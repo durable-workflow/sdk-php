@@ -58,7 +58,7 @@ jobs:
         with:
           args: >-
             --no-progress
-            --exclude 'https://php.durable-workflow.com/'
+            --exclude https://php.durable-workflow.com/
             README.md docs/*.md
       - run: composer docs
       - run: test -s build/api/index.html
