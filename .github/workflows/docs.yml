@@ -1,0 +1,59 @@
+name: API Reference
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'docs/**'
+      - 'README.md'
+      - 'composer.json'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: php-api-reference
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          coverage: none
+      - run: composer install --no-interaction --prefer-dist
+      - name: Check documentation links
+        uses: docker://lycheeverse/lychee:0.24.2
+        with:
+          args: >-
+            --no-progress
+            --exclude 'https://php.durable-workflow.com/'
+            README.md docs/*.md
+      - name: Generate phpDocumentor reference
+        run: |
+          composer docs
+          cp docs/CNAME build/api/CNAME
+          test -s build/api/index.html
+          test "$(cat build/api/CNAME)" = "php.durable-workflow.com"
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: build/api
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: https://php.durable-workflow.com/
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

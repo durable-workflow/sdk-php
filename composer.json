@@ -1,0 +1,65 @@
+{
+    "name": "durable-workflow/sdk",
+    "description": "Framework-neutral PHP client and worker SDK for the Durable Workflow server",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["durable", "workflow", "orchestration", "worker", "sdk"],
+    "homepage": "https://durable-workflow.com",
+    "support": {
+        "docs": "https://php.durable-workflow.com/",
+        "issues": "https://github.com/durable-workflow/sdk-php/issues",
+        "source": "https://github.com/durable-workflow/sdk-php"
+    },
+    "authors": [
+        {
+            "name": "Durable Workflow Contributors"
+        }
+    ],
+    "require": {
+        "php": "^8.1",
+        "apache/avro": "^1.12",
+        "ext-json": "*",
+        "guzzlehttp/guzzle": "^7.8",
+        "psr/http-client": "^1.0",
+        "psr/http-factory": "^1.0",
+        "psr/http-message": "^1.1|^2.0"
+    },
+    "require-dev": {
+        "phpdocumentor/phpdocumentor": "^3.7",
+        "phpstan/phpstan": "^2.0",
+        "phpunit/phpunit": "^10.5|^11.0"
+    },
+    "suggest": {
+        "ext-pcntl": "Enables managed workers to handle SIGINT and SIGTERM gracefully."
+    },
+    "autoload": {
+        "psr-4": {
+            "DurableWorkflow\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "DurableWorkflow\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "analyse": "phpstan analyse",
+        "docs": "phpdoc -d \"$PWD/src\" -t \"$PWD/build/api\" --cache-folder \"$PWD/build/phpdoc-cache\" --title=\"Durable Workflow PHP SDK\"",
+        "check-boundary": "bash scripts/check-dependency-boundary.sh"
+    },
+    "config": {
+        "allow-plugins": {},
+        "sort-packages": true
+    },
+    "extra": {
+        "durable-workflow": {
+            "supported-server-versions": ">=0.2,<0.3",
+            "worker-protocol-version": "1.13",
+            "control-plane-version": "2",
+            "payload-codecs": ["avro"]
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
