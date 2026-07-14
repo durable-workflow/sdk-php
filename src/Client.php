@@ -17,11 +17,18 @@ use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Exception\WorkflowFailed;
 use DurableWorkflow\Exception\WorkflowTerminated;
 use DurableWorkflow\Exception\WorkflowTimedOut;
+use DurableWorkflow\Model\ClusterInfo;
 use DurableWorkflow\Model\NamespaceDescription;
 use DurableWorkflow\Model\ScheduleAction;
 use DurableWorkflow\Model\ScheduleDescription;
+use DurableWorkflow\Model\SchedulePage;
 use DurableWorkflow\Model\ScheduleSpec;
+use DurableWorkflow\Model\SearchAttributeCollection;
+use DurableWorkflow\Model\SearchAttributeDefinition;
+use DurableWorkflow\Model\ServiceOperationDescription;
+use DurableWorkflow\Model\ServiceOperationOptions;
 use DurableWorkflow\Model\WorkflowExecution;
+use DurableWorkflow\Model\WorkflowPage;
 use DurableWorkflow\Model\WorkflowRun;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Transport\Transport;
@@ -54,6 +61,9 @@ final class Client
         if ($authentication !== null && ($token !== null || $controlToken !== null || $workerToken !== null)) {
             throw new InvalidArgumentException('Pass either an Authentication implementation or token arguments, not both.');
         }
+        if (trim($this->namespace) === '') {
+            throw new InvalidArgumentException('The Durable Workflow namespace cannot be empty.');
+        }
         $this->baseUri = rtrim($baseUri, '/');
         $this->authentication = $authentication
             ?? (($token !== null || $controlToken !== null || $workerToken !== null)
@@ -68,10 +78,29 @@ final class Client
         return $this->codec;
     }
 
+    /** Return a new client with the same transport, authentication, and codec for another namespace. */
+    public function withNamespace(string $namespace): self
+    {
+        return new self(
+            $this->baseUri,
+            $this->authentication,
+            $namespace,
+            $this->transport,
+            $this->codec,
+        );
+    }
+
     /** @return array<string, mixed> */
     public function health(): array
     {
         return $this->control('GET', '/health');
+    }
+
+    public function clusterInfo(bool $includeDiagnostics = false): ClusterInfo
+    {
+        $path = $includeDiagnostics ? '/cluster/info?include=diagnostics' : '/cluster/info';
+
+        return ClusterInfo::fromArray($this->control('GET', $path));
     }
 
     /**
@@ -132,15 +161,41 @@ final class Client
         }
         $response = $this->control('GET', $path);
 
-        return new WorkflowExecution(
-            (string) ($response['workflow_id'] ?? $workflowId),
-            isset($response['run_id']) ? (string) $response['run_id'] : $runId,
-            (string) ($response['workflow_type'] ?? ''),
-            isset($response['status']) ? (string) $response['status'] : null,
-            isset($response['namespace']) ? (string) $response['namespace'] : null,
-            isset($response['task_queue']) ? (string) $response['task_queue'] : null,
+        return WorkflowExecution::fromArray(
+            $response,
+            $workflowId,
+            $runId,
             $this->decodedResponsePayload($response, 'input'),
             $this->decodedResponsePayload($response, 'output'),
+        );
+    }
+
+    public function listWorkflows(
+        ?string $workflowType = null,
+        ?string $status = null,
+        ?string $query = null,
+        ?int $pageSize = null,
+        ?string $nextPageToken = null,
+    ): WorkflowPage {
+        $path = $this->pathWithQuery('/workflows', [
+            'workflow_type' => $workflowType,
+            'status' => $status,
+            'query' => $query,
+            'page_size' => $pageSize,
+            'next_page_token' => $nextPageToken,
+        ]);
+        $response = $this->control('GET', $path);
+        $executions = [];
+        foreach (($response['workflows'] ?? []) as $value) {
+            if (is_array($value)) {
+                $executions[] = WorkflowExecution::fromArray($value);
+            }
+        }
+
+        return new WorkflowPage(
+            $executions,
+            isset($response['next_page_token']) ? (string) $response['next_page_token'] : null,
+            isset($response['workflow_count']) ? (int) $response['workflow_count'] : count($executions),
             $response,
         );
     }
@@ -280,6 +335,95 @@ final class Client
         } while (true);
     }
 
+    public function startServiceOperation(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        mixed $arguments = null,
+        ?ServiceOperationOptions $options = null,
+    ): ServiceOperationHandle {
+        $body = $this->serviceOperationBody($arguments, $options);
+        $body['mode_override'] = 'async';
+        $body['wait_for'] = 'accepted';
+        $description = $this->requestServiceOperation(
+            $endpointName,
+            $serviceName,
+            $operationName,
+            $body,
+        );
+
+        if ($description->serviceCallId === '') {
+            throw new ServerException(
+                'The server accepted a service operation without returning a service call ID.',
+                200,
+                'invalid_service_operation_response',
+                $description->raw,
+            );
+        }
+
+        return new ServiceOperationHandle(
+            $this,
+            $endpointName,
+            $serviceName,
+            $operationName,
+            $description->serviceCallId,
+            $description,
+        );
+    }
+
+    public function executeServiceOperation(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        mixed $arguments = null,
+        ?ServiceOperationOptions $options = null,
+    ): ServiceOperationDescription {
+        $body = $this->serviceOperationBody($arguments, $options);
+        $body['wait_for'] ??= 'completed';
+
+        return $this->requestServiceOperation($endpointName, $serviceName, $operationName, $body);
+    }
+
+    public function describeServiceOperation(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        string $serviceCallId,
+    ): ServiceOperationDescription {
+        $response = $this->control(
+            'GET',
+            $this->serviceOperationPath(
+                $endpointName,
+                $serviceName,
+                $operationName,
+                'service-calls/'.$this->segment($serviceCallId),
+            ),
+        );
+
+        return ServiceOperationDescription::fromArray($response, $endpointName, $serviceName, $operationName);
+    }
+
+    public function cancelServiceOperation(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        string $serviceCallId,
+        ?string $reason = null,
+    ): ServiceOperationDescription {
+        $response = $this->control(
+            'POST',
+            $this->serviceOperationPath(
+                $endpointName,
+                $serviceName,
+                $operationName,
+                'service-calls/'.$this->segment($serviceCallId).'/cancel',
+            ),
+            $this->withoutNulls(['reason' => $reason]),
+        );
+
+        return ServiceOperationDescription::fromArray($response, $endpointName, $serviceName, $operationName);
+    }
+
     /**
      * @param array<string, mixed>|null $memo
      * @param array<string, mixed>|null $searchAttributes
@@ -325,18 +469,24 @@ final class Client
         );
     }
 
-    /** @return list<ScheduleDescription> */
-    public function listSchedules(): array
+    /**
+     * @param array<string, bool|int|float|string|null> $filters
+     */
+    public function listSchedules(array $filters = []): SchedulePage
     {
-        $response = $this->control('GET', '/schedules');
-        $result = [];
+        $response = $this->control('GET', $this->pathWithQuery('/schedules', $filters));
+        $schedules = [];
         foreach (($response['schedules'] ?? []) as $value) {
             if (is_array($value)) {
-                $result[] = ScheduleDescription::fromArray($value);
+                $schedules[] = ScheduleDescription::fromArray($value);
             }
         }
 
-        return $result;
+        return new SchedulePage(
+            $schedules,
+            isset($response['next_page_token']) ? (string) $response['next_page_token'] : null,
+            $response,
+        );
     }
 
     /** @param array<string, mixed> $changes */
@@ -439,6 +589,51 @@ final class Client
     public function deleteNamespace(string $name): NamespaceDescription
     {
         return NamespaceDescription::fromArray($this->control('DELETE', '/namespaces/'.$this->segment($name)));
+    }
+
+    /** @param array<string, mixed>|null $config */
+    public function setNamespaceExternalStorage(
+        string $name,
+        string $driver,
+        bool $enabled = true,
+        ?int $thresholdBytes = null,
+        ?array $config = null,
+    ): NamespaceDescription {
+        if ($thresholdBytes !== null && $thresholdBytes < 1) {
+            throw new InvalidArgumentException('Namespace external storage threshold must be at least one byte.');
+        }
+
+        return NamespaceDescription::fromArray($this->control(
+            'PUT',
+            '/namespaces/'.$this->segment($name).'/external-storage',
+            $this->withoutNulls([
+                'driver' => $driver,
+                'enabled' => $enabled,
+                'threshold_bytes' => $thresholdBytes,
+                'config' => $config,
+            ]),
+        ));
+    }
+
+    public function listSearchAttributes(): SearchAttributeCollection
+    {
+        return SearchAttributeCollection::fromArray($this->control('GET', '/search-attributes'));
+    }
+
+    public function createSearchAttribute(string $name, string $type): SearchAttributeDefinition
+    {
+        return SearchAttributeDefinition::fromArray($this->control('POST', '/search-attributes', [
+            'name' => $name,
+            'type' => $type,
+        ]), $name);
+    }
+
+    public function deleteSearchAttribute(string $name): SearchAttributeDefinition
+    {
+        return SearchAttributeDefinition::fromArray(
+            $this->control('DELETE', '/search-attributes/'.$this->segment($name)),
+            $name,
+        );
     }
 
     /**
@@ -806,6 +1001,54 @@ final class Client
         }
 
         return $response[$field] ?? null;
+    }
+
+    /** @return array<string, mixed> */
+    private function serviceOperationBody(mixed $arguments, ?ServiceOperationOptions $options): array
+    {
+        $body = $options?->toArray() ?? [];
+        if ($arguments !== null) {
+            $body['arguments'] = $this->codec->encode($arguments);
+            $body['payload_codec'] = $this->codec->name();
+        }
+
+        return $body;
+    }
+
+    /** @param array<string, mixed> $body */
+    private function requestServiceOperation(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        array $body,
+    ): ServiceOperationDescription {
+        $response = $this->control(
+            'POST',
+            $this->serviceOperationPath($endpointName, $serviceName, $operationName, 'execute'),
+            $body,
+        );
+
+        return ServiceOperationDescription::fromArray($response, $endpointName, $serviceName, $operationName);
+    }
+
+    private function serviceOperationPath(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        string $suffix,
+    ): string {
+        return '/service-endpoints/'.$this->segment($endpointName)
+            .'/services/'.$this->segment($serviceName)
+            .'/operations/'.$this->segment($operationName)
+            .'/'.$suffix;
+    }
+
+    /** @param array<string, bool|int|float|string|null> $query */
+    private function pathWithQuery(string $path, array $query): string
+    {
+        $encoded = http_build_query($this->withoutNulls($query), '', '&', PHP_QUERY_RFC3986);
+
+        return $encoded === '' ? $path : $path.'?'.$encoded;
     }
 
     private function workflowOperationPath(string $workflowId, ?string $runId, string $operation): string

@@ -1,9 +1,12 @@
 # Standalone protocol
 
-The SDK sends control-plane version `2` to `/api/workflows`, `/api/schedules`,
-and `/api/namespaces`. Worker requests use protocol `1.13` under `/api/worker`.
+The SDK sends control-plane version `2` to workflow, schedule, namespace,
+search-attribute, and service-operation routes. Cluster discovery uses
+`/api/cluster/info`. Worker requests use protocol `1.13` under `/api/worker`.
 Every request also carries `X-Namespace`; control and worker bearer tokens can
-be configured independently.
+be configured independently. `Client::withNamespace()` creates another client
+selection without mutating the original or replacing its transport, codec, or
+authentication.
 
 ## Payloads
 
@@ -20,6 +23,13 @@ reader schema. The generic wrapper accepts JSON-safe PHP values only; convert
 objects, resources, dates, and enums to explicit scalar/array representations
 before starting work.
 
+Service-operation arguments use the same codec as workflow payloads. The SDK
+sends the encoded argument blob with its `payload_codec` name to the public
+`/api/service-endpoints/{endpoint}/services/{service}/operations/{operation}/execute`
+surface. Start forces asynchronous/accepted semantics and returns a
+handle for describe and cancel; execute waits for completion unless its
+immutable `ServiceOperationOptions` specifies another wait policy.
+
 ## Run targeting
 
 A workflow ID identifies a stable instance whose current run may change after
@@ -27,6 +37,20 @@ continue-as-new. Ordinary handle operations resolve the current run. A handle
 returned from `startWorkflow()` also retains the selected run ID; methods such
 as `querySelectedRun()`, `cancelSelectedRun()`, and `resultOfSelectedRun()` put
 that ID in the URL so the server rejects stale targeting.
+
+## Visibility and schedule paging
+
+`Client::listWorkflows()` maps `workflow_type`, `status`, `query`, `page_size`,
+and `next_page_token` to the public visibility route and returns a typed page.
+`Client::listSchedules()` returns a typed page containing mapped schedules, the
+server's `next_page_token`, and the complete raw response envelope. It accepts
+filter values and encodes them as RFC 3986 query parameters for forward
+compatibility, but the current server ignores every schedule-list query
+parameter and returns the complete namespace-scoped list with a null
+continuation token. The SDK therefore maps the returned list as-is and does not
+claim or apply client-side filtering.
+`Client::scheduleHistory()` exposes the route's `limit` and `after_sequence`
+cursor without converting server refusals into empty results.
 
 ## Replay
 

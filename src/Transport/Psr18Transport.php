@@ -54,7 +54,7 @@ final class Psr18Transport implements Transport
                 throw new TransportException('The server returned a JSON value instead of an object or array.');
             }
 
-            if ($response->getStatusCode() >= 400) {
+            if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
                 throw TransportException::fromResponse($response->getStatusCode(), $decoded, $rawBody);
             }
 

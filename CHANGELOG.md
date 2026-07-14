@@ -6,6 +6,15 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - Unreleased
+
+### Added
+
+- Immutable namespace selection and typed global workflow visibility pages.
+- Search-attribute administration and namespace external-storage policy updates.
+- Avro-backed service-operation start, execute, describe, and cancel APIs.
+- Typed cluster discovery plus schedule page, continuation, and history route coverage.
+
 ## [0.1.0] - Unreleased
 
 ### Added
@@ -18,5 +27,6 @@ project follows [Semantic Versioning](https://semver.org/).
   cancellation, and graceful shutdown.
 - Generated API reference and supported PHP-version CI.
 
-[Unreleased]: https://github.com/durable-workflow/sdk-php/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/durable-workflow/sdk-php/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/durable-workflow/sdk-php/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/durable-workflow/sdk-php/releases/tag/v0.1.0

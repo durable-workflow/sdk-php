@@ -7,7 +7,7 @@ It targets PHP 8.1 or newer and does not require Laravel or the embedded
 
 ## Install
 
-After the first release, install the package from Packagist:
+Install the package from Packagist:
 
 ```bash
 composer require durable-workflow/sdk:^0.1
@@ -60,6 +60,62 @@ run. Its ordinary operations follow whichever run is current after a
 continue-as-new transition. The `*SelectedRun()` methods retain the original
 run guard and fail rather than silently targeting a successor.
 
+## Control-plane administration and discovery
+
+`Client::withNamespace()` returns an immutable namespace selection that keeps
+the configured authentication, transport, and payload codec. Workflow
+visibility results and the newly covered administrative surfaces use SDK model
+types while retaining the complete server payload in each model's `raw`
+property.
+
+```php
+use DurableWorkflow\Model\ServiceOperationOptions;
+
+$orders = $client->withNamespace('orders-prod');
+
+$page = $orders->listWorkflows(
+    workflowType: 'orders.process',
+    status: 'running',
+    query: 'CustomerId = "42"',
+    pageSize: 25,
+);
+$schedulePage = $orders->listSchedules();
+
+$attributes = $orders->listSearchAttributes();
+$orders->createSearchAttribute('OrderTotal', 'double');
+$orders->deleteSearchAttribute('TemporaryField');
+
+$orders->setNamespaceExternalStorage(
+    'orders-prod',
+    's3',
+    thresholdBytes: 2 * 1024 * 1024,
+    config: ['bucket' => 'workflow-payloads'],
+);
+
+$operation = $orders->startServiceOperation(
+    'payments',
+    'Cards',
+    'authorize',
+    ['amount' => 4200, 'currency' => 'USD'],
+    new ServiceOperationOptions(idempotencyKey: 'order-42-authorization'),
+);
+
+$call = $operation->describe();
+$operation->cancel('customer request');
+$cluster = $orders->clusterInfo();
+```
+
+`listSchedules()` returns a typed page with `schedules`, `nextPageToken`, and
+the original response in `raw`. The current server returns the complete
+namespace-scoped schedule list and does not yet apply schedule-list query
+filters; see the protocol guide for that compatibility boundary.
+
+`startServiceOperation()` explicitly starts an asynchronous call and returns a
+`ServiceOperationHandle`. `executeServiceOperation()` honors the catalog mode,
+waits for completion by default, and returns a `ServiceOperationDescription`.
+Arguments use the client's payload codec; the default is the official Apache
+Avro implementation.
+
 ## Run a remote PHP worker
 
 Workflow handlers may be ordinary callables or generators. Yielding a command
@@ -106,7 +162,8 @@ tasks, and lets the active synchronous task settle before returning.
 See [`examples/`](examples), the generated
 [PHP API reference](https://php.durable-workflow.com/), and
 [`docs/protocol.md`](docs/protocol.md) for the complete client, schedule,
-namespace, authentication, worker, query, and update surfaces.
+namespace, visibility, search-attribute, service-operation, discovery,
+authentication, worker, query, and update surfaces.
 
 ## Development
 
@@ -118,5 +175,6 @@ composer analyse
 composer docs
 ```
 
-The dependency-boundary check rejects Laravel, Illuminate, and the embedded
-workflow package in both declared and resolved production dependencies.
+The dependency-boundary check rejects Laravel, Illuminate, the embedded
+workflow package, and the standalone server package in both declared and
+resolved production dependencies.
