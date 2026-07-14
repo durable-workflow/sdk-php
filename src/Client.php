@@ -32,6 +32,7 @@ use DurableWorkflow\Model\WorkflowPage;
 use DurableWorkflow\Model\WorkflowRun;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Transport\Transport;
+use DurableWorkflow\Worker\PollResponse;
 use InvalidArgumentException;
 
 /** Synchronous control-plane and worker-plane client for the standalone server. */
@@ -701,15 +702,25 @@ final class Client
         $this->control('DELETE', '/workers/'.$this->segment($workerId));
     }
 
-    /** @return array<string, mixed>|null */
-    public function pollWorkflowTask(string $workerId, string $taskQueue, int $timeoutSeconds = 5): ?array
+    /**
+     * Return the complete workflow-task poll response, including typed refusal and protocol metadata.
+     *
+     * @return array<string, mixed>
+     */
+    public function pollWorkflowTaskResponse(string $workerId, string $taskQueue, int $timeoutSeconds = 5): array
     {
-        $response = $this->worker('POST', '/worker/workflow-tasks/poll', [
+        return $this->pollTaskResponse('/worker/workflow-tasks/poll', [
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
             'poll_request_id' => $this->requestId('php-workflow-poll'),
             'timeout_seconds' => max(0, min(60, $timeoutSeconds)),
         ]);
+    }
+
+    /** @return array<string, mixed>|null */
+    public function pollWorkflowTask(string $workerId, string $taskQueue, int $timeoutSeconds = 5): ?array
+    {
+        $response = $this->pollWorkflowTaskResponse($workerId, $taskQueue, $timeoutSeconds);
 
         return isset($response['task']) && is_array($response['task']) ? $response['task'] : null;
     }
@@ -775,15 +786,25 @@ final class Client
         ]);
     }
 
-    /** @return array<string, mixed>|null */
-    public function pollActivityTask(string $workerId, string $taskQueue, int $timeoutSeconds = 5): ?array
+    /**
+     * Return the complete activity-task poll response, including typed refusal and protocol metadata.
+     *
+     * @return array<string, mixed>
+     */
+    public function pollActivityTaskResponse(string $workerId, string $taskQueue, int $timeoutSeconds = 5): array
     {
-        $response = $this->worker('POST', '/worker/activity-tasks/poll', [
+        return $this->pollTaskResponse('/worker/activity-tasks/poll', [
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
             'poll_request_id' => $this->requestId('php-activity-poll'),
             'timeout_seconds' => max(0, min(60, $timeoutSeconds)),
         ]);
+    }
+
+    /** @return array<string, mixed>|null */
+    public function pollActivityTask(string $workerId, string $taskQueue, int $timeoutSeconds = 5): ?array
+    {
+        $response = $this->pollActivityTaskResponse($workerId, $taskQueue, $timeoutSeconds);
 
         return isset($response['task']) && is_array($response['task']) ? $response['task'] : null;
     }
@@ -844,15 +865,25 @@ final class Client
         ]);
     }
 
-    /** @return array<string, mixed>|null */
-    public function pollQueryTask(string $workerId, string $taskQueue, int $timeoutSeconds = 5): ?array
+    /**
+     * Return the complete query-task poll response, including typed refusal and protocol metadata.
+     *
+     * @return array<string, mixed>
+     */
+    public function pollQueryTaskResponse(string $workerId, string $taskQueue, int $timeoutSeconds = 5): array
     {
-        $response = $this->worker('POST', '/worker/query-tasks/poll', [
+        return $this->pollTaskResponse('/worker/query-tasks/poll', [
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
             'poll_request_id' => $this->requestId('php-query-poll'),
             'timeout_seconds' => max(0, min(60, $timeoutSeconds)),
         ]);
+    }
+
+    /** @return array<string, mixed>|null */
+    public function pollQueryTask(string $workerId, string $taskQueue, int $timeoutSeconds = 5): ?array
+    {
+        $response = $this->pollQueryTaskResponse($workerId, $taskQueue, $timeoutSeconds);
 
         return isset($response['task']) && is_array($response['task']) ? $response['task'] : null;
     }
@@ -899,6 +930,29 @@ final class Client
     private function worker(string $method, string $path, ?array $body = null): array
     {
         return $this->request($method, $path, true, $body);
+    }
+
+    /**
+     * @param array<string, mixed> $body
+     * @return array<string, mixed>
+     */
+    private function pollTaskResponse(string $path, array $body): array
+    {
+        try {
+            return $this->worker('POST', $path, $body);
+        } catch (ServerException $exception) {
+            $response = $exception->details;
+            if ($exception->status !== 409 || $response === null || array_is_list($response)) {
+                throw $exception;
+            }
+
+            /** @var array<string, mixed> $response */
+            if (!PollResponse::isTerminal($response)) {
+                throw $exception;
+            }
+
+            return $response;
+        }
     }
 
     /**

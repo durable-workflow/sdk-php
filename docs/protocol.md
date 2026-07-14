@@ -75,6 +75,26 @@ history; update handlers receive the accepted update and return a
 `complete_update` command. SIGINT/SIGTERM request graceful loop shutdown when
 the `pcntl` extension is available.
 
+## Worker poll envelopes
+
+`Client::pollWorkflowTaskResponse()`, `Client::pollActivityTaskResponse()`, and
+`Client::pollQueryTaskResponse()` return the complete worker-protocol response
+without discarding fields when no task is leased. This preserves `poll_status`,
+`reason`, `protocol_version`, `server_capabilities`, and endpoint-specific or
+future protocol metadata. The task-only `pollWorkflowTask()`,
+`pollActivityTask()`, and `pollQueryTask()` methods delegate to the full response
+methods and return only an array task or `null`.
+
+`DurableWorkflow\Worker\PollResponse::isTerminal()` classifies stop decisions
+from typed fields, not human-readable error text. Stale registrations
+(`stale_worker_registration` or `worker_heartbeat_stale`) and server stop/drain
+outcomes (`draining`, `stopped`, `worker_draining`, or `worker_stopped`) are
+terminal. Managed `Worker::run()` and `Worker::tick()` stop all subsequent
+polling on those outcomes. `empty`, `timeout`, `workflow_task_pending`, and
+other non-terminal no-task outcomes remain idle. A terminal HTTP `409` poll body
+is returned as the same response envelope; unrelated conflicts remain
+`ServerException` failures.
+
 ## Custom transports and authentication
 
 Inject `Transport` to adapt the SDK to another PSR-18 stack or a test harness.

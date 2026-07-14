@@ -7,6 +7,7 @@ namespace DurableWorkflow;
 use DurableWorkflow\Exception\ActivityCancelled;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
@@ -104,8 +105,16 @@ final class Worker
     /** Execute at most one task of each kind; useful for custom supervisors and tests. */
     public function tick(int $pollTimeoutSeconds = 1): bool
     {
+        if ($this->shutdownRequested) {
+            return false;
+        }
+
         $handled = false;
-        $workflowTask = $this->client->pollWorkflowTask($this->workerId, $this->taskQueue, $pollTimeoutSeconds);
+        $workflowPoll = $this->client->pollWorkflowTaskResponse($this->workerId, $this->taskQueue, $pollTimeoutSeconds);
+        if ($this->stopForTerminalPoll($workflowPoll)) {
+            return false;
+        }
+        $workflowTask = $this->taskFromPoll($workflowPoll);
         if ($workflowTask !== null) {
             $this->executeWorkflowTask($workflowTask);
             $handled = true;
@@ -114,7 +123,15 @@ final class Worker
             return $handled;
         }
 
-        $activityTask = $this->client->pollActivityTask($this->workerId, $this->taskQueue, $handled ? 0 : $pollTimeoutSeconds);
+        $activityPoll = $this->client->pollActivityTaskResponse(
+            $this->workerId,
+            $this->taskQueue,
+            $handled ? 0 : $pollTimeoutSeconds,
+        );
+        if ($this->stopForTerminalPoll($activityPoll)) {
+            return $handled;
+        }
+        $activityTask = $this->taskFromPoll($activityPoll);
         if ($activityTask !== null) {
             $this->executeActivityTask($activityTask);
             $handled = true;
@@ -123,13 +140,48 @@ final class Worker
             return $handled;
         }
 
-        $queryTask = $this->client->pollQueryTask($this->workerId, $this->taskQueue, $handled ? 0 : $pollTimeoutSeconds);
+        $queryPoll = $this->client->pollQueryTaskResponse(
+            $this->workerId,
+            $this->taskQueue,
+            $handled ? 0 : $pollTimeoutSeconds,
+        );
+        if ($this->stopForTerminalPoll($queryPoll)) {
+            return $handled;
+        }
+        $queryTask = $this->taskFromPoll($queryPoll);
         if ($queryTask !== null) {
             $this->executeQueryTask($queryTask);
             $handled = true;
         }
 
         return $handled;
+    }
+
+    /** @param array<string, mixed> $response */
+    private function stopForTerminalPoll(array $response): bool
+    {
+        if (!PollResponse::isTerminal($response)) {
+            return false;
+        }
+
+        $this->shutdownRequested = true;
+
+        return true;
+    }
+
+    /**
+     * @param array<string, mixed> $response
+     * @return array<string, mixed>|null
+     */
+    private function taskFromPoll(array $response): ?array
+    {
+        $task = $response['task'] ?? null;
+        if (!is_array($task)) {
+            return null;
+        }
+
+        /** @var array<string, mixed> $task */
+        return $task;
     }
 
     /** @param array<string, mixed> $task */
@@ -348,6 +400,10 @@ final class Worker
 
     private function heartbeatIfDue(): void
     {
+        if ($this->shutdownRequested) {
+            return;
+        }
+
         if (microtime(true) - $this->lastHeartbeatAt < $this->heartbeatIntervalSeconds) {
             return;
         }

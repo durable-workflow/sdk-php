@@ -163,7 +163,18 @@ $worker->run();
 Call `$context->heartbeat($details)` from a long-running activity. It throws
 `ActivityCancelled` when the server requests cancellation. `Worker::run()`
 installs SIGINT/SIGTERM handlers when `pcntl` is available, stops accepting new
-tasks, and lets the active synchronous task settle before returning.
+tasks, and lets the active synchronous task settle before returning. The
+managed worker also returns when any task poll reports a terminal typed outcome
+such as `stale_worker_registration`, `draining`, or `stopped`; empty and timeout
+polls remain idle.
+
+Low-level worker integrations can call `pollWorkflowTaskResponse()`,
+`pollActivityTaskResponse()`, and `pollQueryTaskResponse()` to receive the
+complete server envelope, including `poll_status`, `reason`, protocol metadata,
+and any future fields. The existing task-only poll methods delegate to these
+response methods and still return the leased task or `null`. Use
+`DurableWorkflow\Worker\PollResponse::isTerminal()` to apply the same typed
+terminal-outcome classification as the managed worker.
 
 See [`examples/`](examples), the generated
 [PHP API reference](https://php.durable-workflow.com/), and

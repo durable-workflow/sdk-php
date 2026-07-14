@@ -9,6 +9,13 @@ project follows [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Server-side schedule visibility filters and opaque continuation-token paging.
+- Full workflow, activity, and query poll-response methods that preserve typed
+  refusal and protocol metadata.
+
+### Changed
+
+- Managed workers stop polling after stale-registration, drain, and stop
+  outcomes while ordinary empty polls remain idle.
 
 ## [0.1.1] - Unreleased
 
