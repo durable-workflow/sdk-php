@@ -79,7 +79,12 @@ $page = $orders->listWorkflows(
     query: 'CustomerId = "42"',
     pageSize: 25,
 );
-$schedulePage = $orders->listSchedules();
+$schedulePage = $orders->listSchedules(
+    status: 'paused',
+    workflowType: 'reports.rollup',
+    query: 'Region = "eu-west"',
+    pageSize: 25,
+);
 
 $attributes = $orders->listSearchAttributes();
 $orders->createSearchAttribute('OrderTotal', 'double');
@@ -106,9 +111,10 @@ $cluster = $orders->clusterInfo();
 ```
 
 `listSchedules()` returns a typed page with `schedules`, `nextPageToken`, and
-the original response in `raw`. The current server returns the complete
-namespace-scoped schedule list and does not yet apply schedule-list query
-filters; see the protocol guide for that compatibility boundary.
+the original response in `raw`. It supports server-side `status`, workflow
+type, visibility-query, page-size, and continuation-token filtering. Pass a
+non-null `nextPageToken` back unchanged with the same namespace and filters to
+read the next page. See the protocol guide for the paging and error contract.
 
 `startServiceOperation()` explicitly starts an asynchronous call and returns a
 `ServiceOperationHandle`. `executeServiceOperation()` honors the catalog mode,

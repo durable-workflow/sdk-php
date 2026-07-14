@@ -6,6 +6,10 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Server-side schedule visibility filters and opaque continuation-token paging.
+
 ## [0.1.1] - Unreleased
 
 ### Added

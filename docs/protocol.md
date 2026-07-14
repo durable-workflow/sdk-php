@@ -43,12 +43,20 @@ that ID in the URL so the server rejects stale targeting.
 `Client::listWorkflows()` maps `workflow_type`, `status`, `query`, `page_size`,
 and `next_page_token` to the public visibility route and returns a typed page.
 `Client::listSchedules()` returns a typed page containing mapped schedules, the
-server's `next_page_token`, and the complete raw response envelope. It accepts
-filter values and encodes them as RFC 3986 query parameters for forward
-compatibility, but the current server ignores every schedule-list query
-parameter and returns the complete namespace-scoped list with a null
-continuation token. The SDK therefore maps the returned list as-is and does not
-claim or apply client-side filtering.
+server's exact `next_page_token`, and the complete raw response envelope. Its
+supported filters map `status`, `workflowType`, `query`, `pageSize`, and
+`nextPageToken` to `status`, `workflow_type`, `query`, `page_size`, and
+`next_page_token`, respectively. Status and workflow type are exact matches;
+the visibility query is passed unchanged to the server's schedule visibility
+parser. Multiple filters are combined by the server with AND semantics. The
+SDK maps the returned page as-is and does not apply client-side filtering.
+
+Continuation tokens are opaque. Pass a non-null token back unchanged with the
+same namespace, status, workflow type, and visibility query. A null token ends
+the traversal. Malformed, filter-mismatched, cross-namespace, and stale tokens
+are not converted into empty pages: `ServerException` retains the HTTP status,
+machine-readable reason, and the complete response in `details`, including
+field errors and last-safe-cursor evidence supplied by the server.
 `Client::scheduleHistory()` exposes the route's `limit` and `after_sequence`
 cursor without converting server refusals into empty results.
 

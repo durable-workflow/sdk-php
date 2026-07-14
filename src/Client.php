@@ -470,11 +470,25 @@ final class Client
     }
 
     /**
-     * @param array<string, bool|int|float|string|null> $filters
+     * Return one server-filtered schedule page.
+     *
+     * Continuation tokens are opaque and must be reused with the same namespace and filters.
      */
-    public function listSchedules(array $filters = []): SchedulePage
+    public function listSchedules(
+        ?string $status = null,
+        ?string $workflowType = null,
+        ?string $query = null,
+        ?int $pageSize = null,
+        ?string $nextPageToken = null,
+    ): SchedulePage
     {
-        $response = $this->control('GET', $this->pathWithQuery('/schedules', $filters));
+        $response = $this->control('GET', $this->pathWithQuery('/schedules', [
+            'status' => $status,
+            'workflow_type' => $workflowType,
+            'query' => $query,
+            'page_size' => $pageSize,
+            'next_page_token' => $nextPageToken,
+        ]));
         $schedules = [];
         foreach (($response['schedules'] ?? []) as $value) {
             if (is_array($value)) {

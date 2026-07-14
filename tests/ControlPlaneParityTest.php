@@ -12,6 +12,7 @@ use DurableWorkflow\Model\ServiceOperationOptions;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Transport\Psr18Transport;
 use GuzzleHttp\Psr7\Response;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\RequestInterface;
@@ -189,31 +190,72 @@ final class ControlPlaneParityTest extends TestCase
         self::assertSame(['reason' => 'customer request'], $transport->requests[3]['body']);
     }
 
-    public function testSchedulePageMapsDescriptionsContinuationAndRawEnvelope(): void
+    public function testSchedulePageMapsSupportedFiltersDescriptionsAndExactContinuation(): void
     {
-        $response = [
+        $firstResponse = [
             'schedules' => [[
-                'schedule_id' => 'nightly',
+                'schedule_id' => 'nightly-eu',
                 'status' => 'paused',
-                'action' => ['workflow_type' => 'rollup'],
+                'action' => ['workflow_type' => 'reports.rollup'],
+                'search_attributes' => ['Region' => 'eu west'],
             ]],
-            'next_page_token' => 'schedule-page-2',
+            'next_page_token' => 'opaque+/= token',
+            'request_id' => 'request-41',
+        ];
+        $secondResponse = [
+            'schedules' => [[
+                'schedule_id' => 'weekly-eu',
+                'status' => 'paused',
+                'action' => ['workflow_type' => 'reports.rollup'],
+                'search_attributes' => ['Region' => 'eu west'],
+            ]],
+            'next_page_token' => null,
             'request_id' => 'request-42',
         ];
-        $transport = new FakeTransport([$response]);
+        $transport = new FakeTransport([$firstResponse, $secondResponse]);
         $client = new Client('https://server.example', transport: $transport, namespace: 'ops');
 
-        $page = $client->listSchedules();
+        $firstPage = $client->listSchedules(
+            status: 'paused',
+            workflowType: 'reports.rollup',
+            query: 'Region = "eu west"',
+            pageSize: 1,
+        );
+        $secondPage = $client->listSchedules(
+            status: 'paused',
+            workflowType: 'reports.rollup',
+            query: 'Region = "eu west"',
+            pageSize: 1,
+            nextPageToken: $firstPage->nextPageToken,
+        );
 
-        self::assertInstanceOf(SchedulePage::class, $page);
-        self::assertSame('nightly', $page->schedules[0]->scheduleId);
-        self::assertSame('rollup', $page->schedules[0]->action['workflow_type'] ?? null);
-        self::assertSame('schedule-page-2', $page->nextPageToken);
-        self::assertSame($response, $page->raw);
+        self::assertInstanceOf(SchedulePage::class, $firstPage);
+        self::assertSame(['nightly-eu', 'weekly-eu'], array_map(
+            static fn ($schedule): string => $schedule->scheduleId,
+            [...$firstPage->schedules, ...$secondPage->schedules],
+        ));
+        self::assertSame(['paused', 'paused'], array_map(
+            static fn ($schedule): ?string => $schedule->status,
+            [...$firstPage->schedules, ...$secondPage->schedules],
+        ));
+        self::assertSame('reports.rollup', $firstPage->schedules[0]->action['workflow_type'] ?? null);
+        self::assertSame(
+            ['Region' => 'eu west'],
+            $firstPage->schedules[0]->raw['search_attributes'] ?? null,
+        );
+        self::assertSame('opaque+/= token', $firstPage->nextPageToken);
+        self::assertNull($secondPage->nextPageToken);
+        self::assertSame($firstResponse, $firstPage->raw);
+        self::assertSame($secondResponse, $secondPage->raw);
+        self::assertSame([
+            'https://server.example/api/schedules?status=paused&workflow_type=reports.rollup&query=Region%20%3D%20%22eu%20west%22&page_size=1',
+            'https://server.example/api/schedules?status=paused&workflow_type=reports.rollup&query=Region%20%3D%20%22eu%20west%22&page_size=1&next_page_token=opaque%2B%2F%3D%20token',
+        ], array_column($transport->requests, 'uri'));
         self::assertSame('ops', $transport->requests[0]['headers']['X-Namespace']);
+        self::assertSame('ops', $transport->requests[1]['headers']['X-Namespace']);
     }
 
-    public function testScheduleListPreservesUnfilteredServerResultsAndPublicRoutes(): void
+    public function testScheduleListMapsServerResultsAndPublicRoutes(): void
     {
         $transport = new FakeTransport([
             [
@@ -225,7 +267,7 @@ final class ControlPlaneParityTest extends TestCase
                     ],
                     [
                         'schedule_id' => 'hourly',
-                        'status' => 'active',
+                        'status' => 'paused',
                         'action' => ['workflow_type' => 'sync'],
                     ],
                 ],
@@ -246,7 +288,7 @@ final class ControlPlaneParityTest extends TestCase
         ]);
         $client = new Client('https://server.example', transport: $transport, namespace: 'ops');
 
-        $schedulePage = $client->listSchedules(['status' => 'paused', 'page_size' => 20]);
+        $schedulePage = $client->listSchedules(status: 'paused', pageSize: 20);
         $history = $client->scheduleHistory('nightly', 100, 7);
         $cluster = $client->clusterInfo(includeDiagnostics: true);
         $handle = $client->workflowHandle('order/1', 'selected/run');
@@ -255,12 +297,11 @@ final class ControlPlaneParityTest extends TestCase
         $handle->cancel();
         $handle->cancelSelectedRun('selected only');
 
-        // The current server ignores list query parameters; preserve every returned item.
         self::assertSame(['nightly', 'hourly'], array_map(
             static fn ($schedule): string => $schedule->scheduleId,
             $schedulePage->schedules,
         ));
-        self::assertSame(['paused', 'active'], array_map(
+        self::assertSame(['paused', 'paused'], array_map(
             static fn ($schedule): ?string => $schedule->status,
             $schedulePage->schedules,
         ));
@@ -283,6 +324,129 @@ final class ControlPlaneParityTest extends TestCase
             'https://server.example/api/workflows/order%2F1/runs/selected%2Frun/cancel',
         ], array_column($transport->requests, 'uri'));
         self::assertSame(['reason' => 'selected only'], $transport->requests[6]['body']);
+    }
+
+    /**
+     * @return array<string, array{
+     *     arguments: array<string, int|string|null>,
+     *     status: int,
+     *     reason: string,
+     *     field: string,
+     *     lastSafeCursor: array<string, string>|null
+     * }>
+     */
+    public static function scheduleListErrorProvider(): array
+    {
+        return [
+            'invalid status filter' => [
+                'arguments' => ['status' => 'retired'],
+                'status' => 422,
+                'reason' => 'validation_failed',
+                'field' => 'status',
+                'lastSafeCursor' => null,
+            ],
+            'unsupported visibility predicate' => [
+                'arguments' => ['query' => 'Region STARTS_WITH "eu"'],
+                'status' => 422,
+                'reason' => 'unsupported_schedule_visibility_predicate',
+                'field' => 'query',
+                'lastSafeCursor' => null,
+            ],
+            'invalid page size' => [
+                'arguments' => ['pageSize' => 0],
+                'status' => 422,
+                'reason' => 'validation_failed',
+                'field' => 'page_size',
+                'lastSafeCursor' => null,
+            ],
+            'malformed continuation token' => [
+                'arguments' => ['nextPageToken' => 'not-an-opaque-token'],
+                'status' => 400,
+                'reason' => 'malformed_schedule_page_token',
+                'field' => 'next_page_token',
+                'lastSafeCursor' => null,
+            ],
+            'filter-mismatched continuation token' => [
+                'arguments' => ['status' => 'paused', 'nextPageToken' => 'token-for-active'],
+                'status' => 409,
+                'reason' => 'schedule_page_token_filter_mismatch',
+                'field' => 'next_page_token',
+                'lastSafeCursor' => ['created_at' => '2026-07-14T00:00:00Z', 'schedule_id' => 'nightly'],
+            ],
+            'cross-namespace continuation token' => [
+                'arguments' => ['nextPageToken' => 'token-for-another-namespace'],
+                'status' => 403,
+                'reason' => 'schedule_page_token_namespace_mismatch',
+                'field' => 'next_page_token',
+                'lastSafeCursor' => ['created_at' => '2026-07-14T00:00:00Z', 'schedule_id' => 'nightly'],
+            ],
+            'stale continuation token' => [
+                'arguments' => ['nextPageToken' => 'stale-token'],
+                'status' => 409,
+                'reason' => 'stale_schedule_page_token',
+                'field' => 'next_page_token',
+                'lastSafeCursor' => ['created_at' => '2026-07-14T00:00:00Z', 'schedule_id' => 'nightly'],
+            ],
+        ];
+    }
+
+    /**
+     * @param array<string, int|string|null> $arguments
+     * @param array<string, string>|null $lastSafeCursor
+     */
+    #[DataProvider('scheduleListErrorProvider')]
+    public function testScheduleListPreservesTypedFilterAndCursorErrorEvidence(
+        array $arguments,
+        int $status,
+        string $reason,
+        string $field,
+        ?array $lastSafeCursor,
+    ): void {
+        $response = [
+            'message' => "The {$field} value was rejected.",
+            'reason' => $reason,
+            'field' => $field,
+            'errors' => [$field => ["The {$field} value is invalid."]],
+            'last_safe_cursor' => $lastSafeCursor,
+        ];
+        $http = new class($status, $response) implements ClientInterface {
+            /** @param array<string, mixed> $response */
+            public function __construct(
+                private readonly int $status,
+                private readonly array $response,
+            ) {
+            }
+
+            public function sendRequest(RequestInterface $request): ResponseInterface
+            {
+                return new Response(
+                    $this->status,
+                    ['Content-Type' => 'application/json'],
+                    json_encode($this->response, JSON_THROW_ON_ERROR),
+                );
+            }
+        };
+        $client = new Client(
+            'https://server.example',
+            transport: new Psr18Transport($http),
+            namespace: 'ops',
+        );
+
+        try {
+            $client->listSchedules(...$arguments);
+            self::fail("The {$field} refusal was not raised as a typed server error.");
+        } catch (ServerException $exception) {
+            self::assertSame($status, $exception->status);
+            self::assertSame($reason, $exception->reason);
+            self::assertSame($field, $exception->details['field'] ?? null);
+            self::assertSame(
+                "The {$field} value is invalid.",
+                $exception->details['errors'][$field][0] ?? null,
+            );
+            self::assertArrayHasKey('last_safe_cursor', $exception->details ?? []);
+            self::assertSame($lastSafeCursor, $exception->details['last_safe_cursor'] ?? null);
+            self::assertSame($response, $exception->details);
+        }
     }
 
     public function testEveryAddedSurfacePreservesNonSuccessEvidence(): void

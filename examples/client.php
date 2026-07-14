@@ -26,7 +26,7 @@ var_dump($handle->result(timeoutSeconds: 30));
 
 $operations = $client->withNamespace('default');
 $running = $operations->listWorkflows(status: 'running', pageSize: 25);
-$schedules = $operations->listSchedules();
+$schedules = $operations->listSchedules(status: 'active', pageSize: 25);
 $attributes = $operations->listSearchAttributes();
 $cluster = $operations->clusterInfo();
 
