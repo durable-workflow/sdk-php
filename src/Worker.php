@@ -16,6 +16,9 @@ use Throwable;
 /** Managed synchronous remote worker for workflow, activity, query, and update tasks. */
 final class Worker
 {
+    private const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
+    private const MAX_HEARTBEAT_INTERVAL_SECONDS = 3600;
+
     /** @var array<string, callable(WorkflowContext, mixed ...$arguments): mixed> */
     private array $workflows = [];
     /** @var array<string, callable(ActivityContext, mixed ...$arguments): mixed> */
@@ -25,7 +28,11 @@ final class Worker
     /** @var array<string, array<string, callable(QueryContext, mixed ...$arguments): mixed>> */
     private array $updates = [];
     private bool $shutdownRequested = false;
+    private bool $registered = false;
     private float $lastHeartbeatAt = 0.0;
+    private int $heartbeatIntervalSeconds;
+    /** @var \Closure(): float */
+    private readonly \Closure $clock;
     private readonly string $workerId;
     private readonly Replayer $replayer;
 
@@ -33,10 +40,14 @@ final class Worker
         private readonly Client $client,
         public readonly string $taskQueue,
         ?string $workerId = null,
-        private readonly int $heartbeatIntervalSeconds = 30,
+        int $heartbeatIntervalSeconds = self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
         private readonly ?string $buildId = null,
+        ?\Closure $clock = null,
     ) {
         $this->workerId = $workerId ?? 'php-worker-'.bin2hex(random_bytes(8));
+        $this->heartbeatIntervalSeconds = $this->validHeartbeatInterval($heartbeatIntervalSeconds)
+            ?? self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS;
+        $this->clock = $clock ?? static fn (): float => microtime(true);
         $this->replayer = new Replayer($client->payloadCodec());
     }
 
@@ -86,7 +97,7 @@ final class Worker
     public function run(int $pollTimeoutSeconds = 5): void
     {
         $this->installSignalHandlers();
-        $this->client->registerWorker(
+        $registration = $this->client->registerWorker(
             $this->workerId,
             $this->taskQueue,
             array_keys($this->workflows),
@@ -94,7 +105,9 @@ final class Worker
             ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown'],
             buildId: $this->buildId,
         );
-        $this->lastHeartbeatAt = microtime(true);
+        $this->applyHeartbeatInterval($registration);
+        $this->registered = true;
+        $this->lastHeartbeatAt = $this->now();
 
         while (!$this->shutdownRequested) {
             $this->tick($pollTimeoutSeconds);
@@ -110,10 +123,15 @@ final class Worker
         }
 
         $handled = false;
-        $workflowPoll = $this->client->pollWorkflowTaskResponse($this->workerId, $this->taskQueue, $pollTimeoutSeconds);
+        $workflowPoll = $this->client->pollWorkflowTaskResponse(
+            $this->workerId,
+            $this->taskQueue,
+            $this->preparePoll($pollTimeoutSeconds),
+        );
         if ($this->stopForTerminalPoll($workflowPoll)) {
             return false;
         }
+        $this->heartbeatIfDue();
         $workflowTask = $this->taskFromPoll($workflowPoll);
         if ($workflowTask !== null) {
             $this->executeWorkflowTask($workflowTask);
@@ -126,11 +144,12 @@ final class Worker
         $activityPoll = $this->client->pollActivityTaskResponse(
             $this->workerId,
             $this->taskQueue,
-            $handled ? 0 : $pollTimeoutSeconds,
+            $this->preparePoll($handled ? 0 : $pollTimeoutSeconds),
         );
         if ($this->stopForTerminalPoll($activityPoll)) {
             return $handled;
         }
+        $this->heartbeatIfDue();
         $activityTask = $this->taskFromPoll($activityPoll);
         if ($activityTask !== null) {
             $this->executeActivityTask($activityTask);
@@ -143,11 +162,12 @@ final class Worker
         $queryPoll = $this->client->pollQueryTaskResponse(
             $this->workerId,
             $this->taskQueue,
-            $handled ? 0 : $pollTimeoutSeconds,
+            $this->preparePoll($handled ? 0 : $pollTimeoutSeconds),
         );
         if ($this->stopForTerminalPoll($queryPoll)) {
             return $handled;
         }
+        $this->heartbeatIfDue();
         $queryTask = $this->taskFromPoll($queryPoll);
         if ($queryTask !== null) {
             $this->executeQueryTask($queryTask);
@@ -398,20 +418,79 @@ final class Worker
         return is_array($decoded) && array_is_list($decoded) ? $decoded : [$decoded];
     }
 
+    private function preparePoll(int $requestedTimeoutSeconds): int
+    {
+        $timeoutSeconds = max(0, min(60, $requestedTimeoutSeconds));
+        if (!$this->registered) {
+            return $timeoutSeconds;
+        }
+
+        // A synchronous worker cannot heartbeat while a long poll is blocked.
+        // Leave a one-second reserve when possible, then refresh early when
+        // the next request would otherwise carry the worker to its cadence.
+        $maxPollTimeoutSeconds = max(1, $this->heartbeatIntervalSeconds - 1);
+        $timeoutSeconds = min($timeoutSeconds, $maxPollTimeoutSeconds);
+        $elapsed = $this->elapsedSinceHeartbeat();
+        if ($this->heartbeatIntervalSeconds > 1
+            && $timeoutSeconds > 0
+            && $elapsed + $timeoutSeconds >= $this->heartbeatIntervalSeconds) {
+            $this->heartbeat();
+        } else {
+            $this->heartbeatIfDue();
+        }
+
+        return min($timeoutSeconds, max(1, $this->heartbeatIntervalSeconds - 1));
+    }
+
     private function heartbeatIfDue(): void
     {
-        if ($this->shutdownRequested) {
+        if (!$this->registered || $this->shutdownRequested) {
             return;
         }
 
-        if (microtime(true) - $this->lastHeartbeatAt < $this->heartbeatIntervalSeconds) {
+        if ($this->elapsedSinceHeartbeat() < $this->heartbeatIntervalSeconds) {
             return;
         }
-        $this->client->heartbeatWorker($this->workerId, [
+
+        $this->heartbeat();
+    }
+
+    private function heartbeat(): void
+    {
+        $acknowledgement = $this->client->heartbeatWorker($this->workerId, [
             'workflow_available' => 1,
             'activity_available' => 1,
         ]);
-        $this->lastHeartbeatAt = microtime(true);
+        $this->applyHeartbeatInterval($acknowledgement);
+        $this->lastHeartbeatAt = $this->now();
+    }
+
+    /** @param array<string, mixed> $response */
+    private function applyHeartbeatInterval(array $response): void
+    {
+        $interval = $this->validHeartbeatInterval($response['heartbeat_interval_seconds'] ?? null);
+        if ($interval !== null) {
+            $this->heartbeatIntervalSeconds = $interval;
+        }
+    }
+
+    private function validHeartbeatInterval(mixed $interval): ?int
+    {
+        if (!is_int($interval) || $interval < 1 || $interval > self::MAX_HEARTBEAT_INTERVAL_SECONDS) {
+            return null;
+        }
+
+        return $interval;
+    }
+
+    private function elapsedSinceHeartbeat(): float
+    {
+        return max(0.0, $this->now() - $this->lastHeartbeatAt);
+    }
+
+    private function now(): float
+    {
+        return ($this->clock)();
     }
 
     private function installSignalHandlers(): void

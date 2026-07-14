@@ -95,6 +95,16 @@ other non-terminal no-task outcomes remain idle. A terminal HTTP `409` poll body
 is returned as the same response envelope; unrelated conflicts remain
 `ServerException` failures.
 
+`Worker::run()` adopts a valid `heartbeat_interval_seconds` from the worker
+registration response and from later heartbeat acknowledgements. An invalid or
+missing registration cadence preserves the configured fallback, while an
+invalid later acknowledgement leaves the current valid cadence unchanged.
+Because the managed PHP worker is synchronous, it bounds each individual long
+poll below the active heartbeat interval when possible, refreshes proactively
+when the next poll would reach the cadence, and rechecks after every workflow,
+activity, and query response. Poll timeouts and ordinary empty responses retain
+their normal non-terminal semantics while idle workers remain fresh.
+
 ## Custom transports and authentication
 
 Inject `Transport` to adapt the SDK to another PSR-18 stack or a test harness.

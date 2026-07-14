@@ -166,7 +166,11 @@ installs SIGINT/SIGTERM handlers when `pcntl` is available, stops accepting new
 tasks, and lets the active synchronous task settle before returning. The
 managed worker also returns when any task poll reports a terminal typed outcome
 such as `stale_worker_registration`, `draining`, or `stopped`; empty and timeout
-polls remain idle.
+polls remain idle. Registration also negotiates the worker heartbeat cadence.
+Managed long polls are bounded by that cadence and heartbeat checks run between
+workflow, activity, and query polls, so an idle polling cycle cannot silently
+consume the server's registration freshness window. Invalid advertised cadence
+values leave the worker's configured safe fallback in effect.
 
 Low-level worker integrations can call `pollWorkflowTaskResponse()`,
 `pollActivityTaskResponse()`, and `pollQueryTaskResponse()` to receive the

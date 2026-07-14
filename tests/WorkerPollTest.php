@@ -8,6 +8,7 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\ActivityContext;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -88,5 +89,216 @@ final class WorkerPollTest extends TestCase
         self::assertFalse($worker->tick(0));
         self::assertFalse($worker->tick(0));
         self::assertCount(6, $transport->requests);
+    }
+
+    public function testRunAdoptsNegotiatedCadenceAndCompletesWorkAfterExtendedIdlePolling(): void
+    {
+        $now = 0.0;
+        $lastServerHeartbeatAt = 0.0;
+        $workerHeartbeatTimes = [];
+        $pollTimeouts = [];
+        $workDelivered = false;
+        $workCompleted = false;
+
+        $transport = new FakeTransport(handler: function (
+            string $method,
+            string $uri,
+            array $headers,
+            ?array $body,
+        ) use (
+            &$now,
+            &$lastServerHeartbeatAt,
+            &$workerHeartbeatTimes,
+            &$pollTimeouts,
+            &$workDelivered,
+            &$workCompleted,
+        ): ?array {
+            if (str_ends_with($uri, '/api/worker/register')) {
+                return [
+                    'worker_id' => 'worker-1',
+                    'registered' => true,
+                    'heartbeat_interval_seconds' => 10,
+                ];
+            }
+
+            if (str_ends_with($uri, '/api/worker/heartbeat')) {
+                self::assertLessThan(30, $now - $lastServerHeartbeatAt);
+                $lastServerHeartbeatAt = $now;
+                $workerHeartbeatTimes[] = $now;
+
+                return ['acknowledged' => true, 'heartbeat_interval_seconds' => 10];
+            }
+
+            if (preg_match('#/api/worker/(workflow|activity|query)-tasks/poll$#', $uri) === 1) {
+                if ($workCompleted) {
+                    return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+                }
+
+                $timeout = (int) ($body['timeout_seconds'] ?? 0);
+                $pollTimeouts[] = $timeout;
+                $now += $timeout;
+                if ($now - $lastServerHeartbeatAt >= 30) {
+                    return [
+                        'task' => null,
+                        'poll_status' => 'stale_worker_registration',
+                        'reason' => 'worker_heartbeat_stale',
+                    ];
+                }
+
+                if (!$workDelivered && $now > 60 && str_ends_with($uri, '/activity-tasks/poll')) {
+                    $workDelivered = true;
+
+                    return [
+                        'poll_status' => 'leased',
+                        'task' => [
+                            'task_id' => 'activity-after-idle',
+                            'activity_attempt_id' => 'attempt-1',
+                            'lease_owner' => 'worker-1',
+                            'activity_type' => 'after-idle',
+                        ],
+                    ];
+                }
+
+                return ['task' => null, 'poll_status' => 'timeout'];
+            }
+
+            if (str_ends_with($uri, '/api/worker/activity-tasks/activity-after-idle/complete')) {
+                self::assertSame('POST', $method);
+                self::assertSame('worker-1', $body['lease_owner'] ?? null);
+                $workCompleted = true;
+
+                return ['completed' => true];
+            }
+
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        });
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'queue',
+            workerId: 'worker-1',
+            heartbeatIntervalSeconds: 30,
+            clock: static function () use (&$now): float {
+                return $now;
+            },
+        );
+        $worker->registerActivity(
+            'after-idle',
+            static fn (ActivityContext $context): string => 'completed-after-idle',
+        );
+
+        $worker->run(3);
+
+        self::assertTrue($workDelivered);
+        self::assertTrue($workCompleted);
+        self::assertGreaterThan(60, $now);
+        self::assertNotEmpty($workerHeartbeatTimes);
+        self::assertLessThanOrEqual(10, $workerHeartbeatTimes[0]);
+        foreach (array_slice($workerHeartbeatTimes, 1) as $index => $heartbeatAt) {
+            self::assertLessThanOrEqual(10, $heartbeatAt - $workerHeartbeatTimes[$index]);
+        }
+        self::assertNotEmpty($pollTimeouts);
+        self::assertSame([3], array_values(array_unique($pollTimeouts)));
+    }
+
+    public function testManagedLongPollLeavesTimeToHeartbeatBeforeTheNegotiatedCadence(): void
+    {
+        $transport = new FakeTransport([
+            ['registered' => true, 'heartbeat_interval_seconds' => 10],
+            ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'],
+        ]);
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'queue',
+            workerId: 'worker-1',
+            clock: static fn (): float => 0.0,
+        );
+
+        $worker->run(30);
+
+        self::assertCount(2, $transport->requests);
+        self::assertSame(9, $transport->requests[1]['body']['timeout_seconds'] ?? null);
+    }
+
+    /** @param mixed $advertisedInterval */
+    #[DataProvider('invalidHeartbeatIntervals')]
+    public function testInvalidNegotiatedCadenceKeepsTheSafeConfiguredFallback(mixed $advertisedInterval): void
+    {
+        $now = 0.0;
+        $heartbeatTimes = [];
+        $transport = new FakeTransport(handler: function (
+            string $method,
+            string $uri,
+            array $headers,
+            ?array $body,
+        ) use (&$now, &$heartbeatTimes, $advertisedInterval): ?array {
+            if (str_ends_with($uri, '/api/worker/register')) {
+                return [
+                    'registered' => true,
+                    'heartbeat_interval_seconds' => $advertisedInterval,
+                ];
+            }
+
+            if (str_ends_with($uri, '/api/worker/heartbeat')) {
+                $heartbeatTimes[] = $now;
+
+                return [
+                    'acknowledged' => true,
+                    'heartbeat_interval_seconds' => $advertisedInterval,
+                ];
+            }
+
+            if (preg_match('#/api/worker/(workflow|activity|query)-tasks/poll$#', $uri) === 1) {
+                if (count($heartbeatTimes) >= 2) {
+                    return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+                }
+                $now += (int) ($body['timeout_seconds'] ?? 0);
+
+                return ['task' => null, 'poll_status' => 'timeout'];
+            }
+
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        });
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'queue',
+            workerId: 'worker-1',
+            heartbeatIntervalSeconds: 4,
+            clock: static function () use (&$now): float {
+                return $now;
+            },
+        );
+
+        $worker->run(3);
+
+        self::assertSame([3.0, 6.0], $heartbeatTimes);
+    }
+
+    /** @return iterable<string, array{mixed}> */
+    public static function invalidHeartbeatIntervals(): iterable
+    {
+        yield 'missing' => [null];
+        yield 'zero' => [0];
+        yield 'negative' => [-1];
+        yield 'above protocol maximum' => [3601];
+        yield 'numeric string' => ['10'];
+        yield 'fractional number' => [10.5];
+    }
+
+    public function testStoppedPollResponseStopsTheWorker(): void
+    {
+        $transport = new FakeTransport([[
+            'task' => null,
+            'poll_status' => 'stopped',
+            'reason' => 'worker_stopped',
+        ]]);
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'queue',
+            workerId: 'worker-1',
+        );
+
+        self::assertFalse($worker->tick(0));
+        self::assertFalse($worker->tick(0));
+        self::assertCount(1, $transport->requests);
     }
 }

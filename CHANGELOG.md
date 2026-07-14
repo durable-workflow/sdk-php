@@ -16,6 +16,9 @@ project follows [Semantic Versioning](https://semver.org/).
 
 - Managed workers stop polling after stale-registration, drain, and stop
   outcomes while ordinary empty polls remain idle.
+- Managed workers adopt the server-advertised heartbeat cadence and refresh
+  their registration between heartbeat-bounded workflow, activity, and query
+  long polls.
 
 ## [0.1.1] - Unreleased
 
