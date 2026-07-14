@@ -655,6 +655,7 @@ final class Client
      * @param list<string> $workflowTypes
      * @param list<string> $activityTypes
      * @param list<string> $capabilities
+     * @param array<string, array{queries: list<string>, updates: list<string>}>|null $workflowCommandContracts
      * @return array<string, mixed>
      */
     public function registerWorker(
@@ -666,6 +667,7 @@ final class Client
         int $maxConcurrentWorkflowTasks = 1,
         int $maxConcurrentActivityTasks = 1,
         ?string $buildId = null,
+        ?array $workflowCommandContracts = null,
     ): array {
         return $this->worker('POST', '/worker/register', $this->withoutNulls([
             'worker_id' => $workerId,
@@ -674,6 +676,7 @@ final class Client
             'sdk_version' => 'durable-workflow-php/'.Version::SDK,
             'supported_workflow_types' => $workflowTypes,
             'supported_activity_types' => $activityTypes,
+            'workflow_command_contracts' => $workflowCommandContracts,
             'capabilities' => $capabilities,
             'max_concurrent_workflow_tasks' => $maxConcurrentWorkflowTasks,
             'max_concurrent_activity_tasks' => $maxConcurrentActivityTasks,

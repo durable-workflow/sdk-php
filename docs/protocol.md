@@ -75,6 +75,13 @@ history; update handlers receive the accepted update and return a
 `complete_update` command. SIGINT/SIGTERM request graceful loop shutdown when
 the `pcntl` extension is available.
 
+Managed worker registration advertises a command contract for every registered
+workflow type. Its `queries` and `updates` lists come directly from that
+worker's handler registries, including empty lists when a workflow has no such
+handlers. The server can therefore snapshot the declared names when a run
+starts and route later query or update requests without depending on PHP
+framework metadata.
+
 ## Worker poll envelopes
 
 `Client::pollWorkflowTaskResponse()`, `Client::pollActivityTaskResponse()`, and

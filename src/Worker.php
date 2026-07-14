@@ -104,6 +104,7 @@ final class Worker
             array_keys($this->activities),
             ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown'],
             buildId: $this->buildId,
+            workflowCommandContracts: $this->workflowCommandContracts(),
         );
         $this->applyHeartbeatInterval($registration);
         $this->registered = true;
@@ -502,6 +503,20 @@ final class Worker
         foreach ([SIGINT, SIGTERM] as $signal) {
             pcntl_signal($signal, fn (): bool => $this->shutdownRequested = true);
         }
+    }
+
+    /** @return array<string, array{queries: list<string>, updates: list<string>}> */
+    private function workflowCommandContracts(): array
+    {
+        $contracts = [];
+        foreach (array_keys($this->workflows) as $workflowType) {
+            $contracts[$workflowType] = [
+                'queries' => array_keys($this->queries[$workflowType] ?? []),
+                'updates' => array_keys($this->updates[$workflowType] ?? []),
+            ];
+        }
+
+        return $contracts;
     }
 
     /** @param array<string, mixed> $registry */

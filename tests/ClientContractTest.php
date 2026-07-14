@@ -55,6 +55,32 @@ final class ClientContractTest extends TestCase
         self::assertSame('php-activity-poll', substr($transport->requests[0]['body']['poll_request_id'], 0, 17));
     }
 
+    public function testWorkerRegistrationAcceptsTypedWorkflowCommandContracts(): void
+    {
+        $transport = new FakeTransport([['registered' => true]]);
+        $client = new Client('https://server.example', transport: $transport);
+        $contracts = [
+            'orders.process' => [
+                'queries' => ['status', 'summary'],
+                'updates' => ['approve'],
+            ],
+        ];
+
+        $client->registerWorker(
+            'worker-1',
+            'orders',
+            ['orders.process'],
+            ['orders.charge'],
+            buildId: 'release-a',
+            workflowCommandContracts: $contracts,
+        );
+
+        self::assertSame('POST', $transport->requests[0]['method']);
+        self::assertSame('https://server.example/api/worker/register', $transport->requests[0]['uri']);
+        self::assertSame($contracts, $transport->requests[0]['body']['workflow_command_contracts'] ?? null);
+        self::assertSame('release-a', $transport->requests[0]['body']['build_id'] ?? null);
+    }
+
     public function testTaskPollResponseMethodsPreserveTheCompleteEnvelope(): void
     {
         $workflowResponse = [

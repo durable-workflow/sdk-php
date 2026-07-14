@@ -9,11 +9,140 @@ use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\QueryContext;
+use DurableWorkflow\Worker\WorkflowContext;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class WorkerPollTest extends TestCase
 {
+    public function testRunAdvertisesHandlerDerivedContractsForEveryWorkflow(): void
+    {
+        $transport = new FakeTransport([
+            ['registered' => true],
+            ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'],
+        ]);
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'queue',
+            workerId: 'worker-1',
+        );
+        $worker
+            ->registerWorkflow(
+                'orders.process',
+                static fn (WorkflowContext $context): string => 'complete',
+            )
+            ->registerQuery(
+                'orders.process',
+                'order-summary',
+                static fn (QueryContext $context): array => [],
+            )
+            ->registerUpdate(
+                'orders.process',
+                'approve-order',
+                static fn (QueryContext $context): bool => true,
+            )
+            ->registerWorkflow(
+                'inventory.audit',
+                static fn (WorkflowContext $context): string => 'complete',
+            );
+
+        $worker->run(0);
+
+        self::assertSame(
+            ['orders.process', 'inventory.audit'],
+            $transport->requests[0]['body']['supported_workflow_types'] ?? null,
+        );
+        self::assertSame([
+            'orders.process' => [
+                'queries' => ['order-summary'],
+                'updates' => ['approve-order'],
+            ],
+            'inventory.audit' => [
+                'queries' => [],
+                'updates' => [],
+            ],
+        ], $transport->requests[0]['body']['workflow_command_contracts'] ?? null);
+    }
+
+    public function testRegisteredUpdateHandlerCompletesAWorkerUpdateTask(): void
+    {
+        $completedCommand = null;
+        $codecClient = new Client('https://server.example', transport: new FakeTransport());
+        $arguments = $codecClient->payloadCodec()->envelope([41]);
+        $transport = new FakeTransport(handler: static function (
+            string $method,
+            string $uri,
+            array $headers,
+            ?array $body,
+        ) use (&$completedCommand, $arguments): ?array {
+            if (str_ends_with($uri, '/api/worker/register')) {
+                return ['registered' => true];
+            }
+
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
+                return [
+                    'poll_status' => 'leased',
+                    'task' => [
+                        'task_id' => 'update-task-1',
+                        'workflow_task_attempt' => 1,
+                        'lease_owner' => 'worker-1',
+                        'workflow_id' => 'counter-1',
+                        'run_id' => 'run-1',
+                        'workflow_type' => 'counter',
+                        'workflow_update_id' => 'update-1',
+                        'history_events' => [[
+                            'event_type' => 'UpdateAccepted',
+                            'payload' => [
+                                'update_id' => 'update-1',
+                                'update_name' => 'increment',
+                                'arguments' => $arguments,
+                            ],
+                        ]],
+                    ],
+                ];
+            }
+
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/update-task-1/heartbeat')) {
+                return ['acknowledged' => true];
+            }
+
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/update-task-1/complete')) {
+                $completedCommand = $body['commands'][0] ?? null;
+
+                return ['completed' => true];
+            }
+
+            if (str_ends_with($uri, '/api/worker/activity-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        });
+        $client = new Client('https://server.example', transport: $transport);
+        $worker = new Worker($client, 'queue', workerId: 'worker-1');
+        $worker
+            ->registerWorkflow('counter', static fn (WorkflowContext $context): string => 'waiting')
+            ->registerUpdate(
+                'counter',
+                'increment',
+                static fn (QueryContext $context, int $value): int => $value + 1,
+            );
+
+        $worker->run(0);
+
+        self::assertIsArray($completedCommand);
+        self::assertSame('complete_update', $completedCommand['type'] ?? null);
+        self::assertSame('update-1', $completedCommand['update_id'] ?? null);
+        self::assertSame(42, $client->payloadCodec()->decodeEnvelope($completedCommand['result'] ?? []));
+        self::assertSame([
+            'counter' => [
+                'queries' => [],
+                'updates' => ['increment'],
+            ],
+        ], $transport->requests[0]['body']['workflow_command_contracts'] ?? null);
+    }
+
     /**
      * @param list<array<string, mixed>> $responses
      */

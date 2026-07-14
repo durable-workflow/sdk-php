@@ -8,6 +8,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Per-workflow query and update command contracts in managed worker
+  registrations so the server can address declared handlers on new runs.
 - Server-side schedule visibility filters and opaque continuation-token paging.
 - Full workflow, activity, and query poll-response methods that preserve typed
   refusal and protocol metadata.
