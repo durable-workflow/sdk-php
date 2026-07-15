@@ -40,7 +40,13 @@ final class WorkerPollTest extends TestCase
             ->registerUpdate(
                 'orders.process',
                 'approve-order',
-                static fn (QueryContext $context): bool => true,
+                static fn (
+                    QueryContext $context,
+                    int $amount,
+                    string $source = 'manual',
+                    ?bool $approved = null,
+                    string ...$tags,
+                ): bool => true,
             )
             ->registerWorkflow(
                 'inventory.audit',
@@ -56,11 +62,62 @@ final class WorkerPollTest extends TestCase
         self::assertSame([
             'orders.process' => [
                 'queries' => ['order-summary'],
+                'query_contracts' => [[
+                    'name' => 'order-summary',
+                    'parameters' => [],
+                ]],
                 'updates' => ['approve-order'],
+                'update_contracts' => [[
+                    'name' => 'approve-order',
+                    'parameters' => [
+                        [
+                            'name' => 'amount',
+                            'position' => 0,
+                            'required' => true,
+                            'variadic' => false,
+                            'default_available' => false,
+                            'default' => null,
+                            'type' => 'int',
+                            'allows_null' => false,
+                        ],
+                        [
+                            'name' => 'source',
+                            'position' => 1,
+                            'required' => false,
+                            'variadic' => false,
+                            'default_available' => true,
+                            'default' => 'manual',
+                            'type' => 'string',
+                            'allows_null' => false,
+                        ],
+                        [
+                            'name' => 'approved',
+                            'position' => 2,
+                            'required' => false,
+                            'variadic' => false,
+                            'default_available' => true,
+                            'default' => null,
+                            'type' => '?bool',
+                            'allows_null' => true,
+                        ],
+                        [
+                            'name' => 'tags',
+                            'position' => 3,
+                            'required' => false,
+                            'variadic' => true,
+                            'default_available' => false,
+                            'default' => null,
+                            'type' => 'string',
+                            'allows_null' => false,
+                        ],
+                    ],
+                ]],
             ],
             'inventory.audit' => [
                 'queries' => [],
+                'query_contracts' => [],
                 'updates' => [],
+                'update_contracts' => [],
             ],
         ], $transport->requests[0]['body']['workflow_command_contracts'] ?? null);
     }
@@ -138,7 +195,21 @@ final class WorkerPollTest extends TestCase
         self::assertSame([
             'counter' => [
                 'queries' => [],
+                'query_contracts' => [],
                 'updates' => ['increment'],
+                'update_contracts' => [[
+                    'name' => 'increment',
+                    'parameters' => [[
+                        'name' => 'value',
+                        'position' => 0,
+                        'required' => true,
+                        'variadic' => false,
+                        'default_available' => false,
+                        'default' => null,
+                        'type' => 'int',
+                        'allows_null' => false,
+                    ]],
+                ]],
             ],
         ], $transport->requests[0]['body']['workflow_command_contracts'] ?? null);
     }

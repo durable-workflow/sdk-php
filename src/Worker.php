@@ -505,14 +505,99 @@ final class Worker
         }
     }
 
-    /** @return array<string, array{queries: list<string>, updates: list<string>}> */
+    /**
+     * @return array<string, array{
+     *     queries: list<string>,
+     *     query_contracts: list<array{name: string, parameters: list<array{
+     *         name: string,
+     *         position: int,
+     *         required: bool,
+     *         variadic: bool,
+     *         default_available: bool,
+     *         default: mixed,
+     *         type: string|null,
+     *         allows_null: bool
+     *     }>}>,
+     *     updates: list<string>,
+     *     update_contracts: list<array{name: string, parameters: list<array{
+     *         name: string,
+     *         position: int,
+     *         required: bool,
+     *         variadic: bool,
+     *         default_available: bool,
+     *         default: mixed,
+     *         type: string|null,
+     *         allows_null: bool
+     *     }>}>
+     * }>
+     */
     private function workflowCommandContracts(): array
     {
         $contracts = [];
         foreach (array_keys($this->workflows) as $workflowType) {
+            $queries = $this->queries[$workflowType] ?? [];
+            $updates = $this->updates[$workflowType] ?? [];
+
             $contracts[$workflowType] = [
-                'queries' => array_keys($this->queries[$workflowType] ?? []),
-                'updates' => array_keys($this->updates[$workflowType] ?? []),
+                'queries' => array_keys($queries),
+                'query_contracts' => $this->commandHandlerContracts($queries),
+                'updates' => array_keys($updates),
+                'update_contracts' => $this->commandHandlerContracts($updates),
+            ];
+        }
+
+        return $contracts;
+    }
+
+    /**
+     * @param array<string, callable(QueryContext, mixed ...$arguments): mixed> $handlers
+     * @return list<array{name: string, parameters: list<array{
+     *     name: string,
+     *     position: int,
+     *     required: bool,
+     *     variadic: bool,
+     *     default_available: bool,
+     *     default: mixed,
+     *     type: string|null,
+     *     allows_null: bool
+     * }>}>
+     */
+    private function commandHandlerContracts(array $handlers): array
+    {
+        $contracts = [];
+
+        foreach ($handlers as $name => $handler) {
+            $parameters = [];
+            $position = 0;
+            $reflection = new \ReflectionFunction(\Closure::fromCallable($handler));
+
+            foreach ($reflection->getParameters() as $parameter) {
+                $type = $parameter->getType();
+
+                if ($type instanceof \ReflectionNamedType
+                    && !$type->isBuiltin()
+                    && $type->getName() === QueryContext::class
+                ) {
+                    continue;
+                }
+
+                $defaultAvailable = $parameter->isDefaultValueAvailable();
+                $parameters[] = [
+                    'name' => $parameter->getName(),
+                    'position' => $position,
+                    'required' => !$defaultAvailable && !$parameter->isVariadic(),
+                    'variadic' => $parameter->isVariadic(),
+                    'default_available' => $defaultAvailable,
+                    'default' => $defaultAvailable ? $parameter->getDefaultValue() : null,
+                    'type' => $type === null ? null : (string) $type,
+                    'allows_null' => $type?->allowsNull() ?? true,
+                ];
+                $position++;
+            }
+
+            $contracts[] = [
+                'name' => $name,
+                'parameters' => $parameters,
             ];
         }
 

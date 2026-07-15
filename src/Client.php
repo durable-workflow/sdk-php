@@ -655,7 +655,30 @@ final class Client
      * @param list<string> $workflowTypes
      * @param list<string> $activityTypes
      * @param list<string> $capabilities
-     * @param array<string, array{queries: list<string>, updates: list<string>}>|null $workflowCommandContracts
+     * @param array<string, array{
+     *     queries: list<string>,
+     *     query_contracts: list<array{name: string, parameters: list<array{
+     *         name: string,
+     *         position: int,
+     *         required: bool,
+     *         variadic: bool,
+     *         default_available: bool,
+     *         default: mixed,
+     *         type: string|null,
+     *         allows_null: bool
+     *     }>}>,
+     *     updates: list<string>,
+     *     update_contracts: list<array{name: string, parameters: list<array{
+     *         name: string,
+     *         position: int,
+     *         required: bool,
+     *         variadic: bool,
+     *         default_available: bool,
+     *         default: mixed,
+     *         type: string|null,
+     *         allows_null: bool
+     *     }>}>
+     * }>|null $workflowCommandContracts
      * @return array<string, mixed>
      */
     public function registerWorker(

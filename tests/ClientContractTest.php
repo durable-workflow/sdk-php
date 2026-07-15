@@ -62,7 +62,24 @@ final class ClientContractTest extends TestCase
         $contracts = [
             'orders.process' => [
                 'queries' => ['status', 'summary'],
+                'query_contracts' => [
+                    ['name' => 'status', 'parameters' => []],
+                    ['name' => 'summary', 'parameters' => []],
+                ],
                 'updates' => ['approve'],
+                'update_contracts' => [[
+                    'name' => 'approve',
+                    'parameters' => [[
+                        'name' => 'approved',
+                        'position' => 0,
+                        'required' => true,
+                        'variadic' => false,
+                        'default_available' => false,
+                        'default' => null,
+                        'type' => 'bool',
+                        'allows_null' => false,
+                    ]],
+                ]],
             ],
         ];
 
