@@ -93,13 +93,15 @@ jobs:
         run: composer check-release-identity
 
   release-recovery-boundary:
-    name: Release recovery HTTP boundary
+    name: Release recovery boundaries
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@v4
       - name: Exercise source creation, idempotency, mismatch, and permission failure
         run: python scripts/ci/test-publish-planned-source.py
+      - name: Verify release recovery source contracts
+        run: python scripts/ci/test-component-release-recovery.py
 
   target-branch-qualification:
     name: Target branch qualification
