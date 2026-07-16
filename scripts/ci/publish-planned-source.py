@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create or verify a release-plan source tag through GitHub Releases."""
+"""Create or verify a release-plan source tag and GitHub Release."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import datetime as dt
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -20,8 +21,9 @@ PLAN_TAG_PATTERN = re.compile(r"^release-plan/[a-z0-9][a-z0-9._-]{0,55}$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 TAG_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$")
 PERMISSION_BOUNDARY = (
-    "repository-scoped GitHub Actions GITHUB_TOKEN; workflow-declared permissions: "
-    "contents=write, attestations=read, all other configurable permissions=none"
+    "source tag: repository write deploy key held as RELEASE_PLAN_DEPLOY_KEY only in the "
+    "required-reviewer release-plan-publication environment; "
+    "GitHub Release: repository-scoped GitHub Actions GITHUB_TOKEN with contents=write"
 )
 SCHEMA = "durable-workflow.source-release-publication/v1"
 
@@ -36,11 +38,13 @@ class PublicationError(RuntimeError):
         phase: str,
         operation: str | None = None,
         status: int | None = None,
+        response_permission_headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.phase = phase
         self.operation = operation
         self.status = status
+        self.response_permission_headers = response_permission_headers or {}
 
 
 class GitHubClient:
@@ -72,11 +76,21 @@ class GitHubClient:
                 message = response.get("message") if isinstance(response, dict) else None
             except (json.JSONDecodeError, UnicodeDecodeError):
                 message = None
+            permission_headers = {
+                name.lower(): value
+                for name in (
+                    "X-Accepted-GitHub-Permissions",
+                    "X-OAuth-Scopes",
+                    "X-GitHub-Request-Id",
+                )
+                if (value := error.headers.get(name))
+            }
             raise PublicationError(
                 str(message or f"GitHub API returned HTTP {error.code}"),
                 phase="github-permission" if error.code in {401, 403} else "github-api",
                 operation=operation,
                 status=error.code,
+                response_permission_headers=permission_headers,
             ) from error
         except urllib.error.URLError as error:
             raise PublicationError(
@@ -132,9 +146,9 @@ def get_release(client: GitHubClient, repository: str, tag: str) -> dict[str, An
 
 def safe_recovery(repository: str, plan_tag: str) -> str:
     return (
-        f"Restore this repository's GitHub Actions contents:write authority, then rerun "
-        f"{repository} Release plan recovery for {plan_tag}; do not move the tag, push it locally, "
-        "or substitute an operator token"
+        "Restore the matching write-enabled repository deploy key and the release environment's "
+        f"RELEASE_PLAN_DEPLOY_KEY secret, then rerun {repository} Release plan recovery for "
+        f"{plan_tag}. Do not move the tag, publish from a workstation, or substitute an operator token"
     )
 
 
@@ -150,12 +164,79 @@ def evidence_base(repository: str, tag: str, commit: str, plan_tag: str) -> dict
     }
 
 
+def create_tag_with_repository_key(
+    client: GitHubClient,
+    repository: str,
+    tag: str,
+    commit: str,
+    git_directory: Path,
+) -> str:
+    if not (git_directory / ".git").is_dir():
+        raise PublicationError(
+            "repository deploy-key checkout is unavailable",
+            phase="github-permission",
+            operation=f"git push {commit}:refs/tags/{tag}",
+        )
+
+    def git(*arguments: str) -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        environment.pop("GITHUB_TOKEN", None)
+        environment.pop("GH_TOKEN", None)
+        return subprocess.run(
+            ["git", "-C", str(git_directory), *arguments],
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    remote = git("config", "--get", "remote.origin.url")
+    expected_remotes = {
+        f"git@github.com:{repository}.git",
+        f"ssh://git@github.com/{repository}.git",
+    }
+    if remote.returncode != 0 or remote.stdout.strip() not in expected_remotes:
+        raise PublicationError(
+            "repository deploy-key checkout has an unexpected origin",
+            phase="github-permission",
+            operation=f"git push {commit}:refs/tags/{tag}",
+        )
+
+    commit_check = git("cat-file", "-e", f"{commit}^{{commit}}")
+    if commit_check.returncode != 0:
+        raise PublicationError(
+            "planned commit is absent from the repository deploy-key checkout",
+            phase="source-tag",
+            operation=f"git push {commit}:refs/tags/{tag}",
+        )
+
+    operation = f"git push {commit}:refs/tags/{tag}"
+    pushed = git("push", "--porcelain", "origin", f"{commit}:refs/tags/{tag}")
+    source = resolve_tag(client, repository, tag)
+    if pushed.returncode == 0 and source == commit:
+        return "created"
+    if source is not None and source != commit:
+        raise PublicationError(
+            f"source tag changed concurrently to {source}, not the planned commit {commit}",
+            phase="source-tag",
+            operation=operation,
+        )
+    if source == commit:
+        return "verified"
+    raise PublicationError(
+        "GitHub rejected the repository deploy-key source-tag update",
+        phase="github-permission",
+        operation=operation,
+    )
+
+
 def publish_source(
     client: GitHubClient,
     repository: str,
     tag: str,
     commit: str,
     plan_tag: str,
+    git_directory: Path,
 ) -> dict[str, Any]:
     source = resolve_tag(client, repository, tag)
     if source is not None and source != commit:
@@ -168,9 +249,26 @@ def publish_source(
     if source is None and release is not None:
         raise PublicationError("GitHub Release exists without its source tag", phase="github-release")
 
-    action = "verified"
+    tag_action = "verified"
+    if source is None:
+        tag_action = create_tag_with_repository_key(
+            client,
+            repository,
+            tag,
+            commit,
+            git_directory,
+        )
+
+    source = resolve_tag(client, repository, tag)
+    if source != commit:
+        raise PublicationError(
+            f"created source tag resolves to {source or 'no commit'}, not the planned commit {commit}",
+            phase="source-tag",
+        )
+
+    release_action = "verified"
     if release is None:
-        action = "created"
+        release_action = "created"
         release = client.request(
             "POST",
             f"/repos/{repository}/releases",
@@ -184,12 +282,6 @@ def publish_source(
             },
         )
 
-    source = resolve_tag(client, repository, tag)
-    if source != commit:
-        raise PublicationError(
-            f"created source tag resolves to {source or 'no commit'}, not the planned commit {commit}",
-            phase="source-tag",
-        )
     release = get_release(client, repository, tag)
     if release is None:
         raise PublicationError("GitHub Release is absent after source publication", phase="github-release")
@@ -197,9 +289,11 @@ def publish_source(
     return {
         "phase": "source-publication",
         "outcome": "verified",
-        "action": action,
+        "action": "created" if "created" in {tag_action, release_action} else "verified",
         "source_tag": {"ref": f"refs/tags/{tag}", "commit": source},
+        "source_tag_action": tag_action,
         "github_release": {"id": release.get("id"), "url": release.get("html_url")},
+        "github_release_action": release_action,
         "safe_recovery_action": "No action is required",
     }
 
@@ -221,6 +315,7 @@ def main() -> int:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--plan-tag", required=True)
+    parser.add_argument("--git-directory", required=True, type=Path)
     parser.add_argument("--evidence", required=True, type=Path)
     args = parser.parse_args()
 
@@ -229,9 +324,21 @@ def main() -> int:
         validate_arguments(args.repository, args.tag, args.commit, args.plan_tag)
         token = os.environ.get("GITHUB_TOKEN")
         if not token:
-            raise PublicationError("repository GitHub Actions token is unavailable", phase="github-permission")
+            raise PublicationError(
+                "repository GitHub Actions token is unavailable",
+                phase="github-permission",
+            )
         client = GitHubClient(os.environ.get("GITHUB_API_URL", "https://api.github.com"), token)
-        state.update(publish_source(client, args.repository, args.tag, args.commit, args.plan_tag))
+        state.update(
+            publish_source(
+                client,
+                args.repository,
+                args.tag,
+                args.commit,
+                args.plan_tag,
+                args.git_directory,
+            )
+        )
         args.evidence.write_bytes(canonical_json(state))
         print(f"verified refs/tags/{args.tag} at {args.commit} and its public GitHub Release")
         return 0
@@ -242,8 +349,9 @@ def main() -> int:
                 "phase": error.phase,
                 "outcome": "failed",
                 "reason": str(error),
-                "github_api_operation": error.operation,
+                "github_authority_operation": error.operation,
                 "github_http_status": error.status,
+                "github_response_permission_headers": error.response_permission_headers,
                 "safe_recovery_action": recovery,
             }
         )

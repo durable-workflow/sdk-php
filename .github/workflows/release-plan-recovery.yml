@@ -15,18 +15,23 @@ on:
 
 permissions:
   attestations: read
-  contents: write
+  contents: read
 
 concurrency:
   group: release-plan-recovery-sdk-php-${{ inputs.plan_tag || 'latest' }}
   cancel-in-progress: false
 
 jobs:
-  recover:
-    name: Recover exact PHP SDK release
+  discover:
+    name: Discover PHP SDK release recovery
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment: packagist
+    timeout-minutes: 10
+    outputs:
+      action: ${{ steps.recovery.outputs.action }}
+      commit: ${{ steps.recovery.outputs.commit }}
+      plan: ${{ steps.recovery.outputs.plan }}
+      plan_tag: ${{ steps.recovery.outputs.plan_tag }}
+      version: ${{ steps.recovery.outputs.version }}
     steps:
       - uses: actions/checkout@v6
 
@@ -50,23 +55,60 @@ jobs:
           fi
           python scripts/ci/component-release-recovery.py "${arguments[@]}"
 
+      - name: Retain discovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-php-release-recovery-discovery-${{ github.run_id }}
+          path: |
+            release-plan.json
+            release-recovery-evidence.json
+          if-no-files-found: warn
+
+  publish:
+    name: Publish exact PHP SDK release
+    needs: discover
+    if: needs.discover.outputs.action == 'publish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release-plan-publication
+    permissions:
+      attestations: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Restore immutable plan evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-php-release-recovery-discovery-${{ github.run_id }}
+
+      - name: Prepare repository source-tag authority
+        id: source-tag-authority
+        continue-on-error: true
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          path: .release-authority
+          persist-credentials: true
+          ssh-key: ${{ secrets.RELEASE_PLAN_DEPLOY_KEY }}
+
       - name: Create or verify the planned source tag and GitHub Release
-        if: steps.recovery.outputs.action == 'publish'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.recovery.outputs.version }}
-          RELEASE_COMMIT: ${{ steps.recovery.outputs.commit }}
-          RELEASE_PLAN_TAG: ${{ steps.recovery.outputs.plan_tag }}
+          RELEASE_TAG: ${{ needs.discover.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.discover.outputs.commit }}
+          RELEASE_PLAN_TAG: ${{ needs.discover.outputs.plan_tag }}
         run: |
           python scripts/ci/publish-planned-source.py \
             --repository "$GITHUB_REPOSITORY" \
             --tag "$RELEASE_TAG" \
             --commit "$RELEASE_COMMIT" \
             --plan-tag "$RELEASE_PLAN_TAG" \
+            --git-directory "$GITHUB_WORKSPACE/.release-authority" \
             --evidence source-publication-evidence.json
 
       - name: Wait for Packagist source identity
-        if: steps.recovery.outputs.action == 'publish'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -75,7 +117,6 @@ jobs:
             --attempts 30 --sleep 20 --evidence registry-publication-evidence.json
 
       - name: Verify completed public release
-        if: steps.recovery.outputs.action == 'publish'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -87,7 +128,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sdk-php-release-recovery-${{ steps.recovery.outputs.plan || github.run_id }}
+          name: sdk-php-release-recovery-${{ needs.discover.outputs.plan || github.run_id }}
           path: |
             release-plan.json
             release-recovery-evidence.json
