@@ -43,6 +43,8 @@ class GitHubFixture:
         self.release: dict[str, Any] | None = None
         self.permission_failure = False
         self.release_posts = 0
+        self.release_payloads: list[dict[str, Any]] = []
+        self.ref_visibility_misses = 0
 
     def resolve_tag(self) -> str | None:
         result = subprocess.run(
@@ -88,6 +90,9 @@ class Handler(BaseHTTPRequestHandler):
         expected_release = f"/repos/{REPOSITORY}/releases/tags/{urllib.parse.quote(TAG, safe='')}"
         if self.path == expected_ref:
             commit = self.server.fixture.resolve_tag()
+            if commit is not None and self.server.fixture.ref_visibility_misses > 0:
+                self.server.fixture.ref_visibility_misses -= 1
+                commit = None
             if commit is None:
                 self.send_json(404, {"message": "Not Found"})
             else:
@@ -114,6 +119,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", "0"))
         payload = json.loads(self.rfile.read(length))
+        self.server.fixture.release_payloads.append(payload)
         if self.server.fixture.permission_failure:
             self.send_json(
                 403,
@@ -124,7 +130,7 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
             return
-        if payload.get("tag_name") != TAG or payload.get("target_commitish") != self.server.fixture.planned_commit:
+        if payload.get("tag_name") != TAG or "target_commitish" in payload:
             self.send_json(422, {"message": "incorrect release identity"})
             return
         if self.server.fixture.resolve_tag() != self.server.fixture.planned_commit:
@@ -210,6 +216,10 @@ class PlannedSourceBoundaryTest(unittest.TestCase):
                 str(self.authority),
                 "--evidence",
                 str(self.evidence),
+                "--ref-observation-attempts",
+                "4",
+                "--ref-observation-delay",
+                "0",
             ],
             env=environment,
             text=True,
@@ -242,6 +252,13 @@ class PlannedSourceBoundaryTest(unittest.TestCase):
         self.assertEqual(1, self.fixture.release_posts)
         self.assertEqual("verified", self.read_evidence()["action"])
 
+    def test_successful_push_tolerates_bounded_ref_visibility_lag(self) -> None:
+        self.fixture.ref_visibility_misses = 2
+        result = self.run_publication()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(self.planned_commit, self.fixture.resolve_tag())
+        self.assertEqual("created", self.read_evidence()["source_tag_action"])
+
     def test_existing_tag_at_another_commit_is_refused(self) -> None:
         self.fixture.set_tag(self.head_commit)
         result = self.run_publication()
@@ -256,6 +273,7 @@ class PlannedSourceBoundaryTest(unittest.TestCase):
         result = self.run_publication()
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(1, self.fixture.release_posts)
+        self.assertNotIn("target_commitish", self.fixture.release_payloads[0])
         evidence = self.read_evidence()
         self.assertEqual("verified", evidence["source_tag_action"])
         self.assertEqual("created", evidence["github_release_action"])
@@ -270,6 +288,7 @@ class PlannedSourceBoundaryTest(unittest.TestCase):
         self.assertEqual(self.planned_commit, evidence["planned_commit"])
         self.assertEqual("github-permission", evidence["phase"])
         self.assertIn("git push", evidence["github_authority_operation"])
+        self.assertIn("hook or ref policy", evidence["reason"])
         self.assertIn("deploy key", evidence["effective_github_permission_boundary"])
         self.assertIn("rerun", evidence["safe_recovery_action"])
         serialized = json.dumps(evidence) + result.stderr

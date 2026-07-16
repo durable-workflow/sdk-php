@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -144,11 +145,13 @@ def get_release(client: GitHubClient, repository: str, tag: str) -> dict[str, An
     return release
 
 
-def safe_recovery(repository: str, plan_tag: str) -> str:
+def safe_recovery(repository: str, tag: str, commit: str, plan_tag: str) -> str:
     return (
-        "Restore the matching write-enabled repository deploy key and the release environment's "
-        f"RELEASE_PLAN_DEPLOY_KEY secret, then rerun {repository} Release plan recovery for "
-        f"{plan_tag}. Do not move the tag, publish from a workstation, or substitute an operator token"
+        f"Verify refs/tags/{tag} in {repository}: if it resolves to {commit}, rerun Release plan "
+        f"recovery for {plan_tag} to resume; if it is absent, verify the write-enabled repository "
+        "deploy key and the release environment's RELEASE_PLAN_DEPLOY_KEY secret before rerunning. "
+        "Refuse a different source; do not move the tag, publish from a workstation, or substitute "
+        "an operator token"
     )
 
 
@@ -170,6 +173,8 @@ def create_tag_with_repository_key(
     tag: str,
     commit: str,
     git_directory: Path,
+    ref_observation_attempts: int,
+    ref_observation_delay: float,
 ) -> str:
     if not (git_directory / ".git").is_dir():
         raise PublicationError(
@@ -189,6 +194,16 @@ def create_tag_with_repository_key(
             capture_output=True,
             check=False,
         )
+
+    def classify_push_failure(result: subprocess.CompletedProcess[str]) -> str:
+        diagnostic = f"{result.stdout}\n{result.stderr}".lower()
+        if "permission denied (publickey)" in diagnostic or "could not read from remote" in diagnostic:
+            return "repository SSH authentication failed"
+        if "remote rejected" in diagnostic or "hook declined" in diagnostic:
+            return "repository hook or ref policy rejected the ref update"
+        if "non-fast-forward" in diagnostic or "already exists" in diagnostic:
+            return "repository ref conflict rejected the update"
+        return "Git transport did not accept the ref update"
 
     remote = git("config", "--get", "remote.origin.url")
     expected_remotes = {
@@ -213,8 +228,21 @@ def create_tag_with_repository_key(
     operation = f"git push {commit}:refs/tags/{tag}"
     pushed = git("push", "--porcelain", "origin", f"{commit}:refs/tags/{tag}")
     source = resolve_tag(client, repository, tag)
-    if pushed.returncode == 0 and source == commit:
-        return "created"
+    if pushed.returncode == 0:
+        for _ in range(ref_observation_attempts - 1):
+            if source is not None:
+                break
+            time.sleep(ref_observation_delay)
+            source = resolve_tag(client, repository, tag)
+        if source == commit:
+            return "created"
+        if source is None:
+            raise PublicationError(
+                "repository deploy-key push succeeded but the source tag was not observable "
+                "after the bounded GitHub ref propagation wait",
+                phase="source-tag",
+                operation=operation,
+            )
     if source is not None and source != commit:
         raise PublicationError(
             f"source tag changed concurrently to {source}, not the planned commit {commit}",
@@ -224,7 +252,8 @@ def create_tag_with_repository_key(
     if source == commit:
         return "verified"
     raise PublicationError(
-        "GitHub rejected the repository deploy-key source-tag update",
+        "GitHub rejected the repository deploy-key source-tag update: "
+        f"{classify_push_failure(pushed)}",
         phase="github-permission",
         operation=operation,
     )
@@ -237,6 +266,8 @@ def publish_source(
     commit: str,
     plan_tag: str,
     git_directory: Path,
+    ref_observation_attempts: int,
+    ref_observation_delay: float,
 ) -> dict[str, Any]:
     source = resolve_tag(client, repository, tag)
     if source is not None and source != commit:
@@ -257,6 +288,8 @@ def publish_source(
             tag,
             commit,
             git_directory,
+            ref_observation_attempts,
+            ref_observation_delay,
         )
 
     source = resolve_tag(client, repository, tag)
@@ -274,7 +307,6 @@ def publish_source(
             f"/repos/{repository}/releases",
             {
                 "tag_name": tag,
-                "target_commitish": commit,
                 "name": tag,
                 "generate_release_notes": True,
                 "draft": False,
@@ -317,11 +349,15 @@ def main() -> int:
     parser.add_argument("--plan-tag", required=True)
     parser.add_argument("--git-directory", required=True, type=Path)
     parser.add_argument("--evidence", required=True, type=Path)
+    parser.add_argument("--ref-observation-attempts", type=int, default=12)
+    parser.add_argument("--ref-observation-delay", type=float, default=2.0)
     args = parser.parse_args()
 
     state = evidence_base(args.repository, args.tag, args.commit, args.plan_tag)
     try:
         validate_arguments(args.repository, args.tag, args.commit, args.plan_tag)
+        if args.ref_observation_attempts < 1 or args.ref_observation_delay < 0:
+            raise PublicationError("ref observation bounds are invalid", phase="input")
         token = os.environ.get("GITHUB_TOKEN")
         if not token:
             raise PublicationError(
@@ -337,13 +373,15 @@ def main() -> int:
                 args.commit,
                 args.plan_tag,
                 args.git_directory,
+                args.ref_observation_attempts,
+                args.ref_observation_delay,
             )
         )
         args.evidence.write_bytes(canonical_json(state))
         print(f"verified refs/tags/{args.tag} at {args.commit} and its public GitHub Release")
         return 0
     except PublicationError as error:
-        recovery = safe_recovery(args.repository, args.plan_tag)
+        recovery = safe_recovery(args.repository, args.tag, args.commit, args.plan_tag)
         state.update(
             {
                 "phase": error.phase,
