@@ -696,7 +696,7 @@ final class Client
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
             'runtime' => 'php',
-            'sdk_version' => 'durable-workflow-php/'.Version::SDK,
+            'sdk_version' => SdkIdentity::registration(),
             'supported_workflow_types' => $workflowTypes,
             'supported_activity_types' => $activityTypes,
             'workflow_command_contracts' => $workflowCommandContracts,

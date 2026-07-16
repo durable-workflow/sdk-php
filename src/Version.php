@@ -4,10 +4,9 @@ declare(strict_types=1);
 
 namespace DurableWorkflow;
 
-/** Protocol and package identity advertised to the standalone server. */
+/** Protocol versions advertised to the standalone server. */
 final class Version
 {
-    public const SDK = '0.1.5';
     public const CONTROL_PLANE_PROTOCOL = '2';
     public const WORKER_PROTOCOL = '1.13';
 

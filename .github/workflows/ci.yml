@@ -80,3 +80,10 @@ jobs:
           composer config repositories.sdk path "$GITHUB_WORKSPACE"
           composer require durable-workflow/sdk:@dev --no-interaction --prefer-dist
           php -r 'require "vendor/autoload.php"; $codec = new DurableWorkflow\Codec\AvroPayloadCodec(); if ($codec->decode($codec->encode(["ok" => true])) !== ["ok" => true]) { exit(1); }'
+          php "$GITHUB_WORKSPACE/scripts/check-registration-identity.php" \
+            "$consumer/vendor/autoload.php" \
+            source-development
+      - name: Exercise the pre-publication identity guard
+        env:
+          RELEASE_TAG: 9.8.7
+        run: composer check-release-identity
