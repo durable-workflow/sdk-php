@@ -57,7 +57,7 @@ jobs:
 
       - name: Retain discovery evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sdk-php-release-recovery-discovery-${{ github.run_id }}
           path: |
@@ -79,7 +79,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Restore immutable plan evidence
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: sdk-php-release-recovery-discovery-${{ github.run_id }}
 
@@ -126,7 +126,7 @@ jobs:
 
       - name: Retain recovery evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sdk-php-release-recovery-${{ needs.discover.outputs.plan || github.run_id }}
           path: |

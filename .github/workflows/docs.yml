@@ -24,7 +24,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
@@ -44,7 +44,7 @@ jobs:
           cp docs/CNAME build/api/CNAME
           test -s build/api/index.html
           test "$(cat build/api/CNAME)" = "php.durable-workflow.com"
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: build/api
 
@@ -56,4 +56,4 @@ jobs:
       url: https://php.durable-workflow.com/
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
