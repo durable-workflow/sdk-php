@@ -160,6 +160,21 @@ $worker->registerWorkflow(
 $worker->run();
 ```
 
+Long-running workflows declare replay-consumed signals separately from their
+workflow callback. The optional callable describes the signal arguments for
+server admission and is never invoked:
+
+```php
+$worker->declareSignal(
+    'counter',
+    'increment',
+    static fn (int $amount): mixed => null,
+);
+```
+
+The workflow callback reads the committed values with
+`$context->signals('increment')` during replay.
+
 Call `$context->heartbeat($details)` from a long-running activity. It throws
 `ActivityCancelled` when the server requests cancellation. `Worker::run()`
 installs SIGINT/SIGTERM handlers when `pcntl` is available, stops accepting new

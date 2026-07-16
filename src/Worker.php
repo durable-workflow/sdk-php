@@ -25,6 +25,8 @@ final class Worker
     private array $activities = [];
     /** @var array<string, array<string, callable(QueryContext, mixed ...$arguments): mixed>> */
     private array $queries = [];
+    /** @var array<string, array<string, callable(mixed ...$arguments): mixed>> */
+    private array $signals = [];
     /** @var array<string, array<string, callable(QueryContext, mixed ...$arguments): mixed>> */
     private array $updates = [];
     private bool $shutdownRequested = false;
@@ -75,6 +77,26 @@ final class Worker
         $this->queries[$workflowType] ??= [];
         $this->assertUnique($this->queries[$workflowType], $queryName, 'query');
         $this->queries[$workflowType][$queryName] = $handler;
+
+        return $this;
+    }
+
+    /**
+     * Declare a replay-consumed signal and its argument signature.
+     *
+     * The optional signature is reflected for registration metadata only and
+     * is never invoked. Workflows continue to consume signals deterministically
+     * through WorkflowContext::signals().
+     *
+     * @param callable(mixed ...$arguments): mixed|null $signature
+     */
+    public function declareSignal(string $workflowType, string $signalName, ?callable $signature = null): self
+    {
+        $this->assertValidDeclarationName($workflowType, 'workflow type');
+        $this->assertValidDeclarationName($signalName, 'signal');
+        $this->signals[$workflowType] ??= [];
+        $this->assertUnique($this->signals[$workflowType], $signalName, 'signal');
+        $this->signals[$workflowType][$signalName] = $signature ?? static fn (): mixed => null;
 
         return $this;
     }
@@ -518,6 +540,17 @@ final class Worker
      *         type: string|null,
      *         allows_null: bool
      *     }>}>,
+     *     signals: list<string>,
+     *     signal_contracts: list<array{name: string, parameters: list<array{
+     *         name: string,
+     *         position: int,
+     *         required: bool,
+     *         variadic: bool,
+     *         default_available: bool,
+     *         default: mixed,
+     *         type: string|null,
+     *         allows_null: bool
+     *     }>}>,
      *     updates: list<string>,
      *     update_contracts: list<array{name: string, parameters: list<array{
      *         name: string,
@@ -536,13 +569,16 @@ final class Worker
         $contracts = [];
         foreach (array_keys($this->workflows) as $workflowType) {
             $queries = $this->queries[$workflowType] ?? [];
+            $signals = $this->signals[$workflowType] ?? [];
             $updates = $this->updates[$workflowType] ?? [];
 
             $contracts[$workflowType] = [
                 'queries' => array_keys($queries),
-                'query_contracts' => $this->commandHandlerContracts($queries),
+                'query_contracts' => $this->commandHandlerContracts($queries, QueryContext::class),
+                'signals' => array_keys($signals),
+                'signal_contracts' => $this->commandHandlerContracts($signals),
                 'updates' => array_keys($updates),
-                'update_contracts' => $this->commandHandlerContracts($updates),
+                'update_contracts' => $this->commandHandlerContracts($updates, QueryContext::class),
             ];
         }
 
@@ -550,7 +586,8 @@ final class Worker
     }
 
     /**
-     * @param array<string, callable(QueryContext, mixed ...$arguments): mixed> $handlers
+     * @param array<string, callable> $handlers
+     * @param class-string|null $contextClass
      * @return list<array{name: string, parameters: list<array{
      *     name: string,
      *     position: int,
@@ -562,7 +599,7 @@ final class Worker
      *     allows_null: bool
      * }>}>
      */
-    private function commandHandlerContracts(array $handlers): array
+    private function commandHandlerContracts(array $handlers, ?string $contextClass = null): array
     {
         $contracts = [];
 
@@ -576,7 +613,7 @@ final class Worker
 
                 if ($type instanceof \ReflectionNamedType
                     && !$type->isBuiltin()
-                    && $type->getName() === QueryContext::class
+                    && $type->getName() === $contextClass
                 ) {
                     continue;
                 }
@@ -609,6 +646,13 @@ final class Worker
     {
         if (isset($registry[$name])) {
             throw new \InvalidArgumentException("Duplicate {$kind} registration: {$name}.");
+        }
+    }
+
+    private function assertValidDeclarationName(string $name, string $kind): void
+    {
+        if ($name === '' || trim($name) !== $name) {
+            throw new \InvalidArgumentException("Signal declaration {$kind} must be non-empty without surrounding whitespace.");
         }
     }
 }

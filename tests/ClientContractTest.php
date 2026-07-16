@@ -66,6 +66,20 @@ final class ClientContractTest extends TestCase
                     ['name' => 'status', 'parameters' => []],
                     ['name' => 'summary', 'parameters' => []],
                 ],
+                'signals' => ['approved'],
+                'signal_contracts' => [[
+                    'name' => 'approved',
+                    'parameters' => [[
+                        'name' => 'actor',
+                        'position' => 0,
+                        'required' => true,
+                        'variadic' => false,
+                        'default_available' => false,
+                        'default' => null,
+                        'type' => 'string',
+                        'allows_null' => false,
+                    ]],
+                ]],
                 'updates' => ['approve'],
                 'update_contracts' => [[
                     'name' => 'approve',

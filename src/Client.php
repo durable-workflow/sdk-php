@@ -667,6 +667,17 @@ final class Client
      *         type: string|null,
      *         allows_null: bool
      *     }>}>,
+     *     signals: list<string>,
+     *     signal_contracts: list<array{name: string, parameters: list<array{
+     *         name: string,
+     *         position: int,
+     *         required: bool,
+     *         variadic: bool,
+     *         default_available: bool,
+     *         default: mixed,
+     *         type: string|null,
+     *         allows_null: bool
+     *     }>}>,
      *     updates: list<string>,
      *     update_contracts: list<array{name: string, parameters: list<array{
      *         name: string,

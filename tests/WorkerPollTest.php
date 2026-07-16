@@ -37,6 +37,11 @@ final class WorkerPollTest extends TestCase
                 'order-summary',
                 static fn (QueryContext $context): array => [],
             )
+            ->declareSignal(
+                'orders.process',
+                'order-approved',
+                static fn (int $amount, ?string $source = null): mixed => null,
+            )
             ->registerUpdate(
                 'orders.process',
                 'approve-order',
@@ -65,6 +70,32 @@ final class WorkerPollTest extends TestCase
                 'query_contracts' => [[
                     'name' => 'order-summary',
                     'parameters' => [],
+                ]],
+                'signals' => ['order-approved'],
+                'signal_contracts' => [[
+                    'name' => 'order-approved',
+                    'parameters' => [
+                        [
+                            'name' => 'amount',
+                            'position' => 0,
+                            'required' => true,
+                            'variadic' => false,
+                            'default_available' => false,
+                            'default' => null,
+                            'type' => 'int',
+                            'allows_null' => false,
+                        ],
+                        [
+                            'name' => 'source',
+                            'position' => 1,
+                            'required' => false,
+                            'variadic' => false,
+                            'default_available' => true,
+                            'default' => null,
+                            'type' => '?string',
+                            'allows_null' => true,
+                        ],
+                    ],
                 ]],
                 'updates' => ['approve-order'],
                 'update_contracts' => [[
@@ -116,10 +147,52 @@ final class WorkerPollTest extends TestCase
             'inventory.audit' => [
                 'queries' => [],
                 'query_contracts' => [],
+                'signals' => [],
+                'signal_contracts' => [],
                 'updates' => [],
                 'update_contracts' => [],
             ],
         ], $transport->requests[0]['body']['workflow_command_contracts'] ?? null);
+    }
+
+    public function testDuplicateSignalDeclarationsFailLocally(): void
+    {
+        $worker = new Worker(
+            new Client('https://server.example', transport: new FakeTransport()),
+            'queue',
+        );
+        $worker->declareSignal('orders.process', 'approve');
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Duplicate signal registration: approve.');
+
+        $worker->declareSignal('orders.process', 'approve');
+    }
+
+    #[DataProvider('invalidSignalDeclarations')]
+    public function testInvalidSignalDeclarationsFailLocally(
+        string $workflowType,
+        string $signalName,
+        string $expectedKind,
+    ): void {
+        $worker = new Worker(
+            new Client('https://server.example', transport: new FakeTransport()),
+            'queue',
+        );
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("Signal declaration {$expectedKind} must be non-empty without surrounding whitespace.");
+
+        $worker->declareSignal($workflowType, $signalName);
+    }
+
+    /** @return iterable<string, array{string, string, string}> */
+    public static function invalidSignalDeclarations(): iterable
+    {
+        yield 'empty workflow type' => ['', 'approve', 'workflow type'];
+        yield 'workflow type whitespace' => [' orders.process', 'approve', 'workflow type'];
+        yield 'empty signal name' => ['orders.process', '', 'signal'];
+        yield 'signal name whitespace' => ['orders.process', 'approve ', 'signal'];
     }
 
     public function testRegisteredUpdateHandlerCompletesAWorkerUpdateTask(): void
@@ -196,6 +269,8 @@ final class WorkerPollTest extends TestCase
             'counter' => [
                 'queries' => [],
                 'query_contracts' => [],
+                'signals' => [],
+                'signal_contracts' => [],
                 'updates' => ['increment'],
                 'update_contracts' => [[
                     'name' => 'increment',
