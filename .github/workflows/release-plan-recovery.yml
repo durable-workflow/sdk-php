@@ -50,18 +50,20 @@ jobs:
           fi
           python scripts/ci/component-release-recovery.py "${arguments[@]}"
 
-      - name: Create the exact source tag
+      - name: Create or verify the planned source tag and GitHub Release
         if: steps.recovery.outputs.action == 'publish'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.recovery.outputs.version }}
           RELEASE_COMMIT: ${{ steps.recovery.outputs.commit }}
+          RELEASE_PLAN_TAG: ${{ steps.recovery.outputs.plan_tag }}
         run: |
-          set -euo pipefail
-          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-              -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT" >/dev/null
-          fi
+          python scripts/ci/publish-planned-source.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --commit "$RELEASE_COMMIT" \
+            --plan-tag "$RELEASE_PLAN_TAG" \
+            --evidence source-publication-evidence.json
 
       - name: Wait for Packagist source identity
         if: steps.recovery.outputs.action == 'publish'
@@ -71,20 +73,6 @@ jobs:
           python scripts/ci/component-release-recovery.py verify \
             --component sdk-php --plan release-plan.json --registry-only \
             --attempts 30 --sleep 20 --evidence registry-publication-evidence.json
-
-      - name: Create the source GitHub Release
-        if: steps.recovery.outputs.action == 'publish'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.recovery.outputs.version }}
-        run: |
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            arguments=(--verify-tag --generate-notes --title "$RELEASE_TAG")
-            if [[ "$RELEASE_TAG" == *-* ]]; then
-              arguments+=(--prerelease)
-            fi
-            gh release create "$RELEASE_TAG" "${arguments[@]}"
-          fi
 
       - name: Verify completed public release
         if: steps.recovery.outputs.action == 'publish'
@@ -103,6 +91,7 @@ jobs:
           path: |
             release-plan.json
             release-recovery-evidence.json
+            source-publication-evidence.json
             registry-publication-evidence.json
             release-completion-evidence.json
           if-no-files-found: warn

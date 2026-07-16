@@ -92,10 +92,19 @@ jobs:
           RELEASE_TAG: 9.8.7
         run: composer check-release-identity
 
+  release-recovery-boundary:
+    name: Release recovery HTTP boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise source creation, idempotency, mismatch, and permission failure
+        run: python scripts/ci/test-publish-planned-source.py
+
   target-branch-qualification:
     name: Target branch qualification
     if: ${{ always() }}
-    needs: [test, analyse, docs, package-smoke]
+    needs: [test, analyse, docs, package-smoke, release-recovery-boundary]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -105,8 +114,10 @@ jobs:
           ANALYSIS_RESULT: ${{ needs.analyse.result }}
           DOCS_RESULT: ${{ needs.docs.result }}
           PACKAGE_RESULT: ${{ needs.package-smoke.result }}
+          RECOVERY_RESULT: ${{ needs.release-recovery-boundary.result }}
         run: |
           test "$TEST_RESULT" = success
           test "$ANALYSIS_RESULT" = success
           test "$DOCS_RESULT" = success
           test "$PACKAGE_RESULT" = success
+          test "$RECOVERY_RESULT" = success
