@@ -21,6 +21,9 @@ project follows [Semantic Versioning](https://semver.org/).
 - Managed workers adopt the server-advertised heartbeat cadence and refresh
   their registration between heartbeat-bounded workflow, activity, and query
   long polls.
+- Managed workers discard workflow, activity, and query tasks whose typed
+  acknowledgements report that the leased task became terminal concurrently,
+  then continue polling for unrelated work.
 
 ## [0.1.1] - Unreleased
 

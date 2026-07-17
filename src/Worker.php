@@ -6,6 +6,7 @@ namespace DurableWorkflow;
 
 use DurableWorkflow\Exception\ActivityCancelled;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\QueryContext;
@@ -260,12 +261,18 @@ final class Worker
             }
             $this->client->completeWorkflowTask($taskId, $leaseOwner, $attempt, $commands);
         } catch (Throwable $exception) {
-            $this->client->failWorkflowTask(
-                $taskId,
-                $leaseOwner,
-                $attempt,
-                'PHP workflow task execution failed: '.$exception->getMessage(),
-                $exception::class,
+            $this->acknowledgeTaskFailure(
+                'workflow',
+                $exception,
+                function (Throwable $failure) use ($taskId, $leaseOwner, $attempt): void {
+                    $this->client->failWorkflowTask(
+                        $taskId,
+                        $leaseOwner,
+                        $attempt,
+                        'PHP workflow task execution failed: '.$failure->getMessage(),
+                        $failure::class,
+                    );
+                },
             );
         }
     }
@@ -293,13 +300,19 @@ final class Worker
             $result = $handler($context, ...$this->decodeArguments($task['arguments'] ?? null));
             $this->client->completeActivityTask($taskId, $attemptId, $leaseOwner, $result);
         } catch (Throwable $exception) {
-            $this->client->failActivityTask(
-                $taskId,
-                $attemptId,
-                $leaseOwner,
-                $exception->getMessage(),
-                $exception::class,
-                $exception instanceof ActivityCancelled,
+            $this->acknowledgeTaskFailure(
+                'activity',
+                $exception,
+                function (Throwable $failure) use ($taskId, $attemptId, $leaseOwner): void {
+                    $this->client->failActivityTask(
+                        $taskId,
+                        $attemptId,
+                        $leaseOwner,
+                        $failure->getMessage(),
+                        $failure::class,
+                        $failure instanceof ActivityCancelled,
+                    );
+                },
             );
         }
     }
@@ -327,8 +340,62 @@ final class Worker
             $arguments = $this->decodeArguments($task['query_arguments'] ?? $task['arguments'] ?? null);
             $this->client->completeQueryTask($taskId, $leaseOwner, $attempt, $handler($context, ...$arguments));
         } catch (Throwable $exception) {
-            $this->client->failQueryTask($taskId, $leaseOwner, $attempt, $exception->getMessage());
+            $this->acknowledgeTaskFailure(
+                'query',
+                $exception,
+                function (Throwable $failure) use ($taskId, $leaseOwner, $attempt): void {
+                    $this->client->failQueryTask($taskId, $leaseOwner, $attempt, $failure->getMessage());
+                },
+            );
         }
+    }
+
+    /** @param callable(Throwable): void $failureAcknowledgement */
+    private function acknowledgeTaskFailure(
+        string $taskKind,
+        Throwable $taskFailure,
+        callable $failureAcknowledgement,
+    ): void {
+        if ($this->isTerminalTaskConflict($taskKind, $taskFailure)) {
+            return;
+        }
+        if ($taskFailure instanceof ServerException) {
+            throw $taskFailure;
+        }
+
+        try {
+            $failureAcknowledgement($taskFailure);
+        } catch (Throwable $acknowledgementFailure) {
+            if (!$this->isTerminalTaskConflict($taskKind, $acknowledgementFailure)) {
+                throw $acknowledgementFailure;
+            }
+        }
+    }
+
+    private function isTerminalTaskConflict(string $taskKind, Throwable $exception): bool
+    {
+        if (!$exception instanceof ServerException || $exception->status !== 409) {
+            return false;
+        }
+
+        $details = $exception->details;
+        if ($details === null || array_is_list($details)) {
+            return false;
+        }
+
+        $reason = $exception->reason;
+
+        return match ($taskKind) {
+            'workflow' => $reason === 'run_closed'
+                && ($details['can_continue'] ?? null) === false
+                && ($details['task_status'] ?? null) === 'cancelled',
+            'activity' => in_array($reason, ['run_cancelled', 'run_terminated'], true)
+                && ($details['can_continue'] ?? null) === false
+                && ($details['task_status'] ?? null) === 'cancelled',
+            'query' => $reason === 'query_task_timed_out'
+                && ($details['outcome'] ?? null) === 'rejected',
+            default => false,
+        };
     }
 
     /**
