@@ -112,6 +112,26 @@ when the next poll would reach the cadence, and rechecks after every workflow,
 activity, and query response. Poll timeouts and ordinary empty responses retain
 their normal non-terminal semantics while idle workers remain fresh.
 
+Managed workers also retry a poll when its transport failure carries a complete
+worker-protocol envelope that explicitly marks the refusal as retryable. The
+SQLite `backend_lock_pressure` response is recognized by its HTTP 503 status,
+typed `poll_status` and `reason`, empty task, and valid retry delay. Retries stay
+on the same poll kind and worker registration, use capped backoff, refresh the
+worker heartbeat while waiting, and check for shutdown in short sleep slices.
+The optional `transientPollRetryObserver` constructor callback receives the
+task kind, consecutive attempt, chosen delay in seconds, and `ServerException`
+for operational telemetry. Authentication errors, malformed envelopes, generic
+service failures, and responses that are not explicitly retryable still throw.
+
+Before replaying or completing a workflow task, the managed worker requires a
+successful lease-renewal response whose task ID, attempt, and lease owner match
+the current claim. A typed `renewed=false`, `retryable=true` response is retried
+with the same fencing values and interruptible capped backoff. Workflow code is
+not invoked until renewal succeeds. A closed run is discarded under its typed
+terminal contract, while lease loss, non-retryable refusal, and malformed or
+mismatched renewal responses remain visible failures and cannot lead to task
+completion.
+
 ## Custom transports and authentication
 
 Inject `Transport` to adapt the SDK to another PSR-18 stack or a test harness.

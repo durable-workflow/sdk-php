@@ -234,7 +234,13 @@ final class WorkerPollTest extends TestCase
             }
 
             if (str_ends_with($uri, '/api/worker/workflow-tasks/update-task-1/heartbeat')) {
-                return ['acknowledged' => true];
+                return [
+                    'task_id' => 'update-task-1',
+                    'workflow_task_attempt' => 1,
+                    'lease_owner' => 'worker-1',
+                    'renewed' => true,
+                    'reason' => null,
+                ];
             }
 
             if (str_ends_with($uri, '/api/worker/workflow-tasks/update-task-1/complete')) {

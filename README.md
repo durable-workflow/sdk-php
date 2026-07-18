@@ -195,6 +195,19 @@ response methods and still return the leased task or `null`. Use
 `DurableWorkflow\Worker\PollResponse::isTerminal()` to apply the same typed
 terminal-outcome classification as the managed worker.
 
+When a poll fails with a complete worker-protocol envelope explicitly marked as
+transient, the managed worker retries that same poll with capped backoff while
+keeping heartbeats and graceful shutdown responsive. Pass a
+`transientPollRetryObserver` callback to the `Worker` constructor to record the
+task kind, consecutive attempt, selected delay, and typed server exception.
+Authentication failures, malformed responses, and generic server errors remain
+fatal.
+
+Workflow tasks additionally require an acknowledged lease renewal before user
+code runs. Typed transient renewal pressure is retried with the original task
+ID, attempt, and lease owner; shutdown or a terminal/lost lease prevents task
+execution and completion.
+
 See [`examples/`](examples), the generated
 [PHP API reference](https://php.durable-workflow.com/), and
 [`docs/protocol.md`](docs/protocol.md) for the complete client, schedule,

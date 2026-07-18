@@ -58,7 +58,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
                     throw self::workflowRunClosedConflict('closed-task');
                 }
 
-                return ['acknowledged' => true];
+                return self::renewedWorkflowTaskLease('closed-task');
             }
 
             if (str_ends_with($uri, '/workflow-tasks/closed-task/complete')) {
@@ -75,7 +75,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
             }
 
             if (str_ends_with($uri, '/workflow-tasks/next-task/heartbeat')) {
-                return ['acknowledged' => true];
+                return self::renewedWorkflowTaskLease('next-task');
             }
 
             if (str_ends_with($uri, '/workflow-tasks/next-task/complete')) {
@@ -343,7 +343,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
                     );
                 }
 
-                return ['acknowledged' => true];
+                return self::renewedWorkflowTaskLease('owned-task');
             }
 
             if (str_ends_with($uri, '/workflow-tasks/owned-task/fail')) {
@@ -399,6 +399,18 @@ final class WorkerTerminalTaskRaceTest extends TestCase
                 'workflow_type' => 'race.workflow',
                 'history_events' => [],
             ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private static function renewedWorkflowTaskLease(string $taskId): array
+    {
+        return [
+            'task_id' => $taskId,
+            'workflow_task_attempt' => 1,
+            'lease_owner' => 'worker-1',
+            'renewed' => true,
+            'reason' => null,
         ];
     }
 

@@ -18,7 +18,10 @@ use Throwable;
 final class Worker
 {
     private const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
+    private const INITIAL_TRANSIENT_RETRY_DELAY_SECONDS = 0.1;
     private const MAX_HEARTBEAT_INTERVAL_SECONDS = 3600;
+    private const MAX_TRANSIENT_RETRY_DELAY_SECONDS = 5.0;
+    private const TRANSIENT_RETRY_SLEEP_SLICE_SECONDS = 0.1;
 
     /** @var array<string, callable(WorkflowContext, mixed ...$arguments): mixed> */
     private array $workflows = [];
@@ -36,6 +39,8 @@ final class Worker
     private int $heartbeatIntervalSeconds;
     /** @var \Closure(): float */
     private readonly \Closure $clock;
+    /** @var \Closure(int): void */
+    private readonly \Closure $sleeper;
     private readonly string $workerId;
     private readonly Replayer $replayer;
 
@@ -46,11 +51,17 @@ final class Worker
         int $heartbeatIntervalSeconds = self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
         private readonly ?string $buildId = null,
         ?\Closure $clock = null,
+        ?\Closure $sleeper = null,
+        /** @var (\Closure(string, int, float, ServerException): void)|null */
+        private readonly ?\Closure $transientPollRetryObserver = null,
     ) {
         $this->workerId = $workerId ?? 'php-worker-'.bin2hex(random_bytes(8));
         $this->heartbeatIntervalSeconds = $this->validHeartbeatInterval($heartbeatIntervalSeconds)
             ?? self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS;
         $this->clock = $clock ?? static fn (): float => microtime(true);
+        $this->sleeper = $sleeper ?? static function (int $microseconds): void {
+            usleep($microseconds);
+        };
         $this->replayer = new Replayer($client->payloadCodec());
     }
 
@@ -147,11 +158,17 @@ final class Worker
         }
 
         $handled = false;
-        $workflowPoll = $this->client->pollWorkflowTaskResponse(
-            $this->workerId,
-            $this->taskQueue,
-            $this->preparePoll($pollTimeoutSeconds),
+        $workflowPoll = $this->pollWithRetry(
+            'workflow',
+            fn (): array => $this->client->pollWorkflowTaskResponse(
+                $this->workerId,
+                $this->taskQueue,
+                $this->preparePoll($pollTimeoutSeconds),
+            ),
         );
+        if ($workflowPoll === null) {
+            return false;
+        }
         if ($this->stopForTerminalPoll($workflowPoll)) {
             return false;
         }
@@ -165,11 +182,17 @@ final class Worker
             return $handled;
         }
 
-        $activityPoll = $this->client->pollActivityTaskResponse(
-            $this->workerId,
-            $this->taskQueue,
-            $this->preparePoll($handled ? 0 : $pollTimeoutSeconds),
+        $activityPoll = $this->pollWithRetry(
+            'activity',
+            fn (): array => $this->client->pollActivityTaskResponse(
+                $this->workerId,
+                $this->taskQueue,
+                $this->preparePoll($handled ? 0 : $pollTimeoutSeconds),
+            ),
         );
+        if ($activityPoll === null) {
+            return $handled;
+        }
         if ($this->stopForTerminalPoll($activityPoll)) {
             return $handled;
         }
@@ -183,11 +206,17 @@ final class Worker
             return $handled;
         }
 
-        $queryPoll = $this->client->pollQueryTaskResponse(
-            $this->workerId,
-            $this->taskQueue,
-            $this->preparePoll($handled ? 0 : $pollTimeoutSeconds),
+        $queryPoll = $this->pollWithRetry(
+            'query',
+            fn (): array => $this->client->pollQueryTaskResponse(
+                $this->workerId,
+                $this->taskQueue,
+                $this->preparePoll($handled ? 0 : $pollTimeoutSeconds),
+            ),
         );
+        if ($queryPoll === null) {
+            return $handled;
+        }
         if ($this->stopForTerminalPoll($queryPoll)) {
             return $handled;
         }
@@ -199,6 +228,69 @@ final class Worker
         }
 
         return $handled;
+    }
+
+    /**
+     * @param \Closure(): array<string, mixed> $poll
+     * @return array<string, mixed>|null
+     */
+    private function pollWithRetry(string $taskKind, \Closure $poll): ?array
+    {
+        $attempt = 0;
+        while (!$this->shutdownRequested) {
+            try {
+                return $poll();
+            } catch (ServerException $exception) {
+                if (!PollResponse::isTransientFailure($exception)) {
+                    throw $exception;
+                }
+
+                ++$attempt;
+                $delaySeconds = $this->transientRetryDelay(
+                    $attempt,
+                    $exception->details['retry_after_seconds'] ?? null,
+                );
+                if ($this->transientPollRetryObserver !== null) {
+                    ($this->transientPollRetryObserver)($taskKind, $attempt, $delaySeconds, $exception);
+                }
+                $this->waitForTransientRetry($delaySeconds);
+            }
+        }
+
+        return null;
+    }
+
+    private function transientRetryDelay(int $attempt, mixed $retryAfterSeconds): float
+    {
+        $exponent = min(max(0, $attempt - 1), 6);
+        $delaySeconds = self::INITIAL_TRANSIENT_RETRY_DELAY_SECONDS * (2 ** $exponent);
+        if (is_int($retryAfterSeconds)) {
+            $delaySeconds = max($delaySeconds, (float) $retryAfterSeconds);
+        }
+
+        return min(self::MAX_TRANSIENT_RETRY_DELAY_SECONDS, $delaySeconds);
+    }
+
+    private function waitForTransientRetry(float $delaySeconds): void
+    {
+        $deadline = $this->now() + $delaySeconds;
+        while (!$this->shutdownRequested) {
+            $this->heartbeatIfDue();
+            $remainingSeconds = $deadline - $this->now();
+            if ($remainingSeconds <= 0) {
+                return;
+            }
+
+            $sleepSeconds = min(self::TRANSIENT_RETRY_SLEEP_SLICE_SECONDS, $remainingSeconds);
+            if ($this->registered) {
+                $untilHeartbeatSeconds = $this->heartbeatIntervalSeconds - $this->elapsedSinceHeartbeat();
+                if ($untilHeartbeatSeconds > 0) {
+                    $sleepSeconds = min($sleepSeconds, $untilHeartbeatSeconds);
+                }
+            }
+
+            ($this->sleeper)((int) max(1, ceil($sleepSeconds * 1_000_000)));
+        }
     }
 
     /** @param array<string, mixed> $response */
@@ -236,7 +328,9 @@ final class Worker
         $leaseOwner = (string) ($task['lease_owner'] ?? $this->workerId);
         try {
             $history = $this->completeHistory($task, $leaseOwner, $attempt);
-            $this->client->heartbeatWorkflowTask($taskId, $leaseOwner, $attempt);
+            if (!$this->renewWorkflowTaskLease($taskId, $leaseOwner, $attempt)) {
+                return;
+            }
             $workflowType = (string) ($task['workflow_type'] ?? '');
             $updateId = isset($task['workflow_update_id']) ? (string) $task['workflow_update_id'] : null;
             if ($updateId !== null && $updateId !== '') {
@@ -275,6 +369,89 @@ final class Worker
                 },
             );
         }
+    }
+
+    private function renewWorkflowTaskLease(string $taskId, string $leaseOwner, int $taskAttempt): bool
+    {
+        $retryAttempt = 0;
+        while (!$this->shutdownRequested) {
+            $response = $this->client->heartbeatWorkflowTask($taskId, $leaseOwner, $taskAttempt);
+            if (!$this->matchesWorkflowTaskLeaseFence($response, $taskId, $leaseOwner, $taskAttempt)) {
+                throw $this->workflowTaskLeaseResponseFailure(
+                    'Workflow task lease renewal returned mismatched fencing fields.',
+                    $response,
+                );
+            }
+
+            if (($response['renewed'] ?? null) === true) {
+                return true;
+            }
+
+            if (!$this->isTransientWorkflowTaskLeaseRefusal($response)) {
+                throw $this->workflowTaskLeaseResponseFailure(
+                    'Workflow task lease renewal was not acknowledged.',
+                    $response,
+                );
+            }
+
+            ++$retryAttempt;
+            $this->waitForTransientRetry($this->transientRetryDelay(
+                $retryAttempt,
+                $response['retry_after_seconds'] ?? null,
+            ));
+        }
+
+        return false;
+    }
+
+    /** @param array<string, mixed> $response */
+    private function matchesWorkflowTaskLeaseFence(
+        array $response,
+        string $taskId,
+        string $leaseOwner,
+        int $taskAttempt,
+    ): bool {
+        return ($response['task_id'] ?? null) === $taskId
+            && ($response['lease_owner'] ?? null) === $leaseOwner
+            && ($response['workflow_task_attempt'] ?? null) === $taskAttempt;
+    }
+
+    /** @param array<string, mixed> $response */
+    private function isTransientWorkflowTaskLeaseRefusal(array $response): bool
+    {
+        if (($response['renewed'] ?? null) !== false || ($response['retryable'] ?? null) !== true) {
+            return false;
+        }
+
+        $reason = $response['reason'] ?? null;
+        if (!is_string($reason) || $reason === '') {
+            return false;
+        }
+
+        if (array_key_exists('retry_after_seconds', $response)
+            && (!is_int($response['retry_after_seconds']) || $response['retry_after_seconds'] < 0)) {
+            return false;
+        }
+
+        if ($reason === 'backend_lock_pressure') {
+            return isset($response['retry_after_seconds']) && $response['retry_after_seconds'] > 0;
+        }
+
+        return true;
+    }
+
+    /** @param array<string, mixed> $response */
+    private function workflowTaskLeaseResponseFailure(string $fallbackMessage, array $response): ServerException
+    {
+        $message = $response['message'] ?? $response['error'] ?? $fallbackMessage;
+        $reason = $response['reason'] ?? null;
+
+        return new ServerException(
+            is_string($message) && $message !== '' ? $message : $fallbackMessage,
+            200,
+            is_string($reason) && $reason !== '' ? $reason : 'invalid_workflow_task_lease_response',
+            $response,
+        );
     }
 
     /** @param array<string, mixed> $task */

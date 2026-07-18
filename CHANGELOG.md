@@ -24,6 +24,11 @@ project follows [Semantic Versioning](https://semver.org/).
 - Managed workers discard workflow, activity, and query tasks whose typed
   acknowledgements report that the leased task became terminal concurrently,
   then continue polling for unrelated work.
+- Managed workers retry explicitly transient workflow, activity, and query
+  poll refusals with observable capped backoff while preserving heartbeats and
+  responsive shutdown; workflow-task execution also waits for a successful
+  typed lease renewal after transient backend pressure. Unrelated server
+  failures and invalid fencing outcomes remain fatal.
 
 ## [0.1.1] - Unreleased
 
