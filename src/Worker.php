@@ -357,6 +357,7 @@ final class Worker
         } catch (Throwable $exception) {
             $this->acknowledgeTaskFailure(
                 'workflow',
+                $taskId,
                 $exception,
                 function (Throwable $failure) use ($taskId, $leaseOwner, $attempt): void {
                     $this->client->failWorkflowTask(
@@ -479,6 +480,7 @@ final class Worker
         } catch (Throwable $exception) {
             $this->acknowledgeTaskFailure(
                 'activity',
+                $taskId,
                 $exception,
                 function (Throwable $failure) use ($taskId, $attemptId, $leaseOwner): void {
                     $this->client->failActivityTask(
@@ -519,6 +521,7 @@ final class Worker
         } catch (Throwable $exception) {
             $this->acknowledgeTaskFailure(
                 'query',
+                $taskId,
                 $exception,
                 function (Throwable $failure) use ($taskId, $leaseOwner, $attempt): void {
                     $this->client->failQueryTask($taskId, $leaseOwner, $attempt, $failure->getMessage());
@@ -530,10 +533,11 @@ final class Worker
     /** @param callable(Throwable): void $failureAcknowledgement */
     private function acknowledgeTaskFailure(
         string $taskKind,
+        string $taskId,
         Throwable $taskFailure,
         callable $failureAcknowledgement,
     ): void {
-        if ($this->isTerminalTaskConflict($taskKind, $taskFailure)) {
+        if ($this->isTerminalTaskConflict($taskKind, $taskId, $taskFailure)) {
             return;
         }
         if ($taskFailure instanceof ServerException) {
@@ -543,13 +547,13 @@ final class Worker
         try {
             $failureAcknowledgement($taskFailure);
         } catch (Throwable $acknowledgementFailure) {
-            if (!$this->isTerminalTaskConflict($taskKind, $acknowledgementFailure)) {
+            if (!$this->isTerminalTaskConflict($taskKind, $taskId, $acknowledgementFailure)) {
                 throw $acknowledgementFailure;
             }
         }
     }
 
-    private function isTerminalTaskConflict(string $taskKind, Throwable $exception): bool
+    private function isTerminalTaskConflict(string $taskKind, string $taskId, Throwable $exception): bool
     {
         if (!$exception instanceof ServerException || $exception->status !== 409) {
             return false;
@@ -560,12 +564,19 @@ final class Worker
             return false;
         }
 
+        $taskIdField = $taskKind === 'query' ? 'query_task_id' : 'task_id';
+        if (($details[$taskIdField] ?? null) !== $taskId) {
+            return false;
+        }
+
         $reason = $exception->reason;
 
         return match ($taskKind) {
-            'workflow' => $reason === 'run_closed'
-                && ($details['can_continue'] ?? null) === false
-                && ($details['task_status'] ?? null) === 'cancelled',
+            'workflow' => ($reason === 'run_closed'
+                    && ($details['can_continue'] ?? null) === false
+                    && ($details['task_status'] ?? null) === 'cancelled')
+                || ($reason === 'task_not_leased'
+                    && ($details['task_status'] ?? null) === 'cancelled'),
             'activity' => in_array($reason, ['run_cancelled', 'run_terminated'], true)
                 && ($details['can_continue'] ?? null) === false
                 && ($details['task_status'] ?? null) === 'cancelled',

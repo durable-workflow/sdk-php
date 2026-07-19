@@ -23,7 +23,8 @@ project follows [Semantic Versioning](https://semver.org/).
   long polls.
 - Managed workers discard workflow, activity, and query tasks whose typed
   acknowledgements report that the leased task became terminal concurrently,
-  then continue polling for unrelated work.
+  including cancelled workflow tasks reported as no longer leased, then
+  continue polling for unrelated work.
 - Managed workers retry explicitly transient workflow, activity, and query
   poll refusals with observable capped backoff while preserving heartbeats and
   responsive shutdown; workflow-task execution also waits for a successful
