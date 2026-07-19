@@ -6,6 +6,11 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Release-plan recovery now consumes immutable, exact-version release-note
+  preparation authority before publishing a newly recorded plan.
+
 ### Fixed
 
 - Managed workers retry the server's fenced registration lock-pressure

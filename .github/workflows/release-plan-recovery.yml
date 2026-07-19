@@ -45,6 +45,7 @@ jobs:
             resolve
             --component sdk-php
             --plan-output release-plan.json
+            --preparation-output release-preparation.json
             --evidence release-recovery-evidence.json
             --github-output "$GITHUB_OUTPUT"
           )
@@ -62,6 +63,7 @@ jobs:
           name: sdk-php-release-recovery-discovery-${{ github.run_id }}
           path: |
             release-plan.json
+            release-preparation.json
             release-recovery-evidence.json
           if-no-files-found: warn
 
