@@ -6,6 +6,12 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Managed workers retry the server's fenced registration lock-pressure
+  response with bounded backoff before entering the poll loop, while other
+  registration failures remain terminal.
+
 ## [0.1.12] - 2026-07-19
 
 ### Fixed

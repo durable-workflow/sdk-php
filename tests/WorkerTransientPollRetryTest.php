@@ -15,6 +15,126 @@ use PHPUnit\Framework\TestCase;
 
 final class WorkerTransientPollRetryTest extends TestCase
 {
+    public function testManagedWorkerRetriesTypedRegistrationContentionInTheSameProcess(): void
+    {
+        $now = 0.0;
+        $observedRetries = [];
+        $transport = new FakeTransport([
+            self::registrationLockPressure(),
+            ['registered' => true, 'heartbeat_interval_seconds' => 10],
+            ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'],
+        ]);
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'orders',
+            workerId: 'worker-registration-retry',
+            clock: static function () use (&$now): float {
+                return $now;
+            },
+            sleeper: static function (int $microseconds) use (&$now): void {
+                $now += $microseconds / 1_000_000;
+            },
+            transientPollRetryObserver: static function (
+                string $phase,
+                int $attempt,
+                float $delaySeconds,
+                ServerException $exception,
+            ) use (&$observedRetries): void {
+                $observedRetries[] = [
+                    'phase' => $phase,
+                    'attempt' => $attempt,
+                    'delay_seconds' => $delaySeconds,
+                    'reason' => $exception->reason,
+                ];
+            },
+        );
+
+        $worker->run(0);
+
+        self::assertSame([[
+            'phase' => 'registration',
+            'attempt' => 1,
+            'delay_seconds' => 1.0,
+            'reason' => 'backend_lock_pressure',
+        ]], $observedRetries);
+        self::assertEqualsWithDelta(1.0, $now, 0.000_001);
+        self::assertCount(3, $transport->requests);
+        self::assertStringEndsWith('/api/worker/register', $transport->requests[0]['uri']);
+        self::assertStringEndsWith('/api/worker/register', $transport->requests[1]['uri']);
+        self::assertStringEndsWith('/api/worker/workflow-tasks/poll', $transport->requests[2]['uri']);
+        self::assertSame($transport->requests[0]['body'], $transport->requests[1]['body']);
+        self::assertSame('worker-registration-retry', $transport->requests[1]['body']['worker_id'] ?? null);
+        self::assertSame('orders', $transport->requests[1]['body']['task_queue'] ?? null);
+    }
+
+    #[DataProvider('fatalRegistrationFailureProvider')]
+    public function testNonRetryableRegistrationFailuresRemainTerminal(TransportException $failure): void
+    {
+        $sleepCalls = 0;
+        $observedRetries = 0;
+        $transport = new FakeTransport([$failure]);
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'orders',
+            workerId: 'worker-registration-terminal',
+            sleeper: static function (int $microseconds) use (&$sleepCalls): void {
+                ++$sleepCalls;
+            },
+            transientPollRetryObserver: static function (
+                string $phase,
+                int $attempt,
+                float $delaySeconds,
+                ServerException $exception,
+            ) use (&$observedRetries): void {
+                ++$observedRetries;
+            },
+        );
+
+        try {
+            $worker->run(0);
+            self::fail('The registration failure should remain terminal.');
+        } catch (ServerException) {
+            // Expected: only the exact registration lock-pressure contract retries.
+        }
+
+        self::assertSame(0, $sleepCalls);
+        self::assertSame(0, $observedRetries);
+        self::assertCount(1, $transport->requests);
+    }
+
+    /** @return iterable<string, array{TransportException}> */
+    public static function fatalRegistrationFailureProvider(): iterable
+    {
+        yield 'authentication failure' => [self::failure(401, [
+            'message' => 'Invalid worker token.',
+            'reason' => 'authentication_failed',
+        ])];
+
+        yield 'non-retryable lock response' => [self::failure(503, [
+            'message' => 'Registration failed.',
+            'reason' => 'backend_lock_pressure',
+            'operation' => 'register_worker',
+            'worker_id' => 'worker-registration-terminal',
+            'task_queue' => 'orders',
+            'registered' => false,
+            'retryable' => false,
+            'retry_after_seconds' => 1,
+            'backend' => ['driver' => 'mysql', 'lock_pressure' => true],
+        ])];
+
+        yield 'malformed registration fence' => [self::failure(503, [
+            'message' => 'Registration is temporarily unavailable.',
+            'reason' => 'backend_lock_pressure',
+            'operation' => 'register_worker',
+            'worker_id' => 'another-worker',
+            'task_queue' => 'orders',
+            'registered' => false,
+            'retryable' => true,
+            'retry_after_seconds' => 1,
+            'backend' => ['driver' => 'mysql', 'lock_pressure' => true],
+        ])];
+    }
+
     #[DataProvider('pollKindProvider')]
     public function testEveryPollKindRetriesTypedBackendLockPressure(
         string $taskKind,
@@ -451,6 +571,21 @@ final class WorkerTransientPollRetryTest extends TestCase
             'namespace' => 'default',
             'task_queue' => 'orders',
             'backend' => ['driver' => 'sqlite', 'lock_pressure' => true],
+        ]);
+    }
+
+    private static function registrationLockPressure(int $retryAfterSeconds = 1): TransportException
+    {
+        return self::failure(503, [
+            'message' => 'The database backend is temporarily locked while registering the worker. Retry with backoff.',
+            'reason' => 'backend_lock_pressure',
+            'operation' => 'register_worker',
+            'worker_id' => 'worker-registration-retry',
+            'task_queue' => 'orders',
+            'registered' => false,
+            'retryable' => true,
+            'retry_after_seconds' => $retryAfterSeconds,
+            'backend' => ['driver' => 'mysql', 'lock_pressure' => true],
         ]);
     }
 

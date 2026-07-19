@@ -131,15 +131,10 @@ final class Worker
     public function run(int $pollTimeoutSeconds = 5): void
     {
         $this->installSignalHandlers();
-        $registration = $this->client->registerWorker(
-            $this->workerId,
-            $this->taskQueue,
-            array_keys($this->workflows),
-            array_keys($this->activities),
-            ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown'],
-            buildId: $this->buildId,
-            workflowCommandContracts: $this->workflowCommandContracts(),
-        );
+        $registration = $this->registerWithRetry();
+        if ($registration === null) {
+            return;
+        }
         $this->applyHeartbeatInterval($registration);
         $this->registered = true;
         $this->lastHeartbeatAt = $this->now();
@@ -148,6 +143,66 @@ final class Worker
             $this->tick($pollTimeoutSeconds);
             $this->heartbeatIfDue();
         }
+    }
+
+    /** @return array<string, mixed>|null */
+    private function registerWithRetry(): ?array
+    {
+        $attempt = 0;
+        while (!$this->shutdownRequested) {
+            try {
+                return $this->client->registerWorker(
+                    $this->workerId,
+                    $this->taskQueue,
+                    array_keys($this->workflows),
+                    array_keys($this->activities),
+                    ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown'],
+                    buildId: $this->buildId,
+                    workflowCommandContracts: $this->workflowCommandContracts(),
+                );
+            } catch (ServerException $exception) {
+                if (!$this->isTransientRegistrationFailure($exception)) {
+                    throw $exception;
+                }
+
+                ++$attempt;
+                $delaySeconds = $this->transientRetryDelay(
+                    $attempt,
+                    $exception->details['retry_after_seconds'] ?? null,
+                );
+                if ($this->transientPollRetryObserver !== null) {
+                    ($this->transientPollRetryObserver)('registration', $attempt, $delaySeconds, $exception);
+                }
+                $this->waitForTransientRetry($delaySeconds);
+            }
+        }
+
+        return null;
+    }
+
+    private function isTransientRegistrationFailure(ServerException $exception): bool
+    {
+        if ($exception->status !== 503 || $exception->reason !== 'backend_lock_pressure') {
+            return false;
+        }
+
+        $response = $exception->details;
+        if ($response === null || array_is_list($response)) {
+            return false;
+        }
+
+        $backend = $response['backend'] ?? null;
+
+        return ($response['reason'] ?? null) === 'backend_lock_pressure'
+            && ($response['operation'] ?? null) === 'register_worker'
+            && ($response['worker_id'] ?? null) === $this->workerId
+            && ($response['task_queue'] ?? null) === $this->taskQueue
+            && ($response['registered'] ?? null) === false
+            && ($response['retryable'] ?? null) === true
+            && is_int($response['retry_after_seconds'] ?? null)
+            && $response['retry_after_seconds'] > 0
+            && is_array($backend)
+            && ($backend['lock_pressure'] ?? null) === true;
     }
 
     /** Execute at most one task of each kind; useful for custom supervisors and tests. */
