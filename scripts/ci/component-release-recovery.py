@@ -1109,7 +1109,11 @@ def verify_cli(client: PublicClient, component: Component, version: str, commit:
         if shutil.which("php") is None:
             raise RecoveryError("PHP is required to verify CLI release source metadata", "registry-publication")
         phar_version = subprocess.run(
-            ["php", str(directory / "dw.phar"), "--version"], check=False, text=True, capture_output=True
+            ["php", str(directory / "dw.phar"), "--version"],
+            check=False,
+            text=True,
+            capture_output=True,
+            env={"PATH": os.environ.get("PATH", os.defpath)},
         )
         expected_identity = f"{version} (commit {commit[:12]},"
         if phar_version.returncode or expected_identity not in phar_version.stdout:
