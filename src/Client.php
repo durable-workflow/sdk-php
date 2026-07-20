@@ -975,21 +975,29 @@ final class Client
      */
     private function pollTaskResponse(string $path, array $body): array
     {
-        try {
-            return $this->worker('POST', $path, $body);
-        } catch (ServerException $exception) {
-            $response = $exception->details;
-            if ($exception->status !== 409 || $response === null || array_is_list($response)) {
-                throw $exception;
-            }
+        for ($attempt = 0; $attempt < 2; ++$attempt) {
+            try {
+                return $this->worker('POST', $path, $body);
+            } catch (ServerException $exception) {
+                if ($attempt === 0 && $exception->status === 0) {
+                    continue;
+                }
 
-            /** @var array<string, mixed> $response */
-            if (!PollResponse::isTerminal($response)) {
-                throw $exception;
-            }
+                $response = $exception->details;
+                if ($exception->status !== 409 || $response === null || array_is_list($response)) {
+                    throw $exception;
+                }
 
-            return $response;
+                /** @var array<string, mixed> $response */
+                if (!PollResponse::isTerminal($response)) {
+                    throw $exception;
+                }
+
+                return $response;
+            }
         }
+
+        return [];
     }
 
     /**

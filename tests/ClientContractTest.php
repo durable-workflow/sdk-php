@@ -55,6 +55,24 @@ final class ClientContractTest extends TestCase
         self::assertSame('php-activity-poll', substr($transport->requests[0]['body']['poll_request_id'], 0, 17));
     }
 
+    public function testTimedOutWorkerPollsRetryWithTheSameRequestId(): void
+    {
+        foreach (['pollWorkflowTask', 'pollActivityTask', 'pollQueryTask'] as $method) {
+            $transport = new FakeTransport([
+                new TransportException('poll timed out'),
+                ['task' => null],
+            ]);
+            $client = new Client('https://server.example', transport: $transport);
+
+            self::assertNull($client->{$method}('worker-1', 'queue', 0));
+            self::assertCount(2, $transport->requests);
+            self::assertSame(
+                $transport->requests[0]['body']['poll_request_id'],
+                $transport->requests[1]['body']['poll_request_id'],
+            );
+        }
+    }
+
     public function testWorkerRegistrationAcceptsTypedWorkflowCommandContracts(): void
     {
         $transport = new FakeTransport([['registered' => true]]);
