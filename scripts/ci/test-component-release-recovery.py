@@ -430,8 +430,8 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
                 1,
             ),
             "run identity includes an unapproved field": source.replace(
-                "databaseId,displayTitle,headBranch,headSha,status,conclusion",
-                "databaseId,displayTitle,headBranch,headSha,status,conclusion,event",
+                "databaseId,event,displayTitle,headBranch,headSha,status,conclusion",
+                "databaseId,event,displayTitle,headBranch,headSha,status,conclusion,url",
                 1,
             ),
         }
