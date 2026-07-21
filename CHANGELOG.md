@@ -8,6 +8,10 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Joined the synchronized Durable Workflow `2.0.0-beta.3` product train. This
+  is the supported 2.0 baseline; earlier prereleases retain historical release
+  records but receive no compatibility shim.
+
 - Release-plan recovery now consumes immutable, exact-version release-note
   preparation authority before publishing a newly recorded plan.
 
@@ -128,7 +132,7 @@ project follows [Semantic Versioning](https://semver.org/).
   cancellation, and graceful shutdown.
 - Generated API reference and supported PHP-version CI.
 
-[Unreleased]: https://github.com/durable-workflow/sdk-php/compare/0.1.12...HEAD
+[Unreleased]: https://github.com/durable-workflow/sdk-php/compare/0.1.16...HEAD
 [0.1.12]: https://github.com/durable-workflow/sdk-php/compare/0.1.11...0.1.12
 [0.1.11]: https://github.com/durable-workflow/sdk-php/compare/0.1.10...0.1.11
 [0.1.10]: https://github.com/durable-workflow/sdk-php/compare/0.1.9...0.1.10
