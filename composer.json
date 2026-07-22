@@ -56,8 +56,8 @@
     },
     "extra": {
         "durable-workflow": {
-            "product-train": "2.0.0-beta.3",
-            "supported-server-versions": "2.0.0-beta.3",
+            "product-train": "2.0.0-beta.4",
+            "supported-server-versions": "2.0.0-beta.4",
             "worker-protocol-version": "1.13",
             "control-plane-version": "2",
             "payload-codecs": ["avro"]
