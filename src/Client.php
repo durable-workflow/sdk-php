@@ -241,6 +241,15 @@ final class Client
         );
     }
 
+    /** @return array<string, mixed> */
+    public function workflowDiagnostics(string $workflowId, ?string $runId = null): array
+    {
+        return $this->control(
+            'GET',
+            $this->workflowOperationPath($workflowId, $runId, 'debug'),
+        );
+    }
+
     /**
      * @param list<mixed> $arguments
      * @return array<string, mixed>
@@ -306,6 +315,22 @@ final class Client
         return $this->control(
             'POST',
             $this->workflowOperationPath($workflowId, $runId, 'terminate'),
+            $this->withoutNulls(['reason' => $reason]),
+        );
+    }
+
+    /** @return array<string, mixed> */
+    public function repairWorkflow(string $workflowId, ?string $runId = null): array
+    {
+        return $this->control('POST', $this->workflowOperationPath($workflowId, $runId, 'repair'));
+    }
+
+    /** @return array<string, mixed> */
+    public function archiveWorkflow(string $workflowId, ?string $reason = null, ?string $runId = null): array
+    {
+        return $this->control(
+            'POST',
+            $this->workflowOperationPath($workflowId, $runId, 'archive'),
             $this->withoutNulls(['reason' => $reason]),
         );
     }
@@ -633,6 +658,51 @@ final class Client
     public function listSearchAttributes(): SearchAttributeCollection
     {
         return SearchAttributeCollection::fromArray($this->control('GET', '/search-attributes'));
+    }
+
+    /** @return array<string, mixed> */
+    public function systemHealth(): array
+    {
+        return $this->control('GET', '/system/health');
+    }
+
+    /** @return array<string, mixed> */
+    public function operatorMetrics(): array
+    {
+        return $this->control('GET', '/system/operator-metrics');
+    }
+
+    /** @return array<string, mixed> */
+    public function operatorDashboard(): array
+    {
+        return $this->control('GET', '/system/operator-dashboard');
+    }
+
+    /** @return array<string, mixed> */
+    public function listWorkers(?string $taskQueue = null, ?string $status = null): array
+    {
+        return $this->control('GET', $this->pathWithQuery('/workers', [
+            'task_queue' => $taskQueue,
+            'status' => $status,
+        ]));
+    }
+
+    /** @return array<string, mixed> */
+    public function describeWorker(string $workerId): array
+    {
+        return $this->control('GET', '/workers/'.$this->segment($workerId));
+    }
+
+    /** @return array<string, mixed> */
+    public function listTaskQueues(): array
+    {
+        return $this->control('GET', '/task-queues');
+    }
+
+    /** @return array<string, mixed> */
+    public function describeTaskQueue(string $taskQueue): array
+    {
+        return $this->control('GET', '/task-queues/'.$this->segment($taskQueue));
     }
 
     public function createSearchAttribute(string $name, string $type): SearchAttributeDefinition

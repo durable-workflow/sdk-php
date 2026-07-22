@@ -453,11 +453,17 @@ final class ControlPlaneParityTest extends TestCase
     {
         $operations = [
             'workflow visibility' => static fn (Client $client) => $client->listWorkflows(),
+            'workflow diagnostics' => static fn (Client $client) => $client->workflowDiagnostics('order-1', 'run-1'),
             'search attributes' => static fn (Client $client) => $client->listSearchAttributes(),
             'namespace storage' => static fn (Client $client) => $client->setNamespaceExternalStorage('orders', 's3'),
             'service operations' => static fn (Client $client) => $client->startServiceOperation('payments', 'Cards', 'charge'),
             'schedule list' => static fn (Client $client) => $client->listSchedules(),
             'cluster discovery' => static fn (Client $client) => $client->clusterInfo(),
+            'system health' => static fn (Client $client) => $client->systemHealth(),
+            'operator metrics' => static fn (Client $client) => $client->operatorMetrics(),
+            'operator dashboard' => static fn (Client $client) => $client->operatorDashboard(),
+            'workers' => static fn (Client $client) => $client->listWorkers(),
+            'task queues' => static fn (Client $client) => $client->listTaskQueues(),
         ];
 
         foreach ($operations as $surface => $operation) {
@@ -481,6 +487,42 @@ final class ControlPlaneParityTest extends TestCase
                     $surface,
                 );
             }
+        }
+    }
+
+    public function testOperatorObservationAndRunManagementUsePublicControlPlaneRoutes(): void
+    {
+        $transport = new FakeTransport(array_fill(0, 10, ['ok' => true]));
+        $client = new Client('https://server.example', transport: $transport, namespace: 'ops');
+
+        $client->systemHealth();
+        $client->operatorMetrics();
+        $client->operatorDashboard();
+        $client->listWorkers('priority queue', 'stale');
+        $client->describeWorker('worker/1');
+        $client->listTaskQueues();
+        $client->describeTaskQueue('priority queue');
+        $client->workflowDiagnostics('order/1', 'run/1');
+        $client->repairWorkflow('order/1', 'run/1');
+        $client->archiveWorkflow('order/1', 'retention', 'run/1');
+
+        self::assertSame([
+            'https://server.example/api/system/health',
+            'https://server.example/api/system/operator-metrics',
+            'https://server.example/api/system/operator-dashboard',
+            'https://server.example/api/workers?task_queue=priority%20queue&status=stale',
+            'https://server.example/api/workers/worker%2F1',
+            'https://server.example/api/task-queues',
+            'https://server.example/api/task-queues/priority%20queue',
+            'https://server.example/api/workflows/order%2F1/runs/run%2F1/debug',
+            'https://server.example/api/workflows/order%2F1/runs/run%2F1/repair',
+            'https://server.example/api/workflows/order%2F1/runs/run%2F1/archive',
+        ], array_column($transport->requests, 'uri'));
+        self::assertSame('retention', $transport->requests[9]['body']['reason'] ?? null);
+
+        foreach ($transport->requests as $request) {
+            self::assertSame('ops', $request['headers']['X-Namespace']);
+            self::assertSame('2', $request['headers']['X-Durable-Workflow-Control-Plane-Version']);
         }
     }
 
