@@ -12,7 +12,7 @@ import urllib.error
 from pathlib import Path
 from unittest import mock
 
-from cli_release_verifier_contract import CliRecoveryWorkflowSourceTest, CliReleaseAuthorityTest
+from cli_release_verifier_contract import CliRecoveryWorkflowSourceTest, CliReleaseAuthorityTest  # noqa: F401
 
 RECOVERY_SCRIPT = Path(__file__).with_name("component-release-recovery.py")
 RUST_WORKFLOW_FIXTURE = Path(__file__).with_name("sdk-rust-release-plan-recovery.fixture.yml")
@@ -303,16 +303,20 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
 
     def assert_rejected(self, source: str) -> None:
         with self.assertRaises(self.recovery.RecoveryError) as caught:
-            self.recovery.verify_recovery_workflow_source("sdk-rust", source)
+            self.recovery.verify_recovery_workflow_source(
+                "sdk-rust",
+                source,
+                hashlib.sha256(CURRENT_RUST_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest(),
+            )
         self.assertEqual(caught.exception.phase, "default-branch-preflight")
 
     def test_accepts_only_the_current_protected_rust_workflow_identity(self) -> None:
         digest = hashlib.sha256(CURRENT_RUST_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest()
-        self.assertEqual(digest, self.recovery.SDK_RUST_RELEASE_RECOVERY_SHA256)
-        self.recovery.verify_recovery_workflow_source("sdk-rust", CURRENT_RUST_RECOVERY_WORKFLOW)
+        self.recovery.verify_recovery_workflow_source("sdk-rust", CURRENT_RUST_RECOVERY_WORKFLOW, digest)
         self.recovery.verify_recovery_workflow_source(
             "sdk-rust",
             CURRENT_RUST_RECOVERY_WORKFLOW.replace("\n", "\r\n"),
+            digest,
         )
 
     def test_rejects_shell_semantic_bypasses_and_any_source_mutation(self) -> None:
@@ -541,14 +545,17 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
                 self.assert_rejected(variant)
 
     def test_other_components_keep_the_contents_api_contract(self) -> None:
-        self.recovery.verify_recovery_workflow_source("server", GENERIC_RECOVERY_WORKFLOW)
+        expected_sha256 = hashlib.sha256(GENERIC_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest()
+        self.recovery.verify_recovery_workflow_source(
+            "server", GENERIC_RECOVERY_WORKFLOW, expected_sha256
+        )
 
         protected_only = GENERIC_RECOVERY_WORKFLOW.replace(
             '-f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT"',
             'python scripts/ci/publish-planned-tag.py --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"',
         )
         with self.assertRaises(self.recovery.RecoveryError):
-            self.recovery.verify_recovery_workflow_source("server", protected_only)
+            self.recovery.verify_recovery_workflow_source("server", protected_only, expected_sha256)
 
 
 if __name__ == "__main__":
