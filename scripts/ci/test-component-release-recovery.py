@@ -1080,6 +1080,7 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
                         client,
                         authorization,
                         authorization["environment_protection"],
+                        {(55, "release-reviewer")},
                     )
 
     def test_supersession_authority_rejects_mismatched_run_contract(self) -> None:
@@ -1105,7 +1106,43 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
                         client,
                         failure["authorization"],
                         failure["authorization"]["environment_protection"],
+                        {(55, "release-reviewer")},
                     )
+
+    def test_supersession_authority_rejects_approval_history_for_a_rerun_attempt(self) -> None:
+        _, _, _, failure = supersession_failure_fixture(self.recovery)
+        authorization = failure["authorization"]
+        authorization["run_attempt"] = 2
+        authorization["environment_approval"]["run_attempt"] = 2
+        responses = captured_supersession_github_responses(self.recovery)
+        responses[2]["run_attempt"] = 2
+        client = mock.Mock()
+        client.json.side_effect = responses
+
+        with self.assertRaisesRegex(
+            self.recovery.RecoveryError,
+            "approval history cannot bind.*rerun attempt",
+        ):
+            self.recovery.revalidate_supersession_authority(failure, client)
+        self.assertEqual(3, client.json.call_count)
+
+    def test_supersession_authority_rejects_approver_outside_current_policy(self) -> None:
+        _, _, _, failure = supersession_failure_fixture(self.recovery)
+        responses = captured_supersession_github_responses(self.recovery)
+        responses[0]["protection_rules"][0]["reviewers"][0]["reviewer"] = captured_github_user(
+            "different-reviewer",
+            77,
+            "different-reviewer-node",
+        )
+        client = mock.Mock()
+        client.json.side_effect = responses
+
+        with self.assertRaisesRegex(
+            self.recovery.RecoveryError,
+            "approving user is not authorized by the current reviewer policy",
+        ):
+            self.recovery.revalidate_supersession_authority(failure, client)
+        self.assertEqual(4, client.json.call_count)
 
     def test_supersession_authority_rejects_fabricated_reviewer_identity(self) -> None:
         _, _, _, failure = supersession_failure_fixture(self.recovery)

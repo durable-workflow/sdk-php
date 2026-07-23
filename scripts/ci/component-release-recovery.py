@@ -1103,7 +1103,9 @@ def validate_supersession_record(
     validate_environment_approval_evidence(authorization["environment_approval"], authorization)
 
 
-def protected_environment_evidence(client: PublicClient) -> dict[str, Any]:
+def protected_environment_evidence(
+    client: PublicClient,
+) -> tuple[dict[str, Any], set[tuple[int, str]]]:
     encoded = urllib.parse.quote(SUPERSESSION_ENVIRONMENT, safe="")
     environment = client.json(
         f"https://api.github.com/repos/{CONTROL_REPOSITORY}/environments/{encoded}",
@@ -1131,6 +1133,20 @@ def protected_environment_evidence(client: PublicClient) -> dict[str, Any]:
         for rule in reviewer_rules
         if type(rule.get("id")) is int and rule["id"] > 0
     )
+    required_reviewers = {
+        (reviewer["reviewer"]["id"], reviewer["reviewer"]["login"])
+        for rule in reviewer_rules
+        for reviewer in rule["reviewers"]
+        if (
+            isinstance(reviewer, dict)
+            and reviewer.get("type") == "User"
+            and isinstance(reviewer.get("reviewer"), dict)
+            and type(reviewer["reviewer"].get("id")) is int
+            and reviewer["reviewer"]["id"] > 0
+            and isinstance(reviewer["reviewer"].get("login"), str)
+            and re.fullmatch(r"[A-Za-z0-9-]{1,39}", reviewer["reviewer"]["login"])
+        )
+    }
     environment_id = environment.get("id")
     if (
         not rule_ids
@@ -1177,7 +1193,7 @@ def protected_environment_evidence(client: PublicClient) -> dict[str, Any]:
         "required_reviewer_rule_ids": rule_ids,
     }
     validate_environment_protection_evidence(evidence)
-    return evidence
+    return evidence, required_reviewers
 
 
 def normalize_environment_approval_evidence(
@@ -1224,6 +1240,7 @@ def protected_run_approval_evidence(
     client: PublicClient,
     authorization: dict[str, Any],
     environment_protection: dict[str, Any],
+    required_reviewers: set[tuple[int, str]],
 ) -> dict[str, Any]:
     run_id = authorization["run_id"]
     run_attempt = authorization["run_attempt"]
@@ -1255,6 +1272,11 @@ def protected_run_approval_evidence(
             "protected supersession workflow run evidence does not match GitHub",
             "plan-discovery",
         )
+    if run_attempt != 1:
+        raise RecoveryError(
+            "GitHub approval history cannot bind protected approval to a rerun attempt",
+            "plan-discovery",
+        )
     history = client.json(
         f"https://api.github.com/repos/{CONTROL_REPOSITORY}/actions/runs/{run_id}/approvals",
         headers={"X-GitHub-Api-Version": SUPERSESSION_API_VERSION},
@@ -1279,18 +1301,28 @@ def protected_run_approval_evidence(
             "environment_protection": environment_protection,
         },
     )
+    if (evidence["user"]["id"], evidence["user"]["login"]) not in required_reviewers:
+        raise RecoveryError(
+            "protected supersession approving user is not authorized by the current reviewer policy",
+            "plan-discovery",
+        )
     return evidence
 
 
 def revalidate_supersession_authority(record: dict[str, Any], client: PublicClient) -> None:
     authorization = record["authorization"]
-    protection = protected_environment_evidence(client)
+    protection, required_reviewers = protected_environment_evidence(client)
     if protection != authorization["environment_protection"]:
         raise RecoveryError(
             "release plan failure protected environment policy no longer matches GitHub",
             "plan-discovery",
         )
-    approval = protected_run_approval_evidence(client, authorization, protection)
+    approval = protected_run_approval_evidence(
+        client,
+        authorization,
+        protection,
+        required_reviewers,
+    )
     if approval != authorization["environment_approval"]:
         raise RecoveryError(
             "release plan failure approved deployment evidence no longer matches GitHub",
