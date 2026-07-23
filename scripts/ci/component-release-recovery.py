@@ -329,7 +329,7 @@ class PublicClient:
             request_headers["Accept"] = accept
         if self.token and urllib.parse.urlsplit(url).hostname == "api.github.com":
             request_headers["Authorization"] = f"Bearer {self.token}"
-            request_headers["X-GitHub-Api-Version"] = "2022-11-28"
+            request_headers.setdefault("X-GitHub-Api-Version", "2022-11-28")
 
         for attempt in range(1, attempt_limit + 1):
             if endpoint_class is not None and self._remaining_time() <= 0:

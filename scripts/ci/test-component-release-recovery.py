@@ -475,6 +475,30 @@ class PublicClientRetryTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.recovery = load_recovery_for_retry_tests()
 
+    def test_authenticated_requests_preserve_endpoint_api_versions(self) -> None:
+        cases = (
+            ({"X-GitHub-Api-Version": self.recovery.SUPERSESSION_API_VERSION}, self.recovery.SUPERSESSION_API_VERSION),
+            ({}, "2022-11-28"),
+        )
+        for headers, expected_version in cases:
+            with self.subTest(expected_version=expected_version):
+                client = self.recovery.PublicClient(token="test-token")
+                response = mock.Mock()
+                with mock.patch.object(
+                    self.recovery.urllib.request, "urlopen", return_value=response
+                ) as open_url:
+                    self.assertIs(
+                        response,
+                        client.request(
+                            "https://api.github.com/repos/durable-workflow/.github/actions/runs/456",
+                            headers=headers,
+                        ),
+                    )
+                request = open_url.call_args.args[0]
+                request_headers = {key.lower(): value for key, value in request.header_items()}
+                self.assertEqual("Bearer test-token", request_headers["authorization"])
+                self.assertEqual(expected_version, request_headers["x-github-api-version"])
+
     def test_retries_service_failures_connection_resets_and_timeouts(self) -> None:
         failures = (
             ("service", github_http_error(503, **{"Retry-After": "4"}), 4),
