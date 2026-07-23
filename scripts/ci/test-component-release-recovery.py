@@ -632,12 +632,13 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
             mock.patch.object(
                 self.recovery,
                 "read_plan_authority",
-                side_effect=[(older, None), (newer, None)],
+                side_effect=[(older, None), (newer, None), (older, None), (newer, None)],
             ),
             mock.patch.object(
                 self.recovery,
                 "direct_plan_lifecycle",
                 side_effect=[
+                    ("completed", None),
                     ("completed", None),
                     ("completed", None),
                     ("completed", None),
@@ -739,6 +740,27 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
         self.assertEqual("actionable", selected["lifecycle"])
         self.assertEqual(4, registry_reads)
 
+    def test_convergence_rechecks_nonselected_lifecycle_authority(self) -> None:
+        older = {"tag": "release-plan/older", "lifecycle": "completed"}
+        changed_older = {**older, "lifecycle": "superseded"}
+        latest = {"tag": "release-plan/latest", "lifecycle": "actionable"}
+        current_snapshot = [changed_older, latest]
+
+        with mock.patch.object(
+            self.recovery,
+            "classify_implicit_plan_authority",
+            side_effect=[
+                (latest, [older, latest]),
+                (latest, current_snapshot),
+                (latest, current_snapshot),
+                (latest, current_snapshot),
+            ],
+        ) as classify:
+            selected = self.recovery.select_implicit_plan_authority(mock.Mock())
+
+        self.assertEqual(4, classify.call_count)
+        self.assertEqual(current_snapshot, selected["authority_snapshot"])
+
     def test_supersession_during_mirror_validation_cannot_return_publish(self) -> None:
         older = lifecycle_plan(self.recovery)
         older["plan"] = "older-plan"
@@ -779,26 +801,30 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
             "lifecycle": "actionable",
             "successor": None,
         }
+        superseded_older_authority = {
+            **older_authority,
+            "lifecycle": "superseded",
+            "successor": {
+                "tag": successor_tag,
+                "sha256": self.recovery.manifest_digest(successor),
+                "plan": successor,
+            },
+        }
         superseded = False
         classifications = 0
-        convergence_checks = 0
         mirror_validations = 0
 
-        def classify(_client: mock.Mock) -> tuple[dict[str, object], list[str]]:
+        def classify(
+            _client: mock.Mock,
+        ) -> tuple[dict[str, object], list[dict[str, object]]]:
             nonlocal classifications
             classifications += 1
             if superseded:
-                return successor_authority, [older_tag, successor_tag]
-            return older_authority, [older_tag]
-
-        def converged(
-            _client: mock.Mock,
-            _tags: list[str],
-            _selected: dict[str, object],
-        ) -> bool:
-            nonlocal convergence_checks
-            convergence_checks += 1
-            return True
+                return successor_authority, [
+                    superseded_older_authority,
+                    successor_authority,
+                ]
+            return older_authority, [older_authority]
 
         def validate_mirrors(
             _client: mock.Mock,
@@ -811,8 +837,7 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
             mirror_validations += 1
             self.assertEqual(older_tag, tag)
             if mirror_validations == 1:
-                self.assertEqual(1, classifications)
-                self.assertEqual(1, convergence_checks)
+                self.assertEqual(2, classifications)
                 superseded = True
 
         def resolve_tag(
@@ -831,11 +856,6 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
                 self.recovery,
                 "classify_implicit_plan_authority",
                 side_effect=classify,
-            ),
-            mock.patch.object(
-                self.recovery,
-                "implicit_plan_authority_converged",
-                side_effect=converged,
             ),
             mock.patch.object(
                 self.recovery,
@@ -906,8 +926,7 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
             )
 
         self.assertTrue(superseded)
-        self.assertEqual(2, classifications)
-        self.assertEqual(2, convergence_checks)
+        self.assertEqual(3, classifications)
         self.assertEqual(2, mirror_validations)
         self.assertIsNone(explicit_authority)
         self.assertEqual("publish", explicit_outputs["action"])
