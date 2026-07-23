@@ -8,7 +8,7 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Joined the synchronized Durable Workflow `2.0.0-beta.6` product train. This
+- Joined the synchronized Durable Workflow `2.0.0-beta.10` product train. This
   is the supported 2.0 baseline; earlier prereleases retain historical release
   records but receive no compatibility shim.
 
