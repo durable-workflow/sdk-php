@@ -197,6 +197,125 @@ def supersession_record(module, failed, successor, failed_commit: str) -> dict[s
     }
 
 
+def captured_github_user(login: str, user_id: int, node_id: str) -> dict[str, object]:
+    return {
+        "login": login,
+        "id": user_id,
+        "node_id": node_id,
+        "avatar_url": f"https://avatars.githubusercontent.com/u/{user_id}?v=4",
+        "gravatar_id": "",
+        "url": f"https://api.github.com/users/{login}",
+        "html_url": f"https://github.com/{login}",
+        "followers_url": f"https://api.github.com/users/{login}/followers",
+        "following_url": f"https://api.github.com/users/{login}/following{{/other_user}}",
+        "gists_url": f"https://api.github.com/users/{login}/gists{{/gist_id}}",
+        "starred_url": f"https://api.github.com/users/{login}/starred{{/owner}}{{/repo}}",
+        "subscriptions_url": f"https://api.github.com/users/{login}/subscriptions",
+        "organizations_url": f"https://api.github.com/users/{login}/orgs",
+        "repos_url": f"https://api.github.com/users/{login}/repos",
+        "events_url": f"https://api.github.com/users/{login}/events{{/privacy}}",
+        "received_events_url": f"https://api.github.com/users/{login}/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": False,
+    }
+
+
+def captured_supersession_github_responses(module) -> list[object]:
+    environment_url = (
+        "https://github.com/durable-workflow/.github/deployments/activity_log?"
+        "environments_filter=release-plan-supersession"
+    )
+    environment_api_url = (
+        "https://api.github.com/repos/durable-workflow/.github/"
+        "environments/release-plan-supersession"
+    )
+    reviewer = captured_github_user("release-reviewer", 55, "reviewer-node")
+    approval_environment = {
+        "id": 11,
+        "node_id": "environment-node",
+        "name": "release-plan-supersession",
+        "url": environment_api_url,
+        "html_url": environment_url,
+        "created_at": "2026-07-23T09:00:00Z",
+        "updated_at": "2026-07-23T09:30:00Z",
+        "can_admins_bypass": False,
+        "protection_rules": [
+            {
+                "id": 33,
+                "node_id": "reviewer-rule-node",
+                "type": "required_reviewers",
+                "prevent_self_review": True,
+                "reviewers": [{"type": "User", "reviewer": reviewer}],
+            }
+        ],
+        "deployment_branch_policy": {
+            "custom_branch_policies": True,
+            "protected_branches": False,
+        },
+    }
+    return [
+        approval_environment,
+        {
+            "total_count": 1,
+            "branch_policies": [
+                {
+                    "id": 22,
+                    "node_id": "branch-policy-node",
+                    "name": "main",
+                    "type": "branch",
+                    "created_at": "2026-07-23T09:00:00Z",
+                    "updated_at": "2026-07-23T09:30:00Z",
+                }
+            ],
+        },
+        {
+            "id": 456,
+            "name": "Release plan supersession",
+            "run_attempt": 1,
+            "event": "workflow_dispatch",
+            "path": f"{module.SUPERSESSION_WORKFLOW}@main",
+            "head_branch": "main",
+            "head_sha": "f" * 40,
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/durable-workflow/.github/actions/runs/456",
+            "actor": captured_github_user("release-operator", 54, "operator-node"),
+            "repository": {
+                "id": 10,
+                "node_id": "repository-node",
+                "name": ".github",
+                "full_name": "durable-workflow/.github",
+                "private": False,
+                "html_url": "https://github.com/durable-workflow/.github",
+            },
+        },
+        [
+            {
+                "environments": [json.loads(json.dumps(approval_environment))],
+                "user": reviewer,
+                "state": "approved",
+                "comment": "approved",
+            }
+        ],
+    ]
+
+
+def supersession_failure_fixture(module):
+    failed = lifecycle_plan(module)
+    failed["plan"] = "failed-plan"
+    successor = json.loads(json.dumps(failed))
+    successor["plan"] = "successor-plan"
+    successor["components"]["workflow"]["version"] = "2.0.0-alpha.2"
+    failed_commit = "a" * 40
+    return (
+        failed,
+        successor,
+        failed_commit,
+        supersession_record(module, failed, successor, failed_commit),
+    )
+
+
 def qualification_run(
     status: str = "completed",
     conclusion: str | None = "success",
@@ -543,6 +662,7 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
                 "read_record",
                 side_effect=[failure, authorized_successor],
             ),
+            mock.patch.object(self.recovery, "revalidate_supersession_authority"),
         ):
             lifecycle, successor_identity = self.recovery.direct_plan_lifecycle(
                 mock.Mock(),
@@ -607,6 +727,161 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
             ),
         ):
             self.recovery.select_implicit_plan_authority(mock.Mock())
+
+    def test_terminal_failure_accepts_captured_github_authority(self) -> None:
+        failed, successor, failed_commit, failure = supersession_failure_fixture(self.recovery)
+        failed_tag = f"release-plan/{failed['plan']}"
+        client = mock.Mock()
+        client.json.side_effect = captured_supersession_github_responses(self.recovery)
+
+        with (
+            mock.patch.object(
+                self.recovery,
+                "resolve_tag",
+                side_effect=[None, "c" * 40],
+            ),
+            mock.patch.object(
+                self.recovery,
+                "read_record",
+                side_effect=[failure, successor],
+            ),
+        ):
+            lifecycle, successor_identity = self.recovery.direct_plan_lifecycle(
+                client,
+                failed_tag,
+                failed_commit,
+                failed,
+                None,
+            )
+
+        self.assertEqual("superseded", lifecycle)
+        self.assertEqual(successor, successor_identity["plan"])
+        self.assertEqual(4, client.json.call_count)
+
+    def test_supersession_authority_rejects_fabricated_environment_identity(self) -> None:
+        _, _, _, failure = supersession_failure_fixture(self.recovery)
+        authorization = failure["authorization"]
+        authorization["environment_protection"]["environment_id"] = 99
+        authorization["environment_approval"]["environments"][0]["id"] = 99
+        client = mock.Mock()
+        client.json.side_effect = captured_supersession_github_responses(self.recovery)
+
+        with self.assertRaisesRegex(
+            self.recovery.RecoveryError,
+            "protected environment policy no longer matches GitHub",
+        ):
+            self.recovery.revalidate_supersession_authority(failure, client)
+
+    def test_supersession_authority_rejects_fabricated_or_stale_run_identity(self) -> None:
+        cases = {
+            "fabricated run id": {
+                "run_id": 999,
+                "run_url": "https://github.com/durable-workflow/.github/actions/runs/999",
+            },
+            "stale run attempt": {"run_attempt": 2},
+            "mismatched workflow revision": {"workflow_commit": "d" * 40},
+        }
+        for name, changes in cases.items():
+            with self.subTest(name):
+                _, _, _, failure = supersession_failure_fixture(self.recovery)
+                authorization = failure["authorization"]
+                authorization.update(changes)
+                authorization["environment_approval"]["run_id"] = authorization["run_id"]
+                authorization["environment_approval"]["run_attempt"] = authorization["run_attempt"]
+                client = mock.Mock()
+                client.json.side_effect = captured_supersession_github_responses(self.recovery)[2:]
+
+                with self.assertRaisesRegex(
+                    self.recovery.RecoveryError,
+                    "workflow run evidence does not match GitHub",
+                ):
+                    self.recovery.protected_run_approval_evidence(
+                        client,
+                        authorization,
+                        authorization["environment_protection"],
+                    )
+
+    def test_supersession_authority_rejects_mismatched_run_contract(self) -> None:
+        cases = {
+            "workflow": {"path": ".github/workflows/other.yml"},
+            "branch": {"head_branch": "v2"},
+            "conclusion": {"conclusion": "failure"},
+            "actor": {"actor": captured_github_user("other-operator", 56, "other-operator-node")},
+        }
+        for name, changes in cases.items():
+            with self.subTest(name):
+                _, _, _, failure = supersession_failure_fixture(self.recovery)
+                responses = captured_supersession_github_responses(self.recovery)
+                responses[2].update(changes)
+                client = mock.Mock()
+                client.json.side_effect = responses[2:]
+
+                with self.assertRaisesRegex(
+                    self.recovery.RecoveryError,
+                    "workflow run evidence does not match GitHub",
+                ):
+                    self.recovery.protected_run_approval_evidence(
+                        client,
+                        failure["authorization"],
+                        failure["authorization"]["environment_protection"],
+                    )
+
+    def test_supersession_authority_rejects_fabricated_reviewer_identity(self) -> None:
+        _, _, _, failure = supersession_failure_fixture(self.recovery)
+        failure["authorization"]["environment_approval"]["user"]["id"] = 99
+        client = mock.Mock()
+        client.json.side_effect = captured_supersession_github_responses(self.recovery)
+
+        with self.assertRaisesRegex(
+            self.recovery.RecoveryError,
+            "approved deployment evidence no longer matches GitHub",
+        ):
+            self.recovery.revalidate_supersession_authority(failure, client)
+
+    def test_supersession_authority_rejects_stale_or_mismatched_approval(self) -> None:
+        cases = {
+            "stale comment": (
+                "record",
+                "comment",
+                "previous approval",
+                "approved deployment evidence no longer matches GitHub",
+            ),
+            "mismatched environment": (
+                "response",
+                "environment_id",
+                99,
+                "approval names the wrong protected environment",
+            ),
+            "rejected decision": (
+                "response",
+                "state",
+                "rejected",
+                "must contain exactly one approved review",
+            ),
+            "missing decision": (
+                "response",
+                "history",
+                [],
+                "must contain exactly one approved review",
+            ),
+        }
+        for name, (target, field, value, error) in cases.items():
+            with self.subTest(name):
+                _, _, _, failure = supersession_failure_fixture(self.recovery)
+                responses = captured_supersession_github_responses(self.recovery)
+                if target == "record":
+                    failure["authorization"]["environment_approval"][field] = value
+                elif field == "environment_id":
+                    responses[3][0]["environments"][0]["id"] = value
+                elif field == "history":
+                    responses[3] = value
+                else:
+                    responses[3][0][field] = value
+                client = mock.Mock()
+                client.json.side_effect = responses
+
+                with self.assertRaisesRegex(self.recovery.RecoveryError, error):
+                    self.recovery.revalidate_supersession_authority(failure, client)
 
     def test_terminal_failure_rejects_incomplete_lifecycle_authority(self) -> None:
         failed = lifecycle_plan(self.recovery)

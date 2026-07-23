@@ -49,6 +49,7 @@ SUPERSESSION_WORKFLOW = ".github/workflows/release-plan-supersession.yml"
 SUPERSESSION_REASON = "published-version-source-conflict"
 SOURCE_MANIFEST_REASON = "source-manifest-version-conflict"
 OCCUPIED_SOURCE_MANIFEST_REASON = "occupied-source-manifest-version-conflict"
+SUPERSESSION_API_VERSION = "2026-03-10"
 FOUNDATION_TAG = "beta-candidate/beta-continuity-foundation"
 FOUNDATION_COMMIT = "4995052410bd4301c5796ffba54e0b6d2f490ed1"
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -1101,6 +1102,201 @@ def validate_supersession_record(
     validate_environment_approval_evidence(authorization["environment_approval"], authorization)
 
 
+def protected_environment_evidence(client: PublicClient) -> dict[str, Any]:
+    encoded = urllib.parse.quote(SUPERSESSION_ENVIRONMENT, safe="")
+    environment = client.json(
+        f"https://api.github.com/repos/{CONTROL_REPOSITORY}/environments/{encoded}",
+        headers={"X-GitHub-Api-Version": SUPERSESSION_API_VERSION},
+        accept="application/vnd.github+json",
+    )
+    if not isinstance(environment, dict):
+        raise RecoveryError(
+            f"GitHub environment {SUPERSESSION_ENVIRONMENT} has invalid public evidence",
+            "plan-discovery",
+        )
+    rules = environment.get("protection_rules")
+    if not isinstance(rules, list):
+        raise RecoveryError(
+            f"GitHub environment {SUPERSESSION_ENVIRONMENT} has no protection rules",
+            "plan-discovery",
+        )
+    reviewer_rules = [
+        rule
+        for rule in rules
+        if isinstance(rule, dict) and rule.get("type") == "required_reviewers" and rule.get("reviewers")
+    ]
+    rule_ids = sorted(
+        rule["id"]
+        for rule in reviewer_rules
+        if type(rule.get("id")) is int and rule["id"] > 0
+    )
+    environment_id = environment.get("id")
+    if (
+        not rule_ids
+        or type(environment_id) is not int
+        or environment_id < 1
+        or environment.get("html_url") != SUPERSESSION_ENVIRONMENT_URL
+        or environment.get("deployment_branch_policy")
+        != {"custom_branch_policies": True, "protected_branches": False}
+    ):
+        raise RecoveryError(
+            f"GitHub environment {SUPERSESSION_ENVIRONMENT} lacks the required reviewer and branch policy",
+            "plan-discovery",
+        )
+    policies = client.json(
+        f"https://api.github.com/repos/{CONTROL_REPOSITORY}/environments/{encoded}/"
+        "deployment-branch-policies?per_page=100",
+        headers={"X-GitHub-Api-Version": SUPERSESSION_API_VERSION},
+        accept="application/vnd.github+json",
+    )
+    branch_policies = policies.get("branch_policies") if isinstance(policies, dict) else None
+    if (
+        not isinstance(branch_policies, list)
+        or type(policies.get("total_count")) is not int
+        or policies["total_count"] != 1
+        or len(branch_policies) != 1
+        or not isinstance(branch_policies[0], dict)
+        or type(branch_policies[0].get("id")) is not int
+        or branch_policies[0]["id"] < 1
+        or branch_policies[0].get("name") != "main"
+        or branch_policies[0].get("type", "branch") != "branch"
+    ):
+        raise RecoveryError(
+            f"GitHub environment {SUPERSESSION_ENVIRONMENT} must allow only the main branch",
+            "plan-discovery",
+        )
+    evidence = {
+        "custom_branch_policies": [{"id": branch_policies[0]["id"], "name": "main"}],
+        "deployment_branch_policy": {
+            "custom_branch_policies": True,
+            "protected_branches": False,
+        },
+        "environment_id": environment_id,
+        "environment_url": SUPERSESSION_ENVIRONMENT_URL,
+        "required_reviewer_rule_ids": rule_ids,
+    }
+    validate_environment_protection_evidence(evidence)
+    return evidence
+
+
+def normalize_environment_approval_evidence(
+    review: dict[str, Any],
+    run_id: int,
+    run_attempt: int,
+) -> dict[str, Any]:
+    environments = review.get("environments")
+    if isinstance(environments, list):
+        environments = [
+            (
+                {
+                    "html_url": environment.get("html_url"),
+                    "id": environment.get("id"),
+                    "name": environment.get("name"),
+                    "node_id": environment.get("node_id"),
+                    "url": environment.get("url"),
+                }
+                if isinstance(environment, dict)
+                else environment
+            )
+            for environment in environments
+        ]
+    user = review.get("user")
+    if isinstance(user, dict):
+        user = {
+            "html_url": user.get("html_url"),
+            "id": user.get("id"),
+            "login": user.get("login"),
+            "node_id": user.get("node_id"),
+            "url": user.get("url"),
+        }
+    return {
+        "comment": review.get("comment"),
+        "environments": environments,
+        "run_attempt": run_attempt,
+        "run_id": run_id,
+        "state": review.get("state"),
+        "user": user,
+    }
+
+
+def protected_run_approval_evidence(
+    client: PublicClient,
+    authorization: dict[str, Any],
+    environment_protection: dict[str, Any],
+) -> dict[str, Any]:
+    run_id = authorization["run_id"]
+    run_attempt = authorization["run_attempt"]
+    run = client.json(
+        f"https://api.github.com/repos/{CONTROL_REPOSITORY}/actions/runs/{run_id}",
+        headers={"X-GitHub-Api-Version": SUPERSESSION_API_VERSION},
+        accept="application/vnd.github+json",
+    )
+    actor = run.get("actor") if isinstance(run, dict) else None
+    repository = run.get("repository") if isinstance(run, dict) else None
+    if (
+        not isinstance(actor, dict)
+        or actor.get("login") != authorization["actor"]
+        or not isinstance(repository, dict)
+        or repository.get("full_name") != CONTROL_REPOSITORY
+        or type(run.get("id")) is not int
+        or run["id"] != run_id
+        or type(run.get("run_attempt")) is not int
+        or run["run_attempt"] != run_attempt
+        or run.get("event") != "workflow_dispatch"
+        or run.get("path") not in {SUPERSESSION_WORKFLOW, f"{SUPERSESSION_WORKFLOW}@main"}
+        or run.get("head_branch") != "main"
+        or run.get("head_sha") != authorization["workflow_commit"]
+        or run.get("status") != "completed"
+        or run.get("conclusion") != "success"
+        or run.get("html_url") != authorization["run_url"]
+    ):
+        raise RecoveryError(
+            "protected supersession workflow run evidence does not match GitHub",
+            "plan-discovery",
+        )
+    history = client.json(
+        f"https://api.github.com/repos/{CONTROL_REPOSITORY}/actions/runs/{run_id}/approvals",
+        headers={"X-GitHub-Api-Version": SUPERSESSION_API_VERSION},
+        accept="application/vnd.github+json",
+    )
+    if (
+        not isinstance(history, list)
+        or len(history) != 1
+        or not isinstance(history[0], dict)
+        or history[0].get("state") != "approved"
+    ):
+        raise RecoveryError(
+            "protected supersession run must contain exactly one approved review",
+            "plan-discovery",
+        )
+    review = history[0]
+    evidence = normalize_environment_approval_evidence(review, run_id, run_attempt)
+    validate_environment_approval_evidence(
+        evidence,
+        {
+            **authorization,
+            "environment_protection": environment_protection,
+        },
+    )
+    return evidence
+
+
+def revalidate_supersession_authority(record: dict[str, Any], client: PublicClient) -> None:
+    authorization = record["authorization"]
+    protection = protected_environment_evidence(client)
+    if protection != authorization["environment_protection"]:
+        raise RecoveryError(
+            "release plan failure protected environment policy no longer matches GitHub",
+            "plan-discovery",
+        )
+    approval = protected_run_approval_evidence(client, authorization, protection)
+    if approval != authorization["environment_approval"]:
+        raise RecoveryError(
+            "release plan failure approved deployment evidence no longer matches GitHub",
+            "plan-discovery",
+        )
+
+
 def validate_release_preparation(preparation: Any, plan: dict[str, Any]) -> None:
     if not isinstance(preparation, dict) or set(preparation) != {
         "schema",
@@ -1362,6 +1558,7 @@ def direct_plan_lifecycle(
         successor = read_record(client, failure_tag, failure_commit, "successor-release-plan.json")
         validate_plan(successor)
         validate_supersession_record(failure, plan, commit, successor)
+        revalidate_supersession_authority(failure, client)
         expected_successor = {
             "tag": f"{PLAN_TAG_PREFIX}{successor['plan']}",
             "sha256": manifest_digest(successor),
