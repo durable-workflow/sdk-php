@@ -637,7 +637,11 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
             mock.patch.object(
                 self.recovery,
                 "direct_plan_lifecycle",
-                side_effect=[("completed", None), ("completed", None)],
+                side_effect=[
+                    ("completed", None),
+                    ("completed", None),
+                    ("completed", None),
+                ],
             ),
             mock.patch.object(
                 self.recovery,
@@ -654,6 +658,259 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
 
         self.assertEqual(tags[1], selected["tag"])
         self.assertEqual("completed", selected["lifecycle"])
+
+    def test_concurrent_terminal_supersession_retries_before_returning_action(self) -> None:
+        older = {"plan": "older-plan"}
+        successor = {"plan": "successor-plan"}
+        older_tag = "release-plan/older-plan"
+        successor_tag = "release-plan/successor-plan"
+        commits = {older_tag: "a" * 40, successor_tag: "b" * 40}
+        plans = {older_tag: older, successor_tag: successor}
+        recorded = {
+            commits[older_tag]: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+            commits[successor_tag]: dt.datetime(2026, 7, 21, tzinfo=dt.UTC),
+        }
+        terminal_failure: dict[str, object] = {}
+        registry_reads = 0
+
+        def list_tags(_client: mock.Mock) -> list[str]:
+            nonlocal registry_reads
+            registry_reads += 1
+            if registry_reads == 2:
+                terminal_failure.update(
+                    {"outcome": "terminal-failure", "successor": successor_tag}
+                )
+            return (
+                [older_tag, successor_tag]
+                if terminal_failure
+                else [older_tag]
+            )
+
+        def lifecycle(
+            _client: mock.Mock,
+            tag: str,
+            _commit: str,
+            _plan: dict[str, object],
+            _preparation: None,
+        ) -> tuple[str, object | None]:
+            if tag == older_tag and terminal_failure:
+                return "superseded", {
+                    "tag": successor_tag,
+                    "sha256": self.recovery.manifest_digest(successor),
+                    "plan": successor,
+                }
+            return "actionable", None
+
+        with (
+            mock.patch.object(
+                self.recovery,
+                "list_release_plan_tags",
+                side_effect=list_tags,
+            ),
+            mock.patch.object(
+                self.recovery,
+                "resolve_tag",
+                side_effect=lambda _client, _repository, tag: commits[tag],
+            ),
+            mock.patch.object(
+                self.recovery,
+                "read_plan_authority",
+                side_effect=lambda _client, tag, _commit: (plans[tag], None),
+            ),
+            mock.patch.object(
+                self.recovery,
+                "direct_plan_lifecycle",
+                side_effect=lifecycle,
+            ),
+            mock.patch.object(
+                self.recovery,
+                "immutable_plan_recorded_at",
+                side_effect=lambda _client, commit: recorded[commit],
+            ),
+            mock.patch.object(
+                self.recovery,
+                "accepted_continuity_supersession",
+                return_value=None,
+            ),
+        ):
+            selected = self.recovery.select_implicit_plan_authority(mock.Mock())
+
+        self.assertEqual(successor_tag, selected["tag"])
+        self.assertEqual("actionable", selected["lifecycle"])
+        self.assertEqual(4, registry_reads)
+
+    def test_supersession_during_mirror_validation_cannot_return_publish(self) -> None:
+        older = lifecycle_plan(self.recovery)
+        older["plan"] = "older-plan"
+        successor = json.loads(json.dumps(older))
+        successor["plan"] = "successor-plan"
+        successor["components"]["workflow"]["version"] = "2.0.0-alpha.2"
+        older_tag = "release-plan/older-plan"
+        successor_tag = "release-plan/successor-plan"
+        older_commit = "a" * 40
+        successor_commit = "b" * 40
+        preparation = {
+            "components": {
+                "workflow": {
+                    "release_notes": {
+                        "release_date": "2026-07-23",
+                        "sha256": "c" * 64,
+                        "source": {},
+                    }
+                }
+            }
+        }
+        recorded_at = dt.datetime(2026, 7, 20, tzinfo=dt.UTC)
+        older_authority = {
+            "tag": older_tag,
+            "commit": older_commit,
+            "recorded_at": recorded_at,
+            "plan": older,
+            "preparation": preparation,
+            "lifecycle": "actionable",
+            "successor": None,
+        }
+        successor_authority = {
+            "tag": successor_tag,
+            "commit": successor_commit,
+            "recorded_at": recorded_at + dt.timedelta(days=1),
+            "plan": successor,
+            "preparation": preparation,
+            "lifecycle": "actionable",
+            "successor": None,
+        }
+        superseded = False
+        classifications = 0
+        convergence_checks = 0
+        mirror_validations = 0
+
+        def classify(_client: mock.Mock) -> tuple[dict[str, object], list[str]]:
+            nonlocal classifications
+            classifications += 1
+            if superseded:
+                return successor_authority, [older_tag, successor_tag]
+            return older_authority, [older_tag]
+
+        def converged(
+            _client: mock.Mock,
+            _tags: list[str],
+            _selected: dict[str, object],
+        ) -> bool:
+            nonlocal convergence_checks
+            convergence_checks += 1
+            return True
+
+        def validate_mirrors(
+            _client: mock.Mock,
+            tag: str,
+            _release: object,
+            _plan: dict[str, object],
+            _preparation: dict[str, object],
+        ) -> None:
+            nonlocal mirror_validations, superseded
+            mirror_validations += 1
+            self.assertEqual(older_tag, tag)
+            if mirror_validations == 1:
+                self.assertEqual(1, classifications)
+                self.assertEqual(1, convergence_checks)
+                superseded = True
+
+        def resolve_tag(
+            _client: mock.Mock,
+            repository: str,
+            tag: str,
+        ) -> str | None:
+            if repository == self.recovery.CONTROL_REPOSITORY and tag == older_tag:
+                return older_commit
+            return None
+
+        client = mock.Mock()
+        client.json.return_value = {}
+        with (
+            mock.patch.object(
+                self.recovery,
+                "classify_implicit_plan_authority",
+                side_effect=classify,
+            ),
+            mock.patch.object(
+                self.recovery,
+                "implicit_plan_authority_converged",
+                side_effect=converged,
+            ),
+            mock.patch.object(
+                self.recovery,
+                "validate_release_mirrors",
+                side_effect=validate_mirrors,
+            ),
+            mock.patch.object(
+                self.recovery,
+                "read_plan_authority",
+                return_value=(older, preparation),
+            ),
+            mock.patch.object(
+                self.recovery,
+                "verify_plan_authority",
+                return_value=({}, {}),
+            ),
+            mock.patch.object(self.recovery, "validate_release_preparation"),
+            mock.patch.object(
+                self.recovery,
+                "resolve_tag",
+                side_effect=resolve_tag,
+            ),
+            mock.patch.dict(
+                self.recovery.VERIFIERS,
+                {
+                    "composer": mock.Mock(
+                        side_effect=self.recovery.NotFound("not published")
+                    )
+                },
+            ),
+        ):
+            (
+                tag,
+                record_commit,
+                plan,
+                selected_preparation,
+                implicit_authority,
+            ) = self.recovery.discover_plan(client, None, "workflow")
+            with self.assertRaisesRegex(
+                self.recovery.RecoveryError,
+                "authority changed during component preflight",
+            ):
+                self.recovery.resolve_component(
+                    client,
+                    "workflow",
+                    tag,
+                    record_commit,
+                    plan,
+                    selected_preparation,
+                    implicit_authority,
+                )
+
+            (
+                explicit_tag,
+                explicit_commit,
+                explicit_plan,
+                explicit_preparation,
+                explicit_authority,
+            ) = self.recovery.discover_plan(client, older_tag, "workflow")
+            _, explicit_outputs = self.recovery.resolve_component(
+                client,
+                "workflow",
+                explicit_tag,
+                explicit_commit,
+                explicit_plan,
+                explicit_preparation,
+                explicit_authority,
+            )
+
+        self.assertTrue(superseded)
+        self.assertEqual(2, classifications)
+        self.assertEqual(2, convergence_checks)
+        self.assertEqual(2, mirror_validations)
+        self.assertIsNone(explicit_authority)
+        self.assertEqual("publish", explicit_outputs["action"])
 
     def test_terminal_failure_successor_requires_exact_authorized_plan_identity(self) -> None:
         failed = lifecycle_plan(self.recovery)
