@@ -14,7 +14,7 @@ AUTHORITY_REF = "main"
 AUTHORITY_PATH = "release-recovery/authority.json"
 QUALIFICATION_WORKFLOW = ".github/workflows/beta-candidate.yml"
 QUALIFICATION_EVENT = "push"
-QUALIFICATION_RUN_PATH = f"{QUALIFICATION_WORKFLOW}@{AUTHORITY_REF}"
+QUALIFICATION_REF_PATH = f"{QUALIFICATION_WORKFLOW}@{AUTHORITY_REF}"
 WORKFLOW_PATH = ".github/workflows/release-plan-recovery.yml"
 SOURCE_IDENTITY = {
     "repository": CONTROL_REPOSITORY,
@@ -81,8 +81,9 @@ def _qualification_evidence(run: dict[str, Any], commit: str) -> dict[str, Any]:
         )
     return {
         "workflow": QUALIFICATION_WORKFLOW,
-        "path": QUALIFICATION_RUN_PATH,
+        "path": run["path"],
         "event": QUALIFICATION_EVENT,
+        "head_branch": AUTHORITY_REF,
         "head_sha": commit,
         "run_id": run_id,
         "run_attempt": run_attempt,
@@ -103,7 +104,7 @@ def validate_authority_qualification(value: Any, commit: str) -> dict[str, Any]:
         run
         for run in runs
         if isinstance(run, dict)
-        and run.get("path") == QUALIFICATION_RUN_PATH
+        and run.get("path") in (QUALIFICATION_WORKFLOW, QUALIFICATION_REF_PATH)
         and run.get("event") == QUALIFICATION_EVENT
         and run.get("head_branch") == AUTHORITY_REF
     ]

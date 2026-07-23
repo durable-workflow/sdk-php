@@ -15,9 +15,6 @@ from unittest import mock
 
 from cli_release_verifier_contract import CliRecoveryWorkflowSourceTest, CliReleaseAuthorityTest  # noqa: F401
 from recovery_workflow_authority import (
-    AUTHORITY_REF,
-    QUALIFICATION_EVENT,
-    QUALIFICATION_RUN_PATH,
     SCHEMA as AUTHORITY_SCHEMA,
     SOURCE_IDENTITY,
     authority_ref_url,
@@ -86,15 +83,17 @@ def qualification_run(
     conclusion: str | None = "success",
     *,
     head_sha: str = AUTHORITY_COMMIT,
+    head_branch: str = "main",
+    path: str = ".github/workflows/beta-candidate.yml",
 ) -> dict[str, object]:
     return {
         "id": 81,
         "run_attempt": 2,
         "name": "Beta candidate",
         "workflow_id": 37,
-        "path": QUALIFICATION_RUN_PATH,
-        "event": QUALIFICATION_EVENT,
-        "head_branch": AUTHORITY_REF,
+        "path": path,
+        "event": "push",
+        "head_branch": head_branch,
         "head_sha": head_sha,
         "status": status,
         "conclusion": conclusion,
@@ -155,7 +154,8 @@ class QualifiedAuthorityConsumerTest(unittest.TestCase):
         self.assertEqual(AUTHORITY_COMMIT, source["commit"])
         self.assertEqual(hashlib.sha256(authority_raw).hexdigest(), source["sha256"])
         self.assertEqual(AUTHORITY_COMMIT, source["qualification"]["head_sha"])
-        self.assertEqual(QUALIFICATION_RUN_PATH, source["qualification"]["path"])
+        self.assertEqual(".github/workflows/beta-candidate.yml", source["qualification"]["path"])
+        self.assertEqual("main", source["qualification"]["head_branch"])
         self.assertEqual(
             [
                 ("json", authority_ref_url()),
@@ -172,6 +172,17 @@ class QualifiedAuthorityConsumerTest(unittest.TestCase):
             ("cancelled", [qualification_run("completed", "cancelled")], "cancelled"),
             ("absent", [], "absent"),
             ("revision-mismatch", [qualification_run(head_sha="c" * 40)], "another commit"),
+            (
+                "wrong-workflow",
+                [qualification_run(path=".github/workflows/source-qualification.yml")],
+                "absent",
+            ),
+            ("wrong-ref", [qualification_run(head_branch="v2")], "absent"),
+            (
+                "wrong-path-ref",
+                [qualification_run(path=".github/workflows/beta-candidate.yml@v2")],
+                "absent",
+            ),
         )
         for label, runs, message in cases:
             with self.subTest(state=label):
