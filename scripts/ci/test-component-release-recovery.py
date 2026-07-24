@@ -711,6 +711,38 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
         ):
             self.recovery.current_product_train_authorities(authorities)
 
+    def test_validated_source_manifest_supersession_selects_successor(self) -> None:
+        predecessor = lifecycle_plan(self.recovery, "beta")
+        predecessor["plan"] = "source-manifest-predecessor"
+        successor = json.loads(json.dumps(predecessor))
+        successor["plan"] = "source-manifest-successor"
+        successor["components"]["workflow"]["commit"] = "f" * 40
+        successor_tag = f"release-plan/{successor['plan']}"
+        successor_authority = {
+            "tag": successor_tag,
+            "plan": successor,
+            "lifecycle": "actionable",
+            "successor": None,
+        }
+        authorities = [
+            {
+                "tag": f"release-plan/{predecessor['plan']}",
+                "plan": predecessor,
+                "lifecycle": "superseded",
+                "successor": {
+                    "tag": successor_tag,
+                    "sha256": self.recovery.manifest_digest(successor),
+                    "plan": successor,
+                },
+            },
+            successor_authority,
+        ]
+
+        self.assertEqual(
+            [successor_authority],
+            self.recovery.current_product_train_authorities(authorities),
+        )
+
     def test_scheduled_recovery_without_actionable_plan_is_a_truthful_no_op(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -1989,7 +1989,18 @@ def semver_precedence(version: str) -> tuple[int, int, int, int, tuple[tuple[int
 def current_product_train_authorities(
     authorities: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Select one maximal SemVer train with a unique immutable component identity."""
+    """Select one maximal SemVer train after resolving validated supersession edges."""
+
+    def immutable_identity(
+        authority: dict[str, Any],
+    ) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (
+                authority["plan"]["components"][name]["version"],
+                authority["plan"]["components"][name]["commit"],
+            )
+            for name in COMPONENTS
+        )
 
     version_precedence = {
         authority["tag"]: {
@@ -2016,15 +2027,32 @@ def current_product_train_authorities(
             for other in authorities
         )
     ]
-    current_identities = {
-        tuple(
-            (
-                authority["plan"]["components"][name]["version"],
-                authority["plan"]["components"][name]["commit"],
-            )
-            for name in COMPONENTS
-        )
+    by_tag = {authority["tag"]: authority for authority in authorities}
+    maximal_tags = {authority["tag"] for authority in maximal}
+    resolved_predecessors: set[str] = set()
+    for authority in maximal:
+        successor_identity = authority.get("successor")
+        if authority.get("lifecycle") != "superseded" or not isinstance(successor_identity, dict):
+            continue
+        successor = by_tag.get(successor_identity.get("tag"))
+        if successor is None or successor["tag"] not in maximal_tags:
+            continue
+        expected_successor_identity = {
+            "tag": successor["tag"],
+            "sha256": manifest_digest(successor["plan"]),
+            "plan": successor["plan"],
+        }
+        if successor_identity == expected_successor_identity:
+            resolved_predecessors.add(authority["tag"])
+
+    unresolved_maximal = [
+        authority
         for authority in maximal
+        if authority["tag"] not in resolved_predecessors
+    ]
+    current_identities = {
+        immutable_identity(authority)
+        for authority in unresolved_maximal
     }
     if len(current_identities) != 1:
         raise RecoveryError(
@@ -2035,14 +2063,7 @@ def current_product_train_authorities(
     return [
         authority
         for authority in authorities
-        if tuple(
-            (
-                authority["plan"]["components"][name]["version"],
-                authority["plan"]["components"][name]["commit"],
-            )
-            for name in COMPONENTS
-        )
-        == selected_identity
+        if immutable_identity(authority) == selected_identity
     ]
 
 
