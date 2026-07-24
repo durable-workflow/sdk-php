@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import sys
+import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
@@ -692,6 +693,47 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
             ),
         ):
             self.recovery.select_implicit_plan_authority(mock.Mock())
+
+    def test_scheduled_recovery_without_actionable_plan_is_a_truthful_no_op(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = root / "release-recovery-evidence.json"
+            github_output = root / "github-output"
+            arguments = [
+                "component-release-recovery.py",
+                "resolve",
+                "--component",
+                "workflow",
+                "--plan-output",
+                str(root / "release-plan.json"),
+                "--preparation-output",
+                str(root / "release-preparation.json"),
+                "--evidence",
+                str(evidence),
+                "--github-output",
+                str(github_output),
+                "--allow-empty",
+            ]
+
+            with (
+                mock.patch.object(sys, "argv", arguments),
+                mock.patch.object(
+                    self.recovery,
+                    "discover_plan",
+                    side_effect=self.recovery.RecoveryError(
+                        "no public release plan is available",
+                        "plan-discovery",
+                    ),
+                ),
+                mock.patch.object(self.recovery, "resolve_component") as recover_component,
+            ):
+                self.assertEqual(0, self.recovery.main())
+
+            recover_component.assert_not_called()
+            state = json.loads(evidence.read_text())
+            self.assertEqual("plan-discovery", state["phase"])
+            self.assertEqual("idle", state["outcome"])
+            self.assertEqual("action=none\n", github_output.read_text())
 
     def test_explicit_completed_plan_is_not_recovered(self) -> None:
         candidate = lifecycle_plan(self.recovery, "beta")
