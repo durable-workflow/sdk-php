@@ -638,8 +638,10 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
         cls.recovery = load_recovery_for_retry_tests()
 
     def test_updated_older_release_cannot_override_newer_immutable_plan(self) -> None:
-        older = {"plan": "older-alpha"}
-        newer = {"plan": "newer-beta"}
+        older = lifecycle_plan(self.recovery)
+        older["plan"] = "older-alpha"
+        newer = lifecycle_plan(self.recovery, "beta")
+        newer["plan"] = "newer-beta"
         tags = ["release-plan/older-alpha", "release-plan/newer-beta"]
         commits = {tags[0]: "a" * 40, tags[1]: "b" * 40}
         recorded = {
@@ -668,9 +670,9 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
                 self.recovery,
                 "direct_plan_lifecycle",
                 side_effect=[
+                    ("actionable", None),
                     ("completed", None),
-                    ("completed", None),
-                    ("completed", None),
+                    ("actionable", None),
                     ("completed", None),
                 ],
             ),
@@ -684,15 +686,37 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
                 "accepted_continuity_supersession",
                 return_value=None,
             ),
+            self.assertRaisesRegex(
+                self.recovery.RecoveryError,
+                "no public release plan is available",
+            ),
         ):
-            selected = self.recovery.select_implicit_plan_authority(mock.Mock())
+            self.recovery.select_implicit_plan_authority(mock.Mock())
 
-        self.assertEqual(tags[1], selected["tag"])
-        self.assertEqual("completed", selected["lifecycle"])
+    def test_explicit_completed_plan_is_not_recovered(self) -> None:
+        candidate = lifecycle_plan(self.recovery, "beta")
+        tag = f"release-plan/{candidate['plan']}"
+        commit = "a" * 40
+        authority = {
+            "tag": tag,
+            "commit": commit,
+            "recorded_at": dt.datetime(2026, 7, 24, tzinfo=dt.UTC),
+            "plan": candidate,
+            "preparation": None,
+            "lifecycle": "completed",
+            "successor": None,
+        }
+        with (
+            mock.patch.object(self.recovery, "classify_plan_authorities", return_value=[authority]),
+            self.assertRaisesRegex(self.recovery.RecoveryError, "is completed and cannot be recovered"),
+        ):
+            self.recovery.select_explicit_plan_authority(mock.Mock(), tag, commit, candidate, None)
 
     def test_concurrent_terminal_supersession_retries_before_returning_action(self) -> None:
-        older = {"plan": "older-plan"}
-        successor = {"plan": "successor-plan"}
+        older = lifecycle_plan(self.recovery)
+        older["plan"] = "older-plan"
+        successor = lifecycle_plan(self.recovery)
+        successor["plan"] = "successor-plan"
         older_tag = "release-plan/older-plan"
         successor_tag = "release-plan/successor-plan"
         commits = {older_tag: "a" * 40, successor_tag: "b" * 40}

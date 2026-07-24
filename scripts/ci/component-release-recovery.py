@@ -1975,27 +1975,84 @@ def classify_plan_authorities(client: PublicClient) -> list[dict[str, Any]]:
     return authorities
 
 
+def semver_precedence(version: str) -> tuple[int, int, int, int, tuple[tuple[int, int | str], ...]]:
+    without_build = version.split("+", 1)[0]
+    core, separator, prerelease = without_build.partition("-")
+    major, minor, patch = (int(part) for part in core.split("."))
+    identifiers = tuple(
+        (0, int(part)) if part.isdigit() else (1, part)
+        for part in prerelease.split(".")
+    )
+    return major, minor, patch, 1 if not separator else 0, identifiers
+
+
+def current_product_train_authorities(
+    authorities: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Select the unique component-wise maximal SemVer tuple, failing on divergent maxima."""
+
+    version_precedence = {
+        authority["tag"]: {
+            name: semver_precedence(identity["version"])
+            for name, identity in authority["plan"]["components"].items()
+        }
+        for authority in authorities
+    }
+
+    def dominates(candidate: dict[str, Any], other: dict[str, Any]) -> bool:
+        return all(
+            version_precedence[candidate["tag"]][name] >= version_precedence[other["tag"]][name]
+            for name in COMPONENTS
+        ) and any(
+            version_precedence[candidate["tag"]][name] > version_precedence[other["tag"]][name]
+            for name in COMPONENTS
+        )
+
+    maximal = [
+        authority
+        for authority in authorities
+        if not any(
+            other is not authority and dominates(other, authority)
+            for other in authorities
+        )
+    ]
+    current_versions = {
+        tuple(authority["plan"]["components"][name]["version"] for name in COMPONENTS)
+        for authority in maximal
+    }
+    if len(current_versions) != 1:
+        raise RecoveryError(
+            "release plan authority has conflicting current product trains",
+            "plan-discovery",
+        )
+    selected_versions = next(iter(current_versions))
+    return [
+        authority
+        for authority in authorities
+        if tuple(authority["plan"]["components"][name]["version"] for name in COMPONENTS)
+        == selected_versions
+    ]
+
+
 def classify_implicit_plan_authority(
     client: PublicClient,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     authorities = classify_plan_authorities(client)
+    current_train = current_product_train_authorities(authorities)
     nonterminal_older = [
         item
-        for item in authorities[:-1]
+        for item in current_train[:-1]
         if item["lifecycle"] in {"actionable", "interrupted"}
     ]
     if nonterminal_older:
         raise RecoveryError(
             f"release plan authority is ambiguous: {nonterminal_older[0]['tag']} remains "
-            f"{nonterminal_older[0]['lifecycle']} before {authorities[-1]['tag']}",
+            f"{nonterminal_older[0]['lifecycle']} before {current_train[-1]['tag']}",
             "plan-discovery",
         )
-    selected = authorities[-1]
-    if selected["lifecycle"] == "superseded":
-        raise RecoveryError(
-            f"latest release plan {selected['tag']} is superseded and cannot be recovered",
-            "plan-discovery",
-        )
+    selected = current_train[-1]
+    if selected["lifecycle"] in {"completed", "superseded"}:
+        selected = None
     return selected, authorities
 
 
@@ -2011,6 +2068,11 @@ def select_implicit_plan_authority(client: PublicClient) -> dict[str, Any]:
     for _attempt in range(IMPLICIT_AUTHORITY_MAX_ATTEMPTS):
         selected, authority_snapshot = classify_implicit_plan_authority(client)
         if implicit_plan_authority_converged(client, authority_snapshot):
+            if selected is None:
+                raise RecoveryError(
+                    "no public release plan is available",
+                    "plan-discovery",
+                )
             return {**selected, "authority_snapshot": authority_snapshot}
     raise RecoveryError(
         "release plan registry or lifecycle authority did not converge "
@@ -2062,9 +2124,14 @@ def select_explicit_plan_authority(
             f"explicit release plan {tag} changed while its lifecycle was classified",
             "plan-discovery",
         )
-    if authority["lifecycle"] == "superseded":
+    if authority["lifecycle"] not in {"actionable", "interrupted"}:
+        lifecycle = (
+            "terminally superseded"
+            if authority["lifecycle"] == "superseded"
+            else authority["lifecycle"]
+        )
         raise RecoveryError(
-            f"explicit release plan {tag} is terminally superseded and cannot be recovered",
+            f"explicit release plan {tag} is {lifecycle} and cannot be recovered",
             "plan-discovery",
         )
     return {
