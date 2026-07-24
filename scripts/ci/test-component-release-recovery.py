@@ -694,6 +694,23 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
         ):
             self.recovery.select_implicit_plan_authority(mock.Mock())
 
+    def test_equal_versions_with_different_source_commits_are_conflicting(self) -> None:
+        first = lifecycle_plan(self.recovery, "beta")
+        first["plan"] = "first-beta-authority"
+        second = json.loads(json.dumps(first))
+        second["plan"] = "conflicting-beta-authority"
+        second["components"]["workflow"]["commit"] = "f" * 40
+        authorities = [
+            {"tag": f"release-plan/{first['plan']}", "plan": first},
+            {"tag": f"release-plan/{second['plan']}", "plan": second},
+        ]
+
+        with self.assertRaisesRegex(
+            self.recovery.RecoveryError,
+            "conflicting current product trains",
+        ):
+            self.recovery.current_product_train_authorities(authorities)
+
     def test_scheduled_recovery_without_actionable_plan_is_a_truthful_no_op(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

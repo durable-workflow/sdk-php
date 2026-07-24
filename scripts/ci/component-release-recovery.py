@@ -1989,7 +1989,7 @@ def semver_precedence(version: str) -> tuple[int, int, int, int, tuple[tuple[int
 def current_product_train_authorities(
     authorities: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Select the unique component-wise maximal SemVer tuple, failing on divergent maxima."""
+    """Select one maximal SemVer train with a unique immutable component identity."""
 
     version_precedence = {
         authority["tag"]: {
@@ -2016,21 +2016,33 @@ def current_product_train_authorities(
             for other in authorities
         )
     ]
-    current_versions = {
-        tuple(authority["plan"]["components"][name]["version"] for name in COMPONENTS)
+    current_identities = {
+        tuple(
+            (
+                authority["plan"]["components"][name]["version"],
+                authority["plan"]["components"][name]["commit"],
+            )
+            for name in COMPONENTS
+        )
         for authority in maximal
     }
-    if len(current_versions) != 1:
+    if len(current_identities) != 1:
         raise RecoveryError(
             "release plan authority has conflicting current product trains",
             "plan-discovery",
         )
-    selected_versions = next(iter(current_versions))
+    selected_identity = next(iter(current_identities))
     return [
         authority
         for authority in authorities
-        if tuple(authority["plan"]["components"][name]["version"] for name in COMPONENTS)
-        == selected_versions
+        if tuple(
+            (
+                authority["plan"]["components"][name]["version"],
+                authority["plan"]["components"][name]["commit"],
+            )
+            for name in COMPONENTS
+        )
+        == selected_identity
     ]
 
 
