@@ -1000,6 +1000,104 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
         self.assertIsNone(explicit_authority)
         self.assertEqual("publish", explicit_outputs["action"])
 
+    def test_interrupted_plan_rejects_multiple_continuity_successors(self) -> None:
+        interrupted = lifecycle_plan(self.recovery)
+        interrupted["plan"] = "interrupted-plan"
+        first_successor = json.loads(json.dumps(interrupted))
+        first_successor["plan"] = "first-successor"
+        second_successor = json.loads(json.dumps(interrupted))
+        second_successor["plan"] = "second-successor"
+        tags = [
+            f"release-plan/{interrupted['plan']}",
+            f"release-plan/{first_successor['plan']}",
+            f"release-plan/{second_successor['plan']}",
+        ]
+        plans_by_tag = dict(zip(tags, [interrupted, first_successor, second_successor], strict=True))
+        commits = {
+            tags[0]: "a" * 40,
+            tags[1]: "b" * 40,
+            tags[2]: "c" * 40,
+        }
+        interruption_tag = f"{self.recovery.CONTINUITY_TAG_PREFIX}{interrupted['plan']}/interrupted"
+        interruption_commit = "d" * 40
+        interruption_evidence = {"phase": "interrupted"}
+        superseded_interruption = {
+            "tag": interruption_tag,
+            "commit": interruption_commit,
+            "evidence_sha256": self.recovery.manifest_digest(interruption_evidence),
+            "plan_sha256": self.recovery.manifest_digest(interrupted),
+            "reason": self.recovery.CONTINUITY_SUPERSESSION_REASON,
+        }
+        orderings = [
+            (
+                tags,
+                {
+                    commits[tags[0]]: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+                    commits[tags[1]]: dt.datetime(2026, 7, 21, tzinfo=dt.UTC),
+                    commits[tags[2]]: dt.datetime(2026, 7, 22, tzinfo=dt.UTC),
+                },
+            ),
+            (
+                list(reversed(tags)),
+                {
+                    commits[tags[0]]: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+                    commits[tags[1]]: dt.datetime(2026, 7, 22, tzinfo=dt.UTC),
+                    commits[tags[2]]: dt.datetime(2026, 7, 21, tzinfo=dt.UTC),
+                },
+            ),
+        ]
+
+        for discovered_tags, recorded in orderings:
+            with (
+                self.subTest(tags=discovered_tags, recorded=recorded),
+                mock.patch.object(
+                    self.recovery,
+                    "list_release_plan_tags",
+                    return_value=discovered_tags,
+                ),
+                mock.patch.object(
+                    self.recovery,
+                    "resolve_tag",
+                    side_effect=lambda _client, _repository, tag: (
+                        interruption_commit if tag == interruption_tag else commits[tag]
+                    ),
+                ),
+                mock.patch.object(
+                    self.recovery,
+                    "read_plan_authority",
+                    side_effect=lambda _client, tag, _commit: (plans_by_tag[tag], None),
+                ),
+                mock.patch.object(
+                    self.recovery,
+                    "direct_plan_lifecycle",
+                    side_effect=lambda _client, tag, *_args: (
+                        ("interrupted", interruption_tag) if tag == tags[0] else ("completed", None)
+                    ),
+                ),
+                mock.patch.object(
+                    self.recovery,
+                    "immutable_plan_recorded_at",
+                    side_effect=lambda _client, commit, recorded=recorded: recorded[commit],
+                ),
+                mock.patch.object(
+                    self.recovery,
+                    "accepted_continuity_supersession",
+                    side_effect=lambda _client, authority: (
+                        None if authority["tag"] == tags[0] else superseded_interruption
+                    ),
+                ),
+                mock.patch.object(
+                    self.recovery,
+                    "read_record",
+                    return_value=interruption_evidence,
+                ),
+                self.assertRaisesRegex(
+                    self.recovery.RecoveryError,
+                    "multiple continuity successors",
+                ),
+            ):
+                self.recovery.select_implicit_plan_authority(mock.Mock())
+
     def test_terminal_failure_successor_requires_exact_authorized_plan_identity(self) -> None:
         failed = lifecycle_plan(self.recovery)
         failed["plan"] = "failed-plan"

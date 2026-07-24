@@ -1733,12 +1733,14 @@ def classify_implicit_plan_authority(
         continuity_successors.setdefault(interrupted["tag"], []).append(successor["tag"])
 
     for interrupted_tag, successor_tags in continuity_successors.items():
+        if len(successor_tags) != 1:
+            raise RecoveryError(
+                f"release plan {interrupted_tag} has multiple continuity successors",
+                "plan-discovery",
+            )
         interrupted = by_tag[interrupted_tag]
         interrupted["lifecycle"] = "superseded"
-        successor_tag = min(
-            successor_tags,
-            key=lambda tag: by_tag[tag]["recorded_at"],
-        )
+        successor_tag = successor_tags[0]
         successor = by_tag[successor_tag]
         interrupted["successor"] = {
             "tag": successor_tag,
