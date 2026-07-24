@@ -1851,9 +1851,7 @@ def resolve_continuity_successor_fork(
     return str(selected["tag"])
 
 
-def classify_implicit_plan_authority(
-    client: PublicClient,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def classify_plan_authorities(client: PublicClient) -> list[dict[str, Any]]:
     authorities: list[dict[str, Any]] = []
     tags = list_release_plan_tags(client)
     for tag in tags:
@@ -1861,7 +1859,9 @@ def classify_implicit_plan_authority(
         if commit is None:
             raise RecoveryError(f"release plan tag {tag} is absent", "plan-discovery")
         plan, preparation = read_plan_authority(client, tag, commit)
-        lifecycle, successor = direct_plan_lifecycle(client, tag, commit, plan, preparation)
+        lifecycle, successor = direct_plan_lifecycle(
+            client, tag, commit, plan, preparation
+        )
         authorities.append(
             {
                 "tag": tag,
@@ -1888,7 +1888,10 @@ def classify_implicit_plan_authority(
             continue
         interruption_tag = superseded["tag"]
         matches = [
-            item for item in authorities if item["lifecycle"] == "interrupted" and item["successor"] == interruption_tag
+            item
+            for item in authorities
+            if item["lifecycle"] == "interrupted"
+            and item["successor"] == interruption_tag
         ]
         if len(matches) != 1:
             raise RecoveryError(
@@ -1969,7 +1972,18 @@ def classify_implicit_plan_authority(
                 "plan-discovery",
             )
 
-    nonterminal_older = [item for item in authorities[:-1] if item["lifecycle"] in {"actionable", "interrupted"}]
+    return authorities
+
+
+def classify_implicit_plan_authority(
+    client: PublicClient,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    authorities = classify_plan_authorities(client)
+    nonterminal_older = [
+        item
+        for item in authorities[:-1]
+        if item["lifecycle"] in {"actionable", "interrupted"}
+    ]
     if nonterminal_older:
         raise RecoveryError(
             f"release plan authority is ambiguous: {nonterminal_older[0]['tag']} remains "
@@ -2021,6 +2035,85 @@ def revalidate_implicit_plan_authority(
         )
 
 
+def select_explicit_plan_authority(
+    client: PublicClient,
+    tag: str,
+    commit: str,
+    plan: dict[str, Any],
+    preparation: dict[str, Any] | None,
+) -> dict[str, Any]:
+    matches = [
+        authority
+        for authority in classify_plan_authorities(client)
+        if authority["tag"] == tag
+    ]
+    if len(matches) != 1:
+        raise RecoveryError(
+            f"explicit release plan {tag} lacks exact lifecycle authority",
+            "plan-discovery",
+        )
+    authority = matches[0]
+    if (
+        authority["commit"] != commit
+        or authority["plan"] != plan
+        or authority["preparation"] != preparation
+    ):
+        raise RecoveryError(
+            f"explicit release plan {tag} changed while its lifecycle was classified",
+            "plan-discovery",
+        )
+    if authority["lifecycle"] == "superseded":
+        raise RecoveryError(
+            f"explicit release plan {tag} is terminally superseded and cannot be recovered",
+            "plan-discovery",
+        )
+    return {
+        **authority,
+        "selection": "explicit",
+    }
+
+
+def revalidate_explicit_plan_authority(
+    client: PublicClient,
+    explicit_authority: dict[str, Any],
+    action: str,
+) -> None:
+    matches = [
+        authority
+        for authority in classify_plan_authorities(client)
+        if authority["tag"] == explicit_authority["tag"]
+    ]
+    if len(matches) != 1:
+        raise RecoveryError(
+            f"explicit release plan {explicit_authority['tag']} lifecycle authority changed "
+            "during component preflight; refusing a stale recovery action",
+            "plan-discovery",
+        )
+    current = matches[0]
+    if (
+        current["commit"] != explicit_authority["commit"]
+        or current["plan"] != explicit_authority["plan"]
+        or current["preparation"] != explicit_authority["preparation"]
+    ):
+        raise RecoveryError(
+            f"explicit release plan {explicit_authority['tag']} identity changed "
+            "during component preflight; refusing a stale recovery action",
+            "plan-discovery",
+        )
+    if current["lifecycle"] == "superseded":
+        raise RecoveryError(
+            f"explicit release plan {explicit_authority['tag']} became terminally superseded "
+            "during component preflight; refusing a stale recovery action",
+            "plan-discovery",
+        )
+    if current["lifecycle"] == "completed" and action == "publish":
+        raise RecoveryError(
+            f"explicit release plan {explicit_authority['tag']} is completed; "
+            "refusing publication instead of idempotent verification",
+            "plan-discovery",
+        )
+
+
 def discover_plan(
     client: PublicClient, requested_tag: str | None, component_name: str
 ) -> tuple[
@@ -2031,25 +2124,34 @@ def discover_plan(
     dict[str, Any] | None,
 ]:
     if component_name not in COMPONENTS:
-        raise RecoveryError(f"unknown release component: {component_name}", "plan-discovery")
-    implicit_authority = None
+        raise RecoveryError(
+            f"unknown release component: {component_name}", "plan-discovery"
+        )
+    plan_authority = None
     if requested_tag:
         tag = requested_tag
         if not tag.startswith(PLAN_TAG_PREFIX):
-            raise RecoveryError(f"release plan tag must start with {PLAN_TAG_PREFIX}", "plan-discovery")
+            raise RecoveryError(
+                f"release plan tag must start with {PLAN_TAG_PREFIX}", "plan-discovery"
+            )
         try:
             release = client.json(
                 f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases/tags/{urllib.parse.quote(tag, safe='')}"
             )
         except NotFound as error:
-            raise RecoveryError(f"release plan {tag} has no durable GitHub Release", "plan-discovery") from error
+            raise RecoveryError(
+                f"release plan {tag} has no durable GitHub Release", "plan-discovery"
+            ) from error
         commit = resolve_tag(client, CONTROL_REPOSITORY, tag)
         if commit is None:
             raise RecoveryError(f"release plan tag {tag} is absent", "plan-discovery")
         plan, preparation = read_plan_authority(client, tag, commit)
+        plan_authority = select_explicit_plan_authority(
+            client, tag, commit, plan, preparation
+        )
     else:
         selected = select_implicit_plan_authority(client)
-        implicit_authority = selected
+        plan_authority = selected
         tag = selected["tag"]
         commit = selected["commit"]
         plan = selected["plan"]
@@ -2059,7 +2161,9 @@ def discover_plan(
                 f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases/tags/{urllib.parse.quote(tag, safe='')}"
             )
         except NotFound as error:
-            raise RecoveryError(f"release plan {tag} has no durable GitHub Release", "plan-discovery") from error
+            raise RecoveryError(
+                f"release plan {tag} has no durable GitHub Release", "plan-discovery"
+            ) from error
     validate_release_mirrors(client, tag, release, plan, preparation)
     if preparation is None:
         try:
@@ -2070,7 +2174,8 @@ def discover_plan(
                 "only completed legacy releases may recover without it",
                 "plan-discovery",
             ) from error
-    return tag, commit, plan, preparation, implicit_authority
+    return tag, commit, plan, preparation, plan_authority
+
 
 def load_recovery_workflow_authority(
     client: PublicClient,
@@ -2589,7 +2694,7 @@ def resolve_component(
     record_commit: str,
     plan: dict[str, Any],
     preparation: dict[str, Any] | None,
-    implicit_authority: dict[str, Any] | None = None,
+    plan_authority: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     if component_name not in COMPONENTS:
         raise RecoveryError(f"unknown release component: {component_name}")
@@ -2637,8 +2742,10 @@ def resolve_component(
                     identity["commit"],
                 )
         action = "publish"
-    if implicit_authority is not None:
-        revalidate_implicit_plan_authority(client, implicit_authority)
+    if plan_authority is not None and plan_authority.get("selection") == "explicit":
+        revalidate_explicit_plan_authority(client, plan_authority, action)
+    elif plan_authority is not None:
+        revalidate_implicit_plan_authority(client, plan_authority)
         if scheduled_continuity_pause(client, plan) is not None:
             raise RecoveryError(
                 "continuity pause authority changed during component preflight; "
@@ -2765,7 +2872,7 @@ def main() -> int:
             record_commit: str | None = None
             plan: dict[str, Any] | None = None
             try:
-                tag, record_commit, plan, preparation, implicit_authority = discover_plan(
+                tag, record_commit, plan, preparation, plan_authority = discover_plan(
                     client,
                     args.plan_tag,
                     args.component,
@@ -2775,8 +2882,8 @@ def main() -> int:
                     args.preparation_output.write_bytes(canonical_json(preparation))
                 continuity_pause = scheduled_continuity_pause(client, plan) if args.plan_tag is None else None
                 if continuity_pause is not None:
-                    assert implicit_authority is not None
-                    revalidate_implicit_plan_authority(client, implicit_authority)
+                    assert plan_authority is not None
+                    revalidate_implicit_plan_authority(client, plan_authority)
                     paused = base_state(args.component, tag, plan)
                     paused.update(
                         {
@@ -2808,7 +2915,7 @@ def main() -> int:
                     record_commit,
                     plan,
                     preparation,
-                    implicit_authority,
+                    plan_authority,
                 )
                 args.evidence.write_bytes(canonical_json(state))
                 write_output(args.github_output, outputs)

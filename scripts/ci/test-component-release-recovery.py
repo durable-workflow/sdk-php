@@ -860,6 +860,237 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
         self.assertEqual(2, continuity.call_count)
         self.assertEqual(1, publication_preflight.call_count)
 
+    def test_explicit_actionable_and_interrupted_plans_may_publish(self) -> None:
+        candidate = lifecycle_plan(self.recovery)
+        preparation = {
+            "components": {
+                "workflow": {
+                    "release_notes": {
+                        "release_date": "2026-07-23",
+                        "sha256": "c" * 64,
+                        "source": {},
+                    }
+                }
+            }
+        }
+        tag = f"release-plan/{candidate['plan']}"
+        commit = "a" * 40
+        component = self.recovery.COMPONENTS["workflow"]
+
+        for lifecycle, successor in (
+            ("actionable", None),
+            ("interrupted", f"beta-continuity/{candidate['plan']}/interrupted"),
+        ):
+            with self.subTest(lifecycle=lifecycle):
+                authority = {
+                    "selection": "explicit",
+                    "tag": tag,
+                    "commit": commit,
+                    "recorded_at": dt.datetime(2026, 7, 23, tzinfo=dt.UTC),
+                    "plan": candidate,
+                    "preparation": preparation,
+                    "lifecycle": lifecycle,
+                    "successor": successor,
+                }
+                with (
+                    mock.patch.object(
+                        self.recovery, "verify_plan_authority", return_value=({}, {})
+                    ),
+                    mock.patch.object(self.recovery, "validate_release_preparation"),
+                    mock.patch.object(self.recovery, "resolve_tag", return_value=None),
+                    mock.patch.object(
+                        self.recovery,
+                        "classify_plan_authorities",
+                        return_value=[
+                            {
+                                key: value
+                                for key, value in authority.items()
+                                if key != "selection"
+                            }
+                        ],
+                    ),
+                    mock.patch.dict(
+                        self.recovery.VERIFIERS,
+                        {
+                            component.distribution: mock.Mock(
+                                side_effect=self.recovery.NotFound("not published")
+                            )
+                        },
+                    ),
+                ):
+                    _state, outputs = self.recovery.resolve_component(
+                        mock.Mock(),
+                        "workflow",
+                        tag,
+                        commit,
+                        candidate,
+                        preparation,
+                        authority,
+                    )
+
+                self.assertEqual("publish", outputs["action"])
+
+    def test_explicit_completed_plan_verifies_and_skips(self) -> None:
+        candidate = lifecycle_plan(self.recovery)
+        tag = f"release-plan/{candidate['plan']}"
+        commit = "a" * 40
+        identity = candidate["components"]["workflow"]
+        public_evidence = {"version": identity["version"], "commit": identity["commit"]}
+        authority = {
+            "selection": "explicit",
+            "tag": tag,
+            "commit": commit,
+            "recorded_at": dt.datetime(2026, 7, 23, tzinfo=dt.UTC),
+            "plan": candidate,
+            "preparation": None,
+            "lifecycle": "completed",
+            "successor": None,
+        }
+
+        with (
+            mock.patch.object(
+                self.recovery, "verify_plan_authority", return_value=({}, {})
+            ),
+            mock.patch.object(
+                self.recovery, "resolve_tag", return_value=identity["commit"]
+            ),
+            mock.patch.object(
+                self.recovery, "verify_component", return_value=public_evidence
+            ) as verify,
+            mock.patch.object(
+                self.recovery,
+                "classify_plan_authorities",
+                return_value=[
+                    {
+                        key: value
+                        for key, value in authority.items()
+                        if key != "selection"
+                    }
+                ],
+            ),
+        ):
+            state, outputs = self.recovery.resolve_component(
+                mock.Mock(),
+                "workflow",
+                tag,
+                commit,
+                candidate,
+                None,
+                authority,
+            )
+
+        self.assertEqual("skip", outputs["action"])
+        self.assertEqual("verified", state["outcome"])
+        self.assertEqual(1, verify.call_count)
+
+    def test_explicit_terminal_plan_is_rejected_before_preflight(self) -> None:
+        failed = lifecycle_plan(self.recovery)
+        failed["plan"] = "failed-plan"
+        successor = json.loads(json.dumps(failed))
+        successor["plan"] = "successor-plan"
+        tag = f"release-plan/{failed['plan']}"
+        commit = "a" * 40
+        authority = {
+            "tag": tag,
+            "commit": commit,
+            "recorded_at": dt.datetime(2026, 7, 23, tzinfo=dt.UTC),
+            "plan": failed,
+            "preparation": None,
+            "lifecycle": "superseded",
+            "successor": {
+                "tag": f"release-plan/{successor['plan']}",
+                "sha256": self.recovery.manifest_digest(successor),
+                "plan": successor,
+            },
+        }
+
+        with (
+            mock.patch.object(
+                self.recovery, "classify_plan_authorities", return_value=[authority]
+            ),
+            self.assertRaisesRegex(
+                self.recovery.RecoveryError,
+                "terminally superseded and cannot be recovered",
+            ),
+        ):
+            self.recovery.select_explicit_plan_authority(
+                mock.Mock(),
+                tag,
+                commit,
+                failed,
+                None,
+            )
+
+    def test_explicit_terminal_transition_during_preflight_cannot_publish(self) -> None:
+        candidate = lifecycle_plan(self.recovery)
+        preparation = {
+            "components": {
+                "workflow": {
+                    "release_notes": {
+                        "release_date": "2026-07-23",
+                        "sha256": "c" * 64,
+                        "source": {},
+                    }
+                }
+            }
+        }
+        tag = f"release-plan/{candidate['plan']}"
+        commit = "a" * 40
+        component = self.recovery.COMPONENTS["workflow"]
+        authority = {
+            "selection": "explicit",
+            "tag": tag,
+            "commit": commit,
+            "recorded_at": dt.datetime(2026, 7, 23, tzinfo=dt.UTC),
+            "plan": candidate,
+            "preparation": preparation,
+            "lifecycle": "actionable",
+            "successor": None,
+        }
+        superseded = {
+            **authority,
+            "lifecycle": "superseded",
+            "successor": {
+                "tag": "release-plan/successor",
+                "sha256": "d" * 64,
+                "plan": {"plan": "successor"},
+            },
+        }
+        superseded.pop("selection")
+        publication_preflight = mock.Mock(
+            side_effect=self.recovery.NotFound("not published")
+        )
+
+        with (
+            mock.patch.object(
+                self.recovery, "verify_plan_authority", return_value=({}, {})
+            ),
+            mock.patch.object(self.recovery, "validate_release_preparation"),
+            mock.patch.object(self.recovery, "resolve_tag", return_value=None),
+            mock.patch.object(
+                self.recovery, "classify_plan_authorities", return_value=[superseded]
+            ),
+            mock.patch.dict(
+                self.recovery.VERIFIERS,
+                {component.distribution: publication_preflight},
+            ),
+            self.assertRaisesRegex(
+                self.recovery.RecoveryError,
+                "became terminally superseded during component preflight",
+            ),
+        ):
+            self.recovery.resolve_component(
+                mock.Mock(),
+                "workflow",
+                tag,
+                commit,
+                candidate,
+                preparation,
+                authority,
+            )
+
+        self.assertEqual(1, publication_preflight.call_count)
+
     def test_supersession_during_mirror_validation_cannot_return_publish(self) -> None:
         older = lifecycle_plan(self.recovery)
         older["plan"] = "older-plan"
@@ -958,6 +1189,14 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
             ),
             mock.patch.object(
                 self.recovery,
+                "classify_plan_authorities",
+                return_value=[
+                    superseded_older_authority,
+                    successor_authority,
+                ],
+            ),
+            mock.patch.object(
+                self.recovery,
                 "validate_release_mirrors",
                 side_effect=validate_mirrors,
             ),
@@ -1007,28 +1246,15 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
                     implicit_authority,
                 )
 
-            (
-                explicit_tag,
-                explicit_commit,
-                explicit_plan,
-                explicit_preparation,
-                explicit_authority,
-            ) = self.recovery.discover_plan(client, older_tag, "workflow")
-            _, explicit_outputs = self.recovery.resolve_component(
-                client,
-                "workflow",
-                explicit_tag,
-                explicit_commit,
-                explicit_plan,
-                explicit_preparation,
-                explicit_authority,
-            )
+            with self.assertRaisesRegex(
+                self.recovery.RecoveryError,
+                "terminally superseded and cannot be recovered",
+            ):
+                self.recovery.discover_plan(client, older_tag, "workflow")
 
         self.assertTrue(superseded)
         self.assertEqual(3, classifications)
-        self.assertEqual(2, mirror_validations)
-        self.assertIsNone(explicit_authority)
-        self.assertEqual("publish", explicit_outputs["action"])
+        self.assertEqual(1, mirror_validations)
 
     def test_interrupted_plan_rejects_multiple_continuity_successors(self) -> None:
         interrupted = lifecycle_plan(self.recovery)
@@ -1594,6 +1820,11 @@ class ReleasePreparationRecoveryTest(unittest.TestCase):
         with (
             mock.patch.object(self.recovery, "validate_plan"),
             mock.patch.object(self.recovery, "resolve_tag", return_value=record_commit),
+            mock.patch.object(
+                self.recovery,
+                "select_explicit_plan_authority",
+                return_value={"selection": "explicit"},
+            ),
             mock.patch.object(
                 self.recovery,
                 "read_record",

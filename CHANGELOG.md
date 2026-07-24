@@ -17,6 +17,10 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Explicit release recovery rejects terminally superseded plans before and
+  after publication preflight while keeping completed-plan verification
+  idempotent.
+
 - Managed workers retry the server's fenced registration lock-pressure
   response with bounded backoff before entering the poll loop, while other
   registration failures remain terminal.
