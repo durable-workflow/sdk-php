@@ -720,11 +720,13 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
                 "plan": candidate,
             }
 
-            with self.subTest(version=malformed), self.assertRaisesRegex(
-                self.recovery.RecoveryError,
-                "components.server.version is not exact SemVer",
-            ):
-                self.recovery.current_product_train_authorities([authority])
+            with self.subTest(version=malformed):
+                with self.assertRaisesRegex(
+                    self.recovery.RecoveryError,
+                    "components.server.version is not exact SemVer",
+                ) as raised:
+                    self.recovery.current_product_train_authorities([authority])
+                self.assertEqual("plan-discovery", raised.exception.phase)
 
         for valid in ("1.0.0-alpha.1", "1.0.0-alpha.1+build.01", "1.0.0+build.01"):
             candidate = lifecycle_plan(self.recovery, "beta")
@@ -732,6 +734,37 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
 
             with self.subTest(version=valid):
                 self.recovery.validate_plan(candidate)
+
+    def test_semver_precedence_preserves_prerelease_and_build_rules(self) -> None:
+        precedence = self.recovery.semver_precedence
+        self.assertEqual(precedence("1.0.0+build.1"), precedence("1.0.0+build.2"))
+        self.assertLess(precedence("1.0.0-alpha.2"), precedence("1.0.0-alpha.10"))
+        self.assertLess(precedence("1.0.0-alpha"), precedence("1.0.0-alpha.1"))
+        self.assertLess(precedence("1.0.0-alpha.1"), precedence("1.0.0-alpha.beta"))
+        self.assertLess(precedence("1.0.0-rc.1"), precedence("1.0.0"))
+
+    def test_semver_precedence_supports_unbounded_numeric_identifiers(self) -> None:
+        long_numeric = "1" + "0" * 4300
+        for case, lower_version, higher_version in (
+            ("core", "2.0.0", f"{long_numeric}.0.0"),
+            ("prerelease", "1.0.0-2", f"1.0.0-{long_numeric}"),
+        ):
+            lower = lifecycle_plan(self.recovery, "beta")
+            lower["plan"] = f"lower-{case}-authority"
+            lower["components"]["server"]["version"] = lower_version
+            higher = json.loads(json.dumps(lower))
+            higher["plan"] = f"higher-{case}-authority"
+            higher["components"]["server"]["version"] = higher_version
+            authorities = [
+                {"tag": f"release-plan/{lower['plan']}", "plan": lower},
+                {"tag": f"release-plan/{higher['plan']}", "plan": higher},
+            ]
+
+            with self.subTest(case=case):
+                self.assertEqual(
+                    [authorities[1]],
+                    self.recovery.current_product_train_authorities(authorities),
+                )
 
     def test_validated_source_manifest_supersession_selects_successor(self) -> None:
         predecessor = lifecycle_plan(self.recovery, "beta")

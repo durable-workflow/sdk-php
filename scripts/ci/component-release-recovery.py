@@ -1983,12 +1983,22 @@ def classify_plan_authorities(client: PublicClient) -> list[dict[str, Any]]:
     return authorities
 
 
-def semver_precedence(version: str) -> tuple[int, int, int, int, tuple[tuple[int, int | str], ...]]:
+def semver_precedence(
+    version: str,
+) -> tuple[
+    tuple[int, str],
+    tuple[int, str],
+    tuple[int, str],
+    int,
+    tuple[tuple[int, int, str], ...],
+]:
     without_build = version.split("+", 1)[0]
     core, separator, prerelease = without_build.partition("-")
-    major, minor, patch = (int(part) for part in core.split("."))
+    # Validation excludes leading zeroes, so length and lexical order compare
+    # numeric identifiers exactly without a bounded integer conversion.
+    major, minor, patch = ((len(part), part) for part in core.split("."))
     identifiers = tuple(
-        (0, int(part)) if part.isdigit() else (1, part)
+        (0, len(part), part) if part.isdigit() else (1, 0, part)
         for part in prerelease.split(".")
     )
     return major, minor, patch, 1 if not separator else 0, identifiers
