@@ -1,0 +1,22 @@
+{
+  "component": "sdk-php",
+  "consumer": "scripts/ci/component-release-recovery.py",
+  "contract": {
+    "path": "scripts/ci/release-recovery-consumer-contract.json",
+    "sha256": "09b25646ac86166124d73c475b68b4075f15e8ed536b97a52cee2298cacb10bb",
+    "version": "1.0.0"
+  },
+  "distribution_verification": {
+    "command": [
+      "{python}",
+      "scripts/ci/test-component-release-recovery.py"
+    ]
+  },
+  "repository": "durable-workflow/sdk-php",
+  "schema": "durable-workflow.release-recovery-consumer-adapter/v1",
+  "suite": {
+    "path": "scripts/ci/release_recovery_consumer_conformance.py",
+    "sha256": "2e68d6a8f18cd175b84f412f58c9feff8a17b1828c505c48167cab79e7d77fcf"
+  },
+  "target_branch": "main"
+}
