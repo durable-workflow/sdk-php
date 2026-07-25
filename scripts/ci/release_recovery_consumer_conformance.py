@@ -340,6 +340,21 @@ def case_immutable_plan_enumeration(module: ModuleType) -> None:
         lambda: module.list_release_plan_tags(client),
         "consumer accepted duplicate immutable plan authority",
     )
+    malformed_registry_entries = (
+        None,
+        {},
+        {"ref": 7},
+        {"ref": f"refs/heads/{tags[0]}"},
+        {"ref": "refs/tags/release-plan/"},
+        {"ref": "refs/tags/release-plan/Invalid"},
+    )
+    for malformed in malformed_registry_entries:
+        client.json.return_value = [malformed]
+        expect_recovery_error(
+            module,
+            lambda: module.list_release_plan_tags(client),
+            f"consumer accepted malformed immutable plan authority: {malformed!r}",
+        )
 
 
 def case_completed_plan_lifecycle(module: ModuleType) -> None:
@@ -387,7 +402,31 @@ def case_exact_successor_identity(module: ModuleType) -> None:
     expect_recovery_error(
         module,
         lambda: module.current_product_train_authorities([predecessor, successor]),
-        "consumer accepted an inexact successor identity",
+        "consumer accepted an inexact successor digest",
+    )
+
+    predecessor, successor = supersession_pair(module)
+    predecessor["successor"] = {
+        **predecessor["successor"],
+        "tag": "release-plan/wrong-successor-conformance",
+    }
+    expect_recovery_error(
+        module,
+        lambda: module.current_product_train_authorities([predecessor, successor]),
+        "consumer accepted an inexact successor tag",
+    )
+
+    predecessor, successor = supersession_pair(module)
+    mismatched_plan = copy.deepcopy(successor["plan"])
+    mismatched_plan["components"]["sdk-rust"]["commit"] = "c" * 40
+    predecessor["successor"] = {
+        **predecessor["successor"],
+        "plan": mismatched_plan,
+    }
+    expect_recovery_error(
+        module,
+        lambda: module.current_product_train_authorities([predecessor, successor]),
+        "consumer accepted an inexact successor plan document",
     )
 
 
@@ -422,19 +461,20 @@ def case_continuity_ambiguity_rejection(module: ModuleType) -> None:
 
 def case_explicit_terminal_plan_rejection(module: ModuleType) -> None:
     candidate = plan(module, "terminal-conformance")
-    terminal = authority(module, candidate, "superseded")
-    with mock.patch.object(module, "classify_plan_authorities", return_value=[terminal]):
-        expect_recovery_error(
-            module,
-            lambda: module.select_explicit_plan_authority(
-                mock.Mock(),
-                terminal["tag"],
-                terminal["commit"],
-                candidate,
-                None,
-            ),
-            "consumer accepted an explicitly selected terminal plan",
-        )
+    for lifecycle in ("superseded", "completed"):
+        terminal = authority(module, candidate, lifecycle)
+        with mock.patch.object(module, "classify_plan_authorities", return_value=[terminal]):
+            expect_recovery_error(
+                module,
+                lambda terminal=terminal: module.select_explicit_plan_authority(
+                    mock.Mock(),
+                    terminal["tag"],
+                    terminal["commit"],
+                    candidate,
+                    None,
+                ),
+                f"consumer accepted an explicitly selected {lifecycle} plan",
+            )
 
 
 def case_bounded_authority_convergence(module: ModuleType) -> None:
