@@ -773,6 +773,10 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
             ("prerelease", "1.2.3-alpha.9", "1.2.3-alpha.10"),
             ("release-build", "1.2.3+build.1", "1.2.4+build.2"),
             ("prerelease-build", "1.2.3-alpha.9+build.1", "1.2.3-alpha.10+build.2"),
+            ("single-numeric-prerelease", "1.2.3-9", "1.2.3-10"),
+            ("single-numeric-prerelease-build", "1.2.3-9+build.1", "1.2.3-10+build.2"),
+            ("nonnumeric-prerelease", "1.2.3-rc", "1.2.3-rc.1"),
+            ("nonnumeric-prerelease-build", "1.2.3-rc+build.1", "1.2.3-rc.1+build.2"),
             ("long-core", f"1.2.{long_numeric}", f"1.2.1{'0' * 4301}"),
             ("long-prerelease", f"1.2.3-alpha.{long_numeric}", f"1.2.3-alpha.1{'0' * 4301}"),
         )

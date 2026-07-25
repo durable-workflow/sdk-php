@@ -521,14 +521,13 @@ class SemVer:
                 and successor.core[:2] == self.core[:2]
                 and successor.core[2] == increment_numeric_identifier(self.core[2])
             )
-        return (
-            successor.core == self.core
-            and len(self.prerelease) >= 2
-            and len(successor.prerelease) == len(self.prerelease)
-            and successor.prerelease[:-1] == self.prerelease[:-1]
-            and self.prerelease[-1].isdigit()
-            and successor.prerelease[-1] == increment_numeric_identifier(self.prerelease[-1])
-        )
+        if self.prerelease[-1].isdigit():
+            expected_prerelease = self.prerelease[:-1] + (
+                increment_numeric_identifier(self.prerelease[-1]),
+            )
+        else:
+            expected_prerelease = self.prerelease + ("1",)
+        return successor.core == self.core and successor.prerelease == expected_prerelease
 
 
 def parse_semver(version: str) -> SemVer | None:
