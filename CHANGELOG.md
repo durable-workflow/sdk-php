@@ -8,9 +8,18 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Advanced to the synchronized Durable Workflow `2.0.0-rc.1` product train. This
+- Advanced to the synchronized Durable Workflow `2.0.0-rc.3` product train. This
   is the supported 2.0 baseline; earlier prereleases retain historical release
   records but receive no compatibility shim.
+- Replaced the prerelease JSON wrapper with the fixed recursive
+  `durable_workflow.protocol.Value` schema and Avro single-object framing.
+  `AvroBinaryValue` makes the bytes branch explicit while PHP strings remain
+  UTF-8 text. `AvroMapValue` preserves empty maps and numeric-looking string
+  keys that native PHP arrays cannot represent, and the reader resolves
+  recursive named branches without warning suppression.
+- Added golden cross-language fixtures and a repeatable production-path size
+  and latency benchmark over the shared checked-in corpus, with an enforced
+  regression budget calibrated with explicit headroom.
 
 - Release-plan recovery now consumes immutable, exact-version release-note
   preparation authority before publishing a newly recorded plan.

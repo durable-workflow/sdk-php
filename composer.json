@@ -46,6 +46,7 @@
     "scripts": {
         "test": "phpunit",
         "analyse": "phpstan analyse",
+        "benchmark-avro-value": "php benchmarks/avro-value.php --enforce",
         "docs": "phpdoc -d \"$PWD/src\" -t \"$PWD/build/api\" --cache-folder \"$PWD/build/phpdoc-cache\" --title=\"Durable Workflow PHP SDK\"",
         "check-boundary": "bash scripts/check-dependency-boundary.sh",
         "check-release-identity": "scripts/check-release-identity.sh"
@@ -56,8 +57,8 @@
     },
     "extra": {
         "durable-workflow": {
-            "product-train": "2.0.0-rc.1",
-            "supported-server-versions": "2.0.0-rc.1",
+            "product-train": "2.0.0-rc.3",
+            "supported-server-versions": "2.0.0-rc.3",
             "worker-protocol-version": "1.13",
             "control-plane-version": "2",
             "payload-codecs": ["avro"]

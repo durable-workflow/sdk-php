@@ -30,6 +30,9 @@ jobs:
       - name: Lint PHP
         run: find src tests examples -name '*.php' -print0 | xargs -0 -n1 php -l
       - run: composer test
+      - name: Enforce Avro Value regression budget
+        if: matrix.php == '8.3'
+        run: composer benchmark-avro-value
       - run: composer check-boundary
 
   analyse:

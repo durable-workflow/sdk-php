@@ -10,18 +10,30 @@ authentication.
 
 ## Payloads
 
-New payloads use the platform's Avro generic wrapper:
+New payloads use the platform's fixed recursive Avro Value schema:
 
 ```text
-base64(0x00 || avro-binary(record { json: string, version: int }))
+base64(C3 01 || CRC-64-AVRO fingerprint || Avro Value datum)
 ```
 
-`AvroPayloadCodec` delegates schema parsing, datum writing, and datum reading
-to the official `apache/avro` Composer package. The optional typed mode embeds
-the writer schema after a `0x01` prefix and resolves it against an optional
-reader schema. The generic wrapper accepts JSON-safe PHP values only; convert
-objects, resources, dates, and enums to explicit scalar/array representations
-before starting work.
+`AvroPayloadCodec` delegates schema parsing, binary encoding, and datum reading
+to the official `apache/avro` Composer package. Its fixed-schema writer keeps
+map keys as ordered string/value pairs until the binary encoder receives them,
+avoiding PHP's numeric-key coercion. The bundled writer-schema fingerprint
+selects the immutable schema; unknown fingerprints and incompatible branches
+fail with `unsupported_payload_schema` instead of falling back to JSON. Each
+named union branch preserves null, boolean, signed 64-bit integer, finite
+double, bytes, UTF-8 string, list, or string-keyed map identity.
+
+PHP strings select the UTF-8 string branch. Use
+`AvroBinaryValue::fromBytes($bytes)` to select the bytes branch. PHP arrays use
+`array_is_list()` to distinguish lists from maps; every map key must be a
+string, and keys are never stringified. Use `AvroMapValue::fromPairs()` for an
+empty map or keys such as `"0"` that PHP arrays cannot retain as strings.
+Decoding returns the adapter whenever a native array would lose map identity,
+and re-encoding its ordered pairs preserves the original map. Convert objects,
+resources, dates, UUIDs, decimals, enums, and arbitrary-precision integers to
+explicit supported values before starting work.
 
 Service-operation arguments use the same codec as workflow payloads. The SDK
 sends the encoded argument blob with its `payload_codec` name to the public

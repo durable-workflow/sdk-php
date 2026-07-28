@@ -1,0 +1,25 @@
+{
+  "schema": "durable_workflow.protocol.Value.benchmark/v1",
+  "case": "medium",
+  "value": {
+    "workflow": "benchmark",
+    "attempt": 7,
+    "ratio": 7.0,
+    "enabled": true,
+    "note": "typed value",
+    "blob": {
+      "$avro_bytes": "AP8="
+    },
+    "items": [
+      null,
+      false,
+      -9,
+      3.25,
+      "nested",
+      {
+        "region": "us-east-1",
+        "retries": [1, 2, 3]
+      }
+    ]
+  }
+}
