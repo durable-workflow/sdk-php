@@ -8,7 +8,7 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Advanced to the synchronized Durable Workflow `2.0.0-rc.4` product train. This
+- Advanced to the synchronized Durable Workflow `2.0.0-rc.5` product train. This
   is the supported 2.0 baseline; earlier prereleases retain historical release
   records but receive no compatibility shim.
 - Replaced the prerelease JSON wrapper with the fixed recursive
