@@ -197,7 +197,7 @@ class SharedContractVersionGuardTest(unittest.TestCase):
             "strictly advancing SemVer version",
         )
 
-        current["version"] = "1.4.3"
+        current["version"] = "1.5.0"
         self.assert_transition_passes(previous, current)
 
     def test_patch_minor_and_major_advances_are_accepted(self):
@@ -381,7 +381,7 @@ def continuity_resolution_qualification_run() -> dict[str, object]:
 
 
 def lifecycle_plan(module, channel: str = "alpha") -> dict[str, object]:
-    prerelease = "alpha" if channel == "alpha" else "beta"
+    prerelease = channel
     return {
         "schema": module.SCHEMA,
         "plan": "component-recovery",
@@ -400,7 +400,7 @@ def lifecycle_plan(module, channel: str = "alpha") -> dict[str, object]:
         },
         "beta_authorization": (
             {"tag": "beta-authorization/component-recovery", "commit": "f" * 40}
-            if channel == "beta"
+            if channel in {"beta", "rc"}
             else None
         ),
     }
@@ -2630,6 +2630,31 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
         )
         with self.assertRaises(self.recovery.RecoveryError):
             self.recovery.verify_recovery_workflow_source("server", protected_only, expected_sha256)
+
+
+class ReleaseCandidateChannelTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.recovery = load_recovery_module()
+
+    def test_rc_plan_retains_coherent_beta_qualification(self) -> None:
+        candidate = lifecycle_plan(self.recovery, "rc")
+        self.recovery.validate_plan(candidate)
+        beta = lifecycle_plan(self.recovery, "beta")
+        record = {
+            "schema": "durable-workflow.beta-authorization/v1",
+            "channel": "beta",
+            "candidate": beta["plan"],
+            "components": beta["components"],
+        }
+        for identity in record["components"].values():
+            identity["version"] = "2.0.0-beta.21"
+        self.assertTrue(
+            self.recovery.beta_authorization_matches_plan(
+                candidate,
+                candidate["beta_authorization"],
+                record,
+            )
+        )
 
 
 if __name__ == "__main__":
