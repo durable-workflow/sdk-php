@@ -14,7 +14,9 @@ use DurableWorkflow\Codec\AvroMapValue;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Codec\ValueDatumReader;
 use DurableWorkflow\Exception\CodecException;
+use PHPUnit\Framework\ExpectationFailedException;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 
 final class AvroPayloadCodecTest extends TestCase
 {
@@ -113,6 +115,91 @@ final class AvroPayloadCodecTest extends TestCase
             $decoded = $this->codec->decode($blob);
             self::assertEquals($expected, $decoded);
             self::assertEquals($expected, $this->codec->decode($this->codec->encode($decoded)));
+        }
+    }
+
+    public function testEveryPolicySelectedCodecFixtureUsesTheOfficialBinding(): void
+    {
+        $fixtures = self::policySelectedCodecFixtures();
+        self::assertNotSame([], $fixtures);
+
+        foreach ($fixtures as ['format' => $format, 'path' => $path]) {
+            $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+            self::assertIsArray($fixture);
+
+            match ($format) {
+                'avro-value-golden-v1' => $this->assertAvroGoldenFixture($fixture, $path),
+                'codec-regression-v1' => $this->assertCodecRegressionFixture($fixture, $path),
+                default => throw new RuntimeException(
+                    "Codec fixture format {$format} has no official PHP consumer.",
+                ),
+            };
+        }
+    }
+
+    public function testASelectorOutsideTheStandardDirectoryCannotAddInertCodecEvidence(): void
+    {
+        $root = sys_get_temp_dir().'/sdk-php-codec-corpus-'.bin2hex(random_bytes(8));
+        $directory = $root.'/selected-elsewhere';
+        self::assertTrue(mkdir($directory, 0777, true));
+        $path = $directory.'/invalid-wire.json';
+        $fixture = [
+            '$schema' => 'https://example.invalid/evidence-schema.json',
+            'fixture_schema' => 'durable-workflow.codec-regression/v1',
+            'id' => 'invalid-policy-selected-wire',
+            'protocol' => [
+                'codec' => 'avro',
+                'schema' => 'durable_workflow.protocol.Value',
+                'version' => '1',
+                'fingerprint' => AvroPayloadCodec::VALUE_SCHEMA_FINGERPRINT_HEX,
+            ],
+            'bindings' => ['php'],
+            'value' => ['type' => 'long', 'value' => '7'],
+            'framing' => [
+                'encoding' => 'avro-single-object',
+                'wire_base64' => 'AA==',
+            ],
+            'failure_policy' => ['operation' => 'round_trip', 'error' => null],
+        ];
+
+        try {
+            self::assertNotFalse(file_put_contents($path, json_encode($fixture, JSON_THROW_ON_ERROR)));
+            $selected = self::codecFixturesFromPolicy($root, [
+                'categories' => [
+                    'codec' => [
+                        'fixtures' => [[
+                            'glob' => 'selected-elsewhere/*.json',
+                            'format' => 'codec-regression-v1',
+                        ]],
+                    ],
+                ],
+            ]);
+            self::assertSame([['format' => 'codec-regression-v1', 'path' => $path]], $selected);
+
+            $selectedFixture = json_decode(
+                (string) file_get_contents($selected[0]['path']),
+                true,
+                flags: JSON_THROW_ON_ERROR,
+            );
+            self::assertIsArray($selectedFixture);
+            $failure = null;
+            try {
+                $this->assertCodecRegressionFixture($selectedFixture, $selected[0]['path']);
+            } catch (ExpectationFailedException $exception) {
+                $failure = $exception;
+            }
+            self::assertNotNull($failure, 'Invalid policy-selected Avro wire escaped the binding.');
+            self::assertStringContainsString('invalid-policy-selected-wire', $failure->getMessage());
+        } finally {
+            if (is_file($path)) {
+                unlink($path);
+            }
+            if (is_dir($directory)) {
+                rmdir($directory);
+            }
+            if (is_dir($root)) {
+                rmdir($root);
+            }
         }
     }
 
@@ -248,6 +335,198 @@ final class AvroPayloadCodecTest extends TestCase
         $this->expectException(AvroIOSchemaMatchException::class);
         (new ValueDatumReader($readerSchema, $writerSchema))->read(
             new AvroIOBinaryDecoder(new AvroStringIO($newIo->string())),
+        );
+    }
+
+    /** @param array<string, mixed> $value */
+    private static function taggedValue(array $value): mixed
+    {
+        return match ($value['type'] ?? null) {
+            'null' => null,
+            'boolean' => (bool) $value['value'],
+            'long' => (int) $value['value'],
+            'double' => (float) $value['value'],
+            'bytes' => AvroBinaryValue::fromBytes(
+                (string) base64_decode((string) $value['base64'], true),
+            ),
+            'string' => (string) $value['value'],
+            'array' => array_map(
+                self::taggedValue(...),
+                is_array($value['items'] ?? null) ? $value['items'] : [],
+            ),
+            'map' => AvroMapValue::fromPairs(array_map(
+                static fn (array $entry): array => [
+                    (string) $entry['key'],
+                    self::taggedValue($entry['value']),
+                ],
+                is_array($value['entries'] ?? null) ? $value['entries'] : [],
+            )),
+            default => throw new \InvalidArgumentException('Unsupported tagged corpus value.'),
+        };
+    }
+
+    /** @param array<string, mixed> $fixture */
+    private function assertCodecRegressionFixture(array $fixture, string $path): void
+    {
+        self::assertSame('durable-workflow.codec-regression/v1', $fixture['fixture_schema'] ?? null);
+        self::assertContains('php', $fixture['bindings'] ?? []);
+        self::assertSame(
+            AvroPayloadCodec::VALUE_SCHEMA_FINGERPRINT_HEX,
+            $fixture['protocol']['fingerprint'] ?? null,
+        );
+
+        $value = self::taggedValue($fixture['value']);
+        $wire = $fixture['framing']['wire_base64'] ?? null;
+        $operation = $fixture['failure_policy']['operation'] ?? null;
+        $error = $fixture['failure_policy']['error'] ?? null;
+        $identity = is_string($fixture['id'] ?? null) ? $fixture['id'] : $path;
+
+        if ($operation === 'round_trip') {
+            self::assertIsString($wire);
+            self::assertSame($wire, $this->codec->encode($value), $identity);
+            $decoded = $this->codec->decode($wire);
+            self::assertEquals($value, $decoded, $identity);
+            self::assertSame($wire, $this->codec->encode($decoded), $identity);
+
+            return;
+        }
+
+        try {
+            if ($operation === 'decode_reject') {
+                self::assertIsString($wire);
+                $this->codec->decode($wire);
+            } elseif ($operation === 'encode_reject') {
+                $this->codec->encode($value);
+            } else {
+                self::fail("Unsupported failure policy in {$path}.");
+            }
+            self::fail("Expected {$identity} to be rejected.");
+        } catch (CodecException $exception) {
+            self::assertIsString($error);
+            self::assertStringContainsString($error, $exception->getMessage());
+        }
+    }
+
+    /** @param array<string, mixed> $fixture */
+    private function assertAvroGoldenFixture(array $fixture, string $path): void
+    {
+        self::assertSame(
+            AvroPayloadCodec::VALUE_SCHEMA_FINGERPRINT_HEX,
+            $fixture['fingerprint'] ?? null,
+            $path,
+        );
+
+        $cases = $fixture['cases'] ?? null;
+        self::assertIsArray($cases, $path);
+        self::assertNotSame([], $cases, $path);
+        foreach ($cases as $case) {
+            self::assertIsArray($case);
+            $wire = $case['wire_base64'] ?? null;
+            self::assertIsString($wire);
+            $identity = is_string($case['name'] ?? null) ? $case['name'] : $path;
+            $decoded = $this->codec->decode($wire);
+            self::assertSame($wire, $this->codec->encode($decoded), $identity);
+        }
+
+        $alternateMapOrders = $fixture['alternate_map_orders'] ?? null;
+        self::assertIsArray($alternateMapOrders, $path);
+        foreach ($alternateMapOrders as $case) {
+            self::assertIsArray($case);
+            $wires = $case['wire_base64'] ?? null;
+            self::assertIsArray($wires);
+            self::assertNotSame([], $wires);
+            $decoded = array_map($this->codec->decode(...), $wires);
+            foreach (array_slice($decoded, 1) as $value) {
+                self::assertEquals($decoded[0], $value, $case['name'] ?? $path);
+            }
+        }
+
+        $malformedFrames = $fixture['malformed_frames'] ?? null;
+        self::assertIsArray($malformedFrames, $path);
+        foreach ($malformedFrames as $case) {
+            self::assertIsArray($case);
+            $wire = $case['wire_base64'] ?? null;
+            $error = $case['error'] ?? null;
+            self::assertIsString($wire);
+            self::assertIsString($error);
+            try {
+                $this->codec->decode($wire);
+                self::fail("Expected {$path} malformed frame to be rejected.");
+            } catch (CodecException $exception) {
+                self::assertStringContainsString($error, $exception->getMessage());
+            }
+        }
+    }
+
+    /** @return list<array{format: string, path: string}> */
+    private static function policySelectedCodecFixtures(): array
+    {
+        $root = dirname(__DIR__);
+        $policy = json_decode(
+            (string) file_get_contents($root.'/regression-corpus-policy.json'),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+        if (!is_array($policy)) {
+            throw new RuntimeException('Regression corpus policy must be a JSON object.');
+        }
+
+        return self::codecFixturesFromPolicy($root, $policy);
+    }
+
+    /**
+     * @param array<string, mixed> $policy
+     * @return list<array{format: string, path: string}>
+     */
+    private static function codecFixturesFromPolicy(string $root, array $policy): array
+    {
+        $fixtures = $policy['categories']['codec']['fixtures'] ?? null;
+        if (!is_array($fixtures)) {
+            throw new RuntimeException('Regression corpus policy must declare codec fixtures.');
+        }
+
+        $selected = [];
+        foreach ($fixtures as $fixture) {
+            if (!is_array($fixture)) {
+                throw new RuntimeException('Codec fixture selector must be an object.');
+            }
+            $format = $fixture['format'] ?? null;
+            if (!is_string($format) || !in_array(
+                $format,
+                ['avro-value-golden-v1', 'codec-regression-v1'],
+                true,
+            )) {
+                throw new RuntimeException('Codec fixture selector has no official PHP consumer.');
+            }
+            $glob = $fixture['glob'] ?? null;
+            if (!is_string($glob) || $glob === '') {
+                throw new RuntimeException('Codec fixture selector must have a glob.');
+            }
+            if (preg_match(
+                '/\A(?:[A-Za-z0-9._-]+\/)*(?:[A-Za-z0-9._-]+|\*)\.json\z/D',
+                $glob,
+            ) !== 1) {
+                throw new RuntimeException(
+                    "Codec fixture selector {$glob} is not portable to the official PHP consumer.",
+                );
+            }
+
+            foreach (glob($root.'/'.$glob) ?: [] as $path) {
+                if (isset($selected[$path])) {
+                    throw new RuntimeException("Codec fixture {$path} is selected more than once.");
+                }
+                $selected[$path] = $format;
+            }
+        }
+        ksort($selected);
+
+        return array_map(
+            static fn (string $format, string $path): array => [
+                'format' => $format,
+                'path' => $path,
+            ],
+            array_values($selected),
+            array_keys($selected),
         );
     }
 }

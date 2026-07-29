@@ -1,0 +1,51 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/policy-schema.json",
+  "schema": "durable-workflow.regression-corpus-policy/v1",
+  "repository": "sdk-php",
+  "binding": "php",
+  "categories": {
+    "codec": {
+      "fixtures": [
+        {
+          "glob": "resources/protocol/avro-value-v1-golden.json",
+          "format": "avro-value-golden-v1"
+        },
+        {
+          "glob": "tests/fixtures/codec-regressions/*.json",
+          "format": "codec-regression-v1"
+        }
+      ],
+      "guards": [
+        {
+          "glob": "src/Codec/*.php"
+        }
+      ]
+    },
+    "replay": {
+      "fixtures": [
+        {
+          "glob": "tests/fixtures/replay-regressions/*.json",
+          "format": "replay-regression-v1"
+        }
+      ],
+      "guards": [
+        {
+          "glob": "src/Worker/Replayer.php"
+        },
+        {
+          "glob": "src/Worker/WorkflowCommand.php"
+        },
+        {
+          "glob": "src/Worker/WorkflowContext.php"
+        },
+        {
+          "glob": "src/Worker.php",
+          "content_patterns": [
+            "function\\s+completeHistory\\s*\\(",
+            "function\\s+executeWorkflowTask\\s*\\("
+          ]
+        }
+      ]
+    }
+  }
+}
