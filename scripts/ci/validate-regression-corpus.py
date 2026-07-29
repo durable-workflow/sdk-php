@@ -425,8 +425,135 @@ def _run_replay_fixture(
     )
 
 
+def _run_codec_fixture(
+    *,
+    root: Path,
+    php_executable: str,
+    codec_runner: Path,
+    vendor_root: Path,
+    consumer_root: Path,
+    source_root: Path,
+    fixture: Path,
+    fixture_format: str,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            php_executable,
+            str(codec_runner),
+            "--vendor-root",
+            str(vendor_root),
+            "--consumer-root",
+            str(consumer_root),
+            "--source-root",
+            str(source_root),
+            "--fixture",
+            str(fixture),
+            "--format",
+            fixture_format,
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def _process_detail(result: subprocess.CompletedProcess[str]) -> str:
     return result.stderr.strip() or result.stdout.strip() or f"exit status {result.returncode}"
+
+
+def _materialize_files(root: Path, files: Mapping[str, bytes]) -> None:
+    for path, content in files.items():
+        destination = root / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+
+
+def _verify_new_codec_evidence(
+    *,
+    root: Path,
+    base_files: Mapping[str, bytes],
+    current_evidence: Sequence[Evidence],
+    current_formats: Mapping[str, str],
+    added_paths: set[str],
+    php_executable: str,
+    codec_runner_relative: str,
+    vendor_root: Path,
+) -> int:
+    paths = sorted(
+        {
+            item.path
+            for item in current_evidence
+            if item.category == "codec" and item.path in added_paths
+        }
+    )
+    if not paths:
+        raise CorpusError(
+            "codec implementation changed but no newly added codec fixture "
+            "can prove the defective revision"
+        )
+    if codec_runner_relative not in base_files:
+        raise CorpusError(
+            f"official PHP codec runner is missing from the base revision: "
+            f"{codec_runner_relative}"
+        )
+    if not vendor_root.is_dir():
+        raise CorpusError(
+            f"PHP dependency directory is missing: {vendor_root}; "
+            "install dependencies before validation"
+        )
+
+    with tempfile.TemporaryDirectory(prefix="sdk-php-codec-base-") as temporary:
+        base_root = Path(temporary)
+        _materialize_files(base_root, base_files)
+        if not (base_root / "src").is_dir():
+            raise CorpusError("the base revision has no SDK source tree for codec validation")
+        codec_runner = base_root / codec_runner_relative
+
+        for path in paths:
+            fixture_format = current_formats.get(path)
+            if fixture_format is None:
+                raise CorpusError(f"new codec fixture {path} has no selected format")
+            fixture = root / path
+            candidate = _run_codec_fixture(
+                root=root,
+                php_executable=php_executable,
+                codec_runner=codec_runner,
+                vendor_root=vendor_root,
+                consumer_root=base_root,
+                source_root=root,
+                fixture=fixture,
+                fixture_format=fixture_format,
+            )
+            if candidate.returncode != 0:
+                raise CorpusError(
+                    f"new codec fixture {path} does not pass on the candidate "
+                    f"through the official PHP binding: {_process_detail(candidate)}"
+                )
+
+            defective = _run_codec_fixture(
+                root=root,
+                php_executable=php_executable,
+                codec_runner=codec_runner,
+                vendor_root=vendor_root,
+                consumer_root=base_root,
+                source_root=base_root,
+                fixture=fixture,
+                fixture_format=fixture_format,
+            )
+            if defective.returncode == 0:
+                raise CorpusError(
+                    f"new codec fixture {path} also passes on the defective base; "
+                    "it does not reproduce the guarded codec change"
+                )
+            if defective.returncode != 1:
+                raise CorpusError(
+                    f"new codec fixture {path} did not establish a deterministic "
+                    f"target-revision failure through the official PHP binding: "
+                    f"{_process_detail(defective)}"
+                )
+
+    return len(paths)
 
 
 def _verify_new_replay_evidence(
@@ -718,6 +845,27 @@ def _fixture_paths(policy: Mapping[str, Any], files: Mapping[str, bytes]) -> set
     }
 
 
+def _fixture_formats(
+    policy: Mapping[str, Any],
+    files: Mapping[str, bytes],
+) -> dict[str, str]:
+    formats: dict[str, str] = {}
+    for raw_category in _object(policy["categories"], "categories").values():
+        for raw_fixture in _list(
+            _object(raw_category, "category")["fixtures"],
+            "category.fixtures",
+        ):
+            fixture = _object(raw_fixture, "fixture")
+            pattern = _string(fixture["glob"], "fixture.glob")
+            fixture_format = _string(fixture["format"], "fixture.format")
+            for path in files:
+                if _matches(path, pattern):
+                    if path in formats:
+                        raise CorpusError(f"fixture path {path} is selected more than once")
+                    formats[path] = fixture_format
+    return formats
+
+
 def _changed_paths(root: Path, base_ref: str) -> tuple[set[str], set[str]]:
     output = _run(["git", "diff", "--name-status", "--find-renames", base_ref, "--"], root)
     changed: set[str] = set()
@@ -818,6 +966,7 @@ def validate(
     base_ref: str | None,
     *,
     php_executable: str,
+    codec_runner_path: Path,
     replay_runner_path: Path,
     vendor_root_path: Path,
 ) -> dict[str, Any]:
@@ -826,6 +975,11 @@ def validate(
         replay_runner_path
         if replay_runner_path.is_absolute()
         else root / replay_runner_path
+    ).resolve()
+    codec_runner = (
+        codec_runner_path
+        if codec_runner_path.is_absolute()
+        else root / codec_runner_path
     ).resolve()
     vendor_root = (
         vendor_root_path
@@ -836,8 +990,13 @@ def validate(
         policy_relative_path = policy_file.relative_to(root).as_posix()
     except ValueError as error:
         raise CorpusError("policy must be inside the repository root") from error
+    try:
+        codec_runner_relative = codec_runner.relative_to(root).as_posix()
+    except ValueError as error:
+        raise CorpusError("codec runner must be inside the repository root") from error
     policy = _policy(_json(policy_file.read_bytes(), str(policy_path)), str(policy_path))
     current_files = _tracked_worktree_files(root)
+    current_formats = _fixture_formats(policy, current_files)
     changed: set[str] = set()
     added_paths: set[str] = set()
     base_files: dict[str, bytes] = {}
@@ -898,7 +1057,18 @@ def validate(
                 )
         revision_verified = 0
         counterfactual: dict[str, str] | None = None
-        if category_name == "replay" and related:
+        if category_name == "codec" and related:
+            revision_verified = _verify_new_codec_evidence(
+                root=root,
+                base_files=base_files,
+                current_evidence=current_evidence,
+                current_formats=current_formats,
+                added_paths=added_paths,
+                php_executable=php_executable,
+                codec_runner_relative=codec_runner_relative,
+                vendor_root=vendor_root,
+            )
+        elif category_name == "replay" and related:
             revision_verified, counterfactual = _verify_new_replay_evidence(
                 root=root,
                 base_files=base_files,
@@ -913,8 +1083,12 @@ def validate(
             "current": current_count,
             "related_change": related,
         }
-        if category_name == "replay":
+        if category_name in {"codec", "replay"}:
             count["revision_verified"] = revision_verified
+        if category_name == "codec":
+            count["candidate_passed"] = revision_verified
+            count["target_failed"] = revision_verified
+        elif category_name == "replay":
             if counterfactual is not None:
                 count["counterfactual"] = counterfactual
         counts[category_name] = count
@@ -935,6 +1109,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--base-ref")
     parser.add_argument("--php-executable", default="php")
     parser.add_argument(
+        "--codec-runner",
+        type=Path,
+        default=Path("scripts/ci/run-codec-regression-fixture.php"),
+    )
+    parser.add_argument(
         "--replay-runner",
         type=Path,
         default=Path("scripts/ci/run-replay-regression-fixture.php"),
@@ -947,6 +1126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.policy,
             args.base_ref,
             php_executable=args.php_executable,
+            codec_runner_path=args.codec_runner,
             replay_runner_path=args.replay_runner,
             vendor_root_path=args.vendor_root,
         )

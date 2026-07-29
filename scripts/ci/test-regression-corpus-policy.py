@@ -15,6 +15,7 @@ from typing import Any
 VALIDATOR = Path(__file__).with_name("validate-regression-corpus.py")
 REPOSITORY_POLICY = VALIDATOR.parents[2] / "regression-corpus-policy.json"
 REPOSITORY_ROOT = VALIDATOR.parents[2]
+PHP_CODEC_RUNNER = VALIDATOR.with_name("run-codec-regression-fixture.php")
 PHP_REPLAY_RUNNER = VALIDATOR.with_name("run-replay-regression-fixture.php")
 
 
@@ -68,6 +69,37 @@ final class Worker
         $this->beats = 1;
     }
 }
+"""
+        )
+        (self.root / "vendor/autoload.php").write_text("<?php\n")
+        self.codec_runner = self.root / "codec-runner.py"
+        self.codec_runner.write_text(
+            """import argparse
+import json
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--autoload")
+parser.add_argument("--vendor-root")
+parser.add_argument("--consumer-root")
+parser.add_argument("--source-root", type=Path, required=True)
+parser.add_argument("--fixture", type=Path, required=True)
+parser.add_argument("--format")
+args = parser.parse_args()
+fixture = json.loads(args.fixture.read_text())
+source = (args.source_root / "src/Codec/Example.php").read_text()
+identity = fixture.get("id", "")
+if args.autoload is not None:
+    hook = Path(args.autoload).read_text()
+    if "candidate-autoload-failure" in hook:
+        raise SystemExit(0 if "return 'changed';" in source else 1)
+if identity == "candidate-failure":
+    raise SystemExit(1)
+if identity == "codec-defect":
+    raise SystemExit(0 if "return 'changed';" in source else 1)
+if identity == "target-operational-failure":
+    raise SystemExit(0 if "return 'changed';" in source else 2)
+raise SystemExit(0)
 """
         )
         self.replay_runner = self.root / "replay-runner.py"
@@ -247,6 +279,8 @@ raise SystemExit(0)
             self.base_ref,
             "--php-executable",
             sys.executable,
+            "--codec-runner",
+            str(self.codec_runner),
             "--replay-runner",
             str(self.replay_runner),
             "--vendor-root",
@@ -472,6 +506,145 @@ raise SystemExit(0)
         self.assertIn("duplicate semantic fixtures", result.stderr)
         self.assertIn("base.json", result.stderr)
         self.assertIn("duplicate-schema.json", result.stderr)
+
+    def test_codec_growth_fails_on_base_and_passes_candidate(self) -> None:
+        (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
+        self.write_json(
+            "tests/fixtures/codec-regressions/codec-defect.json",
+            self.codec_fixture("codec-defect", "2", "Ag=="),
+        )
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        codec = report["counts"]["codec"]
+        self.assertTrue(codec["related_change"])
+        self.assertEqual(1, codec["revision_verified"])
+        self.assertEqual(1, codec["target_failed"])
+        self.assertEqual(1, codec["candidate_passed"])
+
+    def test_official_php_codec_runner_executes_supported_fixture(self) -> None:
+        result = run(
+            "php",
+            str(PHP_CODEC_RUNNER),
+            "--vendor-root",
+            str(REPOSITORY_ROOT / "vendor"),
+            "--consumer-root",
+            str(REPOSITORY_ROOT),
+            "--source-root",
+            str(REPOSITORY_ROOT),
+            "--fixture",
+            str(
+                REPOSITORY_ROOT
+                / "tests/fixtures/codec-regressions/avro-value-v1-long-zero.json"
+            ),
+            "--format",
+            "codec-regression-v1",
+            cwd=REPOSITORY_ROOT,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_codec_growth_must_pass_on_candidate(self) -> None:
+        (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
+        self.write_json(
+            "tests/fixtures/codec-regressions/candidate-failure.json",
+            self.codec_fixture("candidate-failure", "2", "Ag=="),
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "does not pass on the candidate through the official PHP binding",
+            result.stderr,
+        )
+
+    def test_codec_growth_requires_deterministic_target_failure(self) -> None:
+        (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
+        self.write_json(
+            "tests/fixtures/codec-regressions/target-operational-failure.json",
+            self.codec_fixture("target-operational-failure", "2", "Ag=="),
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "did not establish a deterministic target-revision failure",
+            result.stderr,
+        )
+
+    def test_unrelated_fixture_beside_codec_defect_is_rejected(self) -> None:
+        (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
+        self.write_json(
+            "tests/fixtures/codec-regressions/a-codec-defect.json",
+            self.codec_fixture("codec-defect", "2", "Ag=="),
+        )
+        self.write_json(
+            "tests/fixtures/codec-regressions/unrelated.json",
+            self.codec_fixture("unrelated-codec", "3", "Aw=="),
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "new codec fixture tests/fixtures/codec-regressions/unrelated.json "
+            "also passes on the defective base",
+            result.stderr,
+        )
+
+    def test_candidate_only_codec_consumer_cannot_manufacture_base_failure(self) -> None:
+        (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
+        self.write_json(
+            "tests/fixtures/codec-regressions/unrelated.json",
+            self.codec_fixture("unrelated-codec", "3", "Aw=="),
+        )
+        self.codec_runner.write_text(
+            """import argparse
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--vendor-root")
+parser.add_argument("--consumer-root")
+parser.add_argument("--source-root", type=Path, required=True)
+parser.add_argument("--fixture")
+parser.add_argument("--format")
+args = parser.parse_args()
+source = (args.source_root / "src/Codec/Example.php").read_text()
+raise SystemExit(0 if "return 'changed';" in source else 1)
+"""
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "new codec fixture tests/fixtures/codec-regressions/unrelated.json "
+            "also passes on the defective base",
+            result.stderr,
+        )
+
+    def test_candidate_composer_autoload_hook_cannot_manufacture_base_failure(self) -> None:
+        (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
+        (self.root / "vendor/autoload.php").write_text(
+            "<?php\n// candidate-autoload-failure\n"
+        )
+        self.write_json(
+            "tests/fixtures/codec-regressions/unrelated.json",
+            self.codec_fixture("unrelated-codec", "3", "Aw=="),
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "new codec fixture tests/fixtures/codec-regressions/unrelated.json "
+            "also passes on the defective base",
+            result.stderr,
+        )
 
     def test_replay_binding_metadata_cannot_satisfy_corpus_growth(self) -> None:
         (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)

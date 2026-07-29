@@ -14,7 +14,7 @@ use DurableWorkflow\Codec\AvroMapValue;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Codec\ValueDatumReader;
 use DurableWorkflow\Exception\CodecException;
-use PHPUnit\Framework\ExpectationFailedException;
+use DurableWorkflow\Tests\Support\CodecRegressionFixture;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
@@ -126,14 +126,7 @@ final class AvroPayloadCodecTest extends TestCase
         foreach ($fixtures as ['format' => $format, 'path' => $path]) {
             $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
             self::assertIsArray($fixture);
-
-            match ($format) {
-                'avro-value-golden-v1' => $this->assertAvroGoldenFixture($fixture, $path),
-                'codec-regression-v1' => $this->assertCodecRegressionFixture($fixture, $path),
-                default => throw new RuntimeException(
-                    "Codec fixture format {$format} has no official PHP consumer.",
-                ),
-            };
+            CodecRegressionFixture::execute($format, $fixture, $path);
         }
     }
 
@@ -184,8 +177,12 @@ final class AvroPayloadCodecTest extends TestCase
             self::assertIsArray($selectedFixture);
             $failure = null;
             try {
-                $this->assertCodecRegressionFixture($selectedFixture, $selected[0]['path']);
-            } catch (ExpectationFailedException $exception) {
+                CodecRegressionFixture::execute(
+                    $selected[0]['format'],
+                    $selectedFixture,
+                    $selected[0]['path'],
+                );
+            } catch (RuntimeException $exception) {
                 $failure = $exception;
             }
             self::assertNotNull($failure, 'Invalid policy-selected Avro wire escaped the binding.');
@@ -336,126 +333,6 @@ final class AvroPayloadCodecTest extends TestCase
         (new ValueDatumReader($readerSchema, $writerSchema))->read(
             new AvroIOBinaryDecoder(new AvroStringIO($newIo->string())),
         );
-    }
-
-    /** @param array<string, mixed> $value */
-    private static function taggedValue(array $value): mixed
-    {
-        return match ($value['type'] ?? null) {
-            'null' => null,
-            'boolean' => (bool) $value['value'],
-            'long' => (int) $value['value'],
-            'double' => (float) $value['value'],
-            'bytes' => AvroBinaryValue::fromBytes(
-                (string) base64_decode((string) $value['base64'], true),
-            ),
-            'string' => (string) $value['value'],
-            'array' => array_map(
-                self::taggedValue(...),
-                is_array($value['items'] ?? null) ? $value['items'] : [],
-            ),
-            'map' => AvroMapValue::fromPairs(array_map(
-                static fn (array $entry): array => [
-                    (string) $entry['key'],
-                    self::taggedValue($entry['value']),
-                ],
-                is_array($value['entries'] ?? null) ? $value['entries'] : [],
-            )),
-            default => throw new \InvalidArgumentException('Unsupported tagged corpus value.'),
-        };
-    }
-
-    /** @param array<string, mixed> $fixture */
-    private function assertCodecRegressionFixture(array $fixture, string $path): void
-    {
-        self::assertSame('durable-workflow.codec-regression/v1', $fixture['fixture_schema'] ?? null);
-        self::assertContains('php', $fixture['bindings'] ?? []);
-        self::assertSame(
-            AvroPayloadCodec::VALUE_SCHEMA_FINGERPRINT_HEX,
-            $fixture['protocol']['fingerprint'] ?? null,
-        );
-
-        $value = self::taggedValue($fixture['value']);
-        $wire = $fixture['framing']['wire_base64'] ?? null;
-        $operation = $fixture['failure_policy']['operation'] ?? null;
-        $error = $fixture['failure_policy']['error'] ?? null;
-        $identity = is_string($fixture['id'] ?? null) ? $fixture['id'] : $path;
-
-        if ($operation === 'round_trip') {
-            self::assertIsString($wire);
-            self::assertSame($wire, $this->codec->encode($value), $identity);
-            $decoded = $this->codec->decode($wire);
-            self::assertEquals($value, $decoded, $identity);
-            self::assertSame($wire, $this->codec->encode($decoded), $identity);
-
-            return;
-        }
-
-        try {
-            if ($operation === 'decode_reject') {
-                self::assertIsString($wire);
-                $this->codec->decode($wire);
-            } elseif ($operation === 'encode_reject') {
-                $this->codec->encode($value);
-            } else {
-                self::fail("Unsupported failure policy in {$path}.");
-            }
-            self::fail("Expected {$identity} to be rejected.");
-        } catch (CodecException $exception) {
-            self::assertIsString($error);
-            self::assertStringContainsString($error, $exception->getMessage());
-        }
-    }
-
-    /** @param array<string, mixed> $fixture */
-    private function assertAvroGoldenFixture(array $fixture, string $path): void
-    {
-        self::assertSame(
-            AvroPayloadCodec::VALUE_SCHEMA_FINGERPRINT_HEX,
-            $fixture['fingerprint'] ?? null,
-            $path,
-        );
-
-        $cases = $fixture['cases'] ?? null;
-        self::assertIsArray($cases, $path);
-        self::assertNotSame([], $cases, $path);
-        foreach ($cases as $case) {
-            self::assertIsArray($case);
-            $wire = $case['wire_base64'] ?? null;
-            self::assertIsString($wire);
-            $identity = is_string($case['name'] ?? null) ? $case['name'] : $path;
-            $decoded = $this->codec->decode($wire);
-            self::assertSame($wire, $this->codec->encode($decoded), $identity);
-        }
-
-        $alternateMapOrders = $fixture['alternate_map_orders'] ?? null;
-        self::assertIsArray($alternateMapOrders, $path);
-        foreach ($alternateMapOrders as $case) {
-            self::assertIsArray($case);
-            $wires = $case['wire_base64'] ?? null;
-            self::assertIsArray($wires);
-            self::assertNotSame([], $wires);
-            $decoded = array_map($this->codec->decode(...), $wires);
-            foreach (array_slice($decoded, 1) as $value) {
-                self::assertEquals($decoded[0], $value, $case['name'] ?? $path);
-            }
-        }
-
-        $malformedFrames = $fixture['malformed_frames'] ?? null;
-        self::assertIsArray($malformedFrames, $path);
-        foreach ($malformedFrames as $case) {
-            self::assertIsArray($case);
-            $wire = $case['wire_base64'] ?? null;
-            $error = $case['error'] ?? null;
-            self::assertIsString($wire);
-            self::assertIsString($error);
-            try {
-                $this->codec->decode($wire);
-                self::fail("Expected {$path} malformed frame to be rejected.");
-            } catch (CodecException $exception) {
-                self::assertStringContainsString($error, $exception->getMessage());
-            }
-        }
     }
 
     /** @return list<array{format: string, path: string}> */
