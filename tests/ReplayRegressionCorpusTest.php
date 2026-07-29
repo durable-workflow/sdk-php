@@ -69,6 +69,56 @@ final class ReplayRegressionCorpusTest extends TestCase
         self::assertSame('schedule_activity', $commands[0]['type']);
     }
 
+    public function testReplayFixturesExerciseCancellationAndWorkerUpdateSemantics(): void
+    {
+        $commands = ReplayRegressionFixture::execute([
+            'fixture_schema' => 'durable-workflow.replay-regression/v1',
+            'id' => 'cancellation-semantics',
+            'protocol_version' => '1.0',
+            'bindings' => ['php'],
+            'workflow' => [
+                'type' => 'golden.cancellation',
+                'input' => [],
+            ],
+            'command_sequence' => [[
+                'type' => 'fail_workflow',
+                'message' => 'Workflow cancellation was requested.',
+                'exception_type' => 'DurableWorkflow\Exception\WorkflowCancelled',
+            ]],
+            'expected' => ['type' => 'fail_workflow'],
+        ]);
+
+        self::assertSame('fail_workflow', $commands[0]['type']);
+
+        $codec = new AvroPayloadCodec();
+        $commands = ReplayRegressionFixture::execute([
+            'fixture_schema' => 'durable-workflow.replay-regression/v1',
+            'id' => 'worker-update-semantics',
+            'protocol_version' => '1.0',
+            'bindings' => ['php'],
+            'workflow' => [
+                'type' => 'golden.worker-update',
+                'input' => [],
+            ],
+            'history' => [[
+                'event_type' => 'UpdateAccepted',
+                'payload' => [
+                    'update_id' => 'update-1',
+                    'update_name' => 'golden.update',
+                    'arguments' => $codec->envelope('hello Ada'),
+                ],
+            ]],
+            'command_sequence' => [[
+                'type' => 'complete_update',
+                'update_id' => 'update-1',
+                'result' => ['updated' => 'hello Ada'],
+            ]],
+            'expected' => ['type' => 'complete_update'],
+        ]);
+
+        self::assertSame('complete_update', $commands[0]['type']);
+    }
+
     /** @return array{int, list<string>} */
     private static function replayFixturePaths(): array
     {

@@ -7,6 +7,7 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\WorkflowContext;
 
 try {
@@ -216,7 +217,7 @@ final class ReplayRegressionConsumer
         string $layout,
     ): void {
         $codec = new AvroPayloadCodec();
-        $task = [
+        $task = array_merge([
             'task_id' => "regression-{$layout}",
             'workflow_task_attempt' => 1,
             'lease_owner' => 'regression-consumer',
@@ -226,7 +227,7 @@ final class ReplayRegressionConsumer
             'arguments' => $codec->envelope($input),
             'history_events' => $layout === 'inline' ? $history : [],
             'next_history_page_token' => $layout === 'paginated' ? 'regression-page-1' : '',
-        ];
+        ], self::taskAttributes($workflowType));
         $transport = new ReplayRegressionTransport(
             $task,
             $layout === 'paginated' ? $history : [],
@@ -237,6 +238,13 @@ final class ReplayRegressionConsumer
             workerId: 'regression-consumer',
         );
         $worker->registerWorkflow($workflowType, self::workflow($workflowType));
+        if ($workflowType === 'golden.worker-update') {
+            $worker->registerUpdate(
+                $workflowType,
+                'golden.update',
+                static fn (QueryContext $context, mixed $value = null): array => ['updated' => $value],
+            );
+        }
         $worker->tick(0);
 
         $commands = array_map(
@@ -266,14 +274,72 @@ final class ReplayRegressionConsumer
     /** @return callable(WorkflowContext, mixed ...$input): mixed */
     private static function workflow(string $workflowType): callable
     {
-        if ($workflowType !== 'golden.single-activity') {
-            throw new RuntimeException(
-                "Replay fixture workflow {$workflowType} has no PHP implementation in the official consumer.",
-            );
-        }
+        return match ($workflowType) {
+            'golden.single-activity' => static function (WorkflowContext $context, mixed $name): Generator {
+                return yield $context->activity('golden.greet', [$name]);
+            },
+            'golden.timer' => static function (WorkflowContext $context, mixed $seconds): Generator {
+                yield $context->sleep((float) $seconds);
 
-        return static function (WorkflowContext $context, mixed $name): Generator {
-            return yield $context->activity('golden.greet', [$name]);
+                return 'timer-fired';
+            },
+            'golden.child-workflow' => static function (
+                WorkflowContext $context,
+                mixed $workflowType,
+            ): Generator {
+                $result = yield $context->childWorkflow((string) $workflowType, ['golden-input']);
+
+                return ['child' => $result];
+            },
+            'golden.side-effect' => static function (WorkflowContext $context, mixed $value): Generator {
+                $result = yield $context->sideEffect(static fn (): mixed => $value);
+
+                return ['side_effect' => $result];
+            },
+            'golden.continue-as-new' => static function (WorkflowContext $context, mixed $value): Generator {
+                yield $context->continueAsNew([$value], taskQueue: 'regression-corpus');
+            },
+            'golden.search-attributes' => static function (WorkflowContext $context, mixed $status): Generator {
+                yield $context->upsertSearchAttributes(['status' => $status]);
+
+                return 'search-attributes-upserted';
+            },
+            'golden.signal' => static fn (
+                WorkflowContext $context,
+                mixed $signalName,
+            ): array => ['signals' => $context->signals((string) $signalName)],
+            'golden.update' => static fn (
+                WorkflowContext $context,
+                mixed $updateName,
+            ): array => ['updates' => $context->updates((string) $updateName)],
+            'golden.context-identity' => static fn (WorkflowContext $context): array => [
+                'workflow_id' => $context->workflowId,
+                'run_id' => $context->runId,
+            ],
+            'golden.cancellation' => static function (WorkflowContext $context): string {
+                if ($context->isCancellationRequested()) {
+                    $context->throwIfCancellationRequested();
+                }
+
+                return 'not-cancelled';
+            },
+            'golden.worker-update' => static fn (WorkflowContext $context): array => [],
+            default => throw new RuntimeException(
+                "Replay fixture workflow {$workflowType} has no PHP implementation in the official consumer.",
+            ),
+        };
+    }
+
+    /** @return array<string, mixed> */
+    private static function taskAttributes(string $workflowType): array
+    {
+        return match ($workflowType) {
+            'golden.cancellation' => ['cancel_requested' => true],
+            'golden.worker-update' => [
+                'workflow_update_id' => 'update-1',
+                'update_name' => 'golden.update',
+            ],
+            default => [],
         };
     }
 
@@ -283,6 +349,12 @@ final class ReplayRegressionConsumer
      */
     private static function decodeEnvelopes(array $value, AvroPayloadCodec $codec): array
     {
+        if (($value['type'] ?? null) === 'record_side_effect'
+            && isset($value['result'])
+            && is_string($value['result'])) {
+            $value['result'] = $codec->decode($value['result']);
+        }
+
         $decoded = [];
         foreach ($value as $key => $item) {
             if (is_array($item)

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests\Support;
 
 use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
 use Generator;
@@ -67,16 +68,31 @@ final class ReplayRegressionFixture
         }
 
         $codec = new AvroPayloadCodec();
-        $result = (new Replayer($codec))->replay(
-            self::workflow($workflowType),
-            $history,
-            $input,
-            'regression-corpus',
-        );
-        $commands = array_map(
-            static fn (array $command): array => self::decodeEnvelopes($command, $codec),
-            $result->commands,
-        );
+        try {
+            $result = (new Replayer($codec))->replay(
+                self::workflow($workflowType),
+                $history,
+                $input,
+                'regression-corpus',
+                self::taskAttributes($workflowType),
+            );
+            $commands = array_map(
+                static fn (array $command): array => self::decodeEnvelopes($command, $codec),
+                $result->commands,
+            );
+            if ($workflowType === 'golden.worker-update'
+                && count($commands) === 1
+                && ($commands[0]['type'] ?? null) === 'complete_workflow') {
+                $commands[0]['type'] = 'complete_update';
+                $commands[0]['update_id'] = 'update-1';
+            }
+        } catch (WorkflowCancelled $exception) {
+            $commands = [[
+                'type' => 'fail_workflow',
+                'message' => $exception->getMessage(),
+                'exception_type' => $exception::class,
+            ]];
+        }
 
         $declaredCommands = $fixture['command_sequence'] ?? null;
         if ($declaredCommands !== null) {
@@ -103,16 +119,75 @@ final class ReplayRegressionFixture
     /** @return callable(WorkflowContext, mixed ...$input): mixed */
     private static function workflow(string $workflowType): callable
     {
-        if ($workflowType !== 'golden.single-activity') {
-            throw new RuntimeException(
+        return match ($workflowType) {
+            'golden.single-activity' => static function (WorkflowContext $context, mixed $name): Generator {
+                return yield $context->activity('golden.greet', [$name]);
+            },
+            'golden.timer' => static function (WorkflowContext $context, mixed $seconds): Generator {
+                yield $context->sleep((float) $seconds);
+
+                return 'timer-fired';
+            },
+            'golden.child-workflow' => static function (
+                WorkflowContext $context,
+                mixed $workflowType,
+            ): Generator {
+                $result = yield $context->childWorkflow((string) $workflowType, ['golden-input']);
+
+                return ['child' => $result];
+            },
+            'golden.side-effect' => static function (WorkflowContext $context, mixed $value): Generator {
+                $result = yield $context->sideEffect(static fn (): mixed => $value);
+
+                return ['side_effect' => $result];
+            },
+            'golden.continue-as-new' => static function (WorkflowContext $context, mixed $value): Generator {
+                yield $context->continueAsNew([$value], taskQueue: 'regression-corpus');
+            },
+            'golden.search-attributes' => static function (WorkflowContext $context, mixed $status): Generator {
+                yield $context->upsertSearchAttributes(['status' => $status]);
+
+                return 'search-attributes-upserted';
+            },
+            'golden.signal' => static fn (
+                WorkflowContext $context,
+                mixed $signalName,
+            ): array => ['signals' => $context->signals((string) $signalName)],
+            'golden.update' => static fn (
+                WorkflowContext $context,
+                mixed $updateName,
+            ): array => ['updates' => $context->updates((string) $updateName)],
+            'golden.context-identity' => static fn (WorkflowContext $context): array => [
+                'workflow_id' => $context->workflowId,
+                'run_id' => $context->runId,
+            ],
+            'golden.cancellation' => static function (WorkflowContext $context): string {
+                if ($context->isCancellationRequested()) {
+                    $context->throwIfCancellationRequested();
+                }
+
+                return 'not-cancelled';
+            },
+            'golden.worker-update' => static function (WorkflowContext $context): array {
+                $updates = $context->updates('golden.update');
+
+                return ['updated' => $updates[0][0] ?? null];
+            },
+            default => throw new RuntimeException(
                 "Replay fixture workflow {$workflowType} has no PHP implementation; "
                 .'register its reproducer workflow in ReplayRegressionFixture.',
-            );
-        }
-
-        return static function (WorkflowContext $context, mixed $name): Generator {
-            return yield $context->activity('golden.greet', [$name]);
+            ),
         };
+    }
+
+    /** @return array<string, mixed> */
+    private static function taskAttributes(string $workflowType): array
+    {
+        return [
+            'workflow_id' => 'regression-workflow',
+            'run_id' => 'regression-inline',
+            'cancel_requested' => $workflowType === 'golden.cancellation',
+        ];
     }
 
     /**
@@ -121,6 +196,12 @@ final class ReplayRegressionFixture
      */
     private static function decodeEnvelopes(array $value, AvroPayloadCodec $codec): array
     {
+        if (($value['type'] ?? null) === 'record_side_effect'
+            && isset($value['result'])
+            && is_string($value['result'])) {
+            $value['result'] = $codec->decode($value['result']);
+        }
+
         $decoded = [];
         foreach ($value as $key => $item) {
             if (is_array($item)

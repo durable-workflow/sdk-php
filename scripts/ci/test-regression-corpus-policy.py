@@ -376,6 +376,102 @@ raise SystemExit(0)
 
         return fixture
 
+    def official_replay_fixture(
+        self,
+        identity: str,
+        workflow_type: str,
+        workflow_input: list[Any],
+        expected: dict[str, Any],
+        history: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        fixture = self.replay_fixture(identity, ["php"])
+        fixture["workflow"] = {
+            "type": workflow_type,
+            "input": workflow_input,
+        }
+        fixture["expected"] = expected
+        if history is None:
+            fixture.pop("history")
+            commands = expected.get("command_sequence")
+            fixture["command_sequence"] = (
+                commands if isinstance(commands, list) else [expected]
+            )
+        else:
+            fixture["history"] = history
+
+        return fixture
+
+    def official_timer_fixture(self, identity: str) -> dict[str, Any]:
+        return self.official_replay_fixture(
+            identity,
+            "golden.timer",
+            [5],
+            {
+                "type": "start_timer",
+                "delay_seconds": 5,
+            },
+        )
+
+    def official_replay_repository(self, name: str) -> tuple[Path, str]:
+        root = self.root / name
+        shutil.copytree(REPOSITORY_ROOT / "src", root / "src")
+        (root / "scripts/ci").mkdir(parents=True)
+        shutil.copy2(
+            PHP_REPLAY_RUNNER,
+            root / "scripts/ci/run-replay-regression-fixture.php",
+        )
+        (root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        policy = {
+            "$schema": "https://example.invalid/evidence-schema.json",
+            "schema": "durable-workflow.regression-corpus-policy/v1",
+            "repository": "sdk-php",
+            "binding": "php",
+            "categories": {
+                "replay": self.repository_policy["categories"]["replay"],
+            },
+        }
+        (root / "regression-corpus-policy.json").write_text(
+            json.dumps(policy, indent=2) + "\n"
+        )
+        for arguments in (
+            ("init", "--quiet"),
+            ("add", "--all"),
+            (
+                "-c",
+                "user.name=Regression Corpus Test",
+                "-c",
+                "user.email=regression-corpus@example.invalid",
+                "commit",
+                "--quiet",
+                "--message=baseline",
+            ),
+        ):
+            result = run("git", *arguments, cwd=root)
+            self.assertEqual(0, result.returncode, result.stderr)
+
+        return root, run("git", "rev-parse", "HEAD", cwd=root).stdout.strip()
+
+    def validate_official_replay_repository(
+        self,
+        root: Path,
+        base_ref: str,
+    ) -> subprocess.CompletedProcess[str]:
+        return run(
+            sys.executable,
+            str(VALIDATOR),
+            "--root",
+            str(root),
+            "--base-ref",
+            base_ref,
+            "--php-executable",
+            "php",
+            "--replay-runner",
+            str(root / "scripts/ci/run-replay-regression-fixture.php"),
+            "--vendor-root",
+            str(REPOSITORY_ROOT / "vendor"),
+            cwd=root,
+        )
+
     def test_codec_change_cannot_hide_behind_weakened_guard(self) -> None:
         (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
         self.write_policy("src/nonmatching/*.php")
@@ -1003,41 +1099,241 @@ raise SystemExit(0 if "return 'changed';" in source else 1)
 
         self.assertEqual(0, result.returncode, result.stderr)
 
-    def test_validator_records_official_worker_counterfactual(self) -> None:
-        root = self.root / "official-worker-counterfactual"
-        shutil.copytree(REPOSITORY_ROOT / "src", root / "src")
-        (root / "scripts/ci").mkdir(parents=True)
-        shutil.copy2(
-            PHP_REPLAY_RUNNER,
-            root / "scripts/ci/run-replay-regression-fixture.php",
-        )
-        (root / "tests/fixtures/replay-regressions").mkdir(parents=True)
-        policy = {
-            "$schema": "https://example.invalid/evidence-schema.json",
-            "schema": "durable-workflow.regression-corpus-policy/v1",
-            "repository": "sdk-php",
-            "binding": "php",
-            "categories": {
-                "replay": {
-                    "fixtures": [
-                        {
-                            "glob": "tests/fixtures/replay-regressions/*.json",
-                            "format": "replay-regression-v1",
-                        }
-                    ],
-                    "guards": [
-                        {
-                            "glob": "src/Worker.php",
-                            "content_patterns": [
-                                "function\\s+executeWorkflowTask\\s*\\(",
-                            ],
-                        }
-                    ],
-                }
-            },
+    def test_official_php_runner_executes_every_guarded_replay_semantic(
+        self,
+    ) -> None:
+        encoded_value = {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwoSaGVsbG8gQWRh",
         }
-        (root / "regression-corpus-policy.json").write_text(
-            json.dumps(policy, indent=2) + "\n"
+        update_history = [
+            {
+                "event_type": "UpdateAccepted",
+                "payload": {
+                    "update_id": "update-1",
+                    "update_name": "golden.update",
+                    "arguments": encoded_value,
+                },
+            }
+        ]
+        fixtures = {
+            "timer": self.official_timer_fixture("official-timer"),
+            "child-workflow": self.official_replay_fixture(
+                "official-child-workflow",
+                "golden.child-workflow",
+                ["golden.child"],
+                {
+                    "type": "start_child_workflow",
+                    "workflow_type": "golden.child",
+                    "arguments": ["golden-input"],
+                },
+            ),
+            "side-effect": self.official_replay_fixture(
+                "official-side-effect",
+                "golden.side-effect",
+                ["fixed-value"],
+                {
+                    "command_sequence": [
+                        {
+                            "type": "record_side_effect",
+                            "result": "fixed-value",
+                        },
+                        {
+                            "type": "complete_workflow",
+                            "result": {"side_effect": "fixed-value"},
+                        },
+                    ]
+                },
+            ),
+            "continue-as-new": self.official_replay_fixture(
+                "official-continue-as-new",
+                "golden.continue-as-new",
+                ["next-input"],
+                {
+                    "type": "continue_as_new",
+                    "arguments": ["next-input"],
+                    "queue": "regression-corpus",
+                },
+            ),
+            "search-attributes": self.official_replay_fixture(
+                "official-search-attributes",
+                "golden.search-attributes",
+                ["processing"],
+                {
+                    "command_sequence": [
+                        {
+                            "type": "upsert_search_attributes",
+                            "attributes": {"status": "processing"},
+                        },
+                        {
+                            "type": "complete_workflow",
+                            "result": "search-attributes-upserted",
+                        },
+                    ]
+                },
+            ),
+            "signal": self.official_replay_fixture(
+                "official-signal",
+                "golden.signal",
+                ["golden.signal"],
+                {
+                    "type": "complete_workflow",
+                    "result": {"signals": [["hello Ada"]]},
+                },
+                [
+                    {
+                        "event_type": "SignalReceived",
+                        "payload": {
+                            "signal_name": "golden.signal",
+                            "value": encoded_value,
+                        },
+                    }
+                ],
+            ),
+            "update": self.official_replay_fixture(
+                "official-update",
+                "golden.update",
+                ["golden.update"],
+                {
+                    "type": "complete_workflow",
+                    "result": {"updates": [["hello Ada"]]},
+                },
+                update_history,
+            ),
+            "context-identity": self.official_replay_fixture(
+                "official-context-identity",
+                "golden.context-identity",
+                [],
+                {
+                    "type": "complete_workflow",
+                    "result": {
+                        "workflow_id": "regression-workflow",
+                        "run_id": "regression-inline",
+                    },
+                },
+            ),
+            "cancellation": self.official_replay_fixture(
+                "official-cancellation",
+                "golden.cancellation",
+                [],
+                {
+                    "type": "fail_workflow",
+                    "message": "Workflow cancellation was requested.",
+                    "exception_type": "DurableWorkflow\\Exception\\WorkflowCancelled",
+                },
+            ),
+            "worker-update": self.official_replay_fixture(
+                "official-worker-update",
+                "golden.worker-update",
+                [],
+                {
+                    "type": "complete_update",
+                    "update_id": "update-1",
+                    "result": {"updated": "hello Ada"},
+                },
+                update_history,
+            ),
+        }
+
+        for semantic, fixture in fixtures.items():
+            with self.subTest(semantic=semantic):
+                result = self.run_official_php_runner(REPOSITORY_ROOT, fixture)
+                self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_timer_fixture_proves_non_activity_counterfactual(self) -> None:
+        root, base_ref = self.official_replay_repository(
+            "official-timer-counterfactual"
+        )
+        command_path = root / "src/Worker/WorkflowCommand.php"
+        candidate_command = command_path.read_text()
+        timer = "['delay_seconds' => max(0, $seconds)]"
+        self.assertIn(timer, candidate_command)
+        command_path.write_text(
+            candidate_command.replace(
+                timer,
+                "['delay_seconds' => max(0, $seconds + 1)]",
+                1,
+            )
+        )
+        run("git", "add", "--all", cwd=root)
+        result = run(
+            "git",
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=defective-base",
+            cwd=root,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        base_ref = run("git", "rev-parse", "HEAD", cwd=root).stdout.strip()
+
+        command_path.write_text(candidate_command)
+        fixture_path = root / "tests/fixtures/replay-regressions/timer.json"
+        fixture_path.write_text(
+            json.dumps(
+                self.official_timer_fixture("timer-counterfactual"),
+                indent=2,
+            )
+            + "\n"
+        )
+
+        result = self.validate_official_replay_repository(root, base_ref)
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(1, report["counts"]["replay"]["revision_verified"])
+        self.assertEqual(
+            {
+                "base": "fail",
+                "candidate": "pass",
+                "consumer": "worker",
+            },
+            report["counts"]["replay"]["counterfactual"],
+        )
+
+    def test_non_activity_change_cannot_hide_behind_unrelated_fixture(self) -> None:
+        root, base_ref = self.official_replay_repository(
+            "official-unrelated-timer-change"
+        )
+        command_path = root / "src/Worker/WorkflowCommand.php"
+        command = command_path.read_text()
+        timer = "['delay_seconds' => max(0, $seconds)]"
+        self.assertIn(timer, command)
+        command_path.write_text(
+            command.replace(
+                timer,
+                "['delay_seconds' => max(0, $seconds + 1)]",
+                1,
+            )
+        )
+        fixture = self.replay_fixture("unrelated-activity", ["php"])
+        fixture.pop("history")
+        fixture["command_sequence"] = [
+            {
+                "type": "schedule_activity",
+                "activity_type": "golden.greet",
+                "arguments": ["Ada"],
+            }
+        ]
+        fixture["expected"] = {"type": "schedule_activity"}
+        fixture_path = root / "tests/fixtures/replay-regressions/unrelated.json"
+        fixture_path.write_text(json.dumps(fixture, indent=2) + "\n")
+
+        result = self.validate_official_replay_repository(root, base_ref)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "new replay fixture tests/fixtures/replay-regressions/unrelated.json "
+            "also passes on the defective base",
+            result.stderr,
+        )
+
+    def test_validator_records_official_worker_counterfactual(self) -> None:
+        root, _ = self.official_replay_repository(
+            "official-worker-counterfactual"
         )
         worker_path = root / "src/Worker.php"
         candidate_worker = worker_path.read_text()
@@ -1050,21 +1346,19 @@ raise SystemExit(0 if "return 'changed';" in source else 1)
                 1,
             )
         )
-        for arguments in (
-            ("init", "--quiet"),
-            ("add", "--all"),
-            (
-                "-c",
-                "user.name=Regression Corpus Test",
-                "-c",
-                "user.email=regression-corpus@example.invalid",
-                "commit",
-                "--quiet",
-                "--message=defective-base",
-            ),
-        ):
-            result = run("git", *arguments, cwd=root)
-            self.assertEqual(0, result.returncode, result.stderr)
+        run("git", "add", "--all", cwd=root)
+        result = run(
+            "git",
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=defective-base",
+            cwd=root,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
         base_ref = run("git", "rev-parse", "HEAD", cwd=root).stdout.strip()
 
         worker_path.write_text(candidate_worker)
@@ -1073,21 +1367,7 @@ raise SystemExit(0 if "return 'changed';" in source else 1)
             json.dumps(fixture, indent=2) + "\n"
         )
 
-        result = run(
-            sys.executable,
-            str(VALIDATOR),
-            "--root",
-            str(root),
-            "--base-ref",
-            base_ref,
-            "--php-executable",
-            "php",
-            "--replay-runner",
-            str(root / "scripts/ci/run-replay-regression-fixture.php"),
-            "--vendor-root",
-            str(REPOSITORY_ROOT / "vendor"),
-            cwd=root,
-        )
+        result = self.validate_official_replay_repository(root, base_ref)
 
         self.assertEqual(0, result.returncode, result.stderr)
         report = json.loads(result.stdout)
