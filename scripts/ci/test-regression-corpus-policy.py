@@ -38,7 +38,17 @@ class RegressionCorpusPolicyTest(unittest.TestCase):
         (self.root / "src/Worker").mkdir(parents=True)
         (self.root / "resources/protocol").mkdir(parents=True)
         (self.root / "tests/fixtures/codec-regressions").mkdir(parents=True)
-        (self.root / "vendor").mkdir()
+        dependency_source = self.root / "vendor/apache/avro/lang/php/lib"
+        dependency_source.mkdir(parents=True)
+        (dependency_source / "dependency.marker").write_text("trusted-dependency\n")
+        self.write_json(
+            "composer.json",
+            {
+                "require": {
+                    "apache/avro": "^1.12",
+                },
+            },
+        )
         (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'base';\n")
         (self.root / "src/Client.php").write_text(
             """<?php
@@ -99,7 +109,6 @@ import json
 from pathlib import Path
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--autoload")
 parser.add_argument("--vendor-root")
 parser.add_argument("--consumer-root")
 parser.add_argument("--source-root", type=Path, required=True)
@@ -109,17 +118,24 @@ args = parser.parse_args()
 fixture = json.loads(args.fixture.read_text())
 source = (args.source_root / "src/Codec/Example.php").read_text()
 identity = fixture.get("id", "")
-if args.autoload is not None:
-    hook = Path(args.autoload).read_text()
-    if "candidate-autoload-failure" in hook:
-        raise SystemExit(0 if "return 'changed';" in source else 1)
+marker = (
+    Path(args.vendor_root)
+    / "apache/avro/lang/php/lib/dependency.marker"
+).read_text()
 if identity == "candidate-failure":
-    raise SystemExit(1)
-if identity == "codec-defect":
-    raise SystemExit(0 if "return 'changed';" in source else 1)
-if identity == "target-operational-failure":
-    raise SystemExit(0 if "return 'changed';" in source else 2)
-raise SystemExit(0)
+    outcome = "assertion-failure"
+elif marker == "candidate-vendor-failure\\n":
+    outcome = "pass" if "return 'changed';" in source else "assertion-failure"
+elif identity == "codec-defect":
+    outcome = "pass" if "return 'changed';" in source else "assertion-failure"
+elif identity == "target-operational-failure":
+    outcome = "pass" if "return 'changed';" in source else "operational-error"
+else:
+    outcome = "pass"
+print(json.dumps({"outcome": outcome}))
+raise SystemExit(
+    {"pass": 0, "assertion-failure": 1, "operational-error": 2}[outcome]
+)
 """
         )
         self.replay_runner = self.root / "replay-runner.py"
@@ -543,6 +559,14 @@ raise SystemExit(0)
         self.assertEqual(1, codec["revision_verified"])
         self.assertEqual(1, codec["target_failed"])
         self.assertEqual(1, codec["candidate_passed"])
+        self.assertEqual(
+            {
+                "target": "assertion-failure",
+                "candidate": "pass",
+                "consumer": "codec",
+            },
+            codec["counterfactual"],
+        )
 
     def test_official_php_codec_runner_executes_supported_fixture(self) -> None:
         result = run(
@@ -565,6 +589,37 @@ raise SystemExit(0)
         )
 
         self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual({"outcome": "pass"}, json.loads(result.stdout))
+
+    def test_official_php_codec_runner_reports_assertion_failures(self) -> None:
+        source_root = self.root / "defective-codec-source"
+        shutil.copytree(REPOSITORY_ROOT / "src", source_root / "src")
+        codec_path = source_root / "src/Codec/AvroPayloadCodec.php"
+        codec = codec_path.read_text()
+        self.assertIn("e2a33dff55802237", codec)
+        codec_path.write_text(codec.replace("e2a33dff55802237", "0000000000000000", 1))
+
+        result = run(
+            "php",
+            str(PHP_CODEC_RUNNER),
+            "--vendor-root",
+            str(REPOSITORY_ROOT / "vendor"),
+            "--consumer-root",
+            str(REPOSITORY_ROOT),
+            "--source-root",
+            str(source_root),
+            "--fixture",
+            str(
+                REPOSITORY_ROOT
+                / "tests/fixtures/codec-regressions/avro-value-v1-long-zero.json"
+            ),
+            "--format",
+            "codec-regression-v1",
+            cwd=REPOSITORY_ROOT,
+        )
+
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertEqual({"outcome": "assertion-failure"}, json.loads(result.stdout))
 
     def test_codec_growth_must_pass_on_candidate(self) -> None:
         (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
@@ -592,7 +647,7 @@ raise SystemExit(0)
 
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertIn(
-            "did not establish a deterministic target-revision failure",
+            "did not establish a deterministic target-revision assertion failure",
             result.stderr,
         )
 
@@ -647,10 +702,21 @@ raise SystemExit(0 if "return 'changed';" in source else 1)
             result.stderr,
         )
 
-    def test_candidate_composer_autoload_hook_cannot_manufacture_base_failure(self) -> None:
+    def test_candidate_generated_vendor_cannot_manufacture_base_failure(self) -> None:
         (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
-        (self.root / "vendor/autoload.php").write_text(
-            "<?php\n// candidate-autoload-failure\n"
+        self.write_json(
+            "composer.json",
+            {
+                "require": {
+                    "apache/avro": "^1.12",
+                },
+                "autoload": {
+                    "files": ["candidate-autoload.php"],
+                },
+            },
+        )
+        (self.root / "vendor/apache/avro/lang/php/lib/dependency.marker").write_text(
+            "candidate-vendor-failure\n"
         )
         self.write_json(
             "tests/fixtures/codec-regressions/unrelated.json",
@@ -661,10 +727,95 @@ raise SystemExit(0 if "return 'changed';" in source else 1)
 
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertIn(
-            "new codec fixture tests/fixtures/codec-regressions/unrelated.json "
-            "also passes on the defective base",
+            "codec implementation and counterfactual dependency definitions "
+            "must change independently: composer.json",
             result.stderr,
         )
+
+    def test_codec_change_cannot_replace_the_dependency_lock(self) -> None:
+        (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
+        self.write_json(
+            "composer.lock",
+            {
+                "packages": [
+                    {
+                        "name": "apache/avro",
+                        "version": "candidate-only",
+                    },
+                ],
+            },
+        )
+        self.write_json(
+            "tests/fixtures/codec-regressions/unrelated.json",
+            self.codec_fixture("unrelated-codec", "3", "Aw=="),
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "codec implementation and counterfactual dependency definitions "
+            "must change independently: composer.lock",
+            result.stderr,
+        )
+
+    def test_compound_codec_file_cannot_count_unverified_fixtures(self) -> None:
+        (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
+        self.write_json(
+            "resources/protocol/new-golden.json",
+            json.loads(
+                (self.root / "resources/protocol/avro-value-v1-golden.json").read_text()
+            ),
+        )
+        self.write_policy(
+            "src/Codec/*.php",
+            fixture_selectors=(
+                (
+                    "tests/fixtures/codec-regressions/*.json",
+                    "codec-regression-v1",
+                ),
+                (
+                    "resources/protocol/new-golden.json",
+                    "avro-value-golden-v1",
+                ),
+            ),
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "each new codec evidence file must contain exactly one independently "
+            "verified fixture: resources/protocol/new-golden.json",
+            result.stderr,
+        )
+
+    def test_official_php_codec_runner_classifies_execution_errors_as_operational(
+        self,
+    ) -> None:
+        source_root = self.root / "missing-codec-source"
+        (source_root / "src").mkdir(parents=True)
+        result = run(
+            "php",
+            str(PHP_CODEC_RUNNER),
+            "--vendor-root",
+            str(REPOSITORY_ROOT / "vendor"),
+            "--consumer-root",
+            str(REPOSITORY_ROOT),
+            "--source-root",
+            str(source_root),
+            "--fixture",
+            str(
+                REPOSITORY_ROOT
+                / "tests/fixtures/codec-regressions/avro-value-v1-long-zero.json"
+            ),
+            "--format",
+            "codec-regression-v1",
+            cwd=REPOSITORY_ROOT,
+        )
+
+        self.assertEqual(2, result.returncode, result.stdout)
+        self.assertEqual({"outcome": "operational-error"}, json.loads(result.stdout))
 
     def test_replay_binding_metadata_cannot_satisfy_corpus_growth(self) -> None:
         (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)

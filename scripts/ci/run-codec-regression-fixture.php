@@ -3,7 +3,13 @@
 
 declare(strict_types=1);
 
+use DurableWorkflow\Tests\Support\CodecRegressionAssertionFailed;
 use DurableWorkflow\Tests\Support\CodecRegressionFixture;
+
+function reportOutcome(string $outcome): void
+{
+    fwrite(STDOUT, json_encode(['outcome' => $outcome], JSON_THROW_ON_ERROR).PHP_EOL);
+}
 
 try {
     $options = getopt('', ['vendor-root:', 'consumer-root:', 'source-root:', 'fixture:', 'format:']);
@@ -59,13 +65,21 @@ try {
         true,
     );
 } catch (Throwable $exception) {
+    reportOutcome('operational-error');
     fwrite(STDERR, $exception::class.': '.$exception->getMessage().PHP_EOL);
     exit(2);
 }
 
 try {
     CodecRegressionFixture::executeFile($format, $fixture);
-} catch (Throwable $exception) {
-    fwrite(STDERR, $exception::class.': '.$exception->getMessage().PHP_EOL);
+} catch (CodecRegressionAssertionFailed $exception) {
+    reportOutcome('assertion-failure');
+    fwrite(STDERR, $exception->getMessage().PHP_EOL);
     exit(1);
+} catch (Throwable $exception) {
+    reportOutcome('operational-error');
+    fwrite(STDERR, $exception::class.': '.$exception->getMessage().PHP_EOL);
+    exit(2);
 }
+
+reportOutcome('pass');

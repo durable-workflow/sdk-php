@@ -107,7 +107,7 @@ final class CodecRegressionFixture
             } else {
                 throw new RuntimeException("Unsupported failure policy in {$path}.");
             }
-            throw new RuntimeException("Expected {$identity} to be rejected.");
+            throw new CodecRegressionAssertionFailed("Expected {$identity} to be rejected.");
         } catch (CodecException $exception) {
             self::assertIsString($error);
             self::assertStringContainsString($error, $exception->getMessage());
@@ -171,21 +171,27 @@ final class CodecRegressionFixture
     private static function assertSame(mixed $expected, mixed $actual, string $context = ''): void
     {
         if ($expected !== $actual) {
-            throw new RuntimeException(self::failureMessage('values are not identical', $context));
+            throw new CodecRegressionAssertionFailed(
+                self::failureMessage('values are not identical', $context),
+            );
         }
     }
 
     private static function assertNotSame(mixed $expected, mixed $actual, string $context = ''): void
     {
         if ($expected === $actual) {
-            throw new RuntimeException(self::failureMessage('values are identical', $context));
+            throw new CodecRegressionAssertionFailed(
+                self::failureMessage('values are identical', $context),
+            );
         }
     }
 
     private static function assertEquals(mixed $expected, mixed $actual, string $context = ''): void
     {
         if ($expected != $actual) {
-            throw new RuntimeException(self::failureMessage('values are not equal', $context));
+            throw new CodecRegressionAssertionFailed(
+                self::failureMessage('values are not equal', $context),
+            );
         }
     }
 
@@ -193,7 +199,9 @@ final class CodecRegressionFixture
     private static function assertIsArray(mixed $value, string $context = ''): void
     {
         if (!is_array($value)) {
-            throw new RuntimeException(self::failureMessage('value is not an array', $context));
+            throw new CodecRegressionAssertionFailed(
+                self::failureMessage('value is not an array', $context),
+            );
         }
     }
 
@@ -201,7 +209,9 @@ final class CodecRegressionFixture
     private static function assertIsString(mixed $value, string $context = ''): void
     {
         if (!is_string($value)) {
-            throw new RuntimeException(self::failureMessage('value is not a string', $context));
+            throw new CodecRegressionAssertionFailed(
+                self::failureMessage('value is not a string', $context),
+            );
         }
     }
 
@@ -216,7 +226,9 @@ final class CodecRegressionFixture
             }
         }
 
-        throw new RuntimeException(self::failureMessage('value does not contain the expected item', $context));
+        throw new CodecRegressionAssertionFailed(
+            self::failureMessage('value does not contain the expected item', $context),
+        );
     }
 
     private static function assertStringContainsString(
@@ -225,7 +237,7 @@ final class CodecRegressionFixture
         string $context = '',
     ): void {
         if (!str_contains($haystack, $needle)) {
-            throw new RuntimeException(
+            throw new CodecRegressionAssertionFailed(
                 self::failureMessage("string does not contain {$needle}", $context),
             );
         }

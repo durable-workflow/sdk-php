@@ -10,6 +10,7 @@ import fnmatch
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,13 @@ SUPPORTED_BINDINGS = {"php", "python", "rust"}
 PHP_FIXTURE_FORMATS = {
     "codec": {"avro-value-golden-v1", "codec-regression-v1"},
     "replay": {"replay-regression-v1"},
+}
+CODEC_DEPENDENCY_DEFINITIONS = {"composer.json", "composer.lock"}
+CODEC_DEPENDENCY_SOURCE = Path("apache/avro/lang/php/lib")
+CODEC_OUTCOME_CODES = {
+    "pass": 0,
+    "assertion-failure": 1,
+    "operational-error": 2,
 }
 PORTABLE_PHP_FIXTURE_GLOB = re.compile(
     r"^(?:[A-Za-z0-9._-]+/)*(?:[A-Za-z0-9._-]+|\*)\.json$"
@@ -462,11 +470,70 @@ def _process_detail(result: subprocess.CompletedProcess[str]) -> str:
     return result.stderr.strip() or result.stdout.strip() or f"exit status {result.returncode}"
 
 
+def _codec_outcome(
+    result: subprocess.CompletedProcess[str],
+    *,
+    path: str,
+    revision: str,
+) -> str:
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise CorpusError(
+            f"new codec fixture {path} produced an invalid {revision} consumer verdict: "
+            f"{_process_detail(result)}"
+        ) from error
+    if not isinstance(report, Mapping) or not isinstance(report.get("outcome"), str):
+        raise CorpusError(
+            f"new codec fixture {path} produced an invalid {revision} consumer verdict"
+        )
+    outcome = report["outcome"]
+    expected_code = CODEC_OUTCOME_CODES.get(outcome)
+    if expected_code is None or result.returncode != expected_code:
+        raise CorpusError(
+            f"new codec fixture {path} produced an inconsistent {revision} consumer verdict: "
+            f"outcome={outcome}, exit={result.returncode}"
+        )
+    return outcome
+
+
 def _materialize_files(root: Path, files: Mapping[str, bytes]) -> None:
     for path, content in files.items():
         destination = root / path
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(content)
+
+
+def _materialize_codec_dependencies(vendor_root: Path, destination: Path) -> None:
+    source = vendor_root / CODEC_DEPENDENCY_SOURCE
+    if not source.is_dir():
+        raise CorpusError(
+            f"PHP codec dependency source is missing: {source}; "
+            "install dependencies before validation"
+        )
+    shutil.copytree(source, destination / CODEC_DEPENDENCY_SOURCE)
+
+
+def _require_codec_dependencies_unchanged(
+    *,
+    base_files: Mapping[str, bytes],
+    current_files: Mapping[str, bytes],
+    changed: set[str],
+) -> None:
+    changed_definitions = sorted(
+        path
+        for path in CODEC_DEPENDENCY_DEFINITIONS
+        if base_files.get(path) != current_files.get(path)
+    )
+    changed_vendor_sources = sorted(
+        path for path in changed if Path(path).parts[:1] == ("vendor",)
+    )
+    if changed_definitions or changed_vendor_sources:
+        paths = changed_definitions + changed_vendor_sources
+        raise CorpusError(
+            "codec implementation and counterfactual dependency definitions "
+            f"must change independently: {', '.join(paths)}"
+        )
 
 
 def _verify_new_codec_evidence(
@@ -479,19 +546,29 @@ def _verify_new_codec_evidence(
     php_executable: str,
     codec_runner_relative: str,
     vendor_root: Path,
-) -> int:
-    paths = sorted(
-        {
-            item.path
-            for item in current_evidence
-            if item.category == "codec" and item.path in added_paths
-        }
-    )
-    if not paths:
+) -> tuple[int, dict[str, str]]:
+    new_evidence = [
+        item
+        for item in current_evidence
+        if item.category == "codec" and item.path in added_paths
+    ]
+    if not new_evidence:
         raise CorpusError(
             "codec implementation changed but no newly added codec fixture "
             "can prove the defective revision"
         )
+    evidence_per_path = Counter(item.path for item in new_evidence)
+    compound_paths = sorted(
+        path
+        for path, evidence_count in evidence_per_path.items()
+        if evidence_count != 1
+    )
+    if compound_paths:
+        raise CorpusError(
+            "each new codec evidence file must contain exactly one independently "
+            f"verified fixture: {', '.join(compound_paths)}"
+        )
+    paths = sorted(evidence_per_path)
     if codec_runner_relative not in base_files:
         raise CorpusError(
             f"official PHP codec runner is missing from the base revision: "
@@ -510,50 +587,75 @@ def _verify_new_codec_evidence(
             raise CorpusError("the base revision has no SDK source tree for codec validation")
         codec_runner = base_root / codec_runner_relative
 
-        for path in paths:
+        for index, path in enumerate(paths):
             fixture_format = current_formats.get(path)
             if fixture_format is None:
                 raise CorpusError(f"new codec fixture {path} has no selected format")
-            fixture = root / path
-            candidate = _run_codec_fixture(
-                root=root,
-                php_executable=php_executable,
-                codec_runner=codec_runner,
-                vendor_root=vendor_root,
-                consumer_root=base_root,
-                source_root=root,
-                fixture=fixture,
-                fixture_format=fixture_format,
-            )
-            if candidate.returncode != 0:
-                raise CorpusError(
-                    f"new codec fixture {path} does not pass on the candidate "
-                    f"through the official PHP binding: {_process_detail(candidate)}"
-                )
+            execution_root = base_root / ".codec-counterfactual" / str(index)
+            target_vendor = execution_root / "target-vendor"
+            candidate_vendor = execution_root / "candidate-vendor"
+            _materialize_codec_dependencies(vendor_root, target_vendor)
+            _materialize_codec_dependencies(vendor_root, candidate_vendor)
+            fixture_contents = (root / path).read_bytes()
+            target_fixture = execution_root / "target-fixture.json"
+            candidate_fixture = execution_root / "candidate-fixture.json"
+            target_fixture.parent.mkdir(parents=True, exist_ok=True)
+            target_fixture.write_bytes(fixture_contents)
+            candidate_fixture.write_bytes(fixture_contents)
 
             defective = _run_codec_fixture(
                 root=root,
                 php_executable=php_executable,
                 codec_runner=codec_runner,
-                vendor_root=vendor_root,
+                vendor_root=target_vendor,
                 consumer_root=base_root,
                 source_root=base_root,
-                fixture=fixture,
+                fixture=target_fixture,
                 fixture_format=fixture_format,
             )
-            if defective.returncode == 0:
+            defective_outcome = _codec_outcome(
+                defective,
+                path=path,
+                revision="target",
+            )
+            if defective_outcome == "pass":
                 raise CorpusError(
                     f"new codec fixture {path} also passes on the defective base; "
                     "it does not reproduce the guarded codec change"
                 )
-            if defective.returncode != 1:
+            if defective_outcome != "assertion-failure":
                 raise CorpusError(
                     f"new codec fixture {path} did not establish a deterministic "
-                    f"target-revision failure through the official PHP binding: "
+                    f"target-revision assertion failure through the official PHP binding: "
                     f"{_process_detail(defective)}"
                 )
 
-    return len(paths)
+            candidate = _run_codec_fixture(
+                root=root,
+                php_executable=php_executable,
+                codec_runner=codec_runner,
+                vendor_root=candidate_vendor,
+                consumer_root=base_root,
+                source_root=root,
+                fixture=candidate_fixture,
+                fixture_format=fixture_format,
+            )
+            candidate_outcome = _codec_outcome(
+                candidate,
+                path=path,
+                revision="candidate",
+            )
+            if candidate_outcome != "pass":
+                raise CorpusError(
+                    f"new codec fixture {path} does not pass on the candidate "
+                    f"through the official PHP binding: {_process_detail(candidate)}"
+                )
+
+    return len(new_evidence), {
+        "target": "assertion-failure",
+        "candidate": "pass",
+        "consumer": "codec",
+    }
 
 
 def _verify_new_replay_evidence(
@@ -1058,7 +1160,12 @@ def validate(
         revision_verified = 0
         counterfactual: dict[str, str] | None = None
         if category_name == "codec" and related:
-            revision_verified = _verify_new_codec_evidence(
+            _require_codec_dependencies_unchanged(
+                base_files=base_files,
+                current_files=current_files,
+                changed=changed,
+            )
+            revision_verified, counterfactual = _verify_new_codec_evidence(
                 root=root,
                 base_files=base_files,
                 current_evidence=current_evidence,
@@ -1088,6 +1195,8 @@ def validate(
         if category_name == "codec":
             count["candidate_passed"] = revision_verified
             count["target_failed"] = revision_verified
+            if counterfactual is not None:
+                count["counterfactual"] = counterfactual
         elif category_name == "replay":
             if counterfactual is not None:
                 count["counterfactual"] = counterfactual
