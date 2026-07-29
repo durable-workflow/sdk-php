@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -69,7 +70,6 @@ final class Worker
 }
 """
         )
-        (self.root / "vendor/autoload.php").write_text("<?php\n")
         self.replay_runner = self.root / "replay-runner.py"
         self.replay_runner.write_text(
             """import argparse
@@ -77,7 +77,7 @@ import json
 from pathlib import Path
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--autoload")
+parser.add_argument("--vendor-root")
 parser.add_argument("--source-root", type=Path, required=True)
 parser.add_argument("--fixture", type=Path, required=True)
 args = parser.parse_args()
@@ -249,10 +249,45 @@ raise SystemExit(0)
             sys.executable,
             "--replay-runner",
             str(self.replay_runner),
-            "--autoload",
-            str(self.root / "vendor/autoload.php"),
+            "--vendor-root",
+            str(self.root / "vendor"),
             cwd=self.root,
         )
+
+    def run_official_php_runner(
+        self,
+        source_root: Path,
+        fixture: dict[str, Any],
+    ) -> subprocess.CompletedProcess[str]:
+        fixture_path = self.root / "official-runner-fixture.json"
+        self.write_json(
+            fixture_path.relative_to(self.root).as_posix(),
+            fixture,
+        )
+
+        return run(
+            "php",
+            str(PHP_REPLAY_RUNNER),
+            "--vendor-root",
+            str(REPOSITORY_ROOT / "vendor"),
+            "--source-root",
+            str(source_root),
+            "--fixture",
+            str(fixture_path),
+            cwd=REPOSITORY_ROOT,
+        )
+
+    def official_history_fixture(self, identity: str) -> dict[str, Any]:
+        fixture = self.replay_fixture(identity, ["php"])
+        fixture["history"][0]["payload"] = {
+            "sequence": 1,
+            "result": {
+                "codec": "avro",
+                "blob": "wwHioz3/VYAiNwoSaGVsbG8gQWRh",
+            },
+        }
+
+        return fixture
 
     def test_codec_change_cannot_hide_behind_weakened_guard(self) -> None:
         (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
@@ -545,6 +580,14 @@ raise SystemExit(0)
         report = json.loads(result.stdout)
         self.assertTrue(report["counts"]["replay"]["related_change"])
         self.assertEqual(1, report["counts"]["replay"]["revision_verified"])
+        self.assertEqual(
+            {
+                "base": "fail",
+                "candidate": "pass",
+                "consumer": "worker",
+            },
+            report["counts"]["replay"]["counterfactual"],
+        )
 
     def test_official_php_runner_executes_supported_fixture(self) -> None:
         fixture = self.replay_fixture("official-runner-smoke", ["php"])
@@ -557,21 +600,169 @@ raise SystemExit(0)
             }
         ]
         fixture["expected"] = {"type": "schedule_activity"}
-        self.write_json("official-runner-smoke.json", fixture)
+        result = self.run_official_php_runner(REPOSITORY_ROOT, fixture)
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_validator_records_official_worker_counterfactual(self) -> None:
+        root = self.root / "official-worker-counterfactual"
+        shutil.copytree(REPOSITORY_ROOT / "src", root / "src")
+        (root / "scripts/ci").mkdir(parents=True)
+        shutil.copy2(
+            PHP_REPLAY_RUNNER,
+            root / "scripts/ci/run-replay-regression-fixture.php",
+        )
+        (root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        policy = {
+            "$schema": "https://example.invalid/evidence-schema.json",
+            "schema": "durable-workflow.regression-corpus-policy/v1",
+            "repository": "sdk-php",
+            "binding": "php",
+            "categories": {
+                "replay": {
+                    "fixtures": [
+                        {
+                            "glob": "tests/fixtures/replay-regressions/*.json",
+                            "format": "replay-regression-v1",
+                        }
+                    ],
+                    "guards": [
+                        {
+                            "glob": "src/Worker.php",
+                            "content_patterns": [
+                                "function\\s+executeWorkflowTask\\s*\\(",
+                            ],
+                        }
+                    ],
+                }
+            },
+        }
+        (root / "regression-corpus-policy.json").write_text(
+            json.dumps(policy, indent=2) + "\n"
+        )
+        worker_path = root / "src/Worker.php"
+        candidate_worker = worker_path.read_text()
+        dispatch = "$this->replayer->replay($handler, $history, $input, $this->taskQueue, $task)"
+        self.assertIn(dispatch, candidate_worker)
+        worker_path.write_text(
+            candidate_worker.replace(
+                dispatch,
+                "$this->replayer->replay($handler, [], $input, $this->taskQueue, $task)",
+                1,
+            )
+        )
+        for arguments in (
+            ("init", "--quiet"),
+            ("add", "--all"),
+            (
+                "-c",
+                "user.name=Regression Corpus Test",
+                "-c",
+                "user.email=regression-corpus@example.invalid",
+                "commit",
+                "--quiet",
+                "--message=defective-base",
+            ),
+        ):
+            result = run("git", *arguments, cwd=root)
+            self.assertEqual(0, result.returncode, result.stderr)
+        base_ref = run("git", "rev-parse", "HEAD", cwd=root).stdout.strip()
+
+        worker_path.write_text(candidate_worker)
+        fixture = self.official_history_fixture("dispatch-history-counterfactual")
+        (root / "tests/fixtures/replay-regressions/dispatch-history.json").write_text(
+            json.dumps(fixture, indent=2) + "\n"
+        )
 
         result = run(
+            sys.executable,
+            str(VALIDATOR),
+            "--root",
+            str(root),
+            "--base-ref",
+            base_ref,
+            "--php-executable",
             "php",
-            str(PHP_REPLAY_RUNNER),
-            "--autoload",
-            str(REPOSITORY_ROOT / "vendor/autoload.php"),
-            "--source-root",
-            str(REPOSITORY_ROOT),
-            "--fixture",
-            str(self.root / "official-runner-smoke.json"),
-            cwd=REPOSITORY_ROOT,
+            "--replay-runner",
+            str(root / "scripts/ci/run-replay-regression-fixture.php"),
+            "--vendor-root",
+            str(REPOSITORY_ROOT / "vendor"),
+            cwd=root,
         )
 
         self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(1, report["counts"]["replay"]["revision_verified"])
+        self.assertEqual(
+            {
+                "base": "fail",
+                "candidate": "pass",
+                "consumer": "worker",
+            },
+            report["counts"]["replay"]["counterfactual"],
+        )
+
+    def test_official_php_runner_exercises_complete_history(self) -> None:
+        source_root = self.root / "complete-history-source"
+        shutil.copytree(REPOSITORY_ROOT / "src", source_root / "src")
+        worker_path = source_root / "src/Worker.php"
+        worker = worker_path.read_text()
+        page_assembly = """            foreach (($page['history_events'] ?? []) as $event) {
+                if (is_array($event)) {
+                    $history[] = $event;
+                }
+            }
+"""
+        self.assertIn(page_assembly, worker)
+        worker_path.write_text(worker.replace(page_assembly, "", 1))
+
+        result = self.run_official_php_runner(
+            source_root,
+            self.official_history_fixture("complete-history-path"),
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("does not match", result.stderr)
+
+    def test_official_php_runner_exercises_initial_history_extraction(self) -> None:
+        source_root = self.root / "initial-history-source"
+        shutil.copytree(REPOSITORY_ROOT / "src", source_root / "src")
+        worker_path = source_root / "src/Worker.php"
+        worker = worker_path.read_text()
+        extraction = "$raw = $task['history_events'] ?? $task['history'] ?? [];"
+        self.assertIn(extraction, worker)
+        worker_path.write_text(worker.replace(extraction, "$raw = [];", 1))
+
+        result = self.run_official_php_runner(
+            source_root,
+            self.official_history_fixture("initial-history-path"),
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("does not match", result.stderr)
+
+    def test_official_php_runner_exercises_workflow_task_dispatch(self) -> None:
+        source_root = self.root / "workflow-dispatch-source"
+        shutil.copytree(REPOSITORY_ROOT / "src", source_root / "src")
+        worker_path = source_root / "src/Worker.php"
+        worker = worker_path.read_text()
+        dispatch = "$this->replayer->replay($handler, $history, $input, $this->taskQueue, $task)"
+        self.assertIn(dispatch, worker)
+        worker_path.write_text(
+            worker.replace(
+                dispatch,
+                "$this->replayer->replay($handler, [], $input, $this->taskQueue, $task)",
+                1,
+            )
+        )
+
+        result = self.run_official_php_runner(
+            source_root,
+            self.official_history_fixture("workflow-task-dispatch-path"),
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("does not match", result.stderr)
 
     def test_replay_growth_must_pass_on_candidate(self) -> None:
         worker = self.root / "src/Worker.php"
@@ -589,6 +780,58 @@ raise SystemExit(0)
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertIn(
             "does not pass on the candidate through the official PHP binding",
+            result.stderr,
+        )
+
+    def test_candidate_runner_cannot_manufacture_the_base_failure(self) -> None:
+        worker = self.root / "src/Worker.php"
+        worker.write_text(
+            worker.read_text().replace("$history = [];", "$history = ['changed'];")
+        )
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        self.write_json(
+            "tests/fixtures/replay-regressions/unrelated.json",
+            self.replay_fixture("unrelated-replay", ["php"]),
+        )
+        self.replay_runner.write_text(
+            """import argparse
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--vendor-root")
+parser.add_argument("--source-root", type=Path, required=True)
+parser.add_argument("--fixture")
+args = parser.parse_args()
+source = (args.source_root / "src/Worker.php").read_text()
+raise SystemExit(0 if "$history = ['changed'];" in source else 1)
+"""
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "official PHP replay runner must remain unchanged",
+            result.stderr,
+        )
+
+    def test_replay_change_with_only_an_unrelated_fixture_is_rejected(self) -> None:
+        worker = self.root / "src/Worker.php"
+        worker.write_text(
+            worker.read_text().replace("$history = [];", "$history = ['changed'];")
+        )
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        self.write_json(
+            "tests/fixtures/replay-regressions/unrelated.json",
+            self.replay_fixture("unrelated-replay", ["php"]),
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "new replay fixture tests/fixtures/replay-regressions/unrelated.json "
+            "also passes on the defective base",
             result.stderr,
         )
 

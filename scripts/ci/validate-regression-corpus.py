@@ -403,7 +403,7 @@ def _run_replay_fixture(
     root: Path,
     php_executable: str,
     replay_runner: Path,
-    autoload: Path,
+    vendor_root: Path,
     source_root: Path,
     fixture: Path,
 ) -> subprocess.CompletedProcess[str]:
@@ -411,8 +411,8 @@ def _run_replay_fixture(
         [
             php_executable,
             str(replay_runner),
-            "--autoload",
-            str(autoload),
+            "--vendor-root",
+            str(vendor_root),
             "--source-root",
             str(source_root),
             "--fixture",
@@ -437,8 +437,8 @@ def _verify_new_replay_evidence(
     added_paths: set[str],
     php_executable: str,
     replay_runner: Path,
-    autoload: Path,
-) -> int:
+    vendor_root: Path,
+) -> tuple[int, dict[str, str]]:
     paths = sorted(
         {
             item.path
@@ -451,11 +451,20 @@ def _verify_new_replay_evidence(
             "replay implementation changed but no newly added replay fixture "
             "can prove the defective revision"
         )
-    if not replay_runner.is_file():
-        raise CorpusError(f"official PHP replay runner is missing: {replay_runner}")
-    if not autoload.is_file():
+    try:
+        runner_path = replay_runner.relative_to(root).as_posix()
+    except ValueError as error:
+        raise CorpusError("official PHP replay runner must be inside the repository") from error
+    base_runner = base_files.get(runner_path)
+    if base_runner is None:
+        raise CorpusError("the base revision has no official PHP replay runner")
+    if not replay_runner.is_file() or replay_runner.read_bytes() != base_runner:
         raise CorpusError(
-            f"Composer autoload is missing: {autoload}; install dependencies before validation"
+            "the official PHP replay runner must remain unchanged during a guarded replay change"
+        )
+    if not vendor_root.is_dir():
+        raise CorpusError(
+            f"PHP dependency directory is missing: {vendor_root}; install dependencies before validation"
         )
 
     with tempfile.TemporaryDirectory(prefix="sdk-php-replay-base-") as temporary:
@@ -471,14 +480,17 @@ def _verify_new_replay_evidence(
             destination = base_root / path
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(content)
+        trusted_runner = base_root / runner_path
+        trusted_runner.parent.mkdir(parents=True, exist_ok=True)
+        trusted_runner.write_bytes(base_runner)
 
         for path in paths:
             fixture = root / path
             candidate = _run_replay_fixture(
                 root=root,
                 php_executable=php_executable,
-                replay_runner=replay_runner,
-                autoload=autoload,
+                replay_runner=trusted_runner,
+                vendor_root=vendor_root,
                 source_root=root,
                 fixture=fixture,
             )
@@ -491,8 +503,8 @@ def _verify_new_replay_evidence(
             defective = _run_replay_fixture(
                 root=root,
                 php_executable=php_executable,
-                replay_runner=replay_runner,
-                autoload=autoload,
+                replay_runner=trusted_runner,
+                vendor_root=vendor_root,
                 source_root=base_root,
                 fixture=fixture,
             )
@@ -502,7 +514,11 @@ def _verify_new_replay_evidence(
                     "it does not reproduce the guarded replay change"
                 )
 
-    return len(paths)
+    return len(paths), {
+        "base": "fail",
+        "candidate": "pass",
+        "consumer": "worker",
+    }
 
 
 def _policy(document: Mapping[str, Any], path: str) -> Mapping[str, Any]:
@@ -803,7 +819,7 @@ def validate(
     *,
     php_executable: str,
     replay_runner_path: Path,
-    autoload_path: Path,
+    vendor_root_path: Path,
 ) -> dict[str, Any]:
     policy_file = (policy_path if policy_path.is_absolute() else root / policy_path).resolve()
     replay_runner = (
@@ -811,10 +827,10 @@ def validate(
         if replay_runner_path.is_absolute()
         else root / replay_runner_path
     ).resolve()
-    autoload = (
-        autoload_path
-        if autoload_path.is_absolute()
-        else root / autoload_path
+    vendor_root = (
+        vendor_root_path
+        if vendor_root_path.is_absolute()
+        else root / vendor_root_path
     ).resolve()
     try:
         policy_relative_path = policy_file.relative_to(root).as_posix()
@@ -864,7 +880,7 @@ def validate(
                     f"{item.identity} must supersede evidence in the same category at an older protocol version"
                 )
 
-    counts: dict[str, dict[str, int | bool]] = {}
+    counts: dict[str, dict[str, Any]] = {}
     for category_name, raw_category in _object(policy["categories"], "categories").items():
         current_count = sum(item.category == category_name for item in current_evidence)
         base_count = sum(item.category == category_name for item in base_evidence)
@@ -881,15 +897,16 @@ def validate(
                     f"(base={base_count}, current={current_count})"
                 )
         revision_verified = 0
+        counterfactual: dict[str, str] | None = None
         if category_name == "replay" and related:
-            revision_verified = _verify_new_replay_evidence(
+            revision_verified, counterfactual = _verify_new_replay_evidence(
                 root=root,
                 base_files=base_files,
                 current_evidence=current_evidence,
                 added_paths=added_paths,
                 php_executable=php_executable,
                 replay_runner=replay_runner,
-                autoload=autoload,
+                vendor_root=vendor_root,
             )
         count = {
             "base": base_count,
@@ -898,6 +915,8 @@ def validate(
         }
         if category_name == "replay":
             count["revision_verified"] = revision_verified
+            if counterfactual is not None:
+                count["counterfactual"] = counterfactual
         counts[category_name] = count
     return {
         "schema": POLICY_SCHEMA,
@@ -920,7 +939,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         default=Path("scripts/ci/run-replay-regression-fixture.php"),
     )
-    parser.add_argument("--autoload", type=Path, default=Path("vendor/autoload.php"))
+    parser.add_argument("--vendor-root", type=Path, default=Path("vendor"))
     args = parser.parse_args(argv)
     try:
         result = validate(
@@ -929,7 +948,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.base_ref,
             php_executable=args.php_executable,
             replay_runner_path=args.replay_runner,
-            autoload_path=args.autoload,
+            vendor_root_path=args.vendor_root,
         )
     except (CorpusError, OSError) as error:
         print(f"regression corpus validation failed: {error}", file=sys.stderr)
