@@ -40,6 +40,26 @@ class RegressionCorpusPolicyTest(unittest.TestCase):
         (self.root / "tests/fixtures/codec-regressions").mkdir(parents=True)
         (self.root / "vendor").mkdir()
         (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'base';\n")
+        (self.root / "src/Client.php").write_text(
+            """<?php
+final class Client
+{
+    public function completeWorkflowTask(array $commands): array
+    {
+        if ($commands === []) {
+            return ['status' => 'waiting'];
+        }
+
+        return ['commands' => $commands];
+    }
+
+    public function serviceStatus(): string
+    {
+        return 'ready';
+    }
+}
+"""
+        )
         (self.root / "src/Worker/ReplayResult.php").write_text(
             "<?php\nfinal class ReplayResult { public array $commands = []; }\n"
         )
@@ -1123,6 +1143,41 @@ raise SystemExit(0 if "$history = ['changed'];" in source else 1)
             "(base=0, current=0)",
             result.stderr,
         )
+
+    def test_workflow_task_completion_change_requires_replay_corpus_growth(
+        self,
+    ) -> None:
+        client = self.root / "src/Client.php"
+        client.write_text(
+            client.read_text().replace(
+                "return ['status' => 'waiting'];",
+                "return ['status' => 'ready'];",
+            )
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "replay implementation changed but its corpus did not grow "
+            "(base=0, current=0)",
+            result.stderr,
+        )
+
+    def test_unrelated_client_change_is_replay_neutral(self) -> None:
+        client = self.root / "src/Client.php"
+        client.write_text(
+            client.read_text().replace(
+                "return 'ready';",
+                "return 'available';",
+            )
+        )
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["counts"]["replay"]["related_change"])
 
     def test_heartbeat_only_worker_change_is_replay_neutral(self) -> None:
         worker = self.root / "src/Worker.php"
