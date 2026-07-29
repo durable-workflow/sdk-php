@@ -324,6 +324,23 @@ raise SystemExit(0)
             cwd=self.root,
         )
 
+    def validate_without_base(self) -> subprocess.CompletedProcess[str]:
+        return run(
+            sys.executable,
+            str(VALIDATOR),
+            "--root",
+            str(self.root),
+            "--php-executable",
+            sys.executable,
+            "--codec-runner",
+            str(self.codec_runner),
+            "--replay-runner",
+            str(self.replay_runner),
+            "--vendor-root",
+            str(self.root / "vendor"),
+            cwd=self.root,
+        )
+
     def run_official_php_runner(
         self,
         source_root: Path,
@@ -526,6 +543,44 @@ raise SystemExit(0)
         self.assertIn("duplicate semantic fixtures", result.stderr)
         self.assertIn("base.json", result.stderr)
         self.assertIn("duplicate-bindings.json", result.stderr)
+
+    def test_noncanonical_base64_wire_is_rejected(self) -> None:
+        self.write_json(
+            "tests/fixtures/codec-regressions/noncanonical.json",
+            self.codec_fixture("noncanonical-wire", "2", "AB=="),
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("is not canonical base64", result.stderr)
+
+    def test_malformed_golden_wire_must_be_canonical_base64(self) -> None:
+        path = self.root / "resources/protocol/avro-value-v1-golden.json"
+        fixture = json.loads(path.read_text())
+        fixture["malformed_frames"][0]["wire_base64"] = "%%%"
+        self.write_json(
+            "resources/protocol/avro-value-v1-golden.json",
+            fixture,
+        )
+        self.write_policy(
+            "src/Codec/*.php",
+            fixture_selectors=(
+                (
+                    "resources/protocol/avro-value-v1-golden.json",
+                    "avro-value-golden-v1",
+                ),
+                (
+                    "tests/fixtures/codec-regressions/*.json",
+                    "codec-regression-v1",
+                ),
+            ),
+        )
+
+        result = self.validate_without_base()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("is not canonical base64", result.stderr)
 
     def test_codec_schema_metadata_cannot_disguise_duplicate_behavior(self) -> None:
         (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
