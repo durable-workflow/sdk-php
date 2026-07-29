@@ -39,10 +39,19 @@
           "glob": "src/Worker/WorkflowContext.php"
         },
         {
+          "glob": "src/Worker/ReplayResult.php"
+        },
+        {
           "glob": "src/Worker.php",
           "content_patterns": [
             "function\\s+completeHistory\\s*\\(",
             "function\\s+executeWorkflowTask\\s*\\("
+          ]
+        },
+        {
+          "glob": "src/Worker.php",
+          "content_patterns": [
+            "function\\s+historyFromTask\\s*\\("
           ]
         }
       ]

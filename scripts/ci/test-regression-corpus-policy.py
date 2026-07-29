@@ -33,10 +33,14 @@ class RegressionCorpusPolicyTest(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.repository_policy = json.loads(REPOSITORY_POLICY.read_text())
         (self.root / "src/Codec").mkdir(parents=True)
+        (self.root / "src/Worker").mkdir(parents=True)
         (self.root / "resources/protocol").mkdir(parents=True)
         (self.root / "tests/fixtures/codec-regressions").mkdir(parents=True)
         (self.root / "vendor").mkdir()
         (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'base';\n")
+        (self.root / "src/Worker/ReplayResult.php").write_text(
+            "<?php\nfinal class ReplayResult { public array $commands = []; }\n"
+        )
         (self.root / "src/Worker.php").write_text(
             """<?php
 final class Worker
@@ -51,6 +55,11 @@ final class Worker
     private function executeWorkflowTask(): void
     {
         $commands = $this->replayer->replay();
+    }
+
+    private function historyFromTask(array $task): array
+    {
+        return $task['history'] ?? [];
     }
 
     private function heartbeat(): void
@@ -79,6 +88,8 @@ if identity == "candidate-failure":
     raise SystemExit(1)
 if identity == "replay-defect":
     raise SystemExit(0 if "$history = ['changed'];" in source else 1)
+if identity == "history-from-task-defect":
+    raise SystemExit(0 if "return array_values($task['history'] ?? []);" in source else 1)
 raise SystemExit(0)
 """
         )
@@ -632,6 +643,60 @@ raise SystemExit(0)
                 "$commands = $this->replayer->replay();",
                 "$commands = $this->replayer->replay($history);",
             )
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "replay implementation changed but its corpus did not grow "
+            "(base=0, current=0)",
+            result.stderr,
+        )
+
+    def test_history_from_task_change_requires_replay_corpus_growth(self) -> None:
+        worker = self.root / "src/Worker.php"
+        worker.write_text(
+            worker.read_text().replace(
+                "return $task['history'] ?? [];",
+                "return array_values($task['history'] ?? []);",
+            )
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "replay implementation changed but its corpus did not grow "
+            "(base=0, current=0)",
+            result.stderr,
+        )
+
+    def test_history_from_task_fixture_is_proved_across_revisions(self) -> None:
+        worker = self.root / "src/Worker.php"
+        worker.write_text(
+            worker.read_text().replace(
+                "return $task['history'] ?? [];",
+                "return array_values($task['history'] ?? []);",
+            )
+        )
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        self.write_json(
+            "tests/fixtures/replay-regressions/history-from-task.json",
+            self.replay_fixture("history-from-task-defect", ["php"]),
+        )
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertTrue(report["counts"]["replay"]["related_change"])
+        self.assertEqual(1, report["counts"]["replay"]["revision_verified"])
+
+    def test_replay_result_change_requires_replay_corpus_growth(self) -> None:
+        replay_result = self.root / "src/Worker/ReplayResult.php"
+        replay_result.write_text(
+            "<?php\nfinal class ReplayResult { public iterable $commands = []; }\n"
         )
 
         result = self.validate()
