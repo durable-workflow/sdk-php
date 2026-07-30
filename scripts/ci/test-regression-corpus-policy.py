@@ -1038,6 +1038,122 @@ raise SystemExit(0 if "return 'changed';" in source else 1)
         self.assertIn("base.json", result.stderr)
         self.assertIn("duplicate-protocol.json", result.stderr)
 
+    def test_redundant_replay_command_assertions_are_duplicate_evidence(self) -> None:
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        baseline = self.replay_fixture("base-replay-case", ["php"])
+        self.write_json(
+            "tests/fixtures/replay-regressions/base.json",
+            baseline,
+        )
+        self.git("add", "--all")
+        self.git(
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=add-replay-baseline",
+        )
+        self.base_ref = self.git("rev-parse", "HEAD").stdout.strip()
+
+        duplicate = self.replay_fixture("redundant-command-rewrap", ["php"])
+        duplicate["command_sequence"] = duplicate["expected"]["command_sequence"]
+        self.write_json(
+            "tests/fixtures/replay-regressions/redundant-command-rewrap.json",
+            duplicate,
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("duplicate semantic fixtures", result.stderr)
+        self.assertIn("base.json", result.stderr)
+        self.assertIn("redundant-command-rewrap.json", result.stderr)
+
+    def test_golden_rewrap_with_redundant_commands_is_duplicate_evidence(
+        self,
+    ) -> None:
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        baseline = self.replay_fixture("golden-source", ["php"])
+        self.write_json(
+            "regression-corpus-policy.json",
+            {
+                "$schema": "https://example.invalid/policy-schema.json",
+                "schema": "durable-workflow.regression-corpus-policy/v1",
+                "repository": "sdk-php",
+                "categories": {
+                    "replay": {
+                        "fixtures": [
+                            {
+                                "glob": "tests/fixtures/golden-history.json",
+                                "format": "golden-history-v1",
+                            },
+                            {
+                                "glob": "tests/fixtures/replay-regressions/*.json",
+                                "format": "replay-regression-v1",
+                            },
+                        ],
+                        "guards": [{"glob": "src/Worker.php"}],
+                    }
+                },
+            },
+        )
+        self.write_json(
+            "tests/fixtures/golden-history.json",
+            {
+                "fixture_schema": "durable-workflow.golden-history.v1",
+                "source": {
+                    "runtime": "sdk-php",
+                    "version": "1.0.0",
+                    "worker_protocol_version": "1",
+                },
+                "cases": [
+                    {
+                        "name": "single_activity",
+                        "workflow_type": baseline["workflow"]["type"],
+                        "start_input": baseline["workflow"]["input"],
+                        "history": baseline["history"],
+                        "expected": {
+                            "command_type": "CompleteWorkflow",
+                            "result": "hello Ada",
+                        },
+                    }
+                ],
+            },
+        )
+        duplicate = self.replay_fixture("redundant-command-rewrap", ["php"])
+        duplicate["command_sequence"] = duplicate["expected"]["command_sequence"]
+        self.write_json(
+            "tests/fixtures/replay-regressions/redundant-command-rewrap.json",
+            duplicate,
+        )
+
+        result = self.validate_without_base()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("duplicate semantic fixtures", result.stderr)
+        self.assertIn("golden-history.json", result.stderr)
+        self.assertIn("redundant-command-rewrap.json", result.stderr)
+
+        changed_commands = [
+            {
+                "type": "complete_workflow",
+                "result": "hello Grace",
+            }
+        ]
+        duplicate["command_sequence"] = changed_commands
+        duplicate["expected"]["command_sequence"] = changed_commands
+        self.write_json(
+            "tests/fixtures/replay-regressions/redundant-command-rewrap.json",
+            duplicate,
+        )
+
+        result = self.validate_without_base()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(2, json.loads(result.stdout)["counts"]["replay"]["current"])
+
     def test_replay_change_cannot_claim_growth_from_hidden_fixture(self) -> None:
         worker = self.root / "src/Worker.php"
         worker.write_text(
