@@ -1341,6 +1341,128 @@ raise SystemExit(0 if "return 'changed';" in source else 1)
                 result = self.run_official_php_runner(REPOSITORY_ROOT, fixture)
                 self.assertEqual(0, result.returncode, result.stderr)
 
+    def test_absent_and_null_worker_update_names_are_duplicate_evidence(
+        self,
+    ) -> None:
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        baseline = self.replay_fixture("worker-update-name-absent", ["php"])
+        baseline["workflow"] = {
+            "type": "golden.worker-update",
+            "input": [],
+        }
+        baseline["history"] = [
+            {
+                "event_type": "UpdateAccepted",
+                "payload": {
+                    "update_id": "update-1",
+                    "arguments": {
+                        "codec": "avro",
+                        "blob": "wwHioz3/VYAiNwoSaGVsbG8gQWRh",
+                    },
+                },
+            }
+        ]
+        baseline["expected"] = {
+            "type": "complete_update",
+            "update_id": "update-1",
+            "result": {"updated": "hello Ada"},
+        }
+        duplicate = json.loads(json.dumps(baseline))
+        duplicate["id"] = "worker-update-name-null"
+        duplicate["history"][0]["payload"]["update_name"] = None
+        self.write_json(
+            "tests/fixtures/replay-regressions/base.json",
+            baseline,
+        )
+        self.write_json(
+            "tests/fixtures/replay-regressions/null-name-rewrap.json",
+            duplicate,
+        )
+
+        result = self.validate_without_base()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("duplicate semantic fixtures", result.stderr)
+        self.assertIn("base.json", result.stderr)
+        self.assertIn("null-name-rewrap.json", result.stderr)
+
+        for fixture in (baseline, duplicate):
+            with self.subTest(identity=fixture["id"]):
+                result = self.run_official_php_runner(REPOSITORY_ROOT, fixture)
+                self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_php_string_equivalent_worker_update_names_are_duplicate_evidence(
+        self,
+    ) -> None:
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        baseline = self.replay_fixture("worker-update-name-integer", ["php"])
+        baseline["workflow"] = {
+            "type": "golden.worker-update",
+            "input": [],
+        }
+        baseline["history"] = [
+            {
+                "event_type": "UpdateAccepted",
+                "payload": {
+                    "update_id": "update-1",
+                    "update_name": 123,
+                    "arguments": {
+                        "codec": "avro",
+                        "blob": "wwHioz3/VYAiNwoSaGVsbG8gQWRh",
+                    },
+                },
+            }
+        ]
+        baseline["expected"] = {
+            "type": "fail_update",
+            "update_id": "update-1",
+            "message": (
+                "No update handler is registered for "
+                "golden.worker-update.123."
+            ),
+            "exception_type": "UnknownUpdate",
+            "non_retryable": True,
+        }
+        duplicate = json.loads(json.dumps(baseline))
+        duplicate["id"] = "worker-update-name-string"
+        duplicate["history"][0]["payload"]["update_name"] = "123"
+        self.write_json(
+            "tests/fixtures/replay-regressions/base.json",
+            baseline,
+        )
+        self.write_json(
+            "tests/fixtures/replay-regressions/string-name-rewrap.json",
+            duplicate,
+        )
+
+        result = self.validate_without_base()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("duplicate semantic fixtures", result.stderr)
+        self.assertIn("base.json", result.stderr)
+        self.assertIn("string-name-rewrap.json", result.stderr)
+
+        changed = json.loads(json.dumps(baseline))
+        changed["id"] = "worker-update-name-distinct"
+        changed["history"][0]["payload"]["update_name"] = 124
+        changed["expected"]["message"] = (
+            "No update handler is registered for golden.worker-update.124."
+        )
+        self.write_json(
+            "tests/fixtures/replay-regressions/string-name-rewrap.json",
+            changed,
+        )
+
+        result = self.validate_without_base()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(2, json.loads(result.stdout)["counts"]["replay"]["current"])
+
+        for fixture in (baseline, duplicate, changed):
+            with self.subTest(identity=fixture["id"]):
+                result = self.run_official_php_runner(REPOSITORY_ROOT, fixture)
+                self.assertEqual(0, result.returncode, result.stderr)
+
     def test_replay_payload_identity_fails_closed_without_official_consumer(
         self,
     ) -> None:

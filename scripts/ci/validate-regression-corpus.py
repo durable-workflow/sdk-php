@@ -673,9 +673,21 @@ def _canonical_context_history(
             if payload.get("update_id") == "update-1":
                 accepted = payload
                 break
+        effective_update_name = (
+            accepted["update_name"]
+            if accepted.get("update_name") is not None
+            else "golden.update"
+        )
         return {
             "worker_update": {
-                "update_name": accepted.get("update_name", "golden.update"),
+                "update_name": (
+                    payload_projector.project(
+                        "worker-update-name",
+                        effective_update_name,
+                    )
+                    if payload_projector is not None
+                    else _php_string_value(effective_update_name)
+                ),
                 "arguments": _canonical_payload_envelope(
                     (
                         accepted.get("arguments")

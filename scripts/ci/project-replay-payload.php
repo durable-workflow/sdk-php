@@ -81,6 +81,9 @@ function projectReplayPayloadValue(mixed $value): array
 
 function consumeReplayPayload(string $operation, mixed $value, AvroPayloadCodec $codec): mixed
 {
+    if ($operation === 'worker-update-name') {
+        return (string) $value;
+    }
     if ($operation === 'replayer-result') {
         $method = new ReflectionMethod(Replayer::class, 'decodeResult');
 
