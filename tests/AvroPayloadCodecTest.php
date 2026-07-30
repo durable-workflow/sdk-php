@@ -96,6 +96,14 @@ final class AvroPayloadCodecTest extends TestCase
         }
     }
 
+    public function testSyntacticallyInvalidBase64IsRejected(): void
+    {
+        $this->expectException(CodecException::class);
+        $this->expectExceptionMessage('invalid_payload_framing');
+
+        $this->codec->decode('%%%');
+    }
+
     public function testSharedAlternateMapOrdersDecodeToTheSameNestedValue(): void
     {
         $fixture = json_decode(
