@@ -17,6 +17,7 @@ REPOSITORY_POLICY = VALIDATOR.parents[2] / "regression-corpus-policy.json"
 REPOSITORY_ROOT = VALIDATOR.parents[2]
 PHP_CODEC_RUNNER = VALIDATOR.with_name("run-codec-regression-fixture.php")
 PHP_REPLAY_RUNNER = VALIDATOR.with_name("run-replay-regression-fixture.php")
+PHP_PAYLOAD_PROJECTOR = VALIDATOR.with_name("project-replay-payload.php")
 
 
 def run(*arguments: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -250,6 +251,10 @@ raise SystemExit(0)
         name: str = "Ada",
         result: str = "hello Ada",
     ) -> dict[str, Any]:
+        encoded_results = {
+            "hello Ada": "wwHioz3/VYAiNwoSaGVsbG8gQWRh",
+            "hello Grace": "wwHioz3/VYAiNwoWaGVsbG8gR3JhY2U=",
+        }
         return {
             "$schema": "https://example.invalid/evidence-schema.json",
             "fixture_schema": "durable-workflow.replay-regression/v1",
@@ -263,7 +268,12 @@ raise SystemExit(0)
             "history": [
                 {
                     "event_type": "ActivityCompleted",
-                    "payload": {"result": result},
+                    "payload": {
+                        "result": {
+                            "codec": "avro",
+                            "blob": encoded_results[result],
+                        }
+                    },
                 }
             ],
             "expected": {
@@ -321,6 +331,14 @@ raise SystemExit(0)
             str(self.replay_runner),
             "--vendor-root",
             str(self.root / "vendor"),
+            "--payload-projector-executable",
+            "php",
+            "--payload-projector",
+            str(PHP_PAYLOAD_PROJECTOR),
+            "--payload-consumer-root",
+            str(REPOSITORY_ROOT),
+            "--payload-consumer-vendor-root",
+            str(REPOSITORY_ROOT / "vendor"),
             cwd=self.root,
         )
 
@@ -338,6 +356,43 @@ raise SystemExit(0)
             str(self.replay_runner),
             "--vendor-root",
             str(self.root / "vendor"),
+            "--payload-projector-executable",
+            "php",
+            "--payload-projector",
+            str(PHP_PAYLOAD_PROJECTOR),
+            "--payload-consumer-root",
+            str(REPOSITORY_ROOT),
+            "--payload-consumer-vendor-root",
+            str(REPOSITORY_ROOT / "vendor"),
+            cwd=self.root,
+        )
+
+    def validate_with_payload_projector(
+        self,
+        executable: str,
+        projector: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        return run(
+            sys.executable,
+            str(VALIDATOR),
+            "--root",
+            str(self.root),
+            "--php-executable",
+            sys.executable,
+            "--codec-runner",
+            str(self.codec_runner),
+            "--replay-runner",
+            str(self.replay_runner),
+            "--vendor-root",
+            str(self.root / "vendor"),
+            "--payload-projector-executable",
+            executable,
+            "--payload-projector",
+            str(projector),
+            "--payload-consumer-root",
+            str(REPOSITORY_ROOT),
+            "--payload-consumer-vendor-root",
+            str(REPOSITORY_ROOT / "vendor"),
             cwd=self.root,
         )
 
@@ -468,6 +523,14 @@ raise SystemExit(0)
             "--replay-runner",
             str(root / "scripts/ci/run-replay-regression-fixture.php"),
             "--vendor-root",
+            str(REPOSITORY_ROOT / "vendor"),
+            "--payload-projector-executable",
+            "php",
+            "--payload-projector",
+            str(PHP_PAYLOAD_PROJECTOR),
+            "--payload-consumer-root",
+            str(root),
+            "--payload-consumer-vendor-root",
             str(REPOSITORY_ROOT / "vendor"),
             cwd=root,
         )
@@ -1153,6 +1216,260 @@ raise SystemExit(0 if "return 'changed';" in source else 1)
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(2, json.loads(result.stdout)["counts"]["replay"]["current"])
+
+    def test_numeric_history_sequence_aliases_are_duplicate_evidence(self) -> None:
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        baseline = self.replay_fixture("history-sequence-source", ["php"])
+        baseline["history"][0]["payload"]["sequence"] = 1
+        baseline["expected"] = {"type": "complete_workflow"}
+        self.write_json(
+            "tests/fixtures/replay-regressions/base.json",
+            baseline,
+        )
+
+        variants = (
+            ("sequence", "1.0"),
+            ("sequence", "1e0"),
+            ("workflow_sequence", "1"),
+            ("workflow_sequence", "1.0"),
+            ("workflow_sequence", "1e0"),
+        )
+        for field, sequence in variants:
+            with self.subTest(field=field, sequence=sequence):
+                duplicate = json.loads(json.dumps(baseline))
+                duplicate["id"] = f"history-sequence-{field}-{sequence}"
+                duplicate["history"][0]["payload"].pop("sequence")
+                duplicate["history"][0]["payload"][field] = sequence
+                self.write_json(
+                    "tests/fixtures/replay-regressions/sequence-alias.json",
+                    duplicate,
+                )
+
+                result = self.validate_without_base()
+
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                self.assertIn("duplicate semantic fixtures", result.stderr)
+                (
+                    self.root / "tests/fixtures/replay-regressions/sequence-alias.json"
+                ).unlink()
+
+    def test_overflowing_history_sequence_is_duplicate_evidence(self) -> None:
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        baseline = self.official_history_fixture("history-sequence-zero")
+        baseline["history"][0]["payload"]["sequence"] = 0
+        duplicate = json.loads(json.dumps(baseline))
+        duplicate["id"] = "history-sequence-overflow"
+        duplicate["history"][0]["payload"]["sequence"] = "1e309"
+        self.write_json(
+            "tests/fixtures/replay-regressions/base.json",
+            baseline,
+        )
+        self.write_json(
+            "tests/fixtures/replay-regressions/overflow-rewrap.json",
+            duplicate,
+        )
+
+        result = self.validate_without_base()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("duplicate semantic fixtures", result.stderr)
+        self.assertIn("base.json", result.stderr)
+        self.assertIn("overflow-rewrap.json", result.stderr)
+
+        for fixture in (baseline, duplicate):
+            with self.subTest(identity=fixture["id"]):
+                result = self.run_official_php_runner(REPOSITORY_ROOT, fixture)
+                self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_null_history_envelope_codec_is_duplicate_evidence(self) -> None:
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        baseline = self.official_history_fixture("history-codec-default")
+        baseline["history"][0]["payload"]["result"].pop("codec")
+        duplicate = json.loads(json.dumps(baseline))
+        duplicate["id"] = "history-codec-null"
+        duplicate["history"][0]["payload"]["result"]["codec"] = None
+        self.write_json(
+            "tests/fixtures/replay-regressions/base.json",
+            baseline,
+        )
+        self.write_json(
+            "tests/fixtures/replay-regressions/null-codec-rewrap.json",
+            duplicate,
+        )
+
+        result = self.validate_without_base()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("duplicate semantic fixtures", result.stderr)
+        self.assertIn("base.json", result.stderr)
+        self.assertIn("null-codec-rewrap.json", result.stderr)
+
+        for fixture in (baseline, duplicate):
+            with self.subTest(identity=fixture["id"]):
+                result = self.run_official_php_runner(REPOSITORY_ROOT, fixture)
+                self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_raw_and_avro_null_history_results_are_duplicate_evidence(self) -> None:
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        baseline = self.official_history_fixture("history-raw-null")
+        baseline["history"][0]["payload"]["result"] = None
+        baseline["expected"]["command_sequence"][0]["result"] = None
+        duplicate = json.loads(json.dumps(baseline))
+        duplicate["id"] = "history-avro-null"
+        duplicate["history"][0]["payload"]["result"] = {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwA=",
+        }
+        self.write_json(
+            "tests/fixtures/replay-regressions/base.json",
+            baseline,
+        )
+        self.write_json(
+            "tests/fixtures/replay-regressions/avro-null-rewrap.json",
+            duplicate,
+        )
+
+        result = self.validate_without_base()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("duplicate semantic fixtures", result.stderr)
+        self.assertIn("base.json", result.stderr)
+        self.assertIn("avro-null-rewrap.json", result.stderr)
+
+        for fixture in (baseline, duplicate):
+            with self.subTest(identity=fixture["id"]):
+                result = self.run_official_php_runner(REPOSITORY_ROOT, fixture)
+                self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_replay_payload_identity_fails_closed_without_official_consumer(
+        self,
+    ) -> None:
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        self.write_json(
+            "tests/fixtures/replay-regressions/base.json",
+            self.official_history_fixture("history-consumer-unavailable"),
+        )
+
+        result = self.validate_with_payload_projector(
+            "php",
+            self.root / "missing-payload-projector.php",
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "official PHP replay payload consumer is unavailable",
+            result.stderr,
+        )
+
+    def test_replay_payload_identity_fails_closed_on_consumer_disagreement(
+        self,
+    ) -> None:
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        self.write_json(
+            "tests/fixtures/replay-regressions/base.json",
+            self.official_history_fixture("history-consumer-inconsistent"),
+        )
+        inconsistent_projector = self.root / "inconsistent-projector.py"
+        inconsistent_projector.write_text(
+            """import json
+import sys
+
+json.load(sys.stdin)
+print(json.dumps({
+    "schema": "durable-workflow.php-replay-payload-projection/v1",
+    "projections": [
+        {"type": "null"},
+        {"type": "bool", "value": False},
+    ],
+}))
+"""
+        )
+
+        result = self.validate_with_payload_projector(
+            sys.executable,
+            inconsistent_projector,
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "official PHP replay payload consumer returned inconsistent projections",
+            result.stderr,
+        )
+
+    def test_consumer_ignored_history_metadata_is_duplicate_evidence(
+        self,
+    ) -> None:
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        baseline = self.replay_fixture("history-metadata-source", ["php"])
+        baseline["history"][0]["payload"]["sequence"] = 1
+        baseline["expected"] = {"type": "complete_workflow"}
+        self.write_json(
+            "tests/fixtures/replay-regressions/base.json",
+            baseline,
+        )
+        duplicate = json.loads(json.dumps(baseline))
+        duplicate["id"] = "history-metadata-rewrap"
+        duplicate["history"][0]["recorded_at"] = "2030-01-01T00:00:00Z"
+        duplicate["history"][0]["payload"]["corpus_note"] = "representation only"
+        self.write_json(
+            "tests/fixtures/replay-regressions/metadata-rewrap.json",
+            duplicate,
+        )
+
+        result = self.validate_without_base()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("duplicate semantic fixtures", result.stderr)
+        self.assertIn("base.json", result.stderr)
+        self.assertIn("metadata-rewrap.json", result.stderr)
+
+    def test_changed_history_result_remains_distinct_evidence(self) -> None:
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        baseline = self.official_history_fixture("history-result-source")
+        baseline["history"][0]["payload"]["sequence"] = 1
+        baseline["expected"] = {"type": "complete_workflow"}
+        self.write_json(
+            "tests/fixtures/replay-regressions/base.json",
+            baseline,
+        )
+        changed = json.loads(json.dumps(baseline))
+        changed["id"] = "history-result-changed"
+        changed["history"][0]["payload"]["result"]["blob"] = (
+            "wwHioz3/VYAiNwoWaGVsbG8gR3JhY2U="
+        )
+        self.write_json(
+            "tests/fixtures/replay-regressions/changed.json",
+            changed,
+        )
+
+        result = self.validate_without_base()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(2, json.loads(result.stdout)["counts"]["replay"]["current"])
+
+        baseline["expected"]["result"] = "hello Ada"
+        changed["expected"]["result"] = "hello Grace"
+        for fixture in (baseline, changed):
+            with self.subTest(identity=fixture["id"]):
+                result = self.run_official_php_runner(REPOSITORY_ROOT, fixture)
+                self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_official_php_consumer_ignores_history_representation_details(
+        self,
+    ) -> None:
+        baseline = self.official_history_fixture("history-consumer-source")
+        baseline["history"][0]["payload"]["sequence"] = 1
+        duplicate = json.loads(json.dumps(baseline))
+        duplicate["id"] = "history-consumer-rewrap"
+        duplicate["history"][0]["payload"].pop("sequence")
+        duplicate["history"][0]["payload"]["workflow_sequence"] = "1e0"
+        duplicate["history"][0]["payload"]["corpus_note"] = "representation only"
+        duplicate["history"][0]["recorded_at"] = "2030-01-01T00:00:00Z"
+
+        for fixture in (baseline, duplicate):
+            with self.subTest(identity=fixture["id"]):
+                result = self.run_official_php_runner(REPOSITORY_ROOT, fixture)
+                self.assertEqual(0, result.returncode, result.stderr)
 
     def test_replay_change_cannot_claim_growth_from_hidden_fixture(self) -> None:
         worker = self.root / "src/Worker.php"

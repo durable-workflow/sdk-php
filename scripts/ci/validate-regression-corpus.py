@@ -9,6 +9,7 @@ import binascii
 import fnmatch
 import hashlib
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -24,6 +25,7 @@ POLICY_SCHEMA = "durable-workflow.regression-corpus-policy/v1"
 CODEC_SCHEMA = "durable-workflow.codec-regression/v1"
 REPLAY_SCHEMA = "durable-workflow.replay-regression/v1"
 GOLDEN_HISTORY_SCHEMA = "durable-workflow.golden-history.v1"
+PHP_PAYLOAD_PROJECTION_SCHEMA = "durable-workflow.php-replay-payload-projection/v1"
 SUPPORTED_FORMATS = {
     "avro-value-golden-v1",
     "codec-regression-v1",
@@ -51,10 +53,112 @@ PHP_NAMED_FUNCTION = re.compile(
     r"(?m)^[ \t]*(?:(?:abstract|final|private|protected|public|readonly|static)\s+)*"
     r"function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("
 )
+PHP_NUMERIC_STRING = re.compile(
+    r"[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?)|(?:\.[0-9]+))(?:[eE][+-]?[0-9]+)?"
+)
+PHP_INTEGER_STRING = re.compile(r"[+-]?[0-9]+")
+PHP_INT_MIN = -(2**63)
+PHP_INT_MAX = 2**63 - 1
+PHP_INT_MODULUS = 2**64
 
 
 class CorpusError(RuntimeError):
     """The regression-corpus contract is not satisfied."""
+
+
+class PhpReplayPayloadProjector:
+    """Obtain replay payload identity from the official PHP consumer."""
+
+    def __init__(
+        self,
+        *,
+        executable: str,
+        runner: Path,
+        vendor_root: Path,
+        source_root: Path,
+    ) -> None:
+        self.executable = executable
+        self.runner = runner
+        self.vendor_root = vendor_root
+        self.source_root = source_root
+        self.cache: dict[str, Any] = {}
+
+    def project(self, operation: str, value: Any) -> Any:
+        try:
+            request = json.dumps(
+                {"operation": operation, "value": value},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as error:
+            raise CorpusError(
+                "replay payload cannot be passed to the official PHP consumer"
+            ) from error
+        if request in self.cache:
+            return self.cache[request]
+        if not self.runner.is_file():
+            raise CorpusError(
+                f"official PHP replay payload consumer is unavailable: {self.runner}"
+            )
+        if not self.vendor_root.is_dir() or not self.source_root.is_dir():
+            raise CorpusError(
+                "official PHP replay payload consumer dependencies are unavailable"
+            )
+
+        try:
+            result = subprocess.run(
+                [
+                    self.executable,
+                    str(self.runner),
+                    "--vendor-root",
+                    str(self.vendor_root),
+                    "--source-root",
+                    str(self.source_root),
+                ],
+                input=request,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as error:
+            raise CorpusError(
+                "official PHP replay payload consumer is unavailable"
+            ) from error
+        if result.returncode != 0:
+            raise CorpusError(
+                "official PHP replay payload consumer rejected a supported payload: "
+                f"{_process_detail(result)}"
+            )
+        try:
+            report = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise CorpusError(
+                "official PHP replay payload consumer returned an invalid projection"
+            ) from error
+        if (
+            not isinstance(report, Mapping)
+            or report.get("schema") != PHP_PAYLOAD_PROJECTION_SCHEMA
+        ):
+            raise CorpusError(
+                "official PHP replay payload consumer returned an invalid projection"
+            )
+        projections = report.get("projections")
+        if (
+            not isinstance(projections, Sequence)
+            or isinstance(projections, str | bytes)
+            or len(projections) != 2
+        ):
+            raise CorpusError(
+                "official PHP replay payload consumer returned an invalid projection"
+            )
+        if projections[0] != projections[1]:
+            raise CorpusError(
+                "official PHP replay payload consumer returned inconsistent projections"
+            )
+        self.cache[request] = projections[0]
+        return projections[0]
 
 
 @dataclass(frozen=True)
@@ -207,6 +311,406 @@ def _canonical_replay_commands(value: Any) -> Any:
     return [_canonical_replay_command(command) for command in value]
 
 
+def _php_int_value(value: Any) -> int | None:
+    """Match is_numeric() followed by PHP's integer cast."""
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        if PHP_INT_MIN <= value <= PHP_INT_MAX:
+            return value
+        # json_decode() materializes an out-of-range JSON integer as a double.
+        try:
+            value = float(value)
+        except OverflowError:
+            return 0
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return 0
+        # PHP wraps finite double casts to the platform integer width.
+        wrapped = int(value) % PHP_INT_MODULUS
+        return wrapped if wrapped <= PHP_INT_MAX else wrapped - PHP_INT_MODULUS
+    if not isinstance(value, str) or not PHP_NUMERIC_STRING.fullmatch(value.strip()):
+        return None
+    numeric = value.strip()
+    if PHP_INTEGER_STRING.fullmatch(numeric):
+        try:
+            exact = int(numeric)
+        except ValueError:
+            exact = None
+        if exact is not None and PHP_INT_MIN <= exact <= PHP_INT_MAX:
+            return exact
+    # Numeric strings cap finite overflow, while a non-finite double casts to zero.
+    parsed = float(numeric)
+    if not math.isfinite(parsed):
+        return 0
+    return min(max(int(parsed), PHP_INT_MIN), PHP_INT_MAX)
+
+
+def _php_string_value(value: Any) -> str:
+    """Return the scalar spelling produced by the replay consumer's string cast."""
+
+    if isinstance(value, str):
+        return value
+    if value is True:
+        return "1"
+    if value is False or value is None:
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _php_bool_value(value: Any) -> bool:
+    if value is None or value is False or value == 0 or value == "":
+        return False
+    if value == "0":
+        return False
+    if isinstance(value, Mapping | Sequence) and not isinstance(value, str | bytes):
+        return bool(value)
+    return True
+
+
+def _payload_value(payload: Mapping[str, Any], *fields: str) -> Any:
+    for field in fields:
+        value = payload.get(field)
+        if value is not None:
+            return value
+    return None
+
+
+def _canonical_payload_envelope(
+    value: Any,
+    payload_projector: PhpReplayPayloadProjector | None,
+    *,
+    operation: str = "replayer-result",
+) -> Any:
+    """Resolve replay payloads through the official binding when available."""
+
+    if payload_projector is not None:
+        return payload_projector.project(operation, value)
+
+    if isinstance(value, str):
+        return {"codec": "avro", "blob": value}
+    if isinstance(value, Mapping):
+        codec = value.get("codec")
+        if codec is None:
+            codec = "avro"
+        return {"codec": codec, "blob": value.get("blob")}
+    return value
+
+
+def _payload_detail(payload: Mapping[str, Any], shape: str) -> str | None:
+    value = {
+        "activity": _payload_value(payload, "activity_type", "activity_name"),
+        "timer": payload.get("delay_seconds"),
+        "child_workflow": _payload_value(
+            payload,
+            "child_workflow_type",
+            "workflow_type",
+        ),
+    }.get(shape)
+    return None if value is None else _php_string_value(value)
+
+
+def _resolved_sequence(payload: Mapping[str, Any]) -> int | None:
+    value = _payload_value(payload, "sequence", "workflow_sequence")
+    return _php_int_value(value)
+
+
+def _canonical_failure_payload(
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Project fields exposed through the ActivityFailed exception."""
+
+    if event_type in {"ActivityFailed", "ActivityTimedOut"}:
+        message = _payload_value(payload, "message", "closed_reason")
+        return {
+            "message": _php_string_value(
+                "Activity failed." if message is None else message
+            ),
+            "activity_type": _payload_detail(payload, "activity"),
+            "exception_type": (
+                _php_string_value(payload["exception_type"])
+                if payload.get("exception_type") is not None
+                else None
+            ),
+            "non_retryable": _php_bool_value(payload.get("non_retryable", False)),
+            "failure": dict(payload),
+        }
+    message = payload.get("message")
+    return {
+        "message": _php_string_value(
+            "Child workflow failed." if message is None else message
+        ),
+        "failure": dict(payload),
+    }
+
+
+def _canonical_recorded_steps(
+    value: Any,
+    payload_projector: PhpReplayPayloadProjector | None,
+) -> Sequence[Mapping[str, Any]]:
+    """Resolve history exactly as Replayer::recordedSteps does."""
+
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        return []
+
+    steps: dict[int, dict[str, Any]] = {}
+    fallback_sequence = 1_000_000
+    for index, raw_event in enumerate(value):
+        event = _object(raw_event, f"replay history[{index}]")
+        event_type = _php_string_value(_payload_value(event, "event_type", "type"))
+        raw_payload = event.get("payload")
+        payload = dict(raw_payload) if isinstance(raw_payload, Mapping) else {}
+        sequence = _resolved_sequence(payload)
+        if sequence is None:
+            sequence = fallback_sequence
+            fallback_sequence += 1
+
+        if event_type in {"ActivityScheduled", "ActivityStarted"}:
+            steps.setdefault(
+                sequence,
+                {
+                    "sequence": sequence,
+                    "shape": "activity",
+                    "detail": _payload_detail(payload, "activity"),
+                    "resolved": False,
+                },
+            )
+        elif event_type == "ActivityCompleted":
+            detail = _payload_detail(payload, "activity")
+            if detail is None and sequence in steps:
+                detail = steps[sequence]["detail"]
+            steps[sequence] = {
+                "sequence": sequence,
+                "shape": "activity",
+                "detail": detail,
+                "resolved": True,
+                "value": _canonical_payload_envelope(
+                    _payload_value(payload, "result", "output"),
+                    payload_projector,
+                ),
+            }
+        elif event_type in {"ActivityFailed", "ActivityTimedOut"}:
+            detail = _payload_detail(payload, "activity")
+            if detail is None and sequence in steps:
+                detail = steps[sequence]["detail"]
+            steps[sequence] = {
+                "sequence": sequence,
+                "shape": "activity",
+                "detail": detail,
+                "resolved": True,
+                "failure": _canonical_failure_payload(event_type, payload),
+            }
+        elif event_type == "TimerScheduled":
+            if payload.get("timer_kind") not in {
+                "condition_timeout",
+                "signal_timeout",
+            }:
+                steps.setdefault(
+                    sequence,
+                    {
+                        "sequence": sequence,
+                        "shape": "timer",
+                        "detail": _payload_detail(payload, "timer"),
+                        "resolved": False,
+                    },
+                )
+        elif event_type == "TimerFired":
+            if payload.get("timer_kind") not in {
+                "condition_timeout",
+                "signal_timeout",
+            }:
+                detail = _payload_detail(payload, "timer")
+                if detail is None and sequence in steps:
+                    detail = steps[sequence]["detail"]
+                steps[sequence] = {
+                    "sequence": sequence,
+                    "shape": "timer",
+                    "detail": detail,
+                    "resolved": True,
+                    "value": None,
+                }
+        elif event_type in {"ChildWorkflowScheduled", "ChildRunStarted"}:
+            steps.setdefault(
+                sequence,
+                {
+                    "sequence": sequence,
+                    "shape": "child_workflow",
+                    "detail": _payload_detail(payload, "child_workflow"),
+                    "resolved": False,
+                },
+            )
+        elif event_type == "ChildRunCompleted":
+            detail = _payload_detail(payload, "child_workflow")
+            if detail is None and sequence in steps:
+                detail = steps[sequence]["detail"]
+            steps[sequence] = {
+                "sequence": sequence,
+                "shape": "child_workflow",
+                "detail": detail,
+                "resolved": True,
+                "value": _canonical_payload_envelope(
+                    _payload_value(payload, "result", "output"),
+                    payload_projector,
+                ),
+            }
+        elif event_type in {
+            "ChildRunFailed",
+            "ChildRunCancelled",
+            "ChildRunTerminated",
+        }:
+            detail = _payload_detail(payload, "child_workflow")
+            if detail is None and sequence in steps:
+                detail = steps[sequence]["detail"]
+            steps[sequence] = {
+                "sequence": sequence,
+                "shape": "child_workflow",
+                "detail": detail,
+                "resolved": True,
+                "failure": _canonical_failure_payload(event_type, payload),
+            }
+        elif event_type == "SideEffectRecorded":
+            steps[sequence] = {
+                "sequence": sequence,
+                "shape": "side_effect",
+                "detail": None,
+                "resolved": True,
+                "value": _canonical_payload_envelope(
+                    _payload_value(payload, "result", "output"),
+                    payload_projector,
+                ),
+            }
+        elif event_type == "SearchAttributesUpserted":
+            steps[sequence] = {
+                "sequence": sequence,
+                "shape": "search_attributes",
+                "detail": None,
+                "resolved": True,
+                "value": None,
+            }
+
+    return [steps[sequence] for sequence in sorted(steps)]
+
+
+def _canonical_context_history(
+    value: Any,
+    workflow_type: str,
+    workflow_input: Any,
+    payload_projector: PhpReplayPayloadProjector | None,
+) -> Any:
+    """Project history read directly by the supported WorkflowContext paths."""
+
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        return None
+    input_values = (
+        workflow_input
+        if isinstance(workflow_input, Sequence)
+        and not isinstance(workflow_input, str | bytes)
+        else []
+    )
+    target = _php_string_value(input_values[0]) if input_values else ""
+
+    if workflow_type == "golden.signal":
+        signals = []
+        for index, raw_event in enumerate(value):
+            event = _object(raw_event, f"replay history[{index}]")
+            if _payload_value(event, "event_type", "type") != "SignalReceived":
+                continue
+            raw_payload = event.get("payload")
+            payload = raw_payload if isinstance(raw_payload, Mapping) else {}
+            if payload.get("signal_name") != target:
+                continue
+            signals.append(
+                _canonical_payload_envelope(
+                    _payload_value(payload, "value", "input", "arguments"),
+                    payload_projector,
+                    operation="workflow-signal-arguments",
+                )
+            )
+        return {"signals": signals}
+
+    if workflow_type == "golden.update":
+        updates = []
+        seen = set()
+        for index, raw_event in enumerate(value):
+            event = _object(raw_event, f"replay history[{index}]")
+            if _payload_value(event, "event_type", "type") not in {
+                "UpdateAccepted",
+                "UpdateApplied",
+            }:
+                continue
+            raw_payload = event.get("payload")
+            payload = raw_payload if isinstance(raw_payload, Mapping) else {}
+            if payload.get("update_name") != target or payload.get("arguments") is None:
+                continue
+            update_id = _php_string_value(payload.get("update_id"))
+            if update_id and update_id in seen:
+                continue
+            if update_id:
+                seen.add(update_id)
+            updates.append(
+                _canonical_payload_envelope(
+                    payload["arguments"],
+                    payload_projector,
+                    operation="workflow-update-arguments",
+                )
+            )
+        return {"updates": updates}
+
+    if workflow_type == "golden.worker-update":
+        accepted: Mapping[str, Any] = {}
+        for index, raw_event in reversed(list(enumerate(value))):
+            event = _object(raw_event, f"replay history[{index}]")
+            if _payload_value(event, "event_type", "type") != "UpdateAccepted":
+                continue
+            raw_payload = event.get("payload")
+            payload = raw_payload if isinstance(raw_payload, Mapping) else {}
+            if payload.get("update_id") == "update-1":
+                accepted = payload
+                break
+        return {
+            "worker_update": {
+                "update_name": accepted.get("update_name", "golden.update"),
+                "arguments": _canonical_payload_envelope(
+                    (
+                        accepted.get("arguments")
+                        if accepted.get("arguments") is not None
+                        else workflow_input
+                    ),
+                    payload_projector,
+                    operation="worker-update-arguments",
+                ),
+            }
+        }
+
+    return None
+
+
+def _canonical_replay_history(
+    value: Any,
+    workflow_type: str,
+    workflow_input: Any,
+    payload_projector: PhpReplayPayloadProjector | None,
+) -> Mapping[str, Any]:
+    history: dict[str, Any] = {
+        "recorded_steps": _canonical_recorded_steps(value, payload_projector),
+    }
+    context = _canonical_context_history(
+        value,
+        workflow_type,
+        workflow_input,
+        payload_projector,
+    )
+    if context is not None:
+        history["context"] = context
+    return history
+
+
 def _merge_replay_assertions(left: Any, right: Any, context: str) -> Any:
     """Merge two compatible partial assertions over the same replay output."""
 
@@ -303,12 +807,18 @@ def _replay_semantic(
     history: Any,
     command_sequence: Any,
     expected: Mapping[str, Any],
+    payload_projector: PhpReplayPayloadProjector | None,
 ) -> Mapping[str, Any]:
     """Project every replay representation onto consumer-executed values."""
 
     return {
         "workflow": {"type": workflow_type, "input": workflow_input},
-        "history": history,
+        "history": _canonical_replay_history(
+            history,
+            workflow_type,
+            workflow_input,
+            payload_projector,
+        ),
         "executed_commands": _canonical_executed_commands(
             command_sequence,
             expected,
@@ -428,7 +938,12 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
     ]
 
 
-def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None) -> list[Evidence]:
+def _replay_fixture(
+    document: Mapping[str, Any],
+    path: str,
+    binding: str | None,
+    payload_projector: PhpReplayPayloadProjector | None,
+) -> list[Evidence]:
     _string(document.get("$schema"), f"{path}.$schema")
     if document.get("fixture_schema") != REPLAY_SCHEMA:
         raise CorpusError(f"{path} must declare fixture_schema={REPLAY_SCHEMA}")
@@ -467,6 +982,7 @@ def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None)
         history=history if history is not None else [],
         command_sequence=commands,
         expected=expected,
+        payload_projector=payload_projector,
     )
     return [
         _fixture_evidence(
@@ -554,6 +1070,7 @@ def _golden_history_fixture(
     path: str,
     *,
     require_single_case: bool,
+    payload_projector: PhpReplayPayloadProjector | None,
 ) -> list[Evidence]:
     if document.get("fixture_schema") != GOLDEN_HISTORY_SCHEMA:
         raise CorpusError(f"{path} must declare fixture_schema={GOLDEN_HISTORY_SCHEMA}")
@@ -582,6 +1099,7 @@ def _golden_history_fixture(
             history=history,
             command_sequence=case.get("command_sequence"),
             expected=expected,
+            payload_projector=payload_projector,
         )
         evidence.append(
             _fixture_evidence(
@@ -1083,6 +1601,7 @@ def _inventory(
     files: Mapping[str, bytes],
     *,
     new_paths: set[str] | None = None,
+    payload_projector: PhpReplayPayloadProjector | None = None,
 ) -> list[Evidence]:
     binding = policy.get("binding")
     evidence: list[Evidence] = []
@@ -1101,7 +1620,12 @@ def _inventory(
                 if fixture_format == "codec-regression-v1":
                     parsed = _codec_fixture(document, path, binding if isinstance(binding, str) else None)
                 elif fixture_format == "replay-regression-v1":
-                    parsed = _replay_fixture(document, path, binding if isinstance(binding, str) else None)
+                    parsed = _replay_fixture(
+                        document,
+                        path,
+                        binding if isinstance(binding, str) else None,
+                        payload_projector,
+                    )
                 elif fixture_format == "avro-value-golden-v1":
                     parsed = _avro_golden_fixture(document, path)
                 else:
@@ -1109,6 +1633,7 @@ def _inventory(
                         document,
                         path,
                         require_single_case=new_paths is not None and path in new_paths,
+                        payload_projector=payload_projector,
                     )
                 if any(item.category != category_name for item in parsed):
                     raise CorpusError(f"{path} produced evidence for the wrong category")
@@ -1274,6 +1799,10 @@ def validate(
     codec_runner_path: Path,
     replay_runner_path: Path,
     vendor_root_path: Path,
+    payload_projector_executable: str,
+    payload_projector_path: Path,
+    payload_consumer_root_path: Path,
+    payload_consumer_vendor_root_path: Path,
 ) -> dict[str, Any]:
     policy_file = (policy_path if policy_path.is_absolute() else root / policy_path).resolve()
     replay_runner = (
@@ -1291,6 +1820,21 @@ def validate(
         if vendor_root_path.is_absolute()
         else root / vendor_root_path
     ).resolve()
+    payload_projector_runner = (
+        payload_projector_path
+        if payload_projector_path.is_absolute()
+        else root / payload_projector_path
+    ).resolve()
+    payload_consumer_root = (
+        payload_consumer_root_path
+        if payload_consumer_root_path.is_absolute()
+        else root / payload_consumer_root_path
+    ).resolve()
+    payload_consumer_vendor_root = (
+        payload_consumer_vendor_root_path
+        if payload_consumer_vendor_root_path.is_absolute()
+        else root / payload_consumer_vendor_root_path
+    ).resolve()
     try:
         policy_relative_path = policy_file.relative_to(root).as_posix()
     except ValueError as error:
@@ -1300,6 +1844,16 @@ def validate(
     except ValueError as error:
         raise CorpusError("codec runner must be inside the repository root") from error
     policy = _policy(_json(policy_file.read_bytes(), str(policy_path)), str(policy_path))
+    payload_projector = (
+        PhpReplayPayloadProjector(
+            executable=payload_projector_executable,
+            runner=payload_projector_runner,
+            vendor_root=payload_consumer_vendor_root,
+            source_root=payload_consumer_root,
+        )
+        if policy.get("binding") == "php"
+        else None
+    )
     current_files = _tracked_worktree_files(root)
     current_formats = _fixture_formats(policy, current_files)
     changed: set[str] = set()
@@ -1328,8 +1882,17 @@ def validate(
                     continue
             if current_content != base_files[path]:
                 raise CorpusError(f"immutable fixture file {path} was changed, moved, or removed")
-        base_evidence = _inventory(policy, base_files)
-    current_evidence = _inventory(policy, current_files, new_paths=added_paths)
+        base_evidence = _inventory(
+            policy,
+            base_files,
+            payload_projector=payload_projector,
+        )
+    current_evidence = _inventory(
+        policy,
+        current_files,
+        new_paths=added_paths,
+        payload_projector=payload_projector,
+    )
 
     current_by_id = {item.identity: item for item in current_evidence}
     base_by_id = {item.identity: item for item in base_evidence}
@@ -1436,6 +1999,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=Path("scripts/ci/run-replay-regression-fixture.php"),
     )
     parser.add_argument("--vendor-root", type=Path, default=Path("vendor"))
+    parser.add_argument("--payload-projector-executable")
+    parser.add_argument(
+        "--payload-projector",
+        type=Path,
+        default=Path("scripts/ci/project-replay-payload.php"),
+    )
+    parser.add_argument("--payload-consumer-root", type=Path, default=Path("."))
+    parser.add_argument(
+        "--payload-consumer-vendor-root",
+        type=Path,
+        default=Path("vendor"),
+    )
     args = parser.parse_args(argv)
     try:
         result = validate(
@@ -1446,6 +2021,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             codec_runner_path=args.codec_runner,
             replay_runner_path=args.replay_runner,
             vendor_root_path=args.vendor_root,
+            payload_projector_executable=(
+                args.payload_projector_executable or args.php_executable
+            ),
+            payload_projector_path=args.payload_projector,
+            payload_consumer_root_path=args.payload_consumer_root,
+            payload_consumer_vendor_root_path=args.payload_consumer_vendor_root,
         )
     except (CorpusError, OSError) as error:
         print(f"regression corpus validation failed: {error}", file=sys.stderr)
