@@ -55,6 +55,12 @@
           ]
         },
         {
+          "glob": "src/Worker.php",
+          "content_patterns": [
+            "function\\s+executeUpdate\\s*\\("
+          ]
+        },
+        {
           "glob": "src/Client.php",
           "content_patterns": [
             "function\\s+completeWorkflowTask\\s*\\("

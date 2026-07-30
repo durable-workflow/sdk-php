@@ -95,6 +95,11 @@ final class Worker
         $commands = $this->replayer->replay();
     }
 
+    private function executeUpdate(array $accepted, array $task): array
+    {
+        return $accepted['arguments'] ?? $task['arguments'] ?? [];
+    }
+
     private function historyFromTask(array $task): array
     {
         return $task['history'] ?? [];
@@ -2389,6 +2394,85 @@ print(json.dumps({
             report["counts"]["replay"]["counterfactual"],
         )
 
+    def test_worker_update_fixture_proves_history_argument_counterfactual(
+        self,
+    ) -> None:
+        root, _ = self.official_replay_repository(
+            "official-worker-update-counterfactual"
+        )
+        worker_path = root / "src/Worker.php"
+        candidate_worker = worker_path.read_text()
+        argument_selection = (
+            "$arguments = $this->decodeArguments("
+            "$accepted['arguments'] ?? $task['arguments'] ?? null);"
+        )
+        self.assertIn(argument_selection, candidate_worker)
+        worker_path.write_text(
+            candidate_worker.replace(
+                argument_selection,
+                "$arguments = $this->decodeArguments($task['arguments'] ?? null);",
+                1,
+            )
+        )
+        run("git", "add", "--all", cwd=root)
+        result = run(
+            "git",
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=defective-base",
+            cwd=root,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        base_ref = run("git", "rev-parse", "HEAD", cwd=root).stdout.strip()
+
+        worker_path.write_text(candidate_worker)
+        fixture = self.official_replay_fixture(
+            "worker-update-history-arguments-counterfactual",
+            "golden.worker-update",
+            ["task-fallback"],
+            {
+                "type": "complete_update",
+                "update_id": "update-1",
+                "result": {"updated": "hello Ada"},
+            },
+            [
+                {
+                    "event_type": "UpdateAccepted",
+                    "payload": {
+                        "update_id": "update-1",
+                        "update_name": "golden.update",
+                        "arguments": {
+                            "codec": "avro",
+                            "blob": "wwHioz3/VYAiNwoSaGVsbG8gQWRh",
+                        },
+                    },
+                }
+            ],
+        )
+        fixture_path = (
+            root / "tests/fixtures/replay-regressions/worker-update-arguments.json"
+        )
+        fixture_path.write_text(json.dumps(fixture, indent=2) + "\n")
+
+        result = self.validate_official_replay_repository(root, base_ref)
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertTrue(report["counts"]["replay"]["related_change"])
+        self.assertEqual(1, report["counts"]["replay"]["revision_verified"])
+        self.assertEqual(
+            {
+                "base": "fail",
+                "candidate": "pass",
+                "consumer": "worker",
+            },
+            report["counts"]["replay"]["counterfactual"],
+        )
+
     def test_official_php_runner_exercises_initial_history_extraction(self) -> None:
         source_root = self.root / "initial-history-source"
         shutil.copytree(REPOSITORY_ROOT / "src", source_root / "src")
@@ -2550,6 +2634,24 @@ raise SystemExit(0 if "$history = ['changed'];" in source else 1)
             worker.read_text().replace(
                 "$commands = $this->replayer->replay();",
                 "$commands = $this->replayer->replay($history);",
+            )
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "replay implementation changed but its corpus did not grow "
+            "(base=0, current=0)",
+            result.stderr,
+        )
+
+    def test_worker_update_body_change_requires_replay_corpus_growth(self) -> None:
+        worker = self.root / "src/Worker.php"
+        worker.write_text(
+            worker.read_text().replace(
+                "return $accepted['arguments'] ?? $task['arguments'] ?? [];",
+                "return $task['arguments'] ?? [];",
             )
         )
 
