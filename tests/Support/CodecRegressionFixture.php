@@ -40,7 +40,7 @@ final class CodecRegressionFixture
     }
 
     /** @param array<string, mixed> $value */
-    private static function taggedValue(array $value): mixed
+    public static function projectTaggedValue(array $value): mixed
     {
         return match ($value['type'] ?? null) {
             'null' => null,
@@ -52,13 +52,13 @@ final class CodecRegressionFixture
             ),
             'string' => (string) $value['value'],
             'array' => array_map(
-                self::taggedValue(...),
+                self::projectTaggedValue(...),
                 is_array($value['items'] ?? null) ? $value['items'] : [],
             ),
             'map' => AvroMapValue::fromPairs(array_map(
                 static fn (array $entry): array => [
                     (string) $entry['key'],
-                    self::taggedValue($entry['value']),
+                    self::projectTaggedValue($entry['value']),
                 ],
                 is_array($value['entries'] ?? null) ? $value['entries'] : [],
             )),
@@ -82,7 +82,7 @@ final class CodecRegressionFixture
             $fixture['protocol']['fingerprint'] ?? null,
         );
 
-        $value = self::taggedValue($fixture['value']);
+        $value = self::projectTaggedValue($fixture['value']);
         $wire = $fixture['framing']['wire_base64'] ?? null;
         $operation = $fixture['failure_policy']['operation'] ?? null;
         $error = $fixture['failure_policy']['error'] ?? null;

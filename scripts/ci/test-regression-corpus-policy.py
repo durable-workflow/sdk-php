@@ -248,6 +248,35 @@ raise SystemExit(0)
             "failure_policy": {"operation": "round_trip", "error": None},
         }
 
+    def encode_reject_fixture(
+        self,
+        identity: str,
+        value: dict[str, Any],
+        *,
+        error: str = "non_finite_float",
+        wire: str | None = None,
+        include_wire: bool = True,
+    ) -> dict[str, Any]:
+        fixture = self.codec_fixture(identity, "0", "AA==")
+        fixture["protocol"] = {
+            "codec": "avro",
+            "schema": "durable_workflow.protocol.Value",
+            "version": "1",
+            "fingerprint": "e2a33dff55802237",
+        }
+        fixture["value"] = value
+        fixture["framing"]["encoding"] = "avro-single-object"
+        fixture["failure_policy"] = {
+            "operation": "encode_reject",
+            "error": error,
+        }
+        if include_wire:
+            fixture["framing"]["wire_base64"] = wire
+        else:
+            fixture["framing"].pop("wire_base64")
+
+        return fixture
+
     def replay_fixture(
         self,
         identity: str,
@@ -469,6 +498,34 @@ raise SystemExit(0)
             str(REPOSITORY_ROOT / "vendor"),
             cwd=self.root,
         )
+
+    def run_official_php_codec_runner(
+        self,
+        fixture: dict[str, Any],
+    ) -> subprocess.CompletedProcess[str]:
+        fixture_path = self.root / "official-codec-runner-fixture.json"
+        self.write_json(
+            fixture_path.relative_to(self.root).as_posix(),
+            fixture,
+        )
+
+        result = run(
+            "php",
+            str(PHP_CODEC_RUNNER),
+            "--vendor-root",
+            str(REPOSITORY_ROOT / "vendor"),
+            "--consumer-root",
+            str(REPOSITORY_ROOT),
+            "--source-root",
+            str(REPOSITORY_ROOT),
+            "--fixture",
+            str(fixture_path),
+            "--format",
+            "codec-regression-v1",
+            cwd=REPOSITORY_ROOT,
+        )
+        fixture_path.unlink()
+        return result
 
     def run_official_php_runner(
         self,
@@ -920,6 +977,179 @@ raise SystemExit(0)
             },
             codec["counterfactual"],
         )
+
+    def test_encode_reject_representation_changes_cannot_claim_growth(
+        self,
+    ) -> None:
+        baseline_value = {
+            "type": "array",
+            "items": [
+                {"type": "null"},
+                {"type": "boolean", "value": 1},
+                {"type": "long", "value": "7"},
+                {"type": "double", "value": "2.5"},
+                {"type": "bytes", "base64": "AP8="},
+                {"type": "string", "value": 8},
+                {
+                    "type": "map",
+                    "entries": [
+                        {
+                            "key": 7,
+                            "value": {
+                                "type": "array",
+                                "items": [
+                                    {"type": "double", "value": "1e309"},
+                                ],
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+        equivalent_value = {
+            "type": "array",
+            "items": [
+                {"type": "null", "ignored": "metadata"},
+                {"type": "boolean", "value": "1", "ignored": False},
+                {"type": "long", "value": 7.9, "ignored": []},
+                {"type": "double", "value": 2.5, "ignored": {}},
+                {"type": "bytes", "base64": "AP8=", "ignored": "metadata"},
+                {"type": "string", "value": "8", "ignored": 123},
+                {
+                    "type": "map",
+                    "ignored": "metadata",
+                    "entries": [
+                        {
+                            "key": "7",
+                            "ignored": True,
+                            "value": {
+                                "type": "array",
+                                "ignored": None,
+                                "items": [
+                                    {
+                                        "type": "double",
+                                        "value": "1e400",
+                                        "ignored": "metadata",
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                },
+            ],
+            "ignored": {"corpus_note": "representation only"},
+        }
+        baseline = self.encode_reject_fixture(
+            "encode-reject-source",
+            baseline_value,
+            include_wire=False,
+        )
+        null_wire = self.encode_reject_fixture(
+            "encode-reject-null-wire",
+            baseline_value,
+            wire=None,
+        )
+        canonical_wire = self.encode_reject_fixture(
+            "encode-reject-canonical-wire",
+            equivalent_value,
+            wire="AA==",
+        )
+        self.write_json(
+            "tests/fixtures/codec-regressions/encode-reject-source.json",
+            baseline,
+        )
+        self.git("add", "--all")
+        self.git(
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=encode-reject-baseline",
+        )
+        self.base_ref = self.git("rev-parse", "HEAD").stdout.strip()
+
+        (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
+        self.write_json(
+            "tests/fixtures/codec-regressions/encode-reject-null-wire.json",
+            null_wire,
+        )
+        self.write_json(
+            "tests/fixtures/codec-regressions/encode-reject-canonical-wire.json",
+            canonical_wire,
+        )
+
+        for fixture in (baseline, null_wire, canonical_wire):
+            with self.subTest(identity=fixture["id"]):
+                consumed = self.run_official_php_codec_runner(fixture)
+                self.assertEqual(0, consumed.returncode, consumed.stderr)
+                self.assertEqual(
+                    {"outcome": "pass"},
+                    json.loads(consumed.stdout),
+                )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("duplicate semantic fixtures", result.stderr)
+        self.assertIn("encode-reject-source.json", result.stderr)
+        self.assertIn("encode-reject-null-wire.json", result.stderr)
+        self.assertIn("encode-reject-canonical-wire.json", result.stderr)
+
+    def test_encode_reject_value_and_error_policy_changes_remain_distinct(
+        self,
+    ) -> None:
+        positive = self.encode_reject_fixture(
+            "positive-infinity",
+            {"type": "double", "value": "1e309"},
+            include_wire=False,
+        )
+        negative = self.encode_reject_fixture(
+            "negative-infinity",
+            {"type": "double", "value": "-1e309"},
+            wire=None,
+        )
+        broader_policy = self.encode_reject_fixture(
+            "positive-infinity-broader-policy",
+            {"type": "double", "value": "1e400", "ignored": "metadata"},
+            error="avro_value_encode_failed",
+            wire="AA==",
+        )
+        for fixture in (positive, negative, broader_policy):
+            self.write_json(
+                f"tests/fixtures/codec-regressions/{fixture['id']}.json",
+                fixture,
+            )
+            with self.subTest(identity=fixture["id"]):
+                consumed = self.run_official_php_codec_runner(fixture)
+                self.assertEqual(0, consumed.returncode, consumed.stderr)
+
+        result = self.validate_without_base()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(4, json.loads(result.stdout)["counts"]["codec"]["current"])
+
+    def test_encode_reject_identity_fails_closed_for_unsupported_tagged_value(
+        self,
+    ) -> None:
+        self.write_json(
+            "tests/fixtures/codec-regressions/unsupported-tag.json",
+            self.encode_reject_fixture(
+                "unsupported-tag",
+                {"type": "object", "value": {"anything": True}},
+                include_wire=False,
+            ),
+        )
+
+        result = self.validate_without_base()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "official PHP codec value consumer could not project tagged value",
+            result.stderr,
+        )
+        self.assertIn("Unsupported tagged corpus value", result.stderr)
 
     def test_official_php_codec_runner_executes_supported_fixture(self) -> None:
         result = run(

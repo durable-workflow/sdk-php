@@ -26,6 +26,7 @@ CODEC_SCHEMA = "durable-workflow.codec-regression/v1"
 REPLAY_SCHEMA = "durable-workflow.replay-regression/v1"
 GOLDEN_HISTORY_SCHEMA = "durable-workflow.golden-history.v1"
 PHP_PAYLOAD_PROJECTION_SCHEMA = "durable-workflow.php-replay-payload-projection/v1"
+PHP_CODEC_VALUE_PROJECTION_SCHEMA = "durable-workflow.php-codec-value-projection/v1"
 SUPPORTED_FORMATS = {
     "avro-value-golden-v1",
     "codec-regression-v1",
@@ -159,6 +160,109 @@ class PhpReplayPayloadProjector:
         if projections[0] != projections[1]:
             raise CorpusError(
                 "official PHP replay payload consumer returned inconsistent projections"
+            )
+        self.cache[request] = projections[0]
+        return projections[0]
+
+
+class PhpCodecValueProjector:
+    """Obtain encode-reject identity from the official PHP fixture consumer."""
+
+    def __init__(
+        self,
+        *,
+        executable: str,
+        runner: Path,
+        vendor_root: Path,
+        consumer_root: Path,
+        source_root: Path,
+    ) -> None:
+        self.executable = executable
+        self.runner = runner
+        self.vendor_root = vendor_root
+        self.consumer_root = consumer_root
+        self.source_root = source_root
+        self.cache: dict[str, Any] = {}
+
+    def project(self, value: Any) -> Any:
+        try:
+            request = json.dumps(
+                {"value": value},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as error:
+            raise CorpusError(
+                "codec value cannot be passed to the official PHP consumer"
+            ) from error
+        if request in self.cache:
+            return self.cache[request]
+        if not self.runner.is_file():
+            raise CorpusError(
+                f"official PHP codec value consumer is unavailable: {self.runner}"
+            )
+        if (
+            not self.vendor_root.is_dir()
+            or not self.consumer_root.is_dir()
+            or not self.source_root.is_dir()
+        ):
+            raise CorpusError(
+                "official PHP codec value consumer dependencies are unavailable"
+            )
+
+        try:
+            result = subprocess.run(
+                [
+                    self.executable,
+                    str(self.runner),
+                    "--vendor-root",
+                    str(self.vendor_root),
+                    "--consumer-root",
+                    str(self.consumer_root),
+                    "--source-root",
+                    str(self.source_root),
+                ],
+                input=request,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as error:
+            raise CorpusError(
+                "official PHP codec value consumer is unavailable"
+            ) from error
+        if result.returncode != 0:
+            raise CorpusError(
+                "official PHP codec value consumer could not project tagged value: "
+                f"{_process_detail(result)}"
+            )
+        try:
+            report = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise CorpusError(
+                "official PHP codec value consumer returned an invalid projection"
+            ) from error
+        if (
+            not isinstance(report, Mapping)
+            or report.get("schema") != PHP_CODEC_VALUE_PROJECTION_SCHEMA
+        ):
+            raise CorpusError(
+                "official PHP codec value consumer returned an invalid projection"
+            )
+        projections = report.get("projections")
+        if (
+            not isinstance(projections, Sequence)
+            or isinstance(projections, str | bytes)
+            or len(projections) != 2
+        ):
+            raise CorpusError(
+                "official PHP codec value consumer returned an invalid projection"
+            )
+        if projections[0] != projections[1]:
+            raise CorpusError(
+                "official PHP codec value consumer returned inconsistent projections"
             )
         self.cache[request] = projections[0]
         return projections[0]
@@ -899,16 +1003,20 @@ def _codec_semantic(
     error: str | None,
     rejected_value: Any = None,
 ) -> dict[str, Any]:
-    semantic = {
-        "wire_base64": wire,
-        "failure_policy": {"operation": operation, "error": error},
-    }
+    semantic = {"failure_policy": {"operation": operation, "error": error}}
     if operation == "encode_reject":
         semantic["value"] = rejected_value
+    else:
+        semantic["wire_base64"] = wire
     return semantic
 
 
-def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) -> list[Evidence]:
+def _codec_fixture(
+    document: Mapping[str, Any],
+    path: str,
+    binding: str | None,
+    value_projector: PhpCodecValueProjector | None,
+) -> list[Evidence]:
     _string(document.get("$schema"), f"{path}.$schema")
     if document.get("fixture_schema") != CODEC_SCHEMA:
         raise CorpusError(f"{path} must declare fixture_schema={CODEC_SCHEMA}")
@@ -949,6 +1057,16 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
         if wire is not None
         else None
     )
+    rejected_value: Any = None
+    if operation == "encode_reject":
+        if binding == "php":
+            if value_projector is None:
+                raise CorpusError(
+                    f"{path} cannot project encode_reject through the official PHP consumer"
+                )
+            rejected_value = value_projector.project(value)
+        else:
+            rejected_value = value
 
     supersedes = tuple(
         _string(item, f"{path}.supersedes[]")
@@ -962,7 +1080,7 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
         wire=canonical_wire,
         operation=operation,
         error=error,
-        rejected_value=value,
+        rejected_value=rejected_value,
     )
     return [
         _fixture_evidence(
@@ -1640,6 +1758,7 @@ def _inventory(
     *,
     new_paths: set[str] | None = None,
     payload_projector: PhpReplayPayloadProjector | None = None,
+    codec_value_projector: PhpCodecValueProjector | None = None,
 ) -> list[Evidence]:
     binding = policy.get("binding")
     evidence: list[Evidence] = []
@@ -1656,7 +1775,12 @@ def _inventory(
                 selected_paths.add(path)
                 document = _json(files[path], path)
                 if fixture_format == "codec-regression-v1":
-                    parsed = _codec_fixture(document, path, binding if isinstance(binding, str) else None)
+                    parsed = _codec_fixture(
+                        document,
+                        path,
+                        binding if isinstance(binding, str) else None,
+                        codec_value_projector,
+                    )
                 elif fixture_format == "replay-regression-v1":
                     parsed = _replay_fixture(
                         document,
@@ -1837,6 +1961,8 @@ def validate(
     codec_runner_path: Path,
     replay_runner_path: Path,
     vendor_root_path: Path,
+    codec_value_projector_executable: str,
+    codec_value_projector_path: Path,
     payload_projector_executable: str,
     payload_projector_path: Path,
     payload_consumer_root_path: Path,
@@ -1873,6 +1999,11 @@ def validate(
         if payload_consumer_vendor_root_path.is_absolute()
         else root / payload_consumer_vendor_root_path
     ).resolve()
+    codec_value_projector_runner = (
+        codec_value_projector_path
+        if codec_value_projector_path.is_absolute()
+        else payload_consumer_root / codec_value_projector_path
+    ).resolve()
     try:
         policy_relative_path = policy_file.relative_to(root).as_posix()
     except ValueError as error:
@@ -1887,6 +2018,17 @@ def validate(
             executable=payload_projector_executable,
             runner=payload_projector_runner,
             vendor_root=payload_consumer_vendor_root,
+            source_root=payload_consumer_root,
+        )
+        if policy.get("binding") == "php"
+        else None
+    )
+    codec_value_projector = (
+        PhpCodecValueProjector(
+            executable=codec_value_projector_executable,
+            runner=codec_value_projector_runner,
+            vendor_root=payload_consumer_vendor_root,
+            consumer_root=payload_consumer_root,
             source_root=payload_consumer_root,
         )
         if policy.get("binding") == "php"
@@ -1924,12 +2066,14 @@ def validate(
             policy,
             base_files,
             payload_projector=payload_projector,
+            codec_value_projector=codec_value_projector,
         )
     current_evidence = _inventory(
         policy,
         current_files,
         new_paths=added_paths,
         payload_projector=payload_projector,
+        codec_value_projector=codec_value_projector,
     )
 
     current_by_id = {item.identity: item for item in current_evidence}
@@ -2037,6 +2181,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=Path("scripts/ci/run-replay-regression-fixture.php"),
     )
     parser.add_argument("--vendor-root", type=Path, default=Path("vendor"))
+    parser.add_argument("--codec-value-projector-executable")
+    parser.add_argument(
+        "--codec-value-projector",
+        type=Path,
+        default=Path("scripts/ci/project-codec-regression-value.php"),
+    )
     parser.add_argument("--payload-projector-executable")
     parser.add_argument(
         "--payload-projector",
@@ -2059,6 +2209,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             codec_runner_path=args.codec_runner,
             replay_runner_path=args.replay_runner,
             vendor_root_path=args.vendor_root,
+            codec_value_projector_executable=(
+                args.codec_value_projector_executable
+                or args.payload_projector_executable
+                or args.php_executable
+            ),
+            codec_value_projector_path=args.codec_value_projector,
             payload_projector_executable=(
                 args.payload_projector_executable or args.php_executable
             ),
