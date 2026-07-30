@@ -31,7 +31,7 @@
   ],
   "malformed_frames": [
     {"name": "empty_blob", "error": "invalid_payload_framing", "wire_base64": ""},
-    {"name": "invalid_base64", "error": "invalid_payload_framing", "wire_base64": "JSUl"},
+    {"name": "decoded_non_magic_bytes", "error": "invalid_payload_framing", "wire_base64": "JSUl"},
     {"name": "short_frame", "error": "invalid_payload_framing", "wire_base64": "wwE="},
     {"name": "no_datum", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNw=="},
     {"name": "truncated_boolean", "error": "invalid_payload_framing", "wire_base64": "wwHioz3/VYAiNwI="},

@@ -354,6 +354,41 @@ raise SystemExit(0)
         self.write_json(path, fixture)
         return self.validate()
 
+    def validate_malformed_name_migration(
+        self,
+        base_name: str,
+        current_name: str,
+    ) -> subprocess.CompletedProcess[str]:
+        path = "resources/protocol/avro-value-v1-golden.json"
+        fixture = json.loads((self.root / path).read_text())
+        fixture["malformed_frames"][0]["wire_base64"] = "JSUl"
+        fixture["malformed_frames"][0]["name"] = base_name
+        self.write_json(path, fixture)
+        self.write_policy(
+            "src/Codec/*.php",
+            fixture_selectors=(
+                (path, "avro-value-golden-v1"),
+                (
+                    "tests/fixtures/codec-regressions/*.json",
+                    "codec-regression-v1",
+                ),
+            ),
+        )
+        self.git("add", "--all")
+        self.git(
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=legacy-malformed-name",
+        )
+        self.base_ref = self.git("rev-parse", "HEAD").stdout.strip()
+        fixture["malformed_frames"][0]["name"] = current_name
+        self.write_json(path, fixture)
+        return self.validate()
+
     def validate(self) -> subprocess.CompletedProcess[str]:
         return run(
             sys.executable,
@@ -827,6 +862,23 @@ raise SystemExit(0)
         result = self.validate_malformed_wire_migration("%%%", "JSUl")
 
         self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_malformed_name_migration_accepts_decoded_behavior_reclassification(self) -> None:
+        result = self.validate_malformed_name_migration(
+            "invalid_base64",
+            "decoded_non_magic_bytes",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_malformed_name_migration_rejects_unrelated_reclassification(self) -> None:
+        result = self.validate_malformed_name_migration(
+            "invalid_base64",
+            "unrelated_name",
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("immutable fixture file", result.stderr)
 
     def test_codec_schema_metadata_cannot_disguise_duplicate_behavior(self) -> None:
         (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")

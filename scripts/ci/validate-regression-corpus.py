@@ -246,8 +246,8 @@ def _canonical_wire_replacement(value: str) -> str | None:
     return canonical if canonical != value else None
 
 
-def _canonical_wire_migration(base_content: bytes, current_content: bytes) -> bool:
-    """Allow the one-way repair of legacy malformed-frame wire spellings."""
+def _avro_golden_migration(base_content: bytes, current_content: bytes) -> bool:
+    """Allow one-way repairs of legacy malformed-frame wire metadata."""
 
     try:
         base_document = json.loads(base_content)
@@ -271,21 +271,34 @@ def _canonical_wire_migration(base_content: bytes, current_content: bytes) -> bo
             return False
         base_wire = base_frame.get("wire_base64")
         current_wire = current_frame.get("wire_base64")
-        if base_wire == current_wire:
-            continue
-        if not isinstance(base_wire, str) or not isinstance(current_wire, str):
-            return False
-        if current_wire != _canonical_wire_replacement(base_wire):
-            return False
-        try:
-            _canonical_base64(
-                current_wire,
-                f"current.malformed_frames[{index}].wire_base64",
-            )
-        except CorpusError:
-            return False
-        base_frame["wire_base64"] = current_wire
-        migrated = True
+        if base_wire != current_wire:
+            if not isinstance(base_wire, str) or not isinstance(current_wire, str):
+                return False
+            if current_wire != _canonical_wire_replacement(base_wire):
+                return False
+            try:
+                _canonical_base64(
+                    current_wire,
+                    f"current.malformed_frames[{index}].wire_base64",
+                )
+            except CorpusError:
+                return False
+            base_frame["wire_base64"] = current_wire
+            migrated = True
+
+        base_name = base_frame.get("name")
+        current_name = current_frame.get("name")
+        if base_name != current_name:
+            if (
+                base_name != "invalid_base64"
+                or current_name != "decoded_non_magic_bytes"
+                or current_wire != "JSUl"
+                or base_frame.get("error") != "invalid_payload_framing"
+                or current_frame.get("error") != "invalid_payload_framing"
+            ):
+                return False
+            base_frame["name"] = current_name
+            migrated = True
 
     return migrated and base_document == current_document
 
@@ -1902,7 +1915,7 @@ def validate(
         for path in _fixture_paths(policy, base_files):
             current_content = current_files.get(path)
             if current_content != base_files[path] and current_content is not None:
-                if _canonical_wire_migration(base_files[path], current_content):
+                if _avro_golden_migration(base_files[path], current_content):
                     base_files[path] = current_content
                     continue
             if current_content != base_files[path]:
