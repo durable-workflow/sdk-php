@@ -320,6 +320,40 @@ raise SystemExit(0)
             },
         )
 
+    def validate_malformed_wire_migration(
+        self,
+        base_wire: str,
+        current_wire: str,
+    ) -> subprocess.CompletedProcess[str]:
+        path = "resources/protocol/avro-value-v1-golden.json"
+        fixture = json.loads((self.root / path).read_text())
+        fixture["malformed_frames"][0]["wire_base64"] = base_wire
+        self.write_json(path, fixture)
+        self.write_policy(
+            "src/Codec/*.php",
+            fixture_selectors=(
+                (path, "avro-value-golden-v1"),
+                (
+                    "tests/fixtures/codec-regressions/*.json",
+                    "codec-regression-v1",
+                ),
+            ),
+        )
+        self.git("add", "--all")
+        self.git(
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=legacy-malformed-wire",
+        )
+        self.base_ref = self.git("rev-parse", "HEAD").stdout.strip()
+        fixture["malformed_frames"][0]["wire_base64"] = current_wire
+        self.write_json(path, fixture)
+        return self.validate()
+
     def validate(self) -> subprocess.CompletedProcess[str]:
         return run(
             sys.executable,
@@ -692,6 +726,38 @@ raise SystemExit(0)
         self.assertIn("avro-value-v1-golden.json", result.stderr)
         self.assertIn("duplicate-long-seven.json", result.stderr)
 
+    def test_empty_blob_cross_format_rewrap_is_duplicate_evidence(self) -> None:
+        (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
+        fixture = self.codec_fixture("duplicate-avro-empty-blob", "0", "")
+        fixture["failure_policy"] = {
+            "operation": "decode_reject",
+            "error": "invalid_payload_framing",
+        }
+        self.write_json(
+            "tests/fixtures/codec-regressions/duplicate-empty-blob.json",
+            fixture,
+        )
+        self.write_policy(
+            "src/Codec/*.php",
+            fixture_selectors=(
+                (
+                    "resources/protocol/avro-value-v1-golden.json",
+                    "avro-value-golden-v1",
+                ),
+                (
+                    "tests/fixtures/codec-regressions/*.json",
+                    "codec-regression-v1",
+                ),
+            ),
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("duplicate semantic fixtures", result.stderr)
+        self.assertIn("avro-value-v1-golden.json", result.stderr)
+        self.assertIn("duplicate-empty-blob.json", result.stderr)
+
     def test_codec_binding_metadata_cannot_disguise_duplicate_behavior(self) -> None:
         (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
         fixture = self.codec_fixture("duplicate-with-other-bindings", "0", "AA==")
@@ -745,6 +811,22 @@ raise SystemExit(0)
 
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertIn("is not canonical base64", result.stderr)
+
+    def test_malformed_wire_migration_rejects_different_decoded_bytes(self) -> None:
+        result = self.validate_malformed_wire_migration("AR==", "Ag==")
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("immutable fixture file", result.stderr)
+
+    def test_malformed_wire_migration_accepts_same_decoded_bytes(self) -> None:
+        result = self.validate_malformed_wire_migration("AR==", "AQ==")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_malformed_wire_migration_accepts_explicit_legacy_repair(self) -> None:
+        result = self.validate_malformed_wire_migration("%%%", "JSUl")
+
+        self.assertEqual(0, result.returncode, result.stderr)
 
     def test_codec_schema_metadata_cannot_disguise_duplicate_behavior(self) -> None:
         (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")

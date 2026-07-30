@@ -49,6 +49,9 @@ PORTABLE_PHP_FIXTURE_GLOB = re.compile(
     r"^(?:[A-Za-z0-9._-]+/)*(?:[A-Za-z0-9._-]+|\*)\.json$"
 )
 ZERO_COMMIT = re.compile(r"^0+$")
+LEGACY_MALFORMED_WIRE_REPAIRS = {
+    "%%%": "JSUl",
+}
 PHP_NAMED_FUNCTION = re.compile(
     r"(?m)^[ \t]*(?:(?:abstract|final|private|protected|public|readonly|static)\s+)*"
     r"function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("
@@ -231,6 +234,18 @@ def _canonical_base64(value: str, context: str) -> str:
     return canonical
 
 
+def _canonical_wire_replacement(value: str) -> str | None:
+    """Return the only permitted canonical replacement for a legacy wire."""
+
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        return LEGACY_MALFORMED_WIRE_REPAIRS.get(value)
+
+    canonical = base64.b64encode(decoded).decode("ascii")
+    return canonical if canonical != value else None
+
+
 def _canonical_wire_migration(base_content: bytes, current_content: bytes) -> bool:
     """Allow the one-way repair of legacy malformed-frame wire spellings."""
 
@@ -260,11 +275,7 @@ def _canonical_wire_migration(base_content: bytes, current_content: bytes) -> bo
             continue
         if not isinstance(base_wire, str) or not isinstance(current_wire, str):
             return False
-        try:
-            _canonical_base64(base_wire, f"base.malformed_frames[{index}].wire_base64")
-        except CorpusError:
-            pass
-        else:
+        if current_wire != _canonical_wire_replacement(base_wire):
             return False
         try:
             _canonical_base64(
@@ -906,7 +917,9 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
     _string(value.get("type"), f"{path}.value.type")
     framing = _object(document.get("framing"), f"{path}.framing")
     _string(framing.get("encoding"), f"{path}.framing.encoding")
-    wire = _nullable_string(framing.get("wire_base64"), f"{path}.framing.wire_base64")
+    wire = framing.get("wire_base64")
+    if wire is not None and not isinstance(wire, str):
+        raise CorpusError(f"{path}.framing.wire_base64 must be a string or null")
     policy = _object(document.get("failure_policy"), f"{path}.failure_policy")
     operation = _string(policy.get("operation"), f"{path}.failure_policy.operation")
     if operation not in {"round_trip", "decode_reject", "encode_reject"}:
