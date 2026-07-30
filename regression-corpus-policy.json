@@ -59,6 +59,12 @@
           "content_patterns": [
             "function\\s+completeWorkflowTask\\s*\\("
           ]
+        },
+        {
+          "glob": "src/Client.php",
+          "content_patterns": [
+            "function\\s+workflowTaskHistory\\s*\\("
+          ]
         }
       ]
     }

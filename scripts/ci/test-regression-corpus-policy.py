@@ -55,6 +55,11 @@ class RegressionCorpusPolicyTest(unittest.TestCase):
             """<?php
 final class Client
 {
+    public function workflowTaskHistory(string $nextPageToken): array
+    {
+        return ['next_history_page_token' => $nextPageToken];
+    }
+
     public function completeWorkflowTask(array $commands): array
     {
         if ($commands === []) {
@@ -1958,6 +1963,68 @@ print(json.dumps({
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertIn("does not match", result.stderr)
 
+    def test_workflow_task_history_fixture_proves_page_token_counterfactual(
+        self,
+    ) -> None:
+        root, _ = self.official_replay_repository(
+            "official-workflow-task-history-counterfactual"
+        )
+        client_path = root / "src/Client.php"
+        candidate_client = client_path.read_text()
+        page_token = "'next_history_page_token' => $nextPageToken,"
+        self.assertIn(page_token, candidate_client)
+        client_path.write_text(
+            candidate_client.replace(
+                page_token,
+                "'next_history_page_token' => '',",
+                1,
+            )
+        )
+        run("git", "add", "--all", cwd=root)
+        result = run(
+            "git",
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=defective-base",
+            cwd=root,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        base_ref = run("git", "rev-parse", "HEAD", cwd=root).stdout.strip()
+
+        client_path.write_text(candidate_client)
+        fixture_path = (
+            root
+            / "tests/fixtures/replay-regressions/workflow-task-history-page.json"
+        )
+        fixture_path.write_text(
+            json.dumps(
+                self.official_history_fixture(
+                    "workflow-task-history-page-token-counterfactual"
+                ),
+                indent=2,
+            )
+            + "\n"
+        )
+
+        result = self.validate_official_replay_repository(root, base_ref)
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertTrue(report["counts"]["replay"]["related_change"])
+        self.assertEqual(1, report["counts"]["replay"]["revision_verified"])
+        self.assertEqual(
+            {
+                "base": "fail",
+                "candidate": "pass",
+                "consumer": "worker",
+            },
+            report["counts"]["replay"]["counterfactual"],
+        )
+
     def test_official_php_runner_exercises_initial_history_extraction(self) -> None:
         source_root = self.root / "initial-history-source"
         shutil.copytree(REPOSITORY_ROOT / "src", source_root / "src")
@@ -2193,6 +2260,26 @@ raise SystemExit(0 if "$history = ['changed'];" in source else 1)
             client.read_text().replace(
                 "return ['status' => 'waiting'];",
                 "return ['status' => 'ready'];",
+            )
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "replay implementation changed but its corpus did not grow "
+            "(base=0, current=0)",
+            result.stderr,
+        )
+
+    def test_workflow_task_history_body_change_requires_replay_corpus_growth(
+        self,
+    ) -> None:
+        client = self.root / "src/Client.php"
+        client.write_text(
+            client.read_text().replace(
+                "return ['next_history_page_token' => $nextPageToken];",
+                "return ['next_history_page_token' => ''];",
             )
         )
 
