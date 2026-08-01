@@ -8,9 +8,10 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Advanced to the synchronized Durable Workflow `2.0.0-rc.5` product train. This
-  is the supported 2.0 baseline; earlier prereleases retain historical release
-  records but receive no compatibility shim.
+- Advanced the PHP SDK to `2.0.0-rc.6` and qualified it with Server
+  `2.0.0-rc.12`. SDK and Server prerelease counters remain independent; earlier
+  prereleases retain historical release records but receive no compatibility
+  shim.
 - Replaced the prerelease JSON wrapper with the fixed recursive
   `durable_workflow.protocol.Value` schema and Avro single-object framing.
   `AvroBinaryValue` makes the bytes branch explicit while PHP strings remain
@@ -25,6 +26,9 @@ project follows [Semantic Versioning](https://semver.org/).
   preparation authority before publishing a newly recorded plan.
 
 ### Fixed
+
+- Client construction rejects base URIs ending in the SDK-owned `/api` path
+  segment before they can produce duplicated request paths.
 
 - Explicit release recovery rejects terminally superseded plans before and
   after publication preflight while keeping completed-plan verification

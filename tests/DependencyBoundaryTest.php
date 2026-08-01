@@ -8,9 +8,15 @@ use PHPUnit\Framework\TestCase;
 
 final class DependencyBoundaryTest extends TestCase
 {
+    /** @return array<string, mixed> */
+    private function manifest(): array
+    {
+        return json_decode((string) file_get_contents(dirname(__DIR__).'/composer.json'), true, 512, JSON_THROW_ON_ERROR);
+    }
+
     public function testProductionManifestHasNoEmbeddedFrameworkDependencies(): void
     {
-        $manifest = json_decode((string) file_get_contents(dirname(__DIR__).'/composer.json'), true, 512, JSON_THROW_ON_ERROR);
+        $manifest = $this->manifest();
         $requirements = array_keys($manifest['require']);
         $forbidden = ['laravel/', 'illuminate/', 'durable-workflow/workflow', 'durable-workflow/server'];
 
@@ -19,5 +25,13 @@ final class DependencyBoundaryTest extends TestCase
                 self::assertFalse(str_starts_with(strtolower($requirement), $prefix), "Forbidden dependency {$requirement}");
             }
         }
+    }
+
+    public function testPrereleaseMetadataBindsTheSdkToItsQualifiedServer(): void
+    {
+        $metadata = $this->manifest()['extra']['durable-workflow'];
+
+        self::assertSame('2.0.0-rc.6', $metadata['product-train']);
+        self::assertSame('2.0.0-rc.12', $metadata['supported-server-versions']);
     }
 }

@@ -59,13 +59,21 @@ final class Client
         if (trim($baseUri) === '') {
             throw new InvalidArgumentException('The Durable Workflow server URI cannot be empty.');
         }
+        $normalizedBaseUri = rtrim($baseUri, '/');
+        $basePath = parse_url($normalizedBaseUri, PHP_URL_PATH);
+        $hasSdkApiSuffix = is_string($basePath) && str_ends_with(rtrim($basePath, '/'), '/api');
+        if ($hasSdkApiSuffix) {
+            throw new InvalidArgumentException(
+                'Invalid Durable Workflow base URI: omit the SDK-owned /api suffix and pass the Server or Cloud runtime base URI; the SDK appends /api automatically.',
+            );
+        }
         if ($authentication !== null && ($token !== null || $controlToken !== null || $workerToken !== null)) {
             throw new InvalidArgumentException('Pass either an Authentication implementation or token arguments, not both.');
         }
         if (trim($this->namespace) === '') {
             throw new InvalidArgumentException('The Durable Workflow namespace cannot be empty.');
         }
-        $this->baseUri = rtrim($baseUri, '/');
+        $this->baseUri = $normalizedBaseUri;
         $this->authentication = $authentication
             ?? (($token !== null || $controlToken !== null || $workerToken !== null)
                 ? new TokenAuthentication($token, $controlToken, $workerToken)

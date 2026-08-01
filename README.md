@@ -10,13 +10,13 @@ It targets PHP 8.1 or newer and does not require Laravel or the embedded
 Install the package from Packagist:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.5@RC
+composer require durable-workflow/sdk:2.0.0-rc.6@RC
 ```
 
-This exact package is the PHP SDK member of the supported Durable Workflow
-`2.0.0-rc.5` product train and supports the server with that same version.
-Earlier 2.0 prereleases and pre-1.0 SDK releases remain historical rather than
-alternate supported baselines.
+This exact package is PHP SDK `2.0.0-rc.6` and is qualified with Server
+`2.0.0-rc.12`. SDK and Server prerelease counters are independent. Earlier 2.0
+prereleases and pre-1.0 SDK releases remain historical rather than alternate
+supported baselines.
 
 To install directly from the source repository before a tagged release:
 
@@ -31,6 +31,10 @@ the default PSR-18 transport; any PSR-18 client and PSR-17 factories can be
 injected instead.
 
 ## Start and inspect a workflow
+
+Pass the Server origin or the complete Cloud runtime base URI to `Client`
+without a terminal `/api`; the SDK owns and appends that path segment. Keep any
+other Cloud runtime path prefix exactly as provided.
 
 ```php
 <?php
