@@ -9,8 +9,13 @@ import sys
 import unittest
 from pathlib import Path
 
+from release_recovery_consumer_conformance import legacy_beta_one_plan
+
 
 SCRIPT = Path(__file__).with_name("php_waterline_release_train.py")
+WORKFLOW = (
+    Path(__file__).parents[2] / ".github" / "workflows" / "release-plan-recovery.yml"
+)
 SPEC = importlib.util.spec_from_file_location("php_waterline_release_train", SCRIPT)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError(f"cannot load {SCRIPT}")
@@ -38,6 +43,13 @@ def manifest(candidate: dict) -> tuple[dict, bytes]:
         "extra": {"durable-workflow": {"product-train": versions["waterline"]}},
     }
     return value, b"exact planned Waterline composer source"
+
+
+def workflow_step(name: str) -> str:
+    marker = f"      - name: {name}\n"
+    source = WORKFLOW.read_text(encoding="utf-8")
+    section = source.split(marker, 1)[1]
+    return section.split("      - name:", 1)[0]
 
 
 class PhpWaterlineReleaseTrainTest(unittest.TestCase):
@@ -80,6 +92,25 @@ class PhpWaterlineReleaseTrainTest(unittest.TestCase):
         evidence = train.validate(historical, baseline, composer, raw)
 
         self.assertEqual("historical-compatible-pair", evidence["transition"])
+
+    def test_completed_immutable_beta_one_skips_prerelease_train_validator(
+        self,
+    ) -> None:
+        historical = legacy_beta_one_plan()
+
+        self.assertEqual("beta-1-e743e3760000", historical["plan"])
+        self.assertEqual("0.1.16", historical["components"]["sdk-php"]["version"])
+        with self.assertRaisesRegex(
+            train.TrainError,
+            "exact prerelease sdk-php",
+        ):
+            train.versions(historical)
+
+        qualification = workflow_step("Require a compatible sequential Waterline train")
+        self.assertIn(
+            "        if: steps.recovery.outputs.action == 'publish'\n",
+            qualification,
+        )
 
 
 if __name__ == "__main__":
