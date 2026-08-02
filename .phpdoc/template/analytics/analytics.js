@@ -3,6 +3,7 @@
 
   const MEASUREMENT_ID = 'G-HD1YHT442Y';
   const SITE_HOSTNAME = 'php.durable-workflow.com';
+  const PARENT_COOKIE_DOMAIN = 'durable-workflow.com';
   const CONSENT_KEY = 'durable-workflow.analytics-consent.v1';
   const LOADER_ID = 'durable-workflow-ga4-loader';
   const BANNER_ID = 'durable-workflow-analytics-consent';
@@ -56,6 +57,7 @@
       allow_ad_personalization_signals: false,
       allow_google_signals: false,
       anonymize_ip: true,
+      cookie_domain: SITE_HOSTNAME,
       send_page_view: true,
     });
     if (!document.getElementById(LOADER_ID)) {
@@ -73,7 +75,9 @@
       const name = cookie.split('=', 1)[0].trim();
       if (!name.startsWith('_ga')) continue;
       document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Lax`;
-      document.cookie = `${name}=; Max-Age=0; Path=/; Domain=.${SITE_HOSTNAME}; SameSite=Lax`;
+      for (const domain of new Set([SITE_HOSTNAME, PARENT_COOKIE_DOMAIN])) {
+        document.cookie = `${name}=; Max-Age=0; Path=/; Domain=.${domain}; SameSite=Lax`;
+      }
     }
   }
 

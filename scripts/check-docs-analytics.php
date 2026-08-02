@@ -13,7 +13,15 @@ if (file_get_contents($buildDirectory.'/analytics/analytics.js') !== $runtime) {
     throw new RuntimeException('Rendered phpDocumentor analytics runtime is stale.');
 }
 
-foreach (['G-HD1YHT442Y', 'php.durable-workflow.com', "analytics_storage: 'granted'", 'send_page_view: true'] as $required) {
+foreach ([
+    'G-HD1YHT442Y',
+    'php.durable-workflow.com',
+    "analytics_storage: 'granted'",
+    'send_page_view: true',
+    'cookie_domain: SITE_HOSTNAME',
+    "PARENT_COOKIE_DOMAIN = 'durable-workflow.com'",
+    'new Set([SITE_HOSTNAME, PARENT_COOKIE_DOMAIN])',
+] as $required) {
     if (! str_contains($runtime, $required)) {
         throw new RuntimeException("Analytics runtime is missing required configuration: {$required}");
     }
