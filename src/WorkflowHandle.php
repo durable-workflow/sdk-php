@@ -9,7 +9,7 @@ use DurableWorkflow\Model\WorkflowRun;
 use LogicException;
 
 /** Operations bound to one stable workflow ID and, optionally, its originally selected run. */
-final class WorkflowHandle
+final class WorkflowHandle implements WorkflowHandleInterface
 {
     public function __construct(
         private readonly Client $client,

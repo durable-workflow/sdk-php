@@ -8,7 +8,7 @@ if grep -Eqi '"name"[[:space:]]*:[[:space:]]*"(laravel/|illuminate/|durable-work
   exit 1
 fi
 
-if grep -Eqi '"(laravel/|illuminate/|durable-workflow/(workflow|server))"[[:space:]]*:' composer.json; then
+if grep -Eqi '"(laravel/|illuminate/|symfony/|durable-workflow/(workflow|server))"[[:space:]]*:' composer.json; then
   echo "composer.json declares a forbidden production dependency." >&2
   exit 1
 fi

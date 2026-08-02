@@ -5,13 +5,20 @@ declare(strict_types=1);
 namespace DurableWorkflow;
 
 use DurableWorkflow\Exception\ActivityCancelled;
+use DurableWorkflow\Exception\InvalidWorkerDefinition;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\DiscoveredHandlers;
+use DurableWorkflow\Worker\HandlerDiscovery;
+use DurableWorkflow\Worker\HandlerResolver;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
+use Psr\Container\ContainerInterface;
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 use Throwable;
 
 /** Managed synchronous remote worker for workflow, activity, query, and update tasks. */
@@ -43,6 +50,10 @@ final class Worker
     private readonly \Closure $sleeper;
     private readonly string $workerId;
     private readonly Replayer $replayer;
+    private readonly HandlerDiscovery $handlerDiscovery;
+    private readonly LoggerInterface $logger;
+    /** @var (\Closure(string, array<string, mixed>): void)|null */
+    private readonly ?\Closure $diagnosticListener;
 
     public function __construct(
         private readonly Client $client,
@@ -54,6 +65,10 @@ final class Worker
         ?\Closure $sleeper = null,
         /** @var (\Closure(string, int, float, ServerException): void)|null */
         private readonly ?\Closure $transientPollRetryObserver = null,
+        ?ContainerInterface $container = null,
+        ?LoggerInterface $logger = null,
+        /** @var (callable(string, array<string, mixed>): void)|null $diagnosticListener */
+        ?callable $diagnosticListener = null,
     ) {
         $this->workerId = $workerId ?? 'php-worker-'.bin2hex(random_bytes(8));
         $this->heartbeatIntervalSeconds = $this->validHeartbeatInterval($heartbeatIntervalSeconds)
@@ -63,11 +78,76 @@ final class Worker
             usleep($microseconds);
         };
         $this->replayer = new Replayer($client->payloadCodec());
+        $this->handlerDiscovery = new HandlerDiscovery(new HandlerResolver($container));
+        $this->logger = $logger ?? new NullLogger();
+        $this->diagnosticListener = $diagnosticListener === null
+            ? null
+            : \Closure::fromCallable($diagnosticListener);
+    }
+
+    /**
+     * Construct the preferred class-oriented worker surface.
+     *
+     * @param (callable(string, array<string, mixed>): void)|null $diagnosticListener
+     */
+    public static function create(
+        Client $client,
+        string $taskQueue,
+        ?ContainerInterface $container = null,
+        ?LoggerInterface $logger = null,
+        ?callable $diagnosticListener = null,
+    ): self {
+        return new self(
+            $client,
+            $taskQueue,
+            container: $container,
+            logger: $logger,
+            diagnosticListener: $diagnosticListener,
+        );
+    }
+
+    /**
+     * Discover and register one or more attribute-based handler services.
+     *
+     * @param class-string|object ...$services
+     */
+    public function register(string|object ...$services): self
+    {
+        $discovered = array_map($this->handlerDiscovery->discover(...), $services);
+        $this->assertDiscoveriesCanRegister($discovered);
+
+        foreach ($discovered as $handlers) {
+            foreach ($handlers->workflows as $name => $handler) {
+                $this->registerWorkflow($name, $handler);
+            }
+            foreach ($handlers->activities as $name => $handler) {
+                $this->registerActivity($name, $handler);
+            }
+            foreach ($handlers->queries as $workflowType => $queries) {
+                foreach ($queries as $name => $handler) {
+                    $this->registerQuery($workflowType, $name, $handler);
+                }
+            }
+            foreach ($handlers->signals as $workflowType => $signals) {
+                foreach ($signals as $name => $handler) {
+                    $this->declareSignal($workflowType, $name, $handler);
+                }
+            }
+            foreach ($handlers->updates as $workflowType => $updates) {
+                foreach ($updates as $name => $handler) {
+                    $this->registerUpdate($workflowType, $name, $handler);
+                }
+            }
+        }
+
+        return $this;
     }
 
     /** @param callable(WorkflowContext, mixed ...$arguments): mixed $handler */
     public function registerWorkflow(string $workflowType, callable $handler): self
     {
+        $this->assertValidDeclarationName($workflowType, 'workflow');
+        $this->assertHandlerContext($handler, WorkflowContext::class, "workflow {$workflowType}");
         $this->assertUnique($this->workflows, $workflowType, 'workflow');
         $this->workflows[$workflowType] = $handler;
 
@@ -77,6 +157,8 @@ final class Worker
     /** @param callable(ActivityContext, mixed ...$arguments): mixed $handler */
     public function registerActivity(string $activityType, callable $handler): self
     {
+        $this->assertValidDeclarationName($activityType, 'activity');
+        $this->assertHandlerContext($handler, ActivityContext::class, "activity {$activityType}");
         $this->assertUnique($this->activities, $activityType, 'activity');
         $this->activities[$activityType] = $handler;
 
@@ -86,6 +168,9 @@ final class Worker
     /** @param callable(QueryContext, mixed ...$arguments): mixed $handler */
     public function registerQuery(string $workflowType, string $queryName, callable $handler): self
     {
+        $this->assertValidDeclarationName($workflowType, 'workflow');
+        $this->assertValidDeclarationName($queryName, 'query');
+        $this->assertHandlerContext($handler, QueryContext::class, "query {$workflowType}.{$queryName}");
         $this->queries[$workflowType] ??= [];
         $this->assertUnique($this->queries[$workflowType], $queryName, 'query');
         $this->queries[$workflowType][$queryName] = $handler;
@@ -104,8 +189,8 @@ final class Worker
      */
     public function declareSignal(string $workflowType, string $signalName, ?callable $signature = null): self
     {
-        $this->assertValidDeclarationName($workflowType, 'workflow type');
-        $this->assertValidDeclarationName($signalName, 'signal');
+        $this->assertValidDeclarationName($workflowType, 'workflow type', true);
+        $this->assertValidDeclarationName($signalName, 'signal', true);
         $this->signals[$workflowType] ??= [];
         $this->assertUnique($this->signals[$workflowType], $signalName, 'signal');
         $this->signals[$workflowType][$signalName] = $signature ?? static fn (): mixed => null;
@@ -116,6 +201,9 @@ final class Worker
     /** @param callable(QueryContext, mixed ...$arguments): mixed $handler */
     public function registerUpdate(string $workflowType, string $updateName, callable $handler): self
     {
+        $this->assertValidDeclarationName($workflowType, 'workflow');
+        $this->assertValidDeclarationName($updateName, 'update');
+        $this->assertHandlerContext($handler, QueryContext::class, "update {$workflowType}.{$updateName}");
         $this->updates[$workflowType] ??= [];
         $this->assertUnique($this->updates[$workflowType], $updateName, 'update');
         $this->updates[$workflowType][$updateName] = $handler;
@@ -125,24 +213,141 @@ final class Worker
 
     public function requestShutdown(): void
     {
+        if ($this->shutdownRequested) {
+            return;
+        }
         $this->shutdownRequested = true;
+        $this->diagnostic('worker.shutdown_requested', ['worker_id' => $this->workerId]);
     }
 
     public function run(int $pollTimeoutSeconds = 5): void
     {
+        $this->validate();
+        $this->diagnostic('worker.starting', [
+            'worker_id' => $this->workerId,
+            'task_queue' => $this->taskQueue,
+            'contracts' => $this->contracts(),
+        ]);
         $this->installSignalHandlers();
-        $registration = $this->registerWithRetry();
-        if ($registration === null) {
-            return;
-        }
-        $this->applyHeartbeatInterval($registration);
-        $this->registered = true;
-        $this->lastHeartbeatAt = $this->now();
+        $runFailure = null;
+        try {
+            $registration = $this->registerWithRetry();
+            if ($registration === null) {
+                return;
+            }
+            $this->applyHeartbeatInterval($registration);
+            $this->registered = true;
+            $this->lastHeartbeatAt = $this->now();
+            $this->diagnostic('worker.registered', [
+                'worker_id' => $this->workerId,
+                'task_queue' => $this->taskQueue,
+                'heartbeat_interval_seconds' => $this->heartbeatIntervalSeconds,
+            ]);
 
-        while (!$this->shutdownRequested) {
-            $this->tick($pollTimeoutSeconds);
-            $this->heartbeatIfDue();
+            while (!$this->shutdownRequested) {
+                $this->tick($pollTimeoutSeconds);
+                $this->heartbeatIfDue();
+            }
+        } catch (Throwable $exception) {
+            $runFailure = $exception;
+            $this->diagnostic('worker.failed', [
+                'worker_id' => $this->workerId,
+                'task_queue' => $this->taskQueue,
+                'exception' => $exception,
+            ], 'error');
+            throw $exception;
+        } finally {
+            if ($this->registered) {
+                try {
+                    $this->client->deregisterWorker($this->workerId);
+                    $this->registered = false;
+                    $this->diagnostic('worker.deregistered', ['worker_id' => $this->workerId]);
+                } catch (Throwable $exception) {
+                    $this->diagnostic('worker.shutdown_failed', [
+                        'worker_id' => $this->workerId,
+                        'exception' => $exception,
+                    ], 'error');
+                    if ($runFailure === null) {
+                        throw $exception;
+                    }
+                }
+            }
+            $this->diagnostic('worker.stopped', [
+                'worker_id' => $this->workerId,
+                'task_queue' => $this->taskQueue,
+            ]);
         }
+    }
+
+    /** Validate every registered command contract without contacting the server. */
+    public function validate(): void
+    {
+        foreach ($this->workflows as $name => $handler) {
+            $this->assertValidDeclarationName($name, 'workflow');
+            $this->assertHandlerContext($handler, WorkflowContext::class, "workflow {$name}");
+        }
+        foreach ($this->activities as $name => $handler) {
+            $this->assertValidDeclarationName($name, 'activity');
+            $this->assertHandlerContext($handler, ActivityContext::class, "activity {$name}");
+        }
+        foreach ($this->queries as $workflowType => $handlers) {
+            foreach ($handlers as $name => $handler) {
+                $this->assertValidDeclarationName($name, 'query');
+                $this->assertHandlerContext($handler, QueryContext::class, "query {$workflowType}.{$name}");
+            }
+        }
+        foreach ($this->signals as $workflowType => $handlers) {
+            foreach (array_keys($handlers) as $name) {
+                $this->assertValidDeclarationName($name, 'signal');
+            }
+        }
+        foreach ($this->updates as $workflowType => $handlers) {
+            foreach ($handlers as $name => $handler) {
+                $this->assertValidDeclarationName($name, 'update');
+                $this->assertHandlerContext($handler, QueryContext::class, "update {$workflowType}.{$name}");
+            }
+        }
+    }
+
+    /**
+     * Return the complete local definition sent during worker registration.
+     *
+     * @return array{
+     *     workflows: list<string>,
+     *     activities: list<string>,
+     *     workflow_commands: array<string, mixed>
+     * }
+     */
+    public function contracts(): array
+    {
+        return [
+            'workflows' => array_keys($this->workflows),
+            'activities' => array_keys($this->activities),
+            'workflow_commands' => $this->workflowCommandContracts(),
+        ];
+    }
+
+    /**
+     * Resolve a registered callable for the public worker test harness.
+     *
+     * @internal Applications should use register() or the explicit low-level registration methods.
+     */
+    public function registeredHandler(string $kind, string $name, ?string $workflowType = null): callable
+    {
+        $handler = match ($kind) {
+            'workflow' => $this->workflows[$name] ?? null,
+            'activity' => $this->activities[$name] ?? null,
+            'query' => $workflowType === null ? null : ($this->queries[$workflowType][$name] ?? null),
+            'signal' => $workflowType === null ? null : ($this->signals[$workflowType][$name] ?? null),
+            'update' => $workflowType === null ? null : ($this->updates[$workflowType][$name] ?? null),
+            default => null,
+        };
+        if ($handler === null) {
+            $identity = $workflowType === null ? $name : "{$workflowType}.{$name}";
+            throw new \InvalidArgumentException("No {$kind} handler is registered for {$identity}.");
+        }
+
+        return $handler;
     }
 
     /** @return array<string, mixed>|null */
@@ -173,6 +378,13 @@ final class Worker
                 if ($this->transientPollRetryObserver !== null) {
                     ($this->transientPollRetryObserver)('registration', $attempt, $delaySeconds, $exception);
                 }
+                $this->diagnostic('worker.retrying', [
+                    'worker_id' => $this->workerId,
+                    'operation' => 'registration',
+                    'attempt' => $attempt,
+                    'delay_seconds' => $delaySeconds,
+                    'exception' => $exception,
+                ], 'warning');
                 $this->waitForTransientRetry($delaySeconds);
             }
         }
@@ -308,6 +520,13 @@ final class Worker
                 if ($this->transientPollRetryObserver !== null) {
                     ($this->transientPollRetryObserver)($taskKind, $attempt, $delaySeconds, $exception);
                 }
+                $this->diagnostic('worker.retrying', [
+                    'worker_id' => $this->workerId,
+                    'operation' => "{$taskKind}_poll",
+                    'attempt' => $attempt,
+                    'delay_seconds' => $delaySeconds,
+                    'exception' => $exception,
+                ], 'warning');
                 $this->waitForTransientRetry($delaySeconds);
             }
         }
@@ -356,6 +575,12 @@ final class Worker
         }
 
         $this->shutdownRequested = true;
+        $this->registered = false;
+        $this->diagnostic('worker.stopped_by_server', [
+            'worker_id' => $this->workerId,
+            'poll_status' => $response['poll_status'] ?? null,
+            'reason' => $response['reason'] ?? null,
+        ], 'warning');
 
         return true;
     }
@@ -401,6 +626,7 @@ final class Worker
                 } catch (NonDeterministicWorkflow $exception) {
                     throw $exception;
                 } catch (Throwable $exception) {
+                    $this->handlerFailure('workflow', $workflowType, $exception);
                     $commands = [[
                         'type' => 'fail_workflow',
                         'message' => $exception->getMessage(),
@@ -595,6 +821,7 @@ final class Worker
         if ($this->isTerminalTaskConflict($taskKind, $taskId, $taskFailure)) {
             return;
         }
+        $this->handlerFailure($taskKind, $taskId, $taskFailure);
         if ($taskFailure instanceof ServerException) {
             throw $taskFailure;
         }
@@ -684,6 +911,7 @@ final class Worker
                 'result' => $this->client->payloadCodec()->envelope($handler($context, ...$arguments)),
             ];
         } catch (Throwable $exception) {
+            $this->handlerFailure('update', "{$workflowType}.{$updateName}", $exception);
             return [
                 'type' => 'fail_update',
                 'update_id' => $updateId,
@@ -951,6 +1179,93 @@ final class Worker
         return $contracts;
     }
 
+    /** @param list<DiscoveredHandlers> $discoveries */
+    private function assertDiscoveriesCanRegister(array $discoveries): void
+    {
+        $workflows = $this->workflows;
+        $activities = $this->activities;
+        $queries = $this->queries;
+        $signals = $this->signals;
+        $updates = $this->updates;
+
+        foreach ($discoveries as $discovery) {
+            try {
+                foreach ($discovery->workflows as $name => $handler) {
+                    $this->assertUnique($workflows, $name, 'workflow');
+                    $workflows[$name] = $handler;
+                }
+                foreach ($discovery->activities as $name => $handler) {
+                    $this->assertUnique($activities, $name, 'activity');
+                    $activities[$name] = $handler;
+                }
+                foreach ($discovery->queries as $workflowType => $handlers) {
+                    $queries[$workflowType] ??= [];
+                    foreach ($handlers as $name => $handler) {
+                        $this->assertUnique($queries[$workflowType], $name, 'query');
+                        $queries[$workflowType][$name] = $handler;
+                    }
+                }
+                foreach ($discovery->signals as $workflowType => $handlers) {
+                    $signals[$workflowType] ??= [];
+                    foreach ($handlers as $name => $handler) {
+                        $this->assertUnique($signals[$workflowType], $name, 'signal');
+                        $signals[$workflowType][$name] = $handler;
+                    }
+                }
+                foreach ($discovery->updates as $workflowType => $handlers) {
+                    $updates[$workflowType] ??= [];
+                    foreach ($handlers as $name => $handler) {
+                        $this->assertUnique($updates[$workflowType], $name, 'update');
+                        $updates[$workflowType][$name] = $handler;
+                    }
+                }
+            } catch (\InvalidArgumentException $exception) {
+                throw new InvalidWorkerDefinition(
+                    $discovery->class,
+                    $exception->getMessage().' Rename the attributed contract or remove the duplicate service.',
+                );
+            }
+        }
+    }
+
+    /** @param callable $handler */
+    private function assertHandlerContext(callable $handler, string $contextClass, string $contract): void
+    {
+        $reflection = new \ReflectionFunction(\Closure::fromCallable($handler));
+        $parameter = $reflection->getParameters()[0] ?? null;
+        $type = $parameter?->getType();
+        if ($type instanceof \ReflectionNamedType
+            && !$type->isBuiltin()
+            && $type->getName() === $contextClass
+        ) {
+            return;
+        }
+
+        throw new InvalidWorkerDefinition(
+            $contract,
+            "Make the first handler parameter {$contextClass}.",
+        );
+    }
+
+    private function handlerFailure(string $kind, string $identity, Throwable $exception): void
+    {
+        $this->diagnostic('worker.handler_failed', [
+            'worker_id' => $this->workerId,
+            'handler_kind' => $kind,
+            'handler' => $identity,
+            'exception' => $exception,
+        ], 'error');
+    }
+
+    /** @param array<string, mixed> $context */
+    private function diagnostic(string $event, array $context = [], string $level = 'info'): void
+    {
+        $this->logger->log($level, $event, $context);
+        if ($this->diagnosticListener !== null) {
+            ($this->diagnosticListener)($event, $context);
+        }
+    }
+
     /** @param array<string, mixed> $registry */
     private function assertUnique(array $registry, string $name, string $kind): void
     {
@@ -959,10 +1274,18 @@ final class Worker
         }
     }
 
-    private function assertValidDeclarationName(string $name, string $kind): void
+    private function assertValidDeclarationName(string $name, string $kind, bool $signalDeclaration = false): void
     {
         if ($name === '' || trim($name) !== $name) {
-            throw new \InvalidArgumentException("Signal declaration {$kind} must be non-empty without surrounding whitespace.");
+            if ($signalDeclaration) {
+                throw new \InvalidArgumentException(
+                    "Signal declaration {$kind} must be non-empty without surrounding whitespace.",
+                );
+            }
+            throw new InvalidWorkerDefinition(
+                $kind,
+                "Give the {$kind} contract a non-empty name without surrounding whitespace.",
+            );
         }
     }
 }

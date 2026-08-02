@@ -1,0 +1,110 @@
+name: Published service-mode smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_version:
+        description: Exact published Packagist version, including prerelease stability when needed
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  source-free-service-mode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: published-service-smoke
+    env:
+      DURABLE_WORKFLOW_SERVER_URL: ${{ secrets.DURABLE_WORKFLOW_SERVER_URL }}
+      DURABLE_WORKFLOW_AUTH_TOKEN: ${{ secrets.DURABLE_WORKFLOW_AUTH_TOKEN }}
+      SDK_VERSION: ${{ inputs.sdk_version }}
+    steps:
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          coverage: none
+
+      - name: Install only the published package
+        run: |
+          test -n "$DURABLE_WORKFLOW_SERVER_URL"
+          consumer="$(mktemp -d)"
+          printf '%s\n' "$consumer" > "$RUNNER_TEMP/service-mode-consumer"
+          cd "$consumer"
+          composer init --name=durable-workflow/published-service-smoke --no-interaction
+          composer require "durable-workflow/sdk:${SDK_VERSION}" --no-interaction --prefer-dist
+
+      - name: Complete a class-oriented workflow against the published endpoint
+        run: |
+          consumer="$(cat "$RUNNER_TEMP/service-mode-consumer")"
+          cd "$consumer"
+          queue="php-published-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          workflow_id="php-published-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          export DURABLE_WORKFLOW_TASK_QUEUE="$queue"
+          export DURABLE_WORKFLOW_WORKFLOW_ID="$workflow_id"
+
+          tee worker.php >/dev/null <<'PHP'
+          <?php
+          declare(strict_types=1);
+          require __DIR__.'/vendor/autoload.php';
+          use DurableWorkflow\Attribute\Activity;
+          use DurableWorkflow\Attribute\Workflow;
+          use DurableWorkflow\Client;
+          use DurableWorkflow\Worker;
+          use DurableWorkflow\Worker\ActivityContext;
+          use DurableWorkflow\Worker\WorkflowContext;
+          final class PublishedGreetingWorkflow
+          {
+              #[Workflow('published.php.greeter')]
+              public function run(WorkflowContext $context, string $name): Generator
+              {
+                  return ['greeting' => yield $context->activity('published.php.greet', [$name])];
+              }
+          }
+          final class PublishedGreetingActivities
+          {
+              #[Activity('published.php.greet')]
+              public function greet(ActivityContext $context, string $name): string
+              {
+                  return "hello, {$name}";
+              }
+          }
+          $client = new Client(
+              getenv('DURABLE_WORKFLOW_SERVER_URL'),
+              token: getenv('DURABLE_WORKFLOW_AUTH_TOKEN') ?: null,
+          );
+          Worker::create($client, getenv('DURABLE_WORKFLOW_TASK_QUEUE'))
+              ->register(PublishedGreetingWorkflow::class, PublishedGreetingActivities::class)
+              ->run();
+          PHP
+
+          tee client.php >/dev/null <<'PHP'
+          <?php
+          declare(strict_types=1);
+          require __DIR__.'/vendor/autoload.php';
+          use DurableWorkflow\Client;
+          $client = new Client(
+              getenv('DURABLE_WORKFLOW_SERVER_URL'),
+              token: getenv('DURABLE_WORKFLOW_AUTH_TOKEN') ?: null,
+          );
+          $handle = $client->startWorkflow(
+              'published.php.greeter',
+              getenv('DURABLE_WORKFLOW_WORKFLOW_ID'),
+              getenv('DURABLE_WORKFLOW_TASK_QUEUE'),
+              ['published package'],
+          );
+          $result = $handle->result(timeoutSeconds: 90, pollIntervalSeconds: 1);
+          if ($result !== ['greeting' => 'hello, published package']) {
+              throw new RuntimeException('Published service-mode workflow returned an unexpected result.');
+          }
+          PHP
+
+          php worker.php >worker.log 2>&1 &
+          worker_pid=$!
+          trap 'kill -TERM "$worker_pid" 2>/dev/null || true; wait "$worker_pid" 2>/dev/null || true' EXIT
+          php client.php
+          kill -TERM "$worker_pid"
+          wait "$worker_pid"
+          trap - EXIT

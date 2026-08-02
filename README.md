@@ -10,10 +10,10 @@ It targets PHP 8.1 or newer and does not require Laravel or the embedded
 Install the package from Packagist:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.7@RC
+composer require durable-workflow/sdk:2.0.0-rc.8@RC
 ```
 
-This exact package is PHP SDK `2.0.0-rc.7` and is qualified with Server
+This exact package is PHP SDK `2.0.0-rc.8` and is qualified with Server
 `2.0.0-rc.12`. SDK and Server prerelease counters are independent. Earlier 2.0
 prereleases and pre-1.0 SDK releases remain historical rather than alternate
 supported baselines.
@@ -133,9 +133,11 @@ Avro implementation.
 
 ## Run a remote PHP worker
 
-Workflow handlers may be ordinary callables or generators. Yielding a command
-from `WorkflowContext` creates a durable step; replay sends the recorded value
-back into the generator without repeating the external work.
+The preferred service-mode API discovers handler contracts from ordinary PHP
+classes. Attributes name the server contract while method signatures describe
+its arguments. Yielding a command from `WorkflowContext` creates a durable
+step; replay sends the recorded value back into the generator without repeating
+the external work.
 
 ```php
 <?php
@@ -144,34 +146,78 @@ declare(strict_types=1);
 
 require __DIR__.'/vendor/autoload.php';
 
+use DurableWorkflow\Attribute\Activity;
+use DurableWorkflow\Attribute\Query;
+use DurableWorkflow\Attribute\Signal;
+use DurableWorkflow\Attribute\Update;
+use DurableWorkflow\Attribute\Workflow;
 use DurableWorkflow\Client;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\WorkflowContext;
 
-$client = new Client('http://server:8080', token: 'dev-token-123');
-$worker = new Worker($client, 'php-workers');
-
-$worker->registerActivity(
-    'greet',
-    static fn (ActivityContext $context, string $name): string => "hello, {$name}",
-);
-
-$worker->registerWorkflow(
-    'greeter',
-    static function (WorkflowContext $context, string $name): Generator {
+final class GreeterWorkflow
+{
+    #[Workflow('greeter')]
+    public function run(WorkflowContext $context, string $name): Generator
+    {
         $greeting = yield $context->activity('greet', [$name]);
 
         return ['greeting' => $greeting];
-    },
-);
+    }
 
-$worker->run();
+    #[Query]
+    public function status(QueryContext $context): array
+    {
+        return ['events' => count($context->history)];
+    }
+
+    #[Signal('set-language')]
+    public function setLanguage(string $language): void
+    {
+        // This declaration is reflected for admission; run() consumes signals.
+    }
+
+    #[Update]
+    public function rename(QueryContext $context, string $name): string
+    {
+        return $name;
+    }
+}
+
+final class GreetingActivities
+{
+    #[Activity]
+    public function greet(ActivityContext $context, string $name): string
+    {
+        return "hello, {$name}";
+    }
+}
+
+$client = new Client('http://server:8080', token: 'dev-token-123');
+
+Worker::create($client, 'php-workers')
+    ->register(GreeterWorkflow::class, GreetingActivities::class)
+    ->run();
 ```
 
-Long-running workflows declare replay-consumed signals separately from their
-workflow callback. The optional callable describes the signal arguments for
-server admission and is never invoked:
+`register()` resolves class names once and validates every attributed method
+before registration or polling. With no container, concrete classes with no
+required constructor arguments are instantiated automatically. Pass any PSR-11
+`ContainerInterface` as the third argument to `Worker::create()` when handlers
+have application dependencies. Pass a PSR-3 `LoggerInterface` with the named
+`logger` argument; lifecycle, retry, shutdown, and handler failures then use the
+application's normal logging pipeline. The optional `diagnosticListener`
+receives the same event names and structured context.
+
+Signal methods are signature declarations for server admission and are not
+invoked. The workflow reads their committed values with
+`$context->signals('set-language')` during replay. Query and update methods are
+executed with immutable `QueryContext` state.
+
+The callable registration methods remain the intentional low-level escape
+hatch. For example, replay-consumed signals can be declared directly:
 
 ```php
 $worker->declareSignal(
@@ -180,9 +226,6 @@ $worker->declareSignal(
     static fn (int $amount): mixed => null,
 );
 ```
-
-The workflow callback reads the committed values with
-`$context->signals('increment')` during replay.
 
 Call `$context->heartbeat($details)` from a long-running activity. It throws
 `ActivityCancelled` when the server requests cancellation. `Worker::run()`
@@ -211,6 +254,44 @@ keeping heartbeats and graceful shutdown responsive. Pass a
 task kind, consecutive attempt, selected delay, and typed server exception.
 Authentication failures, malformed responses, and generic server errors remain
 fatal.
+
+## Test workflow code and interactions
+
+The testing namespace has no PHPUnit dependency. Its assertions throw
+`DurableWorkflow\Testing\AssertionFailed`, so they work with PHPUnit, Pest, or
+plain PHP. Application services can type their dependency as
+`WorkflowClientInterface`; both the network `Client` and `WorkflowClientFake`
+implement that interface and return handles with the same interaction methods.
+
+```php
+use DurableWorkflow\Testing\WorkerTestHarness;
+use DurableWorkflow\Testing\WorkflowClientFake;
+
+$worker = Worker::create($client, 'php-workers')
+    ->register(GreeterWorkflow::class, GreetingActivities::class);
+$handlers = new WorkerTestHarness($worker);
+$handlers->assertWorkflowEmits('greeter', 'schedule_activity', ['Ada']);
+$handlers->assertActivityResult('greet', 'hello, Ada', ['Ada']);
+$handlers->assertQueryResult('greeter', 'status', ['events' => 0]);
+$handlers->assertUpdateResult('greeter', 'rename', 'Grace', ['Grace']);
+$handlers->assertRegistered('signal', 'set-language', 'greeter');
+
+$workflows = (new WorkflowClientFake())
+    ->setQueryResult('greeting-1', 'status', 'running')
+    ->setUpdateResult('greeting-1', 'rename', 'accepted')
+    ->setWorkflowResult('greeting-1', ['greeting' => 'hello, Ada']);
+$handle = $workflows->startWorkflow('greeter', 'greeting-1', 'php-workers', ['Ada']);
+$handle->signal('set-language', ['en']);
+$handle->query('status');
+$handle->update('rename', ['Grace']);
+$handle->result();
+
+$workflows->assertWorkflowStarted('greeter', ['Ada']);
+$workflows->assertSignalSent('greeting-1', 'set-language', ['en']);
+$workflows->assertQueryRequested('greeting-1', 'status');
+$workflows->assertUpdateRequested('greeting-1', 'rename', ['Grace']);
+$workflows->assertResultRequested('greeting-1');
+```
 
 Workflow tasks additionally require an acknowledged lease renewal before user
 code runs. Typed transient renewal pressure is retried with the original task

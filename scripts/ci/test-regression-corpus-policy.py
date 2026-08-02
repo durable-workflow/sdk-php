@@ -2646,6 +2646,41 @@ raise SystemExit(0 if "$history = ['changed'];" in source else 1)
             result.stderr,
         )
 
+    def test_workflow_failure_reporting_is_replay_neutral(self) -> None:
+        worker = self.root / "src/Worker.php"
+        worker.write_text(
+            worker.read_text().replace(
+                "$commands = $this->replayer->replay();",
+                "$commands = $this->replayer->replay();\n"
+                "        $this->handlerFailure('workflow', $workflowType, $exception);",
+            )
+        )
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["counts"]["replay"]["related_change"])
+
+    def test_failure_reporting_does_not_hide_replay_dispatch_change(self) -> None:
+        worker = self.root / "src/Worker.php"
+        worker.write_text(
+            worker.read_text().replace(
+                "$commands = $this->replayer->replay();",
+                "$commands = $this->replayer->replay($history);\n"
+                "        $this->handlerFailure('workflow', $workflowType, $exception);",
+            )
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "replay implementation changed but its corpus did not grow "
+            "(base=0, current=0)",
+            result.stderr,
+        )
+
     def test_worker_update_body_change_requires_replay_corpus_growth(self) -> None:
         worker = self.root / "src/Worker.php"
         worker.write_text(

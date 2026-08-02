@@ -57,6 +57,9 @@ PHP_NAMED_FUNCTION = re.compile(
     r"(?m)^[ \t]*(?:(?:abstract|final|private|protected|public|readonly|static)\s+)*"
     r"function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("
 )
+PHP_REPLAY_NEUTRAL_OBSERVABILITY_STATEMENT = re.compile(
+    r"[ \t]*\$this->handlerFailure\([^();=]*\);[ \t]*"
+)
 PHP_NUMERIC_STRING = re.compile(
     r"[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?)|(?:\.[0-9]+))(?:[eE][+-]?[0-9]+)?"
 )
@@ -1918,7 +1921,17 @@ def _changed_php_function_context(
         for name in sorted(base_functions.keys() | current_functions.keys()):
             base_header, base_chunk = base_functions.get(name, ("", ""))
             current_header, current_chunk = current_functions.get(name, ("", ""))
-            if base_chunk != current_chunk:
+            base_semantics = "\n".join(
+                line
+                for line in base_chunk.splitlines()
+                if not PHP_REPLAY_NEUTRAL_OBSERVABILITY_STATEMENT.fullmatch(line)
+            )
+            current_semantics = "\n".join(
+                line
+                for line in current_chunk.splitlines()
+                if not PHP_REPLAY_NEUTRAL_OBSERVABILITY_STATEMENT.fullmatch(line)
+            )
+            if base_semantics != current_semantics:
                 context.extend((base_header, current_header))
     return "\n".join(context)
 

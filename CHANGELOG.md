@@ -6,9 +6,20 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Class-oriented worker authoring with attributes for workflow, activity,
+  query, signal, and update contracts; registration validates definitions and
+  supports PSR-11 dependency resolution, PSR-3 logging, lifecycle diagnostics,
+  and graceful deregistration.
+- Framework-independent workflow client fakes and worker handler harnesses with
+  assertions for workflow interactions and registered handler behavior.
+- A source-free published-package smoke workflow for a real Server or
+  Cloud-compatible endpoint.
+
 ### Changed
 
-- Advanced the PHP SDK to `2.0.0-rc.7` and qualified it with Server
+- Advanced the PHP SDK to `2.0.0-rc.8` and qualified it with Server
   `2.0.0-rc.12`. SDK and Server prerelease counters remain independent; earlier
   prereleases retain historical release records but receive no compatibility
   shim.

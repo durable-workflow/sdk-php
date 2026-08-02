@@ -26,10 +26,12 @@ try {
     }
     $source = realpath($sourceRoot.'/src');
     $avroSource = realpath($vendorRoot.'/apache/avro/lang/php/lib');
-    if ($source === false || $avroSource === false) {
+    $vendorAutoload = $vendorRoot.'/autoload.php';
+    if ($source === false || $avroSource === false || !is_file($vendorAutoload)) {
         throw new RuntimeException('Replay runner source dependencies are missing.');
     }
 
+    require $vendorAutoload;
     $prefixes = [
         'DurableWorkflow\\' => $source,
         'Apache\\Avro\\' => $avroSource,

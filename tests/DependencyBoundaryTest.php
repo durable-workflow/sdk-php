@@ -18,7 +18,13 @@ final class DependencyBoundaryTest extends TestCase
     {
         $manifest = $this->manifest();
         $requirements = array_keys($manifest['require']);
-        $forbidden = ['laravel/', 'illuminate/', 'durable-workflow/workflow', 'durable-workflow/server'];
+        $forbidden = [
+            'laravel/',
+            'illuminate/',
+            'symfony/',
+            'durable-workflow/workflow',
+            'durable-workflow/server',
+        ];
 
         foreach ($requirements as $requirement) {
             foreach ($forbidden as $prefix) {
@@ -31,7 +37,7 @@ final class DependencyBoundaryTest extends TestCase
     {
         $metadata = $this->manifest()['extra']['durable-workflow'];
 
-        self::assertSame('2.0.0-rc.7', $metadata['product-train']);
+        self::assertSame('2.0.0-rc.8', $metadata['product-train']);
         self::assertSame('2.0.0-rc.12', $metadata['supported-server-versions']);
     }
 }

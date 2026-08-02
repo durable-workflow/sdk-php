@@ -36,7 +36,7 @@ use DurableWorkflow\Worker\PollResponse;
 use InvalidArgumentException;
 
 /** Synchronous control-plane and worker-plane client for the standalone server. */
-final class Client
+final class Client implements WorkflowClientInterface
 {
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_MESSAGE = 'Workflow task waiting for scheduled history.';
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_TYPE = 'WorkflowTaskWaitingForHistory';
