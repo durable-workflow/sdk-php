@@ -3,7 +3,7 @@
 
   const MEASUREMENT_ID = 'G-HD1YHT442Y';
   const SITE_HOSTNAME = 'php.durable-workflow.com';
-  const PARENT_COOKIE_DOMAIN = 'durable-workflow.com';
+  const LEGACY_COOKIE_DOMAINS = [SITE_HOSTNAME, 'durable-workflow.com'];
   const CONSENT_KEY = 'durable-workflow.analytics-consent.v1';
   const LOADER_ID = 'durable-workflow-ga4-loader';
   const BANNER_ID = 'durable-workflow-analytics-consent';
@@ -57,7 +57,7 @@
       allow_ad_personalization_signals: false,
       allow_google_signals: false,
       anonymize_ip: true,
-      cookie_domain: SITE_HOSTNAME,
+      cookie_domain: 'none',
       send_page_view: true,
     });
     if (!document.getElementById(LOADER_ID)) {
@@ -73,9 +73,9 @@
   function removeAnalyticsCookies() {
     for (const cookie of document.cookie.split(';')) {
       const name = cookie.split('=', 1)[0].trim();
-      if (!name.startsWith('_ga')) continue;
+      if (name !== '_ga' && !name.startsWith('_ga_')) continue;
       document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Lax`;
-      for (const domain of new Set([SITE_HOSTNAME, PARENT_COOKIE_DOMAIN])) {
+      for (const domain of LEGACY_COOKIE_DOMAINS) {
         document.cookie = `${name}=; Max-Age=0; Path=/; Domain=.${domain}; SameSite=Lax`;
       }
     }
@@ -128,7 +128,7 @@
   function initializeConsent() {
     const consent = readConsent();
     if (consent === 'granted') { showPreferencesButton(); enableAnalytics(); }
-    else if (consent === 'denied') showPreferencesButton();
+    else if (consent === 'denied') { removeAnalyticsCookies(); showPreferencesButton(); }
     else showBanner();
   }
 

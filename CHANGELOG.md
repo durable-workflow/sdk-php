@@ -8,7 +8,7 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Advanced the PHP SDK to `2.0.0-rc.6` and qualified it with Server
+- Advanced the PHP SDK to `2.0.0-rc.7` and qualified it with Server
   `2.0.0-rc.12`. SDK and Server prerelease counters remain independent; earlier
   prereleases retain historical release records but receive no compatibility
   shim.
@@ -26,6 +26,10 @@ project follows [Semantic Versioning](https://semver.org/).
   preparation authority before publishing a newly recorded plan.
 
 ### Fixed
+
+- Analytics consent withdrawal in the PHP API reference clears GA4 identifiers
+  at the current host-only scope and legacy parent-domain scopes while retaining
+  unrelated cookies; denied-state reloads remain fail-closed.
 
 - Client construction rejects base URIs ending in the SDK-owned `/api` path
   segment before they can produce duplicated request paths.

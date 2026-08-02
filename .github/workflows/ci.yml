@@ -85,7 +85,12 @@ jobs:
           php-version: '8.3'
           tools: composer:v2
           coverage: none
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
+        with:
+          node-version: '24'
+          cache: npm
       - run: composer install --no-interaction --prefer-dist
+      - run: npm ci
       - name: Check documentation links
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:
@@ -93,8 +98,12 @@ jobs:
             --no-progress
             --exclude https://php.durable-workflow.com/
             README.md docs/*.md
-      - run: composer docs
-      - run: test -s build/api/index.html
+      - run: composer docs -- --template="$PWD/.phpdoc/template"
+      - run: php scripts/check-docs-analytics.php build/api
+      - name: Check analytics consent in Chromium
+        run: |
+          npx playwright install chromium --with-deps
+          npm run check:docs-analytics-browser -- build/api
 
   package-smoke:
     runs-on: ubuntu-latest

@@ -73,7 +73,11 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         source = workflow_source("docs.yml")
         self.assertIn("  workflow_dispatch:", source)
         deploy = job_source(source, "deploy")
-        self.assert_main_only(deploy, "github.ref == 'refs/heads/main'")
+        self.assert_main_only(
+            deploy,
+            "github.server_url == 'https://github.com' && "
+            "github.ref == 'refs/heads/main'",
+        )
         for privileged_marker in (
             "environment:",
             "id-token: write",

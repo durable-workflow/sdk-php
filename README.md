@@ -10,10 +10,10 @@ It targets PHP 8.1 or newer and does not require Laravel or the embedded
 Install the package from Packagist:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.6@RC
+composer require durable-workflow/sdk:2.0.0-rc.7@RC
 ```
 
-This exact package is PHP SDK `2.0.0-rc.6` and is qualified with Server
+This exact package is PHP SDK `2.0.0-rc.7` and is qualified with Server
 `2.0.0-rc.12`. SDK and Server prerelease counters are independent. Earlier 2.0
 prereleases and pre-1.0 SDK releases remain historical rather than alternate
 supported baselines.
