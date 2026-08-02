@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<template>
+  <name>durable-workflow</name>
+  <author>Durable Workflow Contributors</author>
+  <version>1.0.0</version>
+  <extends>default</extends>
+  <transformations>
+    <transformation writer="FileIo" query="copy" source="analytics" artifact="analytics" />
+  </transformations>
+</template>

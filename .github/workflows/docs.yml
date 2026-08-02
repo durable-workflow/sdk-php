@@ -4,8 +4,10 @@ on:
   push:
     branches: [main]
     paths:
+      - '.phpdoc/**'
       - 'src/**'
       - 'docs/**'
+      - 'scripts/check-docs-analytics.php'
       - 'README.md'
       - 'composer.json'
       - '.github/workflows/docs.yml'
@@ -38,7 +40,8 @@ jobs:
             README.md docs/*.md
       - name: Generate phpDocumentor reference
         run: |
-          composer docs
+          composer docs -- --template="$PWD/.phpdoc/template"
+          php scripts/check-docs-analytics.php build/api
           cp docs/CNAME build/api/CNAME
           test -s build/api/index.html
           test "$(cat build/api/CNAME)" = "php.durable-workflow.com"
