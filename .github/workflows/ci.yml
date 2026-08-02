@@ -141,6 +141,8 @@ jobs:
           fetch-depth: 0
       - name: Exercise source creation, idempotency, mismatch, and permission failure
         run: python scripts/ci/test-publish-planned-source.py
+      - name: Prove SDK-only publication cannot outrun Waterline
+        run: python scripts/ci/test-php-waterline-release-train.py
       - name: Verify release recovery source contracts
         env:
           CONFORMANCE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
