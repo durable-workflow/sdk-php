@@ -9,6 +9,50 @@ import { chromium } from 'playwright';
 const SITE_HOSTNAME = 'php.durable-workflow.com';
 const CONSENT_KEY = 'durable-workflow.analytics-consent.v1';
 const buildDirectory = path.resolve(process.argv[2] ?? 'build/api');
+const RUNTIME_TRACE_KEY = 'durable-workflow.analytics-test-trace';
+const REPRESENTATIVE_ANALYTICS_RUNTIME = `(() => {
+  const measurementId = 'G-HD1YHT442Y';
+  const consent = {};
+  const trace = (type, details = {}) => {
+    const entry = { type, ...details };
+    const history = JSON.parse(window.sessionStorage.getItem('${RUNTIME_TRACE_KEY}') || '[]');
+    history.push(entry);
+    window.sessionStorage.setItem('${RUNTIME_TRACE_KEY}', JSON.stringify(history));
+  };
+  const analyticsAllowed = () => consent.analytics_storage === 'granted'
+    && window['ga-disable-' + measurementId] !== true;
+  const beginEvent = (event, boundary) => {
+    const allowed = analyticsAllowed();
+    trace(allowed ? 'request-started' : 'request-blocked', { event, boundary });
+    if (allowed) {
+      navigator.sendBeacon('https://www.google-analytics.com/g/collect?en=' + encodeURIComponent(event));
+    }
+  };
+  const processCommand = (entry) => {
+    const [command, action, fields] = Array.from(entry);
+    if (command === 'consent') {
+      Object.assign(consent, fields);
+      trace('consent', { action, consent: { ...consent }, disabled: window['ga-disable-' + measurementId] === true });
+    } else if (command === 'config') {
+      beginEvent('page_view', 'config');
+    } else if (command === 'event') {
+      beginEvent(action, 'gtag');
+    }
+  };
+  const queuedCommands = Array.from(window.dataLayer || []);
+  const nativePush = window.dataLayer.push.bind(window.dataLayer);
+  window.dataLayer.push = (...entries) => {
+    const length = nativePush(...entries);
+    entries.forEach(processCommand);
+    return length;
+  };
+  trace('loaded');
+  queuedCommands.forEach(processCommand);
+  window.addEventListener('click', (event) => {
+    if (event.target.closest('[data-consent="denied"]')) beginEvent('withdrawal_click', 'click');
+  });
+  window.addEventListener('pagehide', () => beginEvent('navigation_boundary', 'pagehide'));
+})();`;
 
 async function availablePort() {
   const server = net.createServer();
@@ -273,9 +317,14 @@ try {
 
   const context = await browser.newContext();
   const googleRequests = [];
+  const analyticsRequests = [];
   await context.route('https://www.googletagmanager.com/**', async (route) => {
     googleRequests.push(route.request().url());
-    await route.abort();
+    await route.fulfill({ contentType: 'application/javascript', body: REPRESENTATIVE_ANALYTICS_RUNTIME });
+  });
+  await context.route('https://www.google-analytics.com/**', async (route) => {
+    analyticsRequests.push(route.request().url());
+    await route.fulfill({ status: 204 });
   });
   await context.addInitScript(({ consentKey, hostname }) => {
     if (window.location.hostname === hostname && window.localStorage.getItem(consentKey) === null) {
@@ -296,6 +345,11 @@ try {
   await page.goto(pageUrl);
   await page.locator('#durable-workflow-analytics-preferences').waitFor();
   await page.waitForFunction(() => window.dataLayer?.some((entry) => entry[0] === 'config'));
+  await page.waitForFunction(() => window.__durableWorkflowAnalytics?.analyticsEnabled === true);
+  await page.waitForFunction(
+    (key) => JSON.parse(window.sessionStorage.getItem(key) || '[]').some(({ type }) => type === 'loaded'),
+    RUNTIME_TRACE_KEY,
+  );
 
   const calls = await page.evaluate(() => window.dataLayer.map((entry) => Array.from(entry)));
   const configCalls = calls.filter(([command]) => command === 'config');
@@ -315,13 +369,47 @@ try {
     send_page_view: true,
   });
   assert.equal(googleRequests.length, 1, 'Granted consent must load one GA4 runtime.');
+  const grantedTrace = await page.evaluate(
+    (key) => JSON.parse(window.sessionStorage.getItem(key) || '[]'),
+    RUNTIME_TRACE_KEY,
+  );
+  assert.equal(grantedTrace.filter(({ type }) => type === 'loaded').length, 1, 'The representative GA4 runtime must execute.');
+  assert.equal(analyticsRequests.length, 1, 'Granted consent must emit one automatic page view.');
 
   googleRequests.length = 0;
+  analyticsRequests.length = 0;
   await page.locator('#durable-workflow-analytics-preferences').click();
   await Promise.all([
     page.waitForNavigation(),
     page.locator('[data-consent="denied"]').click(),
   ]);
+
+  const navigationTrace = await page.evaluate(
+    (key) => JSON.parse(window.sessionStorage.getItem(key) || '[]'),
+    RUNTIME_TRACE_KEY,
+  );
+  const deniedUpdateIndex = navigationTrace.findIndex(({ type, action, consent }) => type === 'consent'
+    && action === 'update'
+    && consent.analytics_storage === 'denied'
+    && consent.ad_storage === 'denied'
+    && consent.ad_user_data === 'denied'
+    && consent.ad_personalization === 'denied');
+  const navigationBoundaryIndex = navigationTrace.findIndex(({ event }) => event === 'navigation_boundary');
+  assert(deniedUpdateIndex >= 0, 'Withdrawal must update every active GA4 consent signal to denied.');
+  assert.equal(navigationTrace[deniedUpdateIndex].disabled, true, 'Withdrawal must synchronously disable the active property.');
+  assert(navigationBoundaryIndex > deniedUpdateIndex, 'Active-runtime revocation must precede the navigation boundary.');
+  assert.deepEqual(
+    navigationTrace
+      .slice(deniedUpdateIndex + 1)
+      .filter(({ event }) => event === 'withdrawal_click' || event === 'navigation_boundary')
+      .map(({ type, event }) => [type, event]),
+    [
+      ['request-blocked', 'withdrawal_click'],
+      ['request-blocked', 'navigation_boundary'],
+    ],
+    'The active runtime must block events after withdrawal and during navigation.',
+  );
+  assert.deepEqual(analyticsRequests, [], 'No analytics request may begin after withdrawal.');
 
   let cookies = await context.cookies(siteOrigin);
   assert.deepEqual(analyticsCookies(cookies), [], 'Withdrawal must remove host and parent-domain GA4 cookies.');

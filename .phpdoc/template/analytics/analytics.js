@@ -8,6 +8,9 @@
   const LOADER_ID = 'durable-workflow-ga4-loader';
   const BANNER_ID = 'durable-workflow-analytics-consent';
   const PREFERENCES_ID = 'durable-workflow-analytics-preferences';
+  const DENIED_CONSENT = {
+    ad_personalization: 'denied', ad_storage: 'denied', ad_user_data: 'denied', analytics_storage: 'denied',
+  };
   const configuredPath = document.currentScript?.dataset.analyticsPath;
   const runtime = window.__durableWorkflowAnalytics || {};
 
@@ -45,11 +48,9 @@
     runtime.analyticsEnabled = true;
     window.dataLayer = window.dataLayer || [];
     window.gtag = window.gtag || function () { window.dataLayer.push(arguments); };
-    window.gtag('consent', 'default', {
-      ad_personalization: 'denied', ad_storage: 'denied', ad_user_data: 'denied', analytics_storage: 'denied',
-    });
+    window.gtag('consent', 'default', DENIED_CONSENT);
     window.gtag('consent', 'update', {
-      ad_personalization: 'denied', ad_storage: 'denied', ad_user_data: 'denied', analytics_storage: 'granted',
+      ...DENIED_CONSENT, analytics_storage: 'granted',
     });
     window.gtag('js', new Date());
     window.gtag('config', MEASUREMENT_ID, {
@@ -68,6 +69,14 @@
       loader.addEventListener('error', function () {});
       document.head.appendChild(loader);
     }
+  }
+
+  function revokeAnalytics() {
+    if (!runtime.analyticsEnabled) return;
+    window[`ga-disable-${MEASUREMENT_ID}`] = true;
+    if (typeof window.gtag === 'function') window.gtag('consent', 'update', DENIED_CONSENT);
+    runtime.analyticsEnabled = false;
+    document.getElementById(LOADER_ID)?.remove();
   }
 
   function removeAnalyticsCookies() {
@@ -99,12 +108,14 @@
 
   function chooseConsent(value) {
     const previous = readConsent();
+    const shouldReload = previous === 'granted' && runtime.analyticsEnabled;
+    if (value === 'denied') revokeAnalytics();
     writeConsent(value);
     hideBanner();
     showPreferencesButton();
     if (value === 'granted') { enableAnalytics(); return; }
     removeAnalyticsCookies();
-    if (previous === 'granted' && runtime.analyticsEnabled) window.location.reload();
+    if (shouldReload) window.location.reload();
   }
 
   function showBanner() {
