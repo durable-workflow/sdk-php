@@ -27,6 +27,10 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The generated API reference constrains and, when needed, wraps its SDK title
+  at narrow viewport widths so the shared header and consent controls remain
+  usable without document-level horizontal overflow.
+
 - Analytics consent withdrawal in the PHP API reference clears GA4 identifiers
   at the current host-only scope and legacy parent-domain scopes while retaining
   unrelated cookies; denied-state reloads remain fail-closed.

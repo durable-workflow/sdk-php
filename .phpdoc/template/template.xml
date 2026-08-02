@@ -5,6 +5,7 @@
   <version>1.0.0</version>
   <extends>default</extends>
   <transformations>
+    <transformation writer="FileIo" query="copy" source="assets" artifact="assets" />
     <transformation writer="FileIo" query="copy" source="analytics" artifact="analytics" />
   </transformations>
 </template>

@@ -42,6 +42,196 @@ function analyticsCookies(cookies) {
   return cookies.filter(({ name }) => name === '_ga' || name.startsWith('_ga_'));
 }
 
+function observeBrowserErrors(page, label) {
+  const errors = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(`${label} console: ${message.text()}`);
+  });
+  page.on('pageerror', (error) => errors.push(`${label} page: ${error.message}`));
+  page.on('requestfailed', (request) => {
+    errors.push(`${label} request: ${request.url()} (${request.failure()?.errorText ?? 'unknown failure'})`);
+  });
+  page.on('response', (response) => {
+    if (response.status() >= 400) errors.push(`${label} resource: ${response.url()} (${response.status()})`);
+  });
+  return errors;
+}
+
+async function waitForReferenceUi(page) {
+  await page.locator('.phpdocumentor-title__link').waitFor();
+  await page.locator('.phpdocumentor-header__menu-icon').waitFor({ state: 'attached' });
+  await page.locator('.phpdocumentor-search--active').waitFor();
+  await page.locator('.phpdocumentor-search__field:not([disabled])').waitFor();
+  await page.evaluate(() => document.fonts.ready);
+}
+
+async function layoutSnapshot(page) {
+  return page.evaluate(() => {
+    function rectangle(selector) {
+      const element = document.querySelector(selector);
+      if (!element) return null;
+      const { left, top, right, bottom, width, height } = element.getBoundingClientRect();
+      return { left, top, right, bottom, width, height };
+    }
+
+    return {
+      viewportWidth: document.documentElement.clientWidth,
+      documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+      overflowingElements: Array.from(document.body.querySelectorAll('*'))
+        .map((element) => {
+          const { left, right, width } = element.getBoundingClientRect();
+          return {
+            element: `${element.tagName.toLowerCase()}.${Array.from(element.classList).join('.')}`,
+            html: element.outerHTML.slice(0, 240),
+            left,
+            right,
+            width,
+            scrollWidth: element.scrollWidth,
+            clientWidth: element.clientWidth,
+          };
+        })
+        .filter(({ right }) => right > document.documentElement.clientWidth + 0.5)
+        .slice(0, 12),
+      title: rectangle('.phpdocumentor-title__link'),
+      titleTextLength: document.querySelector('.phpdocumentor-title__link')?.textContent.trim().length ?? 0,
+      titleIsClipped: (() => {
+        const title = document.querySelector('.phpdocumentor-title__link');
+        return !title || title.scrollWidth > title.clientWidth + 1 || title.scrollHeight > title.clientHeight + 1;
+      })(),
+      menu: rectangle('.phpdocumentor-header__menu-icon'),
+      search: rectangle('.phpdocumentor-search'),
+      searchField: rectangle('.phpdocumentor-search__field'),
+      banner: rectangle('#durable-workflow-analytics-consent:not([hidden])'),
+      deny: rectangle('#durable-workflow-analytics-consent:not([hidden]) [data-consent="denied"]'),
+      allow: rectangle('#durable-workflow-analytics-consent:not([hidden]) [data-consent="granted"]'),
+      preferences: rectangle('#durable-workflow-analytics-preferences:not([hidden])'),
+    };
+  });
+}
+
+function assertWithinViewport(rectangle, viewportWidth, label) {
+  assert(rectangle, `${label} must be rendered.`);
+  assert(rectangle.width > 0 && rectangle.height > 0, `${label} must have a usable hit area.`);
+  assert(rectangle.left >= -0.5, `${label} extends past the viewport's left edge.`);
+  assert(rectangle.right <= viewportWidth + 0.5, `${label} extends past the viewport's right edge.`);
+}
+
+function assertNoOverlap(first, second, label) {
+  assert(first && second, `${label} requires both controls to be rendered.`);
+  const overlapWidth = Math.min(first.right, second.right) - Math.max(first.left, second.left);
+  const overlapHeight = Math.min(first.bottom, second.bottom) - Math.max(first.top, second.top);
+  assert(overlapWidth <= 0 || overlapHeight <= 0, `${label} controls overlap.`);
+}
+
+async function assertReachable(page, selector, label) {
+  const reachable = await page.locator(selector).evaluate((element) => {
+    const rectangle = element.getBoundingClientRect();
+    const hit = document.elementFromPoint(
+      rectangle.left + rectangle.width / 2,
+      rectangle.top + rectangle.height / 2,
+    );
+    return hit === element || element.contains(hit) || Boolean(hit?.contains(element));
+  });
+  assert(reachable, `${label} must remain reachable.`);
+}
+
+async function assertReferenceLayout(page, label, consentState) {
+  await waitForReferenceUi(page);
+  const snapshot = await layoutSnapshot(page);
+  assert.equal(
+    snapshot.documentWidth,
+    snapshot.viewportWidth,
+    `${label} must not have document-level horizontal overflow: ${JSON.stringify(snapshot.overflowingElements)}`,
+  );
+  assert(snapshot.titleTextLength > 0, `${label} must retain its SDK title.`);
+  assert.equal(snapshot.titleIsClipped, false, `${label} must render the full SDK title without clipping.`);
+
+  for (const [control, rectangle] of [
+    ['title', snapshot.title],
+    ['search', snapshot.search],
+    ['search field', snapshot.searchField],
+  ]) {
+    assertWithinViewport(rectangle, snapshot.viewportWidth, `${label} ${control}`);
+  }
+  assertNoOverlap(snapshot.title, snapshot.search, `${label} title and search`);
+
+  await assertReachable(page, '.phpdocumentor-title__link', `${label} title`);
+  await assertReachable(page, '.phpdocumentor-search__field', `${label} search`);
+
+  if (snapshot.viewportWidth < 1000) {
+    assertWithinViewport(snapshot.menu, snapshot.viewportWidth, `${label} menu`);
+    assertNoOverlap(snapshot.title, snapshot.menu, `${label} title and menu`);
+    assertNoOverlap(snapshot.menu, snapshot.search, `${label} menu and search`);
+    await assertReachable(page, '.phpdocumentor-header__menu-icon', `${label} menu`);
+  }
+
+  if (consentState === 'initial') {
+    for (const [control, rectangle] of [
+      ['consent banner', snapshot.banner],
+      ['necessary-only action', snapshot.deny],
+      ['analytics action', snapshot.allow],
+    ]) {
+      assertWithinViewport(rectangle, snapshot.viewportWidth, `${label} ${control}`);
+    }
+    assertNoOverlap(snapshot.deny, snapshot.allow, `${label} consent actions`);
+    await assertReachable(page, '[data-consent="denied"]', `${label} necessary-only action`);
+    await assertReachable(page, '[data-consent="granted"]', `${label} analytics action`);
+  } else {
+    assertWithinViewport(snapshot.preferences, snapshot.viewportWidth, `${label} analytics preferences`);
+    for (const [control, rectangle] of [
+      ['title', snapshot.title],
+      ['search', snapshot.search],
+    ]) {
+      assertNoOverlap(rectangle, snapshot.preferences, `${label} ${control} and analytics preferences`);
+    }
+    if (snapshot.viewportWidth < 1000) {
+      assertNoOverlap(snapshot.menu, snapshot.preferences, `${label} menu and analytics preferences`);
+    }
+    await assertReachable(page, '#durable-workflow-analytics-preferences', `${label} analytics preferences`);
+  }
+}
+
+async function validateReferenceLayouts(browser, siteOrigin) {
+  const referencePages = [
+    ['root', '/index.html'],
+    ['nested API', '/namespaces/durableworkflow-worker.html'],
+  ];
+
+  for (const [pageName, pagePath] of referencePages) {
+    const context = await browser.newContext({ viewport: { width: 320, height: 844 } });
+    const page = await context.newPage();
+    const errors = observeBrowserErrors(page, `${pageName} 320px`);
+    await page.goto(`${siteOrigin}${pagePath}`);
+    await page.locator('#durable-workflow-analytics-consent').waitFor();
+    await assertReferenceLayout(page, `${pageName} 320px initial consent`, 'initial');
+
+    await page.locator('[data-consent="denied"]').click();
+    await page.locator('#durable-workflow-analytics-preferences').waitFor();
+    await assertReferenceLayout(page, `${pageName} 320px selected consent`, 'selected');
+
+    await page.reload();
+    await page.locator('#durable-workflow-analytics-preferences').waitFor();
+    await assertReferenceLayout(page, `${pageName} 320px stored consent`, 'stored');
+    assert.deepEqual(errors, [], `${pageName} 320px browser render must be error-free.`);
+    await context.close();
+  }
+
+  for (const [viewportName, viewport] of [
+    ['wider mobile', { width: 390, height: 844 }],
+    ['intermediate', { width: 768, height: 1024 }],
+    ['desktop', { width: 1440, height: 900 }],
+  ]) {
+    const context = await browser.newContext({ viewport });
+    const page = await context.newPage();
+    const errors = observeBrowserErrors(page, `root ${viewportName}`);
+    await page.goto(`${siteOrigin}/index.html`);
+    await page.locator('#durable-workflow-analytics-consent').waitFor();
+    await assertReferenceLayout(page, `root ${viewportName} initial consent`, 'initial');
+    assert.deepEqual(errors, [], `Root ${viewportName} browser render must be error-free.`);
+    await context.close();
+  }
+}
+
 const port = await availablePort();
 const siteOrigin = `http://${SITE_HOSTNAME}:${port}`;
 const pageUrl = `${siteOrigin}/index.html?token=must-not-leak#private-fragment`;
@@ -65,6 +255,8 @@ try {
     launchOptions.executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
   }
   browser = await chromium.launch(launchOptions);
+
+  await validateReferenceLayouts(browser, siteOrigin);
 
   const unconsentedContext = await browser.newContext();
   const unconsentedGoogleRequests = [];
@@ -147,7 +339,7 @@ try {
   assert.deepEqual(googleRequests, [], 'A denied-state reload must not load Google or emit analytics.');
   await context.close();
 
-  process.stdout.write('Validated fail-closed analytics consent and cross-scope GA4 cookie withdrawal in Chromium.\n');
+  process.stdout.write('Validated responsive root and nested API-reference layouts plus fail-closed analytics consent in Chromium.\n');
 } finally {
   await browser?.close();
   server.kill('SIGTERM');
