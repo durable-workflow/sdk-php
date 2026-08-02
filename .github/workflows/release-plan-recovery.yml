@@ -62,7 +62,7 @@ jobs:
 
       - name: Resolve the planned Waterline source identity
         id: waterline
-        if: steps.recovery.outputs.action != 'none'
+        if: steps.recovery.outputs.action == 'publish'
         run: |
           python - <<'PYTHON' >> "$GITHUB_OUTPUT"
           import json
@@ -73,7 +73,7 @@ jobs:
           PYTHON
 
       - name: Check out the public release-train baseline
-        if: steps.recovery.outputs.action != 'none'
+        if: steps.recovery.outputs.action == 'publish'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           repository: durable-workflow/.github
@@ -82,7 +82,7 @@ jobs:
           persist-credentials: false
 
       - name: Check out the exact planned Waterline source
-        if: steps.recovery.outputs.action != 'none'
+        if: steps.recovery.outputs.action == 'publish'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           repository: durable-workflow/waterline
@@ -91,7 +91,7 @@ jobs:
           persist-credentials: false
 
       - name: Require a compatible sequential Waterline train
-        if: steps.recovery.outputs.action != 'none'
+        if: steps.recovery.outputs.action == 'publish'
         run: |
           python scripts/ci/php_waterline_release_train.py \
             --plan release-plan.json \

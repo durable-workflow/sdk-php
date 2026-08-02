@@ -28,6 +28,21 @@ def job_source(source: str, name: str) -> str:
     return "\n".join(lines[start:end])
 
 
+def step_source(job: str, name: str) -> str:
+    lines = job.splitlines()
+    marker = f"      - name: {name}"
+    start = lines.index(marker)
+    end = next(
+        (
+            index
+            for index, line in enumerate(lines[start + 1 :], start=start + 1)
+            if line.startswith("      - ")
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[start:end])
+
+
 def job_condition(source: str) -> str:
     lines = source.splitlines()
     for index, line in enumerate(lines):
@@ -68,6 +83,25 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
             "secrets.RELEASE_PLAN_DEPLOY_KEY",
         ):
             self.assertIn(privileged_marker, publish)
+
+    def test_completed_historical_plan_bypasses_current_train_qualification(self) -> None:
+        discover = job_source(workflow_source("release-plan-recovery.yml"), "discover")
+        for name in (
+            "Resolve the planned Waterline source identity",
+            "Check out the public release-train baseline",
+            "Check out the exact planned Waterline source",
+            "Require a compatible sequential Waterline train",
+        ):
+            step = step_source(discover, name)
+            self.assertIn(
+                "        if: steps.recovery.outputs.action == 'publish'",
+                step,
+            )
+
+        guard = step_source(
+            discover, "Require a compatible sequential Waterline train"
+        )
+        self.assertIn("scripts/ci/php_waterline_release_train.py", guard)
 
     def test_api_reference_deployer_rejects_branch_built_artifacts(self) -> None:
         source = workflow_source("docs.yml")
