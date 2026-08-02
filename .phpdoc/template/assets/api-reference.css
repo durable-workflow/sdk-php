@@ -1,6 +1,6 @@
 @media (max-width: 399px) {
   .phpdocumentor-title {
-    flex: 1 1 0;
+    flex: 0 0 100%;
     min-width: 0;
     font-size: calc(var(--text-xxl) * .75);
   }
@@ -16,9 +16,5 @@
 
   .phpdocumentor-title__link:hover {
     transform: none;
-  }
-
-  .phpdocumentor-header__menu-icon {
-    flex: 0 0 auto;
   }
 }

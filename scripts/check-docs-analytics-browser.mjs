@@ -103,9 +103,9 @@ function observeBrowserErrors(page, label) {
 
 async function waitForReferenceUi(page) {
   await page.locator('.phpdocumentor-title__link').waitFor();
-  await page.locator('.phpdocumentor-header__menu-icon').waitFor({ state: 'attached' });
   await page.locator('.phpdocumentor-search--active').waitFor();
   await page.locator('.phpdocumentor-search__field:not([disabled])').waitFor();
+  await page.locator('.phpdocumentor-content').waitFor();
   await page.evaluate(() => document.fonts.ready);
 }
 
@@ -142,9 +142,16 @@ async function layoutSnapshot(page) {
         const title = document.querySelector('.phpdocumentor-title__link');
         return !title || title.scrollWidth > title.clientWidth + 1 || title.scrollHeight > title.clientHeight + 1;
       })(),
-      menu: rectangle('.phpdocumentor-header__menu-icon'),
+      headerMenuButtonCount: document.querySelectorAll('.phpdocumentor-header__menu-button').length,
+      headerMenuIconCount: document.querySelectorAll('.phpdocumentor-header__menu-icon').length,
+      topNavigationCount: document.querySelectorAll('.phpdocumentor-topnav').length,
       search: rectangle('.phpdocumentor-search'),
       searchField: rectangle('.phpdocumentor-search__field'),
+      sidebarMenu: rectangle('.phpdocumentor-sidebar__menu-icon'),
+      sidebar: rectangle('.phpdocumentor-sidebar'),
+      sidebarExpanded: document.querySelector('.phpdocumentor-sidebar__menu-button')?.checked ?? false,
+      content: rectangle('.phpdocumentor-content'),
+      contentTextLength: document.querySelector('.phpdocumentor-content')?.textContent.trim().length ?? 0,
       banner: rectangle('#durable-workflow-analytics-consent:not([hidden])'),
       deny: rectangle('#durable-workflow-analytics-consent:not([hidden]) [data-consent="denied"]'),
       allow: rectangle('#durable-workflow-analytics-consent:not([hidden]) [data-consent="granted"]'),
@@ -189,11 +196,16 @@ async function assertReferenceLayout(page, label, consentState) {
   );
   assert(snapshot.titleTextLength > 0, `${label} must retain its SDK title.`);
   assert.equal(snapshot.titleIsClipped, false, `${label} must render the full SDK title without clipping.`);
+  assert.equal(snapshot.headerMenuButtonCount, 0, `${label} must omit the empty header-menu checkbox.`);
+  assert.equal(snapshot.headerMenuIconCount, 0, `${label} must omit the empty header-menu hamburger.`);
+  assert.equal(snapshot.topNavigationCount, 0, `${label} must omit empty top navigation.`);
+  assert(snapshot.contentTextLength > 0, `${label} must retain page content.`);
 
   for (const [control, rectangle] of [
     ['title', snapshot.title],
     ['search', snapshot.search],
     ['search field', snapshot.searchField],
+    ['page content', snapshot.content],
   ]) {
     assertWithinViewport(rectangle, snapshot.viewportWidth, `${label} ${control}`);
   }
@@ -201,13 +213,6 @@ async function assertReferenceLayout(page, label, consentState) {
 
   await assertReachable(page, '.phpdocumentor-title__link', `${label} title`);
   await assertReachable(page, '.phpdocumentor-search__field', `${label} search`);
-
-  if (snapshot.viewportWidth < 1000) {
-    assertWithinViewport(snapshot.menu, snapshot.viewportWidth, `${label} menu`);
-    assertNoOverlap(snapshot.title, snapshot.menu, `${label} title and menu`);
-    assertNoOverlap(snapshot.menu, snapshot.search, `${label} menu and search`);
-    await assertReachable(page, '.phpdocumentor-header__menu-icon', `${label} menu`);
-  }
 
   if (consentState === 'initial') {
     for (const [control, rectangle] of [
@@ -228,11 +233,39 @@ async function assertReferenceLayout(page, label, consentState) {
     ]) {
       assertNoOverlap(rectangle, snapshot.preferences, `${label} ${control} and analytics preferences`);
     }
-    if (snapshot.viewportWidth < 1000) {
-      assertNoOverlap(snapshot.menu, snapshot.preferences, `${label} menu and analytics preferences`);
-    }
     await assertReachable(page, '#durable-workflow-analytics-preferences', `${label} analytics preferences`);
   }
+}
+
+async function exerciseReferenceInteractions(page, label) {
+  const sidebarMenu = page.locator('.phpdocumentor-sidebar__menu-icon');
+  if (await sidebarMenu.isVisible()) {
+    await assertReachable(page, '.phpdocumentor-sidebar__menu-icon', `${label} sidebar menu`);
+    await sidebarMenu.click();
+    await page.locator('.phpdocumentor-sidebar__menu-button').evaluate((element) => {
+      if (!element.checked) throw new Error('Sidebar menu did not open.');
+    });
+    let snapshot = await layoutSnapshot(page);
+    assert.equal(snapshot.sidebarExpanded, true, `${label} sidebar menu must expose its destinations.`);
+    assert(snapshot.sidebar.height > 0, `${label} expanded sidebar must be visible.`);
+    assertWithinViewport(snapshot.sidebar, snapshot.viewportWidth, `${label} expanded sidebar`);
+    assertWithinViewport(snapshot.content, snapshot.viewportWidth, `${label} content with expanded sidebar`);
+
+    await sidebarMenu.click();
+    snapshot = await layoutSnapshot(page);
+    assert.equal(snapshot.sidebarExpanded, false, `${label} sidebar menu must close again.`);
+  }
+
+  const searchField = page.locator('.phpdocumentor-search__field');
+  await searchField.pressSequentially('Workflow');
+  await page.locator('.phpdocumentor-search-results:not(.phpdocumentor-search-results--hidden)').waitFor();
+  assert(
+    await page.locator('.phpdocumentor-search-results__entry').count() > 0,
+    `${label} search interaction must reveal useful destinations.`,
+  );
+  await page.locator('.phpdocumentor-search-results__close').click();
+  await page.locator('.phpdocumentor-search-results--hidden').waitFor();
+  await searchField.fill('');
 }
 
 async function validateReferenceLayouts(browser, siteOrigin) {
@@ -241,28 +274,34 @@ async function validateReferenceLayouts(browser, siteOrigin) {
     ['nested API', '/namespaces/durableworkflow-worker.html'],
   ];
 
-  for (const [pageName, pagePath] of referencePages) {
-    const context = await browser.newContext({ viewport: { width: 320, height: 844 } });
-    const page = await context.newPage();
-    const errors = observeBrowserErrors(page, `${pageName} 320px`);
-    await page.goto(`${siteOrigin}${pagePath}`);
-    await page.locator('#durable-workflow-analytics-consent').waitFor();
-    await assertReferenceLayout(page, `${pageName} 320px initial consent`, 'initial');
+  for (const [viewportName, viewport] of [
+    ['320px', { width: 320, height: 844 }],
+    ['intermediate', { width: 768, height: 1024 }],
+  ]) {
+    for (const [pageName, pagePath] of referencePages) {
+      const context = await browser.newContext({ viewport });
+      const page = await context.newPage();
+      const label = `${pageName} ${viewportName}`;
+      const errors = observeBrowserErrors(page, label);
+      await page.goto(`${siteOrigin}${pagePath}`);
+      await page.locator('#durable-workflow-analytics-consent').waitFor();
+      await assertReferenceLayout(page, `${label} initial consent`, 'initial');
+      await exerciseReferenceInteractions(page, label);
 
-    await page.locator('[data-consent="denied"]').click();
-    await page.locator('#durable-workflow-analytics-preferences').waitFor();
-    await assertReferenceLayout(page, `${pageName} 320px selected consent`, 'selected');
+      await page.locator('[data-consent="denied"]').click();
+      await page.locator('#durable-workflow-analytics-preferences').waitFor();
+      await assertReferenceLayout(page, `${label} selected consent`, 'selected');
 
-    await page.reload();
-    await page.locator('#durable-workflow-analytics-preferences').waitFor();
-    await assertReferenceLayout(page, `${pageName} 320px stored consent`, 'stored');
-    assert.deepEqual(errors, [], `${pageName} 320px browser render must be error-free.`);
-    await context.close();
+      await page.reload();
+      await page.locator('#durable-workflow-analytics-preferences').waitFor();
+      await assertReferenceLayout(page, `${label} stored consent`, 'stored');
+      assert.deepEqual(errors, [], `${label} browser render must be error-free.`);
+      await context.close();
+    }
   }
 
   for (const [viewportName, viewport] of [
     ['wider mobile', { width: 390, height: 844 }],
-    ['intermediate', { width: 768, height: 1024 }],
     ['desktop', { width: 1440, height: 900 }],
   ]) {
     const context = await browser.newContext({ viewport });

@@ -1,0 +1,14 @@
+<header class="phpdocumentor-header phpdocumentor-section">
+    {% include 'components/header-title.html.twig' %}
+    {% set hasTopMenu = topMenu|default([])|filter(menu => menu|length > 0)|length > 0 %}
+    {% if hasTopMenu %}
+        <input class="phpdocumentor-header__menu-button" type="checkbox" id="menu-button" name="menu-button" />
+        <label class="phpdocumentor-header__menu-icon" for="menu-button">
+            <i class="fas fa-bars"></i>
+        </label>
+    {% endif %}
+    {{ include('components/search.html.twig') }}
+    {% if hasTopMenu %}
+        {% include 'components/topnav.html.twig' %}
+    {% endif %}
+</header>

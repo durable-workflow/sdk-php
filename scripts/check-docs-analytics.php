@@ -56,6 +56,11 @@ foreach ($iterator as $file) {
     if (substr_count($html, 'href="/assets/api-reference.css"') !== 1) {
         throw new RuntimeException("{$file->getPathname()} does not load the shared API-reference styles.");
     }
+    foreach (['phpdocumentor-header__menu-button', 'phpdocumentor-header__menu-icon', 'phpdocumentor-topnav'] as $emptyHeaderMenuClass) {
+        if (str_contains($html, $emptyHeaderMenuClass)) {
+            throw new RuntimeException("{$file->getPathname()} renders an empty top-navigation control.");
+        }
+    }
     if (substr_count($html, 'href="/analytics/analytics.css"') !== 1 || str_contains($html, 'googletagmanager.com')) {
         throw new RuntimeException("{$file->getPathname()} does not preserve consent-gated analytics loading.");
     }

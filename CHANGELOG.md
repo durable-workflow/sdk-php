@@ -27,6 +27,10 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The generated API reference omits its responsive header-menu control when
+  the top navigation has no destinations, leaving search and sidebar
+  navigation as the useful narrow-viewport interactions.
+
 - The generated API reference constrains and, when needed, wraps its SDK title
   at narrow viewport widths so the shared header and consent controls remain
   usable without document-level horizontal overflow.
