@@ -14,6 +14,7 @@ permissions:
 jobs:
   framework-service-mode:
     name: ${{ matrix.framework }} published workflow
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: published-service-smoke

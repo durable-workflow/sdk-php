@@ -120,6 +120,29 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         ):
             self.assertIn(privileged_marker, deploy)
 
+    def test_published_smokes_reject_caller_selected_refs_before_secret_use(
+        self,
+    ) -> None:
+        workflows = {
+            "framework-bridges-published-smoke.yml": "framework-service-mode",
+            "service-mode-published-smoke.yml": "source-free-service-mode",
+        }
+        for workflow, job in workflows.items():
+            with self.subTest(workflow=workflow):
+                source = workflow_source(workflow)
+                self.assertIn("  workflow_dispatch:", source)
+                smoke = job_source(source, job)
+                self.assert_main_only(smoke, "github.ref == 'refs/heads/main'")
+                for privileged_marker in (
+                    "environment: published-service-smoke",
+                    "secrets.DURABLE_WORKFLOW_SERVER_URL",
+                    "secrets.DURABLE_WORKFLOW_AUTH_TOKEN",
+                ):
+                    self.assertIn(privileged_marker, smoke)
+                    self.assertLess(
+                        smoke.index("    if:"), smoke.index(privileged_marker)
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
