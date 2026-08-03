@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       sdk_version:
-        description: Exact published Packagist version, including prerelease stability when needed
+        description: Exact published Packagist version, such as 2.0.0 or 2.0.0-rc.9
         required: true
         type: string
 
@@ -17,27 +17,119 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: published-service-smoke
-    env:
-      DURABLE_WORKFLOW_SERVER_URL: ${{ secrets.DURABLE_WORKFLOW_SERVER_URL }}
-      DURABLE_WORKFLOW_AUTH_TOKEN: ${{ secrets.DURABLE_WORKFLOW_AUTH_TOKEN }}
-      SDK_VERSION: ${{ inputs.sdk_version }}
     steps:
+      - name: Validate the exact published SDK version
+        env:
+          SDK_VERSION: ${{ inputs.sdk_version }}
+        run: |
+          if [[ ! "$SDK_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+            echo "sdk_version must be an exact stable, alpha, beta, or release-candidate version" >&2
+            exit 1
+          fi
+
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: '8.3'
           tools: composer:v2
           coverage: none
 
-      - name: Install only the published package
+      - name: Resolve the immutable published SDK release
+        env:
+          SDK_VERSION: ${{ inputs.sdk_version }}
         run: |
-          test -n "$DURABLE_WORKFLOW_SERVER_URL"
+          composer show durable-workflow/sdk "$SDK_VERSION" --all --format=json \
+            > "$RUNNER_TEMP/sdk-release.json"
+          php <<'PHP'
+          <?php
+          declare(strict_types=1);
+          $version = getenv('SDK_VERSION');
+          $metadata = json_decode(
+              file_get_contents(getenv('RUNNER_TEMP').'/sdk-release.json'),
+              true,
+              flags: JSON_THROW_ON_ERROR,
+          );
+          if (($metadata['name'] ?? null) !== 'durable-workflow/sdk') {
+              throw new RuntimeException('Packagist returned the wrong package identity.');
+          }
+          if (($metadata['versions'] ?? null) !== [$version]) {
+              throw new RuntimeException('Packagist did not resolve only the requested exact version.');
+          }
+          $references = [];
+          foreach (['source', 'dist'] as $kind) {
+              $reference = $metadata[$kind]['reference'] ?? null;
+              if ($reference === null) {
+                  continue;
+              }
+              if (!is_string($reference) || preg_match('/\A[0-9a-f]{40}\z/i', $reference) !== 1) {
+                  throw new RuntimeException("Published {$kind} reference is not an immutable commit.");
+              }
+              $references[] = strtolower($reference);
+          }
+          if ($references === []) {
+              throw new RuntimeException('Published release has no immutable source or distribution reference.');
+          }
+          PHP
+
+      - name: Install only the published package
+        env:
+          SDK_VERSION: ${{ inputs.sdk_version }}
+        run: |
           consumer="$(mktemp -d)"
           printf '%s\n' "$consumer" > "$RUNNER_TEMP/service-mode-consumer"
           cd "$consumer"
           composer init --name=durable-workflow/published-service-smoke --no-interaction
           composer require "durable-workflow/sdk:${SDK_VERSION}" --no-interaction --prefer-dist
 
+      - name: Verify the installed SDK release identity
+        env:
+          SDK_VERSION: ${{ inputs.sdk_version }}
+        run: |
+          consumer="$(cat "$RUNNER_TEMP/service-mode-consumer")"
+          SDK_LOCK_FILE="$consumer/composer.lock" php <<'PHP'
+          <?php
+          declare(strict_types=1);
+          $version = getenv('SDK_VERSION');
+          $release = json_decode(
+              file_get_contents(getenv('RUNNER_TEMP').'/sdk-release.json'),
+              true,
+              flags: JSON_THROW_ON_ERROR,
+          );
+          $lock = json_decode(
+              file_get_contents(getenv('SDK_LOCK_FILE')),
+              true,
+              flags: JSON_THROW_ON_ERROR,
+          );
+          $packages = array_values(array_filter(
+              array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []),
+              static fn (array $package): bool => ($package['name'] ?? null) === 'durable-workflow/sdk',
+          ));
+          if (count($packages) !== 1 || ($packages[0]['version'] ?? null) !== $version) {
+              throw new RuntimeException('Installed SDK package identity or version does not match the request.');
+          }
+          $installedReferences = [];
+          foreach (['source', 'dist'] as $kind) {
+              $reference = $packages[0][$kind]['reference'] ?? null;
+              if ($reference === null) {
+                  continue;
+              }
+              if (!is_string($reference) || preg_match('/\A[0-9a-f]{40}\z/i', $reference) !== 1) {
+                  throw new RuntimeException("Installed {$kind} reference is not an immutable commit.");
+              }
+              $expectedReference = $release[$kind]['reference'] ?? null;
+              if (!is_string($expectedReference) || strtolower($reference) !== strtolower($expectedReference)) {
+                  throw new RuntimeException("Installed {$kind} reference does not match the requested release.");
+              }
+              $installedReferences[] = strtolower($reference);
+          }
+          if ($installedReferences === []) {
+              throw new RuntimeException('Installed SDK has no immutable source or distribution reference.');
+          }
+          PHP
+
       - name: Complete a class-oriented workflow against the published endpoint
+        env:
+          DURABLE_WORKFLOW_SERVER_URL: ${{ secrets.DURABLE_WORKFLOW_SERVER_URL }}
+          DURABLE_WORKFLOW_AUTH_TOKEN: ${{ secrets.DURABLE_WORKFLOW_AUTH_TOKEN }}
         run: |
           consumer="$(cat "$RUNNER_TEMP/service-mode-consumer")"
           cd "$consumer"

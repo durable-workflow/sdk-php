@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -41,6 +43,17 @@ def step_source(job: str, name: str) -> str:
         len(lines),
     )
     return "\n".join(lines[start:end])
+
+
+def step_script(step: str) -> str:
+    lines = step.splitlines()
+    start = lines.index("        run: |") + 1
+    script: list[str] = []
+    for line in lines[start:]:
+        if line and not line.startswith("          "):
+            break
+        script.append(line[10:] if line else "")
+    return "\n".join(script)
 
 
 def job_condition(source: str) -> str:
@@ -142,6 +155,132 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
                     self.assertLess(
                         smoke.index("    if:"), smoke.index(privileged_marker)
                     )
+
+    def test_published_smokes_accept_only_exact_release_versions(self) -> None:
+        workflows = {
+            "framework-bridges-published-smoke.yml": "framework-service-mode",
+            "service-mode-published-smoke.yml": "source-free-service-mode",
+        }
+        exact_versions = (
+            "0.1.16",
+            "2.0.0",
+            "2.0.0-alpha.1",
+            "2.0.0-beta.21",
+            "2.0.0-rc.9",
+        )
+        mutable_selectors = (
+            "dev-main",
+            "dev-feature#0123456789abcdef0123456789abcdef01234567",
+            "2.x",
+            "2.0.*",
+            "^2.0",
+            "~2.0.0",
+            ">=2.0.0",
+            "2.0.0 || 3.0.0",
+            "2.0.0 as 3.0.0",
+            "2.0.0@dev",
+            "2.0.0-rc.9@RC",
+            "https://github.com/durable-workflow/sdk-php.git",
+        )
+
+        for workflow, job in workflows.items():
+            smoke = job_source(workflow_source(workflow), job)
+            validation = step_source(smoke, "Validate the exact published SDK version")
+            script = step_script(validation)
+            self.assertLess(
+                smoke.index(validation), smoke.index("shivammathur/setup-php@")
+            )
+
+            for version in exact_versions:
+                with self.subTest(workflow=workflow, accepted=version):
+                    result = subprocess.run(
+                        ["bash", "-eu", "-o", "pipefail", "-c", script],
+                        env={**os.environ, "SDK_VERSION": version},
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+
+            for selector in mutable_selectors:
+                with self.subTest(workflow=workflow, rejected=selector):
+                    result = subprocess.run(
+                        ["bash", "-eu", "-o", "pipefail", "-c", script],
+                        env={**os.environ, "SDK_VERSION": selector},
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertNotEqual(0, result.returncode)
+
+    def test_published_smokes_verify_the_installed_release_reference(self) -> None:
+        workflows = {
+            "framework-bridges-published-smoke.yml": (
+                "framework-service-mode",
+                "Create a fresh framework application from published artifacts",
+                "Start the framework worker and complete a workflow",
+            ),
+            "service-mode-published-smoke.yml": (
+                "source-free-service-mode",
+                "Install only the published package",
+                "Complete a class-oriented workflow against the published endpoint",
+            ),
+        }
+        for workflow, (job, install_name, runtime_name) in workflows.items():
+            with self.subTest(workflow=workflow):
+                smoke = job_source(workflow_source(workflow), job)
+                resolve = step_source(
+                    smoke, "Resolve the immutable published SDK release"
+                )
+                install = step_source(smoke, install_name)
+                verify = step_source(smoke, "Verify the installed SDK release identity")
+                runtime = step_source(smoke, runtime_name)
+
+                self.assertLess(smoke.index(resolve), smoke.index(install))
+                self.assertLess(smoke.index(install), smoke.index(verify))
+                self.assertLess(smoke.index(verify), smoke.index(runtime))
+                for marker in (
+                    'composer show durable-workflow/sdk "$SDK_VERSION" --all --format=json',
+                    "($metadata['name'] ?? null) !== 'durable-workflow/sdk'",
+                    "($metadata['versions'] ?? null) !== [$version]",
+                    "preg_match('/\\A[0-9a-f]{40}\\z/i', $reference)",
+                ):
+                    self.assertIn(marker, resolve)
+                for marker in (
+                    "composer.lock",
+                    "($package['name'] ?? null) === 'durable-workflow/sdk'",
+                    "($packages[0]['version'] ?? null) !== $version",
+                    "strtolower($reference) !== strtolower($expectedReference)",
+                ):
+                    self.assertIn(marker, verify)
+
+    def test_published_smoke_credentials_are_runtime_step_scoped(self) -> None:
+        workflows = {
+            "framework-bridges-published-smoke.yml": (
+                "framework-service-mode",
+                "Start the framework worker and complete a workflow",
+            ),
+            "service-mode-published-smoke.yml": (
+                "source-free-service-mode",
+                "Complete a class-oriented workflow against the published endpoint",
+            ),
+        }
+        secret_markers = (
+            "secrets.DURABLE_WORKFLOW_SERVER_URL",
+            "secrets.DURABLE_WORKFLOW_AUTH_TOKEN",
+        )
+        for workflow, (job, runtime_name) in workflows.items():
+            with self.subTest(workflow=workflow):
+                smoke = job_source(workflow_source(workflow), job)
+                runtime = step_source(smoke, runtime_name)
+                job_configuration = smoke[: smoke.index("    steps:")]
+                self.assertNotIn("secrets.", job_configuration)
+                self.assertLess(
+                    runtime.index("        env:"), runtime.index("        run:")
+                )
+                for marker in secret_markers:
+                    self.assertEqual(1, smoke.count(marker))
+                    self.assertIn(marker, runtime)
 
 
 if __name__ == "__main__":
