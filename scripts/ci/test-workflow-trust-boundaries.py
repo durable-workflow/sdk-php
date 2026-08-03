@@ -401,6 +401,35 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         )
         self.assertNotIn("DURABLE_WORKFLOW_TOKEN", symfony_configuration)
 
+    def test_published_smokes_do_not_fail_after_an_asserted_result(self) -> None:
+        workflows = {
+            "framework-bridges-published-smoke.yml": (
+                "framework-service-mode",
+                "Start the framework worker and complete a workflow",
+                "env -u DURABLE_WORKFLOW_WORKER_TOKEN php durable-client.php",
+            ),
+            "service-mode-published-smoke.yml": (
+                "source-free-service-mode",
+                "Complete a class-oriented workflow against the published endpoint",
+                "env -u DURABLE_WORKFLOW_WORKER_TOKEN php client.php",
+            ),
+        }
+        cleanup = (
+            'kill -TERM "$worker_pid" 2>/dev/null || true\n'
+            'wait "$worker_pid" 2>/dev/null || true\n'
+            "trap - EXIT"
+        )
+
+        for workflow, (job, runtime_name, client) in workflows.items():
+            with self.subTest(workflow=workflow):
+                runtime = step_script(
+                    step_source(
+                        job_source(workflow_source(workflow), job), runtime_name
+                    )
+                )
+                self.assertIn(f"{client}\n{cleanup}", runtime)
+                self.assertNotIn(f"{client} || true", runtime)
+
 
 if __name__ == "__main__":
     unittest.main()

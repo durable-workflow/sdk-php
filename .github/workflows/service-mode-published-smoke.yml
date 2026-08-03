@@ -225,6 +225,6 @@ jobs:
           worker_pid=$!
           trap 'kill -TERM "$worker_pid" 2>/dev/null || true; wait "$worker_pid" 2>/dev/null || true' EXIT
           env -u DURABLE_WORKFLOW_WORKER_TOKEN php client.php
-          kill -TERM "$worker_pid"
-          wait "$worker_pid"
+          kill -TERM "$worker_pid" 2>/dev/null || true
+          wait "$worker_pid" 2>/dev/null || true
           trap - EXIT
