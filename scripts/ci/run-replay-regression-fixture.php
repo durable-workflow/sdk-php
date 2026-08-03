@@ -3,6 +3,7 @@
 
 declare(strict_types=1);
 
+use DurableWorkflow\Attribute\Workflow as WorkflowHandler;
 use DurableWorkflow\Client;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Transport\Transport;
@@ -60,16 +61,16 @@ try {
 
 final class ReplayRegressionTransport implements Transport
 {
-    /** @var list<array<string, mixed>>|null */
-    private ?array $completedCommands = null;
-    private bool $workflowPolled = false;
+    /** @var list<list<array<string, mixed>>> */
+    private array $completedCommands = [];
+    private int $workflowPoll = 0;
 
     /**
-     * @param array<string, mixed> $task
-     * @param list<array<string, mixed>> $pagedHistory
+     * @param list<array<string, mixed>> $tasks
+     * @param array<string, list<array<string, mixed>>> $pagedHistory
      */
     public function __construct(
-        private readonly array $task,
+        private readonly array $tasks,
         private readonly array $pagedHistory,
     ) {
     }
@@ -77,66 +78,102 @@ final class ReplayRegressionTransport implements Transport
     public function send(string $method, string $uri, array $headers, ?array $body = null): array
     {
         if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
-            if ($this->workflowPolled) {
+            if (!isset($this->tasks[$this->workflowPoll])) {
                 return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
             }
-            $this->workflowPolled = true;
 
-            return ['task' => $this->task, 'poll_status' => 'leased'];
+            return ['task' => $this->tasks[$this->workflowPoll++], 'poll_status' => 'leased'];
         }
 
-        $taskId = (string) $this->task['task_id'];
-        if (str_ends_with($uri, "/api/worker/workflow-tasks/{$taskId}/history")) {
+        $task = $this->taskFor($uri, 'history');
+        if ($task !== null) {
+            $taskId = (string) $task['task_id'];
             if (($body['next_history_page_token'] ?? null) !== 'regression-page-1') {
                 throw new RuntimeException('Official replay consumer received an unexpected history page token.');
             }
 
             return [
-                'history_events' => $this->pagedHistory,
+                'history_events' => $this->pagedHistory[$taskId] ?? [],
                 'next_history_page_token' => '',
             ];
         }
 
-        if (str_ends_with($uri, "/api/worker/workflow-tasks/{$taskId}/heartbeat")) {
+        $task = $this->taskFor($uri, 'heartbeat');
+        if ($task !== null) {
             return [
-                'task_id' => $taskId,
-                'workflow_task_attempt' => $this->task['workflow_task_attempt'],
-                'lease_owner' => $this->task['lease_owner'],
+                'task_id' => $task['task_id'],
+                'workflow_task_attempt' => $task['workflow_task_attempt'],
+                'lease_owner' => $task['lease_owner'],
                 'renewed' => true,
                 'reason' => null,
             ];
         }
 
-        if (str_ends_with($uri, "/api/worker/workflow-tasks/{$taskId}/complete")) {
+        if ($this->taskFor($uri, 'complete') !== null) {
             $commands = $body['commands'] ?? null;
             if (!is_array($commands) || !array_is_list($commands)) {
                 throw new RuntimeException('Official replay consumer received invalid workflow commands.');
             }
             /** @var list<array<string, mixed>> $commands */
-            $this->completedCommands = $commands;
+            $this->completedCommands[] = $commands;
 
             return ['completed' => true];
         }
 
-        if (str_ends_with($uri, "/api/worker/workflow-tasks/{$taskId}/fail")) {
+        if ($this->taskFor($uri, 'fail') !== null) {
             throw new RuntimeException('Official replay consumer reported a workflow task failure.');
         }
 
         if (str_ends_with($uri, '/api/worker/activity-tasks/poll')) {
-            return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            return $this->workflowPoll < count($this->tasks)
+                ? ['task' => null, 'poll_status' => 'empty']
+                : ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+        }
+
+        if (str_ends_with($uri, '/api/worker/query-tasks/poll')) {
+            return ['task' => null, 'poll_status' => 'empty'];
         }
 
         throw new RuntimeException("Official replay consumer received an unexpected {$method} request.");
     }
 
-    /** @return list<array<string, mixed>> */
+    /** @return list<list<array<string, mixed>>> */
     public function completedCommands(): array
     {
-        if ($this->completedCommands === null) {
-            throw new RuntimeException('Official replay consumer did not complete the workflow task.');
+        if (count($this->completedCommands) !== count($this->tasks)) {
+            throw new RuntimeException('Official replay consumer did not complete every workflow task.');
         }
 
         return $this->completedCommands;
+    }
+
+    /** @return array<string, mixed>|null */
+    private function taskFor(string $uri, string $operation): ?array
+    {
+        foreach ($this->tasks as $task) {
+            $taskId = (string) $task['task_id'];
+            if (str_ends_with($uri, "/api/worker/workflow-tasks/{$taskId}/{$operation}")) {
+                return $task;
+            }
+        }
+
+        return null;
+    }
+}
+
+final class ReplayRegressionAttributedStatefulWorkflow
+{
+    private int $invocation = 0;
+
+    /** @return array{workflow_id: string, run_id: string, invocation: int} */
+    #[WorkflowHandler('golden.attributed-stateful')]
+    public function run(WorkflowContext $context): array
+    {
+        return [
+            'workflow_id' => $context->workflowId,
+            'run_id' => $context->runId,
+            'invocation' => ++$this->invocation,
+        ];
     }
 }
 
@@ -192,6 +229,36 @@ final class ReplayRegressionConsumer
             throw new RuntimeException("{$identity}.history must not be empty.");
         }
 
+        $workflowTasks = $fixture['workflow_tasks'] ?? null;
+        if ($workflowTasks !== null) {
+            if (array_key_exists('command_sequence', $fixture)) {
+                throw new RuntimeException(
+                    "{$identity} cannot combine workflow_tasks with command_sequence.",
+                );
+            }
+            if (!is_array($workflowTasks) || !array_is_list($workflowTasks) || $workflowTasks === []) {
+                throw new RuntimeException("{$identity}.workflow_tasks must be a non-empty list.");
+            }
+            foreach ($workflowTasks as $index => $workflowTask) {
+                if (!is_array($workflowTask)) {
+                    throw new RuntimeException("{$identity}.workflow_tasks.{$index} must be an object.");
+                }
+                if (count($workflowTask) !== 2
+                    || array_diff(array_keys($workflowTask), ['workflow_id', 'run_id']) !== []) {
+                    throw new RuntimeException(
+                        "{$identity}.workflow_tasks.{$index} must contain only workflow_id and run_id.",
+                    );
+                }
+                foreach (['workflow_id', 'run_id'] as $field) {
+                    if (!is_string($workflowTask[$field] ?? null) || $workflowTask[$field] === '') {
+                        throw new RuntimeException(
+                            "{$identity}.workflow_tasks.{$index}.{$field} must be a non-empty string.",
+                        );
+                    }
+                }
+            }
+        }
+
         $layouts = $history === [] ? ['inline'] : ['inline', 'paginated'];
         foreach ($layouts as $layout) {
             self::executeLayout(
@@ -201,6 +268,7 @@ final class ReplayRegressionConsumer
                 $history,
                 $fixture,
                 $layout,
+                $workflowTasks,
             );
         }
     }
@@ -209,6 +277,7 @@ final class ReplayRegressionConsumer
      * @param list<mixed> $input
      * @param list<array<string, mixed>> $history
      * @param array<string, mixed> $fixture
+     * @param list<array<string, mixed>>|null $workflowTasks
      */
     private static function executeLayout(
         string $identity,
@@ -217,29 +286,46 @@ final class ReplayRegressionConsumer
         array $history,
         array $fixture,
         string $layout,
+        ?array $workflowTasks,
     ): void {
         $codec = new AvroPayloadCodec();
-        $task = array_merge([
-            'task_id' => "regression-{$layout}",
-            'workflow_task_attempt' => 1,
-            'lease_owner' => 'regression-consumer',
+        $taskIdentities = $workflowTasks ?? [[
             'workflow_id' => 'regression-workflow',
             'run_id' => "regression-{$layout}",
-            'workflow_type' => $workflowType,
-            'arguments' => $codec->envelope($input),
-            'history_events' => $layout === 'inline' ? $history : [],
-            'next_history_page_token' => $layout === 'paginated' ? 'regression-page-1' : '',
-        ], self::taskAttributes($workflowType));
+        ]];
+        $tasks = [];
+        $pagedHistory = [];
+        foreach ($taskIdentities as $index => $taskIdentity) {
+            $taskId = $workflowTasks === null
+                ? "regression-{$layout}"
+                : "regression-{$layout}-{$index}";
+            $tasks[] = array_merge([
+                'task_id' => $taskId,
+                'workflow_task_attempt' => 1,
+                'lease_owner' => 'regression-consumer',
+                'workflow_id' => $taskIdentity['workflow_id'],
+                'run_id' => $taskIdentity['run_id'],
+                'workflow_type' => $workflowType,
+                'arguments' => $codec->envelope($input),
+                'history_events' => $layout === 'inline' ? $history : [],
+                'next_history_page_token' => $layout === 'paginated' ? 'regression-page-1' : '',
+            ], self::taskAttributes($workflowType));
+            $pagedHistory[$taskId] = $layout === 'paginated' ? $history : [];
+        }
         $transport = new ReplayRegressionTransport(
-            $task,
-            $layout === 'paginated' ? $history : [],
+            $tasks,
+            $pagedHistory,
         );
         $worker = new Worker(
             new Client('https://replay.invalid', transport: $transport, codec: $codec),
             'regression-corpus',
             workerId: 'regression-consumer',
         );
-        $worker->registerWorkflow($workflowType, self::workflow($workflowType));
+        if ($workflowType === 'golden.attributed-stateful') {
+            $worker->register(ReplayRegressionAttributedStatefulWorkflow::class);
+        } else {
+            $worker->registerWorkflow($workflowType, self::workflow($workflowType));
+        }
         if ($workflowType === 'golden.worker-update') {
             $worker->registerUpdate(
                 $workflowType,
@@ -247,12 +333,36 @@ final class ReplayRegressionConsumer
                 static fn (QueryContext $context, mixed $value = null): array => ['updated' => $value],
             );
         }
-        $worker->tick(0);
+        foreach ($tasks as $_task) {
+            $worker->tick(0);
+        }
 
-        $commands = array_map(
-            static fn (array $command): array => self::decodeEnvelopes($command, $codec),
+        $taskCommands = array_map(
+            static fn (array $commands): array => array_map(
+                static fn (array $command): array => self::decodeEnvelopes($command, $codec),
+                $commands,
+            ),
             $transport->completedCommands(),
         );
+        if ($workflowTasks !== null) {
+            $observedTasks = [];
+            foreach ($taskCommands as $index => $commands) {
+                $observed = [
+                    'workflow_id' => $taskIdentities[$index]['workflow_id'],
+                    'run_id' => $taskIdentities[$index]['run_id'],
+                    'command_sequence' => $commands,
+                ];
+                if (count($commands) === 1) {
+                    $observed = array_merge($observed, $commands[0]);
+                }
+                $observedTasks[] = $observed;
+            }
+            self::assertExpected($identity, $fixture, ['workflow_tasks' => $observedTasks]);
+
+            return;
+        }
+
+        $commands = $taskCommands[0];
         $declaredCommands = $fixture['command_sequence'] ?? null;
         if ($declaredCommands !== null) {
             self::assertMatches(
@@ -262,13 +372,22 @@ final class ReplayRegressionConsumer
             );
         }
 
-        $expected = $fixture['expected'] ?? null;
-        if (!is_array($expected) || $expected === []) {
-            throw new RuntimeException("{$identity}.expected must be a non-empty object.");
-        }
         $observed = ['command_sequence' => $commands];
         if (count($commands) === 1) {
             $observed = array_merge($observed, $commands[0]);
+        }
+        self::assertExpected($identity, $fixture, $observed);
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     * @param array<string, mixed> $observed
+     */
+    private static function assertExpected(string $identity, array $fixture, array $observed): void
+    {
+        $expected = $fixture['expected'] ?? null;
+        if (!is_array($expected) || $expected === []) {
+            throw new RuntimeException("{$identity}.expected must be a non-empty object.");
         }
         self::assertMatches($expected, $observed, "{$identity}.expected");
     }

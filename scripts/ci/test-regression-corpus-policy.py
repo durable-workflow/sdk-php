@@ -83,6 +83,11 @@ final class Client
             """<?php
 final class Worker
 {
+    public function register(string $service): void
+    {
+        $this->services[] = $service;
+    }
+
     private function completeHistory(): array
     {
         $history = [];
@@ -108,6 +113,28 @@ final class Worker
     private function heartbeat(): void
     {
         $this->beats = 1;
+    }
+}
+"""
+        )
+        (self.root / "src/Worker/HandlerDiscovery.php").write_text(
+            """<?php
+final class HandlerDiscovery
+{
+    public function discover(string $service): array
+    {
+        return [$service];
+    }
+}
+"""
+        )
+        (self.root / "src/Worker/HandlerResolver.php").write_text(
+            """<?php
+final class HandlerResolver
+{
+    public function resolve(string $class): object
+    {
+        return new $class();
     }
 }
 """
@@ -602,6 +629,54 @@ raise SystemExit(0)
                 "delay_seconds": 5,
             },
         )
+
+    def official_attributed_lifetime_fixture(
+        self,
+        identity: str,
+        invocations: list[int] | None = None,
+    ) -> dict[str, Any]:
+        tasks = [
+            {"workflow_id": "workflow-a", "run_id": "run-a"},
+            {"workflow_id": "workflow-b", "run_id": "run-b"},
+            {"workflow_id": "workflow-a", "run_id": "run-a"},
+        ]
+        return {
+            "$schema": "https://example.invalid/evidence-schema.json",
+            "fixture_schema": "durable-workflow.replay-regression/v1",
+            "id": identity,
+            "protocol_version": "1",
+            "bindings": ["php"],
+            "workflow": {
+                "type": "golden.attributed-stateful",
+                "input": [],
+            },
+            "workflow_tasks": tasks,
+            "expected": {
+                "workflow_tasks": [
+                    {
+                        "command_sequence": [
+                            {
+                                "type": "complete_workflow",
+                                "result": {
+                                    "workflow_id": task["workflow_id"],
+                                    "run_id": task["run_id"],
+                                    **(
+                                        {"invocation": invocation}
+                                        if invocation is not None
+                                        else {}
+                                    ),
+                                },
+                            }
+                        ]
+                    }
+                    for task, invocation in zip(
+                        tasks,
+                        invocations or [None] * len(tasks),
+                        strict=True,
+                    )
+                ]
+            },
+        }
 
     def official_replay_repository(self, name: str) -> tuple[Path, str]:
         root = self.root / name
@@ -2013,6 +2088,64 @@ print(json.dumps({
             report["counts"]["replay"]["counterfactual"],
         )
 
+    def test_validator_consumes_attributed_workflow_task_sequence(self) -> None:
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        self.write_json(
+            "tests/fixtures/replay-regressions/attributed-lifetime.json",
+            self.official_attributed_lifetime_fixture("attributed-lifetime"),
+        )
+
+        result = self.validate_without_base()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(1, report["counts"]["replay"]["current"])
+
+    def test_official_php_runner_uses_attributed_worker_registration(self) -> None:
+        fixture = self.official_attributed_lifetime_fixture(
+            "official-attributed-lifetime"
+        )
+        result = self.run_official_php_runner(REPOSITORY_ROOT, fixture)
+        self.assertEqual(0, result.returncode, result.stderr)
+
+        shared = self.run_official_php_runner(
+            REPOSITORY_ROOT,
+            self.official_attributed_lifetime_fixture(
+                "official-attributed-lifetime-shared",
+                [1, 2, 3],
+            ),
+        )
+        isolated = self.run_official_php_runner(
+            REPOSITORY_ROOT,
+            self.official_attributed_lifetime_fixture(
+                "official-attributed-lifetime-isolated",
+                [1, 1, 1],
+            ),
+        )
+        self.assertEqual(0, shared.returncode, shared.stderr)
+        self.assertNotEqual(0, isolated.returncode, isolated.stdout)
+
+        source_root = self.root / "attributed-registration-source"
+        shutil.copytree(REPOSITORY_ROOT / "src", source_root / "src")
+        worker_path = source_root / "src/Worker.php"
+        worker = worker_path.read_text()
+        discovery = (
+            "$discovered = array_map($this->handlerDiscovery->discover(...), $services);"
+        )
+        self.assertIn(discovery, worker)
+        worker_path.write_text(
+            worker.replace(
+                discovery,
+                "throw new \\RuntimeException('attributed registration exercised');",
+                1,
+            )
+        )
+
+        result = self.run_official_php_runner(source_root, fixture)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("attributed registration exercised", result.stderr)
+
     def test_official_php_runner_executes_supported_fixture(self) -> None:
         fixture = self.replay_fixture("official-runner-smoke", ["php"])
         fixture.pop("history")
@@ -2564,6 +2697,18 @@ raise SystemExit(0 if "$history = ['changed'];" in source else 1)
             result.stderr,
         )
 
+    def test_runner_change_alone_is_not_runtime_corpus_growth(self) -> None:
+        self.replay_runner.write_text(
+            self.replay_runner.read_text() + "\n# consumer capability change\n"
+        )
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["counts"]["replay"]["related_change"])
+        self.assertEqual(0, report["counts"]["replay"]["revision_verified"])
+
     def test_replay_change_with_only_an_unrelated_fixture_is_rejected(self) -> None:
         worker = self.root / "src/Worker.php"
         worker.write_text(
@@ -2627,6 +2772,40 @@ raise SystemExit(0 if "$history = ['changed'];" in source else 1)
             "(base=0, current=0)",
             result.stderr,
         )
+
+    def test_attributed_handler_lifetime_changes_require_replay_growth(self) -> None:
+        cases = {
+            "worker registration": (
+                self.root / "src/Worker.php",
+                "$this->services[] = $service;",
+                "$this->services[] = get_class($service);",
+            ),
+            "handler discovery": (
+                self.root / "src/Worker/HandlerDiscovery.php",
+                "return [$service];",
+                "return [new $service()];",
+            ),
+            "handler resolution": (
+                self.root / "src/Worker/HandlerResolver.php",
+                "return new $class();",
+                "return clone new $class();",
+            ),
+        }
+
+        for name, (path, original, changed) in cases.items():
+            with self.subTest(name=name):
+                source = path.read_text()
+                self.assertIn(original, source)
+                path.write_text(source.replace(original, changed, 1))
+                result = self.validate()
+                path.write_text(source)
+
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                self.assertIn(
+                    "replay implementation changed but its corpus did not grow "
+                    "(base=0, current=0)",
+                    result.stderr,
+                )
 
     def test_replay_dispatch_change_requires_replay_corpus_growth(self) -> None:
         worker = self.root / "src/Worker.php"

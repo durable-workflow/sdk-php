@@ -44,6 +44,24 @@
         {
           "glob": "src/Worker.php",
           "content_patterns": [
+            "function\\s+register\\s*\\("
+          ]
+        },
+        {
+          "glob": "src/Worker/HandlerDiscovery.php",
+          "content_patterns": [
+            "function\\s+discover\\s*\\("
+          ]
+        },
+        {
+          "glob": "src/Worker/HandlerResolver.php",
+          "content_patterns": [
+            "function\\s+resolve\\s*\\("
+          ]
+        },
+        {
+          "glob": "src/Worker.php",
+          "content_patterns": [
             "function\\s+completeHistory\\s*\\(",
             "function\\s+executeWorkflowTask\\s*\\("
           ]
