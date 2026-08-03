@@ -14,7 +14,7 @@ final class TokenAuthentication implements Authentication
         private readonly ?string $controlToken = null,
         private readonly ?string $workerToken = null,
     ) {
-        if ($this->resolvedToken(false) === null || $this->resolvedToken(true) === null) {
+        if ($this->resolvedToken(false) === null && $this->resolvedToken(true) === null) {
             throw new InvalidArgumentException('At least one non-empty authentication token is required.');
         }
     }
@@ -22,14 +22,23 @@ final class TokenAuthentication implements Authentication
     /** @return array<string, string> */
     public function headers(bool $workerRequest): array
     {
-        return ['Authorization' => 'Bearer '.(string) $this->resolvedToken($workerRequest)];
+        $token = $this->resolvedToken($workerRequest);
+        if ($token === null) {
+            $role = $workerRequest ? 'worker' : 'control';
+
+            throw new InvalidArgumentException(
+                "A {$role} credential is required for this request. Configure a shared token or the scoped {$role} token.",
+            );
+        }
+
+        return ['Authorization' => 'Bearer '.$token];
     }
 
     private function resolvedToken(bool $workerRequest): ?string
     {
         $candidates = $workerRequest
-            ? [$this->workerToken, $this->token, $this->controlToken]
-            : [$this->controlToken, $this->token, $this->workerToken];
+            ? [$this->workerToken, $this->token]
+            : [$this->controlToken, $this->token];
 
         foreach ($candidates as $candidate) {
             if ($candidate !== null && trim($candidate) !== '') {

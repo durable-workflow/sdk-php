@@ -300,14 +300,21 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
                 "framework-service-mode",
                 "Start the framework worker and complete a workflow",
                 "DURABLE_WORKFLOW_ENDPOINT",
+                "DURABLE_WORKFLOW_CONTROL_TOKEN",
             ),
             "service-mode-published-smoke.yml": (
                 "source-free-service-mode",
                 "Complete a class-oriented workflow against the published endpoint",
                 "DURABLE_WORKFLOW_SERVER_URL",
+                "DURABLE_WORKFLOW_CLIENT_TOKEN",
             ),
         }
-        for workflow, (job, runtime_name, endpoint_name) in workflows.items():
+        for workflow, (
+            job,
+            runtime_name,
+            endpoint_name,
+            control_token_name,
+        ) in workflows.items():
             with self.subTest(workflow=workflow):
                 smoke = job_source(workflow_source(workflow), job)
                 runtime = step_source(smoke, runtime_name)
@@ -316,7 +323,7 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
                     **os.environ,
                     endpoint_name: "https://runtime.example",
                     "DURABLE_WORKFLOW_NAMESPACE": "published-sdk-smoke",
-                    "DURABLE_WORKFLOW_CLIENT_TOKEN": "client-secret-value",
+                    control_token_name: "client-secret-value",
                     "DURABLE_WORKFLOW_WORKER_TOKEN": "worker-secret-value",
                 }
 
@@ -383,25 +390,36 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         )
 
         for runtime in (service, framework):
-            self.assertIn(
-                "controlToken: getenv('DURABLE_WORKFLOW_CLIENT_TOKEN') ?: null",
-                runtime,
-            )
-            self.assertIn("env -u DURABLE_WORKFLOW_CLIENT_TOKEN php", runtime)
             self.assertIn("env -u DURABLE_WORKFLOW_WORKER_TOKEN php", runtime)
             self.assertNotIn("DURABLE_WORKFLOW_AUTH_TOKEN", runtime)
 
+        self.assertIn(
+            "controlToken: getenv('DURABLE_WORKFLOW_CLIENT_TOKEN') ?: null",
+            service,
+        )
+        self.assertIn("env -u DURABLE_WORKFLOW_CLIENT_TOKEN php", service)
+        self.assertIn(
+            "$application->make(WorkflowClientInterface::class)", framework
+        )
+        self.assertIn(
+            "$kernel->getContainer()->get(WorkflowClientInterface::class)", framework
+        )
+        self.assertIn("env -u DURABLE_WORKFLOW_CONTROL_TOKEN php", framework)
         self.assertIn(
             "workerToken: getenv('DURABLE_WORKFLOW_WORKER_TOKEN') ?: null",
             service,
         )
         self.assertIn(
-            "worker_token: '%env(DURABLE_WORKFLOW_WORKER_TOKEN)%'",
+            "control_token: '%env(default::DURABLE_WORKFLOW_CONTROL_TOKEN)%'",
+            symfony_configuration,
+        )
+        self.assertIn(
+            "worker_token: '%env(default::DURABLE_WORKFLOW_WORKER_TOKEN)%'",
             symfony_configuration,
         )
         self.assertNotIn("DURABLE_WORKFLOW_TOKEN", symfony_configuration)
 
-    def test_published_smokes_do_not_fail_after_an_asserted_result(self) -> None:
+    def test_published_smokes_require_graceful_worker_shutdown(self) -> None:
         workflows = {
             "framework-bridges-published-smoke.yml": (
                 "framework-service-mode",
@@ -414,12 +432,6 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
                 "env -u DURABLE_WORKFLOW_WORKER_TOKEN php client.php",
             ),
         }
-        cleanup = (
-            'kill -TERM "$worker_pid" 2>/dev/null || true\n'
-            'wait "$worker_pid" 2>/dev/null || true\n'
-            "trap - EXIT"
-        )
-
         for workflow, (job, runtime_name, client) in workflows.items():
             with self.subTest(workflow=workflow):
                 runtime = step_script(
@@ -427,7 +439,13 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
                         job_source(workflow_source(workflow), job), runtime_name
                     )
                 )
-                self.assertIn(f"{client}\n{cleanup}", runtime)
+                self.assertIn(client, runtime)
+                self.assertIn('wait "$worker_pid" || worker_status=$?', runtime)
+                self.assertNotIn('wait "$worker_pid" 2>/dev/null || true', runtime)
+                self.assertIn("worker\\.shutdown_failed", runtime)
+                self.assertIn("HTTP[[:space:]]+403", runtime)
+                self.assertIn("403[[:space:]]+Forbidden", runtime)
+                self.assertIn('if [ "$worker_status" -ne 0 ]', runtime)
                 self.assertNotIn(f"{client} || true", runtime)
 
 

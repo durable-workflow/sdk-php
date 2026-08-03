@@ -20,6 +20,7 @@ use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
 final class DurableWorkflowExtension extends Extension
 {
     public const HANDLER_TAG = 'durable_workflow.handler';
+    private const WORKER_CLIENT_SERVICE = 'durable_workflow.worker_client';
 
     /** @param array<int, array<string, mixed>> $configs */
     public function load(array $configs, ContainerBuilder $container): void
@@ -31,9 +32,11 @@ final class DurableWorkflowExtension extends Extension
             ->setFactory([ServiceConfiguration::class, 'fromArray'])
             ->setArguments([$values]);
         $container->register(Client::class, Client::class)
-            ->setFactory([new Reference(ServiceConfiguration::class), 'client'])
+            ->setFactory([new Reference(ServiceConfiguration::class), 'controlClient'])
             ->setPublic(true);
         $container->setAlias(WorkflowClientInterface::class, Client::class)->setPublic(true);
+        $container->register(self::WORKER_CLIENT_SERVICE, Client::class)
+            ->setFactory([new Reference(ServiceConfiguration::class), 'workerClient']);
 
         foreach ($values['handlers'] as $handler) {
             if (!is_string($handler)) {
@@ -50,7 +53,7 @@ final class DurableWorkflowExtension extends Extension
         $container->register(WorkerFactory::class, WorkerFactory::class)
             ->setArguments([
                 new Reference(ServiceConfiguration::class),
-                new Reference(Client::class),
+                new Reference(self::WORKER_CLIENT_SERVICE),
                 new TaggedIteratorArgument(self::HANDLER_TAG),
                 new Reference(LoggerInterface::class, ContainerBuilder::NULL_ON_INVALID_REFERENCE),
                 new Reference(EventDispatcherInterface::class, ContainerBuilder::NULL_ON_INVALID_REFERENCE),

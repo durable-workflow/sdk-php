@@ -8,6 +8,7 @@ use DurableWorkflow\Bridge\FrameworkRuntimeException;
 use DurableWorkflow\Bridge\ServiceConfiguration;
 use DurableWorkflow\Client;
 use DurableWorkflow\Exception\ServerException;
+use DurableWorkflow\Tests\Support\FakeTransport;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -34,6 +35,144 @@ final class FrameworkBridgeTest extends TestCase
         self::assertSame(12, $configuration->pollTimeoutSeconds);
         self::assertSame('priority-orders', $configuration->taskQueue('priority-orders'));
         self::assertSame('orders', $configuration->client()->namespace);
+    }
+
+    public function testRoleSpecificClientsCannotSendTheOppositeScopedCredential(): void
+    {
+        $configuration = ServiceConfiguration::fromArray([
+            'endpoint' => 'https://cloud.example/runtime/acme',
+            'namespace' => 'orders',
+            'task_queue' => 'orders-php',
+            'credentials' => [
+                'control_token' => 'control-secret',
+                'worker_token' => 'worker-secret',
+            ],
+        ]);
+        $controlTransport = new FakeTransport([[], []]);
+        $workerTransport = new FakeTransport([
+            ['registered' => true],
+            [
+                'worker_id' => 'worker-1',
+                'outcome' => 'deregistered',
+                'recovered_workflow_task_count' => 0,
+            ],
+        ]);
+        $controlClient = $configuration->controlClient($controlTransport);
+        $workerClient = $configuration->workerClient($workerTransport);
+
+        $controlClient->health();
+        $controlClient->deregisterWorker('operator-worker');
+        $workerClient->registerWorker('worker-1', 'orders-php', [], []);
+        $deregistration = $workerClient->deregisterWorkerRegistration('worker-1');
+
+        self::assertSame('Bearer control-secret', $controlTransport->requests[0]['headers']['Authorization']);
+        self::assertSame('Bearer control-secret', $controlTransport->requests[1]['headers']['Authorization']);
+        self::assertSame(
+            'https://cloud.example/runtime/acme/api/workers/operator-worker',
+            $controlTransport->requests[1]['uri'],
+        );
+        self::assertSame(
+            '2',
+            $controlTransport->requests[1]['headers']['X-Durable-Workflow-Control-Plane-Version'],
+        );
+        self::assertSame('Bearer worker-secret', $workerTransport->requests[0]['headers']['Authorization']);
+        self::assertSame('Bearer worker-secret', $workerTransport->requests[1]['headers']['Authorization']);
+        self::assertSame(
+            'https://cloud.example/runtime/acme/api/worker/registrations/worker-1',
+            $workerTransport->requests[1]['uri'],
+        );
+        self::assertSame(
+            '1.13',
+            $workerTransport->requests[1]['headers']['X-Durable-Workflow-Protocol-Version'],
+        );
+        self::assertSame([
+            'worker_id' => 'worker-1',
+            'outcome' => 'deregistered',
+            'recovered_workflow_task_count' => 0,
+        ], $deregistration);
+
+        try {
+            $controlClient->registerWorker('worker-2', 'orders-php', [], []);
+            self::fail('The control client accepted a worker-plane request.');
+        } catch (InvalidArgumentException $exception) {
+            self::assertStringContainsString('worker credential is required', $exception->getMessage());
+        }
+        try {
+            $workerClient->health();
+            self::fail('The worker client accepted a control-plane request.');
+        } catch (InvalidArgumentException $exception) {
+            self::assertStringContainsString('control credential is required', $exception->getMessage());
+        }
+        try {
+            $controlClient->deregisterWorkerRegistration('worker-2');
+            self::fail('The control client accepted worker registration cleanup.');
+        } catch (InvalidArgumentException $exception) {
+            self::assertStringContainsString('worker credential is required', $exception->getMessage());
+        }
+        try {
+            $workerClient->deregisterWorker('operator-worker');
+            self::fail('The worker client accepted operator worker removal.');
+        } catch (InvalidArgumentException $exception) {
+            self::assertStringContainsString('control credential is required', $exception->getMessage());
+        }
+
+        self::assertCount(2, $controlTransport->requests);
+        self::assertCount(2, $workerTransport->requests);
+    }
+
+    public function testSharedTokenAuthorizesBothRoleSpecificClients(): void
+    {
+        $configuration = ServiceConfiguration::fromArray([
+            'endpoint' => 'http://localhost:8080',
+            'namespace' => 'default',
+            'task_queue' => 'php-workers',
+            'credentials' => ['token' => 'shared-secret'],
+        ]);
+        $controlTransport = new FakeTransport([[]]);
+        $workerTransport = new FakeTransport([['registered' => true]]);
+
+        $configuration->controlClient($controlTransport)->health();
+        $configuration->workerClient($workerTransport)->registerWorker('worker-1', 'php-workers', [], []);
+
+        self::assertSame('Bearer shared-secret', $controlTransport->requests[0]['headers']['Authorization']);
+        self::assertSame('Bearer shared-secret', $workerTransport->requests[0]['headers']['Authorization']);
+    }
+
+    public function testRoleSpecificClientConstructionFailsClosedWithoutItsCredential(): void
+    {
+        $controlOnly = ServiceConfiguration::fromArray([
+            'endpoint' => 'https://cloud.example/runtime/acme',
+            'namespace' => 'orders',
+            'task_queue' => 'orders-php',
+            'credentials' => ['control_token' => 'control-secret'],
+        ]);
+        $workerOnly = ServiceConfiguration::fromArray([
+            'endpoint' => 'https://cloud.example/runtime/acme',
+            'namespace' => 'orders',
+            'task_queue' => 'orders-php',
+            'credentials' => ['worker_token' => 'worker-secret'],
+        ]);
+        $controlTransport = new FakeTransport([[]]);
+        $workerTransport = new FakeTransport([['registered' => true]]);
+
+        $controlOnly->controlClient($controlTransport)->health();
+        $workerOnly->workerClient($workerTransport)->registerWorker('worker-1', 'orders-php', [], []);
+
+        self::assertSame('Bearer control-secret', $controlTransport->requests[0]['headers']['Authorization']);
+        self::assertSame('Bearer worker-secret', $workerTransport->requests[0]['headers']['Authorization']);
+
+        try {
+            $controlOnly->workerClient();
+            self::fail('The worker client was constructed without a worker credential.');
+        } catch (InvalidArgumentException $exception) {
+            self::assertStringContainsString('worker credential is required', $exception->getMessage());
+        }
+        try {
+            $workerOnly->controlClient();
+            self::fail('The application client was constructed without a control credential.');
+        } catch (InvalidArgumentException $exception) {
+            self::assertStringContainsString('control credential is required', $exception->getMessage());
+        }
     }
 
     /** @param array<string, mixed> $values */

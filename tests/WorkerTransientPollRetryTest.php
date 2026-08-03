@@ -427,7 +427,7 @@ final class WorkerTransientPollRetryTest extends TestCase
         self::assertSame(1, $sleepCalls);
         self::assertCount(3, $transport->requests);
         self::assertSame('DELETE', $transport->requests[2]['method']);
-        self::assertStringEndsWith('/api/workers/worker-1', $transport->requests[2]['uri']);
+        self::assertStringEndsWith('/api/worker/registrations/worker-1', $transport->requests[2]['uri']);
         self::assertStringEndsWith('/api/worker/workflow-tasks/poll', $transport->requests[1]['uri']);
     }
 

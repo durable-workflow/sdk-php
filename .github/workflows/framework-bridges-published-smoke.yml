@@ -191,7 +191,8 @@ jobs:
             namespace: '%env(DURABLE_WORKFLOW_NAMESPACE)%'
             task_queue: '%env(DURABLE_WORKFLOW_TASK_QUEUE)%'
             credentials:
-              worker_token: '%env(DURABLE_WORKFLOW_WORKER_TOKEN)%'
+              control_token: '%env(default::DURABLE_WORKFLOW_CONTROL_TOKEN)%'
+              worker_token: '%env(default::DURABLE_WORKFLOW_WORKER_TOKEN)%'
             handlers:
               - App\Workflow\PublishedGreetingWorkflow
               - App\Activity\PublishedGreetingActivities
@@ -231,14 +232,14 @@ jobs:
         env:
           DURABLE_WORKFLOW_ENDPOINT: ${{ secrets.DURABLE_WORKFLOW_SERVER_URL }}
           DURABLE_WORKFLOW_NAMESPACE: ${{ secrets.DURABLE_WORKFLOW_NAMESPACE }}
-          DURABLE_WORKFLOW_CLIENT_TOKEN: ${{ secrets.DURABLE_WORKFLOW_CLIENT_TOKEN }}
+          DURABLE_WORKFLOW_CONTROL_TOKEN: ${{ secrets.DURABLE_WORKFLOW_CLIENT_TOKEN }}
           DURABLE_WORKFLOW_WORKER_TOKEN: ${{ secrets.DURABLE_WORKFLOW_WORKER_TOKEN }}
           FRAMEWORK: ${{ matrix.framework }}
         run: |
           required=(
             DURABLE_WORKFLOW_ENDPOINT
             DURABLE_WORKFLOW_NAMESPACE
-            DURABLE_WORKFLOW_CLIENT_TOKEN
+            DURABLE_WORKFLOW_CONTROL_TOKEN
             DURABLE_WORKFLOW_WORKER_TOKEN
           )
           missing=()
@@ -253,7 +254,7 @@ jobs:
             printf '\n' >&2
             exit 1
           fi
-          if [ "$DURABLE_WORKFLOW_CLIENT_TOKEN" = "$DURABLE_WORKFLOW_WORKER_TOKEN" ]; then
+          if [ "$DURABLE_WORKFLOW_CONTROL_TOKEN" = "$DURABLE_WORKFLOW_WORKER_TOKEN" ]; then
             echo 'Published runtime client and worker credentials must be distinct.' >&2
             exit 1
           fi
@@ -269,13 +270,23 @@ jobs:
           tee durable-client.php >/dev/null <<'PHP'
           <?php
           declare(strict_types=1);
+          use DurableWorkflow\WorkflowClientInterface;
           require __DIR__.'/vendor/autoload.php';
-          use DurableWorkflow\Client;
-          $client = new Client(
-              getenv('DURABLE_WORKFLOW_ENDPOINT'),
-              namespace: getenv('DURABLE_WORKFLOW_NAMESPACE'),
-              controlToken: getenv('DURABLE_WORKFLOW_CLIENT_TOKEN') ?: null,
-          );
+          $framework = getenv('FRAMEWORK');
+          if ($framework === 'laravel') {
+              $application = require __DIR__.'/bootstrap/app.php';
+              $application->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+              $client = $application->make(WorkflowClientInterface::class);
+          } elseif ($framework === 'symfony') {
+              $kernel = new App\Kernel('prod', false);
+              $kernel->boot();
+              $client = $kernel->getContainer()->get(WorkflowClientInterface::class);
+          } else {
+              throw new RuntimeException('Unknown framework smoke target.');
+          }
+          if (!$client instanceof WorkflowClientInterface) {
+              throw new RuntimeException('Framework did not provide the injectable workflow client.');
+          }
           $handle = $client->startWorkflow(
               getenv('DURABLE_WORKFLOW_TYPE'),
               getenv('DURABLE_WORKFLOW_WORKFLOW_ID'),
@@ -289,13 +300,24 @@ jobs:
           PHP
 
           if [ "$FRAMEWORK" = laravel ]; then
-            env -u DURABLE_WORKFLOW_CLIENT_TOKEN php artisan durable-workflow:worker >worker.log 2>&1 &
+            env -u DURABLE_WORKFLOW_CONTROL_TOKEN php artisan durable-workflow:worker >worker.log 2>&1 &
           else
-            env -u DURABLE_WORKFLOW_CLIENT_TOKEN php bin/console durable-workflow:worker >worker.log 2>&1 &
+            env -u DURABLE_WORKFLOW_CONTROL_TOKEN php bin/console durable-workflow:worker >worker.log 2>&1 &
           fi
           worker_pid=$!
-          trap 'kill -TERM "$worker_pid" 2>/dev/null || true; wait "$worker_pid" 2>/dev/null || true' EXIT
+          trap 'kill -TERM "$worker_pid" 2>/dev/null || true' EXIT
           env -u DURABLE_WORKFLOW_WORKER_TOKEN php durable-client.php
           kill -TERM "$worker_pid" 2>/dev/null || true
-          wait "$worker_pid" 2>/dev/null || true
+          worker_status=0
+          wait "$worker_pid" || worker_status=$?
           trap - EXIT
+          if grep -Eq 'worker\.shutdown_failed|HTTP[[:space:]]+403|403[[:space:]]+Forbidden' worker.log; then
+            echo 'Framework worker reported an authorization or graceful-shutdown failure.' >&2
+            cat worker.log >&2
+            exit 1
+          fi
+          if [ "$worker_status" -ne 0 ]; then
+            echo "Framework worker exited with status $worker_status." >&2
+            cat worker.log >&2
+            exit "$worker_status"
+          fi

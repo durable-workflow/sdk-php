@@ -24,7 +24,10 @@ final class DurableWorkflowServiceProvider extends ServiceProvider
 
             return ServiceConfiguration::fromArray(is_array($values) ? $values : []);
         });
-        $this->app->singleton(Client::class, static fn ($app): Client => $app->make(ServiceConfiguration::class)->client());
+        $this->app->singleton(
+            Client::class,
+            static fn ($app): Client => $app->make(ServiceConfiguration::class)->controlClient(),
+        );
         $this->app->alias(Client::class, WorkflowClientInterface::class);
         $this->app->singleton(WorkerFactory::class, function ($app): WorkerFactory {
             $logger = $app->bound(LoggerInterface::class)
@@ -35,7 +38,7 @@ final class DurableWorkflowServiceProvider extends ServiceProvider
             return new WorkerFactory(
                 $app,
                 $app->make(ServiceConfiguration::class),
-                $app->make(Client::class),
+                $app->make(ServiceConfiguration::class)->workerClient(),
                 $logger,
                 $events,
             );

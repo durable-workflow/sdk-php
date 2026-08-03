@@ -14,7 +14,7 @@ composer require durable-workflow/sdk:2.0.0-rc.10@RC
 ```
 
 This exact package is PHP SDK `2.0.0-rc.10` and is qualified with Server
-`2.0.0-rc.12`. SDK and Server prerelease counters are independent. Earlier 2.0
+`2.0.0-rc.17`. SDK and Server prerelease counters are independent. Earlier 2.0
 prereleases and pre-1.0 SDK releases remain historical rather than alternate
 supported baselines.
 
@@ -288,10 +288,22 @@ php artisan durable-workflow:worker
 
 Set `DURABLE_WORKFLOW_ENDPOINT` to a self-hosted Server origin or the complete
 Cloud runtime base URI. Set `DURABLE_WORKFLOW_NAMESPACE` and
-`DURABLE_WORKFLOW_TASK_QUEUE`, then use either `DURABLE_WORKFLOW_TOKEN` or the
-scoped `DURABLE_WORKFLOW_CONTROL_TOKEN` and `DURABLE_WORKFLOW_WORKER_TOKEN`.
-The published file contains only `env()` references; it never copies a secret
-value into application source. List handler classes in
+`DURABLE_WORKFLOW_TASK_QUEUE`, then choose shared-token or scoped authentication.
+For scoped Cloud authentication, inject credentials at the process boundary:
+
+| Laravel process | Inject | Do not inject |
+| --- | --- | --- |
+| Web, queue, or other application process | `DURABLE_WORKFLOW_CONTROL_TOKEN` | `DURABLE_WORKFLOW_WORKER_TOKEN` |
+| `php artisan durable-workflow:worker` | `DURABLE_WORKFLOW_WORKER_TOKEN` | `DURABLE_WORKFLOW_CONTROL_TOKEN` |
+
+The service provider gives the injectable application client only the control
+credential and creates a separate worker client only for the worker factory.
+For a self-hosted deployment that uses one credential for both roles, inject
+`DURABLE_WORKFLOW_TOKEN` instead. Supply secret values through the deployment
+platform's process environment or secret store, not a generated configuration
+file or a committed `.env` file. The published configuration contains only
+`env()` references; `vendor:publish` never copies a secret value into application
+source. List handler classes in
 `config/durable-workflow.php`:
 
 ```php
@@ -345,11 +357,22 @@ durable_workflow:
   namespace: '%env(DURABLE_WORKFLOW_NAMESPACE)%'
   task_queue: '%env(DURABLE_WORKFLOW_TASK_QUEUE)%'
   credentials:
-    token: '%env(DURABLE_WORKFLOW_TOKEN)%'
+    control_token: '%env(default::DURABLE_WORKFLOW_CONTROL_TOKEN)%'
+    worker_token: '%env(default::DURABLE_WORKFLOW_WORKER_TOKEN)%'
   handlers:
     - App\Workflow\GreeterWorkflow
     - App\Activity\GreetingActivities
 ```
+
+Inject `DURABLE_WORKFLOW_CONTROL_TOKEN` only into web and other application
+processes. Inject `DURABLE_WORKFLOW_WORKER_TOKEN` only into the process running
+`php bin/console durable-workflow:worker`; the `default::` processors leave the
+opposite scoped credential unset. The Bundle binds the public autowired client
+to the control credential and gives its private worker client only the worker
+credential. Self-hosted deployments can instead set `credentials.token` from
+`DURABLE_WORKFLOW_TOKEN` and inject that shared credential into both
+processes. Keep values in the deployment platform's environment or secret store,
+not YAML, generated container files, or committed environment files.
 
 Run `php bin/console durable-workflow:worker`. `Client` and
 `WorkflowClientInterface` are public autowired services. Handler services retain

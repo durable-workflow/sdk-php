@@ -23,7 +23,7 @@ project follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Advanced the PHP SDK to `2.0.0-rc.10` and qualified it with Server
-  `2.0.0-rc.12`. SDK and Server prerelease counters remain independent; earlier
+  `2.0.0-rc.17`. SDK and Server prerelease counters remain independent; earlier
   prereleases retain historical release records but receive no compatibility
   shim.
 - Replaced the prerelease JSON wrapper with the fixed recursive
@@ -40,6 +40,12 @@ project follows [Semantic Versioning](https://semver.org/).
   preparation authority before publishing a newly recorded plan.
 
 ### Fixed
+
+- Laravel and Symfony now bind separate control-only and worker-only clients for
+  scoped Cloud credentials. Missing role credentials fail before transport,
+  while the shared self-hosted token remains valid for both roles.
+- Graceful worker shutdown now uses the worker-plane registration lifecycle
+  route; operator-initiated worker removal remains on the control plane.
 
 - Attribute-discovered workflow entry points, queries, and updates now start
   from clean handler object state for every replay or invocation, without

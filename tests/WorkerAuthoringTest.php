@@ -150,8 +150,12 @@ final class WorkerAuthoringTest extends TestCase
 
                 return ['task' => null, 'poll_status' => 'empty'];
             }
-            if (str_ends_with($uri, '/api/workers/test-worker')) {
-                return ['deleted' => true];
+            if (str_ends_with($uri, '/api/worker/registrations/test-worker')) {
+                return [
+                    'worker_id' => 'test-worker',
+                    'outcome' => 'deregistered',
+                    'recovered_workflow_task_count' => 0,
+                ];
             }
 
             self::fail("Unexpected worker request: {$method} {$uri}");
@@ -165,7 +169,7 @@ final class WorkerAuthoringTest extends TestCase
         $worker->run(0);
 
         self::assertSame('DELETE', $transport->requests[2]['method']);
-        self::assertStringEndsWith('/api/workers/test-worker', $transport->requests[2]['uri']);
+        self::assertStringEndsWith('/api/worker/registrations/test-worker', $transport->requests[2]['uri']);
     }
 
     public function testHandlerFailuresReachTheStandardLogger(): void

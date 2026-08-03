@@ -223,8 +223,19 @@ jobs:
 
           env -u DURABLE_WORKFLOW_CLIENT_TOKEN php worker.php >worker.log 2>&1 &
           worker_pid=$!
-          trap 'kill -TERM "$worker_pid" 2>/dev/null || true; wait "$worker_pid" 2>/dev/null || true' EXIT
+          trap 'kill -TERM "$worker_pid" 2>/dev/null || true' EXIT
           env -u DURABLE_WORKFLOW_WORKER_TOKEN php client.php
           kill -TERM "$worker_pid" 2>/dev/null || true
-          wait "$worker_pid" 2>/dev/null || true
+          worker_status=0
+          wait "$worker_pid" || worker_status=$?
           trap - EXIT
+          if grep -Eq 'worker\.shutdown_failed|HTTP[[:space:]]+403|403[[:space:]]+Forbidden' worker.log; then
+            echo 'Published worker reported an authorization or graceful-shutdown failure.' >&2
+            cat worker.log >&2
+            exit 1
+          fi
+          if [ "$worker_status" -ne 0 ]; then
+            echo "Published worker exited with status $worker_status." >&2
+            cat worker.log >&2
+            exit "$worker_status"
+          fi

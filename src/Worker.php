@@ -286,7 +286,7 @@ final class Worker
         } finally {
             if ($this->registered) {
                 try {
-                    $this->client->deregisterWorker($this->workerId);
+                    $this->client->deregisterWorkerRegistration($this->workerId);
                     $this->registered = false;
                     $this->diagnostic('worker.deregistered', ['worker_id' => $this->workerId]);
                 } catch (Throwable $exception) {

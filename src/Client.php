@@ -817,6 +817,15 @@ final class Client implements WorkflowClientInterface
         $this->control('DELETE', '/workers/'.$this->segment($workerId));
     }
 
+    /** @return array{worker_id: string, outcome: string, recovered_workflow_task_count: int} */
+    public function deregisterWorkerRegistration(string $workerId): array
+    {
+        $response = $this->worker('DELETE', '/worker/registrations/'.$this->segment($workerId));
+
+        /** @var array{worker_id: string, outcome: string, recovered_workflow_task_count: int} $response */
+        return $response;
+    }
+
     /**
      * Return the complete workflow-task poll response, including typed refusal and protocol metadata.
      *

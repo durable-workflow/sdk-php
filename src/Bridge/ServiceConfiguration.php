@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Bridge;
 
 use DurableWorkflow\Client;
+use DurableWorkflow\Transport\Transport;
 use InvalidArgumentException;
 
 /** Validated service-mode settings shared by the optional framework bridges. */
@@ -53,13 +54,44 @@ final class ServiceConfiguration
         );
     }
 
-    public function client(): Client
+    /** Build the application-facing client without access to a scoped worker credential. */
+    public function client(?Transport $transport = null): Client
     {
+        return $this->controlClient($transport);
+    }
+
+    /** Build the application-facing client without access to a scoped worker credential. */
+    public function controlClient(?Transport $transport = null): Client
+    {
+        if ($this->token === null && $this->controlToken === null && $this->workerToken !== null) {
+            throw new InvalidArgumentException(
+                'A control credential is required for the application client. Configure the shared token or scoped control token.',
+            );
+        }
+
         return new Client(
             $this->endpoint,
             namespace: $this->namespace,
+            transport: $transport,
             token: $this->token,
             controlToken: $this->controlToken,
+        );
+    }
+
+    /** Build the worker client without access to a scoped control credential. */
+    public function workerClient(?Transport $transport = null): Client
+    {
+        if ($this->token === null && $this->workerToken === null && $this->controlToken !== null) {
+            throw new InvalidArgumentException(
+                'A worker credential is required for the worker client. Configure the shared token or scoped worker token.',
+            );
+        }
+
+        return new Client(
+            $this->endpoint,
+            namespace: $this->namespace,
+            transport: $transport,
+            token: $this->token,
             workerToken: $this->workerToken,
         );
     }

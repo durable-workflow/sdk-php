@@ -6,14 +6,13 @@ require $argv[1];
 
 use DurableWorkflow\Attribute\Activity;
 use DurableWorkflow\Attribute\Workflow;
+use DurableWorkflow\Auth\Authentication;
 use DurableWorkflow\Bridge\Event\WorkerDiagnosticEvent;
 use DurableWorkflow\Bridge\Laravel\DurableWorkflowServiceProvider;
 use DurableWorkflow\Bridge\Laravel\Facades\DurableWorkflow as DurableWorkflowFacade;
 use DurableWorkflow\Bridge\Laravel\WorkerFactory;
-use DurableWorkflow\Bridge\ServiceConfiguration;
 use DurableWorkflow\Client;
 use DurableWorkflow\Testing\WorkflowClientFake;
-use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\WorkflowContext;
 use DurableWorkflow\WorkflowClientInterface;
@@ -22,6 +21,7 @@ use Illuminate\Events\Dispatcher;
 use Illuminate\Foundation\Application;
 use Illuminate\Support\Facades\Facade;
 use Psr\Log\AbstractLogger;
+use Psr\Log\LoggerInterface;
 
 final class LaravelGreetingHandler
 {
@@ -38,14 +38,6 @@ final class LaravelGreetingHandler
     }
 }
 
-final class LaravelBridgeTransport implements Transport
-{
-    public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
-    {
-        throw new RuntimeException('Compatibility construction must not contact a runtime.');
-    }
-}
-
 final class LaravelBridgeLogger extends AbstractLogger
 {
     /** @var list<string> */
@@ -57,17 +49,49 @@ final class LaravelBridgeLogger extends AbstractLogger
     }
 }
 
+function laravelClientAuthentication(Client $client): Authentication
+{
+    $property = (new ReflectionClass($client))->getProperty('authentication');
+    $authentication = $property->getValue($client);
+    if (!$authentication instanceof Authentication) {
+        throw new RuntimeException('Laravel role-specific client did not retain authentication.');
+    }
+
+    return $authentication;
+}
+
+function laravelAuthenticationRejectsRole(Authentication $authentication, bool $workerRequest): bool
+{
+    try {
+        $authentication->headers($workerRequest);
+    } catch (InvalidArgumentException) {
+        return true;
+    }
+
+    return false;
+}
+
 $values = [
     'endpoint' => 'http://localhost:8080',
     'namespace' => 'default',
     'task_queue' => 'laravel-workers',
-    'credentials' => [],
+    'credentials' => [
+        'control_token' => 'control-secret',
+        'worker_token' => 'worker-secret',
+    ],
     'handlers' => [LaravelGreetingHandler::class],
     'poll_timeout_seconds' => 5,
 ];
 $app = new Application(sys_get_temp_dir().'/durable-workflow-laravel-compat');
 $app->instance('config', new Repository(['durable-workflow' => $values]));
-$app->instance(Illuminate\Contracts\Events\Dispatcher::class, new Dispatcher($app));
+$events = new Dispatcher($app);
+$diagnostics = [];
+$events->listen(WorkerDiagnosticEvent::class, static function (WorkerDiagnosticEvent $event) use (&$diagnostics): void {
+    $diagnostics[] = $event->name;
+});
+$logger = new LaravelBridgeLogger();
+$app->instance(Illuminate\Contracts\Events\Dispatcher::class, $events);
+$app->instance(LoggerInterface::class, $logger);
 $provider = new DurableWorkflowServiceProvider($app);
 $provider->register();
 
@@ -75,20 +99,21 @@ $registeredClient = $app->make(Client::class);
 if ($app->make(WorkflowClientInterface::class) !== $registeredClient) {
     throw new RuntimeException('Laravel provider did not register injectable client services.');
 }
-
-$events = new Dispatcher($app);
-$diagnostics = [];
-$events->listen(WorkerDiagnosticEvent::class, static function (WorkerDiagnosticEvent $event) use (&$diagnostics): void {
-    $diagnostics[] = $event->name;
-});
-$logger = new LaravelBridgeLogger();
-$factory = new WorkerFactory(
-    $app,
-    ServiceConfiguration::fromArray($values),
-    new Client('http://localhost:8080', transport: new LaravelBridgeTransport()),
-    $logger,
-    $events,
-);
+$factory = $app->make(WorkerFactory::class);
+$workerClientProperty = (new ReflectionClass($factory))->getProperty('client');
+$workerClient = $workerClientProperty->getValue($factory);
+if (!$workerClient instanceof Client) {
+    throw new RuntimeException('Laravel worker factory did not receive a client.');
+}
+$controlAuthentication = laravelClientAuthentication($registeredClient);
+$workerAuthentication = laravelClientAuthentication($workerClient);
+if (($controlAuthentication->headers(false)['Authorization'] ?? null) !== 'Bearer control-secret'
+    || !laravelAuthenticationRejectsRole($controlAuthentication, true)
+    || ($workerAuthentication->headers(true)['Authorization'] ?? null) !== 'Bearer worker-secret'
+    || !laravelAuthenticationRejectsRole($workerAuthentication, false)
+) {
+    throw new RuntimeException('Laravel provider did not preserve role-specific client credentials.');
+}
 $worker = $factory->make();
 if ($worker->contracts()['workflows'] !== ['laravel.greeting']
     || $worker->contracts()['activities'] !== ['laravel.greet']

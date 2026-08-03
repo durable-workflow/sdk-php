@@ -71,7 +71,7 @@
         },
         "durable-workflow": {
             "product-train": "2.0.0-rc.10",
-            "supported-server-versions": "2.0.0-rc.12",
+            "supported-server-versions": "2.0.0-rc.17",
             "worker-protocol-version": "1.13",
             "control-plane-version": "2",
             "payload-codecs": ["avro"],

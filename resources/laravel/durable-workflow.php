@@ -10,6 +10,8 @@ return [
 
     'credentials' => [
         // Secrets remain in the environment; vendor:publish never writes their values.
+        // With scoped credentials, inject control_token only into web processes and
+        // worker_token only into the process running durable-workflow:worker.
         'token' => env('DURABLE_WORKFLOW_TOKEN'),
         'control_token' => env('DURABLE_WORKFLOW_CONTROL_TOKEN'),
         'worker_token' => env('DURABLE_WORKFLOW_WORKER_TOKEN'),
