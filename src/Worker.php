@@ -11,6 +11,7 @@ use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\DiscoveredHandlers;
 use DurableWorkflow\Worker\HandlerDiscovery;
+use DurableWorkflow\Worker\HandlerDefinition;
 use DurableWorkflow\Worker\HandlerResolver;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\QueryContext;
@@ -30,15 +31,15 @@ final class Worker
     private const MAX_TRANSIENT_RETRY_DELAY_SECONDS = 5.0;
     private const TRANSIENT_RETRY_SLEEP_SLICE_SECONDS = 0.1;
 
-    /** @var array<string, callable(WorkflowContext, mixed ...$arguments): mixed> */
+    /** @var array<string, HandlerDefinition> */
     private array $workflows = [];
-    /** @var array<string, callable(ActivityContext, mixed ...$arguments): mixed> */
+    /** @var array<string, HandlerDefinition> */
     private array $activities = [];
-    /** @var array<string, array<string, callable(QueryContext, mixed ...$arguments): mixed>> */
+    /** @var array<string, array<string, HandlerDefinition>> */
     private array $queries = [];
     /** @var array<string, array<string, callable(mixed ...$arguments): mixed>> */
     private array $signals = [];
-    /** @var array<string, array<string, callable(QueryContext, mixed ...$arguments): mixed>> */
+    /** @var array<string, array<string, HandlerDefinition>> */
     private array $updates = [];
     private bool $shutdownRequested = false;
     private bool $registered = false;
@@ -118,14 +119,14 @@ final class Worker
 
         foreach ($discovered as $handlers) {
             foreach ($handlers->workflows as $name => $handler) {
-                $this->registerWorkflow($name, $handler);
+                $this->registerWorkflowDefinition($name, $handler);
             }
             foreach ($handlers->activities as $name => $handler) {
-                $this->registerActivity($name, $handler);
+                $this->registerActivityDefinition($name, $handler);
             }
             foreach ($handlers->queries as $workflowType => $queries) {
                 foreach ($queries as $name => $handler) {
-                    $this->registerQuery($workflowType, $name, $handler);
+                    $this->registerQueryDefinition($workflowType, $name, $handler);
                 }
             }
             foreach ($handlers->signals as $workflowType => $signals) {
@@ -135,7 +136,7 @@ final class Worker
             }
             foreach ($handlers->updates as $workflowType => $updates) {
                 foreach ($updates as $name => $handler) {
-                    $this->registerUpdate($workflowType, $name, $handler);
+                    $this->registerUpdateDefinition($workflowType, $name, $handler);
                 }
             }
         }
@@ -146,8 +147,13 @@ final class Worker
     /** @param callable(WorkflowContext, mixed ...$arguments): mixed $handler */
     public function registerWorkflow(string $workflowType, callable $handler): self
     {
+        return $this->registerWorkflowDefinition($workflowType, HandlerDefinition::shared($handler));
+    }
+
+    private function registerWorkflowDefinition(string $workflowType, HandlerDefinition $handler): self
+    {
         $this->assertValidDeclarationName($workflowType, 'workflow');
-        $this->assertHandlerContext($handler, WorkflowContext::class, "workflow {$workflowType}");
+        $this->assertHandlerContext($handler->contract(), WorkflowContext::class, "workflow {$workflowType}");
         $this->assertUnique($this->workflows, $workflowType, 'workflow');
         $this->workflows[$workflowType] = $handler;
 
@@ -157,8 +163,13 @@ final class Worker
     /** @param callable(ActivityContext, mixed ...$arguments): mixed $handler */
     public function registerActivity(string $activityType, callable $handler): self
     {
+        return $this->registerActivityDefinition($activityType, HandlerDefinition::shared($handler));
+    }
+
+    private function registerActivityDefinition(string $activityType, HandlerDefinition $handler): self
+    {
         $this->assertValidDeclarationName($activityType, 'activity');
-        $this->assertHandlerContext($handler, ActivityContext::class, "activity {$activityType}");
+        $this->assertHandlerContext($handler->contract(), ActivityContext::class, "activity {$activityType}");
         $this->assertUnique($this->activities, $activityType, 'activity');
         $this->activities[$activityType] = $handler;
 
@@ -168,9 +179,17 @@ final class Worker
     /** @param callable(QueryContext, mixed ...$arguments): mixed $handler */
     public function registerQuery(string $workflowType, string $queryName, callable $handler): self
     {
+        return $this->registerQueryDefinition($workflowType, $queryName, HandlerDefinition::shared($handler));
+    }
+
+    private function registerQueryDefinition(
+        string $workflowType,
+        string $queryName,
+        HandlerDefinition $handler,
+    ): self {
         $this->assertValidDeclarationName($workflowType, 'workflow');
         $this->assertValidDeclarationName($queryName, 'query');
-        $this->assertHandlerContext($handler, QueryContext::class, "query {$workflowType}.{$queryName}");
+        $this->assertHandlerContext($handler->contract(), QueryContext::class, "query {$workflowType}.{$queryName}");
         $this->queries[$workflowType] ??= [];
         $this->assertUnique($this->queries[$workflowType], $queryName, 'query');
         $this->queries[$workflowType][$queryName] = $handler;
@@ -201,9 +220,17 @@ final class Worker
     /** @param callable(QueryContext, mixed ...$arguments): mixed $handler */
     public function registerUpdate(string $workflowType, string $updateName, callable $handler): self
     {
+        return $this->registerUpdateDefinition($workflowType, $updateName, HandlerDefinition::shared($handler));
+    }
+
+    private function registerUpdateDefinition(
+        string $workflowType,
+        string $updateName,
+        HandlerDefinition $handler,
+    ): self {
         $this->assertValidDeclarationName($workflowType, 'workflow');
         $this->assertValidDeclarationName($updateName, 'update');
-        $this->assertHandlerContext($handler, QueryContext::class, "update {$workflowType}.{$updateName}");
+        $this->assertHandlerContext($handler->contract(), QueryContext::class, "update {$workflowType}.{$updateName}");
         $this->updates[$workflowType] ??= [];
         $this->assertUnique($this->updates[$workflowType], $updateName, 'update');
         $this->updates[$workflowType][$updateName] = $handler;
@@ -284,16 +311,16 @@ final class Worker
     {
         foreach ($this->workflows as $name => $handler) {
             $this->assertValidDeclarationName($name, 'workflow');
-            $this->assertHandlerContext($handler, WorkflowContext::class, "workflow {$name}");
+            $this->assertHandlerContext($handler->contract(), WorkflowContext::class, "workflow {$name}");
         }
         foreach ($this->activities as $name => $handler) {
             $this->assertValidDeclarationName($name, 'activity');
-            $this->assertHandlerContext($handler, ActivityContext::class, "activity {$name}");
+            $this->assertHandlerContext($handler->contract(), ActivityContext::class, "activity {$name}");
         }
         foreach ($this->queries as $workflowType => $handlers) {
             foreach ($handlers as $name => $handler) {
                 $this->assertValidDeclarationName($name, 'query');
-                $this->assertHandlerContext($handler, QueryContext::class, "query {$workflowType}.{$name}");
+                $this->assertHandlerContext($handler->contract(), QueryContext::class, "query {$workflowType}.{$name}");
             }
         }
         foreach ($this->signals as $workflowType => $handlers) {
@@ -304,7 +331,11 @@ final class Worker
         foreach ($this->updates as $workflowType => $handlers) {
             foreach ($handlers as $name => $handler) {
                 $this->assertValidDeclarationName($name, 'update');
-                $this->assertHandlerContext($handler, QueryContext::class, "update {$workflowType}.{$name}");
+                $this->assertHandlerContext(
+                    $handler->contract(),
+                    QueryContext::class,
+                    "update {$workflowType}.{$name}",
+                );
             }
         }
     }
@@ -1124,7 +1155,7 @@ final class Worker
     }
 
     /**
-     * @param array<string, callable> $handlers
+     * @param array<string, HandlerDefinition|callable> $handlers
      * @param class-string|null $contextClass
      * @return list<array{name: string, parameters: list<array{
      *     name: string,
@@ -1144,7 +1175,8 @@ final class Worker
         foreach ($handlers as $name => $handler) {
             $parameters = [];
             $position = 0;
-            $reflection = new \ReflectionFunction(\Closure::fromCallable($handler));
+            $contract = $handler instanceof HandlerDefinition ? $handler->contract() : $handler;
+            $reflection = new \ReflectionFunction(\Closure::fromCallable($contract));
 
             foreach ($reflection->getParameters() as $parameter) {
                 $type = $parameter->getType();

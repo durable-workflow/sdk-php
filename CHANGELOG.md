@@ -22,7 +22,7 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Advanced the PHP SDK to `2.0.0-rc.9` and qualified it with Server
+- Advanced the PHP SDK to `2.0.0-rc.10` and qualified it with Server
   `2.0.0-rc.12`. SDK and Server prerelease counters remain independent; earlier
   prereleases retain historical release records but receive no compatibility
   shim.
@@ -40,6 +40,11 @@ project follows [Semantic Versioning](https://semver.org/).
   preparation authority before publishing a newly recorded plan.
 
 ### Fixed
+
+- Attribute-discovered workflow entry points, queries, and updates now start
+  from clean handler object state for every replay or invocation, without
+  losing constructor-injected collaborators. Activity services and explicit
+  low-level callables retain their application-owned lifetimes.
 
 - The generated API reference omits its responsive header-menu control when
   the top navigation has no destinations, leaving search and sidebar

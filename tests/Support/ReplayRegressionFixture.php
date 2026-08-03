@@ -4,8 +4,12 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Tests\Support;
 
+use DurableWorkflow\Attribute\Workflow;
+use DurableWorkflow\Client;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\WorkflowCancelled;
+use DurableWorkflow\Testing\WorkerTestHarness;
+use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
 use Generator;
@@ -67,6 +71,22 @@ final class ReplayRegressionFixture
             throw new RuntimeException("{$identity}.history must not be empty.");
         }
 
+        $workflowTasks = $fixture['workflow_tasks'] ?? null;
+        if ($workflowTasks !== null) {
+            if (!is_array($workflowTasks) || !array_is_list($workflowTasks) || $workflowTasks === []) {
+                throw new RuntimeException("{$identity}.workflow_tasks must be a non-empty list.");
+            }
+
+            return self::executeWorkflowTasks(
+                $identity,
+                $workflowType,
+                $input,
+                $history,
+                $workflowTasks,
+                $fixture,
+            );
+        }
+
         $codec = new AvroPayloadCodec();
         try {
             $result = (new Replayer($codec))->replay(
@@ -114,6 +134,77 @@ final class ReplayRegressionFixture
         self::assertMatches($expected, $observed, "{$identity}.expected");
 
         return $commands;
+    }
+
+    /**
+     * @param list<mixed> $input
+     * @param list<array<string, mixed>> $history
+     * @param list<mixed> $workflowTasks
+     * @param array<string, mixed> $fixture
+     * @return list<array<string, mixed>>
+     */
+    private static function executeWorkflowTasks(
+        string $identity,
+        string $workflowType,
+        array $input,
+        array $history,
+        array $workflowTasks,
+        array $fixture,
+    ): array {
+        $codec = new AvroPayloadCodec();
+        $client = new Client(
+            'https://replay.invalid',
+            transport: new FakeTransport(),
+            codec: $codec,
+        );
+        $worker = Worker::create($client, 'regression-corpus');
+        if ($workflowType === 'golden.attributed-stateful') {
+            $worker->register(ReplayRegressionAttributedStatefulWorkflow::class);
+        } else {
+            $worker->registerWorkflow($workflowType, self::workflow($workflowType));
+        }
+        $harness = new WorkerTestHarness($worker, $client);
+        $observedTasks = [];
+
+        foreach ($workflowTasks as $index => $task) {
+            if (!is_array($task)) {
+                throw new RuntimeException("{$identity}.workflow_tasks.{$index} must be an object.");
+            }
+            $workflowId = $task['workflow_id'] ?? null;
+            $runId = $task['run_id'] ?? null;
+            if (!is_string($workflowId) || $workflowId === '' || !is_string($runId) || $runId === '') {
+                throw new RuntimeException(
+                    "{$identity}.workflow_tasks.{$index} must name non-empty workflow_id and run_id values.",
+                );
+            }
+
+            $commands = array_map(
+                static fn (array $command): array => self::decodeEnvelopes($command, $codec),
+                $harness->runWorkflow(
+                    $workflowType,
+                    $input,
+                    $history,
+                    ['workflow_id' => $workflowId, 'run_id' => $runId],
+                )->commands,
+            );
+            $observed = [
+                'workflow_id' => $workflowId,
+                'run_id' => $runId,
+                'command_sequence' => $commands,
+            ];
+            if (count($commands) === 1) {
+                $observed = array_merge($observed, $commands[0]);
+            }
+            $observedTasks[] = $observed;
+        }
+
+        $expected = $fixture['expected'] ?? null;
+        if (!is_array($expected) || $expected === []) {
+            throw new RuntimeException("{$identity}.expected must be a non-empty object.");
+        }
+        self::assertMatches($expected, ['workflow_tasks' => $observedTasks], "{$identity}.expected");
+
+        return $observedTasks;
     }
 
     /** @return callable(WorkflowContext, mixed ...$input): mixed */
@@ -242,5 +333,21 @@ final class ReplayRegressionFixture
         if ($expected !== $actual) {
             throw new RuntimeException("{$context} does not match.");
         }
+    }
+}
+
+final class ReplayRegressionAttributedStatefulWorkflow
+{
+    private int $invocation = 0;
+
+    /** @return array{workflow_id: string, run_id: string, invocation: int} */
+    #[Workflow('golden.attributed-stateful')]
+    public function run(WorkflowContext $context): array
+    {
+        return [
+            'workflow_id' => $context->workflowId,
+            'run_id' => $context->runId,
+            'invocation' => ++$this->invocation,
+        ];
     }
 }

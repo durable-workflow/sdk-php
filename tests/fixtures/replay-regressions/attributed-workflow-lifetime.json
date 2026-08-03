@@ -1,0 +1,67 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "attributed-workflow-lifetime",
+  "protocol_version": "1",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.attributed-stateful",
+    "input": []
+  },
+  "workflow_tasks": [
+    {
+      "workflow_id": "workflow-a",
+      "run_id": "run-a"
+    },
+    {
+      "workflow_id": "workflow-b",
+      "run_id": "run-b"
+    },
+    {
+      "workflow_id": "workflow-a",
+      "run_id": "run-a"
+    }
+  ],
+  "expected": {
+    "workflow_tasks": [
+      {
+        "command_sequence": [
+          {
+            "type": "complete_workflow",
+            "result": {
+              "workflow_id": "workflow-a",
+              "run_id": "run-a",
+              "invocation": 1
+            }
+          }
+        ]
+      },
+      {
+        "command_sequence": [
+          {
+            "type": "complete_workflow",
+            "result": {
+              "workflow_id": "workflow-b",
+              "run_id": "run-b",
+              "invocation": 1
+            }
+          }
+        ]
+      },
+      {
+        "command_sequence": [
+          {
+            "type": "complete_workflow",
+            "result": {
+              "workflow_id": "workflow-a",
+              "run_id": "run-a",
+              "invocation": 1
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

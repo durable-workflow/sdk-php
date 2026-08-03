@@ -8,11 +8,11 @@ namespace DurableWorkflow\Worker;
 final class DiscoveredHandlers
 {
     /**
-     * @param array<string, callable> $workflows
-     * @param array<string, callable> $activities
-     * @param array<string, array<string, callable>> $queries
+     * @param array<string, HandlerDefinition> $workflows
+     * @param array<string, HandlerDefinition> $activities
+     * @param array<string, array<string, HandlerDefinition>> $queries
      * @param array<string, array<string, callable>> $signals
-     * @param array<string, array<string, callable>> $updates
+     * @param array<string, array<string, HandlerDefinition>> $updates
      */
     public function __construct(
         public readonly string $class,

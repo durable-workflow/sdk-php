@@ -2108,22 +2108,56 @@ print(json.dumps({
         result = self.run_official_php_runner(REPOSITORY_ROOT, fixture)
         self.assertEqual(0, result.returncode, result.stderr)
 
+        shared_fixture = self.official_attributed_lifetime_fixture(
+            "official-attributed-lifetime-shared",
+            [1, 2, 3],
+        )
+        isolated_fixture = self.official_attributed_lifetime_fixture(
+            "official-attributed-lifetime-isolated",
+            [1, 1, 1],
+        )
         shared = self.run_official_php_runner(
             REPOSITORY_ROOT,
-            self.official_attributed_lifetime_fixture(
-                "official-attributed-lifetime-shared",
-                [1, 2, 3],
-            ),
+            shared_fixture,
         )
         isolated = self.run_official_php_runner(
             REPOSITORY_ROOT,
-            self.official_attributed_lifetime_fixture(
-                "official-attributed-lifetime-isolated",
-                [1, 1, 1],
-            ),
+            isolated_fixture,
         )
-        self.assertEqual(0, shared.returncode, shared.stderr)
-        self.assertNotEqual(0, isolated.returncode, isolated.stdout)
+        self.assertNotEqual(0, shared.returncode, shared.stdout)
+        self.assertEqual(0, isolated.returncode, isolated.stderr)
+
+        shared_source_root = self.root / "attributed-shared-lifetime-source"
+        shutil.copytree(REPOSITORY_ROOT / "src", shared_source_root / "src")
+        definition_path = shared_source_root / "src/Worker/HandlerDefinition.php"
+        definition = definition_path.read_text()
+        replay_safe_resolver = """        return new self(
+            $contract,
+            static function () use ($prototype, $method): Closure {
+                $handler = clone $prototype;
+
+                return Closure::fromCallable([$handler, $method]);
+            },
+        );
+"""
+        shared_resolver = (
+            "        return new self($contract, static fn (): Closure => $contract);\n"
+        )
+        self.assertIn(replay_safe_resolver, definition)
+        definition_path.write_text(
+            definition.replace(replay_safe_resolver, shared_resolver, 1)
+        )
+
+        defective_shared = self.run_official_php_runner(
+            shared_source_root,
+            shared_fixture,
+        )
+        defective_isolated = self.run_official_php_runner(
+            shared_source_root,
+            isolated_fixture,
+        )
+        self.assertEqual(0, defective_shared.returncode, defective_shared.stderr)
+        self.assertNotEqual(0, defective_isolated.returncode, defective_isolated.stdout)
 
         source_root = self.root / "attributed-registration-source"
         shutil.copytree(REPOSITORY_ROOT / "src", source_root / "src")

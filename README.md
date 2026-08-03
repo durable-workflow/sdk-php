@@ -10,10 +10,10 @@ It targets PHP 8.1 or newer and does not require Laravel or the embedded
 Install the package from Packagist:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.9@RC
+composer require durable-workflow/sdk:2.0.0-rc.10@RC
 ```
 
-This exact package is PHP SDK `2.0.0-rc.9` and is qualified with Server
+This exact package is PHP SDK `2.0.0-rc.10` and is qualified with Server
 `2.0.0-rc.12`. SDK and Server prerelease counters are independent. Earlier 2.0
 prereleases and pre-1.0 SDK releases remain historical rather than alternate
 supported baselines.
@@ -206,10 +206,29 @@ Worker::create($client, 'php-workers')
 before registration or polling. With no container, concrete classes with no
 required constructor arguments are instantiated automatically. Pass any PSR-11
 `ContainerInterface` as the third argument to `Worker::create()` when handlers
-have application dependencies. Pass a PSR-3 `LoggerInterface` with the named
-`logger` argument; lifecycle, retry, shutdown, and handler failures then use the
-application's normal logging pipeline. The optional `diagnosticListener`
-receives the same event names and structured context.
+have application dependencies.
+
+Attributed workflow classes have a replay-scoped lifecycle. Registration
+captures a clean handler template, then each workflow task replay, query, and
+update runs on a fresh shallow clone. Mutable properties on the workflow object
+therefore cannot cross workflow IDs, runs, or replay attempts, while
+constructor-injected collaborators retain their configured identity. Keep
+workflow-local mutable state directly on the handler; injected collaborators
+are shared services and must not be used to hold execution-local state.
+Workflow handler classes must remain cloneable.
+
+Activity services have worker-scoped lifetimes instead: their resolved instance
+is reused for activity tasks, so they can retain clients and other service
+resources. The explicit `registerWorkflow()`, `registerQuery()`, and
+`registerUpdate()` low-level methods also invoke the supplied callable as-is;
+state captured by such a callable remains owned by the application. Use
+attribute-based workflow registration when the SDK should provide replay-state
+isolation.
+
+Pass a PSR-3 `LoggerInterface` with the named `logger` argument; lifecycle,
+retry, shutdown, and handler failures then use the application's normal logging
+pipeline. The optional `diagnosticListener` receives the same event names and
+structured context.
 
 Signal methods are signature declarations for server admission and are not
 invoked. The workflow reads their committed values with
@@ -262,7 +281,7 @@ Publish the environment-backed configuration, add attributed handler services,
 and start the supervised Artisan command:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.9@RC
+composer require durable-workflow/sdk:2.0.0-rc.10@RC
 php artisan vendor:publish --tag=durable-workflow-config
 php artisan durable-workflow:worker
 ```

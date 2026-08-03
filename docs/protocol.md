@@ -81,6 +81,14 @@ activity, child-workflow, timer, and side-effect results back into the
 generator. A changed command order fails the task with a typed
 `NonDeterministicWorkflow` error instead of executing different work.
 
+Attribute-discovered workflow entry points, queries, and updates receive a fresh
+shallow clone of the registered workflow handler template for every invocation.
+The template retains constructor-injected collaborators, but mutable properties
+on the workflow handler always begin at their registration-time values. Activity
+handlers are different: the worker invokes the resolved activity service
+instance directly across tasks. Low-level callable registrations likewise keep
+the lifetime and captured state of the callable supplied by the application.
+
 The runtime fetches all paginated history before replay. Activity handlers can
 heartbeat and observe cancellation. Query handlers receive immutable committed
 history; update handlers receive the accepted update and return a

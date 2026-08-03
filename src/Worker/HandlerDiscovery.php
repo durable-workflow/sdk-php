@@ -79,6 +79,18 @@ final class HandlerDiscovery
             );
         }
 
+        $workflowPrototype = null;
+        if ($workflowMethods !== []) {
+            if (!$reflection->isCloneable()) {
+                throw new InvalidWorkerDefinition(
+                    $reflection->getName(),
+                    'Allow the workflow handler object to be cloned so every replay can start from clean instance state.',
+                );
+            }
+
+            $workflowPrototype = clone $handler;
+        }
+
         $workflowType = null;
         $workflows = [];
         $activities = [];
@@ -87,16 +99,18 @@ final class HandlerDiscovery
         $updates = [];
 
         foreach ($annotated as [$method, $attribute]) {
-            $callable = [$handler, $method->getName()];
             if ($attribute instanceof Workflow) {
                 $workflowType = $this->name($attribute->name, $method, 'workflow');
                 $this->assertContext($method, WorkflowContext::class, 'workflow');
-                $workflows[$workflowType] = $callable;
+                $workflows[$workflowType] = HandlerDefinition::replaySafe(
+                    $workflowPrototype ?? $handler,
+                    $method->getName(),
+                );
             } elseif ($attribute instanceof Activity) {
                 $name = $this->name($attribute->name ?? $method->getName(), $method, 'activity');
                 $this->assertContext($method, ActivityContext::class, 'activity');
                 $this->assertLocalUnique($activities, $name, $method, 'activity');
-                $activities[$name] = $callable;
+                $activities[$name] = HandlerDefinition::shared([$handler, $method->getName()]);
             }
         }
 
@@ -104,7 +118,6 @@ final class HandlerDiscovery
             if (!$attribute instanceof Query && !$attribute instanceof Signal && !$attribute instanceof Update) {
                 continue;
             }
-            $callable = [$handler, $method->getName()];
             if ($workflowType === null) {
                 throw $this->invalid(
                     $method,
@@ -116,15 +129,21 @@ final class HandlerDiscovery
             if ($attribute instanceof Query) {
                 $this->assertContext($method, QueryContext::class, 'query');
                 $this->assertLocalUnique($queries[$workflowType] ?? [], $name, $method, 'query');
-                $queries[$workflowType][$name] = $callable;
+                $queries[$workflowType][$name] = HandlerDefinition::replaySafe(
+                    $workflowPrototype ?? $handler,
+                    $method->getName(),
+                );
             } elseif ($attribute instanceof Signal) {
                 $this->assertNotContextual($method, 'signal');
                 $this->assertLocalUnique($signals[$workflowType] ?? [], $name, $method, 'signal');
-                $signals[$workflowType][$name] = $callable;
+                $signals[$workflowType][$name] = [$handler, $method->getName()];
             } else {
                 $this->assertContext($method, QueryContext::class, 'update');
                 $this->assertLocalUnique($updates[$workflowType] ?? [], $name, $method, 'update');
-                $updates[$workflowType][$name] = $callable;
+                $updates[$workflowType][$name] = HandlerDefinition::replaySafe(
+                    $workflowPrototype ?? $handler,
+                    $method->getName(),
+                );
             }
         }
 
@@ -168,7 +187,7 @@ final class HandlerDiscovery
         );
     }
 
-    /** @param array<string, callable> $handlers */
+    /** @param array<string, mixed> $handlers */
     private function assertLocalUnique(
         array $handlers,
         string $name,
