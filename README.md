@@ -10,10 +10,10 @@ It targets PHP 8.1 or newer and does not require Laravel or the embedded
 Install the package from Packagist:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.8@RC
+composer require durable-workflow/sdk:2.0.0-rc.9@RC
 ```
 
-This exact package is PHP SDK `2.0.0-rc.8` and is qualified with Server
+This exact package is PHP SDK `2.0.0-rc.9` and is qualified with Server
 `2.0.0-rc.12`. SDK and Server prerelease counters are independent. Earlier 2.0
 prereleases and pre-1.0 SDK releases remain historical rather than alternate
 supported baselines.
@@ -254,6 +254,98 @@ keeping heartbeats and graceful shutdown responsive. Pass a
 task kind, consecutive attempt, selected delay, and typed server exception.
 Authentication failures, malformed responses, and generic server errors remain
 fatal.
+
+## Laravel service mode
+
+Laravel 12 and 13 auto-discover the service provider from the same SDK package.
+Publish the environment-backed configuration, add attributed handler services,
+and start the supervised Artisan command:
+
+```bash
+composer require durable-workflow/sdk:2.0.0-rc.9@RC
+php artisan vendor:publish --tag=durable-workflow-config
+php artisan durable-workflow:worker
+```
+
+Set `DURABLE_WORKFLOW_ENDPOINT` to a self-hosted Server origin or the complete
+Cloud runtime base URI. Set `DURABLE_WORKFLOW_NAMESPACE` and
+`DURABLE_WORKFLOW_TASK_QUEUE`, then use either `DURABLE_WORKFLOW_TOKEN` or the
+scoped `DURABLE_WORKFLOW_CONTROL_TOKEN` and `DURABLE_WORKFLOW_WORKER_TOKEN`.
+The published file contains only `env()` references; it never copies a secret
+value into application source. List handler classes in
+`config/durable-workflow.php`:
+
+```php
+'handlers' => [
+    App\Workflows\GreeterWorkflow::class,
+    App\Activities\GreetingActivities::class,
+],
+```
+
+Laravel resolves every handler through its container, so ordinary constructor
+injection works. `Client` and `WorkflowClientInterface` are injectable; prefer
+the interface in application services that should be replaceable in tests.
+Worker diagnostics use Laravel's PSR logger and dispatch
+`WorkerDiagnosticEvent` through Laravel events. The event name is available in
+its `name` property and includes lifecycle, retry, handler-failure, and shutdown
+events.
+
+In a Laravel test, `DurableWorkflow::fake()` replaces the injectable interface
+with `WorkflowClientFake` and returns it for result setup and interaction
+assertions:
+
+```php
+$workflows = DurableWorkflow::fake()
+    ->setWorkflowResult('greeting-1', ['greeting' => 'hello, Ada']);
+
+// Exercise application code, then use the framework-independent assertions.
+$workflows->assertWorkflowStarted('greeter', ['Ada']);
+```
+
+## Symfony service mode
+
+Symfony 6.4, 7, and 8 applications register the Bundle from the SDK package in
+`config/bundles.php`:
+
+```php
+return [
+    // ...
+    DurableWorkflow\Bridge\Symfony\DurableWorkflowBundle::class => ['all' => true],
+];
+```
+
+Configure Server or Cloud through environment processors. Attributed services
+under Symfony's normal autoconfigured imports are registered as handlers. The
+optional `handlers` list also registers classes outside those imports as
+autowired services:
+
+```yaml
+# config/packages/durable_workflow.yaml
+durable_workflow:
+  endpoint: '%env(DURABLE_WORKFLOW_ENDPOINT)%'
+  namespace: '%env(DURABLE_WORKFLOW_NAMESPACE)%'
+  task_queue: '%env(DURABLE_WORKFLOW_TASK_QUEUE)%'
+  credentials:
+    token: '%env(DURABLE_WORKFLOW_TOKEN)%'
+  handlers:
+    - App\Workflow\GreeterWorkflow
+    - App\Activity\GreetingActivities
+```
+
+Run `php bin/console durable-workflow:worker`. `Client` and
+`WorkflowClientInterface` are public autowired services. Handler services retain
+normal Symfony autowiring, worker messages use the standard PSR logger when it
+is installed, and `WorkerDiagnosticEvent` is dispatched through Symfony's event
+dispatcher under the diagnostic name. A `KernelTestCase` can use
+`InteractsWithDurableWorkflow::fakeDurableWorkflow()` to replace the autowired
+interface with the same assertion-capable fake used by plain PHP and Laravel.
+
+Both console commands accept `--queue` and `--poll-timeout`. They require
+`ext-pcntl` so SIGINT and SIGTERM always request a graceful worker shutdown.
+Configuration errors, an unreachable endpoint, rejected credentials, and
+worker-protocol or contract mismatches are reported with remediation specific
+to the failing boundary. Neither bridge stores workflow state or installs the
+embedded Laravel workflow engine.
 
 ## Test workflow code and interactions
 

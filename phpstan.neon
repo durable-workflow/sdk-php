@@ -2,4 +2,8 @@ parameters:
     level: 6
     paths:
         - src
+    excludePaths:
+        analyse:
+            - src/Bridge/Laravel
+            - src/Bridge/Symfony
     tmpDir: build/phpstan

@@ -1,0 +1,186 @@
+name: Published framework bridge smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_version:
+        description: Exact published Packagist version, including prerelease stability when needed
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  framework-service-mode:
+    name: ${{ matrix.framework }} published workflow
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: published-service-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        framework: [laravel, symfony]
+    env:
+      DURABLE_WORKFLOW_ENDPOINT: ${{ secrets.DURABLE_WORKFLOW_SERVER_URL }}
+      DURABLE_WORKFLOW_TOKEN: ${{ secrets.DURABLE_WORKFLOW_AUTH_TOKEN }}
+      DURABLE_WORKFLOW_NAMESPACE: default
+      SDK_VERSION: ${{ inputs.sdk_version }}
+    steps:
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: '8.4'
+          tools: composer:v2
+          coverage: none
+
+      - name: Create a fresh framework application from published artifacts
+        env:
+          FRAMEWORK: ${{ matrix.framework }}
+        run: |
+          test -n "$DURABLE_WORKFLOW_ENDPOINT"
+          application="$(mktemp -d)"
+          rmdir "$application"
+          printf '%s\n' "$application" > "$RUNNER_TEMP/framework-application"
+          if [ "$FRAMEWORK" = laravel ]; then
+            composer create-project laravel/laravel:^13.0 "$application" --no-interaction --prefer-dist
+          else
+            composer create-project symfony/skeleton:^8.0 "$application" --no-interaction --prefer-dist
+            composer require --working-dir="$application" symfony/console symfony/framework-bundle \
+              --no-interaction --prefer-dist
+          fi
+          composer require --working-dir="$application" "durable-workflow/sdk:${SDK_VERSION}" \
+            --no-interaction --prefer-dist
+
+      - name: Configure Laravel through auto-discovery and vendor publish
+        if: matrix.framework == 'laravel'
+        run: |
+          application="$(cat "$RUNNER_TEMP/framework-application")"
+          cd "$application"
+          mkdir -p app/Workflows app/Activities
+          tee app/Workflows/PublishedGreetingWorkflow.php >/dev/null <<'PHP'
+          <?php
+          declare(strict_types=1);
+          namespace App\Workflows;
+          use DurableWorkflow\Attribute\Workflow;
+          use DurableWorkflow\Worker\WorkflowContext;
+          final class PublishedGreetingWorkflow
+          {
+              #[Workflow('published.laravel.greeter')]
+              public function run(WorkflowContext $context, string $name): \Generator
+              {
+                  return ['greeting' => yield $context->activity('published.laravel.greet', [$name])];
+              }
+          }
+          PHP
+          tee app/Activities/PublishedGreetingActivities.php >/dev/null <<'PHP'
+          <?php
+          declare(strict_types=1);
+          namespace App\Activities;
+          use DurableWorkflow\Attribute\Activity;
+          use DurableWorkflow\Worker\ActivityContext;
+          final class PublishedGreetingActivities
+          {
+              #[Activity('published.laravel.greet')]
+              public function greet(ActivityContext $context, string $name): string
+              {
+                  return "hello, {$name}";
+              }
+          }
+          PHP
+          php artisan vendor:publish --tag=durable-workflow-config --force
+          sed -i "/'handlers' => \[/a\        App\\\\Workflows\\\\PublishedGreetingWorkflow::class,\n        App\\\\Activities\\\\PublishedGreetingActivities::class," config/durable-workflow.php
+
+      - name: Configure Symfony Bundle and autowired handlers
+        if: matrix.framework == 'symfony'
+        run: |
+          application="$(cat "$RUNNER_TEMP/framework-application")"
+          cd "$application"
+          mkdir -p src/Workflow src/Activity config/packages
+          sed -i "/return \[/a\    DurableWorkflow\\\\Bridge\\\\Symfony\\\\DurableWorkflowBundle::class => ['all' => true]," config/bundles.php
+          tee config/packages/durable_workflow.yaml >/dev/null <<'YAML'
+          durable_workflow:
+            endpoint: '%env(DURABLE_WORKFLOW_ENDPOINT)%'
+            namespace: '%env(DURABLE_WORKFLOW_NAMESPACE)%'
+            task_queue: '%env(DURABLE_WORKFLOW_TASK_QUEUE)%'
+            credentials:
+              token: '%env(DURABLE_WORKFLOW_TOKEN)%'
+            handlers:
+              - App\Workflow\PublishedGreetingWorkflow
+              - App\Activity\PublishedGreetingActivities
+          YAML
+          tee src/Workflow/PublishedGreetingWorkflow.php >/dev/null <<'PHP'
+          <?php
+          declare(strict_types=1);
+          namespace App\Workflow;
+          use DurableWorkflow\Attribute\Workflow;
+          use DurableWorkflow\Worker\WorkflowContext;
+          final class PublishedGreetingWorkflow
+          {
+              #[Workflow('published.symfony.greeter')]
+              public function run(WorkflowContext $context, string $name): \Generator
+              {
+                  return ['greeting' => yield $context->activity('published.symfony.greet', [$name])];
+              }
+          }
+          PHP
+          tee src/Activity/PublishedGreetingActivities.php >/dev/null <<'PHP'
+          <?php
+          declare(strict_types=1);
+          namespace App\Activity;
+          use DurableWorkflow\Attribute\Activity;
+          use DurableWorkflow\Worker\ActivityContext;
+          final class PublishedGreetingActivities
+          {
+              #[Activity('published.symfony.greet')]
+              public function greet(ActivityContext $context, string $name): string
+              {
+                  return "hello, {$name}";
+              }
+          }
+          PHP
+
+      - name: Start the framework worker and complete a workflow
+        env:
+          FRAMEWORK: ${{ matrix.framework }}
+        run: |
+          application="$(cat "$RUNNER_TEMP/framework-application")"
+          cd "$application"
+          queue="php-${FRAMEWORK}-published-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          workflow_id="php-${FRAMEWORK}-published-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          export DURABLE_WORKFLOW_TASK_QUEUE="$queue"
+          export DURABLE_WORKFLOW_WORKFLOW_ID="$workflow_id"
+          export DURABLE_WORKFLOW_TYPE="published.${FRAMEWORK}.greeter"
+
+          tee durable-client.php >/dev/null <<'PHP'
+          <?php
+          declare(strict_types=1);
+          require __DIR__.'/vendor/autoload.php';
+          use DurableWorkflow\Client;
+          $client = new Client(
+              getenv('DURABLE_WORKFLOW_ENDPOINT'),
+              token: getenv('DURABLE_WORKFLOW_TOKEN') ?: null,
+              namespace: getenv('DURABLE_WORKFLOW_NAMESPACE'),
+          );
+          $handle = $client->startWorkflow(
+              getenv('DURABLE_WORKFLOW_TYPE'),
+              getenv('DURABLE_WORKFLOW_WORKFLOW_ID'),
+              getenv('DURABLE_WORKFLOW_TASK_QUEUE'),
+              ['published framework'],
+          );
+          $result = $handle->result(timeoutSeconds: 90, pollIntervalSeconds: 1);
+          if ($result !== ['greeting' => 'hello, published framework']) {
+              throw new RuntimeException('Published framework workflow returned an unexpected result.');
+          }
+          PHP
+
+          if [ "$FRAMEWORK" = laravel ]; then
+            php artisan durable-workflow:worker >worker.log 2>&1 &
+          else
+            php bin/console durable-workflow:worker >worker.log 2>&1 &
+          fi
+          worker_pid=$!
+          trap 'kill -TERM "$worker_pid" 2>/dev/null || true; wait "$worker_pid" 2>/dev/null || true' EXIT
+          php durable-client.php
+          kill -TERM "$worker_pid"
+          wait "$worker_pid"
+          trap - EXIT

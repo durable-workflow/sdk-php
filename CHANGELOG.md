@@ -16,10 +16,13 @@ project follows [Semantic Versioning](https://semver.org/).
   assertions for workflow interactions and registered handler behavior.
 - A source-free published-package smoke workflow for a real Server or
   Cloud-compatible endpoint.
+- Optional first-party bridges for Laravel 12-13 and Symfony 6.4-8, including
+  native container registration, console workers, configuration validation,
+  framework logging and events, and test-client replacement helpers.
 
 ### Changed
 
-- Advanced the PHP SDK to `2.0.0-rc.8` and qualified it with Server
+- Advanced the PHP SDK to `2.0.0-rc.9` and qualified it with Server
   `2.0.0-rc.12`. SDK and Server prerelease counters remain independent; earlier
   prereleases retain historical release records but receive no compatibility
   shim.

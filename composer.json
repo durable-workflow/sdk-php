@@ -33,7 +33,10 @@
         "phpunit/phpunit": "^10.5|^11.0"
     },
     "suggest": {
-        "ext-pcntl": "Enables managed workers to handle SIGINT and SIGTERM gracefully."
+        "ext-pcntl": "Required by framework console workers for graceful SIGINT and SIGTERM handling.",
+        "laravel/framework": "Enables the auto-discovered Laravel 12 and 13 service-mode bridge.",
+        "symfony/framework-bundle": "Enables the Symfony 6.4, 7, and 8 service-mode bundle.",
+        "symfony/console": "Required with symfony/framework-bundle to run the Symfony 6.4, 7, and 8 worker command."
     },
     "autoload": {
         "psr-4": {
@@ -58,12 +61,24 @@
         "sort-packages": true
     },
     "extra": {
+        "laravel": {
+            "providers": [
+                "DurableWorkflow\\Bridge\\Laravel\\DurableWorkflowServiceProvider"
+            ],
+            "aliases": {
+                "DurableWorkflow": "DurableWorkflow\\Bridge\\Laravel\\Facades\\DurableWorkflow"
+            }
+        },
         "durable-workflow": {
-            "product-train": "2.0.0-rc.8",
+            "product-train": "2.0.0-rc.9",
             "supported-server-versions": "2.0.0-rc.12",
             "worker-protocol-version": "1.13",
             "control-plane-version": "2",
-            "payload-codecs": ["avro"]
+            "payload-codecs": ["avro"],
+            "frameworks": {
+                "laravel": "^12.0|^13.0",
+                "symfony": "^6.4|^7.0|^8.0"
+            }
         }
     },
     "minimum-stability": "stable",

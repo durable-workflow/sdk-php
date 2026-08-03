@@ -62,6 +62,83 @@ jobs:
         run: composer benchmark-avro-value
       - run: composer check-boundary
 
+  framework-compat:
+    name: ${{ matrix.framework }} ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - framework: Laravel
+            version: '12'
+            php: '8.2'
+            package: 'laravel/framework:^12.0'
+            script: laravel.php
+          - framework: Laravel
+            version: '13'
+            php: '8.3'
+            package: 'laravel/framework:^13.0'
+            script: laravel.php
+          - framework: Symfony
+            version: '6.4'
+            php: '8.1'
+            package: 'symfony/framework-bundle:^6.4'
+            console_package: 'symfony/console:^6.4'
+            script: symfony.php
+          - framework: Symfony
+            version: '7'
+            php: '8.2'
+            package: 'symfony/framework-bundle:^7.0'
+            console_package: 'symfony/console:^7.0'
+            script: symfony.php
+          - framework: Symfony
+            version: '8'
+            php: '8.4'
+            package: 'symfony/framework-bundle:^8.0'
+            console_package: 'symfony/console:^8.0'
+            script: symfony.php
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: composer:v2
+          coverage: none
+      - name: Install SDK into a clean framework consumer
+        env:
+          FRAMEWORK_PACKAGE: ${{ matrix.package }}
+          FRAMEWORK_CONSOLE_PACKAGE: ${{ matrix.console_package }}
+        run: |
+          consumer="$(mktemp -d)"
+          printf '%s\n' "$consumer" > "$RUNNER_TEMP/framework-consumer"
+          cd "$consumer"
+          composer init --name=durable-workflow/framework-compat --no-interaction
+          composer config repositories.sdk path "$GITHUB_WORKSPACE"
+          framework_packages=("$FRAMEWORK_PACKAGE")
+          if [ -n "$FRAMEWORK_CONSOLE_PACKAGE" ]; then
+            framework_packages+=("$FRAMEWORK_CONSOLE_PACKAGE")
+          fi
+          composer require durable-workflow/sdk:@dev "${framework_packages[@]}" \
+            --no-interaction --prefer-dist --with-all-dependencies
+          composer require --dev phpstan/phpstan:^2.0 --no-interaction --prefer-dist
+      - name: Exercise native container, diagnostics, and testing integration
+        env:
+          COMPAT_SCRIPT: ${{ matrix.script }}
+        run: |
+          consumer="$(cat "$RUNNER_TEMP/framework-consumer")"
+          php "tests/compat/${COMPAT_SCRIPT}" "$consumer/vendor/autoload.php"
+          if [ "$COMPAT_SCRIPT" = laravel.php ]; then
+            bridge_path=src/Bridge/Laravel
+          else
+            bridge_path=src/Bridge/Symfony
+          fi
+          "$consumer/vendor/bin/phpstan" analyse -c phpstan-framework.neon \
+            --autoload-file="$consumer/vendor/autoload.php" \
+            src/Bridge/FrameworkRuntimeException.php \
+            src/Bridge/ServiceConfiguration.php src/Bridge/Event \
+            "$bridge_path" "tests/compat/${COMPAT_SCRIPT}"
+
   analyse:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -123,6 +200,7 @@ jobs:
           composer config repositories.sdk path "$GITHUB_WORKSPACE"
           composer require durable-workflow/sdk:@dev --no-interaction --prefer-dist
           php -r 'require "vendor/autoload.php"; $codec = new DurableWorkflow\Codec\AvroPayloadCodec(); if ($codec->decode($codec->encode(["ok" => true])) !== ["ok" => true]) { exit(1); }'
+          php -r 'require "vendor/autoload.php"; new DurableWorkflow\Client("http://localhost:8080"); foreach (get_included_files() as $file) { if (str_contains($file, "/src/Bridge/Laravel/") || str_contains($file, "/src/Bridge/Symfony/")) { exit(1); } }'
           php "$GITHUB_WORKSPACE/scripts/check-registration-identity.php" \
             "$consumer/vendor/autoload.php" \
             source-development
@@ -161,13 +239,14 @@ jobs:
   target-branch-qualification:
     name: Target branch qualification
     if: ${{ always() }}
-    needs: [regression-corpus, test, analyse, docs, package-smoke, release-recovery-boundary]
+    needs: [regression-corpus, test, framework-compat, analyse, docs, package-smoke, release-recovery-boundary]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: Require every supported PHP and package cell
         env:
           TEST_RESULT: ${{ needs.test.result }}
+          FRAMEWORK_RESULT: ${{ needs.framework-compat.result }}
           CORPUS_RESULT: ${{ needs.regression-corpus.result }}
           ANALYSIS_RESULT: ${{ needs.analyse.result }}
           DOCS_RESULT: ${{ needs.docs.result }}
@@ -175,6 +254,7 @@ jobs:
           RECOVERY_RESULT: ${{ needs.release-recovery-boundary.result }}
         run: |
           test "$TEST_RESULT" = success
+          test "$FRAMEWORK_RESULT" = success
           test "$CORPUS_RESULT" = success
           test "$ANALYSIS_RESULT" = success
           test "$DOCS_RESULT" = success
