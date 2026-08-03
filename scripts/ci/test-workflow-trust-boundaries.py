@@ -149,7 +149,9 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
                 for privileged_marker in (
                     "environment: published-service-smoke",
                     "secrets.DURABLE_WORKFLOW_SERVER_URL",
-                    "secrets.DURABLE_WORKFLOW_AUTH_TOKEN",
+                    "secrets.DURABLE_WORKFLOW_NAMESPACE",
+                    "secrets.DURABLE_WORKFLOW_CLIENT_TOKEN",
+                    "secrets.DURABLE_WORKFLOW_WORKER_TOKEN",
                 ):
                     self.assertIn(privileged_marker, smoke)
                     self.assertLess(
@@ -267,7 +269,9 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         }
         secret_markers = (
             "secrets.DURABLE_WORKFLOW_SERVER_URL",
-            "secrets.DURABLE_WORKFLOW_AUTH_TOKEN",
+            "secrets.DURABLE_WORKFLOW_NAMESPACE",
+            "secrets.DURABLE_WORKFLOW_CLIENT_TOKEN",
+            "secrets.DURABLE_WORKFLOW_WORKER_TOKEN",
         )
         for workflow, (job, runtime_name) in workflows.items():
             with self.subTest(workflow=workflow):
@@ -275,12 +279,127 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
                 runtime = step_source(smoke, runtime_name)
                 job_configuration = smoke[: smoke.index("    steps:")]
                 self.assertNotIn("secrets.", job_configuration)
+                runtime_offset = smoke.index(runtime)
+                non_runtime = (
+                    smoke[:runtime_offset]
+                    + smoke[runtime_offset + len(runtime) :]
+                )
+                self.assertNotIn("secrets.", non_runtime)
                 self.assertLess(
                     runtime.index("        env:"), runtime.index("        run:")
                 )
                 for marker in secret_markers:
                     self.assertEqual(1, smoke.count(marker))
                     self.assertIn(marker, runtime)
+
+    def test_published_smokes_fail_closed_on_incomplete_or_shared_credentials(
+        self,
+    ) -> None:
+        workflows = {
+            "framework-bridges-published-smoke.yml": (
+                "framework-service-mode",
+                "Start the framework worker and complete a workflow",
+                "DURABLE_WORKFLOW_ENDPOINT",
+            ),
+            "service-mode-published-smoke.yml": (
+                "source-free-service-mode",
+                "Complete a class-oriented workflow against the published endpoint",
+                "DURABLE_WORKFLOW_SERVER_URL",
+            ),
+        }
+        for workflow, (job, runtime_name, endpoint_name) in workflows.items():
+            with self.subTest(workflow=workflow):
+                smoke = job_source(workflow_source(workflow), job)
+                runtime = step_source(smoke, runtime_name)
+                guard = step_script(runtime).split("\n\n", 1)[0]
+                environment = {
+                    **os.environ,
+                    endpoint_name: "https://runtime.example",
+                    "DURABLE_WORKFLOW_NAMESPACE": "published-sdk-smoke",
+                    "DURABLE_WORKFLOW_CLIENT_TOKEN": "client-secret-value",
+                    "DURABLE_WORKFLOW_WORKER_TOKEN": "worker-secret-value",
+                }
+
+                missing = subprocess.run(
+                    ["bash", "-eu", "-o", "pipefail", "-c", guard],
+                    env={
+                        key: value
+                        for key, value in environment.items()
+                        if key != "DURABLE_WORKFLOW_NAMESPACE"
+                    },
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(0, missing.returncode)
+                self.assertIn("DURABLE_WORKFLOW_NAMESPACE", missing.stderr)
+                self.assertNotIn("client-secret-value", missing.stderr)
+                self.assertNotIn("worker-secret-value", missing.stderr)
+
+                shared = subprocess.run(
+                    ["bash", "-eu", "-o", "pipefail", "-c", guard],
+                    env={
+                        **environment,
+                        "DURABLE_WORKFLOW_WORKER_TOKEN": "client-secret-value",
+                    },
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(0, shared.returncode)
+                self.assertIn(
+                    "client and worker credentials must be distinct", shared.stderr
+                )
+                self.assertNotIn("client-secret-value", shared.stderr)
+
+                complete = subprocess.run(
+                    ["bash", "-eu", "-o", "pipefail", "-c", guard],
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(0, complete.returncode, complete.stderr)
+
+    def test_published_smokes_keep_role_credentials_on_their_own_operations(
+        self,
+    ) -> None:
+        service = step_source(
+            job_source(
+                workflow_source("service-mode-published-smoke.yml"),
+                "source-free-service-mode",
+            ),
+            "Complete a class-oriented workflow against the published endpoint",
+        )
+        framework_job = job_source(
+            workflow_source("framework-bridges-published-smoke.yml"),
+            "framework-service-mode",
+        )
+        framework = step_source(
+            framework_job, "Start the framework worker and complete a workflow"
+        )
+        symfony_configuration = step_source(
+            framework_job, "Configure Symfony Bundle and autowired handlers"
+        )
+
+        for runtime in (service, framework):
+            self.assertIn(
+                "controlToken: getenv('DURABLE_WORKFLOW_CLIENT_TOKEN') ?: null",
+                runtime,
+            )
+            self.assertIn("env -u DURABLE_WORKFLOW_CLIENT_TOKEN php", runtime)
+            self.assertIn("env -u DURABLE_WORKFLOW_WORKER_TOKEN php", runtime)
+            self.assertNotIn("DURABLE_WORKFLOW_AUTH_TOKEN", runtime)
+
+        self.assertIn(
+            "workerToken: getenv('DURABLE_WORKFLOW_WORKER_TOKEN') ?: null",
+            service,
+        )
+        self.assertIn(
+            "worker_token: '%env(DURABLE_WORKFLOW_WORKER_TOKEN)%'",
+            symfony_configuration,
+        )
+        self.assertNotIn("DURABLE_WORKFLOW_TOKEN", symfony_configuration)
 
 
 if __name__ == "__main__":

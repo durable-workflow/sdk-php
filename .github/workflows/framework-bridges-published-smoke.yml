@@ -191,7 +191,7 @@ jobs:
             namespace: '%env(DURABLE_WORKFLOW_NAMESPACE)%'
             task_queue: '%env(DURABLE_WORKFLOW_TASK_QUEUE)%'
             credentials:
-              token: '%env(DURABLE_WORKFLOW_TOKEN)%'
+              worker_token: '%env(DURABLE_WORKFLOW_WORKER_TOKEN)%'
             handlers:
               - App\Workflow\PublishedGreetingWorkflow
               - App\Activity\PublishedGreetingActivities
@@ -230,10 +230,34 @@ jobs:
       - name: Start the framework worker and complete a workflow
         env:
           DURABLE_WORKFLOW_ENDPOINT: ${{ secrets.DURABLE_WORKFLOW_SERVER_URL }}
-          DURABLE_WORKFLOW_TOKEN: ${{ secrets.DURABLE_WORKFLOW_AUTH_TOKEN }}
-          DURABLE_WORKFLOW_NAMESPACE: default
+          DURABLE_WORKFLOW_NAMESPACE: ${{ secrets.DURABLE_WORKFLOW_NAMESPACE }}
+          DURABLE_WORKFLOW_CLIENT_TOKEN: ${{ secrets.DURABLE_WORKFLOW_CLIENT_TOKEN }}
+          DURABLE_WORKFLOW_WORKER_TOKEN: ${{ secrets.DURABLE_WORKFLOW_WORKER_TOKEN }}
           FRAMEWORK: ${{ matrix.framework }}
         run: |
+          required=(
+            DURABLE_WORKFLOW_ENDPOINT
+            DURABLE_WORKFLOW_NAMESPACE
+            DURABLE_WORKFLOW_CLIENT_TOKEN
+            DURABLE_WORKFLOW_WORKER_TOKEN
+          )
+          missing=()
+          for variable in "${required[@]}"; do
+            if [ -z "${!variable:-}" ]; then
+              missing+=("$variable")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf 'Published runtime configuration is incomplete; missing protected value(s):' >&2
+            printf ' %s' "${missing[@]}" >&2
+            printf '\n' >&2
+            exit 1
+          fi
+          if [ "$DURABLE_WORKFLOW_CLIENT_TOKEN" = "$DURABLE_WORKFLOW_WORKER_TOKEN" ]; then
+            echo 'Published runtime client and worker credentials must be distinct.' >&2
+            exit 1
+          fi
+
           application="$(cat "$RUNNER_TEMP/framework-application")"
           cd "$application"
           queue="php-${FRAMEWORK}-published-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -249,8 +273,8 @@ jobs:
           use DurableWorkflow\Client;
           $client = new Client(
               getenv('DURABLE_WORKFLOW_ENDPOINT'),
-              token: getenv('DURABLE_WORKFLOW_TOKEN') ?: null,
               namespace: getenv('DURABLE_WORKFLOW_NAMESPACE'),
+              controlToken: getenv('DURABLE_WORKFLOW_CLIENT_TOKEN') ?: null,
           );
           $handle = $client->startWorkflow(
               getenv('DURABLE_WORKFLOW_TYPE'),
@@ -265,13 +289,13 @@ jobs:
           PHP
 
           if [ "$FRAMEWORK" = laravel ]; then
-            php artisan durable-workflow:worker >worker.log 2>&1 &
+            env -u DURABLE_WORKFLOW_CLIENT_TOKEN php artisan durable-workflow:worker >worker.log 2>&1 &
           else
-            php bin/console durable-workflow:worker >worker.log 2>&1 &
+            env -u DURABLE_WORKFLOW_CLIENT_TOKEN php bin/console durable-workflow:worker >worker.log 2>&1 &
           fi
           worker_pid=$!
           trap 'kill -TERM "$worker_pid" 2>/dev/null || true; wait "$worker_pid" 2>/dev/null || true' EXIT
-          php durable-client.php
+          env -u DURABLE_WORKFLOW_WORKER_TOKEN php durable-client.php
           kill -TERM "$worker_pid"
           wait "$worker_pid"
           trap - EXIT

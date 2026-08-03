@@ -129,8 +129,33 @@ jobs:
       - name: Complete a class-oriented workflow against the published endpoint
         env:
           DURABLE_WORKFLOW_SERVER_URL: ${{ secrets.DURABLE_WORKFLOW_SERVER_URL }}
-          DURABLE_WORKFLOW_AUTH_TOKEN: ${{ secrets.DURABLE_WORKFLOW_AUTH_TOKEN }}
+          DURABLE_WORKFLOW_NAMESPACE: ${{ secrets.DURABLE_WORKFLOW_NAMESPACE }}
+          DURABLE_WORKFLOW_CLIENT_TOKEN: ${{ secrets.DURABLE_WORKFLOW_CLIENT_TOKEN }}
+          DURABLE_WORKFLOW_WORKER_TOKEN: ${{ secrets.DURABLE_WORKFLOW_WORKER_TOKEN }}
         run: |
+          required=(
+            DURABLE_WORKFLOW_SERVER_URL
+            DURABLE_WORKFLOW_NAMESPACE
+            DURABLE_WORKFLOW_CLIENT_TOKEN
+            DURABLE_WORKFLOW_WORKER_TOKEN
+          )
+          missing=()
+          for variable in "${required[@]}"; do
+            if [ -z "${!variable:-}" ]; then
+              missing+=("$variable")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf 'Published runtime configuration is incomplete; missing protected value(s):' >&2
+            printf ' %s' "${missing[@]}" >&2
+            printf '\n' >&2
+            exit 1
+          fi
+          if [ "$DURABLE_WORKFLOW_CLIENT_TOKEN" = "$DURABLE_WORKFLOW_WORKER_TOKEN" ]; then
+            echo 'Published runtime client and worker credentials must be distinct.' >&2
+            exit 1
+          fi
+
           consumer="$(cat "$RUNNER_TEMP/service-mode-consumer")"
           cd "$consumer"
           queue="php-published-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -166,7 +191,8 @@ jobs:
           }
           $client = new Client(
               getenv('DURABLE_WORKFLOW_SERVER_URL'),
-              token: getenv('DURABLE_WORKFLOW_AUTH_TOKEN') ?: null,
+              namespace: getenv('DURABLE_WORKFLOW_NAMESPACE'),
+              workerToken: getenv('DURABLE_WORKFLOW_WORKER_TOKEN') ?: null,
           );
           Worker::create($client, getenv('DURABLE_WORKFLOW_TASK_QUEUE'))
               ->register(PublishedGreetingWorkflow::class, PublishedGreetingActivities::class)
@@ -180,7 +206,8 @@ jobs:
           use DurableWorkflow\Client;
           $client = new Client(
               getenv('DURABLE_WORKFLOW_SERVER_URL'),
-              token: getenv('DURABLE_WORKFLOW_AUTH_TOKEN') ?: null,
+              namespace: getenv('DURABLE_WORKFLOW_NAMESPACE'),
+              controlToken: getenv('DURABLE_WORKFLOW_CLIENT_TOKEN') ?: null,
           );
           $handle = $client->startWorkflow(
               'published.php.greeter',
@@ -194,10 +221,10 @@ jobs:
           }
           PHP
 
-          php worker.php >worker.log 2>&1 &
+          env -u DURABLE_WORKFLOW_CLIENT_TOKEN php worker.php >worker.log 2>&1 &
           worker_pid=$!
           trap 'kill -TERM "$worker_pid" 2>/dev/null || true; wait "$worker_pid" 2>/dev/null || true' EXIT
-          php client.php
+          env -u DURABLE_WORKFLOW_WORKER_TOKEN php client.php
           kill -TERM "$worker_pid"
           wait "$worker_pid"
           trap - EXIT
