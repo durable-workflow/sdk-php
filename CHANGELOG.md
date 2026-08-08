@@ -60,14 +60,12 @@ project follows [Semantic Versioning](https://semver.org/).
   navigation as the useful narrow-viewport interactions.
 
 - The generated API reference constrains and, when needed, wraps its SDK title
-  at narrow viewport widths so the shared header and consent controls remain
-  usable without document-level horizontal overflow.
+  at narrow viewport widths so the shared header controls remain usable without
+  document-level horizontal overflow.
 
-- Analytics consent withdrawal in the PHP API reference immediately disables
-  the active GA4 property and updates every consent signal to denied before
-  reloading. It also clears GA4 identifiers at the current host-only scope and
-  legacy parent-domain scopes while retaining unrelated cookies; denied-state
-  reloads remain fail-closed.
+- The generated API reference now uses the shared cookie-free Cloudflare Web
+  Analytics runtime and no longer presents analytics consent or preference
+  controls.
 
 - Client construction rejects base URIs ending in the SDK-owned `/api` path
   segment before they can produce duplicated request paths.

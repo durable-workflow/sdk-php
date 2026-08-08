@@ -1,58 +1,21 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
 import net from 'node:net';
 import path from 'node:path';
-import process from 'node:process';
-import { chromium } from 'playwright';
+import {chromium} from 'playwright';
 
-const SITE_HOSTNAME = 'php.durable-workflow.com';
-const CONSENT_KEY = 'durable-workflow.analytics-consent.v1';
 const buildDirectory = path.resolve(process.argv[2] ?? 'build/api');
-const RUNTIME_TRACE_KEY = 'durable-workflow.analytics-test-trace';
-const REPRESENTATIVE_ANALYTICS_RUNTIME = `(() => {
-  const measurementId = 'G-HD1YHT442Y';
-  const consent = {};
-  const trace = (type, details = {}) => {
-    const entry = { type, ...details };
-    const history = JSON.parse(window.sessionStorage.getItem('${RUNTIME_TRACE_KEY}') || '[]');
-    history.push(entry);
-    window.sessionStorage.setItem('${RUNTIME_TRACE_KEY}', JSON.stringify(history));
-  };
-  const analyticsAllowed = () => consent.analytics_storage === 'granted'
-    && window['ga-disable-' + measurementId] !== true;
-  const beginEvent = (event, boundary) => {
-    const allowed = analyticsAllowed();
-    trace(allowed ? 'request-started' : 'request-blocked', { event, boundary });
-    if (allowed) {
-      navigator.sendBeacon('https://www.google-analytics.com/g/collect?en=' + encodeURIComponent(event));
-    }
-  };
-  const processCommand = (entry) => {
-    const [command, action, fields] = Array.from(entry);
-    if (command === 'consent') {
-      Object.assign(consent, fields);
-      trace('consent', { action, consent: { ...consent }, disabled: window['ga-disable-' + measurementId] === true });
-    } else if (command === 'config') {
-      beginEvent('page_view', 'config');
-    } else if (command === 'event') {
-      beginEvent(action, 'gtag');
-    }
-  };
-  const queuedCommands = Array.from(window.dataLayer || []);
-  const nativePush = window.dataLayer.push.bind(window.dataLayer);
-  window.dataLayer.push = (...entries) => {
-    const length = nativePush(...entries);
-    entries.forEach(processCommand);
-    return length;
-  };
-  trace('loaded');
-  queuedCommands.forEach(processCommand);
-  window.addEventListener('click', (event) => {
-    if (event.target.closest('[data-consent="denied"]')) beginEvent('withdrawal_click', 'click');
-  });
-  window.addEventListener('pagehide', () => beginEvent('navigation_boundary', 'pagehide'));
-})();`;
+const viewports = [
+  ['desktop', {width: 1440, height: 900}],
+  ['intermediate', {width: 768, height: 1024}],
+  ['mobile', {width: 390, height: 844}],
+  ['compact-height', {width: 640, height: 360}],
+];
+const pages = [
+  ['root', '/index.html'],
+  ['nested API', '/namespaces/durableworkflow-worker.html'],
+];
 
 async function availablePort() {
   const server = net.createServer();
@@ -61,9 +24,8 @@ async function availablePort() {
   await once(server, 'listening');
   const address = server.address();
   assert(address && typeof address === 'object');
-  const { port } = address;
-  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-  return port;
+  await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  return address.port;
 }
 
 async function waitForServer(port) {
@@ -76,402 +38,122 @@ async function waitForServer(port) {
       });
       return;
     } catch (_error) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
   throw new Error(`PHP documentation server did not start on port ${port}.`);
 }
 
-function analyticsCookies(cookies) {
-  return cookies.filter(({ name }) => name === '_ga' || name.startsWith('_ga_'));
-}
-
-function observeBrowserErrors(page, label) {
-  const errors = [];
-  page.on('console', (message) => {
-    if (message.type() === 'error') errors.push(`${label} console: ${message.text()}`);
-  });
-  page.on('pageerror', (error) => errors.push(`${label} page: ${error.message}`));
-  page.on('requestfailed', (request) => {
-    errors.push(`${label} request: ${request.url()} (${request.failure()?.errorText ?? 'unknown failure'})`);
-  });
-  page.on('response', (response) => {
-    if (response.status() >= 400) errors.push(`${label} resource: ${response.url()} (${response.status()})`);
-  });
-  return errors;
-}
-
-async function waitForReferenceUi(page) {
-  await page.locator('.phpdocumentor-title__link').waitFor();
-  await page.locator('.phpdocumentor-search--active').waitFor();
-  await page.locator('.phpdocumentor-search__field:not([disabled])').waitFor();
-  await page.locator('.phpdocumentor-content').waitFor();
-  await page.evaluate(() => document.fonts.ready);
-}
-
-async function layoutSnapshot(page) {
-  return page.evaluate(() => {
-    function rectangle(selector) {
-      const element = document.querySelector(selector);
-      if (!element) return null;
-      const { left, top, right, bottom, width, height } = element.getBoundingClientRect();
-      return { left, top, right, bottom, width, height };
+async function assertReachableControls(page, label, scope = 'body') {
+  const result = await page.evaluate((scopeSelector) => {
+    const selector = 'a[href], button, input:not([type="hidden"]), select, textarea, summary, [role="button"]';
+    const unreachable = [];
+    const root = document.querySelector(scopeSelector);
+    for (const element of root?.querySelectorAll(selector) || []) {
+      if (
+        element.closest('.phpdocumentor-sidebar')
+        && !document.querySelector('.phpdocumentor-sidebar__menu-button')?.checked
+      ) continue;
+      const style = getComputedStyle(element);
+      const box = element.getBoundingClientRect();
+      const excludedByAncestor = [...function* ancestors(node) {
+        for (let parent = node.parentElement; parent; parent = parent.parentElement) yield parent;
+      }(element)].some(parent => {
+        const parentStyle = getComputedStyle(parent);
+        return parentStyle.visibility === 'hidden'
+          || parentStyle.display === 'none'
+          || parentStyle.pointerEvents === 'none'
+          || Number(parentStyle.opacity) === 0;
+      });
+      if (
+        excludedByAncestor
+        || style.visibility === 'hidden'
+        || style.display === 'none'
+        || style.pointerEvents === 'none'
+        || Number(style.opacity) === 0
+        || box.width < 1
+        || box.height < 1
+        || box.right <= 0
+        || box.left >= innerWidth
+        || box.bottom <= 0
+        || box.top >= innerHeight
+      ) continue;
+      const x = Math.max(0, Math.min(innerWidth - 1, box.left + box.width / 2));
+      const y = Math.max(0, Math.min(innerHeight - 1, box.top + box.height / 2));
+      if (y < 0 || y >= innerHeight) continue;
+      const hit = document.elementFromPoint(x, y);
+      if (!(hit === element || element.contains(hit) || hit?.contains(element))) {
+        unreachable.push(element.outerHTML.slice(0, 180));
+      }
     }
-
     return {
+      unreachable,
       viewportWidth: document.documentElement.clientWidth,
       documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
-      overflowingElements: Array.from(document.body.querySelectorAll('*'))
-        .map((element) => {
-          const { left, right, width } = element.getBoundingClientRect();
-          return {
-            element: `${element.tagName.toLowerCase()}.${Array.from(element.classList).join('.')}`,
-            html: element.outerHTML.slice(0, 240),
-            left,
-            right,
-            width,
-            scrollWidth: element.scrollWidth,
-            clientWidth: element.clientWidth,
-          };
-        })
-        .filter(({ right }) => right > document.documentElement.clientWidth + 0.5)
-        .slice(0, 12),
-      title: rectangle('.phpdocumentor-title__link'),
-      titleTextLength: document.querySelector('.phpdocumentor-title__link')?.textContent.trim().length ?? 0,
-      titleIsClipped: (() => {
-        const title = document.querySelector('.phpdocumentor-title__link');
-        return !title || title.scrollWidth > title.clientWidth + 1 || title.scrollHeight > title.clientHeight + 1;
-      })(),
-      headerMenuButtonCount: document.querySelectorAll('.phpdocumentor-header__menu-button').length,
-      headerMenuIconCount: document.querySelectorAll('.phpdocumentor-header__menu-icon').length,
-      topNavigationCount: document.querySelectorAll('.phpdocumentor-topnav').length,
-      search: rectangle('.phpdocumentor-search'),
-      searchField: rectangle('.phpdocumentor-search__field'),
-      sidebarMenu: rectangle('.phpdocumentor-sidebar__menu-icon'),
-      sidebar: rectangle('.phpdocumentor-sidebar'),
-      sidebarExpanded: document.querySelector('.phpdocumentor-sidebar__menu-button')?.checked ?? false,
-      content: rectangle('.phpdocumentor-content'),
-      contentTextLength: document.querySelector('.phpdocumentor-content')?.textContent.trim().length ?? 0,
-      banner: rectangle('#durable-workflow-analytics-consent:not([hidden])'),
-      deny: rectangle('#durable-workflow-analytics-consent:not([hidden]) [data-consent="denied"]'),
-      allow: rectangle('#durable-workflow-analytics-consent:not([hidden]) [data-consent="granted"]'),
-      preferences: rectangle('#durable-workflow-analytics-preferences:not([hidden])'),
     };
+  }, scope);
+  assert.equal(result.documentWidth, result.viewportWidth, `${label} has horizontal overflow`);
+  assert.deepEqual(result.unreachable, [], `${label} has unreachable controls`);
+}
+
+async function exercisePage(browser, origin, viewportName, viewport, pageName, pagePath) {
+  const context = await browser.newContext({viewport, reducedMotion: 'reduce'});
+  const page = await context.newPage();
+  const errors = [];
+  page.on('console', message => {
+    if (message.type() === 'error') errors.push(`console: ${message.text()}`);
   });
-}
+  page.on('pageerror', error => errors.push(`page: ${error.message}`));
+  const label = `${pageName} ${viewportName}`;
 
-function assertWithinViewport(rectangle, viewportWidth, label) {
-  assert(rectangle, `${label} must be rendered.`);
-  assert(rectangle.width > 0 && rectangle.height > 0, `${label} must have a usable hit area.`);
-  assert(rectangle.left >= -0.5, `${label} extends past the viewport's left edge.`);
-  assert(rectangle.right <= viewportWidth + 0.5, `${label} extends past the viewport's right edge.`);
-}
+  try {
+    const response = await page.goto(`${origin}${pagePath}`, {waitUntil: 'networkidle'});
+    assert.equal(response?.status(), 200, `${label} did not render`);
+    await page.locator('.phpdocumentor-content').waitFor();
+    const retired = await page.evaluate(() => ({
+      ui: document.querySelectorAll('.dw-analytics-consent, .dw-analytics-preferences, #durable-workflow-analytics-consent, #durable-workflow-analytics-preferences').length,
+      storage: localStorage.getItem('durable-workflow.analytics-consent.v1'),
+      google: [...document.scripts].filter(script => /googletagmanager|google-analytics/.test(script.src)).length,
+      runtime: [...document.scripts].filter(script => script.src.endsWith('/analytics/analytics.js')).length,
+    }));
+    assert.deepEqual(retired, {ui: 0, storage: null, google: 0, runtime: 1}, `${label} analytics boundary`);
+    assert.equal(await page.locator('.phpdocumentor-title__link').count(), 1, `${label} lost its title link`);
+    assert.equal(await page.locator('.phpdocumentor-search__field').count(), 1, `${label} lost search`);
+    await assertReachableControls(page, `${label} default`);
 
-function assertNoOverlap(first, second, label) {
-  assert(first && second, `${label} requires both controls to be rendered.`);
-  const overlapWidth = Math.min(first.right, second.right) - Math.max(first.left, second.left);
-  const overlapHeight = Math.min(first.bottom, second.bottom) - Math.max(first.top, second.top);
-  assert(overlapWidth <= 0 || overlapHeight <= 0, `${label} controls overlap.`);
-}
-
-async function assertReachable(page, selector, label) {
-  const reachable = await page.locator(selector).evaluate((element) => {
-    const rectangle = element.getBoundingClientRect();
-    const hit = document.elementFromPoint(
-      rectangle.left + rectangle.width / 2,
-      rectangle.top + rectangle.height / 2,
-    );
-    return hit === element || element.contains(hit) || Boolean(hit?.contains(element));
-  });
-  assert(reachable, `${label} must remain reachable.`);
-}
-
-async function assertReferenceLayout(page, label, consentState) {
-  await waitForReferenceUi(page);
-  const snapshot = await layoutSnapshot(page);
-  assert.equal(
-    snapshot.documentWidth,
-    snapshot.viewportWidth,
-    `${label} must not have document-level horizontal overflow: ${JSON.stringify(snapshot.overflowingElements)}`,
-  );
-  assert(snapshot.titleTextLength > 0, `${label} must retain its SDK title.`);
-  assert.equal(snapshot.titleIsClipped, false, `${label} must render the full SDK title without clipping.`);
-  assert.equal(snapshot.headerMenuButtonCount, 0, `${label} must omit the empty header-menu checkbox.`);
-  assert.equal(snapshot.headerMenuIconCount, 0, `${label} must omit the empty header-menu hamburger.`);
-  assert.equal(snapshot.topNavigationCount, 0, `${label} must omit empty top navigation.`);
-  assert(snapshot.contentTextLength > 0, `${label} must retain page content.`);
-
-  for (const [control, rectangle] of [
-    ['title', snapshot.title],
-    ['search', snapshot.search],
-    ['search field', snapshot.searchField],
-    ['page content', snapshot.content],
-  ]) {
-    assertWithinViewport(rectangle, snapshot.viewportWidth, `${label} ${control}`);
-  }
-  assertNoOverlap(snapshot.title, snapshot.search, `${label} title and search`);
-
-  await assertReachable(page, '.phpdocumentor-title__link', `${label} title`);
-  await assertReachable(page, '.phpdocumentor-search__field', `${label} search`);
-
-  if (consentState === 'initial') {
-    for (const [control, rectangle] of [
-      ['consent banner', snapshot.banner],
-      ['necessary-only action', snapshot.deny],
-      ['analytics action', snapshot.allow],
-    ]) {
-      assertWithinViewport(rectangle, snapshot.viewportWidth, `${label} ${control}`);
+    const sidebarMenu = page.locator('.phpdocumentor-sidebar__menu-icon');
+    if (await sidebarMenu.isVisible()) {
+      await sidebarMenu.click();
+      assert.equal(await page.locator('.phpdocumentor-sidebar__menu-button').isChecked(), true, `${label} sidebar did not open`);
+      await assertReachableControls(page, `${label} open sidebar`);
+      await sidebarMenu.click();
     }
-    assertNoOverlap(snapshot.deny, snapshot.allow, `${label} consent actions`);
-    await assertReachable(page, '[data-consent="denied"]', `${label} necessary-only action`);
-    await assertReachable(page, '[data-consent="granted"]', `${label} analytics action`);
-  } else {
-    assertWithinViewport(snapshot.preferences, snapshot.viewportWidth, `${label} analytics preferences`);
-    for (const [control, rectangle] of [
-      ['title', snapshot.title],
-      ['search', snapshot.search],
-    ]) {
-      assertNoOverlap(rectangle, snapshot.preferences, `${label} ${control} and analytics preferences`);
-    }
-    await assertReachable(page, '#durable-workflow-analytics-preferences', `${label} analytics preferences`);
-  }
-}
 
-async function exerciseReferenceInteractions(page, label) {
-  const sidebarMenu = page.locator('.phpdocumentor-sidebar__menu-icon');
-  if (await sidebarMenu.isVisible()) {
-    await assertReachable(page, '.phpdocumentor-sidebar__menu-icon', `${label} sidebar menu`);
-    await sidebarMenu.click();
-    await page.locator('.phpdocumentor-sidebar__menu-button').evaluate((element) => {
-      if (!element.checked) throw new Error('Sidebar menu did not open.');
-    });
-    let snapshot = await layoutSnapshot(page);
-    assert.equal(snapshot.sidebarExpanded, true, `${label} sidebar menu must expose its destinations.`);
-    assert(snapshot.sidebar.height > 0, `${label} expanded sidebar must be visible.`);
-    assertWithinViewport(snapshot.sidebar, snapshot.viewportWidth, `${label} expanded sidebar`);
-    assertWithinViewport(snapshot.content, snapshot.viewportWidth, `${label} content with expanded sidebar`);
-
-    await sidebarMenu.click();
-    snapshot = await layoutSnapshot(page);
-    assert.equal(snapshot.sidebarExpanded, false, `${label} sidebar menu must close again.`);
-  }
-
-  const searchField = page.locator('.phpdocumentor-search__field');
-  await searchField.pressSequentially('Workflow');
-  await page.locator('.phpdocumentor-search-results:not(.phpdocumentor-search-results--hidden)').waitFor();
-  assert(
-    await page.locator('.phpdocumentor-search-results__entry').count() > 0,
-    `${label} search interaction must reveal useful destinations.`,
-  );
-  await page.locator('.phpdocumentor-search-results__close').click();
-  await page.locator('.phpdocumentor-search-results--hidden').waitFor();
-  await searchField.fill('');
-}
-
-async function validateReferenceLayouts(browser, siteOrigin) {
-  const referencePages = [
-    ['root', '/index.html'],
-    ['nested API', '/namespaces/durableworkflow-worker.html'],
-  ];
-
-  for (const [viewportName, viewport] of [
-    ['320px', { width: 320, height: 844 }],
-    ['intermediate', { width: 768, height: 1024 }],
-  ]) {
-    for (const [pageName, pagePath] of referencePages) {
-      const context = await browser.newContext({ viewport });
-      const page = await context.newPage();
-      const label = `${pageName} ${viewportName}`;
-      const errors = observeBrowserErrors(page, label);
-      await page.goto(`${siteOrigin}${pagePath}`);
-      await page.locator('#durable-workflow-analytics-consent').waitFor();
-      await assertReferenceLayout(page, `${label} initial consent`, 'initial');
-      await exerciseReferenceInteractions(page, label);
-
-      await page.locator('[data-consent="denied"]').click();
-      await page.locator('#durable-workflow-analytics-preferences').waitFor();
-      await assertReferenceLayout(page, `${label} selected consent`, 'selected');
-
-      await page.reload();
-      await page.locator('#durable-workflow-analytics-preferences').waitFor();
-      await assertReferenceLayout(page, `${label} stored consent`, 'stored');
-      assert.deepEqual(errors, [], `${label} browser render must be error-free.`);
-      await context.close();
-    }
-  }
-
-  for (const [viewportName, viewport] of [
-    ['wider mobile', { width: 390, height: 844 }],
-    ['desktop', { width: 1440, height: 900 }],
-  ]) {
-    const context = await browser.newContext({ viewport });
-    const page = await context.newPage();
-    const errors = observeBrowserErrors(page, `root ${viewportName}`);
-    await page.goto(`${siteOrigin}/index.html`);
-    await page.locator('#durable-workflow-analytics-consent').waitFor();
-    await assertReferenceLayout(page, `root ${viewportName} initial consent`, 'initial');
-    assert.deepEqual(errors, [], `Root ${viewportName} browser render must be error-free.`);
+    const search = page.locator('.phpdocumentor-search__field');
+    await search.pressSequentially('Workflow');
+    await page.locator('.phpdocumentor-search-results:not(.phpdocumentor-search-results--hidden)').waitFor();
+    assert.ok(await page.locator('.phpdocumentor-search-results__entry').count() > 0, `${label} search has no results`);
+    await assertReachableControls(page, `${label} open search`, '.phpdocumentor-search-results');
+    assert.deepEqual(errors, [], `${label} emitted browser errors`);
+  } finally {
     await context.close();
   }
 }
 
 const port = await availablePort();
-const siteOrigin = `http://${SITE_HOSTNAME}:${port}`;
-const pageUrl = `${siteOrigin}/index.html?token=must-not-leak#private-fragment`;
-const server = spawn('php', ['-S', `127.0.0.1:${port}`, '-t', buildDirectory], {
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
-
+const server = spawn('php', ['-S', `127.0.0.1:${port}`, '-t', buildDirectory], {stdio: 'ignore'});
 let browser;
-
 try {
   await waitForServer(port);
-
-  const launchOptions = {
-    headless: true,
-    args: [
-      `--host-resolver-rules=MAP ${SITE_HOSTNAME} 127.0.0.1`,
-      '--no-proxy-server',
-    ],
-  };
-  if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH) {
-    launchOptions.executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
-  }
-  browser = await chromium.launch(launchOptions);
-
-  await validateReferenceLayouts(browser, siteOrigin);
-
-  const unconsentedContext = await browser.newContext();
-  const unconsentedGoogleRequests = [];
-  await unconsentedContext.route('https://www.googletagmanager.com/**', async (route) => {
-    unconsentedGoogleRequests.push(route.request().url());
-    await route.abort();
-  });
-  const unconsentedPage = await unconsentedContext.newPage();
-  await unconsentedPage.goto(pageUrl);
-  await unconsentedPage.locator('#durable-workflow-analytics-consent').waitFor();
-  assert.deepEqual(unconsentedGoogleRequests, [], 'Google must not load before the visitor grants consent.');
-  assert.equal(await unconsentedPage.evaluate(() => typeof window.dataLayer), 'undefined');
-  await unconsentedContext.close();
-
-  const context = await browser.newContext();
-  const googleRequests = [];
-  const analyticsRequests = [];
-  await context.route('https://www.googletagmanager.com/**', async (route) => {
-    googleRequests.push(route.request().url());
-    await route.fulfill({ contentType: 'application/javascript', body: REPRESENTATIVE_ANALYTICS_RUNTIME });
-  });
-  await context.route('https://www.google-analytics.com/**', async (route) => {
-    analyticsRequests.push(route.request().url());
-    await route.fulfill({ status: 204 });
-  });
-  await context.addInitScript(({ consentKey, hostname }) => {
-    if (window.location.hostname === hostname && window.localStorage.getItem(consentKey) === null) {
-      window.localStorage.setItem(consentKey, 'granted');
+  browser = await chromium.launch({headless: true});
+  for (const [viewportName, viewport] of viewports) {
+    for (const [pageName, pagePath] of pages) {
+      await exercisePage(browser, `http://127.0.0.1:${port}`, viewportName, viewport, pageName, pagePath);
     }
-  }, { consentKey: CONSENT_KEY, hostname: SITE_HOSTNAME });
-  await context.addCookies([
-    { name: '_ga', value: 'GA1.1.111111111.222222222', url: siteOrigin },
-    { name: '_ga_GHD1YHT442Y', value: 'GS1.1.333333333.1.0.333333333.0.0.0', domain: '.durable-workflow.com', path: '/' },
-    { name: '_garden', value: 'unrelated-prefix-cookie', url: siteOrigin },
-    { name: 'api-reference-preference', value: 'keep-me', url: siteOrigin },
-  ]);
-  const seededCookies = await context.cookies(siteOrigin);
-  assert.equal(seededCookies.find(({ name }) => name === '_ga')?.domain, SITE_HOSTNAME);
-  assert.equal(seededCookies.find(({ name }) => name === '_ga_GHD1YHT442Y')?.domain, '.durable-workflow.com');
-
-  const page = await context.newPage();
-  await page.goto(pageUrl);
-  await page.locator('#durable-workflow-analytics-preferences').waitFor();
-  await page.waitForFunction(() => window.dataLayer?.some((entry) => entry[0] === 'config'));
-  await page.waitForFunction(() => window.__durableWorkflowAnalytics?.analyticsEnabled === true);
-  await page.waitForFunction(
-    (key) => JSON.parse(window.sessionStorage.getItem(key) || '[]').some(({ type }) => type === 'loaded'),
-    RUNTIME_TRACE_KEY,
-  );
-
-  const calls = await page.evaluate(() => window.dataLayer.map((entry) => Array.from(entry)));
-  const configCalls = calls.filter(([command]) => command === 'config');
-  assert.equal(configCalls.length, 1, 'A navigation must configure exactly one automatic page view.');
-  assert.equal(calls.filter(([command, event]) => command === 'event' && event === 'page_view').length, 0);
-  assert.equal(configCalls[0][1], 'G-HD1YHT442Y');
-  assert.deepEqual(configCalls[0][2], {
-    page_hostname: SITE_HOSTNAME,
-    page_location: `https://${SITE_HOSTNAME}/`,
-    page_path: '/',
-    page_referrer: '',
-    page_title: await page.title(),
-    allow_ad_personalization_signals: false,
-    allow_google_signals: false,
-    anonymize_ip: true,
-    cookie_domain: 'none',
-    send_page_view: true,
-  });
-  assert.equal(googleRequests.length, 1, 'Granted consent must load one GA4 runtime.');
-  const grantedTrace = await page.evaluate(
-    (key) => JSON.parse(window.sessionStorage.getItem(key) || '[]'),
-    RUNTIME_TRACE_KEY,
-  );
-  assert.equal(grantedTrace.filter(({ type }) => type === 'loaded').length, 1, 'The representative GA4 runtime must execute.');
-  assert.equal(analyticsRequests.length, 1, 'Granted consent must emit one automatic page view.');
-
-  googleRequests.length = 0;
-  analyticsRequests.length = 0;
-  await page.locator('#durable-workflow-analytics-preferences').click();
-  await Promise.all([
-    page.waitForNavigation(),
-    page.locator('[data-consent="denied"]').click(),
-  ]);
-
-  const navigationTrace = await page.evaluate(
-    (key) => JSON.parse(window.sessionStorage.getItem(key) || '[]'),
-    RUNTIME_TRACE_KEY,
-  );
-  const deniedUpdateIndex = navigationTrace.findIndex(({ type, action, consent }) => type === 'consent'
-    && action === 'update'
-    && consent.analytics_storage === 'denied'
-    && consent.ad_storage === 'denied'
-    && consent.ad_user_data === 'denied'
-    && consent.ad_personalization === 'denied');
-  const navigationBoundaryIndex = navigationTrace.findIndex(({ event }) => event === 'navigation_boundary');
-  assert(deniedUpdateIndex >= 0, 'Withdrawal must update every active GA4 consent signal to denied.');
-  assert.equal(navigationTrace[deniedUpdateIndex].disabled, true, 'Withdrawal must synchronously disable the active property.');
-  assert(navigationBoundaryIndex > deniedUpdateIndex, 'Active-runtime revocation must precede the navigation boundary.');
-  assert.deepEqual(
-    navigationTrace
-      .slice(deniedUpdateIndex + 1)
-      .filter(({ event }) => event === 'withdrawal_click' || event === 'navigation_boundary')
-      .map(({ type, event }) => [type, event]),
-    [
-      ['request-blocked', 'withdrawal_click'],
-      ['request-blocked', 'navigation_boundary'],
-    ],
-    'The active runtime must block events after withdrawal and during navigation.',
-  );
-  assert.deepEqual(analyticsRequests, [], 'No analytics request may begin after withdrawal.');
-
-  let cookies = await context.cookies(siteOrigin);
-  assert.deepEqual(analyticsCookies(cookies), [], 'Withdrawal must remove host and parent-domain GA4 cookies.');
-  assert.equal(cookies.find(({ name }) => name === '_garden')?.value, 'unrelated-prefix-cookie');
-  assert.equal(cookies.find(({ name }) => name === 'api-reference-preference')?.value, 'keep-me');
-  assert.equal(await page.evaluate((key) => window.localStorage.getItem(key), CONSENT_KEY), 'denied');
-  assert.equal(await page.evaluate(() => document.getElementById('durable-workflow-ga4-loader')), null);
-  assert.equal(await page.evaluate(() => typeof window.dataLayer), 'undefined');
-  assert.deepEqual(googleRequests, [], 'The withdrawal reload must not load Google.');
-
-  await page.reload();
-  cookies = await context.cookies(siteOrigin);
-  assert.deepEqual(analyticsCookies(cookies), [], 'GA4 cookies must remain absent after a denied-state reload.');
-  assert.equal(await page.evaluate(() => typeof window.dataLayer), 'undefined');
-  assert.deepEqual(googleRequests, [], 'A denied-state reload must not load Google or emit analytics.');
-  await context.close();
-
-  process.stdout.write('Validated responsive root and nested API-reference layouts plus fail-closed analytics consent in Chromium.\n');
+  }
+  process.stdout.write('Validated analytics-free PHP reference controls across desktop, intermediate, mobile, and compact-height viewports.\n');
 } finally {
   await browser?.close();
   server.kill('SIGTERM');
-  await Promise.race([
-    once(server, 'exit'),
-    new Promise((resolve) => setTimeout(resolve, 1000)),
-  ]);
+  await Promise.race([once(server, 'exit'), new Promise(resolve => setTimeout(resolve, 1000))]);
 }

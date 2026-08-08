@@ -46,13 +46,23 @@ jobs:
             --exclude https://php.durable-workflow.com/
             README.md docs/*.md
       - name: Generate phpDocumentor reference
+        env:
+          CLOUDFLARE_WEB_ANALYTICS_TOKEN: ${{ vars.CLOUDFLARE_WEB_ANALYTICS_TOKEN }}
         run: |
+          if [ "$GITHUB_SERVER_URL" = https://github.com ]; then
+            if ! printf '%s' "$CLOUDFLARE_WEB_ANALYTICS_TOKEN" | grep -Eq '^[a-f0-9]{32}$'; then
+              echo 'CLOUDFLARE_WEB_ANALYTICS_TOKEN must be the canonical 32-character site token' >&2
+              exit 1
+            fi
+            sed -i "s/__CLOUDFLARE_WEB_ANALYTICS_TOKEN__/$CLOUDFLARE_WEB_ANALYTICS_TOKEN/" \
+              .phpdoc/template/analytics/analytics.js
+          fi
           composer docs -- --template="$PWD/.phpdoc/template"
           php scripts/check-docs-analytics.php build/api
           cp docs/CNAME build/api/CNAME
           test -s build/api/index.html
           test "$(cat build/api/CNAME)" = "php.durable-workflow.com"
-      - name: Check analytics consent in Chromium
+      - name: Check analytics-free reference controls in Chromium
         run: |
           npx playwright install chromium --with-deps
           npm run check:docs-analytics-browser -- build/api
