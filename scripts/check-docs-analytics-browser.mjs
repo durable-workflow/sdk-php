@@ -18,11 +18,13 @@ const viewports = [
   ['desktop', {width: 1440, height: 900}],
   ['intermediate', {width: 768, height: 1024}],
   ['mobile', {width: 390, height: 844}],
+  ['compact-mobile', {width: 320, height: 844}],
   ['compact-height', {width: 640, height: 360}],
+  ['compact-mobile-height', {width: 390, height: 360}],
 ];
 const pages = [
   ['root', '/index.html'],
-  ['nested API', '/namespaces/durableworkflow-worker.html'],
+  ['nested API', '/classes/DurableWorkflow-Worker-WorkflowContext.html'],
 ];
 
 async function availablePort() {
@@ -98,10 +100,134 @@ async function assertReachableControls(page, label, scope = 'body') {
       unreachable,
       viewportWidth: document.documentElement.clientWidth,
       documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+      overflowing: [...document.querySelectorAll('body *')].flatMap(element => {
+        const box = element.getBoundingClientRect();
+        return box.right > innerWidth + 1 || box.left < -1
+          ? [{element: element.outerHTML.slice(0, 180), box: box.toJSON()}]
+          : [];
+      }).slice(0, 10),
     };
   }, scope);
-  assert.equal(result.documentWidth, result.viewportWidth, `${label} has horizontal overflow`);
+  assert.equal(
+    result.documentWidth,
+    result.viewportWidth,
+    `${label} has horizontal overflow: ${JSON.stringify(result.overflowing)}`,
+  );
   assert.deepEqual(result.unreachable, [], `${label} has unreachable controls`);
+}
+
+async function assertFloatingUtilitiesClearReadableContent(page, label, scope = '.phpdocumentor-content') {
+  const collisions = await page.evaluate((scopeSelector) => {
+    function isVisible(element) {
+      const style = getComputedStyle(element);
+      const box = element.getBoundingClientRect();
+      return style.visibility !== 'hidden'
+        && style.display !== 'none'
+        && style.pointerEvents !== 'none'
+        && Number(style.opacity) !== 0
+        && box.width > 0
+        && box.height > 0
+        && box.right > 0
+        && box.left < innerWidth
+        && box.bottom > 0
+        && box.top < innerHeight;
+    }
+
+    function intersection(first, second) {
+      const width = Math.min(first.right, second.right) - Math.max(first.left, second.left);
+      const height = Math.min(first.bottom, second.bottom) - Math.max(first.top, second.top);
+      return width > 0 && height > 0 ? width * height : 0;
+    }
+
+    function visibleTextBox(textBox, element) {
+      const visible = {
+        top: Math.max(0, textBox.top),
+        right: Math.min(innerWidth, textBox.right),
+        bottom: Math.min(innerHeight, textBox.bottom),
+        left: Math.max(0, textBox.left),
+      };
+      for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {
+        const style = getComputedStyle(ancestor);
+        const box = ancestor.getBoundingClientRect();
+        if (['auto', 'hidden', 'scroll', 'clip'].includes(style.overflowX)) {
+          visible.left = Math.max(visible.left, box.left);
+          visible.right = Math.min(visible.right, box.right);
+        }
+        if (['auto', 'hidden', 'scroll', 'clip'].includes(style.overflowY)) {
+          visible.top = Math.max(visible.top, box.top);
+          visible.bottom = Math.min(visible.bottom, box.bottom);
+        }
+      }
+      visible.width = Math.max(0, visible.right - visible.left);
+      visible.height = Math.max(0, visible.bottom - visible.top);
+      return visible;
+    }
+
+    const controls = 'a[href], button, input:not([type="hidden"]), select, textarea, summary, [role="button"]';
+    const utilities = [...document.querySelectorAll(controls)].filter(element => {
+      const position = getComputedStyle(element).position;
+      return isVisible(element)
+        && (position === 'fixed' || position === 'sticky' || element.matches('[data-floating-utility], .phpdocumentor-back-to-top'));
+    });
+    const collisions = [];
+    for (const root of document.querySelectorAll(scopeSelector)) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const parent = node.parentElement;
+        if (!parent || !node.textContent.trim() || parent.closest('script, style, .visually-hidden')) continue;
+        if (!isVisible(parent)) continue;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        for (const textBox of range.getClientRects()) {
+          const visibleBox = visibleTextBox(textBox, parent);
+          if (
+            visibleBox.width < 1
+            || visibleBox.height < 1
+          ) continue;
+          for (const utility of utilities) {
+            if (utility.contains(parent) || parent.contains(utility)) continue;
+            const area = intersection(utility.getBoundingClientRect(), visibleBox);
+            if (area > 1) {
+              collisions.push({
+                utility: utility.outerHTML.slice(0, 180),
+                content: node.textContent.trim().replace(/\s+/g, ' ').slice(0, 100),
+                overlapArea: Math.round(area),
+                utilityBox: utility.getBoundingClientRect().toJSON(),
+                contentBox: visibleBox,
+              });
+            }
+          }
+        }
+      }
+    }
+    return collisions;
+  }, scope);
+  assert.deepEqual(collisions, [], `${label} has a floating utility over readable primary content`);
+}
+
+async function assertFloatingUtilityGeometry(page, label) {
+  const utility = page.locator('.phpdocumentor-back-to-top');
+  assert.equal(await utility.count(), 1, `${label} lost its back-to-top utility`);
+  assert.equal(await utility.isVisible(), true, `${label} hid its back-to-top utility`);
+
+  const maximumScroll = await page.evaluate(() => Math.max(0, document.documentElement.scrollHeight - innerHeight));
+  const scrollStep = Math.max(160, Math.floor(page.viewportSize().height / 2));
+  const positions = new Set([0, maximumScroll]);
+  for (let position = scrollStep; position < maximumScroll; position += scrollStep) positions.add(position);
+  for (const position of [...positions].sort((first, second) => first - second)) {
+    await page.evaluate(scrollPosition => new Promise(resolve => {
+      scrollTo(0, scrollPosition);
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    }), position);
+    await assertReachableControls(page, `${label} at scroll ${position}`);
+    await assertFloatingUtilitiesClearReadableContent(page, `${label} at scroll ${position}`);
+  }
+
+  if (maximumScroll > 0) {
+    await page.evaluate(scrollPosition => scrollTo(0, scrollPosition), maximumScroll);
+    await utility.click();
+    await page.waitForFunction(() => scrollY === 0);
+  }
 }
 
 async function exercisePage(browser, origin, viewportName, viewport, pageName, pagePath, edgeInjected = false) {
@@ -188,12 +314,14 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
       assert.deepEqual(errors, [], `${label} emitted browser errors`);
       return;
     }
+    await assertFloatingUtilityGeometry(page, `${label} default`);
 
     const sidebarMenu = page.locator('.phpdocumentor-sidebar__menu-icon');
     if (await sidebarMenu.isVisible()) {
       await sidebarMenu.click();
       assert.equal(await page.locator('.phpdocumentor-sidebar__menu-button').isChecked(), true, `${label} sidebar did not open`);
       await assertReachableControls(page, `${label} open sidebar`);
+      await assertFloatingUtilitiesClearReadableContent(page, `${label} open sidebar`, '.phpdocumentor-sidebar');
       await sidebarMenu.click();
     }
 
@@ -202,6 +330,7 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
     await page.locator('.phpdocumentor-search-results:not(.phpdocumentor-search-results--hidden)').waitFor();
     assert.ok(await page.locator('.phpdocumentor-search-results__entry').count() > 0, `${label} search has no results`);
     await assertReachableControls(page, `${label} open search`, '.phpdocumentor-search-results');
+    await assertFloatingUtilitiesClearReadableContent(page, `${label} open search`, '.phpdocumentor-search-results');
     assert.deepEqual(errors, [], `${label} emitted browser errors`);
   } finally {
     await context.close();
@@ -232,7 +361,7 @@ try {
     }
   }
   await exercisePage(browser, origin, 'desktop', viewports[0][1], 'nested API', pages[1][1], true);
-  process.stdout.write('Validated one supported cookie-free Cloudflare module loader on root and nested PHP reference pages, including the edge-injection guard.\n');
+  process.stdout.write('Validated responsive floating-control geometry and one supported cookie-free Cloudflare module loader on root and nested PHP reference pages.\n');
 } finally {
   await browser?.close();
   server.kill('SIGTERM');

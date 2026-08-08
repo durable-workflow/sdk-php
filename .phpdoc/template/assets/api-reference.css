@@ -1,3 +1,41 @@
+.phpdocumentor .phpdocumentor-content > section:first-of-type {
+  max-width: calc(100% - 2.5rem - var(--spacing-md));
+}
+
+.phpdocumentor .phpdocumentor-back-to-top {
+  right: var(--spacing-sm);
+}
+
+.phpdocumentor:has(.phpdocumentor-sidebar__menu-button:checked) .phpdocumentor-back-to-top,
+.phpdocumentor:has(.phpdocumentor-search-results:not(.phpdocumentor-search-results--hidden)) .phpdocumentor-back-to-top {
+  display: none;
+}
+
+@media (max-width: 549px) {
+  .phpdocumentor .phpdocumentor-table-of-contents__entry {
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .phpdocumentor .phpdocumentor-table-of-contents__entry > a,
+  .phpdocumentor .phpdocumentor-table-of-contents__entry > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .phpdocumentor .phpdocumentor-table-of-contents__entry > span {
+    flex-basis: 100%;
+    overflow: visible;
+    white-space: normal;
+  }
+
+  .phpdocumentor .phpdocumentor-signature,
+  .phpdocumentor .phpdocumentor-signature * {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
 @media (max-width: 399px) {
   .phpdocumentor-title {
     flex: 0 0 100%;

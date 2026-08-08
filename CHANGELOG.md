@@ -63,6 +63,10 @@ project follows [Semantic Versioning](https://semver.org/).
   at narrow viewport widths so the shared header controls remain usable without
   document-level horizontal overflow.
 
+- The generated API reference reserves a clear reading lane beside its fixed
+  back-to-top utility and removes that utility while mobile navigation or search
+  overlays are open.
+
 - The generated API reference now uses Cloudflare Web Analytics with its
   supported cookie-free module loader and token-only configuration, and no
   longer presents analytics consent or preference controls.
