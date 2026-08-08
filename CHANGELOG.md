@@ -63,9 +63,9 @@ project follows [Semantic Versioning](https://semver.org/).
   at narrow viewport widths so the shared header controls remain usable without
   document-level horizontal overflow.
 
-- The generated API reference now uses the shared cookie-free Cloudflare Web
-  Analytics runtime and no longer presents analytics consent or preference
-  controls.
+- The generated API reference now uses Cloudflare Web Analytics with its
+  supported cookie-free module loader and token-only configuration, and no
+  longer presents analytics consent or preference controls.
 
 - Client construction rejects base URIs ending in the SDK-owned `/api` path
   segment before they can produce duplicated request paths.

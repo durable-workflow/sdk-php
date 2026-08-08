@@ -19,7 +19,8 @@ if (file_get_contents($buildDirectory.'/assets/api-reference.css') !== $referenc
 foreach ([
     'https://static.cloudflareinsights.com/beacon.min.js',
     'document.querySelector(BEACON_SELECTOR)',
-    "loader.dataset.cfBeacon = JSON.stringify({token: TOKEN, spa: true})",
+    "loader.type = 'module'",
+    'loader.dataset.cfBeacon = JSON.stringify({token: TOKEN})',
     "'php.durable-workflow.com'",
     "'cloud.durable-workflow.com': new Set(['/', '/early-access', '/early-access/'])",
     "'status.durable-workflow.com': new Set(['/'])",
@@ -28,8 +29,8 @@ foreach ([
         throw new RuntimeException("Analytics runtime is missing required configuration: {$required}");
     }
 }
-if (preg_match('/localStorage|sessionStorage|document\.cookie|googletagmanager|google-analytics|G-HD1YHT442Y|_ga(?:\\b|_)/i', $runtime)) {
-    throw new RuntimeException('Analytics runtime contains retired Google or browser-storage behavior.');
+if (preg_match('/\b(?:async|defer|spa)\b|localStorage|sessionStorage|document\.cookie|googletagmanager|google-analytics|G-HD1YHT442Y|_ga(?:\\b|_)/i', $runtime)) {
+    throw new RuntimeException('Analytics runtime contains unsupported loader, retired Google, or browser-storage behavior.');
 }
 
 $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($buildDirectory));
@@ -46,8 +47,8 @@ foreach ($iterator as $file) {
     $relativePath = str_replace('\\', '/', substr($file->getPathname(), strlen(rtrim($buildDirectory, '/\\')) + 1));
     $isNestedPage = str_contains($relativePath, '/');
     $html = file_get_contents($file->getPathname());
-    if ($html === false || substr_count($html, 'src="/analytics/analytics.js"') !== 1) {
-        throw new RuntimeException("{$file->getPathname()} must load one root-relative cookie-free analytics runtime.");
+    if ($html === false || substr_count($html, 'type="module" src="/analytics/analytics.js"') !== 1) {
+        throw new RuntimeException("{$file->getPathname()} must load one root-relative module analytics runtime.");
     }
     if (preg_match($forbidden, $html)) {
         throw new RuntimeException("{$file->getPathname()} contains retired Google analytics or consent state.");

@@ -186,7 +186,7 @@ jobs:
             README.md docs/*.md
       - run: composer docs -- --template="$PWD/.phpdoc/template"
       - run: php scripts/check-docs-analytics.php build/api
-      - name: Check analytics consent in Chromium
+      - name: Check Cloudflare analytics in Chromium
         run: |
           npx playwright install chromium --with-deps
           npm run check:docs-analytics-browser -- build/api

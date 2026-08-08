@@ -2,7 +2,8 @@
   "name": "durable-workflow-sdk-php-docs",
   "private": true,
   "scripts": {
-    "check:docs-analytics-browser": "node scripts/check-docs-analytics-browser.mjs"
+    "check:docs-analytics-browser": "node scripts/check-docs-analytics-browser.mjs",
+    "qualify:docs-analytics-deployment": "node scripts/qualify-docs-analytics-deployment.mjs"
   },
   "devDependencies": {
     "playwright": "1.62.1"

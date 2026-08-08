@@ -1,8 +1,7 @@
 (function () {
   'use strict';
 
-  const TOKEN = document.currentScript?.dataset.cloudflareWebAnalyticsToken
-    || '__CLOUDFLARE_WEB_ANALYTICS_TOKEN__';
+  const TOKEN = '__CLOUDFLARE_WEB_ANALYTICS_TOKEN__';
   const BEACON_URL = 'https://static.cloudflareinsights.com/beacon.min.js';
   const BEACON_SELECTOR = `script[src^="${BEACON_URL}"]`;
   const LOADER_ID = 'durable-workflow-cloudflare-web-analytics';
@@ -33,8 +32,8 @@
 
   const loader = document.createElement('script');
   loader.id = LOADER_ID;
-  loader.defer = true;
+  loader.type = 'module';
   loader.src = BEACON_URL;
-  loader.dataset.cfBeacon = JSON.stringify({token: TOKEN, spa: true});
+  loader.dataset.cfBeacon = JSON.stringify({token: TOKEN});
   document.head.appendChild(loader);
 }());
