@@ -8,14 +8,9 @@ return [
     'namespace' => env('DURABLE_WORKFLOW_NAMESPACE', 'default'),
     'task_queue' => env('DURABLE_WORKFLOW_TASK_QUEUE', 'php-workers'),
 
-    'credentials' => [
-        // Secrets remain in the environment; vendor:publish never writes their values.
-        // With scoped credentials, inject control_token only into web processes and
-        // worker_token only into the process running durable-workflow:worker.
-        'token' => env('DURABLE_WORKFLOW_TOKEN'),
-        'control_token' => env('DURABLE_WORKFLOW_CONTROL_TOKEN'),
-        'worker_token' => env('DURABLE_WORKFLOW_WORKER_TOKEN'),
-    ],
+    // Credentials intentionally are not configuration values. The service provider
+    // reads them from the process environment when it constructs each role client,
+    // keeping secrets out of the artifact produced by `php artisan config:cache`.
 
     'handlers' => [
         // App\Workflows\OrderWorkflow::class,

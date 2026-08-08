@@ -10,10 +10,10 @@ It targets PHP 8.1 or newer and does not require Laravel or the embedded
 Install the package from Packagist:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.10@RC
+composer require durable-workflow/sdk:2.0.0-rc.11@RC
 ```
 
-This exact package is PHP SDK `2.0.0-rc.10` and is qualified with Server
+This exact package is PHP SDK `2.0.0-rc.11` and is qualified with Server
 `2.0.0-rc.17`. SDK and Server prerelease counters are independent. Earlier 2.0
 prereleases and pre-1.0 SDK releases remain historical rather than alternate
 supported baselines.
@@ -281,8 +281,9 @@ Publish the environment-backed configuration, add attributed handler services,
 and start the supervised Artisan command:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.10@RC
+composer require durable-workflow/sdk:2.0.0-rc.11@RC
 php artisan vendor:publish --tag=durable-workflow-config
+php artisan config:cache
 php artisan durable-workflow:worker
 ```
 
@@ -301,10 +302,16 @@ credential and creates a separate worker client only for the worker factory.
 For a self-hosted deployment that uses one credential for both roles, inject
 `DURABLE_WORKFLOW_TOKEN` instead. Supply secret values through the deployment
 platform's process environment or secret store, not a generated configuration
-file or a committed `.env` file. The published configuration contains only
-`env()` references; `vendor:publish` never copies a secret value into application
-source. List handler classes in
-`config/durable-workflow.php`:
+file or a committed `.env` file.
+
+The published configuration deliberately has no credential entries. Build and
+deploy one cached configuration without any Durable Workflow credential in the
+cache-building environment, then inject only the required role credential when
+each application or worker process starts. The provider resolves that credential
+when it constructs the corresponding client, after Laravel has loaded the cache.
+Applications upgrading an older published configuration should republish it or
+remove its `credentials` block before rebuilding the cache. List handler classes
+in `config/durable-workflow.php`:
 
 ```php
 'handlers' => [

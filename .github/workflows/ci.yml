@@ -127,17 +127,26 @@ jobs:
           COMPAT_SCRIPT: ${{ matrix.script }}
         run: |
           consumer="$(cat "$RUNNER_TEMP/framework-consumer")"
-          php "tests/compat/${COMPAT_SCRIPT}" "$consumer/vendor/autoload.php"
           if [ "$COMPAT_SCRIPT" = laravel.php ]; then
+            DURABLE_WORKFLOW_CONTROL_TOKEN=control-secret \
+              DURABLE_WORKFLOW_WORKER_TOKEN=worker-secret \
+              php "tests/compat/${COMPAT_SCRIPT}" "$consumer/vendor/autoload.php"
+            php tests/compat/laravel-config-cache.php "$consumer/vendor/autoload.php"
             bridge_path=src/Bridge/Laravel
+            compatibility_scripts=(
+              "tests/compat/${COMPAT_SCRIPT}"
+              tests/compat/laravel-config-cache.php
+            )
           else
+            php "tests/compat/${COMPAT_SCRIPT}" "$consumer/vendor/autoload.php"
             bridge_path=src/Bridge/Symfony
+            compatibility_scripts=("tests/compat/${COMPAT_SCRIPT}")
           fi
           "$consumer/vendor/bin/phpstan" analyse -c phpstan-framework.neon \
             --autoload-file="$consumer/vendor/autoload.php" \
             src/Bridge/FrameworkRuntimeException.php \
             src/Bridge/ServiceConfiguration.php src/Bridge/Event \
-            "$bridge_path" "tests/compat/${COMPAT_SCRIPT}"
+            "$bridge_path" "${compatibility_scripts[@]}"
 
   analyse:
     runs-on: ubuntu-latest

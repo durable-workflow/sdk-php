@@ -401,6 +401,12 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         self.assertIn(
             "$application->make(WorkflowClientInterface::class)", framework
         )
+        self.assertIn("php artisan config:cache", framework)
+        self.assertIn("-u DURABLE_WORKFLOW_TOKEN", framework)
+        self.assertIn("-u DURABLE_WORKFLOW_CONTROL_TOKEN", framework)
+        self.assertIn("-u DURABLE_WORKFLOW_WORKER_TOKEN", framework)
+        self.assertIn("bootstrap/cache/config.php", framework)
+        self.assertIn("$configuration['durable-workflow']['credentials']", framework)
         self.assertIn(
             "$kernel->getContainer()->get(WorkflowClientInterface::class)", framework
         )

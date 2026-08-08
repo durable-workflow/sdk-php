@@ -22,7 +22,7 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Advanced the PHP SDK to `2.0.0-rc.10` and qualified it with Server
+- Advanced the PHP SDK to `2.0.0-rc.11` and qualified it with Server
   `2.0.0-rc.17`. SDK and Server prerelease counters remain independent; earlier
   prereleases retain historical release records but receive no compatibility
   shim.
@@ -41,6 +41,9 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Laravel now resolves shared or role-scoped credentials when each client is
+  constructed, keeping secrets out of cached configuration while preserving
+  the control/worker privilege boundary.
 - Laravel and Symfony now bind separate control-only and worker-only clients for
   scoped Cloud credentials. Missing role credentials fail before transport,
   while the shared self-hosted token remains valid for both roles.

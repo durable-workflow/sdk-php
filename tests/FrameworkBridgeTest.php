@@ -258,23 +258,20 @@ final class FrameworkBridgeTest extends TestCase
         self::assertSame([], $bridgeFiles);
     }
 
-    public function testPublishedLaravelConfigurationContainsOnlyEnvironmentReferences(): void
+    public function testPublishedLaravelConfigurationKeepsCredentialsOutOfConfiguration(): void
     {
         $configuration = (string) file_get_contents(
             dirname(__DIR__).'/resources/laravel/durable-workflow.php',
         );
 
         foreach ([
-            'DURABLE_WORKFLOW_ENDPOINT',
-            'DURABLE_WORKFLOW_NAMESPACE',
-            'DURABLE_WORKFLOW_TASK_QUEUE',
             'DURABLE_WORKFLOW_TOKEN',
             'DURABLE_WORKFLOW_CONTROL_TOKEN',
             'DURABLE_WORKFLOW_WORKER_TOKEN',
         ] as $environmentVariable) {
-            self::assertStringContainsString("env('{$environmentVariable}'", $configuration);
+            self::assertStringNotContainsString("env('{$environmentVariable}'", $configuration);
         }
-        self::assertStringNotContainsString('dev-token', $configuration);
+        self::assertStringNotContainsString("'credentials' =>", $configuration);
     }
 }
 

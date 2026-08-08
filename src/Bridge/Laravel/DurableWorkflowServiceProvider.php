@@ -22,11 +22,19 @@ final class DurableWorkflowServiceProvider extends ServiceProvider
         $this->app->singleton(ServiceConfiguration::class, function (): ServiceConfiguration {
             $values = $this->app->make('config')->get('durable-workflow', []);
 
+            // Laravel configuration is serializable and may be cached. Credentials
+            // belong to the process and are resolved by each role-specific factory.
+            if (is_array($values)) {
+                unset($values['credentials']);
+            }
+
             return ServiceConfiguration::fromArray(is_array($values) ? $values : []);
         });
         $this->app->singleton(
             Client::class,
-            static fn ($app): Client => $app->make(ServiceConfiguration::class)->controlClient(),
+            static fn ($app): Client => ProcessCredentialResolver::controlClient(
+                $app->make(ServiceConfiguration::class),
+            ),
         );
         $this->app->alias(Client::class, WorkflowClientInterface::class);
         $this->app->singleton(WorkerFactory::class, function ($app): WorkerFactory {
@@ -38,7 +46,7 @@ final class DurableWorkflowServiceProvider extends ServiceProvider
             return new WorkerFactory(
                 $app,
                 $app->make(ServiceConfiguration::class),
-                $app->make(ServiceConfiguration::class)->workerClient(),
+                ProcessCredentialResolver::workerClient($app->make(ServiceConfiguration::class)),
                 $logger,
                 $events,
             );

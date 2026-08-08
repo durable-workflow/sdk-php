@@ -76,8 +76,8 @@ $values = [
     'namespace' => 'default',
     'task_queue' => 'laravel-workers',
     'credentials' => [
-        'control_token' => 'control-secret',
-        'worker_token' => 'worker-secret',
+        'control_token' => 'configuration-control-decoy',
+        'worker_token' => 'configuration-worker-decoy',
     ],
     'handlers' => [LaravelGreetingHandler::class],
     'poll_timeout_seconds' => 5,

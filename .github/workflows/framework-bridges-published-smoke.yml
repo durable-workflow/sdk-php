@@ -267,6 +267,38 @@ jobs:
           export DURABLE_WORKFLOW_WORKFLOW_ID="$workflow_id"
           export DURABLE_WORKFLOW_TYPE="published.${FRAMEWORK}.greeter"
 
+          if [ "$FRAMEWORK" = laravel ]; then
+            env -u DURABLE_WORKFLOW_TOKEN \
+              -u DURABLE_WORKFLOW_CONTROL_TOKEN \
+              -u DURABLE_WORKFLOW_WORKER_TOKEN \
+              php artisan config:cache
+            DURABLE_WORKFLOW_CONFIG_CACHE="$PWD/bootstrap/cache/config.php" php <<'PHP'
+          <?php
+          declare(strict_types=1);
+          $path = getenv('DURABLE_WORKFLOW_CONFIG_CACHE');
+          $contents = file_get_contents($path);
+          $configuration = require $path;
+          if (!is_string($contents) || !is_array($configuration)) {
+              throw new RuntimeException('Laravel did not produce a readable configuration cache.');
+          }
+          foreach (['DURABLE_WORKFLOW_TOKEN', 'DURABLE_WORKFLOW_CONTROL_TOKEN', 'DURABLE_WORKFLOW_WORKER_TOKEN'] as $name) {
+              $credential = getenv($name);
+              if (is_string($credential) && $credential !== '' && str_contains($contents, $credential)) {
+                  throw new RuntimeException('Laravel serialized a Durable Workflow credential into its configuration cache.');
+              }
+          }
+          $credentials = $configuration['durable-workflow']['credentials'] ?? [];
+          if (!is_array($credentials)) {
+              throw new RuntimeException('Cached Durable Workflow credentials must not be configured.');
+          }
+          foreach (['token', 'control_token', 'worker_token'] as $name) {
+              if (($credentials[$name] ?? null) !== null && ($credentials[$name] ?? null) !== '') {
+                  throw new RuntimeException("Laravel cached the Durable Workflow {$name} credential.");
+              }
+          }
+          PHP
+          fi
+
           tee durable-client.php >/dev/null <<'PHP'
           <?php
           declare(strict_types=1);
