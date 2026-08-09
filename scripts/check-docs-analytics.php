@@ -5,8 +5,9 @@ declare(strict_types=1);
 $buildDirectory = $argv[1] ?? __DIR__.'/../build/api';
 $runtime = file_get_contents(__DIR__.'/../.phpdoc/template/analytics/analytics.js');
 $referenceStyles = file_get_contents(__DIR__.'/../.phpdoc/template/assets/api-reference.css');
+$referenceRuntime = file_get_contents(__DIR__.'/../.phpdoc/template/assets/api-reference.js');
 
-if ($runtime === false || $referenceStyles === false) {
+if ($runtime === false || $referenceStyles === false || $referenceRuntime === false) {
     throw new RuntimeException('API-reference assets are unavailable.');
 }
 if (file_get_contents($buildDirectory.'/analytics/analytics.js') !== $runtime) {
@@ -14,6 +15,9 @@ if (file_get_contents($buildDirectory.'/analytics/analytics.js') !== $runtime) {
 }
 if (file_get_contents($buildDirectory.'/assets/api-reference.css') !== $referenceStyles) {
     throw new RuntimeException('Rendered phpDocumentor API-reference styles are stale.');
+}
+if (file_get_contents($buildDirectory.'/assets/api-reference.js') !== $referenceRuntime) {
+    throw new RuntimeException('Rendered phpDocumentor API-reference runtime is stale.');
 }
 
 foreach ([
@@ -59,6 +63,9 @@ foreach ($iterator as $file) {
     if (substr_count($html, 'href="/assets/api-reference.css"') !== 1) {
         throw new RuntimeException("{$file->getPathname()} does not load the shared API-reference styles.");
     }
+    if (substr_count($html, 'type="module" src="/assets/api-reference.js"') !== 1) {
+        throw new RuntimeException("{$file->getPathname()} does not load the shared API-reference runtime.");
+    }
     foreach (['phpdocumentor-header__menu-button', 'phpdocumentor-header__menu-icon', 'phpdocumentor-topnav'] as $emptyHeaderMenuClass) {
         if (str_contains($html, $emptyHeaderMenuClass)) {
             throw new RuntimeException("{$file->getPathname()} renders an empty top-navigation control.");
@@ -67,7 +74,7 @@ foreach ($iterator as $file) {
 
     if ($isNestedPage) {
         $nestedHtmlCount++;
-        foreach (['/assets/api-reference.css', '/analytics/analytics.js'] as $assetPath) {
+        foreach (['/assets/api-reference.css', '/assets/api-reference.js', '/analytics/analytics.js'] as $assetPath) {
             if (! is_file($buildDirectory.$assetPath)) {
                 throw new RuntimeException("{$relativePath} resolves {$assetPath} to a missing rendered asset.");
             }

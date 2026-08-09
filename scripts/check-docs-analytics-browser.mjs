@@ -16,15 +16,18 @@ const runtimeSource = (await readFile(path.join(buildDirectory, 'analytics/analy
   .replace('__CLOUDFLARE_WEB_ANALYTICS_TOKEN__', TEST_TOKEN);
 const viewports = [
   ['desktop', {width: 1440, height: 900}],
-  ['intermediate', {width: 768, height: 1024}],
+  ['intermediate-landscape', {width: 1024, height: 768}],
+  ['intermediate-portrait', {width: 768, height: 1024}],
   ['mobile', {width: 390, height: 844}],
   ['compact-mobile', {width: 320, height: 844}],
-  ['compact-height', {width: 640, height: 360}],
+  ['compact-height', {width: 1280, height: 360}],
+  ['compact-narrow-height', {width: 640, height: 360}],
   ['compact-mobile-height', {width: 390, height: 360}],
 ];
 const pages = [
   ['root', '/index.html'],
-  ['nested API', '/classes/DurableWorkflow-Worker-WorkflowContext.html'],
+  ['Client API', '/classes/DurableWorkflow-Client.html'],
+  ['neighboring API', '/classes/DurableWorkflow-Worker-WorkflowContext.html'],
 ];
 
 async function availablePort() {
@@ -60,6 +63,7 @@ async function assertReachableControls(page, label, scope = 'body') {
     const unreachable = [];
     const root = document.querySelector(scopeSelector);
     for (const element of root?.querySelectorAll(selector) || []) {
+      if (element.closest('[inert]')) continue;
       if (
         element.closest('.phpdocumentor-sidebar')
         && !document.querySelector('.phpdocumentor-sidebar__menu-button')?.checked
@@ -205,16 +209,64 @@ async function assertFloatingUtilitiesClearReadableContent(page, label, scope = 
   assert.deepEqual(collisions, [], `${label} has a floating utility over readable primary content`);
 }
 
+async function floatingUtilityCandidateScrollPositions(page) {
+  return page.evaluate(() => {
+    const utility = document.querySelector('.phpdocumentor-back-to-top');
+    const content = document.querySelector('.phpdocumentor-content');
+    if (!utility || !content) return [];
+
+    const utilityBox = utility.getBoundingClientRect();
+    const maximumScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+    const positions = new Set([0, maximumScroll]);
+
+    function addCandidate(box) {
+      const horizontalOverlap = Math.min(box.right, utilityBox.right) - Math.max(box.left, utilityBox.left);
+      if (horizontalOverlap <= 1 || box.width < 1 || box.height < 1) return;
+
+      const documentTop = box.top + scrollY;
+      const documentBottom = box.bottom + scrollY;
+      const centered = documentTop - utilityBox.top - Math.max(0, (utilityBox.height - box.height) / 2);
+      const position = Math.max(0, Math.min(maximumScroll, centered));
+      const projectedTop = documentTop - position;
+      const projectedBottom = documentBottom - position;
+      const verticalOverlap = Math.min(projectedBottom, utilityBox.bottom) - Math.max(projectedTop, utilityBox.top);
+      if (verticalOverlap > 1) positions.add(Math.round(position));
+    }
+
+    const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const parent = node.parentElement;
+      if (!parent || !node.textContent.trim() || parent.closest('script, style, .visually-hidden')) continue;
+      const style = getComputedStyle(parent);
+      if (
+        style.visibility === 'hidden'
+        || style.display === 'none'
+        || style.pointerEvents === 'none'
+        || Number(style.opacity) === 0
+      ) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      for (const box of range.getClientRects()) addCandidate(box);
+    }
+
+    for (const element of content.querySelectorAll('canvas, img, input, button, select, table, textarea, video')) {
+      const style = getComputedStyle(element);
+      if (style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity) !== 0) {
+        addCandidate(element.getBoundingClientRect());
+      }
+    }
+
+    return [...positions].sort((first, second) => first - second);
+  });
+}
+
 async function assertFloatingUtilityGeometry(page, label) {
   const utility = page.locator('.phpdocumentor-back-to-top');
   assert.equal(await utility.count(), 1, `${label} lost its back-to-top utility`);
   assert.equal(await utility.isVisible(), true, `${label} hid its back-to-top utility`);
 
-  const maximumScroll = await page.evaluate(() => Math.max(0, document.documentElement.scrollHeight - innerHeight));
-  const scrollStep = Math.max(160, Math.floor(page.viewportSize().height / 2));
-  const positions = new Set([0, maximumScroll]);
-  for (let position = scrollStep; position < maximumScroll; position += scrollStep) positions.add(position);
-  for (const position of [...positions].sort((first, second) => first - second)) {
+  const positions = await floatingUtilityCandidateScrollPositions(page);
+  for (const position of positions) {
     await page.evaluate(scrollPosition => new Promise(resolve => {
       scrollTo(0, scrollPosition);
       requestAnimationFrame(() => requestAnimationFrame(resolve));
@@ -223,6 +275,7 @@ async function assertFloatingUtilityGeometry(page, label) {
     await assertFloatingUtilitiesClearReadableContent(page, `${label} at scroll ${position}`);
   }
 
+  const maximumScroll = positions.at(-1) ?? 0;
   if (maximumScroll > 0) {
     await page.evaluate(scrollPosition => scrollTo(0, scrollPosition), maximumScroll);
     await utility.click();
@@ -233,14 +286,23 @@ async function assertFloatingUtilityGeometry(page, label) {
 async function exercisePage(browser, origin, viewportName, viewport, pageName, pagePath, edgeInjected = false) {
   const context = await browser.newContext({viewport, reducedMotion: 'reduce'});
   const page = await context.newPage();
-  const errors = [];
+  const consoleErrors = [];
+  const pageErrors = [];
+  const requestFailures = [];
+  const httpErrors = [];
   const rumRequests = [];
   let renderedPagePath = pagePath;
   let edgeFixturePath;
   page.on('console', message => {
-    if (message.type() === 'error') errors.push(`console: ${message.text()}`);
+    if (message.type() === 'error') consoleErrors.push(message.text());
   });
-  page.on('pageerror', error => errors.push(`page: ${error.message}`));
+  page.on('pageerror', error => pageErrors.push(error.message));
+  page.on('requestfailed', request => {
+    requestFailures.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText ?? 'unknown failure'}`);
+  });
+  page.on('response', response => {
+    if (response.status() >= 400) httpErrors.push(`${response.status()} ${response.request().method()} ${response.url()}`);
+  });
   const label = `${pageName} ${viewportName}${edgeInjected ? ' with edge injection' : ''}`;
 
   try {
@@ -256,7 +318,9 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
     await page.route(`${RUM_URL}*`, route => {
       rumRequests.push(route.request().method());
       return route.fulfill({
-        status: 204,
+        status: 200,
+        contentType: 'text/plain',
+        body: 'ok',
         headers: {'access-control-allow-origin': '*'},
       });
     });
@@ -311,7 +375,10 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
     assert.equal(await page.locator('.phpdocumentor-search__field').count(), 1, `${label} lost search`);
     await assertReachableControls(page, `${label} default`);
     if (edgeInjected) {
-      assert.deepEqual(errors, [], `${label} emitted browser errors`);
+      assert.deepEqual(consoleErrors, [], `${label} emitted console errors`);
+      assert.deepEqual(pageErrors, [], `${label} emitted page errors`);
+      assert.deepEqual(requestFailures, [], `${label} emitted request failures`);
+      assert.deepEqual(httpErrors, [], `${label} emitted HTTP errors`);
       return;
     }
     await assertFloatingUtilityGeometry(page, `${label} default`);
@@ -329,9 +396,36 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
     await search.pressSequentially('Workflow');
     await page.locator('.phpdocumentor-search-results:not(.phpdocumentor-search-results--hidden)').waitFor();
     assert.ok(await page.locator('.phpdocumentor-search-results__entry').count() > 0, `${label} search has no results`);
-    await assertReachableControls(page, `${label} open search`, '.phpdocumentor-search-results');
+    assert.ok(
+      await page.locator('[data-api-reference-search-background][inert]').count() >= 3,
+      `${label} search did not isolate its background`,
+    );
+    assert.equal(await search.isEditable(), true, `${label} search could not refine its query`);
+    await search.press('Control+A');
+    await search.pressSequentially('Client');
+    await page.waitForTimeout(350);
+    await page.waitForFunction(() => (
+      document.querySelector('.phpdocumentor-search__field')?.value === 'Client'
+      && document.querySelectorAll('.phpdocumentor-search-results__entry').length > 0
+    ));
+    await assertReachableControls(page, `${label} open search`);
     await assertFloatingUtilitiesClearReadableContent(page, `${label} open search`, '.phpdocumentor-search-results');
-    assert.deepEqual(errors, [], `${label} emitted browser errors`);
+    await page.locator('.phpdocumentor-search-results__close').click();
+    await page.waitForFunction(() => (
+      document.querySelector('.phpdocumentor-search-results')
+        ?.classList.contains('phpdocumentor-search-results--hidden')
+      && !document.querySelector('[data-api-reference-search-background]')
+    ));
+    assert.equal(
+      await page.locator('.phpdocumentor-back-to-top').isVisible(),
+      true,
+      `${label} did not restore its back-to-top utility`,
+    );
+    await assertReachableControls(page, `${label} after closing search`);
+    assert.deepEqual(consoleErrors, [], `${label} emitted console errors`);
+    assert.deepEqual(pageErrors, [], `${label} emitted page errors`);
+    assert.deepEqual(requestFailures, [], `${label} emitted request failures`);
+    assert.deepEqual(httpErrors, [], `${label} emitted HTTP errors`);
   } finally {
     await context.close();
     if (edgeFixturePath) await unlink(edgeFixturePath);
@@ -361,7 +455,7 @@ try {
     }
   }
   await exercisePage(browser, origin, 'desktop', viewports[0][1], 'nested API', pages[1][1], true);
-  process.stdout.write('Validated responsive floating-control geometry and one supported cookie-free Cloudflare module loader on root and nested PHP reference pages.\n');
+  process.stdout.write('Validated responsive floating-control geometry and browser evidence on root, Client, and neighboring PHP reference pages.\n');
 } finally {
   await browser?.close();
   server.kill('SIGTERM');

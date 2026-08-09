@@ -1,9 +1,22 @@
 .phpdocumentor .phpdocumentor-content > section:first-of-type {
   max-width: calc(100% - 2.5rem - var(--spacing-md));
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .phpdocumentor .phpdocumentor-back-to-top {
+  line-height: 1;
   right: var(--spacing-sm);
+}
+
+.phpdocumentor .phpdocumentor-table-of-contents__entry,
+.phpdocumentor .phpdocumentor-table-of-contents__entry > a,
+.phpdocumentor .phpdocumentor-table-of-contents__entry > span {
+  min-width: 0;
+}
+
+.phpdocumentor .phpdocumentor-table-of-contents__entry > a {
+  overflow-wrap: anywhere;
 }
 
 .phpdocumentor:has(.phpdocumentor-sidebar__menu-button:checked) .phpdocumentor-back-to-top,
@@ -11,7 +24,28 @@
   display: none;
 }
 
+[data-api-reference-search-background] {
+  display: none !important;
+}
+
+.phpdocumentor-search-results__dialog > .phpdocumentor-search {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  padding: var(--spacing-md) var(--spacing-lg);
+  background: white;
+}
+
 @media (min-width: 1000px) {
+  .phpdocumentor:has(.phpdocumentor-on-this-page__sidebar) .phpdocumentor-content {
+    gap: calc(2.5rem + var(--spacing-sm) + var(--spacing-sm));
+  }
+
+  .phpdocumentor:has(.phpdocumentor-on-this-page__sidebar) .phpdocumentor-back-to-top {
+    right: calc(17.5vw + var(--spacing-lg) + var(--spacing-sm));
+  }
+
   .phpdocumentor .phpdocumentor-content > section:first-of-type
     .phpdocumentor-table-of-contents__entry.-constant > span {
     overflow-wrap: anywhere;
