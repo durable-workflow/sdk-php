@@ -38,6 +38,10 @@
 }
 
 @media (min-width: 1000px) {
+  .phpdocumentor .phpdocumentor-on-this-page__content:not(.-stuck) {
+    height: calc(100vh - var(--header-height) - var(--spacing-xs));
+  }
+
   .phpdocumentor:has(.phpdocumentor-on-this-page__sidebar) .phpdocumentor-content {
     gap: calc(2.5rem + var(--spacing-sm) + var(--spacing-sm));
   }
@@ -48,6 +52,14 @@
 
   .phpdocumentor .phpdocumentor-content > section:first-of-type
     .phpdocumentor-table-of-contents__entry.-constant > span {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+}
+
+@media (max-width: 999px) {
+  .phpdocumentor .phpdocumentor-table-of-contents__entry > span {
+    overflow: visible;
     overflow-wrap: anywhere;
     white-space: normal;
   }

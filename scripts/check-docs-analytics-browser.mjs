@@ -15,19 +15,19 @@ const buildDirectory = path.resolve(process.argv[2] ?? 'build/api');
 const runtimeSource = (await readFile(path.join(buildDirectory, 'analytics/analytics.js'), 'utf8'))
   .replace('__CLOUDFLARE_WEB_ANALYTICS_TOKEN__', TEST_TOKEN);
 const viewports = [
+  ['compact-height', {width: 1280, height: 360}],
   ['desktop', {width: 1440, height: 900}],
   ['intermediate-landscape', {width: 1024, height: 768}],
   ['intermediate-portrait', {width: 768, height: 1024}],
   ['mobile', {width: 390, height: 844}],
   ['compact-mobile', {width: 320, height: 844}],
-  ['compact-height', {width: 1280, height: 360}],
   ['compact-narrow-height', {width: 640, height: 360}],
   ['compact-mobile-height', {width: 390, height: 360}],
 ];
 const pages = [
-  ['root', '/index.html'],
-  ['Client API', '/classes/DurableWorkflow-Client.html'],
   ['neighboring API', '/classes/DurableWorkflow-Worker-WorkflowContext.html'],
+  ['Client API', '/classes/DurableWorkflow-Client.html'],
+  ['root', '/index.html'],
 ];
 
 async function availablePort() {
@@ -70,15 +70,32 @@ async function assertReachableControls(page, label, scope = 'body') {
       ) continue;
       const style = getComputedStyle(element);
       const box = element.getBoundingClientRect();
-      const excludedByAncestor = [...function* ancestors(node) {
-        for (let parent = node.parentElement; parent; parent = parent.parentElement) yield parent;
-      }(element)].some(parent => {
+      const visibleBox = {
+        top: Math.max(0, box.top),
+        right: Math.min(innerWidth, box.right),
+        bottom: Math.min(innerHeight, box.bottom),
+        left: Math.max(0, box.left),
+      };
+      let excludedByAncestor = false;
+      let clippedByAncestor = false;
+      for (let parent = element.parentElement; parent; parent = parent.parentElement) {
         const parentStyle = getComputedStyle(parent);
-        return parentStyle.visibility === 'hidden'
+        excludedByAncestor ||= parentStyle.visibility === 'hidden'
           || parentStyle.display === 'none'
           || parentStyle.pointerEvents === 'none'
           || Number(parentStyle.opacity) === 0;
-      });
+        const parentBox = parent.getBoundingClientRect();
+        if (['auto', 'hidden', 'scroll', 'clip'].includes(parentStyle.overflowX)) {
+          clippedByAncestor ||= parentBox.left > box.left || parentBox.right < box.right;
+          visibleBox.left = Math.max(visibleBox.left, parentBox.left);
+          visibleBox.right = Math.min(visibleBox.right, parentBox.right);
+        }
+        if (['auto', 'hidden', 'scroll', 'clip'].includes(parentStyle.overflowY)) {
+          clippedByAncestor ||= parentBox.top > box.top || parentBox.bottom < box.bottom;
+          visibleBox.top = Math.max(visibleBox.top, parentBox.top);
+          visibleBox.bottom = Math.min(visibleBox.bottom, parentBox.bottom);
+        }
+      }
       if (
         excludedByAncestor
         || style.visibility === 'hidden'
@@ -92,12 +109,28 @@ async function assertReachableControls(page, label, scope = 'body') {
         || box.bottom <= 0
         || box.top >= innerHeight
       ) continue;
-      const x = Math.max(0, Math.min(innerWidth - 1, box.left + box.width / 2));
-      const y = Math.max(0, Math.min(innerHeight - 1, box.top + box.height / 2));
-      if (y < 0 || y >= innerHeight) continue;
-      const hit = document.elementFromPoint(x, y);
-      if (!(hit === element || element.contains(hit) || hit?.contains(element))) {
-        unreachable.push(element.outerHTML.slice(0, 180));
+      const visibleWidth = Math.max(0, visibleBox.right - visibleBox.left);
+      const visibleHeight = Math.max(0, visibleBox.bottom - visibleBox.top);
+      if (visibleWidth <= 0 || visibleHeight <= 0) continue;
+
+      const center = {x: box.left + box.width / 2, y: box.top + box.height / 2};
+      if (center.x < 0 || center.x >= innerWidth || center.y < 0 || center.y >= innerHeight) continue;
+      const centerHit = center.x >= visibleBox.left
+        && center.x < visibleBox.right
+        && center.y >= visibleBox.top
+        && center.y < visibleBox.bottom
+        ? document.elementFromPoint(center.x, center.y)
+        : null;
+      const centerReachable = Boolean(centerHit === element
+        || element.contains(centerHit)
+        || centerHit?.contains(element));
+      if (!centerReachable) {
+        unreachable.push({
+          element: element.outerHTML.slice(0, 180),
+          clippedByAncestor,
+          box: box.toJSON(),
+          visibleBox,
+        });
       }
     }
     return {
@@ -118,6 +151,74 @@ async function assertReachableControls(page, label, scope = 'body') {
     `${label} has horizontal overflow: ${JSON.stringify(result.overflowing)}`,
   );
   assert.deepEqual(result.unreachable, [], `${label} has unreachable controls`);
+}
+
+async function assertOnThisPageUtilityReachability(page, label) {
+  const result = await page.evaluate(async () => {
+    const scrollport = document.querySelector('.phpdocumentor-on-this-page__content');
+    if (!scrollport) return {present: false};
+
+    const settle = () => new Promise(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    });
+    const originalScrollTop = scrollport.scrollTop;
+    const initialScrollportBox = scrollport.getBoundingClientRect();
+    const failures = [];
+    const entries = [...scrollport.querySelectorAll('a[href]')];
+
+    for (const entry of entries) {
+      let scrollportBox = scrollport.getBoundingClientRect();
+      let entryBox = entry.getBoundingClientRect();
+      const entryCenterInContent = entryBox.top - scrollportBox.top
+        + scrollport.scrollTop
+        + entryBox.height / 2;
+      scrollport.scrollTop = Math.max(
+        0,
+        Math.min(
+          scrollport.scrollHeight - scrollport.clientHeight,
+          entryCenterInContent - scrollport.clientHeight / 2,
+        ),
+      );
+      await settle();
+
+      scrollportBox = scrollport.getBoundingClientRect();
+      entryBox = entry.getBoundingClientRect();
+      const center = {x: entryBox.left + entryBox.width / 2, y: entryBox.top + entryBox.height / 2};
+      const centerInsideScrollport = center.x >= scrollportBox.left
+        && center.x < scrollportBox.right
+        && center.y >= Math.max(0, scrollportBox.top)
+        && center.y < Math.min(innerHeight, scrollportBox.bottom);
+      const hit = centerInsideScrollport ? document.elementFromPoint(center.x, center.y) : null;
+      const centerReachable = Boolean(hit === entry || entry.contains(hit) || hit?.contains(entry));
+      if (!centerInsideScrollport || !centerReachable) {
+        failures.push({
+          entry: entry.outerHTML.slice(0, 180),
+          center,
+          centerInsideScrollport,
+          centerReachable,
+          scrollportBox: scrollportBox.toJSON(),
+        });
+      }
+    }
+
+    scrollport.scrollTop = originalScrollTop;
+    await settle();
+    return {
+      present: true,
+      viewportHeight: innerHeight,
+      scrollportBox: initialScrollportBox.toJSON(),
+      entryCount: entries.length,
+      failures,
+    };
+  });
+
+  if (!result.present) return;
+  assert.ok(result.entryCount > 0, `${label} lost its On this page entries`);
+  assert.ok(
+    result.scrollportBox.top >= 0 && result.scrollportBox.bottom <= result.viewportHeight - 1,
+    `${label} On this page scrollport extends outside the usable viewport: ${JSON.stringify(result.scrollportBox)}`,
+  );
+  assert.deepEqual(result.failures, [], `${label} has unreachable On this page entries`);
 }
 
 async function assertFloatingUtilitiesClearReadableContent(page, label, scope = '.phpdocumentor-content') {
@@ -374,6 +475,9 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
     assert.equal(await page.locator('.phpdocumentor-title__link').count(), 1, `${label} lost its title link`);
     assert.equal(await page.locator('.phpdocumentor-search__field').count(), 1, `${label} lost search`);
     await assertReachableControls(page, `${label} default`);
+    if (viewportName === 'compact-height') {
+      await assertOnThisPageUtilityReachability(page, `${label} default`);
+    }
     if (edgeInjected) {
       assert.deepEqual(consoleErrors, [], `${label} emitted console errors`);
       assert.deepEqual(pageErrors, [], `${label} emitted page errors`);
@@ -454,7 +558,9 @@ try {
       await exercisePage(browser, origin, viewportName, viewport, pageName, pagePath);
     }
   }
-  await exercisePage(browser, origin, 'desktop', viewports[0][1], 'nested API', pages[1][1], true);
+  const desktopViewport = viewports.find(([name]) => name === 'desktop')?.[1];
+  assert.ok(desktopViewport);
+  await exercisePage(browser, origin, 'desktop', desktopViewport, 'nested API', pages[1][1], true);
   process.stdout.write('Validated responsive floating-control geometry and browser evidence on root, Client, and neighboring PHP reference pages.\n');
 } finally {
   await browser?.close();
