@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CLASSIFIER = ROOT / "scripts/ci/classify-ci-qualification.py"
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
+API_REFERENCE_WORKFLOW = ROOT / ".github/workflows/docs.yml"
 
 SPEC = importlib.util.spec_from_file_location("ci_qualification", CLASSIFIER)
 if SPEC is None or SPEC.loader is None:
@@ -132,6 +133,17 @@ class ChangedPathClassificationTest(unittest.TestCase):
                 categories, reason = self.classify(paths)
                 self.assertEqual(expected, categories)
                 self.assertEqual("changed-paths-classified", reason)
+
+    def test_api_reference_composer_input_selects_all_preintegration_evidence(
+        self,
+    ) -> None:
+        deployment = API_REFERENCE_WORKFLOW.read_text()
+        self.assertIn("      - 'composer.json'", deployment)
+
+        categories, reason = self.classify(["composer.json"])
+
+        self.assertEqual(("docs", "docs-browser", "runtime"), categories)
+        self.assertEqual("changed-paths-classified", reason)
 
     def test_mixed_changes_combine_relevant_categories(self) -> None:
         categories, _reason = self.classify(
