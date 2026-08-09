@@ -153,6 +153,40 @@ async function assertReachableControls(page, label, scope = 'body') {
   assert.deepEqual(result.unreachable, [], `${label} has unreachable controls`);
 }
 
+async function assertTableOfContentsMetadataLegibility(page, label) {
+  const result = await page.evaluate(() => {
+    const readableWidth = 12 * Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+    const failures = [...document.querySelectorAll(
+      '.phpdocumentor-content > section:first-of-type .phpdocumentor-table-of-contents__entry',
+    )].flatMap(entry => {
+      const metadata = entry.querySelector(':scope > span');
+      if (!metadata?.textContent.trim()) return [];
+
+      const entryBox = entry.getBoundingClientRect();
+      const metadataBox = metadata.getBoundingClientRect();
+      const minimumWidth = Math.min(readableWidth, entryBox.width);
+      return metadataBox.width + 1 < minimumWidth
+        ? [{
+          entry: entry.outerHTML.slice(0, 180),
+          entryWidth: entryBox.width,
+          metadataWidth: metadataBox.width,
+          minimumWidth,
+        }]
+        : [];
+    });
+
+    return {
+      metadataCount: document.querySelectorAll(
+        '.phpdocumentor-content > section:first-of-type .phpdocumentor-table-of-contents__entry > span',
+      ).length,
+      failures,
+    };
+  });
+
+  assert.ok(result.metadataCount > 0, `${label} lost its table-of-contents metadata`);
+  assert.deepEqual(result.failures, [], `${label} collapsed table-of-contents metadata`);
+}
+
 async function assertOnThisPageUtilityReachability(page, label) {
   const result = await page.evaluate(async () => {
     const scrollport = document.querySelector('.phpdocumentor-on-this-page__content');
@@ -475,6 +509,9 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
     assert.equal(await page.locator('.phpdocumentor-title__link').count(), 1, `${label} lost its title link`);
     assert.equal(await page.locator('.phpdocumentor-search__field').count(), 1, `${label} lost search`);
     await assertReachableControls(page, `${label} default`);
+    if (pageName === 'Client API') {
+      await assertTableOfContentsMetadataLegibility(page, `${label} default`);
+    }
     if (viewportName === 'compact-height') {
       await assertOnThisPageUtilityReachability(page, `${label} default`);
     }
