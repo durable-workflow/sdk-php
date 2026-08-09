@@ -143,6 +143,7 @@ final class WorkerPollTest extends TestCase
                         ],
                     ],
                 ]],
+                'update_validators' => [],
             ],
             'inventory.audit' => [
                 'queries' => [],
@@ -151,6 +152,7 @@ final class WorkerPollTest extends TestCase
                 'signal_contracts' => [],
                 'updates' => [],
                 'update_contracts' => [],
+                'update_validators' => [],
             ],
         ], $transport->requests[0]['body']['workflow_command_contracts'] ?? null);
     }
@@ -291,6 +293,7 @@ final class WorkerPollTest extends TestCase
                         'allows_null' => false,
                     ]],
                 ]],
+                'update_validators' => [],
             ],
         ], $transport->requests[0]['body']['workflow_command_contracts'] ?? null);
     }

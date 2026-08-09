@@ -1121,6 +1121,7 @@ final class Worker
      *         allows_null: bool
      *     }>}>,
      *     updates: list<string>,
+     *     update_validators: list<string>,
      *     update_contracts: list<array{name: string, parameters: list<array{
      *         name: string,
      *         position: int,
@@ -1148,6 +1149,7 @@ final class Worker
                 'signal_contracts' => $this->commandHandlerContracts($signals),
                 'updates' => array_keys($updates),
                 'update_contracts' => $this->commandHandlerContracts($updates, QueryContext::class),
+                'update_validators' => [],
             ];
         }
 

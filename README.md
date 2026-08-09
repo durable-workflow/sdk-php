@@ -10,11 +10,11 @@ It targets PHP 8.1 or newer and does not require Laravel or the embedded
 Install the package from Packagist:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.11@RC
+composer require durable-workflow/sdk:2.0.0-rc.12@RC
 ```
 
-This exact package is PHP SDK `2.0.0-rc.11` and is qualified with Server
-`2.0.0-rc.17`. SDK and Server prerelease counters are independent. Earlier 2.0
+This exact package is PHP SDK `2.0.0-rc.12` and is qualified with Server
+`2.0.0-rc.23`. Earlier 2.0
 prereleases and pre-1.0 SDK releases remain historical rather than alternate
 supported baselines.
 
@@ -235,6 +235,11 @@ invoked. The workflow reads their committed values with
 `$context->signals('set-language')` during replay. Query and update methods are
 executed with immutable `QueryContext` state.
 
+The PHP SDK does not expose update-validator authoring. Worker registration
+therefore declares an empty `update_validators` list for every workflow type;
+capability discovery and Server admission must not infer validator parity from
+the presence of ordinary update handlers.
+
 The callable registration methods remain the intentional low-level escape
 hatch. For example, replay-consumed signals can be declared directly:
 
@@ -281,7 +286,7 @@ Publish the environment-backed configuration, add attributed handler services,
 and start the supervised Artisan command:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.11@RC
+composer require durable-workflow/sdk:2.0.0-rc.12@RC
 php artisan vendor:publish --tag=durable-workflow-config
 php artisan config:cache
 php artisan durable-workflow:worker
