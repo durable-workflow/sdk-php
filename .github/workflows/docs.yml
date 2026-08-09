@@ -7,7 +7,7 @@ on:
       - '.phpdoc/**'
       - 'src/**'
       - 'docs/**'
-      - 'scripts/check-docs-analytics*'
+      - 'scripts/check-docs-*'
       - 'scripts/qualify-docs-analytics*'
       - 'README.md'
       - 'composer.json'
@@ -39,6 +39,7 @@ jobs:
           cache: npm
       - run: composer install --no-interaction --prefer-dist
       - run: npm ci
+      - run: npm run check:docs-examples
       - name: Check documentation links
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:

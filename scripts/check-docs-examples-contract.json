@@ -1,0 +1,20 @@
+{
+  "examples": [
+    {
+      "id": "php.readme.first-workflow",
+      "path": "README.md",
+      "language": "php",
+      "workflowIdentity": {
+        "intent": "runnable_first_start",
+        "generator": "php_random_bytes_hex",
+        "variable": "workflowId",
+        "references": [
+          {
+            "pattern": "\\bworkflowId\\s*:\\s*\\$workflowId\\b",
+            "minimum": 1
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -36,6 +36,7 @@ Pass the Server origin or the complete Cloud runtime base URI to `Client`
 without a terminal `/api`; the SDK owns and appends that path segment. Keep any
 other Cloud runtime path prefix exactly as provided.
 
+<!-- docs-example id="php.readme.first-workflow" -->
 ```php
 <?php
 
@@ -52,9 +53,10 @@ $client = new Client(
     namespace: 'default',
 );
 
+$workflowId = 'greeting-'.bin2hex(random_bytes(16));
 $handle = $client->startWorkflow(
     workflowType: 'greeter',
-    workflowId: 'greeting-1',
+    workflowId: $workflowId,
     taskQueue: 'php-workers',
     input: ['world'],
 );

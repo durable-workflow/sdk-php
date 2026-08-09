@@ -123,13 +123,18 @@ jobs:
           python scripts/ci/validate-regression-corpus.py "${arguments[@]}"
           python scripts/ci/test-regression-corpus-policy.py
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
-        if: ${{ contains(needs.qualification-route.outputs.categories, 'docs-browser') }}
+        if: >-
+          ${{
+            contains(needs.qualification-route.outputs.categories, 'docs')
+            || contains(needs.qualification-route.outputs.categories, 'docs-browser')
+          }}
         with:
           node-version: '24'
           cache: npm
       - name: Exercise focused documentation contracts
         if: ${{ contains(needs.qualification-route.outputs.categories, 'docs') }}
         run: |
+          npm run check:docs-examples
           composer docs -- --template="$PWD/.phpdoc/template"
           php scripts/check-docs-analytics.php build/api
       - name: Install responsive documentation browser dependencies
@@ -335,6 +340,7 @@ jobs:
           cache: npm
       - run: composer install --no-interaction --prefer-dist
       - run: npm ci
+      - run: npm run check:docs-examples
       - name: Check documentation links
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:

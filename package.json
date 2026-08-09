@@ -2,6 +2,7 @@
   "name": "durable-workflow-sdk-php-docs",
   "private": true,
   "scripts": {
+    "check:docs-examples": "node scripts/check-docs-examples.mjs",
     "check:docs-analytics-browser": "node scripts/check-docs-analytics-browser.mjs",
     "qualify:docs-analytics-deployment": "node scripts/qualify-docs-analytics-deployment.mjs",
     "test:docs-analytics-deployment": "node --test scripts/qualify-docs-analytics-deployment.test.mjs"
