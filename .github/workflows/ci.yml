@@ -123,17 +123,25 @@ jobs:
           python scripts/ci/validate-regression-corpus.py "${arguments[@]}"
           python scripts/ci/test-regression-corpus-policy.py
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
-        if: ${{ contains(needs.qualification-route.outputs.categories, 'docs') }}
+        if: ${{ contains(needs.qualification-route.outputs.categories, 'docs-browser') }}
         with:
           node-version: '24'
           cache: npm
       - name: Exercise focused documentation contracts
         if: ${{ contains(needs.qualification-route.outputs.categories, 'docs') }}
         run: |
-          npm ci
           composer docs -- --template="$PWD/.phpdoc/template"
           php scripts/check-docs-analytics.php build/api
+      - name: Install responsive documentation browser dependencies
+        if: ${{ contains(needs.qualification-route.outputs.categories, 'docs-browser') }}
+        run: |
+          npm ci
+          npx playwright install chromium --with-deps
+      - name: Exercise responsive documentation browser evidence
+        if: ${{ contains(needs.qualification-route.outputs.categories, 'docs-browser') }}
+        run: |
           npm run test:docs-analytics-deployment
+          npm run check:docs-analytics-browser -- build/api
       - name: Exercise focused release recovery boundaries
         if: ${{ contains(needs.qualification-route.outputs.categories, 'release') }}
         env:

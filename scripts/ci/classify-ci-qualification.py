@@ -18,7 +18,7 @@ FOCUSED = "focused"
 COMPLETE = "complete"
 SENTINEL = "sentinel"
 
-ALL_FOCUSED_CATEGORIES = ("docs", "release", "runtime")
+ALL_FOCUSED_CATEGORIES = ("docs", "docs-browser", "release", "runtime")
 OBJECT_ID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 
@@ -106,6 +106,19 @@ def path_categories(path: str) -> set[str]:
         or path == ".github/workflows/docs.yml"
     ):
         categories.add("docs")
+
+    if (
+        path
+        in {
+            ".github/workflows/docs.yml",
+            "package.json",
+            "package-lock.json",
+            "scripts/check-docs-analytics-browser.mjs",
+        }
+        or path.startswith(".phpdoc/")
+        or path.startswith("scripts/qualify-docs-")
+    ):
+        categories.add("docs-browser")
 
     if (
         path.startswith(("src/", "tests/", "examples/", "benchmarks/", "resources/"))

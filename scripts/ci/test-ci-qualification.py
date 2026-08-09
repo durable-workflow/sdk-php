@@ -107,7 +107,15 @@ class ChangedPathClassificationTest(unittest.TestCase):
 
     def test_known_surfaces_select_only_relevant_focused_evidence(self) -> None:
         cases = {
-            "docs": (["docs/quickstart.md"], ("docs",)),
+            "docs-prose": (["docs/quickstart.md"], ("docs",)),
+            "docs-browser-template": (
+                [".phpdoc/template/assets/api-reference.css"],
+                ("docs", "docs-browser"),
+            ),
+            "docs-browser-check": (
+                ["scripts/check-docs-analytics-browser.mjs"],
+                ("docs", "docs-browser"),
+            ),
             "runtime": (["src/Client.php"], ("runtime",)),
             "release": (
                 ["scripts/ci/component-release-recovery.py"],
@@ -170,6 +178,9 @@ class WorkflowQualificationContractTest(unittest.TestCase):
         self.assertIn("scripts/check-public-boundary.sh", focused)
         self.assertIn("composer test", focused)
         self.assertIn("npm run test:docs-analytics-deployment", focused)
+        self.assertIn("npx playwright install chromium --with-deps", focused)
+        self.assertIn("npm run check:docs-analytics-browser -- build/api", focused)
+        self.assertGreaterEqual(focused.count("'docs-browser'"), 3)
         self.assertNotIn("matrix:", focused)
 
     def test_aggregate_decision_requires_the_selected_route_to_pass(self) -> None:
