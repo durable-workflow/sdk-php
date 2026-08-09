@@ -11,6 +11,14 @@
   display: none;
 }
 
+@media (min-width: 1000px) {
+  .phpdocumentor .phpdocumentor-content > section:first-of-type
+    .phpdocumentor-table-of-contents__entry.-constant > span {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+}
+
 @media (max-width: 549px) {
   .phpdocumentor .phpdocumentor-table-of-contents__entry {
     flex-wrap: wrap;

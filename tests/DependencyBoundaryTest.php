@@ -33,11 +33,11 @@ final class DependencyBoundaryTest extends TestCase
         }
     }
 
-    public function testPrereleaseMetadataBindsTheSdkToItsQualifiedServer(): void
+    public function testPrereleaseMetadataUsesLatestPublishedServerQualificationBaseline(): void
     {
         $metadata = $this->manifest()['extra']['durable-workflow'];
 
-        self::assertSame('2.0.0-rc.12', $metadata['product-train']);
-        self::assertSame('2.0.0-rc.23', $metadata['supported-server-versions']);
+        self::assertSame('2.0.0-rc.13', $metadata['product-train']);
+        self::assertSame('2.0.0-rc.17', $metadata['supported-server-versions']);
     }
 }

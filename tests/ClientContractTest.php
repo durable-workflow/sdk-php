@@ -8,6 +8,7 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Tests\Support\FakeTransport;
+use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
 final class ClientContractTest extends TestCase
@@ -99,6 +100,7 @@ final class ClientContractTest extends TestCase
                     ]],
                 ]],
                 'updates' => ['approve'],
+                'update_validators' => [],
                 'update_contracts' => [[
                     'name' => 'approve',
                     'parameters' => [[
@@ -127,7 +129,106 @@ final class ClientContractTest extends TestCase
         self::assertSame('POST', $transport->requests[0]['method']);
         self::assertSame('https://server.example/api/worker/register', $transport->requests[0]['uri']);
         self::assertSame($contracts, $transport->requests[0]['body']['workflow_command_contracts'] ?? null);
+        self::assertSame(
+            [],
+            $transport->requests[0]['body']['workflow_command_contracts']['orders.process']['update_validators'] ?? null,
+        );
         self::assertSame('release-a', $transport->requests[0]['body']['build_id'] ?? null);
+    }
+
+    public function testWorkerRegistrationRejectsUnsupportedUpdateValidatorsBeforeTransport(): void
+    {
+        $transport = new FakeTransport([]);
+        $client = new Client('https://server.example', transport: $transport);
+        $contracts = [
+            'orders.process' => [
+                'queries' => ['status'],
+                'query_contracts' => [],
+                'signals' => [],
+                'signal_contracts' => [],
+                'updates' => ['approve'],
+                'update_validators' => ['approve'],
+                'update_contracts' => [],
+            ],
+        ];
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(
+            'PHP workers do not support update-validator authoring; update_validators must be an empty list for workflow type orders.process.',
+        );
+
+        try {
+            $client->registerWorker(
+                'worker-1',
+                'orders',
+                ['orders.process'],
+                [],
+                workflowCommandContracts: $contracts,
+            );
+        } finally {
+            self::assertSame([], $transport->requests);
+        }
+    }
+
+    public function testWorkerRegistrationPreservesContractsWithoutUpdateValidatorDeclarations(): void
+    {
+        $transport = new FakeTransport([['registered' => true]]);
+        $client = new Client('https://server.example', transport: $transport);
+        $contracts = [
+            'orders.process' => [
+                'queries' => ['status'],
+                'query_contracts' => [['name' => 'status', 'parameters' => []]],
+                'signals' => [],
+                'signal_contracts' => [],
+                'updates' => ['approve'],
+                'update_contracts' => [['name' => 'approve', 'parameters' => []]],
+            ],
+        ];
+
+        $client->registerWorker(
+            'worker-1',
+            'orders',
+            ['orders.process'],
+            [],
+            workflowCommandContracts: $contracts,
+        );
+
+        self::assertCount(1, $transport->requests);
+        self::assertSame($contracts, $transport->requests[0]['body']['workflow_command_contracts'] ?? null);
+    }
+
+    public function testWorkerRegistrationRejectsMalformedUpdateValidatorsBeforeTransport(): void
+    {
+        $transport = new FakeTransport([]);
+        $client = new Client('https://server.example', transport: $transport);
+        $contracts = [
+            'orders.process' => [
+                'queries' => [],
+                'query_contracts' => [],
+                'signals' => [],
+                'signal_contracts' => [],
+                'updates' => [],
+                'update_validators' => 'approve',
+                'update_contracts' => [],
+            ],
+        ];
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(
+            'PHP workers do not support update-validator authoring; update_validators must be an empty list for workflow type orders.process.',
+        );
+
+        try {
+            $client->registerWorker(
+                'worker-1',
+                'orders',
+                ['orders.process'],
+                [],
+                workflowCommandContracts: $contracts,
+            );
+        } finally {
+            self::assertSame([], $transport->requests);
+        }
     }
 
     public function testTaskPollResponseMethodsPreserveTheCompleteEnvelope(): void

@@ -10,13 +10,13 @@ It targets PHP 8.1 or newer and does not require Laravel or the embedded
 Install the package from Packagist:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.12@RC
+composer require durable-workflow/sdk:2.0.0-rc.13@RC
 ```
 
-This exact package is PHP SDK `2.0.0-rc.12` and is qualified with Server
-`2.0.0-rc.23`. Earlier 2.0
-prereleases and pre-1.0 SDK releases remain historical rather than alternate
-supported baselines.
+This exact package is PHP SDK `2.0.0-rc.13`. Server `2.0.0-rc.17` remains the
+latest published qualification baseline; exact qualification with newer Server
+prereleases requires separate conformance evidence. Earlier 2.0 prereleases and
+pre-1.0 SDK releases remain historical rather than alternate supported baselines.
 
 To install directly from the source repository before a tagged release:
 
@@ -286,7 +286,7 @@ Publish the environment-backed configuration, add attributed handler services,
 and start the supervised Artisan command:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.12@RC
+composer require durable-workflow/sdk:2.0.0-rc.13@RC
 php artisan vendor:publish --tag=durable-workflow-config
 php artisan config:cache
 php artisan durable-workflow:worker

@@ -730,6 +730,11 @@ final class Client implements WorkflowClientInterface
     }
 
     /**
+     * Registers a low-level worker without advertising unsupported validator authoring.
+     *
+     * Workflow command contracts may omit `update_validators` for backward compatibility.
+     * When present, `update_validators` is a `list<string>` and must be empty.
+     *
      * @param list<string> $workflowTypes
      * @param list<string> $activityTypes
      * @param list<string> $capabilities
@@ -757,6 +762,7 @@ final class Client implements WorkflowClientInterface
      *         allows_null: bool
      *     }>}>,
      *     updates: list<string>,
+     *     update_validators?: list<string>,
      *     update_contracts: list<array{name: string, parameters: list<array{
      *         name: string,
      *         position: int,
@@ -769,6 +775,7 @@ final class Client implements WorkflowClientInterface
      *     }>}>
      * }>|null $workflowCommandContracts
      * @return array<string, mixed>
+     * @throws InvalidArgumentException
      */
     public function registerWorker(
         string $workerId,
@@ -781,6 +788,18 @@ final class Client implements WorkflowClientInterface
         ?string $buildId = null,
         ?array $workflowCommandContracts = null,
     ): array {
+        foreach ($workflowCommandContracts ?? [] as $workflowType => $contract) {
+            if (!array_key_exists('update_validators', $contract)) {
+                continue;
+            }
+
+            if ($contract['update_validators'] !== []) {
+                throw new InvalidArgumentException(
+                    "PHP workers do not support update-validator authoring; update_validators must be an empty list for workflow type {$workflowType}.",
+                );
+            }
+        }
+
         return $this->worker('POST', '/worker/register', $this->withoutNulls([
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,

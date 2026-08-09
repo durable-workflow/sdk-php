@@ -22,10 +22,11 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Advanced the PHP SDK to `2.0.0-rc.12` and qualified it with Server
-  `2.0.0-rc.23`. The workflow contract explicitly declares that PHP does not
-  expose update-validator authoring; earlier prereleases retain historical
-  release records but receive no compatibility shim.
+- Advanced the PHP SDK to `2.0.0-rc.13`. Server `2.0.0-rc.17` remains the
+  latest published qualification baseline; newer compatibility targets require
+  separate conformance evidence. Managed registration emits an explicit empty
+  validator list, while low-level registration documents and preserves that
+  declaration and rejects malformed or non-empty claims before transport.
 - Replaced the prerelease JSON wrapper with the fixed recursive
   `durable_workflow.protocol.Value` schema and Avro single-object framing.
   `AvroBinaryValue` makes the bytes branch explicit while PHP strings remain
