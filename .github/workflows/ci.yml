@@ -9,9 +9,151 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Pull requests on an explicitly identified alternate CI server use focused
+  # candidate admission. Removing this opt-in fails safe to the complete gate.
+  ALTERNATE_CI_FOCUSED_ADMISSION: 'true'
+
 jobs:
+  qualification-route:
+    name: Resolve qualification route
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      route: ${{ steps.classify.outputs.route }}
+      route_reason: ${{ steps.classify.outputs.route_reason }}
+      categories: ${{ steps.classify.outputs.categories }}
+      changed_path_reason: ${{ steps.classify.outputs.changed_path_reason }}
+      changed_count: ${{ steps.classify.outputs.changed_count }}
+      started_at: ${{ steps.clock.outputs.started_at }}
+    steps:
+      - name: Record candidate start
+        id: clock
+        run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve portable qualification route
+        id: classify
+        env:
+          QUALIFICATION_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          QUALIFICATION_EVENT_NAME: ${{ github.event_name }}
+          QUALIFICATION_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          QUALIFICATION_SERVER_URL: ${{ github.server_url }}
+        run: |
+          python scripts/ci/classify-ci-qualification.py \
+            --root . \
+            --server-url "$QUALIFICATION_SERVER_URL" \
+            --event-name "$QUALIFICATION_EVENT_NAME" \
+            --alternate-ci-focused-admission "${ALTERNATE_CI_FOCUSED_ADMISSION:-}" \
+            --base-ref "$QUALIFICATION_BASE_SHA" \
+            --head-ref "$QUALIFICATION_HEAD_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Prove qualification routing and workflow contracts
+        run: python scripts/ci/test-ci-qualification.py
+
+  focused-candidate:
+    name: Focused candidate evidence
+    needs: qualification-route
+    if: ${{ needs.qualification-route.outputs.route == 'focused' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          coverage: none
+      - name: Validate package structure
+        run: composer validate --strict
+      - name: Verify CI and privileged workflow boundaries
+        run: |
+          python scripts/ci/test-ci-qualification.py
+          python scripts/ci/test-workflow-trust-boundaries.py
+      - name: Scan the candidate public boundary
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            && [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            && git cat-file -e "${BASE_SHA}^{commit}" \
+            && git cat-file -e "${HEAD_SHA}^{commit}"; then
+            range="${BASE_SHA}..${HEAD_SHA}"
+          elif [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            && git rev-parse --verify --quiet "${HEAD_SHA}^" >/dev/null; then
+            range="${HEAD_SHA}^..${HEAD_SHA}"
+          else
+            echo "Unable to establish a safe public-boundary revision range." >&2
+            exit 1
+          fi
+          PUBLIC_BOUNDARY_GIT_RANGE="$range" scripts/check-public-boundary.sh
+      - name: Install change-relevant Composer dependencies
+        if: >-
+          ${{
+            contains(needs.qualification-route.outputs.categories, 'docs')
+            || contains(needs.qualification-route.outputs.categories, 'runtime')
+          }}
+        run: composer install --no-interaction --prefer-dist --no-progress
+      - name: Exercise one representative PHP runtime
+        if: ${{ contains(needs.qualification-route.outputs.categories, 'runtime') }}
+        run: |
+          find src tests examples -name '*.php' -print0 | xargs -0 -n1 php -l
+          composer test
+          composer benchmark-avro-value
+          composer check-boundary
+      - name: Require relevant regression evidence
+        if: ${{ contains(needs.qualification-route.outputs.categories, 'runtime') }}
+        env:
+          CORPUS_BASE_REF: ${{ github.event.pull_request.base.sha }}
+        run: |
+          arguments=()
+          if [[ "$CORPUS_BASE_REF" =~ ^[0-9a-f]{40}$ ]] && [[ ! "$CORPUS_BASE_REF" =~ ^0+$ ]]; then
+            arguments+=(--base-ref "$CORPUS_BASE_REF")
+          fi
+          python scripts/ci/validate-regression-corpus.py "${arguments[@]}"
+          python scripts/ci/test-regression-corpus-policy.py
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
+        if: ${{ contains(needs.qualification-route.outputs.categories, 'docs') }}
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Exercise focused documentation contracts
+        if: ${{ contains(needs.qualification-route.outputs.categories, 'docs') }}
+        run: |
+          npm ci
+          composer docs -- --template="$PWD/.phpdoc/template"
+          php scripts/check-docs-analytics.php build/api
+          npm run test:docs-analytics-deployment
+      - name: Exercise focused release recovery boundaries
+        if: ${{ contains(needs.qualification-route.outputs.categories, 'release') }}
+        env:
+          CONFORMANCE_BASE_REF: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python scripts/ci/test-publish-planned-source.py
+          python scripts/ci/test-php-waterline-release-train.py
+          arguments=()
+          if [[ "$CONFORMANCE_BASE_REF" =~ ^[0-9a-f]{40}$ ]] && [[ ! "$CONFORMANCE_BASE_REF" =~ ^0+$ ]]; then
+            arguments+=(--previous-ref "$CONFORMANCE_BASE_REF")
+          fi
+          python scripts/ci/release_recovery_consumer_conformance.py \
+            --contract scripts/ci/release-recovery-consumer-contract.json \
+            --adapter scripts/ci/release-recovery-consumer-adapter.json \
+            "${arguments[@]}"
+
   regression-corpus:
     name: Regression corpus
+    needs: qualification-route
+    if: ${{ needs.qualification-route.outputs.route == 'complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -39,6 +181,8 @@ jobs:
 
   test:
     name: PHP ${{ matrix.php }}
+    needs: qualification-route
+    if: ${{ needs.qualification-route.outputs.route == 'complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -64,6 +208,8 @@ jobs:
 
   framework-compat:
     name: ${{ matrix.framework }} ${{ matrix.version }}
+    needs: qualification-route
+    if: ${{ needs.qualification-route.outputs.route == 'complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -149,6 +295,8 @@ jobs:
             "$bridge_path" "${compatibility_scripts[@]}"
 
   analyse:
+    needs: qualification-route
+    if: ${{ needs.qualification-route.outputs.route == 'complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -162,6 +310,8 @@ jobs:
       - run: composer analyse
 
   docs:
+    needs: qualification-route
+    if: ${{ needs.qualification-route.outputs.route == 'complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -193,6 +343,8 @@ jobs:
         run: npm run check:docs-analytics-browser -- build/api
 
   package-smoke:
+    needs: qualification-route
+    if: ${{ needs.qualification-route.outputs.route == 'complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -221,6 +373,8 @@ jobs:
 
   release-recovery-boundary:
     name: Release recovery boundaries
+    needs: qualification-route
+    if: ${{ needs.qualification-route.outputs.route == 'complete' }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -249,12 +403,33 @@ jobs:
   target-branch-qualification:
     name: Target branch qualification
     if: ${{ always() }}
-    needs: [regression-corpus, test, framework-compat, analyse, docs, package-smoke, release-recovery-boundary]
+    needs:
+      - qualification-route
+      - focused-candidate
+      - regression-corpus
+      - test
+      - framework-compat
+      - analyse
+      - docs
+      - package-smoke
+      - release-recovery-boundary
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Require every supported PHP and package cell
+      - name: Require a recognized qualification route
         env:
+          ROUTE: ${{ needs.qualification-route.outputs.route }}
+          ROUTE_RESULT: ${{ needs.qualification-route.result }}
+        run: |
+          test "$ROUTE_RESULT" = success
+          case "$ROUTE" in
+            focused|complete|sentinel) ;;
+            *) echo "Unrecognized or unavailable qualification route: $ROUTE" >&2; exit 1 ;;
+          esac
+      - name: Require selected candidate or target evidence
+        env:
+          ROUTE: ${{ needs.qualification-route.outputs.route }}
+          FOCUSED_RESULT: ${{ needs.focused-candidate.result }}
           TEST_RESULT: ${{ needs.test.result }}
           FRAMEWORK_RESULT: ${{ needs.framework-compat.result }}
           CORPUS_RESULT: ${{ needs.regression-corpus.result }}
@@ -263,10 +438,66 @@ jobs:
           PACKAGE_RESULT: ${{ needs.package-smoke.result }}
           RECOVERY_RESULT: ${{ needs.release-recovery-boundary.result }}
         run: |
-          test "$TEST_RESULT" = success
-          test "$FRAMEWORK_RESULT" = success
-          test "$CORPUS_RESULT" = success
-          test "$ANALYSIS_RESULT" = success
-          test "$DOCS_RESULT" = success
-          test "$PACKAGE_RESULT" = success
-          test "$RECOVERY_RESULT" = success
+          if [ "$ROUTE" = focused ]; then
+            test "$FOCUSED_RESULT" = success
+            test "$TEST_RESULT" = skipped
+            test "$FRAMEWORK_RESULT" = skipped
+            test "$CORPUS_RESULT" = skipped
+            test "$ANALYSIS_RESULT" = skipped
+            test "$DOCS_RESULT" = skipped
+            test "$PACKAGE_RESULT" = skipped
+            test "$RECOVERY_RESULT" = skipped
+            echo "Focused candidate evidence succeeded; complete compatibility is deferred to the landed SHA."
+          elif [ "$ROUTE" = complete ]; then
+            test "$FOCUSED_RESULT" = skipped
+            test "$TEST_RESULT" = success
+            test "$FRAMEWORK_RESULT" = success
+            test "$CORPUS_RESULT" = success
+            test "$ANALYSIS_RESULT" = success
+            test "$DOCS_RESULT" = success
+            test "$PACKAGE_RESULT" = success
+            test "$RECOVERY_RESULT" = success
+            echo "Complete GitHub target qualification succeeded."
+          elif [ "$ROUTE" = sentinel ]; then
+            test "$FOCUSED_RESULT" = skipped
+            test "$TEST_RESULT" = skipped
+            test "$FRAMEWORK_RESULT" = skipped
+            test "$CORPUS_RESULT" = skipped
+            test "$ANALYSIS_RESULT" = skipped
+            test "$DOCS_RESULT" = skipped
+            test "$PACKAGE_RESULT" = skipped
+            test "$RECOVERY_RESULT" = skipped
+            echo "Alternate-CI target sentinel succeeded; GitHub owns landed-SHA qualification."
+          else
+            exit 1
+          fi
+      - name: Record candidate-to-decision timing
+        if: ${{ always() && needs.qualification-route.result == 'success' }}
+        env:
+          CATEGORIES: ${{ needs.qualification-route.outputs.categories }}
+          CHANGED_COUNT: ${{ needs.qualification-route.outputs.changed_count }}
+          PATH_REASON: ${{ needs.qualification-route.outputs.changed_path_reason }}
+          ROUTE: ${{ needs.qualification-route.outputs.route }}
+          ROUTE_REASON: ${{ needs.qualification-route.outputs.route_reason }}
+          STARTED_AT: ${{ needs.qualification-route.outputs.started_at }}
+        run: |
+          elapsed_seconds=$(( $(date +%s) - STARTED_AT ))
+          before_elapsed_seconds_lower_bound=300
+          after_elapsed_seconds=$elapsed_seconds
+          printf '%s\n' \
+            "route=$ROUTE route_reason=$ROUTE_REASON categories=${CATEGORIES:-none} changed_count=$CHANGED_COUNT path_reason=$PATH_REASON" \
+            "before_elapsed_seconds_lower_bound=$before_elapsed_seconds_lower_bound" \
+            "after_elapsed_seconds=$after_elapsed_seconds" \
+            "focused_cells=PHP-8.3 complete_cells=PHP-8.1,PHP-8.2,PHP-8.3,PHP-8.4,Laravel-12,Laravel-13,Symfony-6.4,Symfony-7,Symfony-8"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "### Qualification timing"
+              echo
+              echo "| Measurement | Seconds |"
+              echo "| --- | ---: |"
+              echo "| Representative pre-change candidate (observed lower bound) | >${before_elapsed_seconds_lower_bound} |"
+              echo "| This candidate to aggregate decision | ${after_elapsed_seconds} |"
+              echo
+              echo "Route: \`${ROUTE}\`; focused PHP/framework cells: PHP 8.3 only; complete landed-SHA cells: 4 PHP + 5 framework."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
