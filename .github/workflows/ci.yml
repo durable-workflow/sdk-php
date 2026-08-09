@@ -186,10 +186,11 @@ jobs:
             README.md docs/*.md
       - run: composer docs -- --template="$PWD/.phpdoc/template"
       - run: php scripts/check-docs-analytics.php build/api
+      - run: npx playwright install chromium --with-deps
+      - name: Test deployed Cloudflare transport qualification
+        run: npm run test:docs-analytics-deployment
       - name: Check Cloudflare analytics in Chromium
-        run: |
-          npx playwright install chromium --with-deps
-          npm run check:docs-analytics-browser -- build/api
+        run: npm run check:docs-analytics-browser -- build/api
 
   package-smoke:
     runs-on: ubuntu-latest

@@ -63,10 +63,11 @@ jobs:
           cp docs/CNAME build/api/CNAME
           test -s build/api/index.html
           test "$(cat build/api/CNAME)" = "php.durable-workflow.com"
+      - run: npx playwright install chromium --with-deps
+      - name: Test deployed Cloudflare transport qualification
+        run: npm run test:docs-analytics-deployment
       - name: Check Cloudflare analytics in Chromium
-        run: |
-          npx playwright install chromium --with-deps
-          npm run check:docs-analytics-browser -- build/api
+        run: npm run check:docs-analytics-browser -- build/api
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5
         if: github.server_url == 'https://github.com'
         with:
@@ -92,9 +93,6 @@ jobs:
     needs: deploy
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_ANALYTICS_API_TOKEN: ${{ secrets.CLOUDFLARE_ANALYTICS_API_TOKEN }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
@@ -103,5 +101,5 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install chromium --with-deps
-      - name: Qualify deployed Cloudflare analytics
+      - name: Qualify deployed Cloudflare transport
         run: npm run qualify:docs-analytics-deployment

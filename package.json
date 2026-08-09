@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "check:docs-analytics-browser": "node scripts/check-docs-analytics-browser.mjs",
-    "qualify:docs-analytics-deployment": "node scripts/qualify-docs-analytics-deployment.mjs"
+    "qualify:docs-analytics-deployment": "node scripts/qualify-docs-analytics-deployment.mjs",
+    "test:docs-analytics-deployment": "node --test scripts/qualify-docs-analytics-deployment.test.mjs"
   },
   "devDependencies": {
     "playwright": "1.62.1"
