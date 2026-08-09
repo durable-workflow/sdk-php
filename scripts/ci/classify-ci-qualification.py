@@ -91,6 +91,9 @@ def is_canonical_repo_path(path: str) -> bool:
 def path_categories(path: str) -> set[str]:
     categories: set[str] = set()
 
+    if path.startswith("src/"):
+        categories.update(("docs", "docs-browser"))
+
     if (
         path
         in {

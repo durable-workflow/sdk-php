@@ -116,7 +116,11 @@ class ChangedPathClassificationTest(unittest.TestCase):
                 ["scripts/check-docs-analytics-browser.mjs"],
                 ("docs", "docs-browser"),
             ),
-            "runtime": (["src/Client.php"], ("runtime",)),
+            "generated-reference-source": (
+                ["src/Client.php"],
+                ("docs", "docs-browser", "runtime"),
+            ),
+            "runtime-test": (["tests/ClientTest.php"], ("runtime",)),
             "release": (
                 ["scripts/ci/component-release-recovery.py"],
                 ("release",),
@@ -133,7 +137,10 @@ class ChangedPathClassificationTest(unittest.TestCase):
         categories, _reason = self.classify(
             ["README.md", "src/Client.php", "scripts/ci/publish-planned-source.py"]
         )
-        self.assertEqual(("docs", "release", "runtime"), categories)
+        self.assertEqual(
+            ("docs", "docs-browser", "release", "runtime"),
+            categories,
+        )
 
     def test_missing_invalid_or_unknown_paths_select_every_focused_category(
         self,
