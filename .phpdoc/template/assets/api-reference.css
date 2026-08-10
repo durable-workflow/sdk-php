@@ -1,3 +1,7 @@
+.phpdocumentor .phpdocumentor-content {
+  padding-inline-end: calc(2.5rem + var(--spacing-lg));
+}
+
 .phpdocumentor .phpdocumentor-content > section:first-of-type {
   max-width: calc(100% - 2.5rem - var(--spacing-md));
   min-width: 0;
@@ -34,6 +38,70 @@
 .phpdocumentor:has(.phpdocumentor-sidebar__menu-button:checked) .phpdocumentor-back-to-top,
 .phpdocumentor:has(.phpdocumentor-search-results:not(.phpdocumentor-search-results--hidden)) .phpdocumentor-back-to-top {
   display: none;
+}
+
+.dw-cloud-promotion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  max-width: 72rem;
+  margin: var(--spacing-lg) auto;
+  padding: var(--spacing-md) var(--spacing-lg);
+  border: 1px solid var(--primary-color-lighten);
+  border-left: 3px solid var(--primary-color);
+  background: var(--code-background-color);
+}
+
+.dw-cloud-promotion h2,
+.dw-cloud-promotion p {
+  margin: 0;
+}
+
+.dw-cloud-promotion h2 {
+  margin-block: 0.2rem 0.35rem;
+  font-size: var(--text-lg);
+}
+
+.dw-cloud-promotion__eyebrow {
+  color: var(--primary-color);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.dw-cloud-promotion__action {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  padding: 0.65rem 0.9rem;
+  border: 1px solid var(--primary-color);
+  color: var(--primary-color);
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.dw-cloud-promotion__action:hover,
+.dw-cloud-promotion__action:focus-visible {
+  background: var(--primary-color);
+  color: #fff;
+}
+
+@media (max-width: 700px) {
+  .dw-cloud-promotion {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+    margin: var(--spacing-md);
+    padding: var(--spacing-md);
+  }
+
+  .dw-cloud-promotion__action {
+    width: 100%;
+    text-align: center;
+    white-space: normal;
+  }
 }
 
 [data-api-reference-search-background] {
@@ -202,7 +270,7 @@
   }
 
   .phpdocumentor:has(.phpdocumentor-on-this-page__sidebar) .phpdocumentor-back-to-top {
-    right: calc(17.5vw + var(--spacing-lg) + var(--spacing-sm));
+    right: calc(17.5vw + var(--spacing-lg) + var(--spacing-sm) + 4rem);
   }
 
 }

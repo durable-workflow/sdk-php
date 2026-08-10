@@ -19,6 +19,9 @@ if (file_get_contents($buildDirectory.'/assets/api-reference.css') !== $referenc
 if (file_get_contents($buildDirectory.'/assets/api-reference.js') !== $referenceRuntime) {
     throw new RuntimeException('Rendered phpDocumentor API-reference runtime is stale.');
 }
+if (! preg_match('/\.dw-cloud-promotion__eyebrow\s*\{[^}]*letter-spacing:\s*0;/s', $referenceStyles)) {
+    throw new RuntimeException('Promotion eyebrow letter spacing must remain zero.');
+}
 
 foreach ([
     'https://static.cloudflareinsights.com/beacon.min.js',
@@ -66,6 +69,12 @@ foreach ($iterator as $file) {
     if (substr_count($html, 'type="module" src="/assets/api-reference.js"') !== 1) {
         throw new RuntimeException("{$file->getPathname()} does not load the shared API-reference runtime.");
     }
+    if (substr_count($html, 'data-promotion-source="sdk-php-reference"') !== 1) {
+        throw new RuntimeException("{$file->getPathname()} must render one bounded PHP SDK promotion.");
+    }
+    if (! str_contains($html, 'href="https://cloud.durable-workflow.com/early-access#source=sdk-php-reference"')) {
+        throw new RuntimeException("{$file->getPathname()} promotion must resolve to the public early-access form.");
+    }
     foreach (['phpdocumentor-header__menu-button', 'phpdocumentor-header__menu-icon', 'phpdocumentor-topnav'] as $emptyHeaderMenuClass) {
         if (str_contains($html, $emptyHeaderMenuClass)) {
             throw new RuntimeException("{$file->getPathname()} renders an empty top-navigation control.");
@@ -79,6 +88,17 @@ foreach ($iterator as $file) {
                 throw new RuntimeException("{$relativePath} resolves {$assetPath} to a missing rendered asset.");
             }
         }
+    }
+}
+
+foreach ([
+    "PROMOTION_SOURCE = 'sdk-php-reference'",
+    "credentials: 'omit'",
+    "referrerPolicy: 'no-referrer'",
+    'JSON.stringify({source: PROMOTION_SOURCE, event})',
+] as $promotionBoundary) {
+    if (! str_contains($runtime, $promotionBoundary)) {
+        throw new RuntimeException("Promotion analytics is missing its bounded contract: {$promotionBoundary}");
     }
 }
 

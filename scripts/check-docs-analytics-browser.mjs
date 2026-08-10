@@ -11,6 +11,8 @@ const SITE_HOSTNAME = 'php.durable-workflow.com';
 const TEST_TOKEN = '00000000000000000000000000000000';
 const BEACON_URL = 'https://static.cloudflareinsights.com/beacon.min.js';
 const RUM_URL = 'https://cloudflareinsights.com/cdn-cgi/rum';
+const PROMOTION_EVENT_URL = 'https://cloud.durable-workflow.com/early-access/promotion-events';
+const PROMOTION_SOURCE = 'sdk-php-reference';
 const buildDirectory = path.resolve(process.argv[2] ?? 'build/api');
 const runtimeSource = (await readFile(path.join(buildDirectory, 'analytics/analytics.js'), 'utf8'))
   .replace('__CLOUDFLARE_WEB_ANALYTICS_TOKEN__', TEST_TOKEN);
@@ -151,6 +153,31 @@ async function assertReachableControls(page, label, scope = 'body') {
     `${label} has horizontal overflow: ${JSON.stringify(result.overflowing)}`,
   );
   assert.deepEqual(result.unreachable, [], `${label} has unreachable controls`);
+}
+
+async function assertPromotionActionContainment(page, label) {
+  const result = await page.evaluate(() => {
+    const promotion = document.querySelector('.dw-cloud-promotion');
+    const action = promotion?.querySelector('.dw-cloud-promotion__action');
+    if (!promotion || !action) return {present: false};
+
+    const promotionBox = promotion.getBoundingClientRect();
+    const actionBox = action.getBoundingClientRect();
+    return {
+      present: true,
+      promotionBox: promotionBox.toJSON(),
+      actionBox: actionBox.toJSON(),
+      contained: actionBox.left >= promotionBox.left - 1
+        && actionBox.right <= promotionBox.right + 1,
+    };
+  });
+
+  assert.equal(result.present, true, `${label} lost its Cloud promotion`);
+  assert.equal(
+    result.contained,
+    true,
+    `${label} promotion action escaped its card: ${JSON.stringify(result)}`,
+  );
 }
 
 async function assertTableOfContentsMetadataLegibility(page, label) {
@@ -427,6 +454,7 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
   const requestFailures = [];
   const httpErrors = [];
   const rumRequests = [];
+  const promotionRequests = [];
   let renderedPagePath = pagePath;
   let edgeFixturePath;
   const compactQuickstart = pageName === 'root' && viewport.width <= 549;
@@ -435,7 +463,9 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
   });
   page.on('pageerror', error => pageErrors.push(error.message));
   page.on('requestfailed', request => {
-    requestFailures.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText ?? 'unknown failure'}`);
+    const errorText = request.failure()?.errorText ?? 'unknown failure';
+    if (request.url() === PROMOTION_EVENT_URL && errorText === 'net::ERR_ABORTED') return;
+    requestFailures.push(`${request.method()} ${request.url()}: ${errorText}`);
   });
   page.on('response', response => {
     if (response.status() >= 400) httpErrors.push(`${response.status()} ${response.request().method()} ${response.url()}`);
@@ -459,6 +489,17 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
         contentType: 'text/plain',
         body: 'ok',
         headers: {'access-control-allow-origin': '*'},
+      });
+    });
+    await page.route(PROMOTION_EVENT_URL, route => {
+      promotionRequests.push({
+        body: JSON.parse(route.request().postData() || '{}'),
+        method: route.request().method(),
+      });
+      return route.fulfill({
+        status: 200,
+        body: '',
+        headers: {'access-control-allow-origin': origin},
       });
     });
     if (edgeInjected) {
@@ -505,11 +546,16 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
     assert.equal(analytics.loaderIdCount, edgeInjected ? 0 : 1, `${label} duplicate-beacon guard failed`);
     assert.equal(analytics.executions, 1, `${label} executed the beacon more than once`);
     assert.deepEqual(rumRequests, ['POST'], `${label} did not emit one successful RUM request`);
+    assert.deepEqual(promotionRequests, [{
+      body: {source: PROMOTION_SOURCE, event: 'impression'},
+      method: 'POST',
+    }], `${label} did not emit one bounded promotion impression`);
     assert.equal(analytics.localStorageEntries, 0, `${label} wrote local storage`);
     assert.equal(analytics.sessionStorageEntries, 0, `${label} wrote session storage`);
     assert.deepEqual(await context.cookies(), [], `${label} wrote cookies`);
     assert.equal(await page.locator('.phpdocumentor-title__link').count(), 1, `${label} lost its title link`);
     assert.equal(await page.locator('.phpdocumentor-search__field').count(), 1, `${label} lost search`);
+    await assertPromotionActionContainment(page, `${label} default`);
     await assertReachableControls(page, `${label} default`);
     if (pageName === 'Client API') {
       await assertTableOfContentsMetadataLegibility(page, `${label} default`);
