@@ -4,6 +4,9 @@ const repoRoot = new URL('../', import.meta.url);
 const contract = JSON.parse(
   await readFile(new URL('scripts/check-docs-examples-contract.json', repoRoot), 'utf8'),
 );
+const quickstart = JSON.parse(
+  await readFile(new URL(contract.quickstartContract, repoRoot), 'utf8'),
+);
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -56,6 +59,48 @@ function checkWorkflowIdentity(block, identity, context) {
   }
 }
 
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+const composer = JSON.parse(await readFile(new URL('composer.json', repoRoot), 'utf8'));
+assert(quickstart.schema_version === 1, 'quickstart contract must use schema version 1');
+assert(quickstart.package?.name === composer.name, 'quickstart package name must match composer.json');
+assert(
+  quickstart.package?.published_version === composer.extra?.['durable-workflow']?.['product-train'],
+  'quickstart published version must match the Composer product train',
+);
+assert(
+  quickstart.package?.composer_requirement === `${quickstart.package.published_version}@RC`,
+  'quickstart Composer requirement must select the published release candidate',
+);
+
+const server = new URL(quickstart.runtime_targets?.server?.client_input);
+const serverRequest = new URL(quickstart.runtime_targets?.server?.example_request);
+assert(server.pathname === '/', 'Server client input must be a bare origin');
+assert(
+  quickstart.runtime_targets?.server?.namespace_input === 'default',
+  'Server quickstart must use the default local namespace',
+);
+assert(serverRequest.pathname === '/api/workflows', 'Server request example must contain one SDK API segment');
+
+const cloud = new URL(quickstart.runtime_targets?.cloud?.client_input.replace('<runtime-id>', 'runtime-id'));
+const cloudRequest = new URL(
+  quickstart.runtime_targets?.cloud?.example_request.replace('<runtime-id>', 'runtime-id'),
+);
+assert(
+  cloud.pathname === '/api/runtime/v1/namespaces/runtime-id',
+  'Cloud client input must preserve the complete namespace runtime path',
+);
+assert(
+  quickstart.runtime_targets?.cloud?.namespace_input === '<provisioned-namespace>',
+  'Cloud quickstart must require the separately provisioned namespace',
+);
+assert(
+  cloudRequest.pathname === `${cloud.pathname}/api/workflows`,
+  'Cloud request example must append the SDK API segment after the namespace runtime path',
+);
+
 for (const example of contract.examples || []) {
   const context = `${example.path}#${example.id}`;
   const source = await readFile(new URL(example.path, repoRoot), 'utf8');
@@ -66,7 +111,49 @@ for (const example of contract.examples || []) {
   if ((match[1] || '') !== example.language) {
     throw new Error(`${context} must use a ${example.language} fenced block`);
   }
-  checkWorkflowIdentity(match[2], example.workflowIdentity, context);
+  const executableSource = await readFile(new URL(example.source, repoRoot), 'utf8');
+  if (`${match[2]}\n` !== executableSource) {
+    throw new Error(`${context} must render the shipped executable ${example.source} without drift`);
+  }
+  if (example.workflowIdentity) {
+    checkWorkflowIdentity(match[2], example.workflowIdentity, context);
+  }
 }
+
+const workerSource = await readFile(new URL(quickstart.sources.worker, repoRoot), 'utf8');
+const clientSource = await readFile(new URL(quickstart.sources.client, repoRoot), 'utf8');
+const bootstrapSource = await readFile(new URL(quickstart.sources.bootstrap, repoRoot), 'utf8');
+for (const autoloadCandidate of [
+  "__DIR__.'/vendor/autoload.php'",
+  "dirname(__DIR__).'/vendor/autoload.php'",
+  "dirname(__DIR__, 2).'/vendor/autoload.php'",
+  "dirname(__DIR__, 3).'/autoload.php'",
+  "getcwd().'/vendor/autoload.php'",
+]) {
+  assert(
+    bootstrapSource.includes(autoloadCandidate),
+    `${quickstart.sources.bootstrap} must support the ${autoloadCandidate} Composer layout`,
+  );
+}
+for (const attribute of ['#[Workflow(', '#[Activity(']) {
+  assert(workerSource.includes(attribute), `${quickstart.sources.worker} must expose ${attribute}`);
+}
+assert(
+  workerSource.includes('->register(GreeterWorkflow::class, GreetingActivities::class)'),
+  'quickstart worker must register both attributed handler classes',
+);
+assert(
+  workerSource.includes("workerToken: quickstartEnvironment('DURABLE_WORKFLOW_WORKER_TOKEN')"),
+  'quickstart worker must consume only its scoped credential',
+);
+assert(
+  clientSource.includes("controlToken: quickstartEnvironment('DURABLE_WORKFLOW_CLIENT_TOKEN')"),
+  'quickstart client must consume only its scoped credential',
+);
+assert(
+  !workerSource.includes('DURABLE_WORKFLOW_CLIENT_TOKEN')
+    && !clientSource.includes('DURABLE_WORKFLOW_WORKER_TOKEN'),
+  'quickstart sources must keep role credentials separate',
+);
 
 console.log(`Documentation example checks passed for ${contract.examples.length} examples`);

@@ -37,7 +37,7 @@ final class ClientBaseUriTest extends TestCase
             'http://localhost:8080/' => 'http://localhost:8080/api/health',
             'http://localhost:8080/durable-workflow/' => 'http://localhost:8080/durable-workflow/api/health',
             'https://runtime.example.test/namespaces/orders' => 'https://runtime.example.test/namespaces/orders/api/health',
-            'https://runtime.example.test/gateway/api/namespaces/orders/' => 'https://runtime.example.test/gateway/api/namespaces/orders/api/health',
+            'https://cloud.example.test/api/runtime/v1/namespaces/orders/' => 'https://cloud.example.test/api/runtime/v1/namespaces/orders/api/health',
             'https://api.example.test/runtime/orders/' => 'https://api.example.test/runtime/orders/api/health',
         ] as $baseUri => $expectedUri) {
             $transport = new FakeTransport([[]]);

@@ -159,72 +159,28 @@ jobs:
           consumer="$(cat "$RUNNER_TEMP/service-mode-consumer")"
           cd "$consumer"
           queue="php-published-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          workflow_id="php-published-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          export DURABLE_WORKFLOW_RUNTIME_URL="$DURABLE_WORKFLOW_SERVER_URL"
           export DURABLE_WORKFLOW_TASK_QUEUE="$queue"
-          export DURABLE_WORKFLOW_WORKFLOW_ID="$workflow_id"
-
-          tee worker.php >/dev/null <<'PHP'
-          <?php
-          declare(strict_types=1);
-          require __DIR__.'/vendor/autoload.php';
-          use DurableWorkflow\Attribute\Activity;
-          use DurableWorkflow\Attribute\Workflow;
-          use DurableWorkflow\Client;
-          use DurableWorkflow\Worker;
-          use DurableWorkflow\Worker\ActivityContext;
-          use DurableWorkflow\Worker\WorkflowContext;
-          final class PublishedGreetingWorkflow
-          {
-              #[Workflow('published.php.greeter')]
-              public function run(WorkflowContext $context, string $name): Generator
-              {
-                  return ['greeting' => yield $context->activity('published.php.greet', [$name])];
-              }
-          }
-          final class PublishedGreetingActivities
-          {
-              #[Activity('published.php.greet')]
-              public function greet(ActivityContext $context, string $name): string
-              {
-                  return "hello, {$name}";
-              }
-          }
-          $client = new Client(
-              getenv('DURABLE_WORKFLOW_SERVER_URL'),
-              namespace: getenv('DURABLE_WORKFLOW_NAMESPACE'),
-              workerToken: getenv('DURABLE_WORKFLOW_WORKER_TOKEN') ?: null,
-          );
-          Worker::create($client, getenv('DURABLE_WORKFLOW_TASK_QUEUE'))
-              ->register(PublishedGreetingWorkflow::class, PublishedGreetingActivities::class)
-              ->run();
-          PHP
-
-          tee client.php >/dev/null <<'PHP'
-          <?php
-          declare(strict_types=1);
-          require __DIR__.'/vendor/autoload.php';
-          use DurableWorkflow\Client;
-          $client = new Client(
-              getenv('DURABLE_WORKFLOW_SERVER_URL'),
-              namespace: getenv('DURABLE_WORKFLOW_NAMESPACE'),
-              controlToken: getenv('DURABLE_WORKFLOW_CLIENT_TOKEN') ?: null,
-          );
-          $handle = $client->startWorkflow(
-              'published.php.greeter',
-              getenv('DURABLE_WORKFLOW_WORKFLOW_ID'),
-              getenv('DURABLE_WORKFLOW_TASK_QUEUE'),
-              ['published package'],
-          );
-          $result = $handle->result(timeoutSeconds: 90, pollIntervalSeconds: 1);
-          if ($result !== ['greeting' => 'hello, published package']) {
-              throw new RuntimeException('Published service-mode workflow returned an unexpected result.');
-          }
-          PHP
+          example_dir="$consumer/vendor/durable-workflow/sdk/examples"
+          for source in bootstrap.php worker.php client.php; do
+            if [ ! -f "$example_dir/$source" ]; then
+              echo "Published SDK is missing the shipped quickstart source: examples/$source" >&2
+              exit 1
+            fi
+            cp "$example_dir/$source" "$consumer/$source"
+          done
 
           env -u DURABLE_WORKFLOW_CLIENT_TOKEN php worker.php >worker.log 2>&1 &
           worker_pid=$!
           trap 'kill -TERM "$worker_pid" 2>/dev/null || true' EXIT
-          env -u DURABLE_WORKFLOW_WORKER_TOKEN php client.php
+          env -u DURABLE_WORKFLOW_WORKER_TOKEN php client.php >result.json
+          php -r '
+            $output = json_decode(file_get_contents("result.json"), true, flags: JSON_THROW_ON_ERROR);
+            if (($output["result"] ?? null) !== ["greeting" => "hello, PHP"]
+                || preg_match("/\\Aphp-quickstart-[0-9a-f]{32}\\z/", $output["workflow_id"] ?? "") !== 1) {
+                throw new RuntimeException("Published quickstart returned an unexpected workflow identity or result.");
+            }
+          '
           kill -TERM "$worker_pid" 2>/dev/null || true
           worker_status=0
           wait "$worker_pid" || worker_status=$?

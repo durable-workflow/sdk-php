@@ -14,19 +14,23 @@ project follows [Semantic Versioning](https://semver.org/).
   and graceful deregistration.
 - Framework-independent workflow client fakes and worker handler harnesses with
   assertions for workflow interactions and registered handler behavior.
-- A source-free published-package smoke workflow for a real Server or
-  Cloud-compatible endpoint.
+- A framework-neutral first-run guide and shipped plain-PHP example for Cloud
+  and self-hosted Server, including role-scoped credentials, attributed handler
+  registration, and Composer autoload discovery across supported layouts.
+- A source-free published-package smoke workflow that installs and executes the
+  shipped quickstart against a real Server or Cloud-compatible endpoint.
 - Optional first-party bridges for Laravel 12-13 and Symfony 6.4-8, including
   native container registration, console workers, configuration validation,
   framework logging and events, and test-client replacement helpers.
 
 ### Changed
 
-- Advanced the PHP SDK to `2.0.0-rc.13`. Server `2.0.0-rc.17` remains the
-  latest published qualification baseline; newer compatibility targets require
-  separate conformance evidence. Managed registration emits an explicit empty
-  validator list, while low-level registration documents and preserves that
-  declaration and rejects malformed or non-empty claims before transport.
+- Advanced the PHP SDK to `2.0.0-rc.14`. Package metadata retains Server
+  `2.0.0-rc.17` as the verified compatibility baseline; other Server
+  prereleases require separate conformance evidence. Managed registration emits
+  an explicit empty validator list, while low-level registration documents and
+  preserves that declaration and rejects malformed or non-empty claims before
+  transport.
 - Replaced the prerelease JSON wrapper with the fixed recursive
   `durable_workflow.protocol.Value` schema and Avro single-object framing.
   `AvroBinaryValue` makes the bytes branch explicit while PHP strings remain

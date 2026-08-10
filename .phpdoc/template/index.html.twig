@@ -1,0 +1,123 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}PHP SDK quickstart and API reference{% endblock %}
+
+{% block content %}
+<article class="php-quickstart">
+    <header class="php-quickstart__hero">
+        <p class="php-quickstart__eyebrow">Framework-neutral service mode</p>
+        <h2>Run your first PHP workflow</h2>
+        <p>Use one shipped example with Durable Workflow Cloud or a self-hosted Server, then continue into the generated API reference.</p>
+        <nav class="php-quickstart__path-nav" aria-label="PHP workflow paths">
+            <a aria-current="page" href="#plain-php">Plain PHP</a>
+            <a href="#framework-integrations">Laravel service mode</a>
+            <a href="#framework-integrations">Symfony service mode</a>
+            <a href="https://laravel-workflow.com/">Embedded Laravel</a>
+        </nav>
+    </header>
+
+    <section id="plain-php" class="php-quickstart__section">
+        <h3>1. Create a clean Composer project</h3>
+        <pre><code class="language-bash">mkdir durable-php-quickstart
+cd durable-php-quickstart
+composer init --name=acme/durable-php-quickstart --no-interaction
+composer require durable-workflow/sdk:__QUICKSTART_COMPOSER_REQUIREMENT__</code></pre>
+    </section>
+
+    <section class="php-quickstart__section">
+        <h3>2. Choose the runtime boundary</h3>
+        <div class="php-quickstart__targets">
+            <section>
+                <h4>Self-hosted Server</h4>
+                <p>Pass the bare Server origin. The SDK adds exactly one endpoint <code>/api</code> segment.</p>
+                <pre><code class="language-bash">export DURABLE_WORKFLOW_RUNTIME_URL='__QUICKSTART_SERVER_URI__'
+export DURABLE_WORKFLOW_NAMESPACE='__QUICKSTART_SERVER_NAMESPACE__'</code></pre>
+            </section>
+            <section>
+                <h4>Durable Workflow Cloud</h4>
+                <p>Pass the complete provisioned namespace runtime URI unchanged, including <code>/api/runtime/v1/namespaces/...</code>.</p>
+                <pre><code class="language-bash">export DURABLE_WORKFLOW_RUNTIME_URL='__QUICKSTART_CLOUD_URI__'
+export DURABLE_WORKFLOW_NAMESPACE='__QUICKSTART_CLOUD_NAMESPACE__'</code></pre>
+            </section>
+        </div>
+        <pre><code class="language-bash">export DURABLE_WORKFLOW_TASK_QUEUE="php-quickstart-$(php -r 'echo bin2hex(random_bytes(8));')"
+
+read -rsp 'Client credential: ' DURABLE_WORKFLOW_CLIENT_TOKEN; echo
+export DURABLE_WORKFLOW_CLIENT_TOKEN
+read -rsp 'Worker credential: ' DURABLE_WORKFLOW_WORKER_TOKEN; echo
+export DURABLE_WORKFLOW_WORKER_TOKEN</code></pre>
+        <p>The two prompts do not echo values. Keep client and worker credentials in process environments or a secret manager; do not print them or commit them to source.</p>
+    </section>
+
+    <section class="php-quickstart__section">
+        <h3>3. Create the executable files</h3>
+        <p>These are the files shipped in the package and exercised by the published-artifact smoke. The bootstrap resolves Composer from a standalone project, this SDK checkout, an installed package, or a runner that places the files beside its own <code>vendor/</code> directory.</p>
+
+        <h4><code>bootstrap.php</code></h4>
+        <pre data-quickstart-source="examples/bootstrap.php"><code class="language-php">__QUICKSTART_BOOTSTRAP_SOURCE__</code></pre>
+
+        <h4><code>worker.php</code></h4>
+        <p><code>#[Workflow]</code>, <code>#[Activity]</code>, and <code>Worker::register()</code> stay in one visible path so registration does not require SDK source inspection.</p>
+        <pre data-quickstart-source="examples/worker.php"><code class="language-php">__QUICKSTART_WORKER_SOURCE__</code></pre>
+
+        <h4><code>client.php</code></h4>
+        <pre data-quickstart-source="examples/client.php"><code class="language-php">__QUICKSTART_CLIENT_SOURCE__</code></pre>
+    </section>
+
+    <section class="php-quickstart__section">
+        <h3>4. Start the worker, start a workflow, and read the result</h3>
+        <p>In the first terminal, expose only the worker credential:</p>
+        <pre><code class="language-bash">env -u DURABLE_WORKFLOW_CLIENT_TOKEN php worker.php</code></pre>
+        <p>In the second terminal, reuse the runtime, namespace, and task queue while exposing only the client credential:</p>
+        <pre><code class="language-bash">env -u DURABLE_WORKFLOW_WORKER_TOKEN php client.php</code></pre>
+        <p>The client prints a unique workflow ID and this result shape:</p>
+        <pre><code class="language-json">__QUICKSTART_EXPECTED_RESULT__</code></pre>
+        <p>Stop the worker with <kbd>Ctrl</kbd>+<kbd>C</kbd> after the client completes.</p>
+    </section>
+
+    <section class="php-quickstart__section">
+        <h3>Direct callable registration</h3>
+        <p>Attribute discovery is preferred for class-oriented handlers. Generated or callable-first code can use the explicit alternative without attributes:</p>
+        <pre><code class="language-php">$worker = Worker::create($client, $taskQueue)
+    -&gt;registerWorkflow('quickstart.php.greeter', $workflowHandler)
+    -&gt;registerActivity('quickstart.php.greet', $activityHandler);</code></pre>
+        <p>The callables receive <code>WorkflowContext</code> and <code>ActivityContext</code>. Use one complete registration style rather than passing un-attributed classes to <code>register()</code>.</p>
+    </section>
+
+    <section id="framework-integrations" class="php-quickstart__section">
+        <h3>Framework integrations and embedded mode</h3>
+        <div class="php-quickstart__links">
+            <a href="/classes/DurableWorkflow-Bridge-Laravel-DurableWorkflowServiceProvider.html">
+                <strong>Laravel service mode</strong>
+                <span>Keep Laravel injection, configuration, logging, and test fakes around remote workers.</span>
+            </a>
+            <a href="/classes/DurableWorkflow-Bridge-Symfony-DurableWorkflowBundle.html">
+                <strong>Symfony service mode</strong>
+                <span>Use the shipped Bundle, autowired handlers, and managed console worker.</span>
+            </a>
+            <a href="https://laravel-workflow.com/">
+                <strong>Embedded Laravel workflows</strong>
+                <span>Choose the separate embedded engine when the Laravel application owns durable state and queues.</span>
+            </a>
+        </div>
+        <p><a href="/quickstart-contract.json">Read the machine-readable quickstart contract</a> for package, runtime, credentials, source, registration, and expected-result identities.</p>
+    </section>
+
+    <section id="api-reference" class="php-quickstart__section php-quickstart__reference">
+        <h3>Generated API reference</h3>
+        {% set node = project.namespace %}
+        {{
+        include(
+            'components/table-of-contents.html.twig',
+            {
+                'node': project.namespace,
+                'namespaces': usesNamespaces or not usesPackages ? node.children : [],
+                'packages': usesPackages ? project.package.children : []
+            }
+        )
+        }}
+        {{ include('components/constants.html.twig', {'node': project.namespace}) }}
+        {{ include('components/functions.html.twig', {'node': project.namespace}) }}
+    </section>
+</article>
+{% endblock %}

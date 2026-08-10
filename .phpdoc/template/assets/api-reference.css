@@ -40,6 +40,149 @@
   display: none !important;
 }
 
+.php-quickstart {
+  width: 100%;
+  min-width: 0;
+  max-width: 76rem;
+  margin: 0 auto;
+}
+
+.phpdocumentor:has(.php-quickstart) .phpdocumentor-content {
+  padding-right: calc(var(--spacing-xl) + 2.5rem);
+}
+
+.php-quickstart__hero {
+  padding: clamp(1.5rem, 4vw, 3.5rem);
+  margin-bottom: var(--spacing-lg);
+  color: #eef8ff;
+  background: linear-gradient(135deg, #102a43 0%, #0b6477 100%);
+  border-radius: .75rem;
+}
+
+.php-quickstart__hero h2 {
+  max-width: 18ch;
+  margin: 0 0 var(--spacing-sm);
+  color: white;
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  line-height: 1.05;
+}
+
+.php-quickstart__hero p {
+  max-width: 66ch;
+}
+
+.php-quickstart__eyebrow {
+  margin: 0 0 var(--spacing-xs);
+  color: #9ee8f0;
+  font-size: .8rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.php-quickstart__path-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin-top: var(--spacing-md);
+}
+
+.php-quickstart__path-nav a {
+  padding: .5rem .75rem;
+  color: white;
+  border: 1px solid rgb(255 255 255 / 35%);
+  border-radius: 999px;
+  text-decoration: none;
+}
+
+.php-quickstart__path-nav a:hover,
+.php-quickstart__path-nav a:focus-visible,
+.php-quickstart__path-nav a[aria-current="page"] {
+  color: #102a43;
+  background: #d8f8fa;
+  border-color: #d8f8fa;
+}
+
+.php-quickstart__section {
+  min-width: 0;
+  padding: clamp(1rem, 3vw, 2rem);
+  margin-bottom: var(--spacing-lg);
+  background: white;
+  border: 1px solid #d9e2ec;
+  border-radius: .75rem;
+  box-shadow: 0 .25rem 1rem rgb(16 42 67 / 6%);
+}
+
+.php-quickstart__section > :first-child {
+  margin-top: 0;
+}
+
+.php-quickstart__section > :last-child {
+  margin-bottom: 0;
+}
+
+.php-quickstart__section pre {
+  max-width: 100%;
+  overflow: auto;
+  border-radius: .5rem;
+}
+
+.php-quickstart__section code {
+  overflow-wrap: normal;
+}
+
+.php-quickstart__section p code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.php-quickstart__targets,
+.php-quickstart__links {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--spacing-md);
+  margin: var(--spacing-md) 0;
+}
+
+.php-quickstart__targets > section,
+.php-quickstart__links > a {
+  min-width: 0;
+  padding: var(--spacing-md);
+  border: 1px solid #bcccdc;
+  border-radius: .5rem;
+}
+
+.php-quickstart__targets pre {
+  margin-bottom: 0;
+}
+
+.php-quickstart__links {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.php-quickstart__links > a {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  color: #102a43;
+  text-decoration: none;
+}
+
+.php-quickstart__links > a:hover,
+.php-quickstart__links > a:focus-visible {
+  background: #f0f9ff;
+  border-color: #0b6477;
+}
+
+.php-quickstart__links span {
+  color: #486581;
+  font-size: .9rem;
+}
+
+.php-quickstart__reference {
+  overflow: hidden;
+}
+
 .phpdocumentor-search-results__dialog > .phpdocumentor-search {
   flex: 0 0 auto;
   min-width: 0;
@@ -64,7 +207,22 @@
 
 }
 
+@media (max-width: 899px) {
+  .php-quickstart__targets,
+  .php-quickstart__links {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 549px) {
+  .phpdocumentor:has(.php-quickstart) .phpdocumentor-back-to-top {
+    display: none;
+  }
+
+  .php-quickstart__section {
+    padding: 1rem;
+  }
+
   .phpdocumentor .phpdocumentor-table-of-contents__entry > span {
     flex-basis: 100%;
   }
@@ -77,6 +235,20 @@
 }
 
 @media (max-width: 399px) {
+  .php-quickstart__hero {
+    padding: 1rem;
+  }
+
+  .php-quickstart__path-nav {
+    gap: .25rem;
+  }
+
+  .php-quickstart__path-nav a {
+    padding: .3rem .45rem;
+    font-size: .8rem;
+    line-height: 1.2;
+  }
+
   .phpdocumentor-title {
     flex: 0 0 100%;
     min-width: 0;

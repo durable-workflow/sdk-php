@@ -1,9 +1,23 @@
 {
+  "quickstartContract": "docs/quickstart-contract.json",
   "examples": [
     {
-      "id": "php.readme.first-workflow",
+      "id": "php.quickstart.bootstrap",
       "path": "README.md",
       "language": "php",
+      "source": "examples/bootstrap.php"
+    },
+    {
+      "id": "php.quickstart.worker",
+      "path": "README.md",
+      "language": "php",
+      "source": "examples/worker.php"
+    },
+    {
+      "id": "php.quickstart.client",
+      "path": "README.md",
+      "language": "php",
+      "source": "examples/client.php",
       "workflowIdentity": {
         "intent": "runnable_first_start",
         "generator": "php_random_bytes_hex",

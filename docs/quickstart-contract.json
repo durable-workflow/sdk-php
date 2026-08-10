@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "package": {
+    "name": "durable-workflow/sdk",
+    "published_version": "2.0.0-rc.14",
+    "composer_requirement": "2.0.0-rc.14@RC"
+  },
+  "runtime_targets": {
+    "server": {
+      "client_input": "http://localhost:8080",
+      "namespace_input": "default",
+      "input_kind": "server_origin",
+      "example_request": "http://localhost:8080/api/workflows"
+    },
+    "cloud": {
+      "client_input": "https://cloud.example/api/runtime/v1/namespaces/<runtime-id>",
+      "namespace_input": "<provisioned-namespace>",
+      "input_kind": "complete_namespace_runtime_uri",
+      "example_request": "https://cloud.example/api/runtime/v1/namespaces/<runtime-id>/api/workflows"
+    }
+  },
+  "environment": {
+    "runtime_url": "DURABLE_WORKFLOW_RUNTIME_URL",
+    "namespace": "DURABLE_WORKFLOW_NAMESPACE",
+    "task_queue": "DURABLE_WORKFLOW_TASK_QUEUE",
+    "client_credential": "DURABLE_WORKFLOW_CLIENT_TOKEN",
+    "worker_credential": "DURABLE_WORKFLOW_WORKER_TOKEN"
+  },
+  "sources": {
+    "bootstrap": "examples/bootstrap.php",
+    "worker": "examples/worker.php",
+    "client": "examples/client.php"
+  },
+  "registration": {
+    "preferred": "attribute_discovery",
+    "attributes": [
+      "DurableWorkflow\\Attribute\\Workflow",
+      "DurableWorkflow\\Attribute\\Activity"
+    ],
+    "entrypoint": "DurableWorkflow\\Worker::register",
+    "direct_alternative": [
+      "DurableWorkflow\\Worker::registerWorkflow",
+      "DurableWorkflow\\Worker::registerActivity"
+    ]
+  },
+  "expected_result": {
+    "result": {
+      "greeting": "hello, PHP"
+    }
+  },
+  "published_smoke": ".github/workflows/service-mode-published-smoke.yml",
+  "integrations": {
+    "laravel_service_mode": "https://github.com/durable-workflow/sdk-php#laravel-service-mode",
+    "symfony_service_mode": "https://github.com/durable-workflow/sdk-php#symfony-service-mode",
+    "embedded_laravel": "https://laravel-workflow.com/"
+  }
+}

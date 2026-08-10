@@ -388,16 +388,25 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         symfony_configuration = step_source(
             framework_job, "Configure Symfony Bundle and autowired handlers"
         )
+        quickstart_worker = (REPOSITORY_ROOT / "examples" / "worker.php").read_text()
+        quickstart_client = (REPOSITORY_ROOT / "examples" / "client.php").read_text()
 
         for runtime in (service, framework):
             self.assertIn("env -u DURABLE_WORKFLOW_WORKER_TOKEN php", runtime)
             self.assertNotIn("DURABLE_WORKFLOW_AUTH_TOKEN", runtime)
 
         self.assertIn(
-            "controlToken: getenv('DURABLE_WORKFLOW_CLIENT_TOKEN') ?: null",
-            service,
+            "controlToken: quickstartEnvironment('DURABLE_WORKFLOW_CLIENT_TOKEN')",
+            quickstart_client,
         )
         self.assertIn("env -u DURABLE_WORKFLOW_CLIENT_TOKEN php", service)
+        self.assertIn(
+            'example_dir="$consumer/vendor/durable-workflow/sdk/examples"',
+            service,
+        )
+        self.assertIn('cp "$example_dir/$source" "$consumer/$source"', service)
+        self.assertNotIn("tee worker.php", service)
+        self.assertNotIn("tee client.php", service)
         self.assertIn(
             "$application->make(WorkflowClientInterface::class)", framework
         )
@@ -412,9 +421,11 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         )
         self.assertIn("env -u DURABLE_WORKFLOW_CONTROL_TOKEN php", framework)
         self.assertIn(
-            "workerToken: getenv('DURABLE_WORKFLOW_WORKER_TOKEN') ?: null",
-            service,
+            "workerToken: quickstartEnvironment('DURABLE_WORKFLOW_WORKER_TOKEN')",
+            quickstart_worker,
         )
+        self.assertNotIn("DURABLE_WORKFLOW_WORKER_TOKEN", quickstart_client)
+        self.assertNotIn("DURABLE_WORKFLOW_CLIENT_TOKEN", quickstart_worker)
         self.assertIn(
             "control_token: '%env(default::DURABLE_WORKFLOW_CONTROL_TOKEN)%'",
             symfony_configuration,

@@ -2,47 +2,27 @@
 
 declare(strict_types=1);
 
-require dirname(__DIR__).'/vendor/autoload.php';
+require __DIR__.'/bootstrap.php';
 
 use DurableWorkflow\Client;
-use DurableWorkflow\Model\ServiceOperationOptions;
 
 $client = new Client(
-    getenv('DURABLE_WORKFLOW_SERVER_URL') ?: 'http://localhost:8080',
-    token: getenv('DURABLE_WORKFLOW_AUTH_TOKEN') ?: 'dev-token-123',
+    quickstartEnvironment('DURABLE_WORKFLOW_RUNTIME_URL'),
+    namespace: quickstartEnvironment('DURABLE_WORKFLOW_NAMESPACE'),
+    controlToken: quickstartEnvironment('DURABLE_WORKFLOW_CLIENT_TOKEN'),
 );
 
+$workflowId = 'php-quickstart-'.bin2hex(random_bytes(16));
 $handle = $client->startWorkflow(
-    workflowType: 'greeter',
-    workflowId: 'php-greeter-'.bin2hex(random_bytes(4)),
-    taskQueue: 'php-workers',
-    input: ['world'],
+    workflowType: 'quickstart.php.greeter',
+    workflowId: $workflowId,
+    taskQueue: quickstartEnvironment('DURABLE_WORKFLOW_TASK_QUEUE'),
+    input: ['PHP'],
 );
 
-$handle->signal('set-language', ['en']);
-var_dump($handle->query('status'));
-var_dump($handle->update('rename', ['Ada']));
-var_dump($handle->result(timeoutSeconds: 30));
+$result = $handle->result(timeoutSeconds: 90, pollIntervalSeconds: 1);
 
-$operations = $client->withNamespace('default');
-$running = $operations->listWorkflows(status: 'running', pageSize: 25);
-$schedules = $operations->listSchedules(status: 'active', pageSize: 25);
-$attributes = $operations->listSearchAttributes();
-$cluster = $operations->clusterInfo();
-
-$serviceCall = $operations->startServiceOperation(
-    'greeter-services',
-    'Greeter',
-    'greet',
-    ['name' => 'Ada'],
-    new ServiceOperationOptions(idempotencyKey: 'php-example-greet-Ada'),
-);
-
-var_dump(
-    $running->executions,
-    $schedules->schedules,
-    $schedules->nextPageToken,
-    $attributes->customAttributes,
-    $cluster->capabilities,
-);
-var_dump($serviceCall->describe());
+echo json_encode(
+    ['workflow_id' => $workflowId, 'result' => $result],
+    JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES,
+).PHP_EOL;

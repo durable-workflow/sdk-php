@@ -5,18 +5,37 @@ that connect to a standalone [Durable Workflow server](https://github.com/durabl
 It targets PHP 8.1 or newer and does not require Laravel or the embedded
 `durable-workflow/workflow` engine.
 
-## Install
+## Choose the PHP execution model
 
-Install the package from Packagist:
+- **Plain PHP service mode:** follow the quickstart below when a framework-neutral
+  application and remote worker connect to Durable Workflow Cloud or a
+  self-hosted Server.
+- **Laravel service mode:** use the [Laravel bridge](#laravel-service-mode) from
+  this SDK when remote handlers should keep Laravel dependency injection,
+  configuration, logging, and testing.
+- **Symfony service mode:** use the [Symfony bridge](#symfony-service-mode) from
+  this SDK for autowired remote handlers and a managed console worker.
+- **Embedded Laravel workflows:** use
+  [`durable-workflow/workflow`](https://laravel-workflow.com/) when the Laravel
+  application itself should own durable state and execute through Laravel
+  queues. That is a different deployment model, not a prerequisite for this SDK.
+
+## Plain PHP quickstart
+
+Create an empty Composer project and install the current published package:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.13@RC
+mkdir durable-php-quickstart
+cd durable-php-quickstart
+composer init --name=acme/durable-php-quickstart --no-interaction
+composer require durable-workflow/sdk:2.0.0-rc.14@RC
 ```
 
-This exact package is PHP SDK `2.0.0-rc.13`. Server `2.0.0-rc.17` remains the
-latest published qualification baseline; exact qualification with newer Server
-prereleases requires separate conformance evidence. Earlier 2.0 prereleases and
-pre-1.0 SDK releases remain historical rather than alternate supported baselines.
+This exact package is PHP SDK `2.0.0-rc.14`. Its package metadata declares
+Server `2.0.0-rc.17` as the verified compatibility baseline; using another
+Server prerelease requires separate conformance evidence. Earlier 2.0
+prereleases and pre-1.0 SDK releases remain historical rather than alternate
+supported baselines.
 
 To install directly from the source repository before a tagged release:
 
@@ -30,41 +49,218 @@ package for schema parsing and binary payload encoding. Guzzle is included as
 the default PSR-18 transport; any PSR-18 client and PSR-17 factories can be
 injected instead.
 
-## Start and inspect a workflow
+### Choose Cloud or Server without rewriting the URL
 
-Pass the Server origin or the complete Cloud runtime base URI to `Client`
-without a terminal `/api`; the SDK owns and appends that path segment. Keep any
-other Cloud runtime path prefix exactly as provided.
+Set one runtime URI exactly as provisioned:
 
-<!-- docs-example id="php.readme.first-workflow" -->
+```bash
+# Self-hosted Server: pass the bare origin. The SDK appends one /api segment.
+export DURABLE_WORKFLOW_RUNTIME_URL='http://localhost:8080'
+export DURABLE_WORKFLOW_NAMESPACE='default'
+
+# Durable Workflow Cloud: instead use both values returned by provisioning.
+# export DURABLE_WORKFLOW_RUNTIME_URL='https://cloud.example/api/runtime/v1/namespaces/<runtime-id>'
+# export DURABLE_WORKFLOW_NAMESPACE='<provisioned-namespace>'
+
+export DURABLE_WORKFLOW_TASK_QUEUE="php-quickstart-$(php -r 'echo bin2hex(random_bytes(8));')"
+```
+
+The Cloud URL already contains `/api/runtime/v1/namespaces/...`; do not trim
+that prefix or replace it with the Cloud control-plane URL. Keep the separately
+provisioned Cloud namespace value unchanged as well. The SDK appends its
+endpoint `/api` after the namespace runtime URI. For Server, pass an origin such
+as `http://localhost:8080`, not `http://localhost:8080/api`, so the request path
+contains one `/api` segment rather than two.
+
+Inject credentials through the process environment or a secret manager. Client
+operations and worker polling are separate roles, so keep their variables
+separate even when a development Server is configured with one shared token:
+
+```bash
+read -rsp 'Client credential: ' DURABLE_WORKFLOW_CLIENT_TOKEN; echo
+export DURABLE_WORKFLOW_CLIENT_TOKEN
+read -rsp 'Worker credential: ' DURABLE_WORKFLOW_WORKER_TOKEN; echo
+export DURABLE_WORKFLOW_WORKER_TOKEN
+```
+
+The prompts do not echo values. Do not put these exports in source files,
+commit an `.env` file, or print either value in diagnostics.
+
+### Create the three example files
+
+`bootstrap.php` resolves Composer consistently when the example is in a clean
+project, this SDK checkout, an installed SDK package, or a Sample App
+playground/container that copies the files beside its own `vendor/` directory.
+
+<!-- docs-example id="php.quickstart.bootstrap" -->
 ```php
 <?php
 
 declare(strict_types=1);
 
-require __DIR__.'/vendor/autoload.php';
+(static function (): void {
+    $candidates = array_unique([
+        __DIR__.'/vendor/autoload.php',
+        dirname(__DIR__).'/vendor/autoload.php',
+        dirname(__DIR__, 2).'/vendor/autoload.php',
+        dirname(__DIR__, 3).'/autoload.php',
+        getcwd().'/vendor/autoload.php',
+    ]);
 
+    foreach ($candidates as $candidate) {
+        if (is_file($candidate)) {
+            require $candidate;
+
+            return;
+        }
+    }
+
+    throw new RuntimeException(
+        'Composer autoload.php was not found. Run the example from a Composer project or copy all three example files beside vendor/.',
+    );
+})();
+
+function quickstartEnvironment(string $name): string
+{
+    $value = getenv($name);
+    if (!is_string($value) || trim($value) === '') {
+        throw new RuntimeException("Set the {$name} environment variable before running this example.");
+    }
+
+    return trim($value);
+}
+```
+
+`worker.php` keeps `#[Workflow]`, `#[Activity]`, and the `register()` call in one
+visible path. The attributes provide the public type names that Server admits.
+
+<!-- docs-example id="php.quickstart.worker" -->
+```php
+<?php
+
+declare(strict_types=1);
+
+require __DIR__.'/bootstrap.php';
+
+use DurableWorkflow\Attribute\Activity;
+use DurableWorkflow\Attribute\Workflow;
 use DurableWorkflow\Client;
-use DurableWorkflow\Auth\TokenAuthentication;
+use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\WorkflowContext;
+
+final class GreeterWorkflow
+{
+    #[Workflow('quickstart.php.greeter')]
+    public function run(WorkflowContext $context, string $name): Generator
+    {
+        $greeting = yield $context->activity('quickstart.php.greet', [$name]);
+
+        return ['greeting' => $greeting];
+    }
+}
+
+final class GreetingActivities
+{
+    #[Activity('quickstart.php.greet')]
+    public function greet(ActivityContext $context, string $name): string
+    {
+        return "hello, {$name}";
+    }
+}
 
 $client = new Client(
-    'http://localhost:8080',
-    new TokenAuthentication('dev-token-123'),
-    namespace: 'default',
+    quickstartEnvironment('DURABLE_WORKFLOW_RUNTIME_URL'),
+    namespace: quickstartEnvironment('DURABLE_WORKFLOW_NAMESPACE'),
+    workerToken: quickstartEnvironment('DURABLE_WORKFLOW_WORKER_TOKEN'),
 );
 
-$workflowId = 'greeting-'.bin2hex(random_bytes(16));
-$handle = $client->startWorkflow(
-    workflowType: 'greeter',
-    workflowId: $workflowId,
-    taskQueue: 'php-workers',
-    input: ['world'],
-);
-
-$handle->signal('set-language', ['en']);
-var_dump($handle->query('status'));
-var_dump($handle->result(timeoutSeconds: 30));
+Worker::create($client, quickstartEnvironment('DURABLE_WORKFLOW_TASK_QUEUE'))
+    ->register(GreeterWorkflow::class, GreetingActivities::class)
+    ->run();
 ```
+
+`client.php` starts a unique workflow and waits for its completed result.
+
+<!-- docs-example id="php.quickstart.client" -->
+```php
+<?php
+
+declare(strict_types=1);
+
+require __DIR__.'/bootstrap.php';
+
+use DurableWorkflow\Client;
+
+$client = new Client(
+    quickstartEnvironment('DURABLE_WORKFLOW_RUNTIME_URL'),
+    namespace: quickstartEnvironment('DURABLE_WORKFLOW_NAMESPACE'),
+    controlToken: quickstartEnvironment('DURABLE_WORKFLOW_CLIENT_TOKEN'),
+);
+
+$workflowId = 'php-quickstart-'.bin2hex(random_bytes(16));
+$handle = $client->startWorkflow(
+    workflowType: 'quickstart.php.greeter',
+    workflowId: $workflowId,
+    taskQueue: quickstartEnvironment('DURABLE_WORKFLOW_TASK_QUEUE'),
+    input: ['PHP'],
+);
+
+$result = $handle->result(timeoutSeconds: 90, pollIntervalSeconds: 1);
+
+echo json_encode(
+    ['workflow_id' => $workflowId, 'result' => $result],
+    JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES,
+).PHP_EOL;
+```
+
+The files above ship under [`examples/`](examples/). Copy all three into the
+new project if you prefer not to create them from the visible blocks.
+
+### Start the worker, workflow, and result read
+
+Run the worker in the first terminal with only its role credential:
+
+```bash
+env -u DURABLE_WORKFLOW_CLIENT_TOKEN php worker.php
+```
+
+In a second terminal with the same runtime, namespace, and task queue, start the
+workflow and read the result with only the client credential:
+
+```bash
+env -u DURABLE_WORKFLOW_WORKER_TOKEN php client.php
+```
+
+The output contains a new workflow ID and this result shape:
+
+```json
+{"workflow_id":"php-quickstart-…","result":{"greeting":"hello, PHP"}}
+```
+
+Stop the worker with `Ctrl+C` after the client completes.
+
+`register()` is the preferred class-oriented API: it discovers every attributed
+handler in the supplied classes before polling. For generated handlers or other
+callable-first code, the direct alternative is explicit and does not use
+attributes:
+
+```php
+$worker = Worker::create($client, $taskQueue)
+    ->registerWorkflow('quickstart.php.greeter', $workflowHandler)
+    ->registerActivity('quickstart.php.greet', $activityHandler);
+```
+
+Both callables receive the same `WorkflowContext` and `ActivityContext` values
+shown in the class-oriented example. Do not call `register()` with un-attributed
+classes; use one complete registration style or the other.
+
+The machine-readable [quickstart contract](docs/quickstart-contract.json) names
+the package, runtime URL forms, role-specific environment variables, executable
+sources, expected result, and published-artifact smoke that keep this path in
+sync.
+
+## Workflow handles and control-plane APIs
 
 `WorkflowHandle` distinguishes the stable workflow instance from a selected
 run. Its ordinary operations follow whichever run is current after a
@@ -288,7 +484,7 @@ Publish the environment-backed configuration, add attributed handler services,
 and start the supervised Artisan command:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.13@RC
+composer require durable-workflow/sdk:2.0.0-rc.14@RC
 php artisan vendor:publish --tag=durable-workflow-config
 php artisan config:cache
 php artisan durable-workflow:worker

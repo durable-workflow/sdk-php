@@ -395,10 +395,11 @@ async function floatingUtilityCandidateScrollPositions(page) {
   });
 }
 
-async function assertFloatingUtilityGeometry(page, label) {
+async function assertFloatingUtilityGeometry(page, label, expectedVisible = true) {
   const utility = page.locator('.phpdocumentor-back-to-top');
   assert.equal(await utility.count(), 1, `${label} lost its back-to-top utility`);
-  assert.equal(await utility.isVisible(), true, `${label} hid its back-to-top utility`);
+  assert.equal(await utility.isVisible(), expectedVisible, `${label} back-to-top visibility drifted`);
+  if (!expectedVisible) return;
 
   const positions = await floatingUtilityCandidateScrollPositions(page);
   for (const position of positions) {
@@ -428,6 +429,7 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
   const rumRequests = [];
   let renderedPagePath = pagePath;
   let edgeFixturePath;
+  const compactQuickstart = pageName === 'root' && viewport.width <= 549;
   page.on('console', message => {
     if (message.type() === 'error') consoleErrors.push(message.text());
   });
@@ -522,7 +524,7 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
       assert.deepEqual(httpErrors, [], `${label} emitted HTTP errors`);
       return;
     }
-    await assertFloatingUtilityGeometry(page, `${label} default`);
+    await assertFloatingUtilityGeometry(page, `${label} default`, !compactQuickstart);
 
     const sidebarMenu = page.locator('.phpdocumentor-sidebar__menu-icon');
     if (await sidebarMenu.isVisible()) {
@@ -559,7 +561,7 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
     ));
     assert.equal(
       await page.locator('.phpdocumentor-back-to-top').isVisible(),
-      true,
+      !compactQuickstart,
       `${label} did not restore its back-to-top utility`,
     );
     await assertReachableControls(page, `${label} after closing search`);

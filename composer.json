@@ -52,7 +52,7 @@
         "test": "phpunit",
         "analyse": "phpstan analyse",
         "benchmark-avro-value": "php benchmarks/avro-value.php --enforce",
-        "docs": "phpdoc -d \"$PWD/src\" -t \"$PWD/build/api\" --cache-folder \"$PWD/build/phpdoc-cache\" --title=\"Durable Workflow PHP SDK\"",
+        "docs": "phpdoc -d \"$PWD/src\" -t \"$PWD/build/api\" --cache-folder \"$PWD/build/phpdoc-cache\" --title=\"Durable Workflow PHP SDK\" --template=\"$PWD/.phpdoc/template\" && php scripts/render-quickstart-docs.php \"$PWD/build/api\"",
         "check-boundary": "bash scripts/check-dependency-boundary.sh",
         "check-release-identity": "scripts/check-release-identity.sh"
     },
@@ -70,7 +70,7 @@
             }
         },
         "durable-workflow": {
-            "product-train": "2.0.0-rc.13",
+            "product-train": "2.0.0-rc.14",
             "supported-server-versions": "2.0.0-rc.17",
             "worker-protocol-version": "1.13",
             "control-plane-version": "2",
