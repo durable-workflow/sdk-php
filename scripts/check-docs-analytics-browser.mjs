@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {readFile, unlink, writeFile} from 'node:fs/promises';
+import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import process from 'node:process';
@@ -14,8 +15,11 @@ const RUM_URL = 'https://cloudflareinsights.com/cdn-cgi/rum';
 const PROMOTION_EVENT_URL = 'https://cloud.durable-workflow.com/early-access/promotion-events';
 const PROMOTION_SOURCE = 'sdk-php-reference';
 const buildDirectory = path.resolve(process.argv[2] ?? 'build/api');
-const runtimeSource = (await readFile(path.join(buildDirectory, 'analytics/analytics.js'), 'utf8'))
+const runtimeTemplate = (await readFile(path.join(buildDirectory, 'analytics/analytics.js'), 'utf8'))
   .replace('__CLOUDFLARE_WEB_ANALYTICS_TOKEN__', TEST_TOKEN);
+const promotionRequests = [];
+let expectedPromotionOrigin;
+let runtimeSource;
 const viewports = [
   ['compact-height', {width: 1280, height: 360}],
   ['desktop', {width: 1440, height: 900}],
@@ -57,6 +61,32 @@ async function waitForServer(port) {
     }
   }
   throw new Error(`PHP documentation server did not start on port ${port}.`);
+}
+
+async function waitForPromotionRequests(count) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (promotionRequests.length >= count) return;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error(`Promotion receiver recorded ${promotionRequests.length} of ${count} expected requests.`);
+}
+
+function expectedPromotionRequest(event) {
+  return {
+    accepted: true,
+    body: {source: PROMOTION_SOURCE, event},
+    headers: {
+      authorization: null,
+      contentType: 'text/plain',
+      cookie: null,
+      origin: expectedPromotionOrigin,
+      referer: `${expectedPromotionOrigin}/`,
+      secFetchMode: null,
+      secFetchSite: null,
+    },
+    method: 'POST',
+    path: '/early-access/promotion-events',
+  };
 }
 
 async function assertReachableControls(page, label, scope = 'body') {
@@ -454,17 +484,17 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
   const requestFailures = [];
   const httpErrors = [];
   const rumRequests = [];
-  const promotionRequests = [];
+  const promotionRequestStart = promotionRequests.length;
   let renderedPagePath = pagePath;
   let edgeFixturePath;
-  const compactQuickstart = pageName === 'root' && viewport.width <= 549;
+  const narrowQuickstart = pageName === 'root' && viewport.width <= 899;
   page.on('console', message => {
     if (message.type() === 'error') consoleErrors.push(message.text());
   });
   page.on('pageerror', error => pageErrors.push(error.message));
   page.on('requestfailed', request => {
     const errorText = request.failure()?.errorText ?? 'unknown failure';
-    if (request.url() === PROMOTION_EVENT_URL && errorText === 'net::ERR_ABORTED') return;
+    if (request.url() === promotionEventUrl && errorText === 'net::ERR_ABORTED') return;
     requestFailures.push(`${request.method()} ${request.url()}: ${errorText}`);
   });
   page.on('response', response => {
@@ -489,17 +519,6 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
         contentType: 'text/plain',
         body: 'ok',
         headers: {'access-control-allow-origin': '*'},
-      });
-    });
-    await page.route(PROMOTION_EVENT_URL, route => {
-      promotionRequests.push({
-        body: JSON.parse(route.request().postData() || '{}'),
-        method: route.request().method(),
-      });
-      return route.fulfill({
-        status: 200,
-        body: '',
-        headers: {'access-control-allow-origin': origin},
       });
     });
     if (edgeInjected) {
@@ -546,10 +565,12 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
     assert.equal(analytics.loaderIdCount, edgeInjected ? 0 : 1, `${label} duplicate-beacon guard failed`);
     assert.equal(analytics.executions, 1, `${label} executed the beacon more than once`);
     assert.deepEqual(rumRequests, ['POST'], `${label} did not emit one successful RUM request`);
-    assert.deepEqual(promotionRequests, [{
-      body: {source: PROMOTION_SOURCE, event: 'impression'},
-      method: 'POST',
-    }], `${label} did not emit one bounded promotion impression`);
+    await waitForPromotionRequests(promotionRequestStart + 1);
+    assert.deepEqual(
+      promotionRequests.slice(promotionRequestStart),
+      [expectedPromotionRequest('impression')],
+      `${label} did not emit one browser-realistic bounded promotion impression`,
+    );
     assert.equal(analytics.localStorageEntries, 0, `${label} wrote local storage`);
     assert.equal(analytics.sessionStorageEntries, 0, `${label} wrote session storage`);
     assert.deepEqual(await context.cookies(), [], `${label} wrote cookies`);
@@ -570,7 +591,7 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
       assert.deepEqual(httpErrors, [], `${label} emitted HTTP errors`);
       return;
     }
-    await assertFloatingUtilityGeometry(page, `${label} default`, !compactQuickstart);
+    await assertFloatingUtilityGeometry(page, `${label} default`, !narrowQuickstart);
 
     const sidebarMenu = page.locator('.phpdocumentor-sidebar__menu-icon');
     if (await sidebarMenu.isVisible()) {
@@ -607,10 +628,28 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
     ));
     assert.equal(
       await page.locator('.phpdocumentor-back-to-top').isVisible(),
-      !compactQuickstart,
+      !narrowQuickstart,
       `${label} did not restore its back-to-top utility`,
     );
     await assertReachableControls(page, `${label} after closing search`);
+
+    const promotionAction = page.locator('.dw-cloud-promotion__action');
+    assert.equal(
+      await promotionAction.getAttribute('href'),
+      'https://cloud.durable-workflow.com/early-access#source=sdk-php-reference',
+      `${label} promotion action lost its public early-access destination`,
+    );
+    await promotionAction.evaluate(action => {
+      action.addEventListener('click', event => event.preventDefault(), {once: true});
+    });
+    await promotionAction.click();
+    await waitForPromotionRequests(promotionRequestStart + 2);
+    await page.waitForTimeout(100);
+    assert.deepEqual(
+      promotionRequests.slice(promotionRequestStart),
+      [expectedPromotionRequest('impression'), expectedPromotionRequest('click')],
+      `${label} did not emit exactly one bounded promotion click`,
+    );
     assert.deepEqual(consoleErrors, [], `${label} emitted console errors`);
     assert.deepEqual(pageErrors, [], `${label} emitted page errors`);
     assert.deepEqual(requestFailures, [], `${label} emitted request failures`);
@@ -622,6 +661,58 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
 }
 
 const port = await availablePort();
+const promotionPort = await availablePort();
+const promotionEventUrl = `http://cloud.durable-workflow.com:${promotionPort}/early-access/promotion-events`;
+expectedPromotionOrigin = `http://${SITE_HOSTNAME}:${port}`;
+runtimeSource = runtimeTemplate.replace(PROMOTION_EVENT_URL, promotionEventUrl);
+const promotionServer = http.createServer(async (request, response) => {
+  let contents = '';
+  for await (const chunk of request) contents += chunk;
+
+  let body;
+  try {
+    body = JSON.parse(contents);
+  } catch (_error) {
+    body = null;
+  }
+  const headers = {
+    authorization: request.headers.authorization ?? null,
+    contentType: request.headers['content-type'] ?? null,
+    cookie: request.headers.cookie ?? null,
+    origin: request.headers.origin ?? null,
+    referer: request.headers.referer ?? null,
+    secFetchMode: request.headers['sec-fetch-mode'] ?? null,
+    secFetchSite: request.headers['sec-fetch-site'] ?? null,
+  };
+  const boundedBody = body !== null
+    && Object.keys(body).sort().join(',') === 'event,source'
+    && body.source === PROMOTION_SOURCE
+    && ['impression', 'click'].includes(body.event);
+  const accepted = request.method === 'POST'
+    && request.url === '/early-access/promotion-events'
+    && boundedBody
+    && headers.authorization === null
+    && headers.contentType === 'text/plain'
+    && headers.cookie === null
+    && headers.origin === expectedPromotionOrigin
+    && headers.referer === `${expectedPromotionOrigin}/`;
+  promotionRequests.push({
+    accepted,
+    body,
+    headers,
+    method: request.method,
+    path: request.url,
+  });
+
+  response.writeHead(accepted ? 204 : 403, {
+    'Access-Control-Allow-Origin': expectedPromotionOrigin,
+    'Cache-Control': 'no-store',
+    Vary: 'Origin',
+  });
+  response.end();
+});
+promotionServer.listen(promotionPort, '127.0.0.1');
+await once(promotionServer, 'listening');
 const server = spawn('php', ['-S', `127.0.0.1:${port}`, '-t', buildDirectory], {stdio: 'ignore'});
 let browser;
 try {
@@ -629,7 +720,7 @@ try {
   const launchOptions = {
     headless: true,
     args: [
-      `--host-resolver-rules=MAP ${SITE_HOSTNAME} 127.0.0.1`,
+      `--host-resolver-rules=MAP ${SITE_HOSTNAME} 127.0.0.1, MAP cloud.durable-workflow.com 127.0.0.1`,
       '--no-proxy-server',
     ],
   };
@@ -651,4 +742,6 @@ try {
   await browser?.close();
   server.kill('SIGTERM');
   await Promise.race([once(server, 'exit'), new Promise(resolve => setTimeout(resolve, 1000))]);
+  promotionServer.close();
+  await once(promotionServer, 'close');
 }

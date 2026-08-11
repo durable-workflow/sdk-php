@@ -102,5 +102,5 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install chromium --with-deps
-      - name: Qualify deployed Cloudflare transport
+      - name: Qualify deployed analytics transports
         run: npm run qualify:docs-analytics-deployment

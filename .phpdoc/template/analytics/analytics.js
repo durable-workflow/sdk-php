@@ -31,7 +31,7 @@
       mode: 'cors',
       credentials: 'omit',
       keepalive: true,
-      referrerPolicy: 'no-referrer',
+      referrerPolicy: 'origin',
       headers: {'Content-Type': 'text/plain'},
       body: JSON.stringify({source: PROMOTION_SOURCE, event}),
     }).catch(() => {});

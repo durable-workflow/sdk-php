@@ -94,7 +94,7 @@ foreach ($iterator as $file) {
 foreach ([
     "PROMOTION_SOURCE = 'sdk-php-reference'",
     "credentials: 'omit'",
-    "referrerPolicy: 'no-referrer'",
+    "referrerPolicy: 'origin'",
     'JSON.stringify({source: PROMOTION_SOURCE, event})',
 ] as $promotionBoundary) {
     if (! str_contains($runtime, $promotionBoundary)) {

@@ -276,6 +276,10 @@
 }
 
 @media (max-width: 899px) {
+  .phpdocumentor:has(.php-quickstart) .phpdocumentor-back-to-top {
+    display: none;
+  }
+
   .php-quickstart__targets,
   .php-quickstart__links {
     grid-template-columns: minmax(0, 1fr);
@@ -283,10 +287,6 @@
 }
 
 @media (max-width: 549px) {
-  .phpdocumentor:has(.php-quickstart) .phpdocumentor-back-to-top {
-    display: none;
-  }
-
   .php-quickstart__section {
     padding: 1rem;
   }
