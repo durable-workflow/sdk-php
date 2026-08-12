@@ -6,6 +6,7 @@ $repository = dirname(__DIR__);
 $buildDirectory = $argv[1] ?? $repository.'/build/api';
 $indexPath = rtrim($buildDirectory, '/').'/index.html';
 $contractPath = $repository.'/docs/quickstart-contract.json';
+$faviconPath = rtrim($buildDirectory, '/').'/images/favicon.ico';
 
 $index = file_get_contents($indexPath);
 $contractSource = file_get_contents($contractPath);
@@ -66,6 +67,9 @@ if (file_put_contents($indexPath, $index) === false) {
 }
 if (file_put_contents(rtrim($buildDirectory, '/').'/quickstart-contract.json', $contractSource) === false) {
     throw new RuntimeException('Could not publish the machine-readable quickstart contract.');
+}
+if (! is_file($faviconPath) || ! copy($faviconPath, rtrim($buildDirectory, '/').'/favicon.ico')) {
+    throw new RuntimeException('Could not publish the root documentation favicon.');
 }
 
 fwrite(STDOUT, "Rendered the executable PHP quickstart at the documentation root.\n");

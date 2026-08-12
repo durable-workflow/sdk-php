@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CLASSIFIER = ROOT / "scripts/ci/classify-ci-qualification.py"
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 API_REFERENCE_WORKFLOW = ROOT / ".github/workflows/docs.yml"
+EXTERNAL_LINK_WORKFLOW = ROOT / ".github/workflows/external-link-diagnostics.yml"
 
 SPEC = importlib.util.spec_from_file_location("ci_qualification", CLASSIFIER)
 if SPEC is None or SPEC.loader is None:
@@ -117,6 +118,18 @@ class ChangedPathClassificationTest(unittest.TestCase):
                 ["scripts/check-docs-analytics-browser.mjs"],
                 ("docs", "docs-browser"),
             ),
+            "docs-renderer": (
+                ["scripts/render-quickstart-docs.php"],
+                ("docs", "docs-browser"),
+            ),
+            "docs-link-fixture": (
+                ["scripts/ci/fixtures/docs-links/external-dns-failure.md"],
+                ("docs",),
+            ),
+            "external-link-diagnostics": (
+                [".github/workflows/external-link-diagnostics.yml"],
+                ("docs",),
+            ),
             "generated-reference-source": (
                 ["src/Client.php"],
                 ("docs", "docs-browser", "runtime"),
@@ -197,10 +210,85 @@ class WorkflowQualificationContractTest(unittest.TestCase):
         self.assertIn("scripts/check-public-boundary.sh", focused)
         self.assertIn("composer test", focused)
         self.assertIn("npm run test:docs-analytics-deployment", focused)
+        self.assertIn("--offline", focused)
         self.assertIn("npx playwright install chromium --with-deps", focused)
         self.assertIn("npm run check:docs-analytics-browser -- build/api", focused)
         self.assertGreaterEqual(focused.count("'docs-browser'"), 3)
         self.assertNotIn("matrix:", focused)
+
+    def test_source_qualification_uses_only_deterministic_link_checks(self) -> None:
+        workflows = (
+            workflow_job_source(self.source, "focused-candidate"),
+            workflow_job_source(self.source, "docs"),
+            workflow_job_source(API_REFERENCE_WORKFLOW.read_text(), "build"),
+        )
+        for workflow in workflows:
+            with self.subTest(workflow=workflow[:40]):
+                self.assertIn(
+                    "docker://lycheeverse/lychee@sha256:"
+                    "e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d",
+                    workflow,
+                )
+                self.assertEqual(2, workflow.count("--offline"))
+                self.assertEqual(1, workflow.count("--include-fragments"))
+                self.assertEqual(
+                    1,
+                    workflow.count("--root-dir ${{ github.workspace }}"),
+                )
+                self.assertIn(
+                    "--base-url ${{ github.workspace }}/build/api/",
+                    workflow,
+                )
+                self.assertNotIn("/github/workspace", workflow)
+                self.assertNotIn("--base-url file:", workflow)
+                self.assertNotIn(
+                    "--root-dir ${{ github.workspace }}/build/api",
+                    workflow,
+                )
+                self.assertIn(
+                    "--exclude-path build/api/graphs/classes.html",
+                    workflow,
+                )
+                self.assertIn("build/api/**/*.html build/api/**/*.css", workflow)
+                self.assertNotIn("--method get", workflow)
+                self.assertIn("npm run check:docs-analytics-browser -- build/api", workflow)
+
+    def test_link_regression_fixtures_have_one_required_ci_owner(self) -> None:
+        route = workflow_job_source(self.source, "qualification-route")
+        workflow_sources = self.source + API_REFERENCE_WORKFLOW.read_text()
+        fixtures = (
+            "scripts/ci/fixtures/docs-links/external-dns-failure.md",
+            "scripts/ci/fixtures/docs-links/broken-internal.md",
+            "scripts/ci/fixtures/docs-links/malformed-url.md",
+        )
+
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertIn(fixture, route)
+                self.assertEqual(1, workflow_sources.count(fixture))
+
+        self.assertIn("steps.broken-internal-link.outcome", route)
+        self.assertIn("steps.malformed-url.outcome", route)
+        self.assertEqual(2, route.count("continue-on-error: true"))
+        self.assertEqual(3, route.count("--offline"))
+
+    def test_external_reachability_is_scheduled_and_non_blocking(self) -> None:
+        workflow = EXTERNAL_LINK_WORKFLOW.read_text()
+        diagnostic = workflow_job_source(workflow, "diagnose")
+
+        self.assertIn("  schedule:", workflow)
+        self.assertNotIn("  push:", workflow)
+        self.assertNotIn("  pull_request:", workflow)
+        self.assertIn("        continue-on-error: true", diagnostic)
+        self.assertIn("--method get", diagnostic)
+        self.assertIn("--verbose", diagnostic)
+        self.assertIn("--format json", diagnostic)
+        self.assertIn("--output external-link-diagnostics.json", diagnostic)
+        self.assertIn("--include ^https?://", diagnostic)
+        self.assertNotIn("--offline", diagnostic)
+        self.assertIn("'{method: \"GET\", lychee: .}'", diagnostic)
+        self.assertIn("external-link-diagnostics-with-method.json", diagnostic)
+        self.assertIn("actions/upload-artifact@", diagnostic)
 
     def test_aggregate_decision_requires_the_selected_route_to_pass(self) -> None:
         decision = workflow_job_source(self.source, "target-branch-qualification")

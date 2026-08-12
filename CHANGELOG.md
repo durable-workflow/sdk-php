@@ -25,7 +25,7 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Advanced the PHP SDK to `2.0.0-rc.14`. Package metadata retains Server
+- Advanced the PHP SDK to `2.0.0-rc.15`. Package metadata retains Server
   `2.0.0-rc.17` as the verified compatibility baseline; other Server
   prereleases require separate conformance evidence. Managed registration emits
   an explicit empty validator list, while low-level registration documents and

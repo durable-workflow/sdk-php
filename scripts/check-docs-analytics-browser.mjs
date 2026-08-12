@@ -585,10 +585,10 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
       await assertOnThisPageUtilityReachability(page, `${label} default`);
     }
     if (edgeInjected) {
-      assert.deepEqual(consoleErrors, [], `${label} emitted console errors`);
+      assert.deepEqual(httpErrors, [], `${label} emitted HTTP errors (status, method, URL)`);
+      assert.deepEqual(requestFailures, [], `${label} emitted request failures (method, URL, reason)`);
       assert.deepEqual(pageErrors, [], `${label} emitted page errors`);
-      assert.deepEqual(requestFailures, [], `${label} emitted request failures`);
-      assert.deepEqual(httpErrors, [], `${label} emitted HTTP errors`);
+      assert.deepEqual(consoleErrors, [], `${label} emitted console errors`);
       return;
     }
     await assertFloatingUtilityGeometry(page, `${label} default`, !narrowQuickstart);
@@ -650,10 +650,10 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
       [expectedPromotionRequest('impression'), expectedPromotionRequest('click')],
       `${label} did not emit exactly one bounded promotion click`,
     );
-    assert.deepEqual(consoleErrors, [], `${label} emitted console errors`);
+    assert.deepEqual(httpErrors, [], `${label} emitted HTTP errors (status, method, URL)`);
+    assert.deepEqual(requestFailures, [], `${label} emitted request failures (method, URL, reason)`);
     assert.deepEqual(pageErrors, [], `${label} emitted page errors`);
-    assert.deepEqual(requestFailures, [], `${label} emitted request failures`);
-    assert.deepEqual(httpErrors, [], `${label} emitted HTTP errors`);
+    assert.deepEqual(consoleErrors, [], `${label} emitted console errors`);
   } finally {
     await context.close();
     if (edgeFixturePath) await unlink(edgeFixturePath);

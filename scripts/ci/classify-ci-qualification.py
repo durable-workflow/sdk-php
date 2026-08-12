@@ -102,8 +102,11 @@ def path_categories(path: str) -> set[str]:
             "README.md",
             "package.json",
             "package-lock.json",
+            ".github/workflows/external-link-diagnostics.yml",
+            "scripts/render-quickstart-docs.php",
         }
         or path.startswith((".phpdoc/", "docs/"))
+        or path.startswith("scripts/ci/fixtures/docs-links/")
         or path.startswith("scripts/check-docs-")
         or path.startswith("scripts/qualify-docs-")
         or path == ".github/workflows/docs.yml"
@@ -117,6 +120,7 @@ def path_categories(path: str) -> set[str]:
             "package.json",
             "package-lock.json",
             "scripts/check-docs-analytics-browser.mjs",
+            "scripts/render-quickstart-docs.php",
         }
         or path.startswith(".phpdoc/")
         or path.startswith("scripts/qualify-docs-")

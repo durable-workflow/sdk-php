@@ -56,6 +56,45 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
       - name: Prove qualification routing and workflow contracts
         run: python scripts/ci/test-ci-qualification.py
+      - name: Prove an external outage cannot fail offline qualification
+        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
+        with:
+          args: >-
+            --no-progress
+            --offline
+            --include-fragments
+            --root-dir ${{ github.workspace }}
+            scripts/ci/fixtures/docs-links/external-dns-failure.md
+      - name: Exercise broken internal link fixture
+        id: broken-internal-link
+        continue-on-error: true
+        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
+        with:
+          args: >-
+            --no-progress
+            --offline
+            --include-fragments
+            --root-dir ${{ github.workspace }}
+            scripts/ci/fixtures/docs-links/broken-internal.md
+      - name: Require broken internal links to fail qualification
+        env:
+          FIXTURE_OUTCOME: ${{ steps.broken-internal-link.outcome }}
+        run: test "$FIXTURE_OUTCOME" = failure
+      - name: Exercise malformed URL fixture
+        id: malformed-url
+        continue-on-error: true
+        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
+        with:
+          args: >-
+            --no-progress
+            --offline
+            --include-fragments
+            --root-dir ${{ github.workspace }}
+            scripts/ci/fixtures/docs-links/malformed-url.md
+      - name: Require malformed URLs to fail qualification
+        env:
+          FIXTURE_OUTCOME: ${{ steps.malformed-url.outcome }}
+        run: test "$FIXTURE_OUTCOME" = failure
 
   focused-candidate:
     name: Focused candidate evidence
@@ -137,6 +176,26 @@ jobs:
           npm run check:docs-examples
           composer docs -- --template="$PWD/.phpdoc/template"
           php scripts/check-docs-analytics.php build/api
+      - name: Check repository-owned documentation links offline
+        if: ${{ contains(needs.qualification-route.outputs.categories, 'docs') }}
+        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
+        with:
+          args: >-
+            --no-progress
+            --offline
+            --include-fragments
+            --root-dir ${{ github.workspace }}
+            README.md docs/*.md
+      - name: Check generated documentation links offline
+        if: ${{ contains(needs.qualification-route.outputs.categories, 'docs') }}
+        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
+        with:
+          args: >-
+            --no-progress
+            --offline
+            --base-url ${{ github.workspace }}/build/api/
+            --exclude-path build/api/graphs/classes.html
+            build/api/**/*.html build/api/**/*.css
       - name: Install responsive documentation browser dependencies
         if: ${{ contains(needs.qualification-route.outputs.categories, 'docs-browser') }}
         run: |
@@ -341,15 +400,26 @@ jobs:
       - run: composer install --no-interaction --prefer-dist
       - run: npm ci
       - run: npm run check:docs-examples
-      - name: Check documentation links
+      - run: composer docs -- --template="$PWD/.phpdoc/template"
+      - run: php scripts/check-docs-analytics.php build/api
+      - name: Check repository-owned documentation links offline
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:
           args: >-
             --no-progress
-            --exclude https://php.durable-workflow.com/
+            --offline
+            --include-fragments
+            --root-dir ${{ github.workspace }}
             README.md docs/*.md
-      - run: composer docs -- --template="$PWD/.phpdoc/template"
-      - run: php scripts/check-docs-analytics.php build/api
+      - name: Check generated documentation links offline
+        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
+        with:
+          args: >-
+            --no-progress
+            --offline
+            --base-url ${{ github.workspace }}/build/api/
+            --exclude-path build/api/graphs/classes.html
+            build/api/**/*.html build/api/**/*.css
       - run: npx playwright install chromium --with-deps
       - name: Test deployed Cloudflare transport qualification
         run: npm run test:docs-analytics-deployment

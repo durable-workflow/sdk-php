@@ -40,13 +40,6 @@ jobs:
       - run: composer install --no-interaction --prefer-dist
       - run: npm ci
       - run: npm run check:docs-examples
-      - name: Check documentation links
-        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
-        with:
-          args: >-
-            --no-progress
-            --exclude https://php.durable-workflow.com/
-            README.md docs/*.md
       - name: Generate phpDocumentor reference
         env:
           CLOUDFLARE_WEB_ANALYTICS_TOKEN: ${{ vars.CLOUDFLARE_WEB_ANALYTICS_TOKEN }}
@@ -64,6 +57,24 @@ jobs:
           cp docs/CNAME build/api/CNAME
           test -s build/api/index.html
           test "$(cat build/api/CNAME)" = "php.durable-workflow.com"
+      - name: Check repository-owned documentation links offline
+        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
+        with:
+          args: >-
+            --no-progress
+            --offline
+            --include-fragments
+            --root-dir ${{ github.workspace }}
+            README.md docs/*.md
+      - name: Check generated documentation links offline
+        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
+        with:
+          args: >-
+            --no-progress
+            --offline
+            --base-url ${{ github.workspace }}/build/api/
+            --exclude-path build/api/graphs/classes.html
+            build/api/**/*.html build/api/**/*.css
       - run: npx playwright install chromium --with-deps
       - name: Test deployed Cloudflare transport qualification
         run: npm run test:docs-analytics-deployment

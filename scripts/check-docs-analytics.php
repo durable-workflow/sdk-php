@@ -19,6 +19,12 @@ if (file_get_contents($buildDirectory.'/assets/api-reference.css') !== $referenc
 if (file_get_contents($buildDirectory.'/assets/api-reference.js') !== $referenceRuntime) {
     throw new RuntimeException('Rendered phpDocumentor API-reference runtime is stale.');
 }
+if (
+    ! is_file($buildDirectory.'/favicon.ico')
+    || file_get_contents($buildDirectory.'/favicon.ico') !== file_get_contents($buildDirectory.'/images/favicon.ico')
+) {
+    throw new RuntimeException('Rendered documentation root favicon is unavailable.');
+}
 if (! preg_match('/\.dw-cloud-promotion__eyebrow\s*\{[^}]*letter-spacing:\s*0;/s', $referenceStyles)) {
     throw new RuntimeException('Promotion eyebrow letter spacing must remain zero.');
 }
