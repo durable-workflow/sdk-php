@@ -8,9 +8,12 @@ const SITE_HOSTNAME = 'php.durable-workflow.com';
 const PAGE_PATH = '/namespaces/durableworkflow-worker.html';
 export const BEACON_URL = 'https://static.cloudflareinsights.com/beacon.min.js';
 export const RUM_URL = 'https://cloudflareinsights.com/cdn-cgi/rum';
+export const DEPLOYMENT_AUDIT_URL = `https://${SITE_HOSTNAME}/deployment-audit.json`;
+export const DEPLOYMENT_AUDIT_SCHEMA = 'durable-workflow.sdk-php.docs-deployment/v1';
 export const PROMOTION_EVENT_URL = 'https://cloud.durable-workflow.com/early-access/promotion-events';
 export const PROMOTION_SOURCE = 'sdk-php-reference';
 export const PROMOTION_DESTINATION = 'https://cloud.durable-workflow.com/early-access#source=sdk-php-reference';
+export const QUALIFICATION_EVENT = 'qualification';
 
 const DEFAULT_TARGET_URL = new URL(PAGE_PATH, `https://${SITE_HOSTNAME}`);
 const RUM_ENDPOINT = new URL(RUM_URL);
@@ -24,6 +27,7 @@ const PROMOTION_PAGES = [
   ['root', '/'],
   ['Client API', '/classes/DurableWorkflow-Client.html'],
 ];
+const SOURCE_REVISION_PATTERN = /^[a-f0-9]{40}$/;
 
 function isRumRequest(url) {
   return url.hostname === RUM_ENDPOINT.hostname && url.pathname === RUM_ENDPOINT.pathname;
@@ -37,6 +41,89 @@ async function waitForCount(items, count, description) {
   assert.fail(`${description}: observed ${items.length} of ${count} requests.`);
 }
 
+function promotionQualificationRewriteScript(eventUrl, source) {
+  return `
+    (() => {
+      const eventUrl = ${JSON.stringify(eventUrl)};
+      const source = ${JSON.stringify(source)};
+      const nativeFetch = window.fetch.bind(window);
+
+      window.fetch = function (input, init) {
+        const requestUrl = typeof input === 'string' ? input : input.url;
+        if (requestUrl !== eventUrl) return nativeFetch(input, init);
+
+        const options = init || {};
+        let initiatedPayload = null;
+        try {
+          initiatedPayload = JSON.parse(options.body);
+        } catch (_error) {
+          // The qualification fails on the recorded initiation shape below.
+        }
+        window.recordPromotionQualificationInitiation(initiatedPayload);
+
+        return nativeFetch(input, {
+          ...options,
+          body: JSON.stringify({source, event: ${JSON.stringify(QUALIFICATION_EVENT)}}),
+        });
+      };
+    })();
+  `;
+}
+
+export async function verifyDeployedRevision(sourceRevision, contract = {}) {
+  assert.match(
+    sourceRevision ?? '',
+    SOURCE_REVISION_PATTERN,
+    'The deployed PHP documentation source revision must be an exact commit SHA.',
+  );
+  const auditUrl = contract.auditUrl ?? DEPLOYMENT_AUDIT_URL;
+  const fetchImpl = contract.fetchImpl ?? globalThis.fetch;
+  const attempts = contract.attempts ?? 12;
+  const retryDelayMs = contract.retryDelayMs ?? 10_000;
+  assert(Number.isInteger(attempts) && attempts > 0, 'Deployment audit attempts must be a positive integer.');
+  assert(Number.isFinite(retryDelayMs) && retryDelayMs >= 0, 'Deployment audit retry delay must be non-negative.');
+
+  let lastObservation = 'the deployment audit was unavailable';
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetchImpl(auditUrl, {
+        cache: 'no-store',
+        credentials: 'omit',
+        headers: {accept: 'application/json'},
+        redirect: 'error',
+        referrerPolicy: 'no-referrer',
+      });
+      const contents = await response.text();
+      let audit = null;
+      try {
+        audit = JSON.parse(contents);
+      } catch (_error) {
+        lastObservation = `the deployment audit returned invalid JSON with HTTP ${response.status}`;
+      }
+      if (
+        response.status === 200
+        && audit !== null
+        && typeof audit === 'object'
+        && !Array.isArray(audit)
+        && Object.keys(audit).sort().join(',') === 'schema,source_revision'
+        && audit.schema === DEPLOYMENT_AUDIT_SCHEMA
+        && audit.source_revision === sourceRevision
+      ) {
+        return audit;
+      }
+      if (audit !== null) {
+        lastObservation = `the deployment audit did not identify source revision ${sourceRevision}`;
+      }
+    } catch (error) {
+      lastObservation = `the deployment audit request failed: ${error.message}`;
+    }
+
+    if (attempt < attempts) await delay(retryDelayMs);
+  }
+
+  assert.fail(`The exact deployed PHP documentation candidate was not confirmed: ${lastObservation}.`);
+}
+
 async function promotionRequestContract(request, targetOrigin, source, event) {
   const headers = await request.allHeaders();
   assert.deepEqual(JSON.parse(request.postData() || 'null'), {source, event});
@@ -48,6 +135,53 @@ async function promotionRequestContract(request, targetOrigin, source, event) {
   assert.equal(headers.referer, `${targetOrigin}/`, 'Promotion analytics exposed more than its origin referrer.');
   assert.equal(headers['sec-fetch-mode'], 'cors');
   assert.equal(headers['sec-fetch-site'], 'same-site');
+}
+
+async function promotionResponseContract(response, targetOrigin) {
+  const headers = await response.allHeaders();
+  assert.equal(response.status(), 204, 'The deployed receiver rejected promotion qualification.');
+  assert.equal(
+    headers['access-control-allow-origin'],
+    targetOrigin,
+    'The promotion receiver did not allow the documentation origin.',
+  );
+  assert.match(headers['cache-control'] ?? '', /(?:^|,)\s*no-store\s*(?:,|$)/i, 'The promotion response was cacheable.');
+  assert(
+    (headers.vary ?? '').split(',').map(value => value.trim().toLowerCase()).includes('origin'),
+    'The promotion response did not vary by Origin.',
+  );
+  assert.equal(headers['set-cookie'], undefined, 'The promotion receiver wrote a cookie.');
+}
+
+export async function qualifyPromotionReceiverValidation(contract = {}) {
+  const eventUrl = contract.eventUrl ?? PROMOTION_EVENT_URL;
+  const targetOrigin = contract.targetOrigin ?? `https://${SITE_HOSTNAME}`;
+  const fetchImpl = contract.fetchImpl ?? globalThis.fetch;
+  const invalidPayloads = [
+    {source: `${PROMOTION_SOURCE}-invalid`, event: QUALIFICATION_EVENT},
+    {source: PROMOTION_SOURCE, event: `${QUALIFICATION_EVENT}-invalid`},
+  ];
+
+  for (const payload of invalidPayloads) {
+    const response = await fetchImpl(eventUrl, {
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+      credentials: 'omit',
+      headers: {
+        'content-type': 'text/plain',
+        origin: targetOrigin,
+        referer: `${targetOrigin}/`,
+      },
+      method: 'POST',
+      redirect: 'error',
+    });
+    assert.equal(
+      response.status,
+      422,
+      `The promotion receiver accepted an invalid ${payload.source === PROMOTION_SOURCE ? 'event' : 'source'}.`,
+    );
+    assert.equal(response.headers.get('set-cookie'), null, 'Promotion validation wrote a cookie.');
+  }
 }
 
 export async function qualifyAnalyticsTransport(context, target = DEFAULT_TARGET_URL) {
@@ -142,6 +276,7 @@ export async function qualifyPromotionTransport(context, target, contract = {}) 
   const errors = [];
   const promotionRequests = [];
   const promotionResponses = [];
+  const initiatedPromotionEvents = [];
 
   function capturePageErrors(browserPage) {
     browserPage.on('console', message => {
@@ -151,6 +286,10 @@ export async function qualifyPromotionTransport(context, target, contract = {}) 
   }
 
   capturePageErrors(page);
+  await page.exposeFunction('recordPromotionQualificationInitiation', payload => {
+    initiatedPromotionEvents.push(payload);
+  });
+  await page.addInitScript({content: promotionQualificationRewriteScript(eventUrl, source)});
   context.on('request', request => {
     if (request.url() === eventUrl) promotionRequests.push(request);
   });
@@ -170,12 +309,12 @@ export async function qualifyPromotionTransport(context, target, contract = {}) 
   const promotion = page.locator(`[data-promotion-source="${source}"]`);
   const action = promotion.locator('[data-promotion-action="early-access"]');
   await promotion.waitFor();
-  await waitForCount(promotionResponses, 1, 'Promotion impression did not reach the deployed receiver');
+  await waitForCount(promotionResponses, 1, 'Promotion qualification did not reach the deployed receiver');
   await delay(150);
-  assert.equal(promotionRequests.length, 1, 'The deployed page emitted more than one promotion impression.');
-  assert.equal(promotionResponses.length, 1, 'The receiver returned more than one impression response.');
-  assert.equal(promotionResponses[0].status(), 204, 'The deployed receiver rejected the promotion impression.');
-  await promotionRequestContract(promotionRequests[0], targetUrl.origin, source, 'impression');
+  assert.equal(promotionRequests.length, 1, 'The deployed page emitted more than one initial qualification.');
+  assert.equal(promotionResponses.length, 1, 'The receiver returned more than one initial qualification response.');
+  await promotionRequestContract(promotionRequests[0], targetUrl.origin, source, QUALIFICATION_EVENT);
+  await promotionResponseContract(promotionResponses[0], targetUrl.origin);
   assert.equal(await action.getAttribute('href'), destination, 'The promotion lost its public early-access destination.');
 
   const destinationPagePromise = context.waitForEvent('page', destinationPage => {
@@ -189,12 +328,20 @@ export async function qualifyPromotionTransport(context, target, contract = {}) 
     resolvedUrl.hash = '';
     return resolvedUrl.href === destinationUrl;
   }, {waitUntil: 'load'});
-  await waitForCount(promotionResponses, 2, 'Promotion click did not reach the deployed receiver');
+  await waitForCount(promotionResponses, 2, 'Promotion click qualification did not reach the deployed receiver');
   await delay(150);
   assert.equal(promotionRequests.length, 2, 'The deployed page emitted duplicate promotion events.');
   assert.equal(promotionResponses.length, 2, 'The receiver returned duplicate promotion responses.');
-  assert.equal(promotionResponses[1].status(), 204, 'The deployed receiver rejected the promotion click.');
-  await promotionRequestContract(promotionRequests[1], targetUrl.origin, source, 'click');
+  await promotionRequestContract(promotionRequests[1], targetUrl.origin, source, QUALIFICATION_EVENT);
+  await promotionResponseContract(promotionResponses[1], targetUrl.origin);
+  assert.deepEqual(
+    initiatedPromotionEvents,
+    [
+      {source, event: 'impression'},
+      {source, event: 'click'},
+    ],
+    'The deployed promotion did not initiate exactly one impression and one click.',
+  );
   assert.equal(destinationPage.url(), destinationUrl, 'The public early-access form did not consume the source attribution fragment.');
   const destinationStatus = await destinationPage.evaluate(() => (
     performance.getEntriesByType('navigation')[0]?.responseStatus
@@ -221,19 +368,29 @@ export async function qualifyPromotionTransport(context, target, contract = {}) 
   assert.deepEqual(errors, [], 'The deployed promotion contract emitted browser errors.');
 }
 
-export async function qualifyDeployedAnalytics() {
+export async function qualifyDeployedAnalytics({
+  sourceRevision,
+  revisionContract,
+  browserType = chromium,
+  analyticsQualifier = qualifyAnalyticsTransport,
+  promotionQualifier = qualifyPromotionTransport,
+  receiverBoundaryQualifier = qualifyPromotionReceiverValidation,
+} = {}) {
+  await verifyDeployedRevision(sourceRevision, revisionContract);
+  await receiverBoundaryQualifier();
+
   const launchOptions = {headless: true};
   if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH) {
     launchOptions.executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
   }
-  const browser = await chromium.launch(launchOptions);
+  const browser = await browserType.launch(launchOptions);
   try {
     const context = await browser.newContext({
       reducedMotion: 'reduce',
       viewport: {width: 1440, height: 900},
     });
     try {
-      await qualifyAnalyticsTransport(context);
+      await analyticsQualifier(context);
     } finally {
       await context.close();
     }
@@ -245,7 +402,7 @@ export async function qualifyDeployedAnalytics() {
           viewport,
         });
         try {
-          await qualifyPromotionTransport(
+          await promotionQualifier(
             promotionContext,
             new URL(pagePath, `https://${SITE_HOSTNAME}`),
           );
@@ -261,9 +418,24 @@ export async function qualifyDeployedAnalytics() {
     await browser.close();
   }
 
-  process.stdout.write('Confirmed deployed Cloudflare transport, bounded PHP promotion impressions and clicks, and attributed early-access form across required viewports.\n');
+  process.stdout.write(
+    `Confirmed deployed revision ${sourceRevision}, Cloudflare transport, and all eight root/Client `
+    + 'desktop, intermediate, mobile, and short-height checks through only the non-aggregating promotion '
+    + 'qualification path while preserving bounded impression/click initiation and attributed destination behavior.\n',
+  );
+}
+
+export function sourceRevisionArgument(args) {
+  assert.deepEqual(
+    args.slice(0, 1),
+    ['--source-revision'],
+    'Usage: qualify-docs-analytics-deployment.mjs --source-revision <40-character commit SHA>',
+  );
+  assert.equal(args.length, 2, 'The deployment qualifier accepts exactly one source revision.');
+  assert.match(args[1], SOURCE_REVISION_PATTERN, 'The source revision must be a 40-character lowercase commit SHA.');
+  return args[1];
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await qualifyDeployedAnalytics();
+  await qualifyDeployedAnalytics({sourceRevision: sourceRevisionArgument(process.argv.slice(2))});
 }

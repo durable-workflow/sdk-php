@@ -69,6 +69,16 @@ jobs:
         run: npm run test:docs-analytics-deployment
       - name: Check Cloudflare analytics in Chromium
         run: npm run check:docs-analytics-browser -- build/api
+      - name: Bind Pages artifact to the exact source revision
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          if ! printf '%s' "$SOURCE_REVISION" | grep -Eq '^[a-f0-9]{40}$'; then
+            echo 'SOURCE_REVISION must be an exact lowercase commit SHA' >&2
+            exit 1
+          fi
+          printf '{"schema":"durable-workflow.sdk-php.docs-deployment/v1","source_revision":"%s"}\n' \
+            "$SOURCE_REVISION" > build/api/deployment-audit.json
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5
         if: github.server_url == 'https://github.com'
         with:
@@ -103,4 +113,6 @@ jobs:
       - run: npm ci
       - run: npx playwright install chromium --with-deps
       - name: Qualify deployed analytics transports
-        run: npm run qualify:docs-analytics-deployment
+        run: >-
+          npm run qualify:docs-analytics-deployment --
+          --source-revision "${{ github.sha }}"

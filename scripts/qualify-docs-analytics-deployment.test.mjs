@@ -7,13 +7,20 @@ import process from 'node:process';
 import {chromium} from 'playwright';
 import {
   BEACON_URL,
+  DEPLOYMENT_AUDIT_SCHEMA,
+  qualifyDeployedAnalytics,
   qualifyAnalyticsTransport,
+  qualifyPromotionReceiverValidation,
   qualifyPromotionTransport,
   PROMOTION_SOURCE,
+  QUALIFICATION_EVENT,
   RUM_URL,
+  sourceRevisionArgument,
+  verifyDeployedRevision,
 } from './qualify-docs-analytics-deployment.mjs';
 
 const VALID_TOKEN = '00000000000000000000000000000000';
+const SOURCE_REVISION = 'a'.repeat(40);
 let browser;
 let origin;
 let promotionOrigin;
@@ -122,13 +129,20 @@ before(async () => {
 
     let body = '';
     for await (const chunk of request) body += chunk;
+    const parsedBody = JSON.parse(body);
     promotionEvents.push({
-      body: JSON.parse(body),
+      body: parsedBody,
       headers: request.headers,
       method: request.method,
       path: request.url,
     });
-    response.writeHead(request.url === '/failed-promotion-events' ? 403 : 204, {
+    const boundedQualification = Object.keys(parsedBody).sort().join(',') === 'event,source'
+      && parsedBody.source === PROMOTION_SOURCE
+      && parsedBody.event === 'qualification';
+    const responseStatus = request.url === '/failed-promotion-events'
+      ? 403
+      : boundedQualification ? 204 : 422;
+    response.writeHead(responseStatus, {
       'access-control-allow-origin': origin,
       'cache-control': 'no-store',
       vary: 'Origin',
@@ -288,7 +302,8 @@ test('a successful non-POST RUM request fails deployed transport qualification',
   }
 });
 
-test('promotion qualification exercises browser headers, receiver status, and destination', async () => {
+test('live promotion qualification uses only the non-aggregating receiver path', async () => {
+  assert.equal(QUALIFICATION_EVENT, 'qualification');
   promotionEvents.length = 0;
   const context = await browser.newContext({
     reducedMotion: 'reduce',
@@ -308,12 +323,12 @@ test('promotion qualification exercises browser headers, receiver status, and de
       promotionEvents.map(event => ({body: event.body, method: event.method, path: event.path})),
       [
         {
-          body: {source: PROMOTION_SOURCE, event: 'impression'},
+          body: {source: PROMOTION_SOURCE, event: 'qualification'},
           method: 'POST',
           path: '/promotion-events',
         },
         {
-          body: {source: PROMOTION_SOURCE, event: 'click'},
+          body: {source: PROMOTION_SOURCE, event: 'qualification'},
           method: 'POST',
           path: '/promotion-events',
         },
@@ -322,6 +337,27 @@ test('promotion qualification exercises browser headers, receiver status, and de
   } finally {
     await context.close();
   }
+});
+
+test('live receiver validation fails closed for invalid sources and events', async () => {
+  promotionEvents.length = 0;
+
+  await qualifyPromotionReceiverValidation({
+    eventUrl: `${promotionOrigin}/promotion-events`,
+    targetOrigin: origin,
+  });
+
+  assert.deepEqual(
+    promotionEvents.map(event => event.body),
+    [
+      {source: `${PROMOTION_SOURCE}-invalid`, event: QUALIFICATION_EVENT},
+      {source: PROMOTION_SOURCE, event: `${QUALIFICATION_EVENT}-invalid`},
+    ],
+  );
+  assert(promotionEvents.every(event => event.headers.cookie === undefined));
+  assert(promotionEvents.every(event => event.headers.authorization === undefined));
+  assert(promotionEvents.every(event => event.headers.origin === origin));
+  assert(promotionEvents.every(event => event.headers.referer === `${origin}/`));
 });
 
 test('promotion qualification rejects an unsuccessful receiver response', async () => {
@@ -335,7 +371,7 @@ test('promotion qualification rejects an unsuccessful receiver response', async 
         destination: `${promotionOrigin}/early-access#source=${PROMOTION_SOURCE}`,
         eventUrl: `${promotionOrigin}/failed-promotion-events`,
       }),
-      /receiver rejected the promotion impression/,
+      /receiver rejected promotion qualification/,
     );
   } finally {
     await context.close();
@@ -383,7 +419,131 @@ test('the deployment workflow keeps credential validation but has no aggregation
   const qualification = await readFile(new URL('./qualify-docs-analytics-deployment.mjs', import.meta.url), 'utf8');
 
   assert.match(workflow, /CLOUDFLARE_WEB_ANALYTICS_TOKEN: \$\{\{ vars\.CLOUDFLARE_WEB_ANALYTICS_TOKEN \}\}/);
-  assert.match(workflow, /npm run qualify:docs-analytics-deployment/);
+  assert.match(workflow, /build\/api\/deployment-audit\.json/);
+  assert.match(workflow, /durable-workflow\.sdk-php\.docs-deployment\/v1/);
+  assert.match(
+    workflow,
+    /npm run qualify:docs-analytics-deployment --\s+--source-revision "\$\{\{ github\.sha \}\}"/,
+  );
   assert.doesNotMatch(workflow, /CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ANALYTICS_API_TOKEN/);
   assert.doesNotMatch(qualification, /api\.cloudflare\.com|rumPageloadEventsAdaptiveGroups|observedPageViews/);
+});
+
+test('the deployment audit must identify the exact source revision', async () => {
+  const observations = [
+    {schema: DEPLOYMENT_AUDIT_SCHEMA, source_revision: 'b'.repeat(40)},
+    {schema: DEPLOYMENT_AUDIT_SCHEMA, source_revision: SOURCE_REVISION},
+  ];
+  const requests = [];
+
+  await verifyDeployedRevision(SOURCE_REVISION, {
+    attempts: 2,
+    retryDelayMs: 0,
+    fetchImpl: async (url, options) => {
+      requests.push({url, options});
+      return {
+        status: 200,
+        text: async () => JSON.stringify(observations.shift()),
+      };
+    },
+  });
+
+  assert.equal(requests.length, 2);
+  assert(requests.every(request => request.options.credentials === 'omit'));
+  assert(requests.every(request => request.options.redirect === 'error'));
+});
+
+test('live browser verification cannot begin before the deployed revision matches', async () => {
+  let browserLaunched = false;
+
+  await assert.rejects(
+    qualifyDeployedAnalytics({
+      sourceRevision: SOURCE_REVISION,
+      revisionContract: {
+        attempts: 1,
+        retryDelayMs: 0,
+        fetchImpl: async () => ({
+          status: 200,
+          text: async () => JSON.stringify({
+            schema: DEPLOYMENT_AUDIT_SCHEMA,
+            source_revision: 'b'.repeat(40),
+          }),
+        }),
+      },
+      browserType: {
+        launch: async () => {
+          browserLaunched = true;
+          throw new Error('browser launch must not be reached');
+        },
+      },
+      receiverBoundaryQualifier: async () => {
+        throw new Error('receiver validation must not be reached');
+      },
+    }),
+    /exact deployed PHP documentation candidate was not confirmed/,
+  );
+
+  assert.equal(browserLaunched, false);
+});
+
+test('deployment qualification retains the eight-page viewport matrix', async () => {
+  const calls = [];
+  const browser = {
+    close: async () => calls.push('browser-close'),
+    newContext: async options => ({
+      close: async () => calls.push(['context-close', options.viewport]),
+      options,
+    }),
+  };
+
+  await qualifyDeployedAnalytics({
+    sourceRevision: SOURCE_REVISION,
+    revisionContract: {
+      attempts: 1,
+      fetchImpl: async () => ({
+        status: 200,
+        text: async () => JSON.stringify({
+          schema: DEPLOYMENT_AUDIT_SCHEMA,
+          source_revision: SOURCE_REVISION,
+        }),
+      }),
+    },
+    browserType: {
+      launch: async () => {
+        calls.push('browser-launch');
+        return browser;
+      },
+    },
+    analyticsQualifier: async context => calls.push(['analytics', context.options.viewport]),
+    promotionQualifier: async (context, target) => calls.push([
+      'promotion',
+      context.options.viewport,
+      target.pathname,
+    ]),
+    receiverBoundaryQualifier: async () => calls.push('receiver-boundary'),
+  });
+
+  assert.deepEqual(calls.slice(0, 2), ['receiver-boundary', 'browser-launch']);
+  assert.deepEqual(
+    calls.filter(call => Array.isArray(call) && call[0] === 'promotion'),
+    [
+      ['promotion', {width: 1440, height: 900}, '/'],
+      ['promotion', {width: 1440, height: 900}, '/classes/DurableWorkflow-Client.html'],
+      ['promotion', {width: 768, height: 1024}, '/'],
+      ['promotion', {width: 768, height: 1024}, '/classes/DurableWorkflow-Client.html'],
+      ['promotion', {width: 390, height: 844}, '/'],
+      ['promotion', {width: 390, height: 844}, '/classes/DurableWorkflow-Client.html'],
+      ['promotion', {width: 640, height: 360}, '/'],
+      ['promotion', {width: 640, height: 360}, '/classes/DurableWorkflow-Client.html'],
+    ],
+  );
+});
+
+test('the deployment entrypoint requires one exact source revision', () => {
+  assert.equal(sourceRevisionArgument(['--source-revision', SOURCE_REVISION]), SOURCE_REVISION);
+  assert.throws(() => sourceRevisionArgument([]), /Usage:/);
+  assert.throws(
+    () => sourceRevisionArgument(['--source-revision', 'main']),
+    /40-character lowercase commit SHA/,
+  );
 });
