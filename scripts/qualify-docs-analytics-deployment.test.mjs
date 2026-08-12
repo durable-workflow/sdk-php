@@ -57,11 +57,61 @@ function promotionPage(eventUrl, destination) {
     </html>`;
 }
 
+function earlyAccessPage({
+  formPath = '/early-access',
+  retainSource = true,
+  selectedIntent = 'cohort',
+} = {}) {
+  return `<!doctype html>
+    <html>
+      <body>
+        <main>
+          <h1>Request Cloud early access</h1>
+          <form action="${formPath}">
+            <input type="hidden" name="promotion_source" value="">
+            <label><input type="radio" name="intent" value="updates"> Product and pricing updates</label>
+            <label><input type="radio" name="intent" value="evaluate"> Evaluate Cloud</label>
+            <label><input type="radio" name="intent" value="cohort"> Join the launch cohort</label>
+          </form>
+        </main>
+        <script>
+          const source = new URLSearchParams(location.hash.slice(1)).get('source');
+          if (source === '${PROMOTION_SOURCE}') {
+            ${retainSource ? 'document.querySelector(\'[name="promotion_source"]\').value = source;' : ''}
+            document.querySelector('[name="intent"][value="${selectedIntent}"]').checked = true;
+          }
+          history.replaceState(null, '', location.pathname + location.search);
+        </script>
+      </body>
+    </html>`;
+}
+
 before(async () => {
   promotionServer = http.createServer(async (request, response) => {
+    if (request.method === 'GET' && request.url === '/favicon.ico') {
+      response.writeHead(204);
+      response.end();
+      return;
+    }
     if (request.method === 'GET' && request.url === '/early-access') {
       response.writeHead(200, {'content-type': 'text/html'});
-      response.end('<!doctype html><title>Early access</title><main>Early access form</main>');
+      response.end(earlyAccessPage());
+      return;
+    }
+    if (request.method === 'GET' && request.url === '/unattributed-early-access') {
+      response.writeHead(200, {'content-type': 'text/html'});
+      response.end(earlyAccessPage({
+        formPath: '/unattributed-early-access',
+        retainSource: false,
+      }));
+      return;
+    }
+    if (request.method === 'GET' && request.url === '/wrong-intent-early-access') {
+      response.writeHead(200, {'content-type': 'text/html'});
+      response.end(earlyAccessPage({
+        formPath: '/wrong-intent-early-access',
+        selectedIntent: 'updates',
+      }));
       return;
     }
     if (request.method !== 'POST') {
@@ -92,12 +142,21 @@ before(async () => {
   promotionOrigin = `http://127.0.0.1:${promotionAddress.port}`;
 
   server = http.createServer((request, response) => {
-    if (request.url === '/promotion' || request.url === '/failed-promotion') {
+    if (
+      request.url === '/promotion'
+      || request.url === '/failed-promotion'
+      || request.url === '/unattributed-promotion'
+      || request.url === '/wrong-intent-promotion'
+    ) {
       const failed = request.url === '/failed-promotion';
+      const destinationPath = {
+        '/unattributed-promotion': '/unattributed-early-access',
+        '/wrong-intent-promotion': '/wrong-intent-early-access',
+      }[request.url] ?? '/early-access';
       response.writeHead(200, {'content-type': 'text/html'});
       response.end(promotionPage(
         `${promotionOrigin}/${failed ? 'failed-promotion-events' : 'promotion-events'}`,
-        `${promotionOrigin}/early-access#source=${PROMOTION_SOURCE}`,
+        `${promotionOrigin}${destinationPath}#source=${PROMOTION_SOURCE}`,
       ));
       return;
     }
@@ -277,6 +336,42 @@ test('promotion qualification rejects an unsuccessful receiver response', async 
         eventUrl: `${promotionOrigin}/failed-promotion-events`,
       }),
       /receiver rejected the promotion impression/,
+    );
+  } finally {
+    await context.close();
+  }
+});
+
+test('promotion qualification rejects a destination that drops source attribution', async () => {
+  const context = await browser.newContext({
+    reducedMotion: 'reduce',
+    viewport: {width: 1440, height: 900},
+  });
+  try {
+    await assert.rejects(
+      qualifyPromotionTransport(context, `${origin}/unattributed-promotion`, {
+        destination: `${promotionOrigin}/unattributed-early-access#source=${PROMOTION_SOURCE}`,
+        eventUrl: `${promotionOrigin}/promotion-events`,
+      }),
+      /did not retain the bounded promotion source/,
+    );
+  } finally {
+    await context.close();
+  }
+});
+
+test('promotion qualification rejects a destination that selects the wrong intent', async () => {
+  const context = await browser.newContext({
+    reducedMotion: 'reduce',
+    viewport: {width: 1440, height: 900},
+  });
+  try {
+    await assert.rejects(
+      qualifyPromotionTransport(context, `${origin}/wrong-intent-promotion`, {
+        destination: `${promotionOrigin}/wrong-intent-early-access#source=${PROMOTION_SOURCE}`,
+        eventUrl: `${promotionOrigin}/promotion-events`,
+      }),
+      /did not select the intended launch cohort/,
     );
   } finally {
     await context.close();

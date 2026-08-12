@@ -143,10 +143,14 @@ export async function qualifyPromotionTransport(context, target, contract = {}) 
   const promotionRequests = [];
   const promotionResponses = [];
 
-  page.on('console', message => {
-    if (message.type() === 'error') errors.push(`console: ${message.text()}`);
-  });
-  page.on('pageerror', error => errors.push(`page: ${error.message}`));
+  function capturePageErrors(browserPage) {
+    browserPage.on('console', message => {
+      if (message.type() === 'error') errors.push(`console: ${message.text()}`);
+    });
+    browserPage.on('pageerror', error => errors.push(`page: ${error.message}`));
+  }
+
+  capturePageErrors(page);
   context.on('request', request => {
     if (request.url() === eventUrl) promotionRequests.push(request);
   });
@@ -174,19 +178,46 @@ export async function qualifyPromotionTransport(context, target, contract = {}) 
   await promotionRequestContract(promotionRequests[0], targetUrl.origin, source, 'impression');
   assert.equal(await action.getAttribute('href'), destination, 'The promotion lost its public early-access destination.');
 
-  const destinationPagePromise = context.waitForEvent('page');
+  const destinationPagePromise = context.waitForEvent('page', destinationPage => {
+    capturePageErrors(destinationPage);
+    return true;
+  });
   await action.click({modifiers: ['Control']});
   const destinationPage = await destinationPagePromise;
-  await destinationPage.waitForLoadState('load');
+  await destinationPage.waitForURL(url => {
+    const resolvedUrl = new URL(url);
+    resolvedUrl.hash = '';
+    return resolvedUrl.href === destinationUrl;
+  }, {waitUntil: 'load'});
   await waitForCount(promotionResponses, 2, 'Promotion click did not reach the deployed receiver');
   await delay(150);
   assert.equal(promotionRequests.length, 2, 'The deployed page emitted duplicate promotion events.');
   assert.equal(promotionResponses.length, 2, 'The receiver returned duplicate promotion responses.');
   assert.equal(promotionResponses[1].status(), 204, 'The deployed receiver rejected the promotion click.');
   await promotionRequestContract(promotionRequests[1], targetUrl.origin, source, 'click');
-  assert.equal(destinationPage.url(), destination, 'The promotion did not resolve to the public early-access form.');
-  const destinationResponse = await destinationPage.reload({waitUntil: 'load'});
-  assert.equal(destinationResponse.status(), 200, 'The public early-access form did not return HTTP 200.');
+  assert.equal(destinationPage.url(), destinationUrl, 'The public early-access form did not consume the source attribution fragment.');
+  const destinationStatus = await destinationPage.evaluate(() => (
+    performance.getEntriesByType('navigation')[0]?.responseStatus
+  ));
+  assert.equal(destinationStatus, 200, 'The public early-access form did not return HTTP 200.');
+  const promotionSourceField = destinationPage.locator('input[type="hidden"][name="promotion_source"]');
+  const destinationForm = destinationPage.locator('form').filter({has: promotionSourceField});
+  await destinationForm.waitFor();
+  assert.equal(
+    await destinationForm.evaluate(form => form.action),
+    destinationUrl,
+    'The public early-access form lost its submission destination.',
+  );
+  assert.equal(
+    await promotionSourceField.inputValue(),
+    source,
+    'The public early-access form did not retain the bounded promotion source.',
+  );
+  assert.equal(
+    await destinationForm.locator('input[type="radio"][name="intent"]:checked').inputValue(),
+    'cohort',
+    'The public early-access form did not select the intended launch cohort.',
+  );
   assert.deepEqual(errors, [], 'The deployed promotion contract emitted browser errors.');
 }
 
@@ -230,7 +261,7 @@ export async function qualifyDeployedAnalytics() {
     await browser.close();
   }
 
-  process.stdout.write('Confirmed deployed Cloudflare transport and bounded PHP promotion impressions and clicks across required viewports.\n');
+  process.stdout.write('Confirmed deployed Cloudflare transport, bounded PHP promotion impressions and clicks, and attributed early-access form across required viewports.\n');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
