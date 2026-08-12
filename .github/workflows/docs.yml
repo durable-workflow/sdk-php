@@ -87,6 +87,8 @@ jobs:
             --exclude-path build/api/graphs/classes.html
             build/api/**/*.html build/api/**/*.css
       - run: npx playwright install chromium --with-deps
+      - name: Test missing-resource browser evidence
+        run: npm run test:docs-browser-failures
       - name: Test deployed Cloudflare transport qualification
         run: npm run test:docs-analytics-deployment
       - name: Check Cloudflare analytics in Chromium

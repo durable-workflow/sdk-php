@@ -1,7 +1,10 @@
 {% extends 'base::layout.html.twig' %}
 
 {% block stylesheets %}
-    {{ parent() }}
+    <link rel="stylesheet" href="css/template.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.23.0/themes/prism-okaidia.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.23.0/plugins/line-numbers/prism-line-numbers.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.23.0/plugins/line-highlight/prism-line-highlight.css">
     <link rel="stylesheet" href="/assets/api-reference.css">
 {% endblock %}
 

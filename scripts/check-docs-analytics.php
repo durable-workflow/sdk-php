@@ -50,17 +50,29 @@ $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($buildD
 $htmlCount = 0;
 $nestedHtmlCount = 0;
 $forbidden = '/googletagmanager\.com|google-analytics\.com|G-HD1YHT442Y|durable-workflow\.analytics-consent|durable-workflow-analytics-(?:consent|preferences)|localStorage|_ga(?:\\b|_)/i';
+$externalFont = '/fonts\.(?:googleapis|gstatic)\.com|font-awesome|@font-face\s*\{[^}]*url\(\s*[\'\"]?https?:/is';
 
 foreach ($iterator as $file) {
-    if (! $file->isFile() || $file->getExtension() !== 'html') {
+    if (! $file->isFile() || ! in_array($file->getExtension(), ['css', 'html'], true)) {
+        continue;
+    }
+
+    $contents = file_get_contents($file->getPathname());
+    if ($contents === false) {
+        throw new RuntimeException("{$file->getPathname()} could not be read.");
+    }
+    if (preg_match($externalFont, $contents)) {
+        throw new RuntimeException("{$file->getPathname()} depends on an external font resource.");
+    }
+    if ($file->getExtension() !== 'html') {
         continue;
     }
 
     $htmlCount++;
     $relativePath = str_replace('\\', '/', substr($file->getPathname(), strlen(rtrim($buildDirectory, '/\\')) + 1));
     $isNestedPage = str_contains($relativePath, '/');
-    $html = file_get_contents($file->getPathname());
-    if ($html === false || substr_count($html, 'type="module" src="/analytics/analytics.js"') !== 1) {
+    $html = $contents;
+    if (substr_count($html, 'type="module" src="/analytics/analytics.js"') !== 1) {
         throw new RuntimeException("{$file->getPathname()} must load one root-relative module analytics runtime.");
     }
     if (preg_match($forbidden, $html)) {

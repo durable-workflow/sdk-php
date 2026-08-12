@@ -210,6 +210,7 @@ class WorkflowQualificationContractTest(unittest.TestCase):
         self.assertIn("scripts/check-public-boundary.sh", focused)
         self.assertIn("composer test", focused)
         self.assertIn("npm run test:docs-analytics-deployment", focused)
+        self.assertIn("npm run test:docs-browser-failures", focused)
         self.assertIn("--offline", focused)
         self.assertIn("npx playwright install chromium --with-deps", focused)
         self.assertIn("npm run check:docs-analytics-browser -- build/api", focused)
@@ -269,6 +270,7 @@ class WorkflowQualificationContractTest(unittest.TestCase):
                     ),
                 )
                 self.assertNotIn("--method get", workflow)
+                self.assertIn("npm run test:docs-browser-failures", workflow)
                 self.assertIn("npm run check:docs-analytics-browser -- build/api", workflow)
 
     def test_link_regression_fixtures_have_one_required_ci_owner(self) -> None:

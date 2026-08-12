@@ -123,7 +123,7 @@ def path_categories(path: str) -> set[str]:
             "scripts/render-quickstart-docs.php",
         }
         or path.startswith(".phpdoc/")
-        or path.startswith("scripts/qualify-docs-")
+        or path.startswith(("scripts/check-docs-browser-", "scripts/qualify-docs-"))
     ):
         categories.add("docs-browser")
 

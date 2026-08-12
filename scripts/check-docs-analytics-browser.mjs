@@ -7,6 +7,11 @@ import net from 'node:net';
 import path from 'node:path';
 import process from 'node:process';
 import {chromium} from 'playwright';
+import {
+  assertNoBrowserFailures,
+  formatHttpFailure,
+  formatRequestFailure,
+} from './check-docs-browser-failures.mjs';
 
 const SITE_HOSTNAME = 'php.durable-workflow.com';
 const TEST_TOKEN = '00000000000000000000000000000000';
@@ -14,6 +19,7 @@ const BEACON_URL = 'https://static.cloudflareinsights.com/beacon.min.js';
 const RUM_URL = 'https://cloudflareinsights.com/cdn-cgi/rum';
 const PROMOTION_EVENT_URL = 'https://cloud.durable-workflow.com/early-access/promotion-events';
 const PROMOTION_SOURCE = 'sdk-php-reference';
+const cycleCount = 2;
 const buildDirectory = path.resolve(process.argv[2] ?? 'build/api');
 const runtimeTemplate = (await readFile(path.join(buildDirectory, 'analytics/analytics.js'), 'utf8'))
   .replace('__CLOUDFLARE_WEB_ANALYTICS_TOKEN__', TEST_TOKEN);
@@ -476,7 +482,16 @@ async function assertFloatingUtilityGeometry(page, label, expectedVisible = true
   }
 }
 
-async function exercisePage(browser, origin, viewportName, viewport, pageName, pagePath, edgeInjected = false) {
+async function exercisePage(
+  browser,
+  origin,
+  viewportName,
+  viewport,
+  pageName,
+  pagePath,
+  edgeInjected = false,
+  cycle = null,
+) {
   const context = await browser.newContext({viewport, reducedMotion: 'reduce'});
   const page = await context.newPage();
   const consoleErrors = [];
@@ -495,12 +510,13 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
   page.on('requestfailed', request => {
     const errorText = request.failure()?.errorText ?? 'unknown failure';
     if (request.url() === promotionEventUrl && errorText === 'net::ERR_ABORTED') return;
-    requestFailures.push(`${request.method()} ${request.url()}: ${errorText}`);
+    requestFailures.push(formatRequestFailure(request));
   });
   page.on('response', response => {
-    if (response.status() >= 400) httpErrors.push(`${response.status()} ${response.request().method()} ${response.url()}`);
+    if (response.status() >= 400) httpErrors.push(formatHttpFailure(response));
   });
-  const label = `${pageName} ${viewportName}${edgeInjected ? ' with edge injection' : ''}`;
+  const cycleLabel = cycle === null ? '' : ` cycle ${cycle}`;
+  const label = `${pageName} ${viewportName}${cycleLabel}${edgeInjected ? ' with edge injection' : ''}`;
 
   try {
     await page.route('**/analytics/analytics.js', route => route.fulfill({
@@ -530,6 +546,7 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
     }
 
     const response = await page.goto(`${origin}${renderedPagePath}`, {waitUntil: 'networkidle'});
+    assertNoBrowserFailures(label, {httpErrors, requestFailures, pageErrors, consoleErrors});
     assert.equal(response?.status(), 200, `${label} did not render`);
     await page.locator('.phpdocumentor-content').waitFor();
     await page.waitForFunction(() => window.__cloudflareBeaconExecutions === 1);
@@ -585,10 +602,7 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
       await assertOnThisPageUtilityReachability(page, `${label} default`);
     }
     if (edgeInjected) {
-      assert.deepEqual(httpErrors, [], `${label} emitted HTTP errors (status, method, URL)`);
-      assert.deepEqual(requestFailures, [], `${label} emitted request failures (method, URL, reason)`);
-      assert.deepEqual(pageErrors, [], `${label} emitted page errors`);
-      assert.deepEqual(consoleErrors, [], `${label} emitted console errors`);
+      assertNoBrowserFailures(label, {httpErrors, requestFailures, pageErrors, consoleErrors});
       return;
     }
     await assertFloatingUtilityGeometry(page, `${label} default`, !narrowQuickstart);
@@ -650,10 +664,7 @@ async function exercisePage(browser, origin, viewportName, viewport, pageName, p
       [expectedPromotionRequest('impression'), expectedPromotionRequest('click')],
       `${label} did not emit exactly one bounded promotion click`,
     );
-    assert.deepEqual(httpErrors, [], `${label} emitted HTTP errors (status, method, URL)`);
-    assert.deepEqual(requestFailures, [], `${label} emitted request failures (method, URL, reason)`);
-    assert.deepEqual(pageErrors, [], `${label} emitted page errors`);
-    assert.deepEqual(consoleErrors, [], `${label} emitted console errors`);
+    assertNoBrowserFailures(label, {httpErrors, requestFailures, pageErrors, consoleErrors});
   } finally {
     await context.close();
     if (edgeFixturePath) await unlink(edgeFixturePath);
@@ -729,9 +740,11 @@ try {
   }
   browser = await chromium.launch(launchOptions);
   const origin = `http://${SITE_HOSTNAME}:${port}`;
-  for (const [viewportName, viewport] of viewports) {
-    for (const [pageName, pagePath] of pages) {
-      await exercisePage(browser, origin, viewportName, viewport, pageName, pagePath);
+  for (let cycle = 1; cycle <= cycleCount; cycle += 1) {
+    for (const [viewportName, viewport] of viewports) {
+      for (const [pageName, pagePath] of pages) {
+        await exercisePage(browser, origin, viewportName, viewport, pageName, pagePath, false, cycle);
+      }
     }
   }
   const desktopViewport = viewports.find(([name]) => name === 'desktop')?.[1];

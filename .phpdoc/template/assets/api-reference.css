@@ -1,3 +1,17 @@
+:root {
+  --font-primary: Arial, Helvetica, sans-serif;
+  --font-secondary: Arial, Helvetica, sans-serif;
+  --font-monospace: "Courier New", Courier, monospace;
+}
+
+.phpdocumentor-owned-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  fill: currentcolor;
+  vertical-align: -0.125em;
+}
+
 .phpdocumentor .phpdocumentor-content {
   padding-inline-end: calc(2.5rem + var(--spacing-lg));
 }

@@ -1,0 +1,8 @@
+{% import 'components/macros/anchor.macro.twig' as anchor %}
+{%- set base = link(on)|split('#')|first -%}
+{%- set fragment = anchor.for_element(on, at) -%}
+<a href="{{ fragment ? base ~ '#' ~ fragment : base }}" class="headerlink" aria-label="Permalink">
+    <svg class="phpdocumentor-owned-icon" aria-hidden="true" viewBox="0 0 24 24">
+        <path d="M10.6 13.4a1 1 0 0 1 0-1.4l3-3a3 3 0 0 1 4.2 4.2l-2 2a3 3 0 0 1-4.2 0 1 1 0 0 1 1.4-1.4 1 1 0 0 0 1.4 0l2-2a1 1 0 0 0-1.4-1.4l-3 3a1 1 0 0 1-1.4 0Zm2.8-2.8a1 1 0 0 1 0 1.4l-3 3a1 1 0 0 0 1.4 1.4l2-2a1 1 0 1 1 1.4 1.4l-2 2A3 3 0 0 1 9 13.6l3-3a1 1 0 0 1 1.4 0Z"/>
+    </svg>
+</a>
