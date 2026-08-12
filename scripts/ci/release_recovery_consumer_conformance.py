@@ -1539,6 +1539,11 @@ def case_trusted_github_api_transport(module: ModuleType) -> None:
     with (
         mock.patch.dict(module.os.environ, {"GITHUB_ACTIONS": "true"}),
         mock.patch.object(
+            module.urllib.request,
+            "urlopen",
+            side_effect=AssertionError("runner transport bypassed the GitHub CLI mock"),
+        ) as open_url,
+        mock.patch.object(
             module.subprocess,
             "run",
             side_effect=(
@@ -1552,6 +1557,7 @@ def case_trusted_github_api_transport(module: ModuleType) -> None:
     if (
         result != []
         or sleeps != [1]
+        or open_url.called
         or command[:7] != ["gh", "api", "--hostname", "github.com", "--include", "--method", "GET"]
         or command[-1] != "repos/durable-workflow/.github/releases"
         or "--insecure" in command
