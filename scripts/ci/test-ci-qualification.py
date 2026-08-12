@@ -229,27 +229,45 @@ class WorkflowQualificationContractTest(unittest.TestCase):
                     "e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d",
                     workflow,
                 )
-                self.assertEqual(2, workflow.count("--offline"))
+                self.assertEqual(3, workflow.count("--offline"))
                 self.assertEqual(1, workflow.count("--include-fragments"))
                 self.assertEqual(
                     1,
                     workflow.count("--root-dir ${{ github.workspace }}"),
                 )
-                self.assertIn(
-                    "--base-url ${{ github.workspace }}/build/api/",
-                    workflow,
+                self.assertEqual(
+                    1,
+                    workflow.count("--base-url /github/workspace/build/api/"),
                 )
-                self.assertNotIn("/github/workspace", workflow)
+                self.assertEqual(
+                    1,
+                    workflow.count(
+                        "--base-url ${{ github.workspace }}/build/api/"
+                    ),
+                )
+                self.assertIn(
+                    "github.server_url == 'https://github.com'", workflow
+                )
+                self.assertIn(
+                    "github.server_url != 'https://github.com'", workflow
+                )
                 self.assertNotIn("--base-url file:", workflow)
                 self.assertNotIn(
                     "--root-dir ${{ github.workspace }}/build/api",
                     workflow,
                 )
-                self.assertIn(
-                    "--exclude-path build/api/graphs/classes.html",
-                    workflow,
+                self.assertEqual(
+                    2,
+                    workflow.count(
+                        "--exclude-path build/api/graphs/classes.html"
+                    ),
                 )
-                self.assertIn("build/api/**/*.html build/api/**/*.css", workflow)
+                self.assertEqual(
+                    2,
+                    workflow.count(
+                        "build/api/**/*.html build/api/**/*.css"
+                    ),
+                )
                 self.assertNotIn("--method get", workflow)
                 self.assertIn("npm run check:docs-analytics-browser -- build/api", workflow)
 

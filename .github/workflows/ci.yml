@@ -186,8 +186,26 @@ jobs:
             --include-fragments
             --root-dir ${{ github.workspace }}
             README.md docs/*.md
-      - name: Check generated documentation links offline
-        if: ${{ contains(needs.qualification-route.outputs.categories, 'docs') }}
+      - name: Check generated documentation links offline on GitHub
+        if: >-
+          ${{
+            contains(needs.qualification-route.outputs.categories, 'docs')
+            && github.server_url == 'https://github.com'
+          }}
+        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
+        with:
+          args: >-
+            --no-progress
+            --offline
+            --base-url /github/workspace/build/api/
+            --exclude-path build/api/graphs/classes.html
+            build/api/**/*.html build/api/**/*.css
+      - name: Check generated documentation links offline on alternate CI
+        if: >-
+          ${{
+            contains(needs.qualification-route.outputs.categories, 'docs')
+            && github.server_url != 'https://github.com'
+          }}
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:
           args: >-
@@ -411,7 +429,18 @@ jobs:
             --include-fragments
             --root-dir ${{ github.workspace }}
             README.md docs/*.md
-      - name: Check generated documentation links offline
+      - name: Check generated documentation links offline on GitHub
+        if: ${{ github.server_url == 'https://github.com' }}
+        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
+        with:
+          args: >-
+            --no-progress
+            --offline
+            --base-url /github/workspace/build/api/
+            --exclude-path build/api/graphs/classes.html
+            build/api/**/*.html build/api/**/*.css
+      - name: Check generated documentation links offline on alternate CI
+        if: ${{ github.server_url != 'https://github.com' }}
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:
           args: >-
