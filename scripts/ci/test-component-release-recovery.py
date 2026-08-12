@@ -852,6 +852,39 @@ class PublicClientRetryTest(unittest.TestCase):
         open_url.assert_not_called()
         run.assert_called_once()
 
+    def test_runner_rate_limit_headers_are_case_insensitive_and_use_reset_delay(self) -> None:
+        sleeps: list[float] = []
+        client = self.recovery.PublicClient(
+            token="test-token",
+            max_attempts=2,
+            retry_base_seconds=1,
+            sleep=sleeps.append,
+            now=lambda: 100,
+        )
+        with (
+            mock.patch.dict(self.recovery.os.environ, {"GITHUB_ACTIONS": "true"}),
+            mock.patch.object(
+                self.recovery.subprocess,
+                "run",
+                side_effect=[
+                    github_cli_result(
+                        403,
+                        b'{"message":"Forbidden"}',
+                        **{
+                            "x-ratelimit-remaining": "0",
+                            "X-rAtElImIt-ReSeT": "112",
+                        },
+                    ),
+                    github_cli_result(),
+                ],
+            ) as run,
+        ):
+            result = client.json("https://api.github.com/repos/durable-workflow/.github/releases")
+
+        self.assertEqual([], result)
+        self.assertEqual([12], sleeps)
+        self.assertEqual(2, run.call_count)
+
     def test_retries_service_failures_connection_resets_and_timeouts(self) -> None:
         failures = (
             ("service", github_http_error(503, **{"Retry-After": "4"}), 4),

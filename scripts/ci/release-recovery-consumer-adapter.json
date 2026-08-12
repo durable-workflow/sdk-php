@@ -3,8 +3,8 @@
   "consumer": "scripts/ci/component-release-recovery.py",
   "contract": {
     "path": "scripts/ci/release-recovery-consumer-contract.json",
-    "sha256": "f35d763728c6c0d6a27e61a76f3835bf2283977605588c31ad40d1dc7a83327b",
-    "version": "1.8.1"
+    "sha256": "72bf2ef467a6153ff347c3210cb91aa99bf340fa1a5556715f3a7808468aeedf",
+    "version": "1.8.2"
   },
   "distribution_verification": {
     "command": [
@@ -16,7 +16,7 @@
   "schema": "durable-workflow.release-recovery-consumer-adapter/v1",
   "suite": {
     "path": "scripts/ci/release_recovery_consumer_conformance.py",
-    "sha256": "c222389a0ac557aeca48dae5a65ecd171bc9c934193169a84c35d3eb79f5315d"
+    "sha256": "87ec235eb15d1abb63abf0199607f66d0a49faa6903217858348bc0be67f309c"
   },
   "target_branch": "main"
 }

@@ -301,13 +301,21 @@ class PublicClient:
             return "response body unavailable"
 
     @staticmethod
-    def _is_rate_limited(error: urllib.error.HTTPError, detail: str) -> bool:
+    def _header_value(headers: Mapping[str, str], name: str) -> str | None:
+        normalized_name = name.casefold()
+        return next(
+            (value for header_name, value in headers.items() if header_name.casefold() == normalized_name),
+            None,
+        )
+
+    @classmethod
+    def _is_rate_limited(cls, error: urllib.error.HTTPError, detail: str) -> bool:
         headers = error.headers or {}
         return error.code == 429 or (
             error.code == 403
             and (
-                headers.get("Retry-After") is not None
-                or headers.get("X-RateLimit-Remaining") == "0"
+                cls._header_value(headers, "Retry-After") is not None
+                or cls._header_value(headers, "X-RateLimit-Remaining") == "0"
                 or "rate limit" in detail.lower()
             )
         )
@@ -333,7 +341,7 @@ class PublicClient:
 
     def _server_retry_delay(self, headers: Mapping[str, str]) -> float | None:
         delays: list[float] = []
-        retry_after = headers.get("Retry-After")
+        retry_after = self._header_value(headers, "Retry-After")
         if retry_after:
             try:
                 delays.append(float(retry_after))
@@ -346,7 +354,7 @@ class PublicClient:
                     if retry_at.tzinfo is None:
                         retry_at = retry_at.replace(tzinfo=dt.UTC)
                     delays.append(retry_at.timestamp() - self.now())
-        rate_limit_reset = headers.get("X-RateLimit-Reset")
+        rate_limit_reset = self._header_value(headers, "X-RateLimit-Reset")
         if rate_limit_reset:
             with contextlib.suppress(ValueError):
                 delays.append(float(rate_limit_reset) - self.now())
@@ -371,7 +379,7 @@ class PublicClient:
         for line in lines[1:]:
             name, present, value = line.partition(b":")
             if present:
-                normalized = "-".join(part.capitalize() for part in name.decode(errors="replace").split("-"))
+                normalized = name.decode(errors="replace").strip().casefold()
                 headers[normalized] = value.decode(errors="replace").strip()
         return int(status_match.group(1)), headers, body
 

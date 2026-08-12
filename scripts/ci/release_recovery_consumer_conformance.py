@@ -1568,6 +1568,38 @@ def case_trusted_github_api_transport(module: ModuleType) -> None:
             "consumer did not retry transient certificate failure through the GitHub CLI trust transport"
         )
 
+    rate_limit_sleeps: list[float] = []
+    rate_limited = module.PublicClient(
+        token="conformance-token",
+        max_attempts=2,
+        retry_base_seconds=1,
+        sleep=rate_limit_sleeps.append,
+        now=lambda: 100,
+    )
+    with (
+        mock.patch.dict(module.os.environ, {"GITHUB_ACTIONS": "true"}),
+        mock.patch.object(
+            module.subprocess,
+            "run",
+            side_effect=(
+                github_cli_result(
+                    403,
+                    b'{"message":"Forbidden"}',
+                    **{
+                        "x-ratelimit-remaining": "0",
+                        "X-rAtElImIt-ReSeT": "112",
+                    },
+                ),
+                github_cli_result(),
+            ),
+        ) as run,
+    ):
+        result = rate_limited.json(url)
+    if result != [] or rate_limit_sleeps != [12] or run.call_count != 2:
+        raise ConformanceError(
+            "consumer did not classify mixed-case GitHub CLI rate-limit headers or honor reset delay"
+        )
+
     persistent = module.PublicClient(
         token="conformance-token",
         max_attempts=2,
