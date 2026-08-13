@@ -63,7 +63,7 @@ jobs:
             --no-progress
             --offline
             --include-fragments
-            --root-dir ${{ github.workspace }}
+            --root-dir .
             scripts/ci/fixtures/docs-links/external-dns-failure.md
       - name: Exercise broken internal link fixture
         id: broken-internal-link
@@ -74,7 +74,7 @@ jobs:
             --no-progress
             --offline
             --include-fragments
-            --root-dir ${{ github.workspace }}
+            --root-dir .
             scripts/ci/fixtures/docs-links/broken-internal.md
       - name: Require broken internal links to fail qualification
         env:
@@ -89,7 +89,7 @@ jobs:
             --no-progress
             --offline
             --include-fragments
-            --root-dir ${{ github.workspace }}
+            --root-dir .
             scripts/ci/fixtures/docs-links/malformed-url.md
       - name: Require malformed URLs to fail qualification
         env:
@@ -193,7 +193,7 @@ jobs:
             --no-progress
             --offline
             --include-fragments
-            --root-dir ${{ github.workspace }}
+            --root-dir .
             README.md docs/*.md
       - name: Check rendered documentation links
         if: ${{ contains(needs.qualification-route.outputs.categories, 'docs') }}
@@ -202,7 +202,7 @@ jobs:
           args: >-
             --no-progress
             --offline
-            --root-dir ${{ github.workspace }}/build/site
+            --root-dir build/site
             build/site
       - name: Install responsive documentation browser dependencies
         if: ${{ contains(needs.qualification-route.outputs.categories, 'docs-browser') }}
@@ -419,7 +419,7 @@ jobs:
             --no-progress
             --offline
             --include-fragments
-            --root-dir ${{ github.workspace }}
+            --root-dir .
             README.md docs/*.md
       - name: Check rendered documentation links
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
@@ -427,7 +427,7 @@ jobs:
           args: >-
             --no-progress
             --offline
-            --root-dir ${{ github.workspace }}/build/site
+            --root-dir build/site
             build/site
       - run: npx playwright install chromium --with-deps
       - name: Test missing-resource browser evidence

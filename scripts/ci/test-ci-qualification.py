@@ -235,6 +235,14 @@ class WorkflowQualificationContractTest(unittest.TestCase):
         self.assertNotIn("matrix:", focused)
 
     def test_source_qualification_uses_only_deterministic_link_checks(self) -> None:
+        for source in (self.source, API_REFERENCE_WORKFLOW.read_text()):
+            root_dirs = re.findall(r"--root-dir\s+(\S+)", source)
+            self.assertGreater(len(root_dirs), 0)
+            self.assertFalse(
+                any(root.startswith(("/", "${{")) for root in root_dirs),
+                "link roots must be portable relative paths",
+            )
+
         workflows = (
             workflow_job_source(self.source, "focused-candidate"),
             workflow_job_source(self.source, "docs"),
@@ -249,16 +257,8 @@ class WorkflowQualificationContractTest(unittest.TestCase):
                 )
                 self.assertEqual(2, workflow.count("--offline"))
                 self.assertEqual(1, workflow.count("--include-fragments"))
-                self.assertEqual(
-                    2,
-                    workflow.count("--root-dir ${{ github.workspace }}"),
-                )
-                self.assertEqual(
-                    1,
-                    workflow.count(
-                        "--root-dir ${{ github.workspace }}/build/site"
-                    ),
-                )
+                root_dirs = re.findall(r"--root-dir\s+(\S+)", workflow)
+                self.assertCountEqual([".", "build/site"], root_dirs)
                 self.assertIn("build/site", workflow)
                 self.assertNotIn("--base-url /github/workspace/build/api/", workflow)
                 self.assertNotIn(
