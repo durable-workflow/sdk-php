@@ -319,16 +319,28 @@ test('live promotion qualification uses only the non-aggregating receiver path',
       destination: `${promotionOrigin}/early-access#source=${PROMOTION_SOURCE}`,
       eventUrl: `${promotionOrigin}/promotion-events`,
     });
+    assert.equal(context.pages().length, 1, 'promotion qualification must follow the customer same-page navigation');
     assert.deepEqual(
-      promotionEvents.map(event => ({body: event.body, method: event.method, path: event.path})),
+      promotionEvents.map(event => ({
+        body: event.body,
+        headers: {
+          origin: event.headers.origin,
+          secFetchMode: event.headers['sec-fetch-mode'],
+          secFetchSite: event.headers['sec-fetch-site'],
+        },
+        method: event.method,
+        path: event.path,
+      })),
       [
         {
           body: {source: PROMOTION_SOURCE, event: 'qualification'},
+          headers: {origin, secFetchMode: 'cors', secFetchSite: 'same-site'},
           method: 'POST',
           path: '/promotion-events',
         },
         {
           body: {source: PROMOTION_SOURCE, event: 'qualification'},
+          headers: {origin, secFetchMode: 'cors', secFetchSite: 'same-site'},
           method: 'POST',
           path: '/promotion-events',
         },

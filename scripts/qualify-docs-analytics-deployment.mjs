@@ -124,10 +124,17 @@ export async function verifyDeployedRevision(sourceRevision, contract = {}) {
   assert.fail(`The exact deployed PHP documentation candidate was not confirmed: ${lastObservation}.`);
 }
 
-async function promotionRequestContract(request, targetOrigin, source, event) {
-  const headers = await request.allHeaders();
-  assert.deepEqual(JSON.parse(request.postData() || 'null'), {source, event});
-  assert.equal(request.method(), 'POST');
+function normalizedHeaders(headers) {
+  return Object.freeze(Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]),
+  ));
+}
+
+function promotionRequestContract(request, targetOrigin, source, event, eventUrl) {
+  assert.deepEqual(JSON.parse(request.body || 'null'), {source, event});
+  assert.equal(request.method, 'POST');
+  assert.equal(request.url, eventUrl);
+  const {headers} = request;
   assert.equal(headers.authorization, undefined, 'Promotion analytics sent authorization data.');
   assert.equal(headers.cookie, undefined, 'Promotion analytics sent cookies.');
   assert.equal(headers['content-type'], 'text/plain');
@@ -277,6 +284,8 @@ export async function qualifyPromotionTransport(context, target, contract = {}) 
   const promotionRequests = [];
   const promotionResponses = [];
   const initiatedPromotionEvents = [];
+  const ignoredNetworkRequests = new Set();
+  const pendingPromotionRequests = new Map();
 
   function capturePageErrors(browserPage) {
     browserPage.on('console', message => {
@@ -286,13 +295,49 @@ export async function qualifyPromotionTransport(context, target, contract = {}) 
   }
 
   capturePageErrors(page);
+  // Playwright can lose Chromium-generated fetch headers after this page is replaced by same-tab navigation.
+  // Pair the raw request events now so the qualification asserts an immutable pre-navigation snapshot.
+  const networkSession = await context.newCDPSession(page);
+  await networkSession.send('Network.enable');
+  function capturePromotionRequest(requestId) {
+    const observation = pendingPromotionRequests.get(requestId);
+    if (!observation?.request) return;
+    if (observation.request.url !== eventUrl) {
+      pendingPromotionRequests.delete(requestId);
+      return;
+    }
+    if (!observation.headers) return;
+
+    promotionRequests.push(Object.freeze({
+      body: observation.request.postData ?? null,
+      headers: normalizedHeaders({...observation.request.headers, ...observation.headers}),
+      method: observation.request.method,
+      url: observation.request.url,
+    }));
+    pendingPromotionRequests.delete(requestId);
+  }
+  networkSession.on('Network.requestWillBeSent', event => {
+    if (event.request.url !== eventUrl) {
+      if (pendingPromotionRequests.delete(event.requestId)) return;
+      ignoredNetworkRequests.add(event.requestId);
+      return;
+    }
+    const observation = pendingPromotionRequests.get(event.requestId) ?? {};
+    observation.request = event.request;
+    pendingPromotionRequests.set(event.requestId, observation);
+    capturePromotionRequest(event.requestId);
+  });
+  networkSession.on('Network.requestWillBeSentExtraInfo', event => {
+    if (ignoredNetworkRequests.delete(event.requestId)) return;
+    const observation = pendingPromotionRequests.get(event.requestId) ?? {};
+    observation.headers = event.headers;
+    pendingPromotionRequests.set(event.requestId, observation);
+    capturePromotionRequest(event.requestId);
+  });
   await page.exposeFunction('recordPromotionQualificationInitiation', payload => {
     initiatedPromotionEvents.push(payload);
   });
   await page.addInitScript({content: promotionQualificationRewriteScript(eventUrl, source)});
-  context.on('request', request => {
-    if (request.url() === eventUrl) promotionRequests.push(request);
-  });
   context.on('requestfailed', request => {
     if (request.url() === eventUrl && request.failure()?.errorText === 'net::ERR_ABORTED') return;
     if (request.url() === eventUrl || request.url().startsWith(destinationUrl)) {
@@ -310,29 +355,33 @@ export async function qualifyPromotionTransport(context, target, contract = {}) 
   const action = promotion.locator('[data-promotion-action="early-access"]');
   await promotion.waitFor();
   await waitForCount(promotionResponses, 1, 'Promotion qualification did not reach the deployed receiver');
+  await waitForCount(promotionRequests, 1, 'Promotion qualification request metadata was not observable');
   await delay(150);
   assert.equal(promotionRequests.length, 1, 'The deployed page emitted more than one initial qualification.');
   assert.equal(promotionResponses.length, 1, 'The receiver returned more than one initial qualification response.');
-  await promotionRequestContract(promotionRequests[0], targetUrl.origin, source, QUALIFICATION_EVENT);
+  promotionRequestContract(promotionRequests[0], targetUrl.origin, source, QUALIFICATION_EVENT, eventUrl);
   await promotionResponseContract(promotionResponses[0], targetUrl.origin);
   assert.equal(await action.getAttribute('href'), destination, 'The promotion lost its public early-access destination.');
 
-  const destinationPagePromise = context.waitForEvent('page', destinationPage => {
-    capturePageErrors(destinationPage);
-    return true;
-  });
-  await action.click({modifiers: ['Control']});
-  const destinationPage = await destinationPagePromise;
-  await destinationPage.waitForURL(url => {
-    const resolvedUrl = new URL(url);
-    resolvedUrl.hash = '';
-    return resolvedUrl.href === destinationUrl;
-  }, {waitUntil: 'load'});
+  await context.route(destinationUrl, async route => {
+    await waitForCount(promotionResponses, 2, 'Promotion click qualification did not reach the deployed receiver');
+    await route.continue();
+  }, {times: 1});
+  await Promise.all([
+    page.waitForURL(url => {
+      const resolvedUrl = new URL(url);
+      resolvedUrl.hash = '';
+      return resolvedUrl.href === destinationUrl;
+    }, {waitUntil: 'load'}),
+    action.click(),
+  ]);
+  const destinationPage = page;
   await waitForCount(promotionResponses, 2, 'Promotion click qualification did not reach the deployed receiver');
+  await waitForCount(promotionRequests, 2, 'Promotion click request metadata was not observable');
   await delay(150);
   assert.equal(promotionRequests.length, 2, 'The deployed page emitted duplicate promotion events.');
   assert.equal(promotionResponses.length, 2, 'The receiver returned duplicate promotion responses.');
-  await promotionRequestContract(promotionRequests[1], targetUrl.origin, source, QUALIFICATION_EVENT);
+  promotionRequestContract(promotionRequests[1], targetUrl.origin, source, QUALIFICATION_EVENT, eventUrl);
   await promotionResponseContract(promotionResponses[1], targetUrl.origin);
   assert.deepEqual(
     initiatedPromotionEvents,
