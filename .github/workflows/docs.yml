@@ -1,4 +1,4 @@
-name: API Reference
+name: PHP developer portal
 
 on:
   push:
@@ -7,7 +7,10 @@ on:
       - '.phpdoc/**'
       - 'src/**'
       - 'docs/**'
+      - '.eleventy.cjs'
       - 'scripts/check-docs-*'
+      - 'scripts/finalize-api-reference.php'
+      - 'scripts/qualify-quickstart-contract*'
       - 'scripts/qualify-docs-analytics*'
       - 'README.md'
       - 'composer.json'
@@ -40,7 +43,17 @@ jobs:
       - run: composer install --no-interaction --prefer-dist
       - run: npm ci
       - run: npm run check:docs-examples
-      - name: Generate phpDocumentor reference
+      - run: npm run test:quickstart-contract-deployment
+      - name: Check repository-owned documentation links offline
+        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
+        with:
+          args: >-
+            --no-progress
+            --offline
+            --include-fragments
+            --root-dir ${{ github.workspace }}
+            README.md docs/*.md
+      - name: Build authored portal and generated API reference
         env:
           CLOUDFLARE_WEB_ANALYTICS_TOKEN: ${{ vars.CLOUDFLARE_WEB_ANALYTICS_TOKEN }}
         run: |
@@ -52,47 +65,29 @@ jobs:
             sed -i "s/__CLOUDFLARE_WEB_ANALYTICS_TOKEN__/$CLOUDFLARE_WEB_ANALYTICS_TOKEN/" \
               .phpdoc/template/analytics/analytics.js
           fi
-          composer docs -- --template="$PWD/.phpdoc/template"
-          php scripts/check-docs-analytics.php build/api
-          cp docs/CNAME build/api/CNAME
-          test -s build/api/index.html
-          test "$(cat build/api/CNAME)" = "php.durable-workflow.com"
-      - name: Check repository-owned documentation links offline
+          composer docs
+          npm run check:docs
+          php scripts/check-docs-analytics.php build/site
+          test -s build/site/index.html
+          test -s build/site/api/index.html
+          test "$(cat build/site/CNAME)" = "php.durable-workflow.com"
+      - name: Check rendered links
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:
           args: >-
             --no-progress
             --offline
-            --include-fragments
-            --root-dir ${{ github.workspace }}
-            README.md docs/*.md
-      - name: Check generated documentation links offline on GitHub
-        if: ${{ github.server_url == 'https://github.com' }}
-        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
-        with:
-          args: >-
-            --no-progress
-            --offline
-            --base-url /github/workspace/build/api/
-            --exclude-path build/api/graphs/classes.html
-            build/api/**/*.html build/api/**/*.css
-      - name: Check generated documentation links offline on alternate CI
-        if: ${{ github.server_url != 'https://github.com' }}
-        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
-        with:
-          args: >-
-            --no-progress
-            --offline
-            --base-url ${{ github.workspace }}/build/api/
-            --exclude-path build/api/graphs/classes.html
-            build/api/**/*.html build/api/**/*.css
+            --root-dir ${{ github.workspace }}/build/site
+            build/site
       - run: npx playwright install chromium --with-deps
       - name: Test missing-resource browser evidence
         run: npm run test:docs-browser-failures
       - name: Test deployed Cloudflare transport qualification
         run: npm run test:docs-analytics-deployment
       - name: Check Cloudflare analytics in Chromium
-        run: npm run check:docs-analytics-browser -- build/api
+        run: npm run check:docs-analytics-browser -- build/site
+      - name: Check portal and API layouts in Chromium
+        run: npm run check:docs-browser
       - name: Bind Pages artifact to the exact source revision
         env:
           SOURCE_REVISION: ${{ github.sha }}
@@ -102,11 +97,11 @@ jobs:
             exit 1
           fi
           printf '{"schema":"durable-workflow.sdk-php.docs-deployment/v1","source_revision":"%s"}\n' \
-            "$SOURCE_REVISION" > build/api/deployment-audit.json
+            "$SOURCE_REVISION" > build/site/deployment-audit.json
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5
         if: github.server_url == 'https://github.com'
         with:
-          path: build/api
+          path: build/site
 
   deploy:
     if: github.server_url == 'https://github.com' && github.ref == 'refs/heads/main'
@@ -127,15 +122,22 @@ jobs:
     if: github.server_url == 'https://github.com' && github.ref == 'refs/heads/main'
     needs: deploy
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          coverage: none
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
         with:
           node-version: '24'
           cache: npm
       - run: npm ci
       - run: npx playwright install chromium --with-deps
+      - name: Qualify deployed quickstart references
+        run: npm run qualify:quickstart-contract-deployment
       - name: Qualify deployed analytics transports
         run: >-
           npm run qualify:docs-analytics-deployment --

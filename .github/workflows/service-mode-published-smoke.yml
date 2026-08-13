@@ -7,6 +7,10 @@ on:
         description: Exact published Packagist version, such as 2.0.0 or 2.0.0-rc.9
         required: true
         type: string
+      server_version:
+        description: Exact qualified Server version declared by the published SDK
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -24,6 +28,15 @@ jobs:
         run: |
           if [[ ! "$SDK_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
             echo "sdk_version must be an exact stable, alpha, beta, or release-candidate version" >&2
+            exit 1
+          fi
+
+      - name: Validate the exact qualified Server version
+        env:
+          SERVER_VERSION: ${{ inputs.server_version }}
+        run: |
+          if [[ ! "$SERVER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+            echo "server_version must be an exact stable, alpha, beta, or release-candidate version" >&2
             exit 1
           fi
 
@@ -83,6 +96,7 @@ jobs:
       - name: Verify the installed SDK release identity
         env:
           SDK_VERSION: ${{ inputs.sdk_version }}
+          SERVER_VERSION: ${{ inputs.server_version }}
         run: |
           consumer="$(cat "$RUNNER_TEMP/service-mode-consumer")"
           SDK_LOCK_FILE="$consumer/composer.lock" php <<'PHP'
@@ -124,6 +138,14 @@ jobs:
           if ($installedReferences === []) {
               throw new RuntimeException('Installed SDK has no immutable source or distribution reference.');
           }
+          $packageManifest = json_decode(
+              file_get_contents(dirname(getenv('SDK_LOCK_FILE')).'/vendor/durable-workflow/sdk/composer.json'),
+              true,
+              flags: JSON_THROW_ON_ERROR,
+          );
+          if (($packageManifest['extra']['durable-workflow']['supported-server-versions'] ?? null) !== getenv('SERVER_VERSION')) {
+              throw new RuntimeException('Requested Server version does not match the published SDK compatibility baseline.');
+          }
           PHP
 
       - name: Complete a class-oriented workflow against the published endpoint
@@ -132,6 +154,7 @@ jobs:
           DURABLE_WORKFLOW_NAMESPACE: ${{ secrets.DURABLE_WORKFLOW_NAMESPACE }}
           DURABLE_WORKFLOW_CLIENT_TOKEN: ${{ secrets.DURABLE_WORKFLOW_CLIENT_TOKEN }}
           DURABLE_WORKFLOW_WORKER_TOKEN: ${{ secrets.DURABLE_WORKFLOW_WORKER_TOKEN }}
+          QUALIFIED_SERVER_VERSION: ${{ inputs.server_version }}
         run: |
           required=(
             DURABLE_WORKFLOW_SERVER_URL
@@ -161,6 +184,19 @@ jobs:
           queue="php-published-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           export DURABLE_WORKFLOW_RUNTIME_URL="$DURABLE_WORKFLOW_SERVER_URL"
           export DURABLE_WORKFLOW_TASK_QUEUE="$queue"
+          php -r '
+            require "vendor/autoload.php";
+            $client = new DurableWorkflow\Client(
+                getenv("DURABLE_WORKFLOW_RUNTIME_URL"),
+                namespace: getenv("DURABLE_WORKFLOW_NAMESPACE"),
+                controlToken: getenv("DURABLE_WORKFLOW_CLIENT_TOKEN"),
+            );
+            $actual = $client->clusterInfo()->version;
+            $expected = getenv("QUALIFIED_SERVER_VERSION");
+            if ($actual !== $expected) {
+                throw new RuntimeException("Published endpoint is Server {$actual}; expected {$expected}.");
+            }
+          '
           example_dir="$consumer/vendor/durable-workflow/sdk/examples"
           for source in bootstrap.php worker.php client.php; do
             if [ ! -f "$example_dir/$source" ]; then

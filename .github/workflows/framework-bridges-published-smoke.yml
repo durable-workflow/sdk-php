@@ -154,9 +154,9 @@ jobs:
           final class PublishedGreetingWorkflow
           {
               #[Workflow('published.laravel.greeter')]
-              public function run(WorkflowContext $context, string $name): \Generator
+              public function run(WorkflowContext $context, string $name): array
               {
-                  return ['greeting' => yield $context->activity('published.laravel.greet', [$name])];
+                  return ['greeting' => $context->activity('published.laravel.greet', [$name])];
               }
           }
           PHP
@@ -206,9 +206,9 @@ jobs:
           final class PublishedGreetingWorkflow
           {
               #[Workflow('published.symfony.greeter')]
-              public function run(WorkflowContext $context, string $name): \Generator
+              public function run(WorkflowContext $context, string $name): array
               {
-                  return ['greeting' => yield $context->activity('published.symfony.greet', [$name])];
+                  return ['greeting' => $context->activity('published.symfony.greet', [$name])];
               }
           }
           PHP

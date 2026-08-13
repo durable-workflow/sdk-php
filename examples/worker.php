@@ -14,9 +14,9 @@ use DurableWorkflow\Worker\WorkflowContext;
 final class GreeterWorkflow
 {
     #[Workflow('quickstart.php.greeter')]
-    public function run(WorkflowContext $context, string $name): Generator
+    public function run(WorkflowContext $context, string $name): array
     {
-        $greeting = yield $context->activity('quickstart.php.greet', [$name]);
+        $greeting = $context->activity('quickstart.php.greet', [$name]);
 
         return ['greeting' => $greeting];
     }

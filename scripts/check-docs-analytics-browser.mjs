@@ -37,9 +37,9 @@ const viewports = [
   ['compact-mobile-height', {width: 390, height: 360}],
 ];
 const pages = [
-  ['neighboring API', '/classes/DurableWorkflow-Worker-WorkflowContext.html'],
-  ['Client API', '/classes/DurableWorkflow-Client.html'],
-  ['root', '/index.html'],
+  ['neighboring API', '/api/classes/DurableWorkflow-Worker-WorkflowContext.html', 'api'],
+  ['Client API', '/api/classes/DurableWorkflow-Client.html', 'api'],
+  ['root', '/index.html', 'portal'],
 ];
 
 async function availablePort() {
@@ -489,6 +489,7 @@ async function exercisePage(
   viewport,
   pageName,
   pagePath,
+  pageKind,
   edgeInjected = false,
   cycle = null,
 ) {
@@ -502,7 +503,6 @@ async function exercisePage(
   const promotionRequestStart = promotionRequests.length;
   let renderedPagePath = pagePath;
   let edgeFixturePath;
-  const narrowQuickstart = pageName === 'root' && viewport.width <= 899;
   page.on('console', message => {
     if (message.type() === 'error') consoleErrors.push(message.text());
   });
@@ -548,7 +548,7 @@ async function exercisePage(
     const response = await page.goto(`${origin}${renderedPagePath}`, {waitUntil: 'networkidle'});
     assertNoBrowserFailures(label, {httpErrors, requestFailures, pageErrors, consoleErrors});
     assert.equal(response?.status(), 200, `${label} did not render`);
-    await page.locator('.phpdocumentor-content').waitFor();
+    await page.locator(pageKind === 'api' ? '.phpdocumentor-content' : '#main-content').waitFor();
     await page.waitForFunction(() => window.__cloudflareBeaconExecutions === 1);
     const analytics = await page.evaluate(({beaconUrl}) => ({
       retiredUi: document.querySelectorAll('.dw-analytics-consent, .dw-analytics-preferences, #durable-workflow-analytics-consent, #durable-workflow-analytics-preferences').length,
@@ -582,6 +582,7 @@ async function exercisePage(
     assert.equal(analytics.loaderIdCount, edgeInjected ? 0 : 1, `${label} duplicate-beacon guard failed`);
     assert.equal(analytics.executions, 1, `${label} executed the beacon more than once`);
     assert.deepEqual(rumRequests, ['POST'], `${label} did not emit one successful RUM request`);
+    await page.locator('.dw-cloud-promotion').scrollIntoViewIfNeeded();
     await waitForPromotionRequests(promotionRequestStart + 1);
     assert.deepEqual(
       promotionRequests.slice(promotionRequestStart),
@@ -591,61 +592,84 @@ async function exercisePage(
     assert.equal(analytics.localStorageEntries, 0, `${label} wrote local storage`);
     assert.equal(analytics.sessionStorageEntries, 0, `${label} wrote session storage`);
     assert.deepEqual(await context.cookies(), [], `${label} wrote cookies`);
-    assert.equal(await page.locator('.phpdocumentor-title__link').count(), 1, `${label} lost its title link`);
-    assert.equal(await page.locator('.phpdocumentor-search__field').count(), 1, `${label} lost search`);
     await assertPromotionActionContainment(page, `${label} default`);
     await assertReachableControls(page, `${label} default`);
-    if (pageName === 'Client API') {
-      await assertTableOfContentsMetadataLegibility(page, `${label} default`);
-    }
-    if (viewportName === 'compact-height') {
-      await assertOnThisPageUtilityReachability(page, `${label} default`);
-    }
     if (edgeInjected) {
       assertNoBrowserFailures(label, {httpErrors, requestFailures, pageErrors, consoleErrors});
       return;
     }
-    await assertFloatingUtilityGeometry(page, `${label} default`, !narrowQuickstart);
+    if (pageKind === 'api') {
+      assert.equal(await page.locator('.phpdocumentor-title__link').count(), 1, `${label} lost its title link`);
+      assert.equal(await page.locator('.phpdocumentor-search__field').count(), 1, `${label} lost search`);
+      if (pageName === 'Client API') {
+        await assertTableOfContentsMetadataLegibility(page, `${label} default`);
+      }
+      if (viewportName === 'compact-height') {
+        await assertOnThisPageUtilityReachability(page, `${label} default`);
+      }
+      await assertFloatingUtilityGeometry(page, `${label} default`);
 
-    const sidebarMenu = page.locator('.phpdocumentor-sidebar__menu-icon');
-    if (await sidebarMenu.isVisible()) {
-      await sidebarMenu.click();
-      assert.equal(await page.locator('.phpdocumentor-sidebar__menu-button').isChecked(), true, `${label} sidebar did not open`);
-      await assertReachableControls(page, `${label} open sidebar`);
-      await assertFloatingUtilitiesClearReadableContent(page, `${label} open sidebar`, '.phpdocumentor-sidebar');
-      await sidebarMenu.click();
+      const sidebarMenu = page.locator('.phpdocumentor-sidebar__menu-icon');
+      if (await sidebarMenu.isVisible()) {
+        assert.equal(await sidebarMenu.textContent(), 'Open navigation', `${label} sidebar did not expose its collapsed state`);
+        assert.match(
+          await sidebarMenu.evaluate(element => getComputedStyle(element).letterSpacing),
+          /^(?:normal|0px)$/,
+          `${label} sidebar restored generated-theme letter spacing`,
+        );
+        await sidebarMenu.click();
+        assert.equal(await page.locator('.phpdocumentor-sidebar__menu-button').isChecked(), true, `${label} sidebar did not open`);
+        assert.equal(await sidebarMenu.textContent(), 'Close navigation', `${label} sidebar did not expose a dismiss action`);
+        assert.equal(
+          await page.locator('.phpdocumentor-sidebar__menu-button').getAttribute('aria-expanded'),
+          'true',
+          `${label} sidebar did not expose its expanded state`,
+        );
+        const title = await page.locator('.phpdocumentor-title__link').evaluate(element => ({
+          clientWidth: element.clientWidth,
+          scrollWidth: element.scrollWidth,
+          text: element.textContent.trim(),
+        }));
+        assert.equal(title.text, 'Durable Workflow PHP SDK — API Reference', `${label} clipped the API title text`);
+        assert.ok(title.scrollWidth <= title.clientWidth, `${label} clipped the API title box`);
+        await assertReachableControls(page, `${label} open sidebar`);
+        await assertFloatingUtilitiesClearReadableContent(page, `${label} open sidebar`, '.phpdocumentor-sidebar');
+        await sidebarMenu.click();
+      }
+
+      const search = page.locator('.phpdocumentor-search__field');
+      await search.pressSequentially('Workflow');
+      await page.locator('.phpdocumentor-search-results:not(.phpdocumentor-search-results--hidden)').waitFor();
+      assert.ok(await page.locator('.phpdocumentor-search-results__entry').count() > 0, `${label} search has no results`);
+      assert.ok(
+        await page.locator('[data-api-reference-search-background][inert]').count() >= 3,
+        `${label} search did not isolate its background`,
+      );
+      assert.equal(await search.isEditable(), true, `${label} search could not refine its query`);
+      await search.press('Control+A');
+      await search.pressSequentially('Client');
+      await page.waitForTimeout(350);
+      await page.waitForFunction(() => (
+        document.querySelector('.phpdocumentor-search__field')?.value === 'Client'
+        && document.querySelectorAll('.phpdocumentor-search-results__entry').length > 0
+      ));
+      await assertReachableControls(page, `${label} open search`);
+      await assertFloatingUtilitiesClearReadableContent(page, `${label} open search`, '.phpdocumentor-search-results');
+      await page.locator('.phpdocumentor-search-results__close').click();
+      await page.waitForFunction(() => (
+        document.querySelector('.phpdocumentor-search-results')
+          ?.classList.contains('phpdocumentor-search-results--hidden')
+        && !document.querySelector('[data-api-reference-search-background]')
+      ));
+      assert.equal(
+        await page.locator('.phpdocumentor-back-to-top').isVisible(),
+        true,
+        `${label} did not restore its back-to-top utility`,
+      );
+      await assertReachableControls(page, `${label} after closing search`);
+    } else {
+      assert.equal(await page.locator('.brand').count(), 1, `${label} lost the authored portal identity`);
     }
-
-    const search = page.locator('.phpdocumentor-search__field');
-    await search.pressSequentially('Workflow');
-    await page.locator('.phpdocumentor-search-results:not(.phpdocumentor-search-results--hidden)').waitFor();
-    assert.ok(await page.locator('.phpdocumentor-search-results__entry').count() > 0, `${label} search has no results`);
-    assert.ok(
-      await page.locator('[data-api-reference-search-background][inert]').count() >= 3,
-      `${label} search did not isolate its background`,
-    );
-    assert.equal(await search.isEditable(), true, `${label} search could not refine its query`);
-    await search.press('Control+A');
-    await search.pressSequentially('Client');
-    await page.waitForTimeout(350);
-    await page.waitForFunction(() => (
-      document.querySelector('.phpdocumentor-search__field')?.value === 'Client'
-      && document.querySelectorAll('.phpdocumentor-search-results__entry').length > 0
-    ));
-    await assertReachableControls(page, `${label} open search`);
-    await assertFloatingUtilitiesClearReadableContent(page, `${label} open search`, '.phpdocumentor-search-results');
-    await page.locator('.phpdocumentor-search-results__close').click();
-    await page.waitForFunction(() => (
-      document.querySelector('.phpdocumentor-search-results')
-        ?.classList.contains('phpdocumentor-search-results--hidden')
-      && !document.querySelector('[data-api-reference-search-background]')
-    ));
-    assert.equal(
-      await page.locator('.phpdocumentor-back-to-top').isVisible(),
-      !narrowQuickstart,
-      `${label} did not restore its back-to-top utility`,
-    );
-    await assertReachableControls(page, `${label} after closing search`);
 
     const promotionAction = page.locator('.dw-cloud-promotion__action');
     assert.equal(
@@ -742,14 +766,14 @@ try {
   const origin = `http://${SITE_HOSTNAME}:${port}`;
   for (let cycle = 1; cycle <= cycleCount; cycle += 1) {
     for (const [viewportName, viewport] of viewports) {
-      for (const [pageName, pagePath] of pages) {
-        await exercisePage(browser, origin, viewportName, viewport, pageName, pagePath, false, cycle);
+      for (const [pageName, pagePath, pageKind] of pages) {
+        await exercisePage(browser, origin, viewportName, viewport, pageName, pagePath, pageKind, false, cycle);
       }
     }
   }
   const desktopViewport = viewports.find(([name]) => name === 'desktop')?.[1];
   assert.ok(desktopViewport);
-  await exercisePage(browser, origin, 'desktop', desktopViewport, 'nested API', pages[1][1], true);
+  await exercisePage(browser, origin, 'desktop', desktopViewport, 'nested API', pages[1][1], 'api', true);
   process.stdout.write('Validated responsive floating-control geometry and browser evidence on root, Client, and neighboring PHP reference pages.\n');
 } finally {
   await browser?.close();

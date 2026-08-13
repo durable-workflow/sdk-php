@@ -6,47 +6,57 @@ namespace DurableWorkflow\Worker;
 
 use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\WorkflowCancelled;
+use Fiber;
+use LogicException;
 
-/** Deterministic helpers available while a workflow generator is replayed. */
+/** Straight-line deterministic operations available while a workflow Fiber is replayed. */
 final class WorkflowContext
 {
-    /** @param list<array<string, mixed>> $history */
+    /** @var Fiber<mixed, mixed, mixed, mixed>|null */
+    private readonly ?Fiber $execution;
+
+    /**
+     * @param list<array<string, mixed>> $history
+     * @param Fiber<mixed, mixed, mixed, mixed>|null $execution
+     */
     public function __construct(
         public readonly string $workflowId,
         public readonly string $runId,
         private readonly array $history,
         private readonly PayloadCodec $codec,
         private readonly bool $cancellationRequested = false,
+        ?Fiber $execution = null,
     ) {
+        $this->execution = $execution;
     }
 
     /**
      * @param list<mixed> $arguments
      * @param array<string, mixed> $options
      */
-    public function activity(string $activityType, array $arguments = [], array $options = []): WorkflowCommand
+    public function activity(string $activityType, array $arguments = [], array $options = []): mixed
     {
-        return WorkflowCommand::activity($activityType, $arguments, $options);
+        return $this->suspend(WorkflowCommand::activity($activityType, $arguments, $options));
     }
 
-    public function sleep(int|float $seconds): WorkflowCommand
+    public function sleep(int|float $seconds): void
     {
-        return WorkflowCommand::timer((int) ceil($seconds));
+        $this->suspend(WorkflowCommand::timer((int) ceil($seconds)));
     }
 
     /**
      * @param list<mixed> $arguments
      * @param array<string, mixed> $options
      */
-    public function childWorkflow(string $workflowType, array $arguments = [], array $options = []): WorkflowCommand
+    public function childWorkflow(string $workflowType, array $arguments = [], array $options = []): mixed
     {
-        return WorkflowCommand::childWorkflow($workflowType, $arguments, $options);
+        return $this->suspend(WorkflowCommand::childWorkflow($workflowType, $arguments, $options));
     }
 
     /** @param callable(): mixed $operation */
-    public function sideEffect(callable $operation): WorkflowCommand
+    public function sideEffect(callable $operation): mixed
     {
-        return WorkflowCommand::sideEffect($operation);
+        return $this->suspend(WorkflowCommand::sideEffect($operation));
     }
 
     /** @param list<mixed> $arguments */
@@ -54,14 +64,16 @@ final class WorkflowContext
         array $arguments = [],
         ?string $workflowType = null,
         ?string $taskQueue = null,
-    ): WorkflowCommand {
-        return WorkflowCommand::continueAsNew($arguments, $workflowType, $taskQueue);
+    ): never {
+        $this->suspend(WorkflowCommand::continueAsNew($arguments, $workflowType, $taskQueue));
+
+        throw new LogicException('A continue-as-new command cannot resume the current workflow execution.');
     }
 
     /** @param array<string, mixed> $attributes */
-    public function upsertSearchAttributes(array $attributes): WorkflowCommand
+    public function upsertSearchAttributes(array $attributes): void
     {
-        return WorkflowCommand::upsertSearchAttributes($attributes);
+        $this->suspend(WorkflowCommand::upsertSearchAttributes($attributes));
     }
 
     public function isCancellationRequested(): bool
@@ -122,5 +134,14 @@ final class WorkflowContext
         }
 
         return $updates;
+    }
+
+    private function suspend(WorkflowCommand $command): mixed
+    {
+        if ($this->execution === null || Fiber::getCurrent() !== $this->execution) {
+            throw new LogicException('WorkflowContext operations may only be called by their active workflow Fiber.');
+        }
+
+        return Fiber::suspend($command);
     }
 }

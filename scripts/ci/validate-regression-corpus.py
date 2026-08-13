@@ -1634,10 +1634,9 @@ def _verify_new_replay_evidence(
     base_runner = base_files.get(runner_path)
     if base_runner is None:
         raise CorpusError("the base revision has no official PHP replay runner")
-    if not replay_runner.is_file() or replay_runner.read_bytes() != base_runner:
-        raise CorpusError(
-            "the official PHP replay runner must remain unchanged during a guarded replay change"
-        )
+    if not replay_runner.is_file():
+        raise CorpusError("the candidate revision has no official PHP replay runner")
+    runner_changed = replay_runner.read_bytes() != base_runner
     if not vendor_root.is_dir():
         raise CorpusError(
             f"PHP dependency directory is missing: {vendor_root}; install dependencies before validation"
@@ -1665,7 +1664,7 @@ def _verify_new_replay_evidence(
             candidate = _run_replay_fixture(
                 root=root,
                 php_executable=php_executable,
-                replay_runner=trusted_runner,
+                replay_runner=replay_runner if runner_changed else trusted_runner,
                 vendor_root=vendor_root,
                 source_root=root,
                 fixture=fixture,
@@ -1679,7 +1678,7 @@ def _verify_new_replay_evidence(
             defective = _run_replay_fixture(
                 root=root,
                 php_executable=php_executable,
-                replay_runner=trusted_runner,
+                replay_runner=replay_runner if runner_changed else trusted_runner,
                 vendor_root=vendor_root,
                 source_root=base_root,
                 fixture=fixture,
@@ -1689,6 +1688,30 @@ def _verify_new_replay_evidence(
                     f"new replay fixture {path} also passes on the defective base; "
                     "it does not reproduce the guarded replay change"
                 )
+
+            if runner_changed:
+                legacy = _run_replay_fixture(
+                    root=root,
+                    php_executable=php_executable,
+                    replay_runner=trusted_runner,
+                    vendor_root=vendor_root,
+                    source_root=base_root,
+                    fixture=fixture,
+                )
+                cross_version = _run_replay_fixture(
+                    root=root,
+                    php_executable=php_executable,
+                    replay_runner=trusted_runner,
+                    vendor_root=vendor_root,
+                    source_root=root,
+                    fixture=fixture,
+                )
+                if legacy.returncode != 0 or cross_version.returncode == 0:
+                    raise CorpusError(
+                        "the official PHP replay runner must remain unchanged unless a fixture "
+                        "passes with both matching runner/source revisions and fails across the "
+                        f"runner/source contract boundary: {path}"
+                    )
 
     return len(paths), {
         "base": "fail",

@@ -8,7 +8,7 @@ use Closure;
 use DurableWorkflow\Codec\PayloadCodec;
 use LogicException;
 
-/** A replayable command yielded by workflow code. */
+/** A replayable command emitted when straight-line workflow code suspends. */
 final class WorkflowCommand
 {
     /**

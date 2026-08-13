@@ -19,7 +19,6 @@ use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\WorkflowContext;
 use DurableWorkflow\WorkflowClientInterface;
-use Generator;
 use PHPUnit\Framework\TestCase;
 use Psr\Container\ContainerInterface;
 use Psr\Log\AbstractLogger;
@@ -229,9 +228,9 @@ final class WorkerAuthoringTest extends TestCase
 final class GreetingWorkflow
 {
     #[Workflow('greeter')]
-    public function run(WorkflowContext $context, string $name): Generator
+    public function run(WorkflowContext $context, string $name): array
     {
-        $greeting = yield $context->activity('greet', [$name]);
+        $greeting = $context->activity('greet', [$name]);
 
         return ['greeting' => $greeting];
     }

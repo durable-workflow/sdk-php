@@ -431,7 +431,7 @@ test('the deployment workflow keeps credential validation but has no aggregation
   const qualification = await readFile(new URL('./qualify-docs-analytics-deployment.mjs', import.meta.url), 'utf8');
 
   assert.match(workflow, /CLOUDFLARE_WEB_ANALYTICS_TOKEN: \$\{\{ vars\.CLOUDFLARE_WEB_ANALYTICS_TOKEN \}\}/);
-  assert.match(workflow, /build\/api\/deployment-audit\.json/);
+  assert.match(workflow, /build\/site\/deployment-audit\.json/);
   assert.match(workflow, /durable-workflow\.sdk-php\.docs-deployment\/v1/);
   assert.match(
     workflow,
@@ -540,13 +540,13 @@ test('deployment qualification retains the eight-page viewport matrix', async ()
     calls.filter(call => Array.isArray(call) && call[0] === 'promotion'),
     [
       ['promotion', {width: 1440, height: 900}, '/'],
-      ['promotion', {width: 1440, height: 900}, '/classes/DurableWorkflow-Client.html'],
+      ['promotion', {width: 1440, height: 900}, '/api/classes/DurableWorkflow-Client.html'],
       ['promotion', {width: 768, height: 1024}, '/'],
-      ['promotion', {width: 768, height: 1024}, '/classes/DurableWorkflow-Client.html'],
+      ['promotion', {width: 768, height: 1024}, '/api/classes/DurableWorkflow-Client.html'],
       ['promotion', {width: 390, height: 844}, '/'],
-      ['promotion', {width: 390, height: 844}, '/classes/DurableWorkflow-Client.html'],
+      ['promotion', {width: 390, height: 844}, '/api/classes/DurableWorkflow-Client.html'],
       ['promotion', {width: 640, height: 360}, '/'],
-      ['promotion', {width: 640, height: 360}, '/classes/DurableWorkflow-Client.html'],
+      ['promotion', {width: 640, height: 360}, '/api/classes/DurableWorkflow-Client.html'],
     ],
   );
 });

@@ -7,10 +7,11 @@ namespace DurableWorkflow\Worker;
 use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
-use Generator;
+use Fiber;
+use LogicException;
 use Throwable;
 
-/** Re-executes a workflow generator against committed, sequence-ordered history. */
+/** Re-executes a straight-line workflow Fiber against committed, sequence-ordered history. */
 final class Replayer
 {
     public function __construct(private readonly PayloadCodec $codec)
@@ -31,46 +32,49 @@ final class Replayer
         array $task = [],
     ): ReplayResult {
         $steps = $this->recordedSteps($history);
-        $context = new WorkflowContext(
-            (string) ($task['workflow_id'] ?? ''),
-            (string) ($task['run_id'] ?? ''),
-            $history,
-            $this->codec,
-            (bool) ($task['cancel_requested'] ?? false),
-        );
-        $execution = $handler($context, ...$input);
-        if (!$execution instanceof Generator) {
-            $this->assertNoRemainingSteps($steps, 0, 'complete_workflow');
+        $execution = new Fiber(function () use ($handler, $history, $input, $task): mixed {
+            $current = Fiber::getCurrent();
+            if ($current === null) {
+                throw new LogicException('Workflow execution did not start inside its Fiber.');
+            }
+            $context = new WorkflowContext(
+                (string) ($task['workflow_id'] ?? ''),
+                (string) ($task['run_id'] ?? ''),
+                $history,
+                $this->codec,
+                (bool) ($task['cancel_requested'] ?? false),
+                $current,
+            );
 
-            return new ReplayResult([$this->completeCommand($execution)]);
-        }
+            return $handler($context, ...$input);
+        });
 
         $stepCursor = 0;
         $commands = [];
-        $yielded = $execution->current();
+        $suspended = $execution->start();
 
-        while ($execution->valid()) {
-            if (!$yielded instanceof WorkflowCommand) {
-                throw new NonDeterministicWorkflow('Workflow yielded an unsupported value instead of WorkflowCommand.');
+        while (!$execution->isTerminated()) {
+            if (!$suspended instanceof WorkflowCommand) {
+                throw new NonDeterministicWorkflow('Workflow suspended with an unsupported value instead of WorkflowCommand.');
             }
-            if ($yielded->type === 'continue_as_new') {
+            if ($suspended->type === 'continue_as_new') {
                 $this->assertNoRemainingSteps($steps, $stepCursor, 'continue_as_new');
-                $commands[] = $yielded->toWire($this->codec, $taskQueue);
+                $commands[] = $suspended->toWire($this->codec, $taskQueue);
 
                 return new ReplayResult($commands);
             }
 
             $step = $steps[$stepCursor] ?? null;
             if ($step !== null) {
-                if ($step['shape'] !== $yielded->historyShape) {
+                if ($step['shape'] !== $suspended->historyShape) {
                     throw new NonDeterministicWorkflow(
-                        "History contains {$step['shape']} but workflow yielded {$yielded->historyShape}.",
+                        "History contains {$step['shape']} but workflow scheduled {$suspended->historyShape}.",
                         $step['sequence'],
                         $step['shape'],
-                        $yielded->historyShape,
+                        $suspended->historyShape,
                     );
                 }
-                $actualDetail = $this->commandDetail($yielded);
+                $actualDetail = $this->commandDetail($suspended);
                 if ($step['detail'] !== null && $actualDetail !== null && $step['detail'] !== $actualDetail) {
                     throw new NonDeterministicWorkflow(
                         "Recorded {$step['shape']} detail changed from {$step['detail']} to {$actualDetail}.",
@@ -83,18 +87,18 @@ final class Replayer
                 if ($step['resolved'] === false) {
                     return new ReplayResult($commands);
                 }
-                $yielded = $step['failure'] instanceof Throwable
+                $suspended = $step['failure'] instanceof Throwable
                     ? $execution->throw($step['failure'])
-                    : $execution->send($step['value']);
+                    : $execution->resume($step['value']);
                 continue;
             }
 
-            if ($yielded->type === 'record_side_effect') {
-                $yielded = $yielded->resolveSideEffect();
+            if ($suspended->type === 'record_side_effect') {
+                $suspended = $suspended->resolveSideEffect();
             }
-            $commands[] = $yielded->toWire($this->codec, $taskQueue);
-            if ($yielded->type === 'record_side_effect' || $yielded->type === 'upsert_search_attributes') {
-                $yielded = $execution->send($yielded->localResult);
+            $commands[] = $suspended->toWire($this->codec, $taskQueue);
+            if ($suspended->type === 'record_side_effect' || $suspended->type === 'upsert_search_attributes') {
+                $suspended = $execution->resume($suspended->localResult);
                 continue;
             }
 
@@ -102,7 +106,13 @@ final class Replayer
         }
 
         $this->assertNoRemainingSteps($steps, $stepCursor, 'complete_workflow');
-        $commands[] = $this->completeCommand($execution->getReturn());
+        $result = $execution->getReturn();
+        if ($result instanceof \Generator) {
+            throw new LogicException(
+                'Workflow handlers must call WorkflowContext operations directly; Generator results are not supported.',
+            );
+        }
+        $commands[] = $this->completeCommand($result);
 
         return new ReplayResult($commands);
     }

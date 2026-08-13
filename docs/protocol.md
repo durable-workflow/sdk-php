@@ -74,12 +74,20 @@ cursor without converting server refusals into empty results.
 
 ## Replay
 
-PHP workflow handlers yield commands from `WorkflowContext`. On each workflow
-task the worker re-runs the generator from the beginning, matches yielded
-command shapes against positive durable sequence numbers, and sends recorded
-activity, child-workflow, timer, and side-effect results back into the
-generator. A changed command order fails the task with a typed
+PHP workflow handlers use straight-line calls on `WorkflowContext`. On each
+workflow task the worker starts a new Fiber, re-runs the handler from the
+beginning, and suspends the Fiber whenever a replayable command is reached. The
+replayer matches command shapes and details against positive durable sequence
+numbers, then resumes the call with recorded activity, child-workflow, timer,
+and side-effect results. Recorded failures are thrown from the same call site.
+A changed command order fails the task with a typed
 `NonDeterministicWorkflow` error instead of executing different work.
+
+Every replay owns a distinct `WorkflowContext` and Fiber. The context rejects
+operations from any other Fiber, so nested, sequential, or otherwise
+interleaved workflow executions cannot consume one another's execution state.
+Generator-returning workflow handlers are not part of the 2.0 service-mode
+contract.
 
 Attribute-discovered workflow entry points, queries, and updates receive a fresh
 shallow clone of the registered workflow handler template for every invocation.

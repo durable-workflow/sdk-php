@@ -110,6 +110,10 @@ class ChangedPathClassificationTest(unittest.TestCase):
     def test_known_surfaces_select_only_relevant_focused_evidence(self) -> None:
         cases = {
             "docs-prose": (["docs/quickstart.md"], ("docs",)),
+            "portal-content": (
+                ["docs/portal/frameworks/laravel.md"],
+                ("docs", "docs-browser"),
+            ),
             "docs-browser-template": (
                 [".phpdoc/template/assets/api-reference.css"],
                 ("docs", "docs-browser"),
@@ -118,9 +122,13 @@ class ChangedPathClassificationTest(unittest.TestCase):
                 ["scripts/check-docs-analytics-browser.mjs"],
                 ("docs", "docs-browser"),
             ),
-            "docs-renderer": (
-                ["scripts/render-quickstart-docs.php"],
+            "api-reference-finalizer": (
+                ["scripts/finalize-api-reference.php"],
                 ("docs", "docs-browser"),
+            ),
+            "quickstart-deployment-check": (
+                ["scripts/qualify-quickstart-contract-deployment.mjs"],
+                ("docs",),
             ),
             "docs-link-fixture": (
                 ["scripts/ci/fixtures/docs-links/external-dns-failure.md"],
@@ -135,6 +143,14 @@ class ChangedPathClassificationTest(unittest.TestCase):
                 ("docs", "docs-browser", "runtime"),
             ),
             "runtime-test": (["tests/ClientTest.php"], ("runtime",)),
+            "runtime-fixture-runner": (
+                ["scripts/ci/run-replay-regression-fixture.php"],
+                ("runtime",),
+            ),
+            "published-runtime-smoke": (
+                [".github/workflows/service-mode-published-smoke.yml"],
+                ("release", "runtime"),
+            ),
             "release": (
                 ["scripts/ci/component-release-recovery.py"],
                 ("release",),
@@ -213,7 +229,8 @@ class WorkflowQualificationContractTest(unittest.TestCase):
         self.assertIn("npm run test:docs-browser-failures", focused)
         self.assertIn("--offline", focused)
         self.assertIn("npx playwright install chromium --with-deps", focused)
-        self.assertIn("npm run check:docs-analytics-browser -- build/api", focused)
+        self.assertIn("npm run check:docs-analytics-browser -- build/site", focused)
+        self.assertIn("npm run check:docs-browser", focused)
         self.assertGreaterEqual(focused.count("'docs-browser'"), 3)
         self.assertNotIn("matrix:", focused)
 
@@ -230,48 +247,33 @@ class WorkflowQualificationContractTest(unittest.TestCase):
                     "e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d",
                     workflow,
                 )
-                self.assertEqual(3, workflow.count("--offline"))
+                self.assertEqual(2, workflow.count("--offline"))
                 self.assertEqual(1, workflow.count("--include-fragments"))
                 self.assertEqual(
-                    1,
+                    2,
                     workflow.count("--root-dir ${{ github.workspace }}"),
                 )
                 self.assertEqual(
                     1,
-                    workflow.count("--base-url /github/workspace/build/api/"),
-                )
-                self.assertEqual(
-                    1,
                     workflow.count(
-                        "--base-url ${{ github.workspace }}/build/api/"
+                        "--root-dir ${{ github.workspace }}/build/site"
                     ),
                 )
-                self.assertIn(
-                    "github.server_url == 'https://github.com'", workflow
-                )
-                self.assertIn(
-                    "github.server_url != 'https://github.com'", workflow
+                self.assertIn("build/site", workflow)
+                self.assertNotIn("--base-url /github/workspace/build/api/", workflow)
+                self.assertNotIn(
+                    "--base-url ${{ github.workspace }}/build/api/", workflow
                 )
                 self.assertNotIn("--base-url file:", workflow)
                 self.assertNotIn(
                     "--root-dir ${{ github.workspace }}/build/api",
                     workflow,
                 )
-                self.assertEqual(
-                    2,
-                    workflow.count(
-                        "--exclude-path build/api/graphs/classes.html"
-                    ),
-                )
-                self.assertEqual(
-                    2,
-                    workflow.count(
-                        "build/api/**/*.html build/api/**/*.css"
-                    ),
-                )
+                self.assertNotIn("--exclude-path build/api/graphs/classes.html", workflow)
+                self.assertNotIn("build/api/**/*.html build/api/**/*.css", workflow)
                 self.assertNotIn("--method get", workflow)
                 self.assertIn("npm run test:docs-browser-failures", workflow)
-                self.assertIn("npm run check:docs-analytics-browser -- build/api", workflow)
+                self.assertIn("npm run check:docs-analytics-browser -- build/site", workflow)
 
     def test_link_regression_fixtures_have_one_required_ci_owner(self) -> None:
         route = workflow_job_source(self.source, "qualification-route")

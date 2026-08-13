@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://php.durable-workflow.com/quickstart-contract.schema.v2.json",
+  "title": "Durable Workflow PHP quickstart contract",
+  "description": "Schema version 2 defines package-relative source resolution and public qualification provenance.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema_version",
+    "package",
+    "runtime_targets",
+    "environment",
+    "reference_resolution",
+    "sources",
+    "registration",
+    "workflow_authoring",
+    "expected_result",
+    "qualification_provenance",
+    "integrations"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://php.durable-workflow.com/quickstart-contract.schema.v2.json"
+    },
+    "schema_version": {
+      "const": 2
+    },
+    "package": {
+      "$ref": "#/$defs/package"
+    },
+    "runtime_targets": {
+      "type": "object",
+      "required": ["server", "cloud"],
+      "properties": {
+        "server": {"$ref": "#/$defs/server_runtime_target"},
+        "cloud": {"$ref": "#/$defs/runtime_target"}
+      },
+      "additionalProperties": false
+    },
+    "environment": {
+      "type": "object",
+      "required": [
+        "runtime_url",
+        "namespace",
+        "task_queue",
+        "client_credential",
+        "worker_credential"
+      ],
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "reference_resolution": {
+      "$ref": "#/$defs/reference_resolution"
+    },
+    "sources": {
+      "type": "object",
+      "required": ["bootstrap", "worker", "client"],
+      "properties": {
+        "bootstrap": {"$ref": "#/$defs/composer_package_path"},
+        "worker": {"$ref": "#/$defs/composer_package_path"},
+        "client": {"$ref": "#/$defs/composer_package_path"}
+      },
+      "additionalProperties": false
+    },
+    "registration": {"type": "object"},
+    "workflow_authoring": {
+      "$ref": "#/$defs/workflow_authoring"
+    },
+    "expected_result": {"type": "object"},
+    "qualification_provenance": {
+      "$ref": "#/$defs/qualification_provenance"
+    },
+    "integrations": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "format": "uri"}
+    }
+  },
+  "$defs": {
+    "package": {
+      "description": "The immutable Composer package coordinate used by every composer_package_path reference.",
+      "type": "object",
+      "required": ["name", "published_version", "composer_requirement", "onboarding_requirement"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9_.-]+/[a-z0-9_.-]+$"},
+        "published_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-(?:alpha|beta|rc)\\.[0-9]+)?$"
+        },
+        "composer_requirement": {"type": "string", "minLength": 1},
+        "onboarding_requirement": {
+          "type": "string",
+          "pattern": "^\\^[0-9]+\\.[0-9]+@RC$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "server_runtime_target": {
+      "type": "object",
+      "required": ["client_input", "namespace_input", "input_kind", "example_request", "image"],
+      "properties": {
+        "client_input": {"type": "string", "minLength": 1},
+        "namespace_input": {"type": "string", "minLength": 1},
+        "input_kind": {"type": "string", "minLength": 1},
+        "example_request": {"type": "string", "minLength": 1},
+        "image": {"type": "string", "pattern": "^[a-z0-9./_-]+:[A-Za-z0-9._-]+$"}
+      },
+      "additionalProperties": false
+    },
+    "runtime_target": {
+      "type": "object",
+      "required": ["client_input", "namespace_input", "input_kind", "example_request"],
+      "properties": {
+        "client_input": {"type": "string", "minLength": 1},
+        "namespace_input": {"type": "string", "minLength": 1},
+        "input_kind": {"type": "string", "minLength": 1},
+        "example_request": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "reference_resolution": {
+      "description": "Resolution semantics version 1 resolves a composer_package base by applying its JSON Pointer to this contract, installing that exact package name and published_version with Composer, and treating composer_package_path.path as relative to the installed package root.",
+      "type": "object",
+      "required": ["version", "bases"],
+      "properties": {
+        "version": {"const": 1},
+        "bases": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {"$ref": "#/$defs/composer_package_base"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "composer_package_base": {
+      "type": "object",
+      "required": ["kind", "package_pointer"],
+      "properties": {
+        "kind": {"const": "composer_package"},
+        "package_pointer": {
+          "description": "RFC 6901 JSON Pointer to the package coordinate in this contract.",
+          "type": "string",
+          "pattern": "^/"
+        }
+      },
+      "additionalProperties": false
+    },
+    "composer_package_path": {
+      "description": "A file installed beneath the exact Composer package selected by base.",
+      "type": "object",
+      "required": ["kind", "base", "path"],
+      "properties": {
+        "kind": {"const": "composer_package_path"},
+        "base": {"type": "string", "minLength": 1},
+        "path": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "workflow_authoring": {
+      "description": "The execution and syntax model used by workflows authored with this SDK release.",
+      "type": "object",
+      "required": [
+        "execution_model",
+        "syntax",
+        "operation_results",
+        "generator_compatibility"
+      ],
+      "properties": {
+        "execution_model": {"const": "fiber"},
+        "syntax": {"const": "straight_line"},
+        "operation_results": {"const": "direct_return"},
+        "generator_compatibility": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "qualification_provenance": {
+      "description": "Identifies the public workflow that qualifies the exact package selected by subject_base.",
+      "type": "object",
+      "required": ["subject_base", "evidence"],
+      "properties": {
+        "subject_base": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/github_actions_workflow"}
+      },
+      "additionalProperties": false
+    },
+    "github_actions_workflow": {
+      "description": "A publicly resolvable GitHub Actions workflow identity. version_input binds its dispatch parameter to a value in this contract with RFC 6901 JSON Pointer semantics.",
+      "type": "object",
+      "required": ["kind", "api_url", "web_url", "version_input"],
+      "properties": {
+        "kind": {"const": "github_actions_workflow"},
+        "api_url": {"type": "string", "format": "uri", "pattern": "^https://api\\.github\\.com/"},
+        "web_url": {"type": "string", "format": "uri", "pattern": "^https://github\\.com/"},
+        "version_input": {
+          "type": "object",
+          "required": ["name", "value_pointer"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "value_pointer": {"type": "string", "pattern": "^/"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

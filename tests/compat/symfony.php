@@ -34,9 +34,9 @@ final class SymfonyGreetingHandler
     }
 
     #[Workflow('symfony.greeting')]
-    public function workflow(WorkflowContext $context, string $name): Generator
+    public function workflow(WorkflowContext $context, string $name): string
     {
-        return yield $context->activity('symfony.greet', [$name]);
+        return $context->activity('symfony.greet', [$name]);
     }
 
     #[Activity('symfony.greet')]

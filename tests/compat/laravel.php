@@ -26,9 +26,9 @@ use Psr\Log\LoggerInterface;
 final class LaravelGreetingHandler
 {
     #[Workflow('laravel.greeting')]
-    public function workflow(WorkflowContext $context, string $name): Generator
+    public function workflow(WorkflowContext $context, string $name): string
     {
-        return yield $context->activity('laravel.greet', [$name]);
+        return $context->activity('laravel.greet', [$name]);
     }
 
     #[Activity('laravel.greet')]

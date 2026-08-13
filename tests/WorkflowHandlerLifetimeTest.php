@@ -17,7 +17,6 @@ use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\WorkflowContext;
-use Generator;
 use PHPUnit\Framework\TestCase;
 use Psr\Container\ContainerInterface;
 
@@ -162,11 +161,11 @@ final class StatefulWorkflow
     }
 
     #[Workflow('stateful')]
-    public function run(WorkflowContext $context): Generator
+    public function run(WorkflowContext $context): array
     {
         ++$this->replays;
         $prefix = $this->prefix === null ? '' : "{$this->prefix->value}-";
-        $result = yield $context->activity("{$prefix}step-{$this->replays}");
+        $result = $context->activity("{$prefix}step-{$this->replays}");
 
         return ['replays' => $this->replays, 'result' => $result];
     }

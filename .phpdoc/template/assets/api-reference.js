@@ -3,6 +3,24 @@ const reference = document.querySelector('.phpdocumentor');
 const searchForm = document.querySelector('[data-search-form]');
 const searchResultsBody = searchResults?.querySelector('.phpdocumentor-search-results__body');
 
+const sidebarButton = document.querySelector('.phpdocumentor-sidebar__menu-button');
+const sidebarMenu = document.querySelector('.phpdocumentor-sidebar__menu-icon');
+const sidebar = document.querySelector('.phpdocumentor-sidebar');
+
+if (sidebarButton && sidebarMenu && sidebar) {
+  sidebar.id ||= 'api-reference-navigation';
+  sidebarButton.setAttribute('aria-controls', sidebar.id);
+
+  const syncSidebarMenu = () => {
+    const expanded = sidebarButton.checked;
+    sidebarButton.setAttribute('aria-expanded', String(expanded));
+    sidebarMenu.textContent = expanded ? 'Close navigation' : 'Open navigation';
+  };
+
+  sidebarButton.addEventListener('change', syncSidebarMenu);
+  syncSidebarMenu();
+}
+
 if (searchResults && reference && searchForm && searchResultsBody) {
   const searchField = searchForm.querySelector('.phpdocumentor-search__field');
   const searchFormHome = searchForm.parentElement;

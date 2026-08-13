@@ -25,8 +25,12 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Advanced the PHP SDK to `2.0.0-rc.15`. Package metadata retains Server
-  `2.0.0-rc.17` as the verified compatibility baseline; other Server
+- Replaced prerelease generator-based workflow authoring with Fiber-backed
+  straight-line execution. Durable operations now return recorded values or
+  throw recorded failures directly at their call sites, while replay retains
+  strict command-order, history-shape, and command-detail validation.
+- Advanced the PHP SDK to `2.0.0-rc.15`. Package metadata declares Server
+  `2.0.0-rc.24` as the verified compatibility baseline; other Server
   prereleases require separate conformance evidence. Managed registration emits
   an explicit empty validator list, while low-level registration documents and
   preserves that declaration and rejects malformed or non-empty claims before

@@ -32,7 +32,7 @@ composer require durable-workflow/sdk:2.0.0-rc.15@RC
 ```
 
 This exact package is PHP SDK `2.0.0-rc.15`. Its package metadata declares
-Server `2.0.0-rc.17` as the verified compatibility baseline; using another
+Server `2.0.0-rc.24` as the verified compatibility baseline; using another
 Server prerelease requires separate conformance evidence. Earlier 2.0
 prereleases and pre-1.0 SDK releases remain historical rather than alternate
 supported baselines.
@@ -152,9 +152,9 @@ use DurableWorkflow\Worker\WorkflowContext;
 final class GreeterWorkflow
 {
     #[Workflow('quickstart.php.greeter')]
-    public function run(WorkflowContext $context, string $name): Generator
+    public function run(WorkflowContext $context, string $name): array
     {
-        $greeting = yield $context->activity('quickstart.php.greet', [$name]);
+        $greeting = $context->activity('quickstart.php.greet', [$name]);
 
         return ['greeting' => $greeting];
     }
@@ -255,10 +255,11 @@ Both callables receive the same `WorkflowContext` and `ActivityContext` values
 shown in the class-oriented example. Do not call `register()` with un-attributed
 classes; use one complete registration style or the other.
 
-The machine-readable [quickstart contract](docs/quickstart-contract.json) names
-the package, runtime URL forms, role-specific environment variables, executable
-sources, expected result, and published-artifact smoke that keep this path in
-sync.
+Release metadata and the machine-readable
+[quickstart contract](docs/quickstart-contract.json) together name the exact
+package and Server compatibility line, runtime URL forms, role-specific
+environment variables, package-resolvable executable sources, expected result,
+and public published-artifact qualification identity that keep this path in sync.
 
 ## Workflow handles and control-plane APIs
 
@@ -270,7 +271,8 @@ run guard and fail rather than silently targeting a successor.
 ## Control-plane administration and discovery
 
 `Client::withNamespace()` returns an immutable namespace selection that keeps
-the configured authentication, transport, and payload codec. Workflow
+the configured authentication and transport. Workflow payload encoding remains
+Apache Avro. Workflow
 visibility results and the newly covered administrative surfaces use SDK model
 types while retaining the complete server payload in each model's `raw`
 property.
@@ -326,16 +328,15 @@ read the next page. See the protocol guide for the paging and error contract.
 `startServiceOperation()` explicitly starts an asynchronous call and returns a
 `ServiceOperationHandle`. `executeServiceOperation()` honors the catalog mode,
 waits for completion by default, and returns a `ServiceOperationDescription`.
-Arguments use the client's payload codec; the default is the official Apache
-Avro implementation.
+Arguments use the official Apache Avro payload codec.
 
 ## Run a remote PHP worker
 
 The preferred service-mode API discovers handler contracts from ordinary PHP
 classes. Attributes name the server contract while method signatures describe
-its arguments. Yielding a command from `WorkflowContext` creates a durable
-step; replay sends the recorded value back into the generator without repeating
-the external work.
+its arguments. Calls on `WorkflowContext` suspend the workflow's Fiber at each
+durable step. Replay resumes that call with its recorded value, or throws its
+recorded failure there, without repeating external work.
 
 ```php
 <?php
@@ -358,9 +359,9 @@ use DurableWorkflow\Worker\WorkflowContext;
 final class GreeterWorkflow
 {
     #[Workflow('greeter')]
-    public function run(WorkflowContext $context, string $name): Generator
+    public function run(WorkflowContext $context, string $name): array
     {
-        $greeting = yield $context->activity('greet', [$name]);
+        $greeting = $context->activity('greet', [$name]);
 
         return ['greeting' => $greeting];
     }
@@ -642,8 +643,9 @@ code runs. Typed transient renewal pressure is retried with the original task
 ID, attempt, and lease owner; shutdown or a terminal/lost lease prevents task
 execution and completion.
 
-See [`examples/`](examples), the generated
-[PHP API reference](https://php.durable-workflow.com/), and
+See [`examples/`](examples), the authored
+[PHP developer portal](https://php.durable-workflow.com/), the generated
+[API reference](https://php.durable-workflow.com/api/), and
 [`docs/protocol.md`](docs/protocol.md) for the complete client, schedule,
 namespace, visibility, search-attribute, service-operation, discovery,
 authentication, worker, query, and update surfaces.

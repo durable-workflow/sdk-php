@@ -1,16 +1,19 @@
 {
-  "schema_version": 1,
+  "$schema": "https://php.durable-workflow.com/quickstart-contract.schema.v2.json",
+  "schema_version": 2,
   "package": {
     "name": "durable-workflow/sdk",
     "published_version": "2.0.0-rc.15",
-    "composer_requirement": "2.0.0-rc.15@RC"
+    "composer_requirement": "2.0.0-rc.15@RC",
+    "onboarding_requirement": "^2.0@RC"
   },
   "runtime_targets": {
     "server": {
       "client_input": "http://localhost:8080",
       "namespace_input": "default",
       "input_kind": "server_origin",
-      "example_request": "http://localhost:8080/api/workflows"
+      "example_request": "http://localhost:8080/api/workflows",
+      "image": "durableworkflow/server:2.0.0-rc.24"
     },
     "cloud": {
       "client_input": "https://cloud.example/api/runtime/v1/namespaces/<runtime-id>",
@@ -26,10 +29,31 @@
     "client_credential": "DURABLE_WORKFLOW_CLIENT_TOKEN",
     "worker_credential": "DURABLE_WORKFLOW_WORKER_TOKEN"
   },
+  "reference_resolution": {
+    "version": 1,
+    "bases": {
+      "published_sdk": {
+        "kind": "composer_package",
+        "package_pointer": "/package"
+      }
+    }
+  },
   "sources": {
-    "bootstrap": "examples/bootstrap.php",
-    "worker": "examples/worker.php",
-    "client": "examples/client.php"
+    "bootstrap": {
+      "kind": "composer_package_path",
+      "base": "published_sdk",
+      "path": "examples/bootstrap.php"
+    },
+    "worker": {
+      "kind": "composer_package_path",
+      "base": "published_sdk",
+      "path": "examples/worker.php"
+    },
+    "client": {
+      "kind": "composer_package_path",
+      "base": "published_sdk",
+      "path": "examples/client.php"
+    }
   },
   "registration": {
     "preferred": "attribute_discovery",
@@ -43,12 +67,29 @@
       "DurableWorkflow\\Worker::registerActivity"
     ]
   },
+  "workflow_authoring": {
+    "execution_model": "fiber",
+    "syntax": "straight_line",
+    "operation_results": "direct_return",
+    "generator_compatibility": false
+  },
   "expected_result": {
     "result": {
       "greeting": "hello, PHP"
     }
   },
-  "published_smoke": ".github/workflows/service-mode-published-smoke.yml",
+  "qualification_provenance": {
+    "subject_base": "published_sdk",
+    "evidence": {
+      "kind": "github_actions_workflow",
+      "api_url": "https://api.github.com/repos/durable-workflow/sdk-php/actions/workflows/service-mode-published-smoke.yml",
+      "web_url": "https://github.com/durable-workflow/sdk-php/actions/workflows/service-mode-published-smoke.yml",
+      "version_input": {
+        "name": "sdk_version",
+        "value_pointer": "/package/published_version"
+      }
+    }
+  },
   "integrations": {
     "laravel_service_mode": "https://github.com/durable-workflow/sdk-php#laravel-service-mode",
     "symfony_service_mode": "https://github.com/durable-workflow/sdk-php#symfony-service-mode",

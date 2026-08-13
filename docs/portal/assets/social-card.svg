@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
+  <title id="title">Durable Workflow PHP SDK</title>
+  <desc id="description">Build, test, and operate durable workflows in PHP.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1118"/>
+      <stop offset="1" stop-color="#17283a"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(952 118) rotate(135) scale(530)">
+      <stop stop-color="#8da2ff" stop-opacity=".42"/>
+      <stop offset="1" stop-color="#8da2ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#background)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+  <g fill="none" stroke="#9effc7" stroke-width="3" opacity=".38">
+    <path d="M765 420h90c40 0 40-62 80-62h105"/>
+    <circle cx="765" cy="420" r="8" fill="#9effc7"/>
+    <circle cx="1040" cy="358" r="8" fill="#9effc7"/>
+    <path d="M825 490h60c50 0 50-68 100-68h116"/>
+  </g>
+  <g transform="translate(92 88)">
+    <rect width="88" height="88" rx="22" fill="#9effc7"/>
+    <path d="M21 27h20c18 0 28 8 28 17s-10 17-28 17H21V27Zm14 10v14h7c8 0 12-3 12-7s-4-7-12-7h-7Z" fill="#101820"/>
+  </g>
+  <text x="92" y="265" fill="#9effc7" font-family="system-ui, sans-serif" font-size="28" font-weight="700" letter-spacing="3">DURABLE WORKFLOW</text>
+  <text x="92" y="365" fill="#f7f7f2" font-family="system-ui, sans-serif" font-size="88" font-weight="750">PHP SDK</text>
+  <text x="92" y="437" fill="#b9c6d3" font-family="system-ui, sans-serif" font-size="34">Build. Test. Operate. Keep going.</text>
+  <rect x="92" y="505" width="390" height="2" fill="#9effc7"/>
+  <text x="92" y="556" fill="#b9c6d3" font-family="ui-monospace, monospace" font-size="24">php.durable-workflow.com</text>
+</svg>

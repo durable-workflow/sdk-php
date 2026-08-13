@@ -12,6 +12,26 @@
   vertical-align: -0.125em;
 }
 
+.dw-api-guide-link {
+  align-items: center;
+  align-self: center;
+  border: 1px solid #263746;
+  border-radius: 6px;
+  color: #284b63;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: 650 .78rem/1 system-ui, sans-serif;
+  height: 40px;
+  padding: .62rem .75rem;
+  text-decoration: none;
+}
+
+.dw-api-guide-link:hover,
+.dw-api-guide-link:focus-visible {
+  border-color: #12835a;
+  color: #0a6847;
+}
+
 .phpdocumentor .phpdocumentor-content {
   padding-inline-end: calc(2.5rem + var(--spacing-lg));
 }
@@ -145,7 +165,7 @@
   max-width: 18ch;
   margin: 0 0 var(--spacing-sm);
   color: white;
-  font-size: clamp(2rem, 5vw, 3.5rem);
+  font-size: 3.5rem;
   line-height: 1.05;
 }
 
@@ -158,7 +178,7 @@
   color: #9ee8f0;
   font-size: .8rem;
   font-weight: 700;
-  letter-spacing: .08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -290,6 +310,10 @@
 }
 
 @media (max-width: 899px) {
+  .php-quickstart__hero h2 {
+    font-size: 2.5rem;
+  }
+
   .phpdocumentor:has(.php-quickstart) .phpdocumentor-back-to-top {
     display: none;
   }
@@ -301,6 +325,9 @@
 }
 
 @media (max-width: 549px) {
+  .php-quickstart__hero h2 {
+    font-size: 2rem;
+  }
   .php-quickstart__section {
     padding: 1rem;
   }
@@ -348,5 +375,277 @@
 
   .phpdocumentor-title__link:hover {
     transform: none;
+  }
+
+  .dw-api-guide-link {
+    padding: .55rem .65rem;
+  }
+}
+
+/* Keep the generated reference visually subordinate to the authored portal. */
+:root {
+  color-scheme: dark;
+  --primary-color: #9effc7;
+  --primary-color-darken: #6fe3a1;
+  --primary-color-darker: #9effc7;
+  --primary-color-darkest: #f7f7f2;
+  --primary-color-lighten: #263746;
+  --primary-color-lighter: #101820;
+  --dark-gray: #263746;
+  --light-gray: #162330;
+  --text-color: #c6d0da;
+  --header-bg-color: #0b1118;
+  --code-background-color: #101820;
+  --code-border-color: #263746;
+  --button-border-color: #263746;
+  --button-color-primary: #9effc7;
+  --button-text-color: #c6d0da;
+  --button-text-color-primary: #082016;
+  --popover-background-color: rgb(16 24 32 / 96%);
+  --link-color-primary: #9effc7;
+  --link-hover-color-primary: #c5ffdc;
+  --form-field-border-color: #263746;
+  --form-field-color: #101820;
+  --table-separator-color: #263746;
+  --title-text-color: #f7f7f2;
+  --sidebar-border-color: #263746;
+  --font-primary: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-secondary: var(--font-primary);
+  --font-monospace: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --letter-spacing--primary: 0;
+}
+
+body {
+  background: #0b1118;
+  color: #c6d0da;
+}
+
+.phpdocumentor-header {
+  gap: 1rem;
+  max-width: none;
+  padding-inline: max(1rem, calc((100vw - 1160px) / 2));
+  background: rgb(11 17 24 / 96%);
+  border-bottom: 1px solid #263746;
+}
+
+.phpdocumentor-title {
+  color: #f7f7f2;
+  font-size: 1rem;
+  font-weight: 720;
+}
+
+.phpdocumentor-title__link,
+.phpdocumentor-title__link:hover {
+  color: #f7f7f2;
+  transform: none;
+}
+
+.phpdocumentor-search {
+  min-width: 0;
+}
+
+.phpdocumentor-search__field {
+  color: #f7f7f2;
+  background: #101820;
+  border-color: #263746;
+}
+
+.phpdocumentor-search__field::placeholder,
+.phpdocumentor-search__icon {
+  color: #adbac8;
+}
+
+.dw-api-guide-link {
+  color: #f7f7f2;
+  background: #101820;
+  border-color: #263746;
+}
+
+.dw-api-guide-link:hover,
+.dw-api-guide-link:focus-visible {
+  color: #9effc7;
+  border-color: #9effc7;
+}
+
+.dw-cloud-promotion {
+  max-width: 1160px;
+  margin: 1rem auto;
+  padding: .85rem 1rem;
+  color: #adbac8;
+  background: #101820;
+  border: 1px solid #263746;
+  border-left: 3px solid #8da2ff;
+  border-radius: 8px;
+}
+
+.dw-cloud-promotion h2 {
+  color: #f7f7f2;
+  font-size: 1rem;
+}
+
+.dw-cloud-promotion__eyebrow {
+  color: #8da2ff;
+}
+
+.dw-cloud-promotion__action {
+  color: #c9d3ff;
+  border-color: #55679f;
+  border-radius: 6px;
+}
+
+.dw-cloud-promotion__action:hover,
+.dw-cloud-promotion__action:focus-visible {
+  color: #0b1118;
+  background: #8da2ff;
+  border-color: #8da2ff;
+}
+
+.phpdocumentor {
+  padding-top: 1rem;
+}
+
+.phpdocumentor .phpdocumentor-sidebar {
+  color: #adbac8;
+}
+
+.phpdocumentor .phpdocumentor-sidebar abbr,
+.phpdocumentor .phpdocumentor-sidebar a {
+  color: #adbac8;
+}
+
+.phpdocumentor .phpdocumentor-sidebar a:hover,
+.phpdocumentor .phpdocumentor-sidebar a.-active,
+.phpdocumentor .phpdocumentor-sidebar__category-header {
+  color: #9effc7;
+}
+
+.phpdocumentor-sidebar__menu-icon {
+  padding: .7rem .85rem;
+  color: #9effc7;
+  background: #101820;
+  border: 1px solid #263746;
+  border-radius: 6px;
+  letter-spacing: 0;
+  text-align: left;
+}
+
+.php-quickstart__hero {
+  color: #c6d0da;
+  background: linear-gradient(145deg, #162330, #101820);
+  border: 1px solid #263746;
+}
+
+.php-quickstart__hero h2 {
+  color: #f7f7f2;
+}
+
+.php-quickstart__eyebrow {
+  color: #9effc7;
+}
+
+.php-quickstart__path-nav a {
+  color: #f7f7f2;
+  border-color: #3b5063;
+}
+
+.php-quickstart__path-nav a:hover,
+.php-quickstart__path-nav a:focus-visible,
+.php-quickstart__path-nav a[aria-current="page"] {
+  color: #082016;
+  background: #9effc7;
+  border-color: #9effc7;
+}
+
+.php-quickstart__section {
+  color: #c6d0da;
+  background: #101820;
+  border-color: #263746;
+  box-shadow: none;
+}
+
+.php-quickstart__section h1,
+.php-quickstart__section h2,
+.php-quickstart__section h3,
+.php-quickstart__section h4,
+.php-quickstart__section h5,
+.php-quickstart__section h6 {
+  color: #f7f7f2;
+}
+
+.phpdocumentor-signature,
+.phpdocumentor-element .phpdocumentor-element,
+.phpdocumentor-table,
+.phpdocumentor-table th,
+.phpdocumentor-table td {
+  border-color: #263746 !important;
+}
+
+.phpdocumentor-search-results__dialog,
+.phpdocumentor-search-results__dialog > .phpdocumentor-search,
+.phpdocumentor-search-results__body {
+  color: #c6d0da;
+  background: #101820;
+}
+
+.phpdocumentor-back-to-top {
+  color: #9effc7;
+  background: #162330;
+}
+
+@media (min-width: 900px) {
+  .phpdocumentor .phpdocumentor-sidebar.-three {
+    width: 210px;
+  }
+
+  .phpdocumentor .phpdocumentor-content.-nine {
+    width: calc(100% - 242px);
+    margin-left: 32px;
+  }
+}
+
+@media (max-width: 700px) {
+  .phpdocumentor-header {
+    align-items: center;
+    padding: .85rem 1rem;
+  }
+
+  .phpdocumentor-title {
+    flex: 1 0 100%;
+    margin: 0;
+    font-size: 1rem;
+  }
+
+  body:has(.phpdocumentor-sidebar__menu-button:checked) .phpdocumentor-title,
+  body:has(.phpdocumentor-sidebar__menu-button:checked) .phpdocumentor-title__link {
+    width: 100%;
+    max-width: 100%;
+    overflow: visible;
+    white-space: normal;
+  }
+
+  .phpdocumentor-search {
+    flex: 1 1 220px;
+    width: auto;
+    margin: 0;
+  }
+
+  .dw-cloud-promotion {
+    gap: .65rem;
+    margin: .75rem 1rem;
+    padding: .75rem;
+  }
+
+  .dw-cloud-promotion div > p:not(.dw-cloud-promotion__eyebrow) {
+    display: none;
+  }
+
+  .dw-cloud-promotion__action {
+    width: auto;
+    padding: .5rem .7rem;
+    font-size: .85rem;
+  }
+
+  .phpdocumentor {
+    padding-top: .25rem;
   }
 }

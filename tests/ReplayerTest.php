@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
-use Generator;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -83,8 +83,8 @@ final class ReplayerTest extends TestCase
             'event_type' => 'TimerScheduled',
             'payload' => ['sequence' => 11, 'delay_seconds' => 30],
         ]];
-        $workflow = static function (WorkflowContext $context): Generator {
-            yield $context->continueAsNew(['changed']);
+        $workflow = static function (WorkflowContext $context): never {
+            $context->continueAsNew(['changed']);
         };
 
         try {
@@ -97,11 +97,28 @@ final class ReplayerTest extends TestCase
         }
     }
 
+    public function testContinueAsNewStopsTheCurrentFiberWithItsProtocolCommand(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): never {
+            $context->continueAsNew(['next'], 'renamed-workflow', 'next-queue');
+        };
+
+        $result = (new Replayer($codec))->replay($workflow, [], [], 'php-workers');
+
+        self::assertSame('continue_as_new', $result->commands[0]['type']);
+        self::assertSame(['next'], $codec->decodeEnvelope($result->commands[0]['arguments']));
+        self::assertSame('renamed-workflow', $result->commands[0]['workflow_type']);
+        self::assertSame('next-queue', $result->commands[0]['queue']);
+    }
+
     public function testSearchAttributeUpsertUsesWorkerProtocolCommandShape(): void
     {
         $codec = new AvroPayloadCodec();
-        $workflow = static function (WorkflowContext $context): Generator {
-            yield $context->upsertSearchAttributes(['status' => 'processing']);
+        $workflow = static function (WorkflowContext $context): string {
+            $context->upsertSearchAttributes(['status' => 'processing']);
+
+            return 'search attributes recorded';
         };
 
         $result = (new Replayer($codec))->replay($workflow, [], [], 'php-workers');
@@ -117,8 +134,8 @@ final class ReplayerTest extends TestCase
         $codec = new AvroPayloadCodec();
         $replayer = new Replayer($codec);
         $calls = 0;
-        $workflow = static function (WorkflowContext $context) use (&$calls): Generator {
-            $value = yield $context->sideEffect(static function () use (&$calls): string {
+        $workflow = static function (WorkflowContext $context) use (&$calls): array {
+            $value = $context->sideEffect(static function () use (&$calls): string {
                 ++$calls;
 
                 return 'generated-once';
@@ -148,8 +165,8 @@ final class ReplayerTest extends TestCase
     {
         $codec = new AvroPayloadCodec();
         $replayer = new Replayer($codec);
-        $workflow = static function (WorkflowContext $context): Generator {
-            $result = yield $context->activity('charge-card');
+        $workflow = static function (WorkflowContext $context): array {
+            $result = $context->activity('charge-card');
 
             return ['activity' => $result];
         };
@@ -175,12 +192,53 @@ final class ReplayerTest extends TestCase
         self::assertSame(['activity' => 'charged'], $codec->decodeEnvelope($resolved->commands[0]['result']));
     }
 
+    public function testRecordedActivityFailureIsThrownAtTheStraightLineCallSite(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): array {
+            try {
+                $context->activity('charge-card');
+            } catch (ActivityFailed $failure) {
+                return [
+                    'caught' => $failure->getMessage(),
+                    'activity_type' => $failure->activityType,
+                    'failure_type' => $failure->failureType,
+                ];
+            }
+
+            return ['caught' => null];
+        };
+        $history = [
+            [
+                'event_type' => 'ActivityScheduled',
+                'payload' => ['sequence' => 4, 'activity_type' => 'charge-card'],
+            ],
+            [
+                'event_type' => 'ActivityFailed',
+                'payload' => [
+                    'sequence' => 4,
+                    'activity_type' => 'charge-card',
+                    'message' => 'card declined',
+                    'exception_type' => 'PaymentDeclined',
+                ],
+            ],
+        ];
+
+        $result = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame([
+            'caught' => 'card declined',
+            'activity_type' => 'charge-card',
+            'failure_type' => 'PaymentDeclined',
+        ], $codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
     public function testPendingRecordedTimerWaitsForHistoryAndResumes(): void
     {
         $codec = new AvroPayloadCodec();
         $replayer = new Replayer($codec);
-        $workflow = static function (WorkflowContext $context): Generator {
-            yield $context->sleep(5);
+        $workflow = static function (WorkflowContext $context): string {
+            $context->sleep(5);
 
             return 'timer-fired';
         };
@@ -206,8 +264,8 @@ final class ReplayerTest extends TestCase
     {
         $codec = new AvroPayloadCodec();
         $replayer = new Replayer($codec);
-        $workflow = static function (WorkflowContext $context): Generator {
-            $result = yield $context->childWorkflow('invoice-child');
+        $workflow = static function (WorkflowContext $context): array {
+            $result = $context->childWorkflow('invoice-child');
 
             return ['child' => $result];
         };
@@ -233,6 +291,134 @@ final class ReplayerTest extends TestCase
         self::assertSame(['child' => 'invoiced'], $codec->decodeEnvelope($resolved->commands[0]['result']));
     }
 
+    public function testExecutionStateIsIsolatedAcrossNestedAndSequentialWorkflowFibers(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $replayer = new Replayer($codec);
+        $outerContext = null;
+        $outer = static function (WorkflowContext $context) use (&$outerContext, $replayer, $codec): array {
+            $outerContext = $context;
+            $nested = $context->sideEffect(static function () use (&$outerContext, $replayer, $codec): array {
+                $nestedHistory = [
+                    [
+                        'event_type' => 'ActivityScheduled',
+                        'payload' => ['sequence' => 1, 'activity_type' => 'nested-step'],
+                    ],
+                    [
+                        'event_type' => 'ActivityCompleted',
+                        'payload' => [
+                            'sequence' => 1,
+                            'activity_type' => 'nested-step',
+                            'result' => $codec->envelope('nested-value'),
+                        ],
+                    ],
+                ];
+                $nestedWorkflow = static function (WorkflowContext $context) use (&$outerContext): array {
+                    $crossExecutionRejected = false;
+                    try {
+                        $outerContext?->activity('must-not-run');
+                    } catch (\LogicException) {
+                        $crossExecutionRejected = true;
+                    }
+
+                    return [
+                        'workflow_id' => $context->workflowId,
+                        'value' => $context->activity('nested-step'),
+                        'cross_execution_rejected' => $crossExecutionRejected,
+                    ];
+                };
+                $result = $replayer->replay(
+                    $nestedWorkflow,
+                    $nestedHistory,
+                    [],
+                    'php-workers',
+                    ['workflow_id' => 'nested-workflow', 'run_id' => 'nested-run'],
+                );
+
+                return $codec->decodeEnvelope($result->commands[0]['result']);
+            });
+
+            return [
+                'workflow_id' => $context->workflowId,
+                'run_id' => $context->runId,
+                'nested' => $nested,
+            ];
+        };
+
+        $outerResult = $replayer->replay(
+            $outer,
+            [],
+            [],
+            'php-workers',
+            ['workflow_id' => 'outer-workflow', 'run_id' => 'outer-run'],
+        );
+        $sequentialResult = $replayer->replay(
+            static fn (WorkflowContext $context): array => [
+                'workflow_id' => $context->workflowId,
+                'run_id' => $context->runId,
+            ],
+            [],
+            [],
+            'php-workers',
+            ['workflow_id' => 'later-workflow', 'run_id' => 'later-run'],
+        );
+
+        self::assertSame([
+            'workflow_id' => 'outer-workflow',
+            'run_id' => 'outer-run',
+            'nested' => [
+                'workflow_id' => 'nested-workflow',
+                'value' => 'nested-value',
+                'cross_execution_rejected' => true,
+            ],
+        ], $codec->decodeEnvelope($outerResult->commands[1]['result']));
+        self::assertSame([
+            'workflow_id' => 'later-workflow',
+            'run_id' => 'later-run',
+        ], $codec->decodeEnvelope($sequentialResult->commands[0]['result']));
+    }
+
+    public function testSignalsAndUpdatesRemainAvailableDuringStraightLineReplay(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $history = [
+            [
+                'event_type' => 'SignalReceived',
+                'payload' => [
+                    'signal_name' => 'set-language',
+                    'arguments' => $codec->envelope(['fr']),
+                ],
+            ],
+            [
+                'event_type' => 'UpdateAccepted',
+                'payload' => [
+                    'update_id' => 'rename-1',
+                    'update_name' => 'rename',
+                    'arguments' => $codec->envelope(['Grace']),
+                ],
+            ],
+            [
+                'event_type' => 'UpdateApplied',
+                'payload' => [
+                    'update_id' => 'rename-1',
+                    'update_name' => 'rename',
+                    'arguments' => $codec->envelope(['Grace']),
+                ],
+            ],
+        ];
+        $workflow = static fn (WorkflowContext $context): array => [
+            'signals' => $context->signals('set-language'),
+            'updates' => $context->updates('rename'),
+        ];
+
+        $result = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame([
+            'signals' => [['fr']],
+            'updates' => [['Grace']],
+        ], $codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
     #[DataProvider('terminalChildOutcomeProvider')]
     public function testTerminalChildOutcomeRetainsIdentityForDeterminism(string $eventType): void
     {
@@ -251,8 +437,8 @@ final class ReplayerTest extends TestCase
                 ],
             ],
         ];
-        $workflow = static function (WorkflowContext $context): Generator {
-            yield $context->childWorkflow('changed-child');
+        $workflow = static function (WorkflowContext $context): void {
+            $context->childWorkflow('changed-child');
         };
 
         try {
@@ -275,8 +461,8 @@ final class ReplayerTest extends TestCase
 
     private static function workflow(): callable
     {
-        return static function (WorkflowContext $context, string $name): Generator {
-            $message = yield $context->activity('greet', [$name]);
+        return static function (WorkflowContext $context, string $name): array {
+            $message = $context->activity('greet', [$name]);
 
             return ['message' => $message];
         };

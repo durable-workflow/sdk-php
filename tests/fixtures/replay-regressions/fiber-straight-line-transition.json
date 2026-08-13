@@ -1,0 +1,43 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "fiber-straight-line-transition",
+  "protocol_version": "1",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.single-activity",
+    "input": [
+      "Ada"
+    ]
+  },
+  "history": [
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "golden.greet"
+      }
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "golden.greet",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoUaGVsbG8sIEFkYQ=="
+        }
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "complete_workflow",
+        "result": "hello, Ada"
+      }
+    ]
+  }
+}

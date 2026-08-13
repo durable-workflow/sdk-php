@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if title %}{{ title }} · {% endif %}Durable Workflow PHP SDK</title>
+  <meta name="description" content="{{ description }}">
+  <meta name="robots" content="index,follow">
+  <meta name="theme-color" content="#101820">
+  <link rel="canonical" href="{{ page.url | absoluteUrl }}">
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/portal.css">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Durable Workflow PHP SDK">
+  <meta property="og:title" content="{% if title %}{{ title }} · {% endif %}Durable Workflow PHP SDK">
+  <meta property="og:description" content="{{ description }}">
+  <meta property="og:url" content="{{ page.url | absoluteUrl }}">
+  <meta property="og:image" content="https://php.durable-workflow.com/assets/social-card.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{% if title %}{{ title }} · {% endif %}Durable Workflow PHP SDK">
+  <meta name="twitter:description" content="{{ description }}">
+  <meta name="twitter:image" content="https://php.durable-workflow.com/assets/social-card.png">
+  <script defer src="/assets/portal.js"></script>
+  <script type="module" src="/analytics/analytics.js"></script>
+</head>
+<body class="{% if layoutType == 'home' %}home{% else %}guide{% endif %}">
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="/" aria-label="Durable Workflow PHP SDK home">
+        <span class="brand-mark" aria-hidden="true">DW</span>
+        <span class="brand-name">Durable Workflow</span>
+        <span class="brand-product">PHP</span>
+      </a>
+      <button class="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="primary-navigation">
+        <span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span>
+      </button>
+      <nav id="primary-navigation" class="primary-nav" aria-label="Primary navigation">
+        <a href="/getting-started/first-workflow/">Get started</a>
+        <a href="/build/workflows-activities/">Guides</a>
+        <a href="/frameworks/laravel/">Frameworks</a>
+        <a href="/operate/deployment/">Operate</a>
+        <a class="api-link" href="/api/">API Reference</a>
+      </nav>
+    </div>
+  </header>
+
+  {% if layoutType == 'home' %}
+    <main id="main-content">{{ content | safe }}</main>
+  {% else %}
+    <div class="docs-shell">
+      <aside class="docs-sidebar" aria-label="Guide navigation">
+        <div class="release-chip"><span>SDK</span> {{ release.sdkChannel }}</div>
+        {% for section in navigation %}
+          <section>
+            <h2>{{ section.label }}</h2>
+            <ul>
+              {% for item in section.items %}
+                <li><a href="{{ item.url }}"{% if page.url == item.url %} aria-current="page"{% endif %}>{{ item.label }}</a></li>
+              {% endfor %}
+            </ul>
+          </section>
+        {% endfor %}
+        <section>
+          <h2>Reference</h2>
+          <ul><li><a href="/api/">Generated API Reference</a></li></ul>
+        </section>
+      </aside>
+      <main id="main-content" class="guide-content">
+        <div class="eyebrow">PHP SDK guide</div>
+        <h1>{{ title }}</h1>
+        {% if lead %}<p class="lead">{{ lead }}</p>{% endif %}
+        {{ content | safe }}
+        <nav class="next-links" aria-label="Continue learning">
+          {% if previous %}<a href="{{ previous.url }}"><span>Previous</span>{{ previous.label }}</a>{% endif %}
+          {% if next %}<a href="{{ next.url }}"><span>Next</span>{{ next.label }}</a>{% endif %}
+        </nav>
+      </main>
+    </div>
+  {% endif %}
+
+  <footer class="site-footer">
+    <div><strong>Durable Workflow for PHP</strong><p>First-party clients and workers for Cloud and self-hosted Server.</p></div>
+    <nav aria-label="Related developer sites">
+      <a href="https://durable-workflow.com/docs/2.0/">Main docs</a>
+      <a href="https://python.durable-workflow.com/">Python</a>
+      <a href="https://rust.durable-workflow.com/">Rust</a>
+      <a href="https://github.com/durable-workflow/sdk-php">GitHub</a>
+    </nav>
+  </footer>
+</body>
+</html>

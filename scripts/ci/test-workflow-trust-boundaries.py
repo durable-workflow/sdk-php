@@ -256,6 +256,26 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
                 ):
                     self.assertIn(marker, verify)
 
+    def test_service_mode_smoke_binds_the_declared_server_release(self) -> None:
+        source = workflow_source("service-mode-published-smoke.yml")
+        smoke = job_source(
+            source,
+            "source-free-service-mode",
+        )
+        validate = step_source(smoke, "Validate the exact qualified Server version")
+        verify = step_source(smoke, "Verify the installed SDK release identity")
+        runtime = step_source(
+            smoke,
+            "Complete a class-oriented workflow against the published endpoint",
+        )
+
+        self.assertIn("server_version:", source)
+        self.assertIn("SERVER_VERSION: ${{ inputs.server_version }}", validate)
+        self.assertIn("supported-server-versions", verify)
+        self.assertIn("getenv('SERVER_VERSION')", verify)
+        self.assertIn("QUALIFIED_SERVER_VERSION: ${{ inputs.server_version }}", runtime)
+        self.assertIn("$client->clusterInfo()->version", runtime)
+
     def test_published_smoke_credentials_are_runtime_step_scoped(self) -> None:
         workflows = {
             "framework-bridges-published-smoke.yml": (

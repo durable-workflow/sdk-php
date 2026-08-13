@@ -52,7 +52,11 @@
         "test": "phpunit",
         "analyse": "phpstan analyse",
         "benchmark-avro-value": "php benchmarks/avro-value.php --enforce",
-        "docs": "phpdoc -d \"$PWD/src\" -t \"$PWD/build/api\" --cache-folder \"$PWD/build/phpdoc-cache\" --title=\"Durable Workflow PHP SDK\" --template=\"$PWD/.phpdoc/template\" && php scripts/render-quickstart-docs.php \"$PWD/build/api\"",
+        "docs:api": "phpdoc -d \"$PWD/src\" -t \"$PWD/build/api\" --cache-folder \"$PWD/build/phpdoc-cache\" --title=\"Durable Workflow PHP SDK — API Reference\" --template=\"$PWD/.phpdoc/template\" && php scripts/finalize-api-reference.php build/api",
+        "docs": [
+            "@docs:api",
+            "npm run build:docs"
+        ],
         "check-boundary": "bash scripts/check-dependency-boundary.sh",
         "check-release-identity": "scripts/check-release-identity.sh"
     },
@@ -71,7 +75,7 @@
         },
         "durable-workflow": {
             "product-train": "2.0.0-rc.15",
-            "supported-server-versions": "2.0.0-rc.17",
+            "supported-server-versions": "2.0.0-rc.24",
             "worker-protocol-version": "1.13",
             "control-plane-version": "2",
             "payload-codecs": ["avro"],

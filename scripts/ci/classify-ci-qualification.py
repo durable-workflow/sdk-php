@@ -97,18 +97,21 @@ def path_categories(path: str) -> set[str]:
     if (
         path
         in {
+            ".eleventy.cjs",
             "CHANGELOG.md",
             "CONTRIBUTING.md",
             "README.md",
             "package.json",
             "package-lock.json",
             ".github/workflows/external-link-diagnostics.yml",
+            "scripts/finalize-api-reference.php",
             "scripts/render-quickstart-docs.php",
         }
         or path.startswith((".phpdoc/", "docs/"))
         or path.startswith("scripts/ci/fixtures/docs-links/")
         or path.startswith("scripts/check-docs-")
         or path.startswith("scripts/qualify-docs-")
+        or path.startswith("scripts/qualify-quickstart-")
         or path == ".github/workflows/docs.yml"
     ):
         categories.add("docs")
@@ -116,13 +119,16 @@ def path_categories(path: str) -> set[str]:
     if (
         path
         in {
+            ".eleventy.cjs",
             ".github/workflows/docs.yml",
             "package.json",
             "package-lock.json",
+            "scripts/check-docs-browser.mjs",
             "scripts/check-docs-analytics-browser.mjs",
-            "scripts/render-quickstart-docs.php",
+            "scripts/finalize-api-reference.php",
         }
         or path.startswith(".phpdoc/")
+        or path.startswith("docs/portal/")
         or path.startswith(("scripts/check-docs-browser-", "scripts/qualify-docs-"))
     ):
         categories.add("docs-browser")
@@ -139,12 +145,18 @@ def path_categories(path: str) -> set[str]:
             "regression-corpus-policy.json",
         }
         or path.startswith("scripts/check-dependency-")
+        or path == "scripts/ci/run-replay-regression-fixture.php"
         or "regression-corpus" in path
     ):
         categories.add("runtime")
 
     if (
-        path == ".github/workflows/release-plan-recovery.yml"
+        path
+        in {
+            ".github/workflows/framework-bridges-published-smoke.yml",
+            ".github/workflows/release-plan-recovery.yml",
+            ".github/workflows/service-mode-published-smoke.yml",
+        }
         or path.startswith("scripts/ci/component-release-")
         or path.startswith("scripts/ci/release-recovery-")
         or path.startswith("scripts/ci/release_recovery_")
@@ -156,6 +168,12 @@ def path_categories(path: str) -> set[str]:
         or path.startswith("scripts/ci/recovery_workflow_")
     ):
         categories.add("release")
+
+    if path in {
+        ".github/workflows/framework-bridges-published-smoke.yml",
+        ".github/workflows/service-mode-published-smoke.yml",
+    }:
+        categories.add("runtime")
 
     if path in {
         ".github/workflows/ci.yml",

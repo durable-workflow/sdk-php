@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Durable Workflow PHP">
+  <rect width="64" height="64" rx="15" fill="#101820"/>
+  <path d="M16 20h14c12 0 19 6 19 12s-7 12-19 12H16V20Zm10 7v10h5c5 0 8-2 8-5s-3-5-8-5h-5Z" fill="#9effc7"/>
+  <circle cx="51" cy="14" r="5" fill="#8da2ff"/>
+</svg>

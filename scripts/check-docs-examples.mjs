@@ -1,4 +1,6 @@
 import {readFile} from 'node:fs/promises';
+import Ajv2020 from 'ajv/dist/2020.js';
+import addFormats from 'ajv-formats';
 
 const repoRoot = new URL('../', import.meta.url);
 const contract = JSON.parse(
@@ -7,6 +9,18 @@ const contract = JSON.parse(
 const quickstart = JSON.parse(
   await readFile(new URL(contract.quickstartContract, repoRoot), 'utf8'),
 );
+const quickstartSchema = JSON.parse(
+  await readFile(new URL('docs/quickstart-contract.schema.v2.json', repoRoot), 'utf8'),
+);
+
+const schemaValidator = new Ajv2020({allErrors: true});
+addFormats(schemaValidator);
+const validateQuickstart = schemaValidator.compile(quickstartSchema);
+if (!validateQuickstart(quickstart)) {
+  throw new Error(
+    `quickstart contract does not satisfy its published schema: ${schemaValidator.errorsText(validateQuickstart.errors)}`,
+  );
+}
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -63,8 +77,46 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function jsonPointer(document, pointer, context) {
+  assert(
+    typeof pointer === 'string' && pointer.startsWith('/'),
+    `${context} must be an RFC 6901 JSON Pointer`,
+  );
+
+  return pointer.slice(1).split('/').reduce((value, rawSegment) => {
+    const segment = rawSegment.replace(/~1/g, '/').replace(/~0/g, '~');
+    assert(value !== null && typeof value === 'object' && segment in value, `${context} does not resolve`);
+    return value[segment];
+  }, document);
+}
+
+function packageSourcePath(reference, context) {
+  assert(reference?.kind === 'composer_package_path', `${context} must be a Composer package path`);
+  const base = quickstart.reference_resolution?.bases?.[reference.base];
+  assert(base?.kind === 'composer_package', `${context} must select a Composer package base`);
+  assert(
+    jsonPointer(quickstart, base.package_pointer, `${context} package pointer`) === quickstart.package,
+    `${context} must resolve against the contract package coordinate`,
+  );
+  assert(
+    typeof reference.path === 'string'
+      && reference.path.length > 0
+      && !reference.path.startsWith('/')
+      && !reference.path.includes('\\')
+      && !reference.path.split('/').some((segment) => segment === '' || segment === '..'),
+    `${context} must use a safe package-relative path`,
+  );
+  return reference.path;
+}
+
 const composer = JSON.parse(await readFile(new URL('composer.json', repoRoot), 'utf8'));
-assert(quickstart.schema_version === 1, 'quickstart contract must use schema version 1');
+assert(quickstart.schema_version === 2, 'quickstart contract must use schema version 2');
+assert(quickstart.$schema === quickstartSchema.$id, 'quickstart contract must identify its deployed schema');
+assert(quickstartSchema.properties?.schema_version?.const === 2, 'quickstart schema must describe version 2');
+assert(
+  quickstart.reference_resolution?.version === 1,
+  'quickstart contract must use reference resolution semantics version 1',
+);
 assert(quickstart.package?.name === composer.name, 'quickstart package name must match composer.json');
 assert(
   quickstart.package?.published_version === composer.extra?.['durable-workflow']?.['product-train'],
@@ -73,6 +125,17 @@ assert(
 assert(
   quickstart.package?.composer_requirement === `${quickstart.package.published_version}@RC`,
   'quickstart Composer requirement must select the published release candidate',
+);
+assert(
+  /^\^\d+\.\d+@RC$/.test(quickstart.package?.onboarding_requirement || ''),
+  'quickstart onboarding requirement must select a prerelease release channel',
+);
+assert(
+  quickstart.workflow_authoring?.execution_model === 'fiber'
+    && quickstart.workflow_authoring?.syntax === 'straight_line'
+    && quickstart.workflow_authoring?.operation_results === 'direct_return'
+    && quickstart.workflow_authoring?.generator_compatibility === false,
+  'quickstart workflow authoring must declare the Fiber-backed straight-line contract',
 );
 
 const server = new URL(quickstart.runtime_targets?.server?.client_input);
@@ -83,6 +146,11 @@ assert(
   'Server quickstart must use the default local namespace',
 );
 assert(serverRequest.pathname === '/api/workflows', 'Server request example must contain one SDK API segment');
+assert(
+  quickstart.runtime_targets?.server?.image
+    === `durableworkflow/server:${composer.extra?.['durable-workflow']?.['supported-server-versions']}`,
+  'Server quickstart image must match the Composer compatibility metadata',
+);
 
 const cloud = new URL(quickstart.runtime_targets?.cloud?.client_input.replace('<runtime-id>', 'runtime-id'));
 const cloudRequest = new URL(
@@ -100,6 +168,41 @@ assert(
   cloudRequest.pathname === `${cloud.pathname}/api/workflows`,
   'Cloud request example must append the SDK API segment after the namespace runtime path',
 );
+
+const sourcePaths = Object.fromEntries(
+  Object.entries(quickstart.sources || {}).map(([name, reference]) => [
+    name,
+    packageSourcePath(reference, `quickstart source ${name}`),
+  ]),
+);
+assert(
+  JSON.stringify(Object.keys(sourcePaths).sort()) === JSON.stringify(['bootstrap', 'client', 'worker']),
+  'quickstart contract must expose exactly the bootstrap, client, and worker sources',
+);
+
+const provenance = quickstart.qualification_provenance;
+assert(
+  typeof provenance?.subject_base === 'string'
+    && provenance.subject_base in quickstart.reference_resolution.bases,
+  'qualification provenance must select a declared reference base',
+);
+assert(
+  provenance?.evidence?.kind === 'github_actions_workflow',
+  'qualification provenance must use a public GitHub Actions workflow identity',
+);
+for (const field of ['api_url', 'web_url']) {
+  const url = new URL(provenance.evidence[field]);
+  assert(url.protocol === 'https:', `qualification provenance ${field} must use HTTPS`);
+}
+assert(
+  jsonPointer(
+    quickstart,
+    provenance.evidence.version_input?.value_pointer,
+    'qualification version input pointer',
+  ) === quickstart.package.published_version,
+  'qualification provenance must bind its input to the published package version',
+);
+assert(!('published_smoke' in quickstart), 'quickstart contract must not expose a repository-local smoke path');
 
 for (const example of contract.examples || []) {
   const context = `${example.path}#${example.id}`;
@@ -120,9 +223,9 @@ for (const example of contract.examples || []) {
   }
 }
 
-const workerSource = await readFile(new URL(quickstart.sources.worker, repoRoot), 'utf8');
-const clientSource = await readFile(new URL(quickstart.sources.client, repoRoot), 'utf8');
-const bootstrapSource = await readFile(new URL(quickstart.sources.bootstrap, repoRoot), 'utf8');
+const workerSource = await readFile(new URL(sourcePaths.worker, repoRoot), 'utf8');
+const clientSource = await readFile(new URL(sourcePaths.client, repoRoot), 'utf8');
+const bootstrapSource = await readFile(new URL(sourcePaths.bootstrap, repoRoot), 'utf8');
 for (const autoloadCandidate of [
   "__DIR__.'/vendor/autoload.php'",
   "dirname(__DIR__).'/vendor/autoload.php'",
@@ -132,12 +235,16 @@ for (const autoloadCandidate of [
 ]) {
   assert(
     bootstrapSource.includes(autoloadCandidate),
-    `${quickstart.sources.bootstrap} must support the ${autoloadCandidate} Composer layout`,
+    `${sourcePaths.bootstrap} must support the ${autoloadCandidate} Composer layout`,
   );
 }
 for (const attribute of ['#[Workflow(', '#[Activity(']) {
-  assert(workerSource.includes(attribute), `${quickstart.sources.worker} must expose ${attribute}`);
+  assert(workerSource.includes(attribute), `${sourcePaths.worker} must expose ${attribute}`);
 }
+assert(
+  !workerSource.includes('yield ') && !workerSource.includes('Generator'),
+  'quickstart worker must use straight-line workflow calls without generator syntax',
+);
 assert(
   workerSource.includes('->register(GreeterWorkflow::class, GreetingActivities::class)'),
   'quickstart worker must register both attributed handler classes',

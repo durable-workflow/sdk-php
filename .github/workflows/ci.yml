@@ -170,12 +170,21 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - name: Install documentation dependencies
+        if: >-
+          ${{
+            contains(needs.qualification-route.outputs.categories, 'docs')
+            || contains(needs.qualification-route.outputs.categories, 'docs-browser')
+          }}
+        run: npm ci
       - name: Exercise focused documentation contracts
         if: ${{ contains(needs.qualification-route.outputs.categories, 'docs') }}
         run: |
           npm run check:docs-examples
-          composer docs -- --template="$PWD/.phpdoc/template"
-          php scripts/check-docs-analytics.php build/api
+          npm run test:quickstart-contract-deployment
+          composer docs
+          npm run check:docs
+          php scripts/check-docs-analytics.php build/site
       - name: Check repository-owned documentation links offline
         if: ${{ contains(needs.qualification-route.outputs.categories, 'docs') }}
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
@@ -186,45 +195,25 @@ jobs:
             --include-fragments
             --root-dir ${{ github.workspace }}
             README.md docs/*.md
-      - name: Check generated documentation links offline on GitHub
-        if: >-
-          ${{
-            contains(needs.qualification-route.outputs.categories, 'docs')
-            && github.server_url == 'https://github.com'
-          }}
+      - name: Check rendered documentation links
+        if: ${{ contains(needs.qualification-route.outputs.categories, 'docs') }}
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:
           args: >-
             --no-progress
             --offline
-            --base-url /github/workspace/build/api/
-            --exclude-path build/api/graphs/classes.html
-            build/api/**/*.html build/api/**/*.css
-      - name: Check generated documentation links offline on alternate CI
-        if: >-
-          ${{
-            contains(needs.qualification-route.outputs.categories, 'docs')
-            && github.server_url != 'https://github.com'
-          }}
-        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
-        with:
-          args: >-
-            --no-progress
-            --offline
-            --base-url ${{ github.workspace }}/build/api/
-            --exclude-path build/api/graphs/classes.html
-            build/api/**/*.html build/api/**/*.css
+            --root-dir ${{ github.workspace }}/build/site
+            build/site
       - name: Install responsive documentation browser dependencies
         if: ${{ contains(needs.qualification-route.outputs.categories, 'docs-browser') }}
-        run: |
-          npm ci
-          npx playwright install chromium --with-deps
+        run: npx playwright install chromium --with-deps
       - name: Exercise responsive documentation browser evidence
         if: ${{ contains(needs.qualification-route.outputs.categories, 'docs-browser') }}
         run: |
           npm run test:docs-browser-failures
           npm run test:docs-analytics-deployment
-          npm run check:docs-analytics-browser -- build/api
+          npm run check:docs-analytics-browser -- build/site
+          npm run check:docs-browser
       - name: Exercise focused release recovery boundaries
         if: ${{ contains(needs.qualification-route.outputs.categories, 'release') }}
         env:
@@ -419,8 +408,10 @@ jobs:
       - run: composer install --no-interaction --prefer-dist
       - run: npm ci
       - run: npm run check:docs-examples
-      - run: composer docs -- --template="$PWD/.phpdoc/template"
-      - run: php scripts/check-docs-analytics.php build/api
+      - run: npm run test:quickstart-contract-deployment
+      - run: composer docs
+      - run: npm run check:docs
+      - run: php scripts/check-docs-analytics.php build/site
       - name: Check repository-owned documentation links offline
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:
@@ -430,33 +421,23 @@ jobs:
             --include-fragments
             --root-dir ${{ github.workspace }}
             README.md docs/*.md
-      - name: Check generated documentation links offline on GitHub
-        if: ${{ github.server_url == 'https://github.com' }}
+      - name: Check rendered documentation links
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:
           args: >-
             --no-progress
             --offline
-            --base-url /github/workspace/build/api/
-            --exclude-path build/api/graphs/classes.html
-            build/api/**/*.html build/api/**/*.css
-      - name: Check generated documentation links offline on alternate CI
-        if: ${{ github.server_url != 'https://github.com' }}
-        uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
-        with:
-          args: >-
-            --no-progress
-            --offline
-            --base-url ${{ github.workspace }}/build/api/
-            --exclude-path build/api/graphs/classes.html
-            build/api/**/*.html build/api/**/*.css
+            --root-dir ${{ github.workspace }}/build/site
+            build/site
       - run: npx playwright install chromium --with-deps
       - name: Test missing-resource browser evidence
         run: npm run test:docs-browser-failures
       - name: Test deployed Cloudflare transport qualification
         run: npm run test:docs-analytics-deployment
       - name: Check Cloudflare analytics in Chromium
-        run: npm run check:docs-analytics-browser -- build/api
+        run: npm run check:docs-analytics-browser -- build/site
+      - name: Check portal and API layouts in Chromium
+        run: npm run check:docs-browser
 
   package-smoke:
     needs: qualification-route

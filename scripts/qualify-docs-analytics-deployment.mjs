@@ -5,7 +5,7 @@ import {pathToFileURL} from 'node:url';
 import {chromium} from 'playwright';
 
 const SITE_HOSTNAME = 'php.durable-workflow.com';
-const PAGE_PATH = '/namespaces/durableworkflow-worker.html';
+const PAGE_PATH = '/api/namespaces/durableworkflow-worker.html';
 export const BEACON_URL = 'https://static.cloudflareinsights.com/beacon.min.js';
 export const RUM_URL = 'https://cloudflareinsights.com/cdn-cgi/rum';
 export const DEPLOYMENT_AUDIT_URL = `https://${SITE_HOSTNAME}/deployment-audit.json`;
@@ -25,7 +25,7 @@ const PROMOTION_VIEWPORTS = [
 ];
 const PROMOTION_PAGES = [
   ['root', '/'],
-  ['Client API', '/classes/DurableWorkflow-Client.html'],
+  ['Client API', '/api/classes/DurableWorkflow-Client.html'],
 ];
 const SOURCE_REVISION_PATTERN = /^[a-f0-9]{40}$/;
 
@@ -350,10 +350,10 @@ export async function qualifyPromotionTransport(context, target, contract = {}) 
 
   const response = await page.goto(targetUrl.href, {waitUntil: 'networkidle'});
   assert.equal(response?.status(), 200, `The deployed PHP reference page did not render: ${targetUrl.href}`);
-  await page.locator('.phpdocumentor-content').waitFor();
   const promotion = page.locator(`[data-promotion-source="${source}"]`);
   const action = promotion.locator('[data-promotion-action="early-access"]');
   await promotion.waitFor();
+  await promotion.scrollIntoViewIfNeeded();
   await waitForCount(promotionResponses, 1, 'Promotion qualification did not reach the deployed receiver');
   await waitForCount(promotionRequests, 1, 'Promotion qualification request metadata was not observable');
   await delay(150);

@@ -396,32 +396,32 @@ final class ReplayRegressionConsumer
     private static function workflow(string $workflowType): callable
     {
         return match ($workflowType) {
-            'golden.single-activity' => static function (WorkflowContext $context, mixed $name): Generator {
-                return yield $context->activity('golden.greet', [$name]);
+            'golden.single-activity' => static function (WorkflowContext $context, mixed $name): mixed {
+                return $context->activity('golden.greet', [$name]);
             },
-            'golden.timer' => static function (WorkflowContext $context, mixed $seconds): Generator {
-                yield $context->sleep((float) $seconds);
+            'golden.timer' => static function (WorkflowContext $context, mixed $seconds): string {
+                $context->sleep((float) $seconds);
 
                 return 'timer-fired';
             },
             'golden.child-workflow' => static function (
                 WorkflowContext $context,
                 mixed $workflowType,
-            ): Generator {
-                $result = yield $context->childWorkflow((string) $workflowType, ['golden-input']);
+            ): array {
+                $result = $context->childWorkflow((string) $workflowType, ['golden-input']);
 
                 return ['child' => $result];
             },
-            'golden.side-effect' => static function (WorkflowContext $context, mixed $value): Generator {
-                $result = yield $context->sideEffect(static fn (): mixed => $value);
+            'golden.side-effect' => static function (WorkflowContext $context, mixed $value): array {
+                $result = $context->sideEffect(static fn (): mixed => $value);
 
                 return ['side_effect' => $result];
             },
-            'golden.continue-as-new' => static function (WorkflowContext $context, mixed $value): Generator {
-                yield $context->continueAsNew([$value], taskQueue: 'regression-corpus');
+            'golden.continue-as-new' => static function (WorkflowContext $context, mixed $value): never {
+                $context->continueAsNew([$value], taskQueue: 'regression-corpus');
             },
-            'golden.search-attributes' => static function (WorkflowContext $context, mixed $status): Generator {
-                yield $context->upsertSearchAttributes(['status' => $status]);
+            'golden.search-attributes' => static function (WorkflowContext $context, mixed $status): string {
+                $context->upsertSearchAttributes(['status' => $status]);
 
                 return 'search-attributes-upserted';
             },
