@@ -67,6 +67,7 @@ PHP_INTEGER_STRING = re.compile(r"[+-]?[0-9]+")
 PHP_INT_MIN = -(2**63)
 PHP_INT_MAX = 2**63 - 1
 PHP_INT_MODULUS = 2**64
+SUBPROCESS_DIAGNOSTIC_LIMIT = 4096
 
 
 class CorpusError(RuntimeError):
@@ -1353,6 +1354,28 @@ def _run(command: Sequence[str], root: Path, *, check: bool = True) -> str:
     return result.stdout
 
 
+def _run_bytes(command: Sequence[str], root: Path, *, check: bool = True) -> bytes:
+    result = subprocess.run(
+        command,
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=False,
+    )
+    if check and result.returncode != 0:
+        raw_detail = result.stderr.strip() or result.stdout.strip()
+        detail = raw_detail[:SUBPROCESS_DIAGNOSTIC_LIMIT].decode(
+            "utf-8",
+            errors="replace",
+        )
+        if len(raw_detail) > SUBPROCESS_DIAGNOSTIC_LIMIT:
+            detail += "…"
+        if not detail:
+            detail = f"exit status {result.returncode}"
+        raise CorpusError(f"{' '.join(command)} failed: {detail}")
+    return result.stdout
+
+
 def _run_replay_fixture(
     *,
     root: Path,
@@ -1829,7 +1852,7 @@ def _tracked_worktree_files(root: Path) -> dict[str, bytes]:
 def _ref_files(root: Path, ref: str) -> dict[str, bytes]:
     paths = _run(["git", "ls-tree", "-r", "--name-only", "-z", ref], root).split("\0")
     return {
-        path: _run(["git", "show", f"{ref}:{path}"], root).encode()
+        path: _run_bytes(["git", "show", f"{ref}:{path}"], root)
         for path in paths
         if path
     }

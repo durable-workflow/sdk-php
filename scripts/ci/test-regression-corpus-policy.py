@@ -758,6 +758,26 @@ raise SystemExit(0)
             result.stderr,
         )
 
+    def test_base_revision_preserves_non_utf8_binary_assets(self) -> None:
+        asset = self.root / "docs/portal/assets/share.png"
+        asset.parent.mkdir(parents=True)
+        asset.write_bytes(b"\x89PNG\r\n\x1a\n\xffbinary-fixture")
+        self.git("add", asset.relative_to(self.root).as_posix())
+        self.git(
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=binary-asset",
+        )
+        self.base_ref = self.git("rev-parse", "HEAD").stdout.strip()
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
     def test_php_policy_rejects_unconsumed_replay_format(self) -> None:
         policy = json.loads(
             (self.root / "regression-corpus-policy.json").read_text()

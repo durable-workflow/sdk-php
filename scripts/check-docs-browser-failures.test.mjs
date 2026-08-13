@@ -1,10 +1,23 @@
 import assert from 'node:assert/strict';
 import {once} from 'node:events';
+import {readFile} from 'node:fs/promises';
 import http from 'node:http';
 import process from 'node:process';
 import test from 'node:test';
 import {chromium} from 'playwright';
 import {assertNoBrowserFailures, formatHttpFailure} from './check-docs-browser-failures.mjs';
+
+test('the layout check isolates only the exact Cloudflare RUM endpoint', async () => {
+  const source = await readFile(new URL('./check-docs-browser.mjs', import.meta.url), 'utf8');
+  const rumRoutes = [...source.matchAll(/page\.route\((['"])([^'"]*cloudflareinsights[^'"]*)\1/g)]
+    .map(match => match[2]);
+
+  assert.deepEqual(rumRoutes, ['https://cloudflareinsights.com/cdn-cgi/rum']);
+  assert.match(source, /'access-control-allow-origin': origin/);
+  assert.match(source, /'cache-control': 'no-store'/);
+  assert.match(source, /if \(response\.status\(\) >= 400\)/);
+  assert.match(source, /assert\.deepEqual\(errors, \[\],/);
+});
 
 test('a missing font reports its exact HTTP evidence before its console error', async () => {
   const server = http.createServer((request, response) => {

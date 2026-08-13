@@ -109,6 +109,13 @@ async function validateSurface(browser, origin, surface, viewportName, viewport)
       vary: 'Origin',
     },
   }));
+  await page.route('https://cloudflareinsights.com/cdn-cgi/rum', route => route.fulfill({
+    status: 204,
+    headers: {
+      'access-control-allow-origin': origin,
+      'cache-control': 'no-store',
+    },
+  }));
   await page.goto(`${origin}${surface.path}`, {waitUntil: 'networkidle'});
   await page.evaluate(() => document.fonts.ready);
 
