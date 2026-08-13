@@ -73,6 +73,11 @@ final class Client implements WorkflowClientInterface
         if (trim($this->namespace) === '') {
             throw new InvalidArgumentException('The Durable Workflow namespace cannot be empty.');
         }
+        if ($codec !== null && ! $codec instanceof AvroPayloadCodec) {
+            throw new InvalidArgumentException(
+                'unsupported_payload_codec: Durable Workflow 2.0 accepts only AvroPayloadCodec with the fixed Avro Value schema and single-object framing. JSON remains the HTTP document transport, not a workflow payload codec.',
+            );
+        }
         $this->baseUri = $normalizedBaseUri;
         $this->authentication = $authentication
             ?? (($token !== null || $controlToken !== null || $workerToken !== null)

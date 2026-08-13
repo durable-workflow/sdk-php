@@ -27,6 +27,18 @@ final class AvroPayloadCodecTest extends TestCase
         $this->codec = new AvroPayloadCodec();
     }
 
+    public function test_json_tagged_payload_fails_closed_with_actionable_diagnostic(): void
+    {
+        $this->expectException(\DurableWorkflow\Exception\CodecException::class);
+        $this->expectExceptionMessage('unsupported_payload_codec');
+        $this->expectExceptionMessage('HTTP document transport');
+
+        $this->codec->decodeEnvelope([
+            'codec' => 'json',
+            'blob' => '{"stale":true}',
+        ]);
+    }
+
     public function testCanonicalSchemaAndFingerprintMatchCheckedInAuthority(): void
     {
         self::assertSame(

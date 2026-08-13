@@ -28,11 +28,11 @@ Create an empty Composer project and install the current published package:
 mkdir durable-php-quickstart
 cd durable-php-quickstart
 composer init --name=acme/durable-php-quickstart --no-interaction
-composer require durable-workflow/sdk:2.0.0-rc.15@RC
+composer require durable-workflow/sdk:2.0.0-rc.30@RC
 ```
 
-This exact package is PHP SDK `2.0.0-rc.15`. Its package metadata declares
-Server `2.0.0-rc.24` as the verified compatibility baseline; using another
+This exact package is PHP SDK `2.0.0-rc.30`. Its package metadata declares
+Server `2.0.0-rc.32` as the verified compatibility baseline; using another
 Server prerelease requires separate conformance evidence. Earlier 2.0
 prereleases and pre-1.0 SDK releases remain historical rather than alternate
 supported baselines.
@@ -485,7 +485,7 @@ Publish the environment-backed configuration, add attributed handler services,
 and start the supervised Artisan command:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.15@RC
+composer require durable-workflow/sdk:2.0.0-rc.30@RC
 php artisan vendor:publish --tag=durable-workflow-config
 php artisan config:cache
 php artisan durable-workflow:worker

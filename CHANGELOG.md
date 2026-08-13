@@ -29,12 +29,13 @@ project follows [Semantic Versioning](https://semver.org/).
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK to `2.0.0-rc.15`. Package metadata declares Server
-  `2.0.0-rc.24` as the verified compatibility baseline; other Server
-  prereleases require separate conformance evidence. Managed registration emits
-  an explicit empty validator list, while low-level registration documents and
-  preserves that declaration and rejects malformed or non-empty claims before
-  transport.
+- Advanced the PHP SDK source to `2.0.0-rc.30`. Package metadata declares Server
+  `2.0.0-rc.32` as the verified compatibility baseline; other Server
+  prereleases require separate conformance evidence. Avro is the sole public
+  Durable Workflow 2.0 payload codec, and non-Avro configuration fails before
+  transmission. Managed registration emits an explicit empty validator list,
+  while low-level registration documents and preserves that declaration and
+  rejects malformed or non-empty claims before transport.
 - Replaced the prerelease JSON wrapper with the fixed recursive
   `durable_workflow.protocol.Value` schema and Avro single-object framing.
   `AvroBinaryValue` makes the bytes branch explicit while PHP strings remain

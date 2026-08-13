@@ -50,6 +50,19 @@ class RegressionCorpusPolicyTest(unittest.TestCase):
                 },
             },
         )
+        self.write_json(
+            "composer.lock",
+            {
+                "content-hash": "base",
+                "packages": [
+                    {
+                        "name": "apache/avro",
+                        "version": "1.12.0",
+                    }
+                ],
+                "packages-dev": [],
+            },
+        )
         (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'base';\n")
         (self.root / "src/Client.php").write_text(
             """<?php
@@ -1441,6 +1454,28 @@ raise SystemExit(0 if "return 'changed';" in source else 1)
             "must change independently: composer.lock",
             result.stderr,
         )
+
+    def test_release_metadata_and_lock_hash_can_change_without_dependency_drift(self) -> None:
+        (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")
+        composer = json.loads((self.root / "composer.json").read_text())
+        composer["extra"] = {
+            "durable-workflow": {
+                "product-train": "2.0.0-rc.30",
+                "payload-codecs": ["avro"],
+            }
+        }
+        self.write_json("composer.json", composer)
+        lock = json.loads((self.root / "composer.lock").read_text())
+        lock["content-hash"] = "release-metadata-only"
+        self.write_json("composer.lock", lock)
+        self.write_json(
+            "tests/fixtures/codec-regressions/codec-defect.json",
+            self.codec_fixture("codec-defect", "2", "Ag=="),
+        )
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
 
     def test_compound_codec_file_cannot_count_unverified_fixtures(self) -> None:
         (self.root / "src/Codec/Example.php").write_text("<?php\nreturn 'changed';\n")

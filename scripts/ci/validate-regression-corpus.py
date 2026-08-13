@@ -1493,7 +1493,8 @@ def _require_codec_dependencies_unchanged(
     changed_definitions = sorted(
         path
         for path in CODEC_DEPENDENCY_DEFINITIONS
-        if base_files.get(path) != current_files.get(path)
+        if _codec_dependency_projection(path, base_files.get(path))
+        != _codec_dependency_projection(path, current_files.get(path))
     )
     changed_vendor_sources = sorted(
         path for path in changed if Path(path).parts[:1] == ("vendor",)
@@ -1504,6 +1505,34 @@ def _require_codec_dependencies_unchanged(
             "codec implementation and counterfactual dependency definitions "
             f"must change independently: {', '.join(paths)}"
         )
+
+
+def _codec_dependency_projection(path: str, content: bytes | None) -> Any:
+    """Project Composer metadata onto inputs that can change the Avro consumer."""
+
+    if content is None:
+        return None
+    document = _json(content, path)
+    if path == "composer.json":
+        require = document.get("require")
+        requirements = require if isinstance(require, Mapping) else {}
+        return {
+            "apache/avro": requirements.get("apache/avro"),
+            "autoload": document.get("autoload"),
+        }
+    if path == "composer.lock":
+        packages: list[Mapping[str, Any]] = []
+        for section in ("packages", "packages-dev"):
+            entries = document.get(section, [])
+            if not isinstance(entries, Sequence) or isinstance(entries, str | bytes):
+                raise CorpusError(f"{path}.{section} must be an array")
+            packages.extend(
+                package
+                for package in entries
+                if isinstance(package, Mapping) and package.get("name") == "apache/avro"
+            )
+        return {"apache/avro": packages}
+    raise CorpusError(f"unsupported codec dependency definition {path}")
 
 
 def _verify_new_codec_evidence(

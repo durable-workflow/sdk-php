@@ -92,7 +92,7 @@ def path_categories(path: str) -> set[str]:
     categories: set[str] = set()
 
     if path == "composer.json" or path.startswith("src/"):
-        categories.update(("docs", "docs-browser"))
+        categories.add("docs")
 
     if (
         path

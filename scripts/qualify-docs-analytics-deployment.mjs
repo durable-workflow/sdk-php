@@ -278,6 +278,7 @@ export async function qualifyPromotionTransport(context, target, contract = {}) 
   const eventUrl = contract.eventUrl ?? PROMOTION_EVENT_URL;
   const source = contract.source ?? PROMOTION_SOURCE;
   const destination = contract.destination ?? PROMOTION_DESTINATION;
+  const navigationTimeoutMs = contract.navigationTimeoutMs ?? 30_000;
   const destinationUrl = destination.split('#')[0];
   const page = await context.newPage();
   const errors = [];
@@ -367,15 +368,31 @@ export async function qualifyPromotionTransport(context, target, contract = {}) 
     await waitForCount(promotionResponses, 2, 'Promotion click qualification did not reach the deployed receiver');
     await route.continue();
   }, {times: 1});
-  await Promise.all([
-    page.waitForURL(url => {
-      const resolvedUrl = new URL(url);
-      resolvedUrl.hash = '';
-      return resolvedUrl.href === destinationUrl;
-    }, {waitUntil: 'load'}),
-    action.click(),
-  ]);
-  const destinationPage = page;
+  const destinationMatches = url => {
+    const resolvedUrl = new URL(url);
+    resolvedUrl.hash = '';
+    return resolvedUrl.href === destinationUrl;
+  };
+  let destinationPage = page;
+  if (await action.getAttribute('target') === '_blank') {
+    [destinationPage] = await Promise.all([
+      context.waitForEvent('page', {timeout: navigationTimeoutMs}),
+      action.click(),
+    ]);
+    capturePageErrors(destinationPage);
+    await destinationPage.waitForURL(destinationMatches, {
+      timeout: navigationTimeoutMs,
+      waitUntil: 'load',
+    });
+  } else {
+    await Promise.all([
+      page.waitForURL(destinationMatches, {
+        timeout: navigationTimeoutMs,
+        waitUntil: 'load',
+      }),
+      action.click(),
+    ]);
+  }
   await waitForCount(promotionResponses, 2, 'Promotion click qualification did not reach the deployed receiver');
   await waitForCount(promotionRequests, 2, 'Promotion click request metadata was not observable');
   await delay(150);

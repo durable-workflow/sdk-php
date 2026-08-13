@@ -5,12 +5,30 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Client;
+use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
 final class ClientBaseUriTest extends TestCase
 {
+    public function testClientRejectsEveryNonAvroPayloadCodecConfiguration(): void
+    {
+        $codec = new class() implements PayloadCodec {
+            public function name(): string { return 'json'; }
+            public function encode(mixed $value): string { return json_encode($value, JSON_THROW_ON_ERROR); }
+            public function decode(string $blob): mixed { return json_decode($blob, true, flags: JSON_THROW_ON_ERROR); }
+            public function envelope(mixed $value): array { return ['codec' => 'json', 'blob' => $this->encode($value)]; }
+            public function decodeEnvelope(array|string|null $envelope): mixed { return null; }
+        };
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('unsupported_payload_codec');
+        $this->expectExceptionMessage('HTTP document transport');
+
+        new Client('https://server.example', codec: $codec);
+    }
+
     public function testClientRejectsTheSdkOwnedApiSuffix(): void
     {
         foreach ([

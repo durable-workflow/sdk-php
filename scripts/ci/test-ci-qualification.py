@@ -144,7 +144,7 @@ class ChangedPathClassificationTest(unittest.TestCase):
             ),
             "generated-reference-source": (
                 ["src/Client.php"],
-                ("docs", "docs-browser", "runtime"),
+                ("docs", "runtime"),
             ),
             "runtime-test": (["tests/ClientTest.php"], ("runtime",)),
             "runtime-fixture-runner": (
@@ -167,7 +167,7 @@ class ChangedPathClassificationTest(unittest.TestCase):
                 self.assertEqual(expected, categories)
                 self.assertEqual("changed-paths-classified", reason)
 
-    def test_api_reference_composer_input_selects_all_preintegration_evidence(
+    def test_api_reference_composer_input_selects_generated_docs_and_runtime_evidence(
         self,
     ) -> None:
         deployment = API_REFERENCE_WORKFLOW.read_text()
@@ -175,7 +175,7 @@ class ChangedPathClassificationTest(unittest.TestCase):
 
         categories, reason = self.classify(["composer.json"])
 
-        self.assertEqual(("docs", "docs-browser", "runtime"), categories)
+        self.assertEqual(("docs", "runtime"), categories)
         self.assertEqual("changed-paths-classified", reason)
 
     def test_mixed_changes_combine_relevant_categories(self) -> None:
@@ -183,7 +183,7 @@ class ChangedPathClassificationTest(unittest.TestCase):
             ["README.md", "src/Client.php", "scripts/ci/publish-planned-source.py"]
         )
         self.assertEqual(
-            ("docs", "docs-browser", "release", "runtime"),
+            ("docs", "release", "runtime"),
             categories,
         )
 

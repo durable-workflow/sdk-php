@@ -57,6 +57,11 @@ final class AvroPayloadCodec implements PayloadCodec
     public function decode(string $blob): mixed
     {
         $bytes = base64_decode($blob, true);
+        if ($bytes !== false && self::looksLikeJsonDocument($bytes)) {
+            throw new CodecException(
+                'unsupported_payload_codec: raw JSON workflow payloads are not supported by Durable Workflow 2.0; use codec="avro" with the fixed Avro Value schema and single-object framing. JSON remains the HTTP document transport, not a workflow payload codec.',
+            );
+        }
         if ($bytes === false || strlen($bytes) < 10 || ! str_starts_with($bytes, self::SINGLE_OBJECT_MAGIC)) {
             throw new CodecException(
                 'invalid_payload_framing: expected strict base64 Avro single-object bytes beginning c301.',
@@ -99,6 +104,22 @@ final class AvroPayloadCodec implements PayloadCodec
         }
     }
 
+    private static function looksLikeJsonDocument(string $bytes): bool
+    {
+        $document = trim($bytes);
+        if ($document === '') {
+            return false;
+        }
+
+        try {
+            json_decode($document, true, flags: JSON_THROW_ON_ERROR);
+
+            return true;
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
     /** @return array{codec: string, blob: string} */
     public function envelope(mixed $value): array
     {
@@ -115,7 +136,9 @@ final class AvroPayloadCodec implements PayloadCodec
             return $this->decode($envelope);
         }
         if (($envelope['codec'] ?? $this->name()) !== $this->name()) {
-            throw new CodecException('Expected an Avro payload envelope.');
+            throw new CodecException(
+                'unsupported_payload_codec: Durable Workflow 2.0 accepts only codec="avro" with the fixed Avro Value schema and single-object framing. JSON remains the HTTP document transport, not a workflow payload codec.',
+            );
         }
         if (! isset($envelope['blob']) || ! is_string($envelope['blob'])) {
             throw new CodecException('Avro payload envelope is missing its string blob field.');

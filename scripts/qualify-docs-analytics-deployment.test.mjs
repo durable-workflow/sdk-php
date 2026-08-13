@@ -38,13 +38,14 @@ function analyticsPage(token = VALID_TOKEN) {
     </html>`;
 }
 
-function promotionPage(eventUrl, destination) {
+function promotionPage(eventUrl, destination, {target = null} = {}) {
+  const targetAttribute = target === null ? '' : ` target="${target}"`;
   return `<!doctype html>
     <html>
       <body>
         <main class="phpdocumentor-content">API reference</main>
         <aside data-promotion-source="${PROMOTION_SOURCE}">
-          <a data-promotion-action="early-access" href="${destination}">Request early access</a>
+          <a data-promotion-action="early-access" href="${destination}"${targetAttribute}>Request early access</a>
         </aside>
         <script>
           const sendPromotionEvent = event => fetch('${eventUrl}', {
@@ -171,6 +172,7 @@ before(async () => {
       response.end(promotionPage(
         `${promotionOrigin}/${failed ? 'failed-promotion-events' : 'promotion-events'}`,
         `${promotionOrigin}${destinationPath}#source=${PROMOTION_SOURCE}`,
+        {target: request.url === '/wrong-intent-promotion' ? '_blank' : null},
       ));
       return;
     }
@@ -418,6 +420,7 @@ test('promotion qualification rejects a destination that selects the wrong inten
       qualifyPromotionTransport(context, `${origin}/wrong-intent-promotion`, {
         destination: `${promotionOrigin}/wrong-intent-early-access#source=${PROMOTION_SOURCE}`,
         eventUrl: `${promotionOrigin}/promotion-events`,
+        navigationTimeoutMs: 2_000,
       }),
       /did not select the intended launch cohort/,
     );
