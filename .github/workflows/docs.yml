@@ -10,13 +10,15 @@ on:
       - '.eleventy.cjs'
       - 'scripts/check-docs-*'
       - 'scripts/finalize-api-reference.php'
-      - 'scripts/qualify-quickstart-contract*'
+      - 'scripts/qualify-quickstart-*'
       - 'scripts/qualify-docs-analytics*'
       - 'README.md'
       - 'composer.json'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/docs.yml'
+  schedule:
+    - cron: '41 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -29,6 +31,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      release_published: ${{ steps.release-availability.outputs.release_published }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
@@ -42,6 +46,10 @@ jobs:
           cache: npm
       - run: composer install --no-interaction --prefer-dist
       - run: npm ci
+      - name: Resolve the exact published portal release
+        id: release-availability
+        if: github.server_url == 'https://github.com'
+        run: node scripts/qualify-quickstart-release-availability.mjs
       - run: npm run check:docs-examples
       - run: npm run test:quickstart-contract-deployment
       - name: Check repository-owned documentation links offline
@@ -104,7 +112,10 @@ jobs:
           path: build/site
 
   deploy:
-    if: github.server_url == 'https://github.com' && github.ref == 'refs/heads/main'
+    if: >-
+      github.server_url == 'https://github.com' &&
+      github.ref == 'refs/heads/main' &&
+      needs.build.outputs.release_published == 'true'
     needs: build
     runs-on: ubuntu-latest
     permissions:

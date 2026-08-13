@@ -123,7 +123,8 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         self.assert_main_only(
             deploy,
             "github.server_url == 'https://github.com' && "
-            "github.ref == 'refs/heads/main'",
+            "github.ref == 'refs/heads/main' && "
+            "needs.build.outputs.release_published == 'true'",
         )
         for privileged_marker in (
             "environment:",

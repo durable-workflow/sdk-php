@@ -130,6 +130,10 @@ class ChangedPathClassificationTest(unittest.TestCase):
                 ["scripts/qualify-quickstart-contract-deployment.mjs"],
                 ("docs",),
             ),
+            "quickstart-release-availability": (
+                ["scripts/qualify-quickstart-release-availability.mjs"],
+                ("docs",),
+            ),
             "docs-link-fixture": (
                 ["scripts/ci/fixtures/docs-links/external-dns-failure.md"],
                 ("docs",),

@@ -5,11 +5,15 @@ import test from 'node:test';
 import {fileURLToPath} from 'node:url';
 
 import {qualifyDeployment} from './qualify-quickstart-contract-deployment.mjs';
+import {resolvePublishedRelease} from './qualify-quickstart-release-availability.mjs';
 
 const repoRoot = new URL('../', import.meta.url);
 const packageRoot = fileURLToPath(repoRoot);
 const sourceContract = JSON.parse(
   await readFile(new URL('docs/quickstart-contract.json', repoRoot), 'utf8'),
+);
+const sourceManifest = JSON.parse(
+  await readFile(new URL('composer.json', repoRoot), 'utf8'),
 );
 const sourceSchema = JSON.parse(
   await readFile(new URL('docs/quickstart-contract.schema.v2.json', repoRoot), 'utf8'),
@@ -133,4 +137,50 @@ test('unresolvable qualification identities are rejected', async () => {
 test('the deployment workflow runs public quickstart reference qualification', async () => {
   const workflow = await readFile(new URL('../.github/workflows/docs.yml', import.meta.url), 'utf8');
   assert.match(workflow, /npm run qualify:quickstart-contract-deployment/);
+  assert.match(workflow, /- 'scripts\/qualify-quickstart-\*'/);
+  assert.match(workflow, /needs\.build\.outputs\.release_published == 'true'/);
+  assert.match(workflow, /schedule:\n\s+- cron:/);
+});
+
+test('portal deployment waits for the exact source-declared release', async () => {
+  const requests = [];
+  const unavailable = await resolvePublishedRelease(sourceManifest, {
+    inspector: async (packageName, version) => {
+      requests.push([packageName, version]);
+      return null;
+    },
+  });
+
+  assert.deepEqual(requests, [[sourceContract.package.name, sourceContract.package.published_version]]);
+  assert.equal(
+    sourceManifest.extra['durable-workflow']['product-train'],
+    sourceContract.package.published_version,
+  );
+  assert.deepEqual(unavailable, {
+    release: sourceContract.package.published_version,
+    published: false,
+  });
+});
+
+test('portal deployment accepts only exact Composer release metadata', async () => {
+  const manifest = {
+    extra: {'durable-workflow': {'product-train': sourceContract.package.published_version}},
+  };
+  const published = await resolvePublishedRelease(manifest, {
+    inspector: async () => ({
+      name: sourceContract.package.name,
+      versions: [sourceContract.package.published_version],
+    }),
+  });
+  assert.equal(published.published, true);
+
+  await assert.rejects(
+    resolvePublishedRelease(manifest, {
+      inspector: async () => ({
+        name: sourceContract.package.name,
+        versions: ['2.0.0-rc.14'],
+      }),
+    }),
+    /did not resolve only the source-declared release identity/,
+  );
 });
