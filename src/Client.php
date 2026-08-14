@@ -8,6 +8,7 @@ use DurableWorkflow\Auth\Authentication;
 use DurableWorkflow\Auth\TokenAuthentication;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Codec\PayloadCodec;
+use DurableWorkflow\Exception\CodecException;
 use DurableWorkflow\Exception\QueryFailed;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\SignalFailed;
@@ -40,6 +41,17 @@ final class Client implements WorkflowClientInterface
 {
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_MESSAGE = 'Workflow task waiting for scheduled history.';
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_TYPE = 'WorkflowTaskWaitingForHistory';
+
+    /** @var array<string, list<string>> */
+    private const WORKFLOW_COMMAND_PAYLOAD_FIELDS = [
+        'complete_workflow' => ['result'],
+        'schedule_activity' => ['arguments'],
+        'start_child_workflow' => ['arguments'],
+        'continue_as_new' => ['arguments'],
+        'complete_update' => ['result'],
+        'record_side_effect' => ['result'],
+        'start_service_operation' => ['request_payload'],
+    ];
 
     private readonly string $baseUri;
     private readonly ?Authentication $authentication;
@@ -545,6 +557,11 @@ final class Client implements WorkflowClientInterface
     /** @param array<string, mixed> $changes */
     public function updateSchedule(string $scheduleId, array $changes): void
     {
+        $action = $changes['action'] ?? null;
+        if (is_array($action) && array_key_exists('input', $action)) {
+            $this->assertOutboundAvroPayload($action['input'], 'schedule action input');
+        }
+
         $this->control('PUT', '/schedules/'.$this->segment($scheduleId), $changes);
     }
 
@@ -1077,7 +1094,62 @@ final class Client implements WorkflowClientInterface
      */
     private function worker(string $method, string $path, ?array $body = null): array
     {
+        if ($method === 'POST'
+            && str_starts_with($path, '/worker/workflow-tasks/')
+            && str_ends_with($path, '/complete')
+            && is_array($body['commands'] ?? null)
+        ) {
+            /** @var list<mixed> $commands */
+            $commands = $body['commands'];
+            $this->assertWorkflowCommandPayloads($commands);
+        }
+
         return $this->request($method, $path, true, $body);
+    }
+
+    /** @param list<mixed> $commands */
+    private function assertWorkflowCommandPayloads(array $commands): void
+    {
+        foreach ($commands as $index => $command) {
+            if (! is_array($command) || ! is_string($command['type'] ?? null)) {
+                continue;
+            }
+
+            foreach (self::WORKFLOW_COMMAND_PAYLOAD_FIELDS[$command['type']] ?? [] as $field) {
+                if (! array_key_exists($field, $command)) {
+                    continue;
+                }
+
+                $this->assertOutboundAvroPayload(
+                    $command[$field],
+                    "workflow command {$index} {$field}",
+                    $command['payload_codec'] ?? null,
+                );
+            }
+        }
+    }
+
+    private function assertOutboundAvroPayload(
+        mixed $payload,
+        string $location,
+        mixed $declaredCodec = null,
+    ): void {
+        $message = sprintf(
+            'unsupported_payload_codec: %s must use AvroPayloadCodec with the fixed Avro Value schema and single-object framing; create durable payloads with Client::payloadCodec()->envelope().',
+            $location,
+        );
+
+        if (($declaredCodec !== null && $declaredCodec !== $this->codec->name())
+            || (! is_array($payload) && ! is_string($payload))
+        ) {
+            throw new CodecException($message);
+        }
+
+        try {
+            $this->codec->decodeEnvelope($payload);
+        } catch (\Throwable $exception) {
+            throw new CodecException($message, $exception);
+        }
     }
 
     /**
