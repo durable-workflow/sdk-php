@@ -29,7 +29,7 @@ project follows [Semantic Versioning](https://semver.org/).
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK source to `2.0.0-rc.31`. Package metadata declares Server
+- Advanced the PHP SDK source to `2.0.0-rc.32`. Package metadata declares Server
   `2.0.0-rc.32` as the verified compatibility baseline; other Server
   prereleases require separate conformance evidence. Avro is the sole public
   Durable Workflow 2.0 payload codec, and non-Avro configuration fails before
@@ -54,7 +54,9 @@ project follows [Semantic Versioning](https://semver.org/).
 - Low-level schedule updates and workflow-task completions now validate only
   their schema-defined durable payload fields as fixed-schema Avro before any
   transport request, while preserving codec-looking memo, search-attribute,
-  and failure metadata as user-owned data.
+  and failure metadata as user-owned data. Caller-supplied payload arrays must
+  use an exact inline Avro envelope or a structurally valid external-storage
+  reference, which is preserved for server-side resolution.
 - Laravel now resolves shared or role-scoped credentials when each client is
   constructed, keeping secrets out of cached configuration while preserving
   the control/worker privilege boundary.

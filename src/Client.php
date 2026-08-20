@@ -39,6 +39,7 @@ use InvalidArgumentException;
 /** Synchronous control-plane and worker-plane client for the standalone server. */
 final class Client implements WorkflowClientInterface
 {
+    private const EXTERNAL_PAYLOAD_REFERENCE_SCHEMA = 'durable-workflow.v2.external-payload-reference.v1';
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_MESSAGE = 'Workflow task waiting for scheduled history.';
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_TYPE = 'WorkflowTaskWaitingForHistory';
 
@@ -1135,7 +1136,7 @@ final class Client implements WorkflowClientInterface
         mixed $declaredCodec = null,
     ): void {
         $message = sprintf(
-            'unsupported_payload_codec: %s must use AvroPayloadCodec with the fixed Avro Value schema and single-object framing; create durable payloads with Client::payloadCodec()->envelope().',
+            'unsupported_payload_codec: %s must be fixed-schema Avro single-object bytes, an exact {codec: "avro", blob: "..."} envelope, or a structurally valid {codec: "avro", external_storage: {...}} reference; create inline durable payloads with Client::payloadCodec()->envelope().',
             $location,
         );
 
@@ -1145,11 +1146,64 @@ final class Client implements WorkflowClientInterface
             throw new CodecException($message);
         }
 
+        if (is_array($payload)) {
+            if (self::hasExactKeys($payload, ['codec', 'external_storage'])) {
+                if ($payload['codec'] !== $this->codec->name()
+                    || ! $this->isValidExternalPayloadReference($payload['external_storage'])
+                ) {
+                    throw new CodecException($message);
+                }
+
+                return;
+            }
+
+            if (! self::hasExactKeys($payload, ['codec', 'blob'])
+                || $payload['codec'] !== $this->codec->name()
+                || ! is_string($payload['blob'])
+            ) {
+                throw new CodecException($message);
+            }
+
+            $payload = $payload['blob'];
+        }
+
         try {
-            $this->codec->decodeEnvelope($payload);
+            $this->codec->decode($payload);
         } catch (\Throwable $exception) {
             throw new CodecException($message, $exception);
         }
+    }
+
+    /**
+     * @param array<mixed> $value
+     * @param list<string> $keys
+     */
+    private static function hasExactKeys(array $value, array $keys): bool
+    {
+        if (count($value) !== count($keys)) {
+            return false;
+        }
+
+        foreach ($keys as $key) {
+            if (! array_key_exists($key, $value)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function isValidExternalPayloadReference(mixed $value): bool
+    {
+        return is_array($value)
+            && ($value['schema'] ?? null) === self::EXTERNAL_PAYLOAD_REFERENCE_SCHEMA
+            && is_string($value['uri'] ?? null)
+            && $value['uri'] !== ''
+            && is_string($value['sha256'] ?? null)
+            && preg_match('/\A[a-f0-9]{64}\z/i', $value['sha256']) === 1
+            && is_int($value['size_bytes'] ?? null)
+            && $value['size_bytes'] >= 0
+            && ($value['codec'] ?? null) === $this->codec->name();
     }
 
     /**
