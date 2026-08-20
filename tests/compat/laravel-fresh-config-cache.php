@@ -3,6 +3,8 @@
 declare(strict_types=1);
 
 use DurableWorkflow\Auth\Authentication;
+use DurableWorkflow\Attribute\Workflow;
+use DurableWorkflow\Bridge\Laravel\LaravelWorkflowClientInterface;
 use DurableWorkflow\Bridge\Laravel\ProcessCredentialResolver;
 use DurableWorkflow\Bridge\Laravel\WorkerFactory;
 use DurableWorkflow\Bridge\ServiceConfiguration;
@@ -14,6 +16,14 @@ use Illuminate\Support\Env;
 
 const LARAVEL_FRESH_CLIENT_TOKEN = 'fresh-cache-client-secret';
 const LARAVEL_FRESH_WORKER_TOKEN = 'fresh-cache-worker-secret';
+
+final class LaravelFreshClientOperationWorkflow
+{
+    #[Workflow('laravel.client-credential-probe')]
+    public function run(): void
+    {
+    }
+}
 
 /** @return array{getenv: bool, _ENV: bool, _SERVER: bool, laravel_env: bool} */
 function laravelFreshEnvironmentPresence(string $name): array
@@ -132,13 +142,21 @@ function laravelFreshRunChild(string $basePath, string $role): void
         ) {
             throw new RuntimeException('Fresh Laravel lost the explicit worker credential handoff during bootstrap.');
         }
+        $application->make('config')->set(
+            'durable-workflow.handlers',
+            [LaravelFreshClientOperationWorkflow::class],
+        );
+        $applicationClient = $application->make(LaravelWorkflowClientInterface::class);
         $factory = $application->make(WorkerFactory::class);
         $client = laravelFreshWorkerClient($factory);
         if (!array_key_exists('Authorization', laravelFreshAuthentication($client)->headers(true))) {
             throw new RuntimeException('Fresh Laravel worker did not receive its process credential.');
         }
         laravelFreshAssertOppositeRoleFails(
-            static fn () => $application->make(WorkflowClientInterface::class),
+            static fn () => $applicationClient->handle(
+                LaravelFreshClientOperationWorkflow::class,
+                'client-credential-probe',
+            ),
             'client',
         );
 

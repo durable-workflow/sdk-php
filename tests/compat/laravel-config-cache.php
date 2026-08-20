@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use DurableWorkflow\Auth\Authentication;
+use DurableWorkflow\Attribute\Workflow;
 use DurableWorkflow\Bridge\Laravel\ProcessCredentialResolver;
 use DurableWorkflow\Bridge\Laravel\LaravelWorkflowClientInterface;
 use DurableWorkflow\Bridge\Laravel\WorkerFactory;
@@ -19,6 +20,21 @@ require $argv[1];
 const LARAVEL_CACHE_CLIENT_TOKEN = 'cache-client-secret';
 const LARAVEL_CACHE_WORKER_TOKEN = 'cache-worker-secret';
 const LARAVEL_CACHE_SHARED_TOKEN = 'cache-shared-secret';
+
+final class LaravelCacheClientOperationWorkflow
+{
+    #[Workflow('laravel.cache-client-credential-probe')]
+    public function run(): void
+    {
+    }
+}
+
+final class LaravelCacheInjectedApplicationService
+{
+    public function __construct(public readonly LaravelWorkflowClientInterface $workflows)
+    {
+    }
+}
 
 final class LaravelCacheTransport implements Transport
 {
@@ -153,6 +169,11 @@ function laravelCacheRunChild(string $basePath, string $role): void
     }
 
     if ($role === 'worker') {
+        $application->make('config')->set(
+            'durable-workflow.handlers',
+            [LaravelCacheClientOperationWorkflow::class],
+        );
+        $applicationService = $application->make(LaravelCacheInjectedApplicationService::class);
         $factory = $application->make(WorkerFactory::class);
         $client = laravelCacheWorkerClient($factory);
         $authentication = laravelCacheAuthentication($client);
@@ -165,7 +186,10 @@ function laravelCacheRunChild(string $basePath, string $role): void
             'client',
         );
         laravelCacheAssertFailsBeforeTransport(
-            static fn () => $application->make(LaravelWorkflowClientInterface::class),
+            static fn () => $applicationService->workflows->handle(
+                LaravelCacheClientOperationWorkflow::class,
+                'cache-client-credential-probe',
+            ),
             'client',
         );
 

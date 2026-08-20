@@ -19,6 +19,36 @@ for name in "${credential_names[@]}"; do
 done
 
 cd "$application"
+mkdir -p app/Console/Commands
+tee app/Console/Commands/DurableWorkflowApplicationCommand.php >/dev/null <<'PHP'
+<?php
+
+declare(strict_types=1);
+
+namespace App\Console\Commands;
+
+use DurableWorkflow\Bridge\Laravel\LaravelWorkflowClientInterface;
+use Illuminate\Console\Command;
+
+final class DurableWorkflowApplicationCommand extends Command
+{
+    protected $signature = 'durable-workflow:application-client-probe';
+
+    protected $description = 'Probe constructor injection for the Durable Workflow application client';
+
+    public function __construct(private readonly LaravelWorkflowClientInterface $workflows)
+    {
+        parent::__construct();
+    }
+
+    public function handle(): int
+    {
+        $this->components->info($this->workflows::class);
+
+        return self::SUCCESS;
+    }
+}
+PHP
 tee app/Providers/DurableWorkflowRoleProbeProvider.php >/dev/null <<'PHP'
 <?php
 
@@ -26,12 +56,15 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Console\Commands\DurableWorkflowApplicationCommand;
 use Illuminate\Support\ServiceProvider;
 
 final class DurableWorkflowRoleProbeProvider extends ServiceProvider
 {
     public function boot(): void
     {
+        $this->commands([DurableWorkflowApplicationCommand::class]);
+
         if (class_exists(\LaravelFreshRoleProbe::class, false)) {
             \LaravelFreshRoleProbe::record('after-bootstrap');
         }
