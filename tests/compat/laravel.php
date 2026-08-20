@@ -33,6 +33,15 @@ final class LaravelGreetingPrefix
     }
 }
 
+final class LaravelInjectedApplicationService
+{
+    public function __construct(
+        public readonly LaravelWorkflowClientInterface $workflows,
+        public readonly WorkflowClientInterface $client,
+    ) {
+    }
+}
+
 final class LaravelGreetingWorkflow
 {
     public function __construct(private readonly LaravelGreetingPrefix $prefix)
@@ -137,11 +146,20 @@ $app->instance(LoggerInterface::class, $logger);
 $provider = new DurableWorkflowServiceProvider($app);
 $provider->register();
 
-$registeredClient = $app->make(Client::class);
-if ($app->make(WorkflowClientInterface::class) !== $registeredClient) {
-    throw new RuntimeException('Laravel provider did not register injectable client services.');
+$applicationService = $app->make(LaravelInjectedApplicationService::class);
+if ($app->resolved(Client::class)
+    || $app->make(WorkflowClientInterface::class) !== $applicationService->client
+    || $applicationService->client instanceof Client
+) {
+    throw new RuntimeException('Laravel interface injection eagerly resolved the application client.');
 }
-$app->make(LaravelWorkflowClientInterface::class);
+$registeredClient = $app->make(Client::class);
+$handle = $applicationService->client->workflowHandle('laravel-interface-probe');
+$handleClient = (new ReflectionClass($handle))->getProperty('client')->getValue($handle);
+if (!$handleClient instanceof Client || $handleClient !== $registeredClient) {
+    throw new RuntimeException('Laravel generic interface did not resolve the registered application client on use.');
+}
+$applicationService->workflows->handle(LaravelGreetingWorkflow::class, 'laravel-interface-probe');
 $factory = $app->make(WorkerFactory::class);
 $workerClientProperty = (new ReflectionClass($factory))->getProperty('client');
 $workerClient = $workerClientProperty->getValue($factory);
@@ -227,6 +245,12 @@ if ($app->make(LaravelWorkflowClientInterface::class) !== $fake
     || $app->make(WorkflowClientInterface::class) !== $fake->workflowClient()
 ) {
     throw new RuntimeException('Laravel testing fake did not replace both injectable workflow client layers.');
+}
+$fakeApplicationService = $app->make(LaravelInjectedApplicationService::class);
+if ($fakeApplicationService->workflows !== $fake
+    || $fakeApplicationService->client !== $fake->workflowClient()
+) {
+    throw new RuntimeException('Laravel testing fake leaked a network client through interface injection.');
 }
 $fake->setWorkflowResult('laravel-greeting-1', 'hello from Laravel, Ada');
 $fakeHandle = DurableWorkflowFacade::start(

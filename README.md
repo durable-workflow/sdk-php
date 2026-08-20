@@ -507,7 +507,7 @@ For scoped Cloud authentication, inject credentials at the process boundary:
 | Web, queue, or other application process | `DURABLE_WORKFLOW_CLIENT_TOKEN` | `DURABLE_WORKFLOW_WORKER_TOKEN` |
 | `php artisan durable-workflow:worker` | `DURABLE_WORKFLOW_WORKER_TOKEN` | `DURABLE_WORKFLOW_CLIENT_TOKEN` |
 
-The service provider gives the injectable application client only the client
+The service provider gives the injectable application interfaces only the client
 credential and creates a separate worker client only for the worker factory.
 For a self-hosted deployment that uses one credential for both roles, inject
 `DURABLE_WORKFLOW_TOKEN` instead. Supply secret values through the deployment
@@ -517,8 +517,11 @@ file or a committed `.env` file.
 The published configuration deliberately has no credential entries. Build and
 deploy one cached configuration without any Durable Workflow credential in the
 cache-building environment, then inject only the required role credential when
-each application or worker process starts. The provider resolves that credential
-when it constructs the corresponding client, after Laravel has loaded the cache.
+each application or worker process starts. Resolving either documented client
+interface is credential-lazy; the provider resolves the client credential when
+the interface performs its first application-client operation, after Laravel has
+loaded the cache. Resolving `Client` directly is the explicit eager low-level
+path and validates the application credential immediately.
 Applications upgrading an older published configuration should republish it or
 remove its `credentials` block before rebuilding the cache. List handler classes
 in `config/durable-workflow.php`:
@@ -533,8 +536,11 @@ in `config/durable-workflow.php`:
 Laravel resolves every handler through its container, so ordinary constructor
 injection works. Inject `LaravelWorkflowClientInterface` to start an attributed
 workflow service class on the configured default queue; explicit IDs and
-`WorkflowStartOptions` remain available. `Client` and `WorkflowClientInterface`
-remain injectable for low-level cross-language string contracts.
+`WorkflowStartOptions` remain available. Inject `WorkflowClientInterface` for
+low-level cross-language string contracts; like the Laravel-shaped interface,
+it is safe to constructor-inject into services that may be discovered by a
+worker-only Artisan process. Inject `Client` directly only when eager application
+credential validation and its broader concrete API are intentional.
 Worker diagnostics use Laravel's PSR logger and dispatch
 `WorkerDiagnosticEvent` through Laravel events. The event name is available in
 its `name` property and includes lifecycle, retry, handler-failure, and shutdown

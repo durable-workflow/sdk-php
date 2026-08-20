@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use DurableWorkflow\Auth\Authentication;
 use DurableWorkflow\Attribute\Workflow;
+use DurableWorkflow\Bridge\Laravel\DeferredWorkflowClient;
 use DurableWorkflow\Bridge\Laravel\LaravelWorkflowClientInterface;
 use DurableWorkflow\Bridge\Laravel\ProcessCredentialResolver;
 use DurableWorkflow\Bridge\Laravel\WorkerFactory;
@@ -22,6 +23,15 @@ final class LaravelFreshClientOperationWorkflow
     #[Workflow('laravel.client-credential-probe')]
     public function run(): void
     {
+    }
+}
+
+final class LaravelFreshInjectedApplicationService
+{
+    public function __construct(
+        public readonly LaravelWorkflowClientInterface $workflows,
+        public readonly WorkflowClientInterface $client,
+    ) {
     }
 }
 
@@ -73,6 +83,27 @@ function laravelFreshWorkerClient(WorkerFactory $factory): Client
     }
 
     return $client;
+}
+
+function laravelFreshResolvedApplicationClient(WorkflowClientInterface $client): Client
+{
+    if (!$client instanceof DeferredWorkflowClient) {
+        throw new RuntimeException('Fresh Laravel did not inject its deferred application client.');
+    }
+    $property = (new ReflectionClass($client))->getProperty('resolved');
+    $resolved = $property->getValue($client);
+    if (!$resolved instanceof Client) {
+        throw new RuntimeException('Fresh Laravel did not resolve its application client on first use.');
+    }
+
+    return $resolved;
+}
+
+function laravelFreshAssertApplicationClientUnresolved(Application $application, string $process): void
+{
+    if ($application->resolved(Client::class)) {
+        throw new RuntimeException("Fresh Laravel {$process} eagerly resolved an injected interface.");
+    }
 }
 
 function laravelFreshAssertOppositeRoleFails(callable $operation, string $role): void
@@ -146,17 +177,30 @@ function laravelFreshRunChild(string $basePath, string $role): void
             'durable-workflow.handlers',
             [LaravelFreshClientOperationWorkflow::class],
         );
-        $applicationClient = $application->make(LaravelWorkflowClientInterface::class);
+        $applicationService = $application->make(LaravelFreshInjectedApplicationService::class);
+        laravelFreshAssertApplicationClientUnresolved($application, 'worker');
+        if ($applicationService->client !== $application->make(WorkflowClientInterface::class)) {
+            throw new RuntimeException('Fresh Laravel worker eagerly resolved an injected interface.');
+        }
         $factory = $application->make(WorkerFactory::class);
         $client = laravelFreshWorkerClient($factory);
+        laravelFreshAssertApplicationClientUnresolved($application, 'worker factory');
         if (!array_key_exists('Authorization', laravelFreshAuthentication($client)->headers(true))) {
             throw new RuntimeException('Fresh Laravel worker did not receive its process credential.');
         }
         laravelFreshAssertOppositeRoleFails(
-            static fn () => $applicationClient->handle(
+            static fn () => $applicationService->client->workflowHandle('client-credential-probe'),
+            'client',
+        );
+        laravelFreshAssertOppositeRoleFails(
+            static fn () => $applicationService->workflows->handle(
                 LaravelFreshClientOperationWorkflow::class,
                 'client-credential-probe',
             ),
+            'client',
+        );
+        laravelFreshAssertOppositeRoleFails(
+            static fn () => $application->make(Client::class),
             'client',
         );
 
@@ -164,9 +208,19 @@ function laravelFreshRunChild(string $basePath, string $role): void
     }
 
     if ($role === 'client') {
-        $client = $application->make(WorkflowClientInterface::class);
-        if (!$client instanceof Client
-            || !array_key_exists('Authorization', laravelFreshAuthentication($client)->headers(false))
+        $application->make('config')->set(
+            'durable-workflow.handlers',
+            [LaravelFreshClientOperationWorkflow::class],
+        );
+        $applicationService = $application->make(LaravelFreshInjectedApplicationService::class);
+        laravelFreshAssertApplicationClientUnresolved($application, 'application');
+        $applicationService->client->workflowHandle('client-credential-probe');
+        $applicationService->workflows->handle(
+            LaravelFreshClientOperationWorkflow::class,
+            'client-credential-probe',
+        );
+        $client = laravelFreshResolvedApplicationClient($applicationService->client);
+        if (!array_key_exists('Authorization', laravelFreshAuthentication($client)->headers(false))
         ) {
             throw new RuntimeException('Fresh Laravel application did not receive its process credential.');
         }

@@ -285,7 +285,12 @@ attributes, priority, fairness, or build ID. `handle(GreetingWorkflow::class,
 $workflowId)` returns the existing workflow handle after validating the same
 configured attributed class. The lower-level `WorkflowClientInterface` and
 `Client` bindings remain available when a cross-language contract intentionally
-uses explicit string types and queues.
+uses explicit string types and queues. Prefer `WorkflowClientInterface` for
+normal dependency injection: both documented interfaces defer application
+credential resolution until their first client operation, so services may be
+discovered during worker-only Artisan bootstrap. Direct `Client` injection is
+the explicit eager surface and validates the application credential as soon as
+Laravel resolves it.
 
 Expose that injected action through an ordinary application command:
 
@@ -304,7 +309,8 @@ Artisan::command('app:start-greeting {id} {name}', function (): void {
 Worker diagnostics use Laravel's PSR logger and dispatch
 `WorkerDiagnosticEvent` through Laravel events. Configuration contains no
 credentials; the provider resolves the self-hosted shared token or scoped
-client/worker token when the corresponding process constructs its client.
+client token on the first operation through either application interface, and
+resolves the worker token only when it constructs the worker factory.
 After registration, Artisan prints a registered-and-polling line naming the
 runtime host, namespace, task queue, registered workflow and activity types, and
 credential role. Compare that line with the starter's explicit workflow type and

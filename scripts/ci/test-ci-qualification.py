@@ -267,7 +267,7 @@ class WorkflowQualificationContractTest(unittest.TestCase):
         for marker in (
             "php artisan config:cache",
             'php "$role_launcher" "$application" durable-workflow:worker',
-            'php "$role_launcher" "$application" durable-workflow:role-client',
+            'php "$role_launcher" "$application" durable-workflow:application-client-probe',
             "DURABLE_WORKFLOW_PROCESS_ROLE=worker",
             "DURABLE_WORKFLOW_PROCESS_ROLE=client",
             "DURABLE_WORKFLOW_PROCESS_TOKEN=",

@@ -28,6 +28,8 @@ declare(strict_types=1);
 namespace App\Console\Commands;
 
 use DurableWorkflow\Bridge\Laravel\LaravelWorkflowClientInterface;
+use DurableWorkflow\Bridge\Laravel\WorkerFactory;
+use DurableWorkflow\WorkflowClientInterface;
 use Illuminate\Console\Command;
 
 final class DurableWorkflowApplicationCommand extends Command
@@ -36,16 +38,28 @@ final class DurableWorkflowApplicationCommand extends Command
 
     protected $description = 'Probe constructor injection for the Durable Workflow application client';
 
-    public function __construct(private readonly LaravelWorkflowClientInterface $workflows)
-    {
+    public function __construct(
+        private readonly LaravelWorkflowClientInterface $workflows,
+        private readonly WorkflowClientInterface $client,
+    ) {
         parent::__construct();
     }
 
     public function handle(): int
     {
-        $this->components->info($this->workflows::class);
+        $this->client->workflowHandle('fresh-laravel-command-probe');
+        try {
+            app(WorkerFactory::class);
+        } catch (\InvalidArgumentException $exception) {
+            if (str_contains($exception->getMessage(), 'worker credential is required')) {
+                $this->components->info($this->workflows::class);
 
-        return self::SUCCESS;
+                return self::SUCCESS;
+            }
+            throw $exception;
+        }
+
+        throw new \RuntimeException('Fresh Laravel application accepted its client token for a worker.');
     }
 }
 PHP
@@ -72,26 +86,6 @@ final class DurableWorkflowRoleProbeProvider extends ServiceProvider
 }
 PHP
 sed -i "/return \[/a\    App\\\\Providers\\\\DurableWorkflowRoleProbeProvider::class," bootstrap/providers.php
-tee -a routes/console.php >/dev/null <<'PHP'
-
-Artisan::command('durable-workflow:role-client', function (): void {
-    $client = app(\DurableWorkflow\WorkflowClientInterface::class);
-    if (!$client instanceof \DurableWorkflow\Client) {
-        throw new \RuntimeException('Fresh Laravel did not resolve its application client.');
-    }
-    try {
-        app(\DurableWorkflow\Bridge\Laravel\WorkerFactory::class);
-    } catch (\InvalidArgumentException $exception) {
-        if (str_contains($exception->getMessage(), 'worker credential is required')) {
-            $this->info('Fresh Laravel application role isolation passed.');
-
-            return;
-        }
-        throw $exception;
-    }
-    throw new \RuntimeException('Fresh Laravel application accepted its client token for a worker.');
-});
-PHP
 
 "${isolated_environment[@]}" php artisan vendor:publish \
   --tag=durable-workflow-config --force
@@ -141,7 +135,7 @@ fi
   DURABLE_WORKFLOW_PROCESS_ROLE=client \
   DURABLE_WORKFLOW_PROCESS_TOKEN="$client_token" \
   DURABLE_WORKFLOW_ROLE_PROBE_LOG="$role_probe_log" \
-  php "$role_launcher" "$application" durable-workflow:role-client
+  php "$role_launcher" "$application" durable-workflow:application-client-probe
 "${isolated_environment[@]}" \
   DURABLE_WORKFLOW_PROCESS_ROLE=client \
   DURABLE_WORKFLOW_PROCESS_TOKEN="$client_token" \

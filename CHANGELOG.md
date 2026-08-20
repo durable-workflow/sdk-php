@@ -45,7 +45,7 @@ project follows [Semantic Versioning](https://semver.org/).
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK source to `2.0.0-rc.39` and qualified it with Server
+- Advanced the PHP SDK source to `2.0.0-rc.40` and qualified it with Server
   `2.0.0-rc.38`. During the active 2.0 prerelease train, package metadata names
   the exact SDK artifact and exact qualified Server artifact rather than a
   compatibility range; other prereleases remain historical and receive no
@@ -69,10 +69,11 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Laravel can resolve and constructor-inject its application workflow client
-  while an Artisan worker is running with only a worker credential. Client
-  credentials remain process-scoped and are validated when the injected client
-  performs its first operation.
+- Laravel can resolve and constructor-inject both documented application client
+  interfaces while an Artisan worker is running with only a worker credential.
+  Client credentials remain process-scoped and are validated when an injected
+  interface performs its first operation; direct `Client` injection remains an
+  explicit eager boundary.
 - Workers now reject workflow, update, activity, and query tasks whose root
   `payload_codec` is missing or is not exactly `avro`, before payload decoding
   or user-handler execution, and report `unsupported_payload_codec` through the

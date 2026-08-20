@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use DurableWorkflow\Auth\Authentication;
 use DurableWorkflow\Attribute\Workflow;
+use DurableWorkflow\Bridge\Laravel\DeferredWorkflowClient;
 use DurableWorkflow\Bridge\Laravel\ProcessCredentialResolver;
 use DurableWorkflow\Bridge\Laravel\LaravelWorkflowClientInterface;
 use DurableWorkflow\Bridge\Laravel\WorkerFactory;
@@ -31,8 +32,10 @@ final class LaravelCacheClientOperationWorkflow
 
 final class LaravelCacheInjectedApplicationService
 {
-    public function __construct(public readonly LaravelWorkflowClientInterface $workflows)
-    {
+    public function __construct(
+        public readonly LaravelWorkflowClientInterface $workflows,
+        public readonly WorkflowClientInterface $client,
+    ) {
     }
 }
 
@@ -75,6 +78,20 @@ function laravelCacheWorkerClient(WorkerFactory $factory): Client
     }
 
     return $client;
+}
+
+function laravelCacheResolvedApplicationClient(WorkflowClientInterface $client): Client
+{
+    if (!$client instanceof DeferredWorkflowClient) {
+        throw new RuntimeException('Cached Laravel did not inject its deferred application client.');
+    }
+    $property = (new ReflectionClass($client))->getProperty('resolved');
+    $resolved = $property->getValue($client);
+    if (!$resolved instanceof Client) {
+        throw new RuntimeException('Cached Laravel did not resolve its application client on first use.');
+    }
+
+    return $resolved;
 }
 
 function laravelCacheAssertFailsBeforeTransport(callable $operation, string $role): void
@@ -147,11 +164,22 @@ function laravelCacheRunChild(string $basePath, string $role): void
     }
 
     if ($role === 'client') {
-        $client = $application->make(WorkflowClientInterface::class);
-        if (!$client instanceof Client) {
-            throw new RuntimeException('The client-only process did not resolve the Laravel application client.');
+        $application->make('config')->set(
+            'durable-workflow.handlers',
+            [LaravelCacheClientOperationWorkflow::class],
+        );
+        $applicationService = $application->make(LaravelCacheInjectedApplicationService::class);
+        if ($application->resolved(Client::class)
+            || $applicationService->client !== $application->make(WorkflowClientInterface::class)
+        ) {
+            throw new RuntimeException('The client-only process eagerly resolved an injected interface.');
         }
-        $application->make(LaravelWorkflowClientInterface::class);
+        $applicationService->client->workflowHandle('cache-client-credential-probe');
+        $applicationService->workflows->handle(
+            LaravelCacheClientOperationWorkflow::class,
+            'cache-client-credential-probe',
+        );
+        $client = laravelCacheResolvedApplicationClient($applicationService->client);
         $authentication = laravelCacheAuthentication($client);
         if (($authentication->headers(false)['Authorization'] ?? null) !== 'Bearer '.LARAVEL_CACHE_CLIENT_TOKEN) {
             throw new RuntimeException('The client-only process did not resolve its runtime credential.');
@@ -174,6 +202,11 @@ function laravelCacheRunChild(string $basePath, string $role): void
             [LaravelCacheClientOperationWorkflow::class],
         );
         $applicationService = $application->make(LaravelCacheInjectedApplicationService::class);
+        if ($application->resolved(Client::class)
+            || $applicationService->client !== $application->make(WorkflowClientInterface::class)
+        ) {
+            throw new RuntimeException('The worker-only process eagerly resolved an injected interface.');
+        }
         $factory = $application->make(WorkerFactory::class);
         $client = laravelCacheWorkerClient($factory);
         $authentication = laravelCacheAuthentication($client);
@@ -182,7 +215,7 @@ function laravelCacheRunChild(string $basePath, string $role): void
         }
         laravelCacheAssertFailsBeforeTransport(static fn () => $client->health(), 'client');
         laravelCacheAssertFailsBeforeTransport(
-            static fn () => $application->make(WorkflowClientInterface::class),
+            static fn () => $applicationService->client->workflowHandle('cache-client-credential-probe'),
             'client',
         );
         laravelCacheAssertFailsBeforeTransport(
@@ -190,6 +223,10 @@ function laravelCacheRunChild(string $basePath, string $role): void
                 LaravelCacheClientOperationWorkflow::class,
                 'cache-client-credential-probe',
             ),
+            'client',
+        );
+        laravelCacheAssertFailsBeforeTransport(
+            static fn () => $application->make(Client::class),
             'client',
         );
 
@@ -217,10 +254,19 @@ function laravelCacheRunChild(string $basePath, string $role): void
     }
 
     if ($role === 'shared') {
-        $applicationClient = $application->make(WorkflowClientInterface::class);
+        $application->make('config')->set(
+            'durable-workflow.handlers',
+            [LaravelCacheClientOperationWorkflow::class],
+        );
+        $applicationService = $application->make(LaravelCacheInjectedApplicationService::class);
+        $applicationService->client->workflowHandle('cache-shared-credential-probe');
+        $applicationService->workflows->handle(
+            LaravelCacheClientOperationWorkflow::class,
+            'cache-shared-credential-probe',
+        );
+        $applicationClient = laravelCacheResolvedApplicationClient($applicationService->client);
         $workerClient = laravelCacheWorkerClient($application->make(WorkerFactory::class));
-        if (!$applicationClient instanceof Client
-            || (laravelCacheAuthentication($applicationClient)->headers(false)['Authorization'] ?? null)
+        if ((laravelCacheAuthentication($applicationClient)->headers(false)['Authorization'] ?? null)
                 !== 'Bearer '.LARAVEL_CACHE_SHARED_TOKEN
             || (laravelCacheAuthentication($workerClient)->headers(true)['Authorization'] ?? null)
                 !== 'Bearer '.LARAVEL_CACHE_SHARED_TOKEN

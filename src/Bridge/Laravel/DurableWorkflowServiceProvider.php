@@ -44,7 +44,12 @@ final class DurableWorkflowServiceProvider extends ServiceProvider
                 $app->make(ServiceConfiguration::class),
             ),
         );
-        $this->app->alias(Client::class, WorkflowClientInterface::class);
+        $this->app->singleton(
+            WorkflowClientInterface::class,
+            static fn ($app): WorkflowClientInterface => new DeferredWorkflowClient(
+                static fn (): WorkflowClientInterface => $app->make(Client::class),
+            ),
+        );
         $this->app->singleton(
             WorkflowServiceResolver::class,
             static fn ($app): WorkflowServiceResolver => new WorkflowServiceResolver(
@@ -54,9 +59,7 @@ final class DurableWorkflowServiceProvider extends ServiceProvider
         $this->app->bind(
             LaravelWorkflowClient::class,
             static fn ($app): LaravelWorkflowClient => new LaravelWorkflowClient(
-                new DeferredWorkflowClient(
-                    static fn (): WorkflowClientInterface => $app->make(WorkflowClientInterface::class),
-                ),
+                $app->make(WorkflowClientInterface::class),
                 $app->make(ServiceConfiguration::class),
                 $app->make(WorkflowServiceResolver::class),
             ),
