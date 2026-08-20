@@ -7,13 +7,17 @@ on:
         description: Exact published Packagist version, such as 2.0.0 or 2.0.0-rc.9
         required: true
         type: string
+      server_version:
+        description: Exact current Server version declared by the published SDK
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   framework-service-mode:
-    name: ${{ matrix.framework }} published workflow
+    name: ${{ matrix.framework }} / ${{ matrix.runtime }} published workflow
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -21,7 +25,31 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        framework: [laravel, symfony]
+        include:
+          - framework: laravel
+            runtime: standalone-server
+            endpoint_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_URL
+            namespace_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_NAMESPACE
+            client_token_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_CLIENT_TOKEN
+            worker_token_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_WORKER_TOKEN
+          - framework: laravel
+            runtime: managed-cloud
+            endpoint_secret: DURABLE_WORKFLOW_CLOUD_URL
+            namespace_secret: DURABLE_WORKFLOW_CLOUD_NAMESPACE
+            client_token_secret: DURABLE_WORKFLOW_CLOUD_CLIENT_TOKEN
+            worker_token_secret: DURABLE_WORKFLOW_CLOUD_WORKER_TOKEN
+          - framework: symfony
+            runtime: standalone-server
+            endpoint_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_URL
+            namespace_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_NAMESPACE
+            client_token_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_CLIENT_TOKEN
+            worker_token_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_WORKER_TOKEN
+          - framework: symfony
+            runtime: managed-cloud
+            endpoint_secret: DURABLE_WORKFLOW_CLOUD_URL
+            namespace_secret: DURABLE_WORKFLOW_CLOUD_NAMESPACE
+            client_token_secret: DURABLE_WORKFLOW_CLOUD_CLIENT_TOKEN
+            worker_token_secret: DURABLE_WORKFLOW_CLOUD_WORKER_TOKEN
     steps:
       - name: Validate the exact published SDK version
         env:
@@ -29,6 +57,15 @@ jobs:
         run: |
           if [[ ! "$SDK_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
             echo "sdk_version must be an exact stable, alpha, beta, or release-candidate version" >&2
+            exit 1
+          fi
+
+      - name: Validate the exact current Server version
+        env:
+          SERVER_VERSION: ${{ inputs.server_version }}
+        run: |
+          if [[ ! "$SERVER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+            echo "server_version must be an exact stable, alpha, beta, or release-candidate version" >&2
             exit 1
           fi
 
@@ -96,6 +133,7 @@ jobs:
       - name: Verify the installed SDK release identity
         env:
           SDK_VERSION: ${{ inputs.sdk_version }}
+          SERVER_VERSION: ${{ inputs.server_version }}
         run: |
           application="$(cat "$RUNNER_TEMP/framework-application")"
           SDK_LOCK_FILE="$application/composer.lock" php <<'PHP'
@@ -137,6 +175,14 @@ jobs:
           if ($installedReferences === []) {
               throw new RuntimeException('Installed SDK has no immutable source or distribution reference.');
           }
+          $packageManifest = json_decode(
+              file_get_contents(dirname(getenv('SDK_LOCK_FILE')).'/vendor/durable-workflow/sdk/composer.json'),
+              true,
+              flags: JSON_THROW_ON_ERROR,
+          );
+          if (($packageManifest['extra']['durable-workflow']['supported-server-versions'] ?? null) !== getenv('SERVER_VERSION')) {
+              throw new RuntimeException('Requested Server version does not match the published SDK compatibility baseline.');
+          }
           PHP
 
       - name: Configure Laravel through auto-discovery and vendor publish
@@ -144,19 +190,38 @@ jobs:
         run: |
           application="$(cat "$RUNNER_TEMP/framework-application")"
           cd "$application"
-          mkdir -p app/Workflows app/Activities
+          mkdir -p app/Actions app/Activities app/Support app/Workflows
+          tee app/Support/PublishedGreetingPrefix.php >/dev/null <<'PHP'
+          <?php
+          declare(strict_types=1);
+          namespace App\Support;
+          final class PublishedGreetingPrefix
+          {
+              public function value(): string
+              {
+                  return 'hello from Laravel';
+              }
+          }
+          PHP
           tee app/Workflows/PublishedGreetingWorkflow.php >/dev/null <<'PHP'
           <?php
           declare(strict_types=1);
           namespace App\Workflows;
+          use App\Support\PublishedGreetingPrefix;
           use DurableWorkflow\Attribute\Workflow;
           use DurableWorkflow\Worker\WorkflowContext;
           final class PublishedGreetingWorkflow
           {
-              #[Workflow('published.laravel.greeter')]
-              public function run(WorkflowContext $context, string $name): array
+              public function __construct(private PublishedGreetingPrefix $prefix) {}
+
+              #[Workflow('laravel.greeting')]
+              public function run(WorkflowContext $context, string $name): string
               {
-                  return ['greeting' => $context->activity('published.laravel.greet', [$name])];
+                  if ($this->prefix->value() === '') {
+                      throw new \LogicException('Laravel did not inject the workflow dependency.');
+                  }
+
+                  return $context->activity('laravel.greet', [$name]);
               }
           }
           PHP
@@ -164,19 +229,80 @@ jobs:
           <?php
           declare(strict_types=1);
           namespace App\Activities;
+          use App\Support\PublishedGreetingPrefix;
           use DurableWorkflow\Attribute\Activity;
           use DurableWorkflow\Worker\ActivityContext;
           final class PublishedGreetingActivities
           {
-              #[Activity('published.laravel.greet')]
+              public function __construct(private PublishedGreetingPrefix $prefix) {}
+
+              #[Activity('laravel.greet')]
               public function greet(ActivityContext $context, string $name): string
               {
-                  return "hello, {$name}";
+                  return "{$this->prefix->value()}, {$name}";
               }
           }
           PHP
+          tee app/Actions/StartPublishedGreeting.php >/dev/null <<'PHP'
+          <?php
+          declare(strict_types=1);
+          namespace App\Actions;
+          use DurableWorkflow\Bridge\Laravel\LaravelWorkflowClientInterface;
+          final class StartPublishedGreeting
+          {
+              public function __construct(private LaravelWorkflowClientInterface $workflows) {}
+
+              public function __invoke(string $workflowId): string
+              {
+                  return $this->workflows->start(
+                      \App\Workflows\PublishedGreetingWorkflow::class,
+                      ['Ada'],
+                      workflowId: $workflowId,
+                  )->result(timeoutSeconds: 90, pollIntervalSeconds: 1);
+              }
+          }
+          PHP
+          tee -a routes/console.php >/dev/null <<'PHP'
+
+          Artisan::command('durable-workflow:published-greeting', function (): void {
+              $actualVersion = app(\DurableWorkflow\Client::class)->clusterInfo()->version;
+              if ($actualVersion !== env('QUALIFIED_SERVER_VERSION')) {
+                  throw new \RuntimeException("Published endpoint is Server {$actualVersion}; expected ".env('QUALIFIED_SERVER_VERSION').'.');
+              }
+              $result = app(\App\Actions\StartPublishedGreeting::class)(
+                  env('DURABLE_WORKFLOW_WORKFLOW_ID'),
+              );
+              if ($result !== 'hello from Laravel, Ada') {
+                  throw new \RuntimeException('Published Laravel workflow returned an unexpected result.');
+              }
+          });
+
+          Artisan::command('durable-workflow:published-fake', function (): void {
+              $fake = \DurableWorkflow\Bridge\Laravel\Facades\DurableWorkflow::fake()
+                  ->setWorkflowResult('published-laravel-fake', 'hello from Laravel, Ada');
+              $result = app(\App\Actions\StartPublishedGreeting::class)(
+                  'published-laravel-fake',
+              );
+              if ($result !== 'hello from Laravel, Ada') {
+                  throw new \RuntimeException('Published Laravel fake returned an unexpected result.');
+              }
+              $fake->assertWorkflowStarted(
+                  \App\Workflows\PublishedGreetingWorkflow::class,
+                  ['Ada'],
+                  workflowId: 'published-laravel-fake',
+              );
+              $fake->assertResultRequested('published-laravel-fake');
+          });
+          PHP
           php artisan vendor:publish --tag=durable-workflow-config --force
           sed -i "/'handlers' => \[/a\        App\\\\Workflows\\\\PublishedGreetingWorkflow::class,\n        App\\\\Activities\\\\PublishedGreetingActivities::class," config/durable-workflow.php
+
+      - name: Prove the published Laravel fake without a runtime
+        if: matrix.framework == 'laravel'
+        run: |
+          application="$(cat "$RUNNER_TEMP/framework-application")"
+          cd "$application"
+          php artisan durable-workflow:published-fake
 
       - name: Configure Symfony Bundle and autowired handlers
         if: matrix.framework == 'symfony'
@@ -187,11 +313,11 @@ jobs:
           sed -i "/return \[/a\    DurableWorkflow\\\\Bridge\\\\Symfony\\\\DurableWorkflowBundle::class => ['all' => true]," config/bundles.php
           tee config/packages/durable_workflow.yaml >/dev/null <<'YAML'
           durable_workflow:
-            endpoint: '%env(DURABLE_WORKFLOW_ENDPOINT)%'
+            endpoint: '%env(DURABLE_WORKFLOW_RUNTIME_URL)%'
             namespace: '%env(DURABLE_WORKFLOW_NAMESPACE)%'
             task_queue: '%env(DURABLE_WORKFLOW_TASK_QUEUE)%'
             credentials:
-              control_token: '%env(default::DURABLE_WORKFLOW_CONTROL_TOKEN)%'
+              control_token: '%env(default::DURABLE_WORKFLOW_CLIENT_TOKEN)%'
               worker_token: '%env(default::DURABLE_WORKFLOW_WORKER_TOKEN)%'
             handlers:
               - App\Workflow\PublishedGreetingWorkflow
@@ -230,16 +356,18 @@ jobs:
 
       - name: Start the framework worker and complete a workflow
         env:
-          DURABLE_WORKFLOW_ENDPOINT: ${{ secrets.DURABLE_WORKFLOW_SERVER_URL }}
-          DURABLE_WORKFLOW_NAMESPACE: ${{ secrets.DURABLE_WORKFLOW_NAMESPACE }}
-          DURABLE_WORKFLOW_CONTROL_TOKEN: ${{ secrets.DURABLE_WORKFLOW_CLIENT_TOKEN }}
-          DURABLE_WORKFLOW_WORKER_TOKEN: ${{ secrets.DURABLE_WORKFLOW_WORKER_TOKEN }}
+          DURABLE_WORKFLOW_RUNTIME_URL: ${{ secrets[matrix.endpoint_secret] }}
+          DURABLE_WORKFLOW_NAMESPACE: ${{ secrets[matrix.namespace_secret] }}
+          DURABLE_WORKFLOW_CLIENT_TOKEN: ${{ secrets[matrix.client_token_secret] }}
+          DURABLE_WORKFLOW_WORKER_TOKEN: ${{ secrets[matrix.worker_token_secret] }}
           FRAMEWORK: ${{ matrix.framework }}
+          QUALIFIED_SERVER_VERSION: ${{ inputs.server_version }}
+          RUNTIME_TARGET: ${{ matrix.runtime }}
         run: |
           required=(
-            DURABLE_WORKFLOW_ENDPOINT
+            DURABLE_WORKFLOW_RUNTIME_URL
             DURABLE_WORKFLOW_NAMESPACE
-            DURABLE_WORKFLOW_CONTROL_TOKEN
+            DURABLE_WORKFLOW_CLIENT_TOKEN
             DURABLE_WORKFLOW_WORKER_TOKEN
           )
           missing=()
@@ -254,22 +382,22 @@ jobs:
             printf '\n' >&2
             exit 1
           fi
-          if [ "$DURABLE_WORKFLOW_CONTROL_TOKEN" = "$DURABLE_WORKFLOW_WORKER_TOKEN" ]; then
+          if [ "$DURABLE_WORKFLOW_CLIENT_TOKEN" = "$DURABLE_WORKFLOW_WORKER_TOKEN" ]; then
             echo 'Published runtime client and worker credentials must be distinct.' >&2
             exit 1
           fi
 
           application="$(cat "$RUNNER_TEMP/framework-application")"
           cd "$application"
-          queue="php-${FRAMEWORK}-published-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          workflow_id="php-${FRAMEWORK}-published-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          queue="php-${FRAMEWORK}-${RUNTIME_TARGET}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          workflow_id="php-${FRAMEWORK}-${RUNTIME_TARGET}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           export DURABLE_WORKFLOW_TASK_QUEUE="$queue"
           export DURABLE_WORKFLOW_WORKFLOW_ID="$workflow_id"
           export DURABLE_WORKFLOW_TYPE="published.${FRAMEWORK}.greeter"
 
           if [ "$FRAMEWORK" = laravel ]; then
             env -u DURABLE_WORKFLOW_TOKEN \
-              -u DURABLE_WORKFLOW_CONTROL_TOKEN \
+              -u DURABLE_WORKFLOW_CLIENT_TOKEN \
               -u DURABLE_WORKFLOW_WORKER_TOKEN \
               php artisan config:cache
             DURABLE_WORKFLOW_CONFIG_CACHE="$PWD/bootstrap/cache/config.php" php <<'PHP'
@@ -281,7 +409,7 @@ jobs:
           if (!is_string($contents) || !is_array($configuration)) {
               throw new RuntimeException('Laravel did not produce a readable configuration cache.');
           }
-          foreach (['DURABLE_WORKFLOW_TOKEN', 'DURABLE_WORKFLOW_CONTROL_TOKEN', 'DURABLE_WORKFLOW_WORKER_TOKEN'] as $name) {
+          foreach (['DURABLE_WORKFLOW_TOKEN', 'DURABLE_WORKFLOW_CLIENT_TOKEN', 'DURABLE_WORKFLOW_WORKER_TOKEN'] as $name) {
               $credential = getenv($name);
               if (is_string($credential) && $credential !== '' && str_contains($contents, $credential)) {
                   throw new RuntimeException('Laravel serialized a Durable Workflow credential into its configuration cache.');
@@ -291,7 +419,7 @@ jobs:
           if (!is_array($credentials)) {
               throw new RuntimeException('Cached Durable Workflow credentials must not be configured.');
           }
-          foreach (['token', 'control_token', 'worker_token'] as $name) {
+          foreach (['token', 'client_token', 'worker_token'] as $name) {
               if (($credentials[$name] ?? null) !== null && ($credentials[$name] ?? null) !== '') {
                   throw new RuntimeException("Laravel cached the Durable Workflow {$name} credential.");
               }
@@ -299,25 +427,22 @@ jobs:
           PHP
           fi
 
-          tee durable-client.php >/dev/null <<'PHP'
+          if [ "$FRAMEWORK" = symfony ]; then
+            tee durable-client.php >/dev/null <<'PHP'
           <?php
           declare(strict_types=1);
+          use DurableWorkflow\Client;
           use DurableWorkflow\WorkflowClientInterface;
           require __DIR__.'/vendor/autoload.php';
-          $framework = getenv('FRAMEWORK');
-          if ($framework === 'laravel') {
-              $application = require __DIR__.'/bootstrap/app.php';
-              $application->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
-              $client = $application->make(WorkflowClientInterface::class);
-          } elseif ($framework === 'symfony') {
-              $kernel = new App\Kernel('prod', false);
-              $kernel->boot();
-              $client = $kernel->getContainer()->get(WorkflowClientInterface::class);
-          } else {
-              throw new RuntimeException('Unknown framework smoke target.');
-          }
-          if (!$client instanceof WorkflowClientInterface) {
+          $kernel = new App\Kernel('prod', false);
+          $kernel->boot();
+          $client = $kernel->getContainer()->get(WorkflowClientInterface::class);
+          if (!$client instanceof WorkflowClientInterface || !$client instanceof Client) {
               throw new RuntimeException('Framework did not provide the injectable workflow client.');
+          }
+          $actualVersion = $client->clusterInfo()->version;
+          if ($actualVersion !== getenv('QUALIFIED_SERVER_VERSION')) {
+              throw new RuntimeException("Published endpoint is Server {$actualVersion}; expected ".getenv('QUALIFIED_SERVER_VERSION').'.');
           }
           $handle = $client->startWorkflow(
               getenv('DURABLE_WORKFLOW_TYPE'),
@@ -330,15 +455,40 @@ jobs:
               throw new RuntimeException('Published framework workflow returned an unexpected result.');
           }
           PHP
+          fi
 
           if [ "$FRAMEWORK" = laravel ]; then
-            env -u DURABLE_WORKFLOW_CONTROL_TOKEN php artisan durable-workflow:worker >worker.log 2>&1 &
+            env -u DURABLE_WORKFLOW_CLIENT_TOKEN php artisan durable-workflow:worker >worker.log 2>&1 &
           else
-            env -u DURABLE_WORKFLOW_CONTROL_TOKEN php bin/console durable-workflow:worker >worker.log 2>&1 &
+            env -u DURABLE_WORKFLOW_CLIENT_TOKEN php bin/console durable-workflow:worker >worker.log 2>&1 &
           fi
           worker_pid=$!
           trap 'kill -TERM "$worker_pid" 2>/dev/null || true' EXIT
-          env -u DURABLE_WORKFLOW_WORKER_TOKEN php durable-client.php
+          if [ "$FRAMEWORK" = laravel ]; then
+            ready=false
+            for _attempt in $(seq 1 30); do
+              if grep -Fq 'Registered and polling:' worker.log; then
+                ready=true
+                break
+              fi
+              if ! kill -0 "$worker_pid" 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            if [ "$ready" != true ] \
+              || ! grep -Fq "queue=${queue}" worker.log \
+              || ! grep -Fq 'workflows=[laravel.greeting]' worker.log \
+              || ! grep -Fq 'activities=[laravel.greet]' worker.log \
+              || ! grep -Fq 'credential_role=worker' worker.log; then
+              echo "Laravel worker did not register workflow type laravel.greeting and task queue ${queue}." >&2
+              cat worker.log >&2
+              exit 1
+            fi
+            env -u DURABLE_WORKFLOW_WORKER_TOKEN php artisan durable-workflow:published-greeting
+          else
+            env -u DURABLE_WORKFLOW_WORKER_TOKEN php durable-client.php
+          fi
           kill -TERM "$worker_pid" 2>/dev/null || true
           worker_status=0
           wait "$worker_pid" || worker_status=$?

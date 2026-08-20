@@ -113,10 +113,18 @@ final class WorkflowClientFake implements WorkflowClientInterface
     }
 
     /** @param list<mixed>|null $input */
-    public function assertWorkflowStarted(string $workflowType, ?array $input = null): void
-    {
+    public function assertWorkflowStarted(
+        string $workflowType,
+        ?array $input = null,
+        ?string $workflowId = null,
+        ?string $taskQueue = null,
+    ): void {
         foreach ($this->starts as $start) {
-            if ($start['workflow_type'] === $workflowType && ($input === null || $start['input'] === $input)) {
+            if ($start['workflow_type'] === $workflowType
+                && ($input === null || $start['input'] === $input)
+                && ($workflowId === null || $start['workflow_id'] === $workflowId)
+                && ($taskQueue === null || $start['task_queue'] === $taskQueue)
+            ) {
                 return;
             }
         }

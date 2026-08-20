@@ -14,18 +14,18 @@ use InvalidArgumentException;
 final class ProcessCredentialResolver
 {
     private const SHARED_TOKEN = 'DURABLE_WORKFLOW_TOKEN';
-    private const CONTROL_TOKEN = 'DURABLE_WORKFLOW_CONTROL_TOKEN';
+    private const CLIENT_TOKEN = 'DURABLE_WORKFLOW_CLIENT_TOKEN';
     private const WORKER_TOKEN = 'DURABLE_WORKFLOW_WORKER_TOKEN';
 
-    public static function controlClient(
+    public static function applicationClient(
         ServiceConfiguration $configuration,
         ?Transport $transport = null,
     ): Client {
-        [$token, $controlToken, $workerToken] = self::credentials();
-        self::assertAuthenticationMode($token, $controlToken, $workerToken);
-        if ($token === null && $controlToken === null && $workerToken !== null) {
+        [$token, $clientToken, $workerToken] = self::credentials();
+        self::assertAuthenticationMode($token, $clientToken, $workerToken);
+        if ($token === null && $clientToken === null && $workerToken !== null) {
             throw new InvalidArgumentException(
-                'A control credential is required for the application client. Configure the shared token or scoped control token.',
+                'A client credential is required for the Laravel application client. Configure the self-hosted shared token or scoped client token.',
             );
         }
 
@@ -34,7 +34,7 @@ final class ProcessCredentialResolver
             namespace: $configuration->namespace,
             transport: $transport,
             token: $token,
-            controlToken: $controlToken,
+            controlToken: $clientToken,
         );
     }
 
@@ -42,11 +42,11 @@ final class ProcessCredentialResolver
         ServiceConfiguration $configuration,
         ?Transport $transport = null,
     ): Client {
-        [$token, $controlToken, $workerToken] = self::credentials();
-        self::assertAuthenticationMode($token, $controlToken, $workerToken);
-        if ($token === null && $workerToken === null && $controlToken !== null) {
+        [$token, $clientToken, $workerToken] = self::credentials();
+        self::assertAuthenticationMode($token, $clientToken, $workerToken);
+        if ($token === null && $workerToken === null && $clientToken !== null) {
             throw new InvalidArgumentException(
-                'A worker credential is required for the worker client. Configure the shared token or scoped worker token.',
+                'A worker credential is required for the Laravel worker client. Configure the self-hosted shared token or scoped worker token.',
             );
         }
 
@@ -59,12 +59,20 @@ final class ProcessCredentialResolver
         );
     }
 
+    public static function workerCredentialRole(): string
+    {
+        [$token, $clientToken, $workerToken] = self::credentials();
+        self::assertAuthenticationMode($token, $clientToken, $workerToken);
+
+        return $token === null ? 'worker' : 'shared';
+    }
+
     /** @return array{?string, ?string, ?string} */
     private static function credentials(): array
     {
         return [
             self::credential(self::SHARED_TOKEN),
-            self::credential(self::CONTROL_TOKEN),
+            self::credential(self::CLIENT_TOKEN),
             self::credential(self::WORKER_TOKEN),
         ];
     }
@@ -84,12 +92,12 @@ final class ProcessCredentialResolver
 
     private static function assertAuthenticationMode(
         ?string $token,
-        ?string $controlToken,
+        ?string $clientToken,
         ?string $workerToken,
     ): void {
-        if ($token !== null && ($controlToken !== null || $workerToken !== null)) {
+        if ($token !== null && ($clientToken !== null || $workerToken !== null)) {
             throw new InvalidArgumentException(
-                'Configure either the shared Durable Workflow token or scoped control and worker tokens, not both.',
+                'Configure either the self-hosted shared Durable Workflow token or scoped client and worker tokens, not both.',
             );
         }
     }

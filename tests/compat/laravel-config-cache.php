@@ -4,17 +4,19 @@ declare(strict_types=1);
 
 use DurableWorkflow\Auth\Authentication;
 use DurableWorkflow\Bridge\Laravel\ProcessCredentialResolver;
+use DurableWorkflow\Bridge\Laravel\LaravelWorkflowClientInterface;
 use DurableWorkflow\Bridge\Laravel\WorkerFactory;
 use DurableWorkflow\Bridge\ServiceConfiguration;
 use DurableWorkflow\Client;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\WorkflowClientInterface;
 use Illuminate\Contracts\Console\Kernel;
+use Illuminate\Foundation\Application;
 use Symfony\Component\Process\Process;
 
 require $argv[1];
 
-const LARAVEL_CACHE_CONTROL_TOKEN = 'cache-control-secret';
+const LARAVEL_CACHE_CLIENT_TOKEN = 'cache-client-secret';
 const LARAVEL_CACHE_WORKER_TOKEN = 'cache-worker-secret';
 const LARAVEL_CACHE_SHARED_TOKEN = 'cache-shared-secret';
 
@@ -93,7 +95,7 @@ function laravelCacheAssertContainsNoCredentials(string $cachePath): void
         throw new RuntimeException('Laravel did not produce a readable configuration cache.');
     }
     foreach ([
-        LARAVEL_CACHE_CONTROL_TOKEN,
+        LARAVEL_CACHE_CLIENT_TOKEN,
         LARAVEL_CACHE_WORKER_TOKEN,
         LARAVEL_CACHE_SHARED_TOKEN,
     ] as $credential) {
@@ -110,7 +112,7 @@ function laravelCacheAssertContainsNoCredentials(string $cachePath): void
     if (!is_array($credentials)) {
         throw new RuntimeException('Cached Durable Workflow credentials must not be configured.');
     }
-    foreach (['token', 'control_token', 'worker_token'] as $name) {
+    foreach (['token', 'client_token', 'worker_token'] as $name) {
         if (($credentials[$name] ?? null) !== null && ($credentials[$name] ?? null) !== '') {
             throw new RuntimeException("Laravel cached the Durable Workflow {$name} credential.");
         }
@@ -128,14 +130,15 @@ function laravelCacheRunChild(string $basePath, string $role): void
         throw new RuntimeException('The Laravel role process loaded credentials from cached configuration.');
     }
 
-    if ($role === 'control') {
+    if ($role === 'client') {
         $client = $application->make(WorkflowClientInterface::class);
         if (!$client instanceof Client) {
-            throw new RuntimeException('The control-only process did not resolve the Laravel application client.');
+            throw new RuntimeException('The client-only process did not resolve the Laravel application client.');
         }
+        $application->make(LaravelWorkflowClientInterface::class);
         $authentication = laravelCacheAuthentication($client);
-        if (($authentication->headers(false)['Authorization'] ?? null) !== 'Bearer '.LARAVEL_CACHE_CONTROL_TOKEN) {
-            throw new RuntimeException('The control-only process did not resolve its runtime credential.');
+        if (($authentication->headers(false)['Authorization'] ?? null) !== 'Bearer '.LARAVEL_CACHE_CLIENT_TOKEN) {
+            throw new RuntimeException('The client-only process did not resolve its runtime credential.');
         }
         laravelCacheAssertFailsBeforeTransport(
             static fn () => $client->registerWorker('opposite-role', 'cache-workers', [], []),
@@ -156,10 +159,14 @@ function laravelCacheRunChild(string $basePath, string $role): void
         if (($authentication->headers(true)['Authorization'] ?? null) !== 'Bearer '.LARAVEL_CACHE_WORKER_TOKEN) {
             throw new RuntimeException('The worker-only process did not resolve its runtime credential.');
         }
-        laravelCacheAssertFailsBeforeTransport(static fn () => $client->health(), 'control');
+        laravelCacheAssertFailsBeforeTransport(static fn () => $client->health(), 'client');
         laravelCacheAssertFailsBeforeTransport(
             static fn () => $application->make(WorkflowClientInterface::class),
-            'control',
+            'client',
+        );
+        laravelCacheAssertFailsBeforeTransport(
+            static fn () => $application->make(LaravelWorkflowClientInterface::class),
+            'client',
         );
 
         $transport = new LaravelCacheTransport([[
@@ -186,10 +193,10 @@ function laravelCacheRunChild(string $basePath, string $role): void
     }
 
     if ($role === 'shared') {
-        $controlClient = $application->make(WorkflowClientInterface::class);
+        $applicationClient = $application->make(WorkflowClientInterface::class);
         $workerClient = laravelCacheWorkerClient($application->make(WorkerFactory::class));
-        if (!$controlClient instanceof Client
-            || (laravelCacheAuthentication($controlClient)->headers(false)['Authorization'] ?? null)
+        if (!$applicationClient instanceof Client
+            || (laravelCacheAuthentication($applicationClient)->headers(false)['Authorization'] ?? null)
                 !== 'Bearer '.LARAVEL_CACHE_SHARED_TOKEN
             || (laravelCacheAuthentication($workerClient)->headers(true)['Authorization'] ?? null)
                 !== 'Bearer '.LARAVEL_CACHE_SHARED_TOKEN
@@ -231,9 +238,11 @@ if ($mode === '--cache' && is_string($basePath)) {
         throw new RuntimeException('The Laravel cache builder did not bootstrap an application.');
     }
     $kernel = $application->make(Kernel::class);
-    if ($kernel->call('config:cache') !== 0) {
+    $status = $kernel->call('config:cache');
+    if ($status !== 0 || !is_file($application->getCachedConfigPath())) {
         throw new RuntimeException('Laravel config:cache failed: '.$kernel->output());
     }
+    fwrite(STDOUT, $application->getCachedConfigPath().PHP_EOL);
     exit(0);
 }
 if ($mode === '--child' && is_string($basePath)) {
@@ -260,33 +269,109 @@ try {
     if (!copy(dirname(__DIR__, 2).'/resources/laravel/durable-workflow.php', $fixturePath.'/config/durable-workflow.php')) {
         throw new RuntimeException('Could not publish the Durable Workflow Laravel configuration.');
     }
-    $bootstrap = <<<'PHP'
+    if ((new ReflectionClass(Application::class))->hasMethod('configure')) {
+        $bootstrap = <<<'PHP'
 <?php
 
 declare(strict_types=1);
 
 use DurableWorkflow\Bridge\Laravel\DurableWorkflowServiceProvider;
 use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Exceptions;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withProviders([DurableWorkflowServiceProvider::class])
+    ->withExceptions(static function (Exceptions $exceptions): void {
+    })
     ->create();
 PHP;
+    } else {
+        $legacyApplicationConfiguration = <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+return [
+    'name' => 'Durable Workflow compatibility',
+    'env' => 'testing',
+    'debug' => false,
+    'url' => 'http://localhost',
+    'timezone' => 'UTC',
+    'locale' => 'en',
+    'fallback_locale' => 'en',
+    'faker_locale' => 'en_US',
+    'key' => 'base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    'cipher' => 'AES-256-CBC',
+    'providers' => [],
+    'aliases' => [],
+];
+PHP;
+        if (file_put_contents($fixturePath.'/config/app.php', $legacyApplicationConfiguration.PHP_EOL) === false) {
+            throw new RuntimeException('Could not create the legacy Laravel application configuration.');
+        }
+        $bootstrap = <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use DurableWorkflow\Bridge\Laravel\DurableWorkflowServiceProvider;
+use Illuminate\Config\Repository;
+use Illuminate\Contracts\Console\Kernel as ConsoleKernelContract;
+use Illuminate\Contracts\Debug\ExceptionHandler as ExceptionHandlerContract;
+use Illuminate\Contracts\Events\Dispatcher;
+use Illuminate\Filesystem\Filesystem;
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Console\ConfigCacheCommand;
+use Illuminate\Foundation\Console\ConfigClearCommand;
+use Illuminate\Foundation\Console\Kernel as FoundationConsoleKernel;
+use Illuminate\Foundation\Exceptions\Handler as FoundationExceptionHandler;
+
+$application = new Application(dirname(__DIR__));
+$application->instance('config', new Repository());
+$application->singleton(ExceptionHandlerContract::class, FoundationExceptionHandler::class);
+$application->singleton('files', static fn (): Filesystem => new Filesystem());
+$application->singleton(
+    ConfigCacheCommand::class,
+    static fn (Application $app): ConfigCacheCommand => new ConfigCacheCommand($app->make('files')),
+);
+$application->singleton(
+    ConfigClearCommand::class,
+    static fn (Application $app): ConfigClearCommand => new ConfigClearCommand($app->make('files')),
+);
+$application->singleton(
+    ConsoleKernelContract::class,
+    static fn (Application $app): FoundationConsoleKernel => new class(
+        $app,
+        $app->make(Dispatcher::class),
+    ) extends FoundationConsoleKernel {
+        /** @var list<class-string> */
+        protected $commands = [ConfigCacheCommand::class, ConfigClearCommand::class];
+    },
+);
+$application->register(DurableWorkflowServiceProvider::class);
+
+return $application;
+PHP;
+    }
     if (file_put_contents($fixturePath.'/bootstrap/app.php', $bootstrap.PHP_EOL) === false) {
         throw new RuntimeException('Could not create the Laravel fixture bootstrap.');
     }
 
     $baseEnvironment = [
         'DURABLE_WORKFLOW_TOKEN' => false,
-        'DURABLE_WORKFLOW_CONTROL_TOKEN' => false,
+        'DURABLE_WORKFLOW_CLIENT_TOKEN' => false,
         'DURABLE_WORKFLOW_WORKER_TOKEN' => false,
     ];
     $cache = new Process([PHP_BINARY, __FILE__, $autoloadPath, '--cache', $fixturePath], env: $baseEnvironment);
     $cache->mustRun();
+    $reportedCachePath = trim($cache->getOutput());
+    if ($reportedCachePath !== $cachePath) {
+        throw new RuntimeException("Laravel cached configuration at {$reportedCachePath}; expected {$cachePath}.");
+    }
     laravelCacheAssertContainsNoCredentials($cachePath);
 
     $roles = [
-        'control' => ['DURABLE_WORKFLOW_CONTROL_TOKEN' => LARAVEL_CACHE_CONTROL_TOKEN],
+        'client' => ['DURABLE_WORKFLOW_CLIENT_TOKEN' => LARAVEL_CACHE_CLIENT_TOKEN],
         'worker' => ['DURABLE_WORKFLOW_WORKER_TOKEN' => LARAVEL_CACHE_WORKER_TOKEN],
         'shared' => ['DURABLE_WORKFLOW_TOKEN' => LARAVEL_CACHE_SHARED_TOKEN],
     ];

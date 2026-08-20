@@ -32,11 +32,11 @@ The package supports the Symfony versions declared by this SDK release. No third
 ```yaml
 # config/packages/durable_workflow.yaml
 durable_workflow:
-  endpoint: '%env(DURABLE_WORKFLOW_ENDPOINT)%'
+  endpoint: '%env(DURABLE_WORKFLOW_RUNTIME_URL)%'
   namespace: '%env(DURABLE_WORKFLOW_NAMESPACE)%'
   task_queue: '%env(DURABLE_WORKFLOW_TASK_QUEUE)%'
   credentials:
-    control_token: '%env(default::DURABLE_WORKFLOW_CONTROL_TOKEN)%'
+    control_token: '%env(default::DURABLE_WORKFLOW_CLIENT_TOKEN)%'
     worker_token: '%env(default::DURABLE_WORKFLOW_WORKER_TOKEN)%'
 ```
 
@@ -72,7 +72,7 @@ Add an autowired activity service with `#[Activity('orders.reserve')]`. The Bund
 php bin/console debug:container DurableWorkflow\\WorkflowClientInterface
 php bin/console debug:container --tag=durable_workflow.handler
 
-env -u DURABLE_WORKFLOW_CONTROL_TOKEN \
+env -u DURABLE_WORKFLOW_CLIENT_TOKEN \
   DURABLE_WORKFLOW_WORKER_TOKEN="$WORKER_SECRET" \
   php bin/console durable-workflow:worker
 ```

@@ -1,0 +1,114 @@
+{
+  "$schema": "https://php.durable-workflow.com/laravel-adoption-contract.schema.json",
+  "schema_version": 1,
+  "framework": {
+    "package": "laravel/framework",
+    "constraint": "^9.0|^10.0|^11.0|^12.0|^13.0",
+    "php_constraint": "^8.1",
+    "qualification_matrix": [
+      {"laravel": "9", "php": "8.1", "package": "laravel/framework:^9.0", "bootstrap": "existing_supported_lock"},
+      {"laravel": "10", "php": "8.1", "package": "laravel/framework:^10.0", "bootstrap": "existing_supported_lock"},
+      {"laravel": "9", "php": "8.2", "package": "laravel/framework:^9.0", "bootstrap": "existing_supported_lock"},
+      {"laravel": "10", "php": "8.2", "package": "laravel/framework:^10.0", "bootstrap": "existing_supported_lock"},
+      {"laravel": "11", "php": "8.2", "package": "laravel/framework:^11.0", "bootstrap": "existing_supported_lock"},
+      {"laravel": "12", "php": "8.2", "package": "laravel/framework:^12.0", "bootstrap": "fresh_supported_install"},
+      {"laravel": "9", "php": "8.3", "package": "laravel/framework:^9.0", "bootstrap": "existing_supported_lock"},
+      {"laravel": "10", "php": "8.3", "package": "laravel/framework:^10.0", "bootstrap": "existing_supported_lock"},
+      {"laravel": "11", "php": "8.3", "package": "laravel/framework:^11.0", "bootstrap": "existing_supported_lock"},
+      {"laravel": "12", "php": "8.3", "package": "laravel/framework:^12.0", "bootstrap": "fresh_supported_install"},
+      {"laravel": "13", "php": "8.3", "package": "laravel/framework:^13.0", "bootstrap": "fresh_supported_install"},
+      {"laravel": "9", "php": "8.4", "package": "laravel/framework:^9.0", "bootstrap": "existing_supported_lock"},
+      {"laravel": "10", "php": "8.4", "package": "laravel/framework:^10.0", "bootstrap": "existing_supported_lock"},
+      {"laravel": "11", "php": "8.4", "package": "laravel/framework:^11.0", "bootstrap": "existing_supported_lock"},
+      {"laravel": "12", "php": "8.4", "package": "laravel/framework:^12.0", "bootstrap": "fresh_supported_install"},
+      {"laravel": "13", "php": "8.4", "package": "laravel/framework:^13.0", "bootstrap": "fresh_supported_install"}
+    ]
+  },
+  "embedded_transition_authority": {
+    "package": "durable-workflow/workflow",
+    "manifest": "resources/laravel-embedded-upgrade-contract.json",
+    "schema": "durable-workflow.laravel-embedded-upgrade.contract",
+    "version": 1
+  },
+  "modes": {
+    "embedded_v1": {
+      "package": "durable-workflow/workflow",
+      "channel": "^1.0",
+      "state_owner": "laravel_application"
+    },
+    "embedded_v2": {
+      "package": "durable-workflow/workflow",
+      "channel": "^2.0@RC",
+      "state_owner": "laravel_application"
+    },
+    "service_v2": {
+      "package": "durable-workflow/sdk",
+      "channel": "^2.0@RC",
+      "state_owner": "server_or_cloud"
+    }
+  },
+  "transitions": [
+    {
+      "id": "v1_to_v2_embedded",
+      "from": "embedded_v1",
+      "to": "embedded_v2",
+      "authority": "embedded_transition_authority"
+    },
+    {
+      "id": "v1_to_v2_service",
+      "from": "embedded_v1",
+      "to": "service_v2",
+      "ownership_change": true,
+      "open_run_policies": ["drain", "coexist_by_runtime"],
+      "history_disposition": "explicit_state_migration_required",
+      "rollback_boundary": "per_runtime"
+    },
+    {
+      "id": "v2_embedded_to_v2_service",
+      "from": "embedded_v2",
+      "to": "service_v2",
+      "ownership_change": true,
+      "open_run_policies": ["drain", "coexist_by_runtime"],
+      "history_disposition": "explicit_state_migration_required",
+      "rollback_boundary": "per_runtime"
+    }
+  ],
+  "continuity": [
+    {"surface": "workflow_type", "required_action": "map_explicitly"},
+    {"surface": "workflow_id", "required_action": "route_to_one_authority"},
+    {"surface": "task_queue", "required_action": "bind_worker_and_starter"},
+    {"surface": "payload", "required_action": "translate_and_validate"},
+    {"surface": "memo_search_metadata", "required_action": "repopulate_for_new_runs"},
+    {"surface": "signals_updates", "required_action": "quiesce_then_switch_ingress"},
+    {"surface": "rollback", "required_action": "keep_runtime_specific"}
+  ],
+  "representative_journey": {
+    "workflow_type": "laravel.greeting",
+    "activity_type": "laravel.greet",
+    "input": ["Ada"],
+    "result": "hello from Laravel, Ada",
+    "service_dependency": "App\\GreetingPrefix",
+    "application_client": "DurableWorkflow\\Bridge\\Laravel\\LaravelWorkflowClientInterface",
+    "application_fake": "DurableWorkflow\\Bridge\\Laravel\\Testing\\LaravelWorkflowClientFake",
+    "start_shape": "attributed_service_class",
+    "assertion_shape": "attributed_service_class"
+  },
+  "qualification": {
+    "embedded": {
+      "owner": "durable-workflow/workflow",
+      "targets": ["local_laravel_runtime"]
+    },
+    "service": {
+      "owner": "durable-workflow/sdk",
+      "targets": ["standalone_server", "managed_cloud"],
+      "published_artifacts_required": true
+    },
+    "established_application_transitions": {
+      "sources": ["embedded_v1", "embedded_v2"],
+      "clean_application_required": true,
+      "same_injected_dependency_required": true,
+      "source_history_must_remain_owned": true,
+      "new_service_starts_required": true
+    }
+  }
+}

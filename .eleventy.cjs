@@ -30,6 +30,8 @@ module.exports = function configure(eleventyConfig) {
   eleventyConfig.addPassthroughCopy({'docs/portal/assets': 'assets'});
   eleventyConfig.addPassthroughCopy({'docs/quickstart-contract.json': 'quickstart-contract.json'});
   eleventyConfig.addPassthroughCopy({'docs/quickstart-contract.schema.v2.json': 'quickstart-contract.schema.v2.json'});
+  eleventyConfig.addPassthroughCopy({'docs/laravel-adoption-contract.json': 'laravel-adoption-contract.json'});
+  eleventyConfig.addPassthroughCopy({'docs/laravel-adoption-contract.schema.json': 'laravel-adoption-contract.schema.json'});
   eleventyConfig.addPassthroughCopy({'.phpdoc/template/analytics': 'analytics'});
   eleventyConfig.addPassthroughCopy({'.phpdoc/template/assets': 'assets'});
   eleventyConfig.addPassthroughCopy({'build/api': 'api'});

@@ -19,17 +19,33 @@ project follows [Semantic Versioning](https://semver.org/).
   registration, and Composer autoload discovery across supported layouts.
 - A source-free published-package smoke workflow that installs and executes the
   shipped quickstart against a real Server or Cloud-compatible endpoint.
-- Optional first-party bridges for Laravel 12-13 and Symfony 6.4-8, including
+- Optional first-party bridges for Laravel 9-13 and Symfony 6.4-8, including
   native container registration, console workers, configuration validation,
   framework logging and events, and test-client replacement helpers.
+- A Laravel-native injectable workflow client that derives the public type from
+  a configured attributed service class and uses the configured task queue,
+  with explicit ID and start-option overrides when application code needs them.
+  Its facade fake records and asserts the same service-class call shape.
+- A machine-readable Laravel adoption contract and ownership-first migration
+  guide for v1 to v2 embedded, v1 to v2 service mode, and embedded v2 to
+  service mode.
 
 ### Changed
 
+- Published Laravel bridge qualification now runs the container-injected
+  workflow and activity through Artisan against separately credentialed
+  standalone Server and managed Cloud targets, and proves the Laravel fake
+  without either runtime.
+- Laravel service mode now uses the same runtime URL, namespace, task queue,
+  client-token, and worker-token vocabulary as the package quickstart. Worker
+  startup reports an explicit registered-and-polling record, and clean
+  transition jobs preserve stable-v1 or embedded-v2 history while exercising a
+  new service-mode start with the same injected application dependency.
 - Replaced prerelease generator-based workflow authoring with Fiber-backed
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK source to `2.0.0-rc.32`. Package metadata declares Server
+- Advanced the PHP SDK source to `2.0.0-rc.33`. Package metadata declares Server
   `2.0.0-rc.32` as the verified compatibility baseline; other Server
   prereleases require separate conformance evidence. Avro is the sole public
   Durable Workflow 2.0 payload codec, and non-Avro configuration fails before
@@ -51,6 +67,9 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- SDK installation now accepts Guzzle 8 as well as Guzzle 7, preserving clean
+  installation in Laravel 13 applications while existing Guzzle 7 locks remain
+  valid.
 - Low-level schedule updates and workflow-task completions now validate only
   their schema-defined durable payload fields as fixed-schema Avro before any
   transport request, while preserving codec-looking memo, search-attribute,

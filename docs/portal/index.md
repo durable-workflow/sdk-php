@@ -9,10 +9,10 @@ description: Build, test, deploy, and operate durable PHP workflows with first-p
     <div>
       <div class="release-kicker">{{ release.sdkChannelLabel }}</div>
       <h1>Work that keeps going. <em>Even when PHP stops.</em></h1>
-      <p class="hero-copy">Start a workflow, survive process restarts, retry unreliable work, and come back for the result. Choose the PHP and deployment path that matches your application.</p>
+      <p class="hero-copy">Move an existing Laravel workflow application to Durable Workflow 2.0 without giving up its container, configuration, commands, logs, or tests. Choose embedded state or a separately operated service.</p>
       <div class="hero-actions">
-        <a class="button primary" href="/getting-started/first-workflow/">Run your first workflow <span aria-hidden="true">→</span></a>
-        <a class="button secondary" href="/build/workflows-activities/">Explore the concepts</a>
+        <a class="button primary" href="/frameworks/laravel/">Choose a Laravel path <span aria-hidden="true">→</span></a>
+        <a class="button secondary" href="/getting-started/first-workflow/">Start with plain PHP</a>
       </div>
     </div>
     <div class="hero-terminal" aria-label="Example terminal session">
@@ -34,16 +34,16 @@ description: Build, test, deploy, and operate durable PHP workflows with first-p
     <p>The durable model is shared. The bootstrap, container, and operating experience stay idiomatic to your stack.</p>
   </div>
   <div class="path-grid">
-    <a class="path-card" href="/getting-started/first-workflow/">
-      <span class="number">01 / PLAIN PHP</span>
-      <h3>Client + remote worker</h3>
-      <p>Use the framework-neutral SDK in a script, service, or existing application.</p>
+    <a class="path-card" href="/frameworks/laravel/">
+      <span class="number">01 / LARAVEL</span>
+      <h3>Move from v1 without losing Laravel</h3>
+      <p>Choose v2 embedded or service mode now, then change ownership later through one supported transition matrix.</p>
       <span class="arrow" aria-hidden="true">→</span>
     </a>
-    <a class="path-card" href="/frameworks/laravel/">
-      <span class="number">02 / LARAVEL</span>
-      <h3>Choose embedded or service mode</h3>
-      <p>Use the first-party Laravel engine in-app, or inject the standalone SDK for Cloud and Server.</p>
+    <a class="path-card" href="/getting-started/first-workflow/">
+      <span class="number">02 / PLAIN PHP</span>
+      <h3>Client + remote worker</h3>
+      <p>Use the framework-neutral SDK in a script, service, or existing application.</p>
       <span class="arrow" aria-hidden="true">→</span>
     </a>
     <a class="path-card" href="/frameworks/symfony/">

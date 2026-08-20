@@ -26,17 +26,40 @@ final class DurableWorkflowServiceProvider extends ServiceProvider
             // belong to the process and are resolved by each role-specific factory.
             if (is_array($values)) {
                 unset($values['credentials']);
+                $runtimeUrl = $values['runtime_url'] ?? null;
+                if (!is_string($runtimeUrl)) {
+                    throw new \InvalidArgumentException(
+                        'Durable Workflow Laravel runtime_url must be a string. Set DURABLE_WORKFLOW_RUNTIME_URL to the Server origin or complete Cloud namespace runtime URL.',
+                    );
+                }
+                $values['endpoint'] = $runtimeUrl;
+                unset($values['runtime_url']);
             }
 
             return ServiceConfiguration::fromArray(is_array($values) ? $values : []);
         });
         $this->app->singleton(
             Client::class,
-            static fn ($app): Client => ProcessCredentialResolver::controlClient(
+            static fn ($app): Client => ProcessCredentialResolver::applicationClient(
                 $app->make(ServiceConfiguration::class),
             ),
         );
         $this->app->alias(Client::class, WorkflowClientInterface::class);
+        $this->app->singleton(
+            WorkflowServiceResolver::class,
+            static fn ($app): WorkflowServiceResolver => new WorkflowServiceResolver(
+                $app->make(ServiceConfiguration::class),
+            ),
+        );
+        $this->app->bind(
+            LaravelWorkflowClient::class,
+            static fn ($app): LaravelWorkflowClient => new LaravelWorkflowClient(
+                $app->make(WorkflowClientInterface::class),
+                $app->make(ServiceConfiguration::class),
+                $app->make(WorkflowServiceResolver::class),
+            ),
+        );
+        $this->app->alias(LaravelWorkflowClient::class, LaravelWorkflowClientInterface::class);
         $this->app->singleton(WorkerFactory::class, function ($app): WorkerFactory {
             $logger = $app->bound(LoggerInterface::class)
                 ? $app->make(LoggerInterface::class)
@@ -49,6 +72,7 @@ final class DurableWorkflowServiceProvider extends ServiceProvider
                 ProcessCredentialResolver::workerClient($app->make(ServiceConfiguration::class)),
                 $logger,
                 $events,
+                ProcessCredentialResolver::workerCredentialRole(),
             );
         });
     }

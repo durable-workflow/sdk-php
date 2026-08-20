@@ -7,12 +7,14 @@ It targets PHP 8.1 or newer and does not require Laravel or the embedded
 
 ## Choose the PHP execution model
 
+- **Laravel adoption:** start with the [ownership-first transition
+  guide](https://php.durable-workflow.com/frameworks/laravel/) when moving a
+  Laravel Workflow v1 application to v2 embedded or service mode, or when
+  moving embedded v2 to service mode. Laravel 9 through 13 are supported on
+  both v2 destinations.
 - **Plain PHP service mode:** follow the quickstart below when a framework-neutral
   application and remote worker connect to Durable Workflow Cloud or a
   self-hosted Server.
-- **Laravel service mode:** use the [Laravel bridge](#laravel-service-mode) from
-  this SDK when remote handlers should keep Laravel dependency injection,
-  configuration, logging, and testing.
 - **Symfony service mode:** use the [Symfony bridge](#symfony-service-mode) from
   this SDK for autowired remote handlers and a managed console worker.
 - **Embedded Laravel workflows:** use
@@ -28,14 +30,13 @@ Create an empty Composer project and install the current published package:
 mkdir durable-php-quickstart
 cd durable-php-quickstart
 composer init --name=acme/durable-php-quickstart --no-interaction
-composer require durable-workflow/sdk:2.0.0-rc.32@RC
+composer require 'durable-workflow/sdk:^2.0@RC'
 ```
 
-This exact package is PHP SDK `2.0.0-rc.32`. Its package metadata declares
-Server `2.0.0-rc.32` as the verified compatibility baseline; using another
-Server prerelease requires separate conformance evidence. Earlier 2.0
-prereleases and pre-1.0 SDK releases remain historical rather than alternate
-supported baselines.
+The current 2.0 RC declares its verified Server baseline in package metadata;
+using another Server prerelease requires separate conformance evidence. Earlier
+2.0 prereleases and pre-1.0 SDK releases remain historical rather than
+alternate supported baselines.
 
 To install directly from the source repository before a tagged release:
 
@@ -480,28 +481,28 @@ fatal.
 
 ## Laravel service mode
 
-Laravel 12 and 13 auto-discover the service provider from the same SDK package.
+Laravel 9 through 13 auto-discover the service provider from the same SDK package.
 Publish the environment-backed configuration, add attributed handler services,
 and start the supervised Artisan command:
 
 ```bash
-composer require durable-workflow/sdk:2.0.0-rc.32@RC
+composer require 'durable-workflow/sdk:^2.0@RC'
 php artisan vendor:publish --tag=durable-workflow-config
 php artisan config:cache
 php artisan durable-workflow:worker
 ```
 
-Set `DURABLE_WORKFLOW_ENDPOINT` to a self-hosted Server origin or the complete
+Set `DURABLE_WORKFLOW_RUNTIME_URL` to a self-hosted Server origin or the complete
 Cloud runtime base URI. Set `DURABLE_WORKFLOW_NAMESPACE` and
 `DURABLE_WORKFLOW_TASK_QUEUE`, then choose shared-token or scoped authentication.
 For scoped Cloud authentication, inject credentials at the process boundary:
 
 | Laravel process | Inject | Do not inject |
 | --- | --- | --- |
-| Web, queue, or other application process | `DURABLE_WORKFLOW_CONTROL_TOKEN` | `DURABLE_WORKFLOW_WORKER_TOKEN` |
-| `php artisan durable-workflow:worker` | `DURABLE_WORKFLOW_WORKER_TOKEN` | `DURABLE_WORKFLOW_CONTROL_TOKEN` |
+| Web, queue, or other application process | `DURABLE_WORKFLOW_CLIENT_TOKEN` | `DURABLE_WORKFLOW_WORKER_TOKEN` |
+| `php artisan durable-workflow:worker` | `DURABLE_WORKFLOW_WORKER_TOKEN` | `DURABLE_WORKFLOW_CLIENT_TOKEN` |
 
-The service provider gives the injectable application client only the control
+The service provider gives the injectable application client only the client
 credential and creates a separate worker client only for the worker factory.
 For a self-hosted deployment that uses one credential for both roles, inject
 `DURABLE_WORKFLOW_TOKEN` instead. Supply secret values through the deployment
@@ -525,23 +526,27 @@ in `config/durable-workflow.php`:
 ```
 
 Laravel resolves every handler through its container, so ordinary constructor
-injection works. `Client` and `WorkflowClientInterface` are injectable; prefer
-the interface in application services that should be replaceable in tests.
+injection works. Inject `LaravelWorkflowClientInterface` to start an attributed
+workflow service class on the configured default queue; explicit IDs and
+`WorkflowStartOptions` remain available. `Client` and `WorkflowClientInterface`
+remain injectable for low-level cross-language string contracts.
 Worker diagnostics use Laravel's PSR logger and dispatch
 `WorkerDiagnosticEvent` through Laravel events. The event name is available in
 its `name` property and includes lifecycle, retry, handler-failure, and shutdown
-events.
+events. After server registration, Artisan prints a registered-and-polling line
+with the runtime host, namespace, queue, workflow and activity types, and
+credential role; it never includes credential values.
 
-In a Laravel test, `DurableWorkflow::fake()` replaces the injectable interface
-with `WorkflowClientFake` and returns it for result setup and interaction
-assertions:
+In a Laravel test, `DurableWorkflow::fake()` replaces the class-shaped Laravel
+client and its low-level transport. It returns `LaravelWorkflowClientFake` for
+result setup and service-class interaction assertions:
 
 ```php
 $workflows = DurableWorkflow::fake()
     ->setWorkflowResult('greeting-1', ['greeting' => 'hello, Ada']);
 
 // Exercise application code, then use the framework-independent assertions.
-$workflows->assertWorkflowStarted('greeter', ['Ada']);
+$workflows->assertWorkflowStarted(GreeterWorkflow::class, ['Ada']);
 ```
 
 ## Symfony service mode
@@ -564,22 +569,22 @@ autowired services:
 ```yaml
 # config/packages/durable_workflow.yaml
 durable_workflow:
-  endpoint: '%env(DURABLE_WORKFLOW_ENDPOINT)%'
+  endpoint: '%env(DURABLE_WORKFLOW_RUNTIME_URL)%'
   namespace: '%env(DURABLE_WORKFLOW_NAMESPACE)%'
   task_queue: '%env(DURABLE_WORKFLOW_TASK_QUEUE)%'
   credentials:
-    control_token: '%env(default::DURABLE_WORKFLOW_CONTROL_TOKEN)%'
+    control_token: '%env(default::DURABLE_WORKFLOW_CLIENT_TOKEN)%'
     worker_token: '%env(default::DURABLE_WORKFLOW_WORKER_TOKEN)%'
   handlers:
     - App\Workflow\GreeterWorkflow
     - App\Activity\GreetingActivities
 ```
 
-Inject `DURABLE_WORKFLOW_CONTROL_TOKEN` only into web and other application
+Inject `DURABLE_WORKFLOW_CLIENT_TOKEN` only into web and other application
 processes. Inject `DURABLE_WORKFLOW_WORKER_TOKEN` only into the process running
 `php bin/console durable-workflow:worker`; the `default::` processors leave the
 opposite scoped credential unset. The Bundle binds the public autowired client
-to the control credential and gives its private worker client only the worker
+to the client credential and gives its private worker client only the worker
 credential. Self-hosted deployments can instead set `credentials.token` from
 `DURABLE_WORKFLOW_TOKEN` and inject that shared credential into both
 processes. Keep values in the deployment platform's environment or secret store,

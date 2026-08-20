@@ -22,7 +22,11 @@ final class WorkerFactory
         private readonly Client $client,
         private readonly LoggerInterface $logger,
         private readonly ?Dispatcher $events = null,
+        private readonly string $credentialRole = 'worker',
     ) {
+        if (!in_array($this->credentialRole, ['worker', 'shared'], true)) {
+            throw new InvalidArgumentException('The Laravel worker credential role must be worker or shared.');
+        }
     }
 
     public function make(?string $taskQueue = null): Worker
@@ -33,12 +37,28 @@ final class WorkerFactory
             );
         }
 
+        $worker = null;
         $worker = Worker::create(
             $this->client,
             $this->configuration->taskQueue($taskQueue),
             logger: $this->logger,
-            diagnosticListener: function (string $name, array $context): void {
+            diagnosticListener: function (string $name, array $context) use (&$worker): void {
                 $this->events?->dispatch(new WorkerDiagnosticEvent($name, $context));
+                if ($name !== 'worker.registered' || !$worker instanceof Worker) {
+                    return;
+                }
+
+                $contracts = $worker->contracts();
+                $readiness = [
+                    'runtime_host' => $this->runtimeHost(),
+                    'namespace' => $this->configuration->namespace,
+                    'task_queue' => $worker->taskQueue,
+                    'workflow_types' => $contracts['workflows'],
+                    'activity_types' => $contracts['activities'],
+                    'credential_role' => $this->credentialRole,
+                ];
+                $this->logger->info('worker.registered_and_polling', $readiness);
+                $this->events?->dispatch(new WorkerDiagnosticEvent('worker.registered_and_polling', $readiness));
             },
         );
 
@@ -53,5 +73,14 @@ final class WorkerFactory
     public function pollTimeoutSeconds(): int
     {
         return $this->configuration->pollTimeoutSeconds;
+    }
+
+    private function runtimeHost(): string
+    {
+        $parts = parse_url($this->configuration->endpoint);
+        $host = is_array($parts) ? (string) ($parts['host'] ?? '') : '';
+        $port = is_array($parts) ? ($parts['port'] ?? null) : null;
+
+        return is_int($port) ? "{$host}:{$port}" : $host;
     }
 }

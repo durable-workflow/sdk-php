@@ -327,14 +327,100 @@ jobs:
       matrix:
         include:
           - framework: Laravel
+            version: '9'
+            php: '8.1'
+            package: 'laravel/framework:^9.0'
+            bootstrap: existing_supported_lock
+            script: laravel.php
+          - framework: Laravel
+            version: '10'
+            php: '8.1'
+            package: 'laravel/framework:^10.0'
+            bootstrap: existing_supported_lock
+            script: laravel.php
+          - framework: Laravel
+            version: '9'
+            php: '8.2'
+            package: 'laravel/framework:^9.0'
+            bootstrap: existing_supported_lock
+            script: laravel.php
+          - framework: Laravel
+            version: '10'
+            php: '8.2'
+            package: 'laravel/framework:^10.0'
+            bootstrap: existing_supported_lock
+            script: laravel.php
+          - framework: Laravel
+            version: '11'
+            php: '8.2'
+            package: 'laravel/framework:^11.0'
+            bootstrap: existing_supported_lock
+            script: laravel.php
+          - framework: Laravel
             version: '12'
             php: '8.2'
             package: 'laravel/framework:^12.0'
+            bootstrap: fresh_supported_install
+            script: laravel.php
+          - framework: Laravel
+            version: '9'
+            php: '8.3'
+            package: 'laravel/framework:^9.0'
+            bootstrap: existing_supported_lock
+            script: laravel.php
+          - framework: Laravel
+            version: '10'
+            php: '8.3'
+            package: 'laravel/framework:^10.0'
+            bootstrap: existing_supported_lock
+            script: laravel.php
+          - framework: Laravel
+            version: '11'
+            php: '8.3'
+            package: 'laravel/framework:^11.0'
+            bootstrap: existing_supported_lock
+            script: laravel.php
+          - framework: Laravel
+            version: '12'
+            php: '8.3'
+            package: 'laravel/framework:^12.0'
+            bootstrap: fresh_supported_install
             script: laravel.php
           - framework: Laravel
             version: '13'
             php: '8.3'
             package: 'laravel/framework:^13.0'
+            bootstrap: fresh_supported_install
+            script: laravel.php
+          - framework: Laravel
+            version: '9'
+            php: '8.4'
+            package: 'laravel/framework:^9.0'
+            bootstrap: existing_supported_lock
+            script: laravel.php
+          - framework: Laravel
+            version: '10'
+            php: '8.4'
+            package: 'laravel/framework:^10.0'
+            bootstrap: existing_supported_lock
+            script: laravel.php
+          - framework: Laravel
+            version: '11'
+            php: '8.4'
+            package: 'laravel/framework:^11.0'
+            bootstrap: existing_supported_lock
+            script: laravel.php
+          - framework: Laravel
+            version: '12'
+            php: '8.4'
+            package: 'laravel/framework:^12.0'
+            bootstrap: fresh_supported_install
+            script: laravel.php
+          - framework: Laravel
+            version: '13'
+            php: '8.4'
+            package: 'laravel/framework:^13.0'
+            bootstrap: fresh_supported_install
             script: laravel.php
           - framework: Symfony
             version: '6.4'
@@ -363,20 +449,37 @@ jobs:
           coverage: none
       - name: Install SDK into a clean framework consumer
         env:
+          FRAMEWORK_BOOTSTRAP: ${{ matrix.bootstrap }}
           FRAMEWORK_PACKAGE: ${{ matrix.package }}
           FRAMEWORK_CONSOLE_PACKAGE: ${{ matrix.console_package }}
+          COMPAT_SCRIPT: ${{ matrix.script }}
         run: |
           consumer="$(mktemp -d)"
           printf '%s\n' "$consumer" > "$RUNNER_TEMP/framework-consumer"
           cd "$consumer"
           composer init --name=durable-workflow/framework-compat --no-interaction
           composer config repositories.sdk path "$GITHUB_WORKSPACE"
-          framework_packages=("$FRAMEWORK_PACKAGE")
-          if [ -n "$FRAMEWORK_CONSOLE_PACKAGE" ]; then
-            framework_packages+=("$FRAMEWORK_CONSOLE_PACKAGE")
+          if [ "$COMPAT_SCRIPT" = laravel.php ]; then
+            bootstrap_arguments=()
+            if [ "$FRAMEWORK_BOOTSTRAP" = existing_supported_lock ]; then
+              # Model the established application named by the adoption contract.
+              # Composer may refuse a new installation of an end-of-life Laravel
+              # line, but SDK installation still runs with normal policy against
+              # the resulting existing lock file.
+              bootstrap_arguments+=(--no-blocking)
+            fi
+            composer require "$FRAMEWORK_PACKAGE" \
+              --no-interaction --prefer-dist --no-progress "${bootstrap_arguments[@]}"
+            composer require durable-workflow/sdk:@dev \
+              --no-interaction --prefer-dist --no-progress
+          else
+            framework_packages=("$FRAMEWORK_PACKAGE")
+            if [ -n "$FRAMEWORK_CONSOLE_PACKAGE" ]; then
+              framework_packages+=("$FRAMEWORK_CONSOLE_PACKAGE")
+            fi
+            composer require durable-workflow/sdk:@dev "${framework_packages[@]}" \
+              --no-interaction --prefer-dist --with-all-dependencies
           fi
-          composer require durable-workflow/sdk:@dev "${framework_packages[@]}" \
-            --no-interaction --prefer-dist --with-all-dependencies
           composer require --dev phpstan/phpstan:^2.0 --no-interaction --prefer-dist
       - name: Exercise native container, diagnostics, and testing integration
         env:
@@ -384,7 +487,7 @@ jobs:
         run: |
           consumer="$(cat "$RUNNER_TEMP/framework-consumer")"
           if [ "$COMPAT_SCRIPT" = laravel.php ]; then
-            DURABLE_WORKFLOW_CONTROL_TOKEN=control-secret \
+            DURABLE_WORKFLOW_CLIENT_TOKEN=client-secret \
               DURABLE_WORKFLOW_WORKER_TOKEN=worker-secret \
               php "tests/compat/${COMPAT_SCRIPT}" "$consumer/vendor/autoload.php"
             php tests/compat/laravel-config-cache.php "$consumer/vendor/autoload.php"
@@ -403,6 +506,41 @@ jobs:
             src/Bridge/FrameworkRuntimeException.php \
             src/Bridge/ServiceConfiguration.php src/Bridge/Event \
             "$bridge_path" "${compatibility_scripts[@]}"
+
+  laravel-transition-compat:
+    name: Laravel ${{ matrix.source }} to service mode
+    needs: qualification-route
+    if: ${{ needs.qualification-route.outputs.route == 'complete' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - source: embedded-v1
+            source_mode: embedded_v1
+            php: '8.2'
+            laravel: '^12.0'
+            workflow: '^1.0'
+          - source: embedded-v2
+            source_mode: embedded_v2
+            php: '8.3'
+            laravel: '^12.0'
+            workflow: '^2.0@RC'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: composer:v2
+          coverage: none
+      - name: Exercise the established Laravel application transition
+        env:
+          LARAVEL_REQUIREMENT: ${{ matrix.laravel }}
+          SDK_PATH: ${{ github.workspace }}
+          SOURCE_MODE: ${{ matrix.source_mode }}
+          WORKFLOW_REQUIREMENT: ${{ matrix.workflow }}
+        run: scripts/ci/laravel-service-transition-smoke.sh
 
   analyse:
     needs: qualification-route
@@ -622,7 +760,7 @@ jobs:
             "route=$ROUTE route_reason=$ROUTE_REASON categories=${CATEGORIES:-none} changed_count=$CHANGED_COUNT path_reason=$PATH_REASON" \
             "before_elapsed_seconds_lower_bound=$before_elapsed_seconds_lower_bound" \
             "after_elapsed_seconds=$after_elapsed_seconds" \
-            "focused_cells=PHP-8.3 complete_cells=PHP-8.1,PHP-8.2,PHP-8.3,PHP-8.4,Laravel-12,Laravel-13,Symfony-6.4,Symfony-7,Symfony-8"
+            "focused_cells=PHP-8.3 complete_cells=PHP-8.1,PHP-8.2,PHP-8.3,PHP-8.4,Laravel-9,Laravel-10,Laravel-11,Laravel-12,Laravel-13,Symfony-6.4,Symfony-7,Symfony-8"
           if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
             {
               echo "### Qualification timing"
@@ -632,6 +770,6 @@ jobs:
               echo "| Representative pre-change candidate (observed lower bound) | >${before_elapsed_seconds_lower_bound} |"
               echo "| This candidate to aggregate decision | ${after_elapsed_seconds} |"
               echo
-              echo "Route: \`${ROUTE}\`; focused PHP/framework cells: PHP 8.3 only; complete landed-SHA cells: 4 PHP + 5 framework."
+              echo "Route: \`${ROUTE}\`; focused PHP/framework cells: PHP 8.3 only; complete landed-SHA cells: 4 PHP + 8 framework."
             } >> "$GITHUB_STEP_SUMMARY"
           fi

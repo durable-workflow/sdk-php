@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import unittest
@@ -138,10 +139,26 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         self,
     ) -> None:
         workflows = {
-            "framework-bridges-published-smoke.yml": "framework-service-mode",
-            "service-mode-published-smoke.yml": "source-free-service-mode",
+            "framework-bridges-published-smoke.yml": (
+                "framework-service-mode",
+                (
+                    "secrets[matrix.endpoint_secret]",
+                    "secrets[matrix.namespace_secret]",
+                    "secrets[matrix.client_token_secret]",
+                    "secrets[matrix.worker_token_secret]",
+                ),
+            ),
+            "service-mode-published-smoke.yml": (
+                "source-free-service-mode",
+                (
+                    "secrets.DURABLE_WORKFLOW_SERVER_URL",
+                    "secrets.DURABLE_WORKFLOW_NAMESPACE",
+                    "secrets.DURABLE_WORKFLOW_CLIENT_TOKEN",
+                    "secrets.DURABLE_WORKFLOW_WORKER_TOKEN",
+                ),
+            ),
         }
-        for workflow, job in workflows.items():
+        for workflow, (job, secret_markers) in workflows.items():
             with self.subTest(workflow=workflow):
                 source = workflow_source(workflow)
                 self.assertIn("  workflow_dispatch:", source)
@@ -149,10 +166,7 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
                 self.assert_main_only(smoke, "github.ref == 'refs/heads/main'")
                 for privileged_marker in (
                     "environment: published-service-smoke",
-                    "secrets.DURABLE_WORKFLOW_SERVER_URL",
-                    "secrets.DURABLE_WORKFLOW_NAMESPACE",
-                    "secrets.DURABLE_WORKFLOW_CLIENT_TOKEN",
-                    "secrets.DURABLE_WORKFLOW_WORKER_TOKEN",
+                    *secret_markers,
                 ):
                     self.assertIn(privileged_marker, smoke)
                     self.assertLess(
@@ -277,24 +291,92 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         self.assertIn("QUALIFIED_SERVER_VERSION: ${{ inputs.server_version }}", runtime)
         self.assertIn("$client->clusterInfo()->version", runtime)
 
+    def test_published_laravel_smoke_qualifies_both_runtime_destinations(self) -> None:
+        journey = json.loads(
+            (REPOSITORY_ROOT / "docs/laravel-adoption-contract.json").read_text()
+        )["representative_journey"]
+        source = workflow_source("framework-bridges-published-smoke.yml")
+        smoke = job_source(source, "framework-service-mode")
+        validate = step_source(smoke, "Validate the exact current Server version")
+        verify = step_source(smoke, "Verify the installed SDK release identity")
+        configure = step_source(
+            smoke, "Configure Laravel through auto-discovery and vendor publish"
+        )
+        fake = step_source(
+            smoke, "Prove the published Laravel fake without a runtime"
+        )
+        runtime = step_source(
+            smoke, "Start the framework worker and complete a workflow"
+        )
+
+        self.assertIn("server_version:", source)
+        self.assertIn("SERVER_VERSION: ${{ inputs.server_version }}", validate)
+        self.assertIn("supported-server-versions", verify)
+        self.assertIn("getenv('SERVER_VERSION')", verify)
+        for destination in ("standalone-server", "managed-cloud"):
+            self.assertIn(
+                "          - framework: laravel\n"
+                f"            runtime: {destination}",
+                smoke,
+            )
+        for secret_name in (
+            "DURABLE_WORKFLOW_STANDALONE_SERVER_URL",
+            "DURABLE_WORKFLOW_STANDALONE_SERVER_NAMESPACE",
+            "DURABLE_WORKFLOW_STANDALONE_SERVER_CLIENT_TOKEN",
+            "DURABLE_WORKFLOW_STANDALONE_SERVER_WORKER_TOKEN",
+            "DURABLE_WORKFLOW_CLOUD_URL",
+            "DURABLE_WORKFLOW_CLOUD_NAMESPACE",
+            "DURABLE_WORKFLOW_CLOUD_CLIENT_TOKEN",
+            "DURABLE_WORKFLOW_CLOUD_WORKER_TOKEN",
+        ):
+            self.assertIn(secret_name, smoke)
+
+        for marker in (
+            "private PublishedGreetingPrefix $prefix",
+            "private LaravelWorkflowClientInterface $workflows",
+            "return $this->workflows->start(",
+            "PublishedGreetingWorkflow::class",
+            "php artisan durable-workflow:worker",
+        ):
+            self.assertIn(marker, configure + runtime)
+        self.assertIn("php artisan durable-workflow:published-fake", fake)
+        self.assertIn("assertWorkflowStarted", configure)
+        self.assertIn("assertResultRequested", configure)
+        self.assertNotIn("secrets.", fake)
+        self.assertLess(smoke.index(fake), smoke.index(runtime))
+        self.assertIn("QUALIFIED_SERVER_VERSION: ${{ inputs.server_version }}", runtime)
+        self.assertIn("clusterInfo()->version", runtime)
+        self.assertIn("php artisan durable-workflow:published-greeting", runtime)
+        self.assertNotIn("continue-on-error", runtime)
+        self.assertIn(f"#[Workflow('{journey['workflow_type']}')]", configure)
+        self.assertIn(f"#[Activity('{journey['activity_type']}')]", configure)
+        self.assertIn(repr(journey["input"][0]), configure)
+        self.assertIn(repr(journey["result"]), configure)
+
     def test_published_smoke_credentials_are_runtime_step_scoped(self) -> None:
         workflows = {
             "framework-bridges-published-smoke.yml": (
                 "framework-service-mode",
                 "Start the framework worker and complete a workflow",
+                (
+                    "secrets[matrix.endpoint_secret]",
+                    "secrets[matrix.namespace_secret]",
+                    "secrets[matrix.client_token_secret]",
+                    "secrets[matrix.worker_token_secret]",
+                ),
             ),
             "service-mode-published-smoke.yml": (
                 "source-free-service-mode",
                 "Complete a class-oriented workflow against the published endpoint",
+                (
+                    "secrets.DURABLE_WORKFLOW_SERVER_URL",
+                    "secrets.DURABLE_WORKFLOW_NAMESPACE",
+                    "secrets.DURABLE_WORKFLOW_CLIENT_TOKEN",
+                    "secrets.DURABLE_WORKFLOW_WORKER_TOKEN",
+                ),
             ),
         }
-        secret_markers = (
-            "secrets.DURABLE_WORKFLOW_SERVER_URL",
-            "secrets.DURABLE_WORKFLOW_NAMESPACE",
-            "secrets.DURABLE_WORKFLOW_CLIENT_TOKEN",
-            "secrets.DURABLE_WORKFLOW_WORKER_TOKEN",
-        )
-        for workflow, (job, runtime_name) in workflows.items():
+        for workflow, (job, runtime_name, secret_markers) in workflows.items():
             with self.subTest(workflow=workflow):
                 smoke = job_source(workflow_source(workflow), job)
                 runtime = step_source(smoke, runtime_name)
@@ -320,8 +402,8 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
             "framework-bridges-published-smoke.yml": (
                 "framework-service-mode",
                 "Start the framework worker and complete a workflow",
-                "DURABLE_WORKFLOW_ENDPOINT",
-                "DURABLE_WORKFLOW_CONTROL_TOKEN",
+                "DURABLE_WORKFLOW_RUNTIME_URL",
+                "DURABLE_WORKFLOW_CLIENT_TOKEN",
             ),
             "service-mode-published-smoke.yml": (
                 "source-free-service-mode",
@@ -334,7 +416,7 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
             job,
             runtime_name,
             endpoint_name,
-            control_token_name,
+            client_token_name,
         ) in workflows.items():
             with self.subTest(workflow=workflow):
                 smoke = job_source(workflow_source(workflow), job)
@@ -344,7 +426,7 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
                     **os.environ,
                     endpoint_name: "https://runtime.example",
                     "DURABLE_WORKFLOW_NAMESPACE": "published-sdk-smoke",
-                    control_token_name: "client-secret-value",
+                    client_token_name: "client-secret-value",
                     "DURABLE_WORKFLOW_WORKER_TOKEN": "worker-secret-value",
                 }
 
@@ -406,6 +488,9 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         framework = step_source(
             framework_job, "Start the framework worker and complete a workflow"
         )
+        laravel_configuration = step_source(
+            framework_job, "Configure Laravel through auto-discovery and vendor publish"
+        )
         symfony_configuration = step_source(
             framework_job, "Configure Symfony Bundle and autowired handlers"
         )
@@ -429,18 +514,28 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         self.assertNotIn("tee worker.php", service)
         self.assertNotIn("tee client.php", service)
         self.assertIn(
-            "$application->make(WorkflowClientInterface::class)", framework
+            "private LaravelWorkflowClientInterface $workflows",
+            laravel_configuration,
+        )
+        self.assertIn("$this->workflows->start(", laravel_configuration)
+        self.assertNotIn("$this->workflows->startWorkflow(", laravel_configuration)
+        self.assertIn(
+            "app(\\App\\Actions\\StartPublishedGreeting::class)",
+            laravel_configuration,
         )
         self.assertIn("php artisan config:cache", framework)
         self.assertIn("-u DURABLE_WORKFLOW_TOKEN", framework)
-        self.assertIn("-u DURABLE_WORKFLOW_CONTROL_TOKEN", framework)
+        self.assertIn("-u DURABLE_WORKFLOW_CLIENT_TOKEN", framework)
         self.assertIn("-u DURABLE_WORKFLOW_WORKER_TOKEN", framework)
         self.assertIn("bootstrap/cache/config.php", framework)
         self.assertIn("$configuration['durable-workflow']['credentials']", framework)
         self.assertIn(
             "$kernel->getContainer()->get(WorkflowClientInterface::class)", framework
         )
-        self.assertIn("env -u DURABLE_WORKFLOW_CONTROL_TOKEN php", framework)
+        self.assertIn("env -u DURABLE_WORKFLOW_CLIENT_TOKEN php", framework)
+        self.assertIn("Registered and polling:", framework)
+        self.assertIn("workflows=[laravel.greeting]", framework)
+        self.assertIn("activities=[laravel.greet]", framework)
         self.assertIn(
             "workerToken: quickstartEnvironment('DURABLE_WORKFLOW_WORKER_TOKEN')",
             quickstart_worker,
@@ -448,7 +543,7 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         self.assertNotIn("DURABLE_WORKFLOW_WORKER_TOKEN", quickstart_client)
         self.assertNotIn("DURABLE_WORKFLOW_CLIENT_TOKEN", quickstart_worker)
         self.assertIn(
-            "control_token: '%env(default::DURABLE_WORKFLOW_CONTROL_TOKEN)%'",
+            "control_token: '%env(default::DURABLE_WORKFLOW_CLIENT_TOKEN)%'",
             symfony_configuration,
         )
         self.assertIn(

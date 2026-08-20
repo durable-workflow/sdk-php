@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import Ajv2020 from 'ajv/dist/2020.js';
 
 const siteDirectory = path.resolve(process.argv[2] ?? 'build/site');
 const projectDirectory = path.resolve(import.meta.dirname, '..');
@@ -10,6 +11,12 @@ const composer = JSON.parse(fs.readFileSync(path.join(projectDirectory, 'compose
 const navigation = JSON.parse(fs.readFileSync(path.join(projectDirectory, 'docs/portal/_data/navigation.json'), 'utf8'));
 const quickstartContract = JSON.parse(fs.readFileSync(path.join(projectDirectory, 'docs/quickstart-contract.json'), 'utf8'));
 const quickstartSchema = JSON.parse(fs.readFileSync(path.join(projectDirectory, 'docs/quickstart-contract.schema.v2.json'), 'utf8'));
+const laravelAdoptionContract = JSON.parse(
+  fs.readFileSync(path.join(projectDirectory, 'docs/laravel-adoption-contract.json'), 'utf8'),
+);
+const laravelAdoptionSchema = JSON.parse(
+  fs.readFileSync(path.join(projectDirectory, 'docs/laravel-adoption-contract.schema.json'), 'utf8'),
+);
 const release = composer.extra['durable-workflow'];
 const sdkVersion = release['product-train'];
 const composerCommand = `composer require ${quickstartContract.package.name}:${quickstartContract.package.onboarding_requirement}`;
@@ -123,8 +130,35 @@ const quickstart = fs.readFileSync(path.join(siteDirectory, 'getting-started/fir
 const deployment = fs.readFileSync(path.join(siteDirectory, 'operate/deployment/index.html'), 'utf8');
 const deployedQuickstartContract = JSON.parse(fs.readFileSync(path.join(siteDirectory, 'quickstart-contract.json'), 'utf8'));
 const deployedQuickstartSchema = JSON.parse(fs.readFileSync(path.join(siteDirectory, 'quickstart-contract.schema.v2.json'), 'utf8'));
+const deployedLaravelAdoptionContract = JSON.parse(
+  fs.readFileSync(path.join(siteDirectory, 'laravel-adoption-contract.json'), 'utf8'),
+);
+const deployedLaravelAdoptionSchema = JSON.parse(
+  fs.readFileSync(path.join(siteDirectory, 'laravel-adoption-contract.schema.json'), 'utf8'),
+);
 assert.deepEqual(deployedQuickstartContract, quickstartContract, 'Deployed quickstart contract must match its release-owned source.');
 assert.deepEqual(deployedQuickstartSchema, quickstartSchema, 'Deployed quickstart schema must match its release-owned source.');
+assert.deepEqual(
+  deployedLaravelAdoptionContract,
+  laravelAdoptionContract,
+  'Deployed Laravel adoption contract must match its package-owned source.',
+);
+assert.deepEqual(
+  deployedLaravelAdoptionSchema,
+  laravelAdoptionSchema,
+  'Deployed Laravel adoption schema must match its package-owned source.',
+);
+const adoptionValidator = new Ajv2020({allErrors: true});
+const validateLaravelAdoption = adoptionValidator.compile(laravelAdoptionSchema);
+assert(
+  validateLaravelAdoption(laravelAdoptionContract),
+  adoptionValidator.errorsText(validateLaravelAdoption.errors),
+);
+assert.equal(
+  laravelAdoptionContract.framework.constraint,
+  release.frameworks.laravel,
+  'Laravel adoption and Composer framework compatibility must stay aligned.',
+);
 assert(home.includes(`PHP SDK ${sdkSeries} prerelease`), 'Home release badge must identify the SDK prerelease channel.');
 assert.equal(quickstartContract.schema_version, 2, 'Quickstart contract must use consumer-resolvable schema version 2.');
 assert.equal(quickstartContract.$schema, quickstartSchema.$id, 'Quickstart contract must identify its deployed schema.');

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -17,6 +18,7 @@ CLASSIFIER = ROOT / "scripts/ci/classify-ci-qualification.py"
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 API_REFERENCE_WORKFLOW = ROOT / ".github/workflows/docs.yml"
 EXTERNAL_LINK_WORKFLOW = ROOT / ".github/workflows/external-link-diagnostics.yml"
+LARAVEL_ADOPTION_CONTRACT = ROOT / "docs/laravel-adoption-contract.json"
 
 SPEC = importlib.util.spec_from_file_location("ci_qualification", CLASSIFIER)
 if SPEC is None or SPEC.loader is None:
@@ -209,6 +211,7 @@ class WorkflowQualificationContractTest(unittest.TestCase):
             "regression-corpus",
             "test",
             "framework-compat",
+            "laravel-transition-compat",
             "analyse",
             "docs",
             "package-smoke",
@@ -221,6 +224,38 @@ class WorkflowQualificationContractTest(unittest.TestCase):
                     "needs.qualification-route.outputs.route == 'complete'",
                     job,
                 )
+
+    def test_laravel_jobs_match_the_published_adoption_matrix(self) -> None:
+        contract = json.loads(LARAVEL_ADOPTION_CONTRACT.read_text())
+        framework_job = workflow_job_source(self.source, "framework-compat")
+        qualified = contract["framework"]["qualification_matrix"]
+
+        self.assertEqual(len(qualified), framework_job.count("framework: Laravel"))
+        for cell in qualified:
+            package, constraint = cell["package"].split(":", 1)
+            block = (
+                "          - framework: Laravel\n"
+                f"            version: '{cell['laravel']}'\n"
+                f"            php: '{cell['php']}'\n"
+                f"            package: '{package}:{constraint}'\n"
+                f"            bootstrap: {cell['bootstrap']}\n"
+                "            script: laravel.php"
+            )
+            with self.subTest(cell=cell):
+                self.assertIn(block, framework_job)
+
+    def test_established_laravel_transitions_are_executable(self) -> None:
+        transition_job = workflow_job_source(self.source, "laravel-transition-compat")
+        self.assertIn("source_mode: embedded_v1", transition_job)
+        self.assertIn("workflow: '^1.0'", transition_job)
+        self.assertIn("source_mode: embedded_v2", transition_job)
+        self.assertIn("workflow: '^2.0@RC'", transition_job)
+        self.assertEqual(
+            1,
+            transition_job.count(
+                "- name: Exercise the established Laravel application transition"
+            ),
+        )
 
     def test_focused_gate_covers_structure_security_and_relevant_changes(self) -> None:
         focused = workflow_job_source(self.source, "focused-candidate")

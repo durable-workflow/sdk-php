@@ -237,7 +237,10 @@ final class FrameworkBridgeTest extends TestCase
             ['DurableWorkflow\\Bridge\\Laravel\\DurableWorkflowServiceProvider'],
             $manifest['extra']['laravel']['providers'],
         );
-        self::assertSame('^12.0|^13.0', $manifest['extra']['durable-workflow']['frameworks']['laravel']);
+        self::assertSame(
+            '^9.0|^10.0|^11.0|^12.0|^13.0',
+            $manifest['extra']['durable-workflow']['frameworks']['laravel'],
+        );
         self::assertSame('^6.4|^7.0|^8.0', $manifest['extra']['durable-workflow']['frameworks']['symfony']);
         self::assertArrayHasKey('symfony/console', $manifest['suggest']);
         self::assertArrayNotHasKey('laravel/framework', $manifest['require']);
@@ -266,11 +269,16 @@ final class FrameworkBridgeTest extends TestCase
 
         foreach ([
             'DURABLE_WORKFLOW_TOKEN',
+            'DURABLE_WORKFLOW_CLIENT_TOKEN',
             'DURABLE_WORKFLOW_CONTROL_TOKEN',
             'DURABLE_WORKFLOW_WORKER_TOKEN',
         ] as $environmentVariable) {
             self::assertStringNotContainsString("env('{$environmentVariable}'", $configuration);
         }
+        self::assertStringContainsString("env('DURABLE_WORKFLOW_RUNTIME_URL'", $configuration);
+        self::assertStringContainsString("env('DURABLE_WORKFLOW_NAMESPACE'", $configuration);
+        self::assertStringContainsString("env('DURABLE_WORKFLOW_TASK_QUEUE'", $configuration);
+        self::assertStringNotContainsString('DURABLE_WORKFLOW_ENDPOINT', $configuration);
         self::assertStringNotContainsString("'credentials' =>", $configuration);
     }
 }

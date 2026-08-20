@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 return [
     // Server origin or complete Cloud runtime base URI. Do not append /api.
-    'endpoint' => env('DURABLE_WORKFLOW_ENDPOINT', 'http://localhost:8080'),
+    'runtime_url' => env('DURABLE_WORKFLOW_RUNTIME_URL', 'http://localhost:8080'),
     'namespace' => env('DURABLE_WORKFLOW_NAMESPACE', 'default'),
     'task_queue' => env('DURABLE_WORKFLOW_TASK_QUEUE', 'php-workers'),
 
