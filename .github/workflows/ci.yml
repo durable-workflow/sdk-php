@@ -481,6 +481,18 @@ jobs:
               --no-interaction --prefer-dist --with-all-dependencies
           fi
           composer require --dev phpstan/phpstan:^2.0 --no-interaction --prefer-dist
+      - name: Install SDK into a fresh Laravel application for cached role isolation
+        if: matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4'
+        run: |
+          application="$RUNNER_TEMP/laravel-fresh-config-cache"
+          composer create-project laravel/laravel:^13.0 "$application" \
+            --no-interaction --prefer-dist --no-progress
+          composer --working-dir="$application" config repositories.sdk path "$GITHUB_WORKSPACE"
+          composer --working-dir="$application" require durable-workflow/sdk:@dev \
+            --no-interaction --prefer-dist --no-progress
+      - name: Exercise fresh Laravel cached role isolation
+        if: matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4'
+        run: php tests/compat/laravel-fresh-config-cache.php "$RUNNER_TEMP/laravel-fresh-config-cache"
       - name: Exercise native container, diagnostics, and testing integration
         env:
           COMPAT_SCRIPT: ${{ matrix.script }}
@@ -495,6 +507,7 @@ jobs:
             compatibility_scripts=(
               "tests/compat/${COMPAT_SCRIPT}"
               tests/compat/laravel-config-cache.php
+              tests/compat/laravel-fresh-config-cache.php
             )
           else
             php "tests/compat/${COMPAT_SCRIPT}" "$consumer/vendor/autoload.php"

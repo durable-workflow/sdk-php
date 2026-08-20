@@ -45,7 +45,7 @@ project follows [Semantic Versioning](https://semver.org/).
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK source to `2.0.0-rc.34`. Package metadata declares Server
+- Advanced the PHP SDK source to `2.0.0-rc.35`. Package metadata declares Server
   `2.0.0-rc.33` as the verified compatibility baseline; other Server
   prereleases require separate conformance evidence. Avro is the sole public
   Durable Workflow 2.0 payload codec, and non-Avro configuration fails before
@@ -67,6 +67,9 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Laravel role clients now read scoped credentials from the operating-system
+  process environment after configuration caching, avoiding stale framework
+  environment repositories while preserving worker/client isolation.
 - SDK installation now accepts Guzzle 8 as well as Guzzle 7, preserving clean
   installation in Laravel 13 applications while existing Guzzle 7 locks remain
   valid.

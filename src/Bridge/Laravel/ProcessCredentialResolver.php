@@ -7,7 +7,6 @@ namespace DurableWorkflow\Bridge\Laravel;
 use DurableWorkflow\Bridge\ServiceConfiguration;
 use DurableWorkflow\Client;
 use DurableWorkflow\Transport\Transport;
-use Illuminate\Support\Env;
 use InvalidArgumentException;
 
 /** Resolves role credentials only when a Laravel client is constructed. */
@@ -79,12 +78,9 @@ final class ProcessCredentialResolver
 
     private static function credential(string $name): ?string
     {
-        $value = Env::get($name);
-        if ($value === null || $value === '') {
+        $value = getenv($name);
+        if ($value === false || $value === '') {
             return null;
-        }
-        if (!is_string($value)) {
-            throw new InvalidArgumentException("Durable Workflow process credential {$name} must be a string.");
         }
 
         return $value;

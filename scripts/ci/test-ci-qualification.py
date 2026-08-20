@@ -244,6 +244,30 @@ class WorkflowQualificationContractTest(unittest.TestCase):
             with self.subTest(cell=cell):
                 self.assertIn(block, framework_job)
 
+    def test_fresh_laravel_cached_role_regression_is_executable(self) -> None:
+        framework_job = workflow_job_source(self.source, "framework-compat")
+        install = workflow_step_script(
+            framework_job,
+            "Install SDK into a fresh Laravel application for cached role isolation",
+        )
+        exercise = workflow_step_script(
+            framework_job,
+            "Exercise fresh Laravel cached role isolation",
+        )
+
+        self.assertIn("composer create-project laravel/laravel:^13.0", install)
+        self.assertIn(
+            'composer --working-dir="$application" require durable-workflow/sdk:@dev',
+            install,
+        )
+        self.assertIn("tests/compat/laravel-fresh-config-cache.php", exercise)
+        self.assertLess(
+            framework_job.index(
+                "- name: Install SDK into a fresh Laravel application for cached role isolation"
+            ),
+            framework_job.index("- name: Exercise fresh Laravel cached role isolation"),
+        )
+
     def test_established_laravel_transitions_are_executable(self) -> None:
         transition_job = workflow_job_source(self.source, "laravel-transition-compat")
         self.assertIn("source_mode: embedded_v1", transition_job)
