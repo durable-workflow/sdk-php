@@ -306,6 +306,7 @@ final class ReplayRegressionConsumer
                 'workflow_id' => $taskIdentity['workflow_id'],
                 'run_id' => $taskIdentity['run_id'],
                 'workflow_type' => $workflowType,
+                'payload_codec' => 'avro',
                 'arguments' => $codec->envelope($input),
                 'history_events' => $layout === 'inline' ? $history : [],
                 'next_history_page_token' => $layout === 'paginated' ? 'regression-page-1' : '',

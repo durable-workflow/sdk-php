@@ -222,6 +222,7 @@ final class WorkerPollTest extends TestCase
                         'workflow_id' => 'counter-1',
                         'run_id' => 'run-1',
                         'workflow_type' => 'counter',
+                        'payload_codec' => 'avro',
                         'workflow_update_id' => 'update-1',
                         'history_events' => [[
                             'event_type' => 'UpdateAccepted',
@@ -439,6 +440,7 @@ final class WorkerPollTest extends TestCase
                             'activity_attempt_id' => 'attempt-1',
                             'lease_owner' => 'worker-1',
                             'activity_type' => 'after-idle',
+                            'payload_codec' => 'avro',
                         ],
                     ];
                 }

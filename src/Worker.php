@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow;
 
 use DurableWorkflow\Exception\ActivityCancelled;
+use DurableWorkflow\Exception\CodecException;
 use DurableWorkflow\Exception\InvalidWorkerDefinition;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\ServerException;
@@ -473,7 +474,7 @@ final class Worker
         $this->heartbeatIfDue();
         $workflowTask = $this->taskFromPoll($workflowPoll);
         if ($workflowTask !== null) {
-            $this->executeWorkflowTask($workflowTask);
+            $this->executePolledTask('workflow', $workflowTask);
             $handled = true;
         }
         if ($this->shutdownRequested) {
@@ -497,7 +498,7 @@ final class Worker
         $this->heartbeatIfDue();
         $activityTask = $this->taskFromPoll($activityPoll);
         if ($activityTask !== null) {
-            $this->executeActivityTask($activityTask);
+            $this->executePolledTask('activity', $activityTask);
             $handled = true;
         }
         if ($this->shutdownRequested) {
@@ -521,7 +522,7 @@ final class Worker
         $this->heartbeatIfDue();
         $queryTask = $this->taskFromPoll($queryPoll);
         if ($queryTask !== null) {
-            $this->executeQueryTask($queryTask);
+            $this->executePolledTask('query', $queryTask);
             $handled = true;
         }
 
@@ -629,6 +630,67 @@ final class Worker
 
         /** @var array<string, mixed> $task */
         return $task;
+    }
+
+    /** @param array<string, mixed> $task */
+    private function executePolledTask(string $taskKind, array $task): void
+    {
+        try {
+            $this->assertSupportedTaskPayloadCodec($task);
+        } catch (CodecException $exception) {
+            $this->rejectPolledTask($taskKind, $task, $exception);
+
+            return;
+        }
+
+        match ($taskKind) {
+            'workflow' => $this->executeWorkflowTask($task),
+            'activity' => $this->executeActivityTask($task),
+            'query' => $this->executeQueryTask($task),
+            default => throw new \LogicException("Unsupported polled task kind {$taskKind}."),
+        };
+    }
+
+    /** @param array<string, mixed> $task */
+    private function rejectPolledTask(string $taskKind, array $task, CodecException $exception): void
+    {
+        $taskId = (string) ($task[$taskKind === 'query' ? 'query_task_id' : 'task_id'] ?? '');
+        $leaseOwner = (string) ($task['lease_owner'] ?? $this->workerId);
+        $this->acknowledgeTaskFailure(
+            $taskKind,
+            $taskId,
+            $exception,
+            match ($taskKind) {
+                'workflow' => function (Throwable $failure) use ($taskId, $leaseOwner, $task): void {
+                    $this->client->failWorkflowTask(
+                        $taskId,
+                        $leaseOwner,
+                        (int) ($task['workflow_task_attempt'] ?? 1),
+                        'PHP workflow task execution failed: '.$failure->getMessage(),
+                        $failure::class,
+                    );
+                },
+                'activity' => function (Throwable $failure) use ($taskId, $leaseOwner, $task): void {
+                    $this->client->failActivityTask(
+                        $taskId,
+                        (string) ($task['activity_attempt_id'] ?? $task['attempt_id'] ?? ''),
+                        $leaseOwner,
+                        $failure->getMessage(),
+                        $failure::class,
+                        false,
+                    );
+                },
+                'query' => function (Throwable $failure) use ($taskId, $leaseOwner, $task): void {
+                    $this->client->failQueryTask(
+                        $taskId,
+                        $leaseOwner,
+                        (int) ($task['query_task_attempt'] ?? 1),
+                        $failure->getMessage(),
+                    );
+                },
+                default => throw new \LogicException("Unsupported polled task kind {$taskKind}."),
+            },
+        );
     }
 
     /** @param array<string, mixed> $task */
@@ -1008,6 +1070,24 @@ final class Worker
             : $raw;
 
         return is_array($decoded) && array_is_list($decoded) ? $decoded : [$decoded];
+    }
+
+    /** @param array<string, mixed> $task */
+    private function assertSupportedTaskPayloadCodec(array $task): void
+    {
+        $codec = $task['payload_codec'] ?? null;
+        if ($codec === 'avro') {
+            return;
+        }
+
+        $rendered = !array_key_exists('payload_codec', $task)
+            ? 'missing'
+            : (is_string($codec) ? sprintf('"%s"', $codec) : get_debug_type($codec));
+
+        throw new CodecException(sprintf(
+            'unsupported_payload_codec: worker task payload_codec %s is not supported by Durable Workflow 2.0; use payload_codec="avro" with the fixed Avro Value schema and single-object framing. JSON remains the HTTP document transport, not a workflow payload codec.',
+            $rendered,
+        ));
     }
 
     private function preparePoll(int $requestedTimeoutSeconds): int

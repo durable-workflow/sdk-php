@@ -419,6 +419,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
                 'workflow_id' => $taskId.'-workflow',
                 'run_id' => $taskId.'-run',
                 'workflow_type' => 'race.workflow',
+                'payload_codec' => 'avro',
                 'history_events' => [],
             ],
         ];
@@ -446,6 +447,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
                 'activity_attempt_id' => $taskId.'-attempt',
                 'lease_owner' => 'worker-1',
                 'activity_type' => 'race.activity',
+                'payload_codec' => 'avro',
             ],
         ];
     }
@@ -463,6 +465,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
                 'run_id' => $taskId.'-run',
                 'workflow_type' => 'race.workflow',
                 'query_name' => 'status',
+                'payload_codec' => 'avro',
                 'history_events' => [],
             ],
         ];

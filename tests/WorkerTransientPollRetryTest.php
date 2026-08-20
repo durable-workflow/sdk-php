@@ -291,6 +291,7 @@ final class WorkerTransientPollRetryTest extends TestCase
                             'activity_attempt_id' => 'attempt-1',
                             'lease_owner' => 'worker-1',
                             'activity_type' => 'orders.charge',
+                            'payload_codec' => 'avro',
                         ],
                     ];
                 }

@@ -40,7 +40,20 @@ PHP_FIXTURE_FORMATS = {
     "replay": {"replay-regression-v1"},
 }
 CODEC_DEPENDENCY_DEFINITIONS = {"composer.json", "composer.lock"}
-CODEC_DEPENDENCY_SOURCE = Path("apache/avro/lang/php/lib")
+CODEC_DEPENDENCY_SOURCES = {
+    Path("apache/avro/lang/php/lib"),
+    Path("psr/container/src"),
+    Path("psr/log/src"),
+}
+REQUIRED_CODEC_DEPENDENCY_SOURCE = Path("apache/avro/lang/php/lib")
+CODEC_CONSUMER_CONTRACT_PATHS = {
+    "scripts/ci/run-codec-regression-fixture.php",
+    "tests/Support/CodecRegressionFixture.php",
+}
+CODEC_TASK_TRANSPORT_WITNESS_RUNNER = "scripts/ci/run-replay-regression-fixture.php"
+CODEC_TASK_TRANSPORT_WITNESS_FIXTURE = (
+    "tests/fixtures/replay-regressions/fiber-straight-line-transition.json"
+)
 CODEC_OUTCOME_CODES = {
     "pass": 0,
     "assertion-failure": 1,
@@ -1015,6 +1028,65 @@ def _codec_semantic(
     return semantic
 
 
+def _task_transport_semantic(value: Any, path: str) -> Mapping[str, Any]:
+    transport = _object(value, f"{path}.task_transport")
+    worker_paths = _unique_strings(
+        transport.get("worker_paths"),
+        f"{path}.task_transport.worker_paths",
+        allowed={"workflow", "update", "activity", "query"},
+    )
+    cases = _list(
+        transport.get("payload_codec_cases"),
+        f"{path}.task_transport.payload_codec_cases",
+        nonempty=True,
+    )
+    canonical_cases = []
+    case_names = set()
+    for index, raw_case in enumerate(cases):
+        case_path = f"{path}.task_transport.payload_codec_cases[{index}]"
+        case = _object(raw_case, case_path)
+        name = _string(case.get("name"), f"{case_path}.name")
+        if name in case_names:
+            raise CorpusError(f"{path}.task_transport.payload_codec_cases contains duplicate names")
+        case_names.add(name)
+        present = case.get("present")
+        if not isinstance(present, bool):
+            raise CorpusError(f"{case_path}.present must be a boolean")
+        if present != ("value" in case):
+            raise CorpusError(
+                f"{case_path}.value must be present exactly when the root codec is present"
+            )
+        if set(case) - {"name", "present", "value"}:
+            raise CorpusError(f"{case_path} contains unsupported fields")
+        canonical_case = {"name": name, "present": present}
+        if present:
+            canonical_case["value"] = case["value"]
+        canonical_cases.append(canonical_case)
+    expected_error = _string(
+        transport.get("expected_error"),
+        f"{path}.task_transport.expected_error",
+    )
+    forbidden_error = _string(
+        transport.get("forbidden_error"),
+        f"{path}.task_transport.forbidden_error",
+    )
+    if expected_error == forbidden_error:
+        raise CorpusError(f"{path}.task_transport error policies must be distinct")
+    if set(transport) != {
+        "worker_paths",
+        "payload_codec_cases",
+        "expected_error",
+        "forbidden_error",
+    }:
+        raise CorpusError(f"{path}.task_transport contains unsupported fields")
+    return {
+        "worker_paths": worker_paths,
+        "payload_codec_cases": canonical_cases,
+        "expected_error": expected_error,
+        "forbidden_error": forbidden_error,
+    }
+
+
 def _codec_fixture(
     document: Mapping[str, Any],
     path: str,
@@ -1086,6 +1158,12 @@ def _codec_fixture(
         error=error,
         rejected_value=rejected_value,
     )
+    if "task_transport" in document:
+        task_transport = _task_transport_semantic(document["task_transport"], path)
+        semantic = {
+            "payload": semantic,
+            "task_transport": task_transport,
+        }
     return [
         _fixture_evidence(
             category="codec",
@@ -1475,13 +1553,16 @@ def _materialize_files(root: Path, files: Mapping[str, bytes]) -> None:
 
 
 def _materialize_codec_dependencies(vendor_root: Path, destination: Path) -> None:
-    source = vendor_root / CODEC_DEPENDENCY_SOURCE
-    if not source.is_dir():
-        raise CorpusError(
-            f"PHP codec dependency source is missing: {source}; "
-            "install dependencies before validation"
-        )
-    shutil.copytree(source, destination / CODEC_DEPENDENCY_SOURCE)
+    for relative_source in CODEC_DEPENDENCY_SOURCES:
+        source = vendor_root / relative_source
+        if not source.is_dir():
+            if relative_source != REQUIRED_CODEC_DEPENDENCY_SOURCE:
+                continue
+            raise CorpusError(
+                f"PHP codec dependency source is missing: {source}; "
+                "install dependencies before validation"
+            )
+        shutil.copytree(source, destination / relative_source)
 
 
 def _require_codec_dependencies_unchanged(
@@ -1584,7 +1665,20 @@ def _verify_new_codec_evidence(
         _materialize_files(base_root, base_files)
         if not (base_root / "src").is_dir():
             raise CorpusError("the base revision has no SDK source tree for codec validation")
-        codec_runner = base_root / codec_runner_relative
+        trusted_codec_runner = base_root / codec_runner_relative
+        consumer_contract_paths = CODEC_CONSUMER_CONTRACT_PATHS | {
+            codec_runner_relative,
+        }
+        consumer_contract_changed = any(
+            (
+                (root / contract_path).read_bytes()
+                if (root / contract_path).is_file()
+                else None
+            )
+            != base_files.get(contract_path)
+            for contract_path in consumer_contract_paths
+        )
+        used_candidate_consumer = False
 
         for index, path in enumerate(paths):
             fixture_format = current_formats.get(path)
@@ -1596,6 +1690,17 @@ def _verify_new_codec_evidence(
             _materialize_codec_dependencies(vendor_root, target_vendor)
             _materialize_codec_dependencies(vendor_root, candidate_vendor)
             fixture_contents = (root / path).read_bytes()
+            fixture_document = _json(fixture_contents, path)
+            use_candidate_consumer = (
+                consumer_contract_changed and "task_transport" in fixture_document
+            )
+            used_candidate_consumer = used_candidate_consumer or use_candidate_consumer
+            codec_runner = (
+                root / codec_runner_relative
+                if use_candidate_consumer
+                else trusted_codec_runner
+            )
+            consumer_root = root if use_candidate_consumer else base_root
             target_fixture = execution_root / "target-fixture.json"
             candidate_fixture = execution_root / "candidate-fixture.json"
             target_fixture.parent.mkdir(parents=True, exist_ok=True)
@@ -1607,7 +1712,7 @@ def _verify_new_codec_evidence(
                 php_executable=php_executable,
                 codec_runner=codec_runner,
                 vendor_root=target_vendor,
-                consumer_root=base_root,
+                consumer_root=consumer_root,
                 source_root=base_root,
                 fixture=target_fixture,
                 fixture_format=fixture_format,
@@ -1634,7 +1739,7 @@ def _verify_new_codec_evidence(
                 php_executable=php_executable,
                 codec_runner=codec_runner,
                 vendor_root=candidate_vendor,
-                consumer_root=base_root,
+                consumer_root=consumer_root,
                 source_root=root,
                 fixture=candidate_fixture,
                 fixture_format=fixture_format,
@@ -1650,10 +1755,74 @@ def _verify_new_codec_evidence(
                     f"through the official PHP binding: {_process_detail(candidate)}"
                 )
 
+            if use_candidate_consumer:
+                legacy_target = _run_codec_fixture(
+                    root=root,
+                    php_executable=php_executable,
+                    codec_runner=trusted_codec_runner,
+                    vendor_root=target_vendor,
+                    consumer_root=base_root,
+                    source_root=base_root,
+                    fixture=target_fixture,
+                    fixture_format=fixture_format,
+                )
+                legacy_candidate = _run_codec_fixture(
+                    root=root,
+                    php_executable=php_executable,
+                    codec_runner=trusted_codec_runner,
+                    vendor_root=candidate_vendor,
+                    consumer_root=base_root,
+                    source_root=root,
+                    fixture=candidate_fixture,
+                    fixture_format=fixture_format,
+                )
+                legacy_target_outcome = _codec_outcome(
+                    legacy_target,
+                    path=path,
+                    revision="legacy target",
+                )
+                legacy_candidate_outcome = _codec_outcome(
+                    legacy_candidate,
+                    path=path,
+                    revision="legacy candidate",
+                )
+                if legacy_target_outcome != "pass" or legacy_candidate_outcome != "pass":
+                    raise CorpusError(
+                        "a task-transport codec consumer extension must preserve the "
+                        f"legacy payload fixture verdict at both source revisions: {path}"
+                    )
+                witness_runner = base_root / CODEC_TASK_TRANSPORT_WITNESS_RUNNER
+                witness_fixture = base_root / CODEC_TASK_TRANSPORT_WITNESS_FIXTURE
+                if not witness_runner.is_file() or not witness_fixture.is_file():
+                    raise CorpusError(
+                        "the base revision has no trusted worker transport witness"
+                    )
+                witness_target = _run_replay_fixture(
+                    root=root,
+                    php_executable=php_executable,
+                    replay_runner=witness_runner,
+                    vendor_root=vendor_root,
+                    source_root=base_root,
+                    fixture=witness_fixture,
+                )
+                witness_candidate = _run_replay_fixture(
+                    root=root,
+                    php_executable=php_executable,
+                    replay_runner=witness_runner,
+                    vendor_root=vendor_root,
+                    source_root=root,
+                    fixture=witness_fixture,
+                )
+                if witness_target.returncode != 0 or witness_candidate.returncode == 0:
+                    raise CorpusError(
+                        "task-transport codec evidence must make the trusted base worker "
+                        f"consumer cross the rejection boundary: {path}"
+                    )
+
     return len(new_evidence), {
         "target": "assertion-failure",
         "candidate": "pass",
-        "consumer": "codec",
+        "consumer": "codec-worker" if used_candidate_consumer else "codec",
     }
 
 

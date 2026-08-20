@@ -38,7 +38,15 @@ try {
     $consumerTests = realpath($consumerRoot.'/tests');
     $source = realpath($sourceRoot.'/src');
     $avroSource = realpath($vendorRoot.'/apache/avro/lang/php/lib');
-    if ($consumerTests === false || $source === false || $avroSource === false) {
+    $psrContainerSource = realpath($vendorRoot.'/psr/container/src');
+    $psrLogSource = realpath($vendorRoot.'/psr/log/src');
+    if (
+        $consumerTests === false
+        || $source === false
+        || $avroSource === false
+        || $psrContainerSource === false
+        || $psrLogSource === false
+    ) {
         throw new RuntimeException('Codec runner source dependencies are missing.');
     }
 
@@ -46,6 +54,8 @@ try {
         'DurableWorkflow\\Tests\\' => $consumerTests,
         'DurableWorkflow\\' => $source,
         'Apache\\Avro\\' => $avroSource,
+        'Psr\\Container\\' => $psrContainerSource,
+        'Psr\\Log\\' => $psrLogSource,
     ];
     spl_autoload_register(
         static function (string $class) use ($prefixes): void {

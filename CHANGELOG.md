@@ -45,7 +45,7 @@ project follows [Semantic Versioning](https://semver.org/).
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK source to `2.0.0-rc.36`. Package metadata declares Server
+- Advanced the PHP SDK source to `2.0.0-rc.37`. Package metadata declares Server
   `2.0.0-rc.33` as the verified compatibility baseline; other Server
   prereleases require separate conformance evidence. Avro is the sole public
   Durable Workflow 2.0 payload codec, and non-Avro configuration fails before

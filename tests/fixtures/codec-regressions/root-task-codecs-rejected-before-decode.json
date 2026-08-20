@@ -1,0 +1,68 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "root-task-codecs-rejected-before-decode",
+  "protocol": {
+    "codec": "avro",
+    "schema": "durable_workflow.protocol.Value",
+    "version": "1",
+    "fingerprint": "e2a33dff55802237"
+  },
+  "bindings": [
+    "php"
+  ],
+  "value": {
+    "type": "null"
+  },
+  "framing": {
+    "encoding": "avro-single-object",
+    "wire_base64": "ZGVjb2RlLW11c3Qtbm90LXJ1bg=="
+  },
+  "failure_policy": {
+    "operation": "decode_reject",
+    "error": "invalid_payload_framing"
+  },
+  "task_transport": {
+    "worker_paths": [
+      "workflow",
+      "update",
+      "activity",
+      "query"
+    ],
+    "payload_codec_cases": [
+      {
+        "name": "missing",
+        "present": false
+      },
+      {
+        "name": "empty",
+        "present": true,
+        "value": ""
+      },
+      {
+        "name": "json",
+        "present": true,
+        "value": "json"
+      },
+      {
+        "name": "unknown",
+        "present": true,
+        "value": "custom"
+      },
+      {
+        "name": "wrong-case",
+        "present": true,
+        "value": "Avro"
+      },
+      {
+        "name": "non-string",
+        "present": true,
+        "value": [
+          "avro"
+        ]
+      }
+    ],
+    "expected_error": "unsupported_payload_codec",
+    "forbidden_error": "invalid_payload_framing"
+  }
+}

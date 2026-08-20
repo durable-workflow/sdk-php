@@ -18,6 +18,12 @@
       "guards": [
         {
           "glob": "src/Codec/*.php"
+        },
+        {
+          "glob": "src/Worker.php",
+          "content_patterns": [
+            "function\\s+assertSupportedTaskPayloadCodec\\s*\\("
+          ]
         }
       ]
     },

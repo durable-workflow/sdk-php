@@ -311,6 +311,7 @@ final class WorkerWorkflowTaskLeaseRetryTest extends TestCase
                 'workflow_id' => 'workflow-1',
                 'run_id' => 'run-1',
                 'workflow_type' => 'orders.workflow',
+                'payload_codec' => 'avro',
                 'history_events' => [],
             ],
         ];
