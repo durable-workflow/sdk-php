@@ -261,6 +261,11 @@ Release metadata and the machine-readable
 package and Server compatibility line, runtime URL forms, role-specific
 environment variables, package-resolvable executable sources, expected result,
 and public published-artifact qualification identity that keep this path in sync.
+During the active 2.0 prerelease train, `product-train` names the exact SDK
+artifact being qualified and `supported-server-versions` names the exact
+standalone Server artifact qualified with it. The latter is not a version range
+or a promise of compatibility with other prereleases; earlier prereleases remain
+historical and do not activate compatibility shims.
 
 ## Workflow handles and control-plane APIs
 

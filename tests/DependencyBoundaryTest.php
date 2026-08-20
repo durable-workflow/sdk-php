@@ -14,6 +14,12 @@ final class DependencyBoundaryTest extends TestCase
         return json_decode((string) file_get_contents(dirname(__DIR__).'/composer.json'), true, 512, JSON_THROW_ON_ERROR);
     }
 
+    /** @return array<string, mixed> */
+    private function quickstartContract(): array
+    {
+        return json_decode((string) file_get_contents(dirname(__DIR__).'/docs/quickstart-contract.json'), true, 512, JSON_THROW_ON_ERROR);
+    }
+
     public function testProductionManifestHasNoEmbeddedFrameworkDependencies(): void
     {
         $manifest = $this->manifest();
@@ -33,11 +39,18 @@ final class DependencyBoundaryTest extends TestCase
         }
     }
 
-    public function testPrereleaseMetadataDeclaresVerifiedServerCompatibilityBaseline(): void
+    public function testPrereleaseMetadataDeclaresExactQualifiedArtifacts(): void
     {
         $metadata = $this->manifest()['extra']['durable-workflow'];
+        $quickstart = $this->quickstartContract();
 
-        self::assertSame('2.0.0-rc.37', $metadata['product-train']);
-        self::assertSame('2.0.0-rc.33', $metadata['supported-server-versions']);
+        self::assertMatchesRegularExpression('/^2\.0\.0-rc\.(?:0|[1-9][0-9]*)$/D', $metadata['product-train']);
+        self::assertMatchesRegularExpression('/^2\.0\.0-rc\.(?:0|[1-9][0-9]*)$/D', $metadata['supported-server-versions']);
+        self::assertSame($metadata['product-train'], $quickstart['package']['published_version']);
+        self::assertSame($metadata['product-train'].'@RC', $quickstart['package']['composer_requirement']);
+        self::assertSame(
+            'durableworkflow/server:'.$metadata['supported-server-versions'],
+            $quickstart['runtime_targets']['server']['image'],
+        );
     }
 }
