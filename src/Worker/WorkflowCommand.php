@@ -21,6 +21,7 @@ final class WorkflowCommand
         public readonly array $attributes = [],
         public readonly mixed $localResult = null,
         private readonly ?Closure $sideEffect = null,
+        private readonly ?Closure $conditionPredicate = null,
     ) {
     }
 
@@ -39,6 +40,30 @@ final class WorkflowCommand
     public static function timer(int $seconds): self
     {
         return new self('start_timer', 'timer', ['delay_seconds' => max(0, $seconds)]);
+    }
+
+    /** @param Closure(): bool $predicate */
+    public static function conditionWait(
+        Closure $predicate,
+        ?string $key,
+        ?string $definitionFingerprint,
+        ?int $timeoutSeconds,
+    ): self {
+        return new self('open_condition_wait', 'condition_wait', array_filter([
+            'condition_key' => $key,
+            'condition_definition_fingerprint' => $definitionFingerprint,
+            'timeout_seconds' => $timeoutSeconds,
+        ], static fn (mixed $value): bool => $value !== null), conditionPredicate: $predicate);
+    }
+
+    /** @internal Condition predicates are evaluated by the replayer after durable history matching. */
+    public function conditionSatisfied(): bool
+    {
+        if ($this->type !== 'open_condition_wait' || $this->conditionPredicate === null) {
+            throw new LogicException('Only a condition-wait command has a predicate.');
+        }
+
+        return ($this->conditionPredicate)() === true;
     }
 
     /**

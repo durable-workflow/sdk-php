@@ -716,6 +716,7 @@ final class Worker
                 $input = $this->decodeArguments($task['arguments'] ?? $task['input'] ?? null);
                 try {
                     $commands = $this->replayer->replay($handler, $history, $input, $this->taskQueue, $task)->commands;
+                    $this->diagnoseWorkflowWait($task, $commands);
                 } catch (NonDeterministicWorkflow $exception) {
                     throw $exception;
                 } catch (Throwable $exception) {
@@ -1369,6 +1370,32 @@ final class Worker
             'handler' => $identity,
             'exception' => $exception,
         ], 'error');
+    }
+
+    /**
+     * @param array<string, mixed> $task
+     * @param list<array<string, mixed>> $commands
+     */
+    private function diagnoseWorkflowWait(array $task, array $commands): void
+    {
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) !== 'open_condition_wait') {
+                continue;
+            }
+
+            $this->diagnostic('worker.workflow_waiting', [
+                'worker_id' => $this->workerId,
+                'workflow_id' => $task['workflow_id'] ?? null,
+                'run_id' => $task['run_id'] ?? null,
+                'task_id' => $task['task_id'] ?? null,
+                'wait_kind' => 'condition',
+                'condition_key' => $command['condition_key'] ?? null,
+                'condition_definition_fingerprint' => $command['condition_definition_fingerprint'] ?? null,
+                'timeout_seconds' => $command['timeout_seconds'] ?? null,
+            ]);
+
+            return;
+        }
     }
 
     /** @param array<string, mixed> $context */

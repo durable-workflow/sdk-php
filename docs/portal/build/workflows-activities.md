@@ -14,6 +14,20 @@ next:
 
 A workflow handler runs as ordinary straight-line PHP inside an isolated Fiber. Calls on `WorkflowContext` pause internally when durable work is pending; on replay, the SDK walks committed history and returns recorded values directly from those calls.
 
+Use `WorkflowContext::waitCondition()` when progress depends on workflow state rather than an external activity. Its deterministic predicate is re-evaluated when committed signals or updates produce another workflow task. A stable key identifies the wait across replay, and the optional timeout returns `false` instead of requiring an application timer loop.
+
+```php
+$approved = $context->waitCondition(
+    static fn (): bool => $context->signals('approve') !== [],
+    key: 'order-approved',
+    timeout: 300,
+);
+
+if (!$approved) {
+    return ['status' => 'timed_out'];
+}
+```
+
 ```php
 $worker->registerWorkflow(
     'orders.process',

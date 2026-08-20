@@ -16,6 +16,84 @@ use PHPUnit\Framework\TestCase;
 
 final class WorkerPollTest extends TestCase
 {
+    public function testConditionWaitUsesItsProtocolCommandAndDedicatedDiagnosticAfterLeaseRenewal(): void
+    {
+        $commands = null;
+        $diagnostics = [];
+        $transport = new FakeTransport(handler: static function (
+            string $method,
+            string $uri,
+            array $headers,
+            ?array $body,
+        ) use (&$commands): ?array {
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
+                return [
+                    'poll_status' => 'leased',
+                    'task' => [
+                        'task_id' => 'condition-task-1',
+                        'workflow_task_attempt' => 2,
+                        'lease_owner' => 'worker-1',
+                        'workflow_id' => 'approval-workflow-1',
+                        'run_id' => 'approval-run-1',
+                        'workflow_type' => 'approval.workflow',
+                        'payload_codec' => 'avro',
+                        'history_events' => [],
+                    ],
+                ];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/condition-task-1/heartbeat')) {
+                return [
+                    'task_id' => 'condition-task-1',
+                    'workflow_task_attempt' => 2,
+                    'lease_owner' => 'worker-1',
+                    'renewed' => true,
+                ];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/condition-task-1/complete')) {
+                $commands = $body['commands'] ?? null;
+
+                return ['completed' => true];
+            }
+            if (str_ends_with($uri, '/api/worker/activity-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        });
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'approvals',
+            workerId: 'worker-1',
+            diagnosticListener: static function (string $name, array $context) use (&$diagnostics): void {
+                $diagnostics[] = ['name' => $name, 'context' => $context];
+            },
+        );
+        $worker->registerWorkflow(
+            'approval.workflow',
+            static fn (WorkflowContext $context): bool => $context->waitCondition(
+                static fn (): bool => false,
+                key: 'approval.ready',
+                timeout: 45,
+            ),
+        );
+
+        self::assertTrue($worker->tick(0));
+
+        self::assertSame('open_condition_wait', $commands[0]['type'] ?? null);
+        self::assertArrayNotHasKey('activity_type', $commands[0]);
+        self::assertSame('worker.workflow_waiting', $diagnostics[0]['name'] ?? null);
+        self::assertSame([
+            'worker_id' => 'worker-1',
+            'workflow_id' => 'approval-workflow-1',
+            'run_id' => 'approval-run-1',
+            'task_id' => 'condition-task-1',
+            'wait_kind' => 'condition',
+            'condition_key' => 'approval.ready',
+            'condition_definition_fingerprint' => $commands[0]['condition_definition_fingerprint'],
+            'timeout_seconds' => 45,
+        ], $diagnostics[0]['context']);
+    }
+
     public function testRunAdvertisesHandlerDerivedContractsForEveryWorkflow(): void
     {
         $transport = new FakeTransport([

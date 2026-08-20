@@ -1,0 +1,27 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-condition-wait-mismatched-replay",
+  "protocol_version": "1.13",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "condition-mismatch",
+    "input": []
+  },
+  "history": [
+    {
+      "event_type": "ConditionWaitOpened",
+      "payload": {
+        "sequence": 12,
+        "condition_wait_id": "condition:12",
+        "condition_key": "approval-mismatch",
+        "condition_definition_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "timeout_seconds": 30
+      }
+    }
+  ],
+  "expected": {
+    "exception_type": "DurableWorkflow\\Exception\\NonDeterministicWorkflow",
+    "sequence": 12
+  }
+}

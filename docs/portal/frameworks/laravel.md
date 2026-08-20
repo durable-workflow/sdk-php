@@ -205,6 +205,7 @@ namespace App\Workflows;
 
 use App\GreetingPrefix;
 use DurableWorkflow\Attribute\Activity;
+use DurableWorkflow\Attribute\Signal;
 use DurableWorkflow\Attribute\Workflow;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\WorkflowContext;
@@ -220,7 +221,22 @@ final class GreetingWorkflow
             throw new \LogicException('Greeting configuration is required.');
         }
 
+        $approved = $context->waitCondition(
+            static fn (): bool => $context->signals('approve-greeting') !== [],
+            key: 'greeting-approved',
+            timeout: 300,
+        );
+        if (!$approved) {
+            return 'Greeting approval timed out.';
+        }
+
         return $context->activity('laravel.greet', [$name]);
+    }
+
+    #[Signal('approve-greeting')]
+    public function approveGreeting(): void
+    {
+        // The declaration is admitted by the worker; run() reads committed signal history.
     }
 }
 

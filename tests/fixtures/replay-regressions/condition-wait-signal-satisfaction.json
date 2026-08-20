@@ -1,0 +1,40 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-condition-wait-signal-satisfaction",
+  "protocol_version": "1.13",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "golden.signal",
+    "input": ["condition:signal"]
+  },
+  "history": [
+    {
+      "event_type": "ConditionWaitOpened",
+      "payload": {
+        "sequence": 4,
+        "condition_wait_id": "condition:4",
+        "condition_key": "approval",
+        "timeout_seconds": 30
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "workflow_sequence": 4,
+        "signal_name": "approve",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCgZBZGEA"
+        }
+      }
+    },
+    {
+      "event_type": "WorkflowCompleted",
+      "payload": {}
+    }
+  ],
+  "expected": {
+    "type": "complete_workflow"
+  }
+}

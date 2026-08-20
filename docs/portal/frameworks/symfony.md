@@ -49,6 +49,7 @@ Symfony's normal autoconfigured `src/` import recognizes the SDK attributes. Thi
 ```php
 namespace App\Workflow;
 
+use DurableWorkflow\Attribute\Signal;
 use DurableWorkflow\Attribute\Workflow;
 use DurableWorkflow\Worker\WorkflowContext;
 
@@ -59,7 +60,22 @@ final class FulfillOrderWorkflow
     #[Workflow('orders.fulfill')]
     public function run(WorkflowContext $context, string $orderId): mixed
     {
+        $released = $context->waitCondition(
+            static fn (): bool => $context->signals('orders.release') !== [],
+            key: 'inventory-release',
+            timeout: 300,
+        );
+        if (!$released) {
+            return ['status' => 'timed_out'];
+        }
+
         return $context->activity('orders.reserve', [$orderId]);
+    }
+
+    #[Signal('orders.release')]
+    public function release(): void
+    {
+        // The Fiber re-evaluates the predicate from committed signal history.
     }
 }
 ```

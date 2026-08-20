@@ -75,7 +75,10 @@ final class Replayer
                     );
                 }
                 $actualDetail = $this->commandDetail($suspended);
-                if ($step['detail'] !== null && $actualDetail !== null && $step['detail'] !== $actualDetail) {
+                if ($suspended->type !== 'open_condition_wait'
+                    && $step['detail'] !== null
+                    && $actualDetail !== null
+                    && $step['detail'] !== $actualDetail) {
                     throw new NonDeterministicWorkflow(
                         "Recorded {$step['shape']} detail changed from {$step['detail']} to {$actualDetail}.",
                         $step['sequence'],
@@ -84,6 +87,21 @@ final class Replayer
                     );
                 }
                 ++$stepCursor;
+                if ($suspended->type === 'open_condition_wait') {
+                    $this->assertConditionWaitCompatible($step, $suspended);
+                    if ($step['resolved']) {
+                        $suspended = $execution->resume($step['value']);
+                        continue;
+                    }
+                    if ($suspended->conditionSatisfied()) {
+                        $suspended = $execution->resume(true);
+                        continue;
+                    }
+
+                    $commands[] = $suspended->toWire($this->codec, $taskQueue);
+
+                    return new ReplayResult($commands);
+                }
                 if ($step['resolved'] === false) {
                     return new ReplayResult($commands);
                 }
@@ -95,6 +113,16 @@ final class Replayer
 
             if ($suspended->type === 'record_side_effect') {
                 $suspended = $suspended->resolveSideEffect();
+            }
+            if ($suspended->type === 'open_condition_wait') {
+                if ($suspended->conditionSatisfied()) {
+                    $suspended = $execution->resume(true);
+                    continue;
+                }
+                if (($suspended->attributes['timeout_seconds'] ?? null) === 0) {
+                    $suspended = $execution->resume(false);
+                    continue;
+                }
             }
             $commands[] = $suspended->toWire($this->codec, $taskQueue);
             if ($suspended->type === 'record_side_effect' || $suspended->type === 'upsert_search_attributes') {
@@ -119,11 +147,22 @@ final class Replayer
 
     /**
      * @param list<array<string, mixed>> $history
-     * @return list<array{sequence: int, shape: string, detail: ?string, resolved: bool, value: mixed, failure: ?Throwable}>
+     * @return list<array{
+     *     sequence: int,
+     *     shape: string,
+     *     detail: ?string,
+     *     resolved: bool,
+     *     value: mixed,
+     *     failure: ?Throwable,
+     *     condition_key: ?string,
+     *     condition_definition_fingerprint: ?string,
+     *     timeout_seconds: ?int
+     * }>
      */
     private function recordedSteps(array $history): array
     {
         $steps = [];
+        $conditionStepsByWaitId = [];
         $fallbackSequence = 1_000_000;
         foreach ($history as $event) {
             $type = (string) ($event['event_type'] ?? $event['type'] ?? '');
@@ -160,7 +199,22 @@ final class Replayer
                     $steps[$key] ??= $this->step($sequence, 'timer', $this->payloadDetail($payload, 'timer'));
                 }
             } elseif ($type === 'TimerFired') {
-                if (!in_array($payload['timer_kind'] ?? null, ['condition_timeout', 'signal_timeout'], true)) {
+                if (($payload['timer_kind'] ?? null) === 'condition_timeout') {
+                    $conditionStepKey = $this->conditionStepKey($payload, $conditionStepsByWaitId);
+                    if ($conditionStepKey !== null
+                        && isset($steps[$conditionStepKey])
+                        && $steps[$conditionStepKey]['resolved'] === false) {
+                        $steps[$conditionStepKey] = $this->resolvedStep(
+                            $steps[$conditionStepKey]['sequence'],
+                            'condition_wait',
+                            false,
+                            detail: $steps[$conditionStepKey]['detail'],
+                            conditionKey: $steps[$conditionStepKey]['condition_key'],
+                            conditionDefinitionFingerprint: $steps[$conditionStepKey]['condition_definition_fingerprint'],
+                            timeoutSeconds: $steps[$conditionStepKey]['timeout_seconds'],
+                        );
+                    }
+                } elseif (($payload['timer_kind'] ?? null) !== 'signal_timeout') {
                     $steps[$key] = $this->resolvedStep(
                         $sequence,
                         'timer',
@@ -189,15 +243,58 @@ final class Replayer
                 $steps[$key] = $this->resolvedStep($sequence, 'side_effect', $this->decodeResult($payload));
             } elseif ($type === 'SearchAttributesUpserted') {
                 $steps[$key] = $this->resolvedStep($sequence, 'search_attributes', null);
+            } elseif ($type === 'ConditionWaitOpened') {
+                $conditionKey = $this->stringValue($payload['condition_key'] ?? null);
+                $conditionDefinitionFingerprint = $this->stringValue(
+                    $payload['condition_definition_fingerprint'] ?? null,
+                );
+                $timeoutSeconds = $this->intValue($payload['timeout_seconds'] ?? null);
+                $steps[$key] ??= $this->step(
+                    $sequence,
+                    'condition_wait',
+                    $this->conditionDetail($conditionKey, $conditionDefinitionFingerprint),
+                    $conditionKey,
+                    $conditionDefinitionFingerprint,
+                    $timeoutSeconds,
+                );
+                $conditionWaitId = $this->stringValue($payload['condition_wait_id'] ?? null);
+                if ($conditionWaitId !== null) {
+                    $conditionStepsByWaitId[$conditionWaitId] = $key;
+                }
+            } elseif (in_array($type, ['ConditionWaitSatisfied', 'ConditionWaitTimedOut'], true)) {
+                $conditionStepKey = $this->conditionStepKey($payload, $conditionStepsByWaitId);
+                if ($conditionStepKey !== null
+                    && isset($steps[$conditionStepKey])
+                    && $steps[$conditionStepKey]['resolved'] === false) {
+                    $steps[$conditionStepKey] = $this->resolvedStep(
+                        $steps[$conditionStepKey]['sequence'],
+                        'condition_wait',
+                        $type === 'ConditionWaitSatisfied',
+                        detail: $steps[$conditionStepKey]['detail'],
+                        conditionKey: $steps[$conditionStepKey]['condition_key'],
+                        conditionDefinitionFingerprint: $steps[$conditionStepKey]['condition_definition_fingerprint'],
+                        timeoutSeconds: $steps[$conditionStepKey]['timeout_seconds'],
+                    );
+                }
             }
         }
         ksort($steps, SORT_NUMERIC);
 
-        return array_values($steps);
+        return $this->collapseConditionReopens(array_values($steps));
     }
 
     /**
-     * @param list<array{sequence: int, shape: string, detail: ?string, resolved: bool, value: mixed, failure: ?Throwable}> $steps
+     * @param list<array{
+     *     sequence: int,
+     *     shape: string,
+     *     detail: ?string,
+     *     resolved: bool,
+     *     value: mixed,
+     *     failure: ?Throwable,
+     *     condition_key: ?string,
+     *     condition_definition_fingerprint: ?string,
+     *     timeout_seconds: ?int
+     * }> $steps
      */
     private function assertNoRemainingSteps(array $steps, int $stepCursor, string $terminalCommand): void
     {
@@ -214,22 +311,75 @@ final class Replayer
         );
     }
 
-    /** @return array{sequence: int, shape: string, detail: ?string, resolved: bool, value: mixed, failure: ?Throwable} */
-    private function step(int $sequence, string $shape, ?string $detail = null): array
-    {
-        return ['sequence' => $sequence, 'shape' => $shape, 'detail' => $detail, 'resolved' => false, 'value' => null, 'failure' => null];
+    /**
+     * @return array{
+     *     sequence: int,
+     *     shape: string,
+     *     detail: ?string,
+     *     resolved: bool,
+     *     value: mixed,
+     *     failure: ?Throwable,
+     *     condition_key: ?string,
+     *     condition_definition_fingerprint: ?string,
+     *     timeout_seconds: ?int
+     * }
+     */
+    private function step(
+        int $sequence,
+        string $shape,
+        ?string $detail = null,
+        ?string $conditionKey = null,
+        ?string $conditionDefinitionFingerprint = null,
+        ?int $timeoutSeconds = null,
+    ): array {
+        return [
+            'sequence' => $sequence,
+            'shape' => $shape,
+            'detail' => $detail,
+            'resolved' => false,
+            'value' => null,
+            'failure' => null,
+            'condition_key' => $conditionKey,
+            'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
+            'timeout_seconds' => $timeoutSeconds,
+        ];
     }
 
-    /** @return array{sequence: int, shape: string, detail: ?string, resolved: bool, value: mixed, failure: ?Throwable} */
+    /**
+     * @return array{
+     *     sequence: int,
+     *     shape: string,
+     *     detail: ?string,
+     *     resolved: bool,
+     *     value: mixed,
+     *     failure: ?Throwable,
+     *     condition_key: ?string,
+     *     condition_definition_fingerprint: ?string,
+     *     timeout_seconds: ?int
+     * }
+     */
     private function resolvedStep(
         int $sequence,
         string $shape,
         mixed $value,
         ?Throwable $failure = null,
         ?string $detail = null,
+        ?string $conditionKey = null,
+        ?string $conditionDefinitionFingerprint = null,
+        ?int $timeoutSeconds = null,
     ): array
     {
-        return ['sequence' => $sequence, 'shape' => $shape, 'detail' => $detail, 'resolved' => true, 'value' => $value, 'failure' => $failure];
+        return [
+            'sequence' => $sequence,
+            'shape' => $shape,
+            'detail' => $detail,
+            'resolved' => true,
+            'value' => $value,
+            'failure' => $failure,
+            'condition_key' => $conditionKey,
+            'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
+            'timeout_seconds' => $timeoutSeconds,
+        ];
     }
 
     private function commandDetail(WorkflowCommand $command): ?string
@@ -238,6 +388,10 @@ final class Replayer
             'activity' => $command->attributes['activity_type'] ?? null,
             'timer' => $command->attributes['delay_seconds'] ?? null,
             'child_workflow' => $command->attributes['workflow_type'] ?? null,
+            'condition_wait' => $this->conditionDetail(
+                $this->stringValue($command->attributes['condition_key'] ?? null),
+                $this->stringValue($command->attributes['condition_definition_fingerprint'] ?? null),
+            ),
             default => null,
         };
 
@@ -251,6 +405,10 @@ final class Replayer
             'activity' => $payload['activity_type'] ?? $payload['activity_name'] ?? null,
             'timer' => $payload['delay_seconds'] ?? null,
             'child_workflow' => $payload['child_workflow_type'] ?? $payload['workflow_type'] ?? null,
+            'condition_wait' => $this->conditionDetail(
+                $this->stringValue($payload['condition_key'] ?? null),
+                $this->stringValue($payload['condition_definition_fingerprint'] ?? null),
+            ),
             default => null,
         };
 
@@ -274,6 +432,143 @@ final class Replayer
         $value = $payload['sequence'] ?? $payload['workflow_sequence'] ?? null;
 
         return is_numeric($value) ? (int) $value : null;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @param array<string, string> $conditionStepsByWaitId
+     */
+    private function conditionStepKey(array $payload, array $conditionStepsByWaitId): ?string
+    {
+        $waitId = $this->stringValue($payload['condition_wait_id'] ?? null);
+        if ($waitId !== null && isset($conditionStepsByWaitId[$waitId])) {
+            return $conditionStepsByWaitId[$waitId];
+        }
+
+        $sequence = $this->sequence($payload);
+
+        return $sequence === null ? null : (string) $sequence;
+    }
+
+    /**
+     * @param list<array{
+     *     sequence: int,
+     *     shape: string,
+     *     detail: ?string,
+     *     resolved: bool,
+     *     value: mixed,
+     *     failure: ?Throwable,
+     *     condition_key: ?string,
+     *     condition_definition_fingerprint: ?string,
+     *     timeout_seconds: ?int
+     * }> $steps
+     * @return list<array{
+     *     sequence: int,
+     *     shape: string,
+     *     detail: ?string,
+     *     resolved: bool,
+     *     value: mixed,
+     *     failure: ?Throwable,
+     *     condition_key: ?string,
+     *     condition_definition_fingerprint: ?string,
+     *     timeout_seconds: ?int
+     * }>
+     */
+    private function collapseConditionReopens(array $steps): array
+    {
+        $collapsed = [];
+        foreach ($steps as $step) {
+            $last = array_key_last($collapsed);
+            if ($last !== null
+                && $step['shape'] === 'condition_wait'
+                && $collapsed[$last]['shape'] === 'condition_wait'
+                && $step['condition_key'] === $collapsed[$last]['condition_key']
+                && $step['condition_definition_fingerprint'] === $collapsed[$last]['condition_definition_fingerprint']
+                && $step['timeout_seconds'] === $collapsed[$last]['timeout_seconds']) {
+                $step['sequence'] = $collapsed[$last]['sequence'];
+                $collapsed[$last] = $step;
+                continue;
+            }
+
+            $collapsed[] = $step;
+        }
+
+        return $collapsed;
+    }
+
+    /**
+     * @param array{
+     *     sequence: int,
+     *     shape: string,
+     *     detail: ?string,
+     *     resolved: bool,
+     *     value: mixed,
+     *     failure: ?Throwable,
+     *     condition_key: ?string,
+     *     condition_definition_fingerprint: ?string,
+     *     timeout_seconds: ?int
+     * } $step
+     */
+    private function assertConditionWaitCompatible(array $step, WorkflowCommand $command): void
+    {
+        $currentKey = $this->stringValue($command->attributes['condition_key'] ?? null);
+        $currentFingerprint = $this->stringValue(
+            $command->attributes['condition_definition_fingerprint'] ?? null,
+        );
+        $currentTimeout = $this->intValue($command->attributes['timeout_seconds'] ?? null);
+
+        if ($step['condition_key'] !== $currentKey) {
+            throw new NonDeterministicWorkflow(
+                sprintf(
+                    'Condition wait key changed from %s to %s during replay.',
+                    $step['condition_key'] ?? '<none>',
+                    $currentKey ?? '<none>',
+                ),
+                $step['sequence'],
+                $step['condition_key'],
+                $currentKey,
+            );
+        }
+        if ($step['condition_definition_fingerprint'] !== null
+            && $step['condition_definition_fingerprint'] !== $currentFingerprint) {
+            throw new NonDeterministicWorkflow(
+                'Condition wait predicate fingerprint changed during replay.',
+                $step['sequence'],
+                $step['condition_definition_fingerprint'],
+                $currentFingerprint,
+            );
+        }
+        if ($step['timeout_seconds'] !== $currentTimeout) {
+            throw new NonDeterministicWorkflow(
+                sprintf(
+                    'Condition wait timeout changed from %s to %s during replay.',
+                    $step['timeout_seconds'] === null ? '<none>' : (string) $step['timeout_seconds'],
+                    $currentTimeout === null ? '<none>' : (string) $currentTimeout,
+                ),
+                $step['sequence'],
+                $step['timeout_seconds'] === null ? null : (string) $step['timeout_seconds'],
+                $currentTimeout === null ? null : (string) $currentTimeout,
+            );
+        }
+    }
+
+    private function conditionDetail(?string $conditionKey, ?string $definitionFingerprint): string
+    {
+        return sprintf(
+            'key=%s;predicate=%s',
+            $conditionKey ?? '<none>',
+            $definitionFingerprint ?? '<none>',
+        );
+    }
+
+    private function stringValue(mixed $value): ?string
+    {
+        return is_string($value) && $value !== '' ? $value : null;
+    }
+
+    private function intValue(mixed $value): ?int
+    {
+        return is_int($value) ? $value : (is_numeric($value) ? (int) $value : null);
     }
 
     /** @return array{type: string, result: array{codec: string, blob: string}} */

@@ -291,6 +291,7 @@ jobs:
           declare(strict_types=1);
           namespace App\Workflows;
           use App\Support\PublishedGreetingPrefix;
+          use DurableWorkflow\Attribute\Signal;
           use DurableWorkflow\Attribute\Workflow;
           use DurableWorkflow\Worker\WorkflowContext;
           final class PublishedGreetingWorkflow
@@ -304,8 +305,20 @@ jobs:
                       throw new \LogicException('Laravel did not inject the workflow dependency.');
                   }
 
+                  $released = $context->waitCondition(
+                      static fn (): bool => $context->signals('published.release') !== [],
+                      key: 'published-laravel-release',
+                      timeout: 60,
+                  );
+                  if (!$released) {
+                      return 'published Laravel condition wait timed out';
+                  }
+
                   return $context->activity('laravel.greet', [$name]);
               }
+
+              #[Signal('published.release')]
+              public function release(): void {}
           }
           PHP
           tee app/Activities/PublishedGreetingActivities.php >/dev/null <<'PHP'
@@ -348,13 +361,30 @@ jobs:
           tee -a routes/console.php >/dev/null <<'PHP'
 
           Artisan::command('durable-workflow:published-greeting', function (): void {
-              $actualVersion = app(\DurableWorkflow\Client::class)->clusterInfo()->version;
+              $client = app(\DurableWorkflow\Client::class);
+              $actualVersion = $client->clusterInfo()->version;
               if ($actualVersion !== env('QUALIFIED_SERVER_VERSION')) {
                   throw new \RuntimeException("Published endpoint is Server {$actualVersion}; expected ".env('QUALIFIED_SERVER_VERSION').'.');
               }
-              $result = app(\App\Actions\StartPublishedGreeting::class)(
-                  env('DURABLE_WORKFLOW_WORKFLOW_ID'),
+              $workflowId = env('DURABLE_WORKFLOW_WORKFLOW_ID');
+              $handle = app(\DurableWorkflow\Bridge\Laravel\LaravelWorkflowClientInterface::class)->start(
+                  \App\Workflows\PublishedGreetingWorkflow::class,
+                  ['Ada'],
+                  workflowId: $workflowId,
               );
+              $deadline = microtime(true) + 30;
+              do {
+                  $execution = $client->describeWorkflow($workflowId);
+                  if ($execution->status === 'waiting') {
+                      break;
+                  }
+                  usleep(250_000);
+              } while (microtime(true) < $deadline);
+              if ($execution->status !== 'waiting') {
+                  throw new \RuntimeException('Published Laravel workflow did not open its condition wait.');
+              }
+              $handle->signal('published.release', ['qualified']);
+              $result = $handle->result(timeoutSeconds: 90, pollIntervalSeconds: 1);
               if ($result !== 'hello from Laravel, Ada') {
                   throw new \RuntimeException('Published Laravel workflow returned an unexpected result.');
               }
@@ -410,6 +440,7 @@ jobs:
           <?php
           declare(strict_types=1);
           namespace App\Workflow;
+          use DurableWorkflow\Attribute\Signal;
           use DurableWorkflow\Attribute\Workflow;
           use DurableWorkflow\Worker\WorkflowContext;
           final class PublishedGreetingWorkflow
@@ -417,8 +448,20 @@ jobs:
               #[Workflow('published.symfony.greeter')]
               public function run(WorkflowContext $context, string $name): array
               {
+                  $released = $context->waitCondition(
+                      static fn (): bool => $context->signals('published.release') !== [],
+                      key: 'published-symfony-release',
+                      timeout: 60,
+                  );
+                  if (!$released) {
+                      return ['greeting' => 'published Symfony condition wait timed out'];
+                  }
+
                   return ['greeting' => $context->activity('published.symfony.greet', [$name])];
               }
+
+              #[Signal('published.release')]
+              public function release(): void {}
           }
           PHP
           tee src/Activity/PublishedGreetingActivities.php >/dev/null <<'PHP'
@@ -743,6 +786,18 @@ jobs:
               getenv('DURABLE_WORKFLOW_TASK_QUEUE'),
               ['published framework'],
           );
+          $deadline = microtime(true) + 30;
+          do {
+              $execution = $client->describeWorkflow(getenv('DURABLE_WORKFLOW_WORKFLOW_ID'));
+              if ($execution->status === 'waiting') {
+                  break;
+              }
+              usleep(250_000);
+          } while (microtime(true) < $deadline);
+          if ($execution->status !== 'waiting') {
+              throw new RuntimeException('Published Symfony workflow did not open its condition wait.');
+          }
+          $handle->signal('published.release', ['qualified']);
           $result = $handle->result(timeoutSeconds: 90, pollIntervalSeconds: 1);
           if ($result !== ['greeting' => 'hello, published framework']) {
               throw new RuntimeException('Published framework workflow returned an unexpected result.');

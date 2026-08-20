@@ -6,6 +6,7 @@ namespace DurableWorkflow\Worker;
 
 use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\WorkflowCancelled;
+use Closure;
 use Fiber;
 use LogicException;
 
@@ -42,6 +43,30 @@ final class WorkflowContext
     public function sleep(int|float $seconds): void
     {
         $this->suspend(WorkflowCommand::timer((int) ceil($seconds)));
+    }
+
+    /**
+     * Suspend until the deterministic predicate is satisfied or its durable timeout elapses.
+     *
+     * The result is true only when the condition was satisfied and false only when it timed out.
+     * Give repeated or otherwise ambiguous waits a stable key so replay can identify them.
+     *
+     * @param callable(): bool $predicate
+     */
+    public function waitCondition(
+        callable $predicate,
+        ?string $key = null,
+        int|float|null $timeout = null,
+    ): bool {
+        $condition = Closure::fromCallable($predicate);
+        $timeoutSeconds = $timeout === null ? null : max(0, (int) ceil($timeout));
+
+        return (bool) $this->suspend(WorkflowCommand::conditionWait(
+            $condition,
+            self::conditionKey($key),
+            ConditionWaitDefinition::fingerprint($condition),
+            $timeoutSeconds,
+        ));
     }
 
     /**
@@ -143,5 +168,21 @@ final class WorkflowContext
         }
 
         return Fiber::suspend($command);
+    }
+
+    private static function conditionKey(?string $key): ?string
+    {
+        if ($key === null) {
+            return null;
+        }
+
+        $key = trim($key);
+        if ($key === '' || strlen($key) > 128 || preg_match('/\A[A-Za-z0-9._:-]+\z/', $key) !== 1) {
+            throw new LogicException(
+                'Condition wait keys must be non-empty URL-safe strings up to 128 characters using only letters, numbers, ".", "_", "-", and ":".',
+            );
+        }
+
+        return $key;
     }
 }

@@ -112,7 +112,6 @@ final class ReplayRegressionFixture
                 'exception_type' => $exception::class,
             ]];
         }
-
         $declaredCommands = $fixture['command_sequence'] ?? null;
         if ($declaredCommands !== null) {
             self::assertMatches(
@@ -239,14 +238,42 @@ final class ReplayRegressionFixture
 
                 return 'search-attributes-upserted';
             },
-            'golden.signal' => static fn (
+            'golden.signal' => static function (
                 WorkflowContext $context,
                 mixed $signalName,
-            ): array => ['signals' => $context->signals((string) $signalName)],
-            'golden.update' => static fn (
+            ): array {
+                return match ($signalName) {
+                    'condition:signal' => ['satisfied' => $context->waitCondition(
+                        static fn (): bool => $context->signals('approve') !== [],
+                        key: 'approval',
+                        timeout: 30,
+                    )],
+                    'condition:timeout' => ['satisfied' => $context->waitCondition(
+                        static fn (): bool => false,
+                        key: 'approval-timeout',
+                        timeout: 5,
+                    )],
+                    'condition:pending' => ['satisfied' => $context->waitCondition(
+                        static fn (): bool => false,
+                        key: 'approval-pending',
+                        timeout: 60,
+                    )],
+                    default => ['signals' => $context->signals((string) $signalName)],
+                };
+            },
+            'golden.update' => static function (
                 WorkflowContext $context,
                 mixed $updateName,
-            ): array => ['updates' => $context->updates((string) $updateName)],
+            ): array {
+                if ($updateName === 'condition:update') {
+                    return ['satisfied' => $context->waitCondition(
+                        static fn (): bool => ($context->updates('approve')[0][0] ?? false) === true,
+                        key: 'update-approval',
+                    )];
+                }
+
+                return ['updates' => $context->updates((string) $updateName)];
+            },
             'golden.context-identity' => static fn (WorkflowContext $context): array => [
                 'workflow_id' => $context->workflowId,
                 'run_id' => $context->runId,

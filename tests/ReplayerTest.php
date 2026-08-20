@@ -419,6 +419,310 @@ final class ReplayerTest extends TestCase
         ], $codec->decodeEnvelope($result->commands[0]['result']));
     }
 
+    public function testFalseConditionEmitsPublishedConditionWaitCommand(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): string {
+            $context->waitCondition(
+                static fn (): bool => false,
+                key: 'approval.ready',
+                timeout: 60.2,
+            );
+
+            return 'approved';
+        };
+
+        $result = (new Replayer($codec))->replay($workflow, [], [], 'php-workers');
+
+        self::assertSame('open_condition_wait', $result->commands[0]['type']);
+        self::assertSame('approval.ready', $result->commands[0]['condition_key']);
+        self::assertSame(61, $result->commands[0]['timeout_seconds']);
+        self::assertMatchesRegularExpression(
+            '/\Asha256:[0-9a-f]{64}\z/',
+            $result->commands[0]['condition_definition_fingerprint'],
+        );
+    }
+
+    public function testImmediatelySatisfiedAndZeroTimeoutConditionsDoNotOpenServerWaits(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static fn (WorkflowContext $context): array => [
+            'satisfied' => $context->waitCondition(static fn (): bool => true, key: 'already-ready'),
+            'zero_timeout' => $context->waitCondition(static fn (): bool => false, key: 'no-wait', timeout: 0),
+        ];
+
+        $result = (new Replayer($codec))->replay($workflow, [], [], 'php-workers');
+
+        self::assertCount(1, $result->commands);
+        self::assertSame('complete_workflow', $result->commands[0]['type']);
+        self::assertSame([
+            'satisfied' => true,
+            'zero_timeout' => false,
+        ], $codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    public function testSignalReevaluatesAndSatisfiesOpenCondition(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): array {
+            $satisfied = $context->waitCondition(
+                static fn (): bool => $context->signals('approve') !== [],
+                key: 'approval',
+                timeout: 30,
+            );
+
+            return ['satisfied' => $satisfied];
+        };
+        $history = [
+            [
+                'event_type' => 'ConditionWaitOpened',
+                'payload' => [
+                    'sequence' => 4,
+                    'condition_wait_id' => 'wait-approval',
+                    'condition_key' => 'approval',
+                    'timeout_seconds' => 30,
+                ],
+            ],
+            [
+                'event_type' => 'SignalReceived',
+                'payload' => [
+                    'workflow_sequence' => 4,
+                    'signal_name' => 'approve',
+                    'arguments' => $codec->envelope(['Ada']),
+                ],
+            ],
+        ];
+
+        $result = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame('complete_workflow', $result->commands[0]['type']);
+        self::assertSame(['satisfied' => true], $codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    public function testUpdateReevaluatesAndSatisfiesOpenCondition(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): array {
+            $satisfied = $context->waitCondition(
+                static fn (): bool => ($context->updates('approve')[0][0] ?? false) === true,
+                key: 'update-approval',
+            );
+
+            return ['satisfied' => $satisfied];
+        };
+        $history = [
+            [
+                'event_type' => 'ConditionWaitOpened',
+                'payload' => [
+                    'sequence' => 7,
+                    'condition_wait_id' => 'wait-update',
+                    'condition_key' => 'update-approval',
+                ],
+            ],
+            [
+                'event_type' => 'UpdateApplied',
+                'payload' => [
+                    'sequence' => 7,
+                    'update_id' => 'update-1',
+                    'update_name' => 'approve',
+                    'arguments' => $codec->envelope([true]),
+                ],
+            ],
+        ];
+
+        $result = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame('complete_workflow', $result->commands[0]['type']);
+        self::assertSame(['satisfied' => true], $codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    public function testConditionTimeoutResumesFalseWithoutAdvancingAnOrdinaryTimer(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): string {
+            $satisfied = $context->waitCondition(
+                static fn (): bool => false,
+                key: 'approval',
+                timeout: 10,
+            );
+            if (!$satisfied) {
+                $context->sleep(60);
+            }
+
+            return 'done';
+        };
+        $history = [
+            [
+                'event_type' => 'ConditionWaitOpened',
+                'payload' => [
+                    'sequence' => 8,
+                    'condition_wait_id' => 'condition:8',
+                    'condition_key' => 'approval',
+                    'timeout_seconds' => 10,
+                ],
+            ],
+            [
+                'event_type' => 'TimerScheduled',
+                'payload' => [
+                    'sequence' => 9,
+                    'timer_id' => 'condition-timer:9',
+                    'timer_kind' => 'condition_timeout',
+                    'condition_wait_id' => 'condition:8',
+                    'delay_seconds' => 10,
+                ],
+            ],
+            [
+                'event_type' => 'TimerFired',
+                'payload' => [
+                    'sequence' => 9,
+                    'timer_id' => 'condition-timer:9',
+                    'timer_kind' => 'condition_timeout',
+                    'condition_wait_id' => 'condition:8',
+                    'delay_seconds' => 10,
+                ],
+            ],
+        ];
+
+        $result = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame([[
+            'type' => 'start_timer',
+            'delay_seconds' => 60,
+        ]], $result->commands);
+    }
+
+    public function testOpenConditionStateSurvivesFreshReplayersAndReopensAfterFalseExternalInput(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): bool {
+            return $context->waitCondition(
+                static fn (): bool => count($context->signals('vote')) >= 2,
+                key: 'two-votes',
+                timeout: 120,
+            );
+        };
+        $history = [[
+            'event_type' => 'ConditionWaitOpened',
+            'payload' => [
+                'sequence' => 3,
+                'condition_wait_id' => 'wait-votes-1',
+                'condition_key' => 'two-votes',
+                'timeout_seconds' => 120,
+            ],
+        ], [
+            'event_type' => 'SignalReceived',
+            'payload' => [
+                'workflow_sequence' => 3,
+                'signal_name' => 'vote',
+                'arguments' => $codec->envelope(['first']),
+            ],
+        ]];
+
+        $firstWorker = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+        $restartedWorker = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame('open_condition_wait', $firstWorker->commands[0]['type']);
+        self::assertSame($firstWorker->commands, $restartedWorker->commands);
+    }
+
+    public function testRepeatedPhysicalOpensReplayAsOneLogicalCondition(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): bool {
+            return $context->waitCondition(
+                static fn (): bool => count($context->signals('vote')) >= 2,
+                key: 'two-votes',
+            );
+        };
+        $history = [
+            [
+                'event_type' => 'ConditionWaitOpened',
+                'payload' => [
+                    'sequence' => 3,
+                    'condition_wait_id' => 'wait-votes-1',
+                    'condition_key' => 'two-votes',
+                ],
+            ],
+            [
+                'event_type' => 'SignalReceived',
+                'payload' => [
+                    'workflow_sequence' => 3,
+                    'signal_name' => 'vote',
+                    'arguments' => $codec->envelope(['first']),
+                ],
+            ],
+            [
+                'event_type' => 'ConditionWaitSatisfied',
+                'payload' => [
+                    'sequence' => 3,
+                    'condition_wait_id' => 'wait-votes-1',
+                    'condition_key' => 'two-votes',
+                ],
+            ],
+            [
+                'event_type' => 'ConditionWaitOpened',
+                'payload' => [
+                    'sequence' => 5,
+                    'condition_wait_id' => 'wait-votes-2',
+                    'condition_key' => 'two-votes',
+                ],
+            ],
+            [
+                'event_type' => 'SignalReceived',
+                'payload' => [
+                    'workflow_sequence' => 5,
+                    'signal_name' => 'vote',
+                    'arguments' => $codec->envelope(['second']),
+                ],
+            ],
+            [
+                'event_type' => 'ConditionWaitSatisfied',
+                'payload' => [
+                    'sequence' => 5,
+                    'condition_wait_id' => 'wait-votes-2',
+                    'condition_key' => 'two-votes',
+                ],
+            ],
+        ];
+
+        $result = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame('complete_workflow', $result->commands[0]['type']);
+        self::assertTrue($codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    public function testReplayRejectsChangedConditionIdentityPredicateAndTimeout(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): bool {
+            return $context->waitCondition(static fn (): bool => false, key: 'current', timeout: 20);
+        };
+        $initial = (new Replayer($codec))->replay($workflow, [], [], 'php-workers');
+        $fingerprint = $initial->commands[0]['condition_definition_fingerprint'];
+
+        foreach ([
+            ['recorded', $fingerprint, 20],
+            ['current', 'sha256:'.str_repeat('0', 64), 20],
+            ['current', $fingerprint, 19],
+        ] as [$recordedKey, $recordedFingerprint, $recordedTimeout]) {
+            try {
+                (new Replayer($codec))->replay($workflow, [[
+                    'event_type' => 'ConditionWaitOpened',
+                    'payload' => [
+                        'sequence' => 12,
+                        'condition_wait_id' => 'wait-mismatch',
+                        'condition_key' => $recordedKey,
+                        'condition_definition_fingerprint' => $recordedFingerprint,
+                        'timeout_seconds' => $recordedTimeout,
+                    ],
+                ]], [], 'php-workers');
+                self::fail('Changed condition wait definitions must fail replay.');
+            } catch (NonDeterministicWorkflow $exception) {
+                self::assertSame(12, $exception->sequence);
+            }
+        }
+    }
+
     #[DataProvider('terminalChildOutcomeProvider')]
     public function testTerminalChildOutcomeRetainsIdentityForDeterminism(string $eventType): void
     {

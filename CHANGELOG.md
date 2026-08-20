@@ -8,6 +8,11 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Fiber-backed service workflows can use `WorkflowContext::waitCondition()` to
+  wait on deterministic state with a stable replay identity and optional
+  timeout. The worker emits the Server's `open_condition_wait` command,
+  re-evaluates the predicate after signals and updates, and reports a dedicated
+  condition-wait diagnostic.
 - Class-oriented worker authoring with attributes for workflow, activity,
   query, signal, and update contracts; registration validates definitions and
   supports PSR-11 dependency resolution, PSR-3 logging, lifecycle diagnostics,
@@ -45,7 +50,7 @@ project follows [Semantic Versioning](https://semver.org/).
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK source to `2.0.0-rc.40` and qualified it with Server
+- Advanced the PHP SDK source to `2.0.0-rc.41` and qualified it with Server
   `2.0.0-rc.38`. During the active 2.0 prerelease train, package metadata names
   the exact SDK artifact and exact qualified Server artifact rather than a
   compatibility range; other prereleases remain historical and receive no

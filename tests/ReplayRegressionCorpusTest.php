@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Tests\Support\ReplayRegressionFixture;
+use DurableWorkflow\Worker\Replayer;
+use DurableWorkflow\Worker\WorkflowContext;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
@@ -117,6 +120,44 @@ final class ReplayRegressionCorpusTest extends TestCase
         ]);
 
         self::assertSame('complete_update', $commands[0]['type']);
+    }
+
+    public function testConditionWaitRestartFixtureReplaysThroughFreshWorkerExecutions(): void
+    {
+        $commands = ReplayRegressionFixture::executeFile(
+            __DIR__.'/fixtures/condition-waits/worker-restart.json',
+        );
+
+        self::assertCount(2, $commands);
+        self::assertSame('open_condition_wait', $commands[0]['type']);
+        self::assertSame($commands[0]['command_sequence'], $commands[1]['command_sequence']);
+    }
+
+    public function testConditionWaitMismatchFixtureRejectsChangedPredicateFingerprint(): void
+    {
+        $fixture = json_decode(
+            (string) file_get_contents(__DIR__.'/fixtures/condition-waits/mismatched-replay.json'),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+        self::assertIsArray($fixture);
+        $history = $fixture['history'] ?? null;
+        self::assertIsArray($history);
+        $workflow = static function (WorkflowContext $context): bool {
+            return $context->waitCondition(
+                static fn (): bool => false,
+                key: 'approval-mismatch',
+                timeout: 30,
+            );
+        };
+
+        try {
+            (new Replayer(new AvroPayloadCodec()))->replay($workflow, $history, [], 'php-workers');
+            self::fail('The mismatched replay fixture must be rejected.');
+        } catch (NonDeterministicWorkflow $exception) {
+            self::assertSame($fixture['expected']['exception_type'] ?? null, $exception::class);
+            self::assertSame($fixture['expected']['sequence'] ?? null, $exception->sequence);
+        }
     }
 
     /** @return array{int, list<string>} */
