@@ -93,6 +93,6 @@
   "integrations": {
     "laravel_service_mode": "https://github.com/durable-workflow/sdk-php#laravel-service-mode",
     "symfony_service_mode": "https://github.com/durable-workflow/sdk-php#symfony-service-mode",
-    "embedded_laravel": "https://laravel-workflow.com/"
+    "embedded_laravel": "https://php.durable-workflow.com/frameworks/laravel/"
   }
 }

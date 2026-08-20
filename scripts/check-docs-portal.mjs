@@ -37,8 +37,30 @@ function outputPath(url) {
 }
 
 const navigationItems = navigation.flatMap(({items}) => items);
+const navigationUrls = navigationItems.map(({url}) => url);
+assert.equal(
+  new Set(navigationUrls).size,
+  navigationUrls.length,
+  'Every guide route must have exactly one primary navigation owner.',
+);
+assert.deepEqual(
+  navigation
+    .filter(({items}) => items.some(({url}) => url === '/frameworks/laravel/'))
+    .map(({label}) => label),
+  ['Frameworks'],
+  'Laravel adoption must belong to the framework guide sequence.',
+);
 for (const item of navigationItems) {
-  assert(fs.existsSync(outputPath(item.url)), `Navigation target does not exist: ${item.url}`);
+  const target = outputPath(item.url);
+  assert(fs.existsSync(target), `Navigation target does not exist: ${item.url}`);
+  if (item.url !== '/') {
+    const html = fs.readFileSync(target, 'utf8');
+    assert.equal(
+      html.match(/aria-current="page"/g)?.length,
+      1,
+      `Guide route must render exactly one current-page marker: ${item.url}`,
+    );
+  }
 }
 assert(fs.existsSync(path.join(siteDirectory, 'api/index.html')), 'Generated API Reference must live under /api/.');
 assert(
@@ -127,6 +149,8 @@ for (const relative of ['api/packages/Application.html', 'api/reports/deprecated
 
 const home = fs.readFileSync(path.join(siteDirectory, 'index.html'), 'utf8');
 const quickstart = fs.readFileSync(path.join(siteDirectory, 'getting-started/first-workflow/index.html'), 'utf8');
+const laravel = fs.readFileSync(path.join(siteDirectory, 'frameworks/laravel/index.html'), 'utf8');
+const symfony = fs.readFileSync(path.join(siteDirectory, 'frameworks/symfony/index.html'), 'utf8');
 const deployment = fs.readFileSync(path.join(siteDirectory, 'operate/deployment/index.html'), 'utf8');
 const deployedQuickstartContract = JSON.parse(fs.readFileSync(path.join(siteDirectory, 'quickstart-contract.json'), 'utf8'));
 const deployedQuickstartSchema = JSON.parse(fs.readFileSync(path.join(siteDirectory, 'quickstart-contract.schema.v2.json'), 'utf8'));
@@ -160,11 +184,20 @@ assert.equal(
   'Laravel adoption and Composer framework compatibility must stay aligned.',
 );
 assert(home.includes(`PHP SDK ${sdkSeries} prerelease`), 'Home release badge must identify the SDK prerelease channel.');
+assert(
+  home.includes('<a class="button primary" href="/frameworks/laravel/">'),
+  'Home must keep a primary entry to the Laravel ownership guide.',
+);
 assert.equal(quickstartContract.schema_version, 2, 'Quickstart contract must use consumer-resolvable schema version 2.');
 assert.equal(quickstartContract.$schema, quickstartSchema.$id, 'Quickstart contract must identify its deployed schema.');
 assert.equal(quickstartContract.package.name, composer.name, 'Quickstart package must match Composer metadata.');
 assert.equal(quickstartContract.package.published_version, sdkVersion, 'Quickstart version must match Composer metadata.');
 assert.equal(quickstartContract.package.onboarding_requirement, `^${sdkSeries}@RC`);
+assert.equal(
+  quickstartContract.integrations.embedded_laravel,
+  'https://php.durable-workflow.com/frameworks/laravel/',
+  'Embedded Laravel adopters must enter through the ownership-first guide.',
+);
 assert.equal(
   quickstartContract.runtime_targets.server.image,
   `durableworkflow/server:${release['supported-server-versions']}`,
@@ -188,6 +221,25 @@ assert.deepEqual(
 );
 assert(quickstart.includes(composerCommand), 'First-workflow install command must be rendered from the quickstart contract.');
 assert(quickstart.includes('/quickstart-contract.json'), 'First workflow must resolve its qualified Server image from the deployed contract.');
+const continuationUrls = (html) => {
+  const continuation = html.match(/<nav class="next-links"[^>]*>([\s\S]*?)<\/nav>/)?.[1] ?? '';
+  return [...continuation.matchAll(/<a href="([^"]+)"/g)].map((match) => match[1]);
+};
+assert.deepEqual(
+  continuationUrls(quickstart),
+  ['/getting-started/client-setup/'],
+  'The plain PHP first-workflow path must continue to client setup.',
+);
+assert.deepEqual(
+  continuationUrls(laravel),
+  ['/build/testing/', '/frameworks/symfony/'],
+  'Laravel adoption must sit between testing and Symfony.',
+);
+assert.deepEqual(
+  continuationUrls(symfony),
+  ['/frameworks/laravel/', '/operate/deployment/'],
+  'Symfony must continue the framework path into deployment.',
+);
 for (const [name, html] of [['first workflow', quickstart], ['deployment', deployment]]) {
   assert(
     !/&amp;(?:quot|#39|#92);/.test(html),

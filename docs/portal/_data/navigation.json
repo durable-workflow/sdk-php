@@ -3,7 +3,6 @@
     "label": "Start",
     "items": [
       {"label": "PHP SDK home", "url": "/"},
-      {"label": "Laravel adoption", "url": "/frameworks/laravel/"},
       {"label": "Your first workflow", "url": "/getting-started/first-workflow/"},
       {"label": "Client setup", "url": "/getting-started/client-setup/"}
     ]

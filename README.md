@@ -18,9 +18,10 @@ It targets PHP 8.1 or newer and does not require Laravel or the embedded
 - **Symfony service mode:** use the [Symfony bridge](#symfony-service-mode) from
   this SDK for autowired remote handlers and a managed console worker.
 - **Embedded Laravel workflows:** use
-  [`durable-workflow/workflow`](https://laravel-workflow.com/) when the Laravel
-  application itself should own durable state and execute through Laravel
-  queues. That is a different deployment model, not a prerequisite for this SDK.
+  [`durable-workflow/workflow`](https://php.durable-workflow.com/frameworks/laravel/)
+  when the Laravel application itself should own durable state and execute
+  through Laravel queues. That is a different deployment model, not a
+  prerequisite for this SDK.
 
 ## Plain PHP quickstart
 
