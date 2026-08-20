@@ -210,6 +210,70 @@ jobs:
           application="$(cat "$RUNNER_TEMP/framework-application")"
           cd "$application"
           mkdir -p app/Actions app/Activities app/Support app/Workflows
+          tee app/Support/PublishedRoleCredentialProbe.php >/dev/null <<'PHP'
+          <?php
+          declare(strict_types=1);
+          namespace App\Support;
+          use Illuminate\Support\Env;
+          final class PublishedRoleCredentialProbe
+          {
+              public static function record(string $stage): void
+              {
+                  $log = getenv('DURABLE_WORKFLOW_ROLE_PROBE_LOG');
+                  if (!is_string($log) || $log === '') {
+                      return;
+                  }
+                  $presence = [];
+                  foreach ([
+                      'DURABLE_WORKFLOW_TOKEN',
+                      'DURABLE_WORKFLOW_CLIENT_TOKEN',
+                      'DURABLE_WORKFLOW_WORKER_TOKEN',
+                      'DURABLE_WORKFLOW_PROCESS_ROLE',
+                      'DURABLE_WORKFLOW_PROCESS_TOKEN',
+                  ] as $name) {
+                      $presence[$name] = [
+                          'getenv' => getenv($name) !== false,
+                          '_ENV' => array_key_exists($name, $_ENV),
+                          '_SERVER' => array_key_exists($name, $_SERVER),
+                          'laravel_env' => class_exists(Env::class)
+                              ? Env::get($name) !== null
+                              : null,
+                      ];
+                  }
+                  $role = getenv('DURABLE_WORKFLOW_PROCESS_ROLE');
+                  file_put_contents($log, json_encode([
+                      'stage' => $stage,
+                      'role_is_client' => $role === 'client',
+                      'role_is_worker' => $role === 'worker',
+                      'presence' => $presence,
+                  ], JSON_THROW_ON_ERROR).PHP_EOL, FILE_APPEND | LOCK_EX);
+              }
+          }
+          PHP
+          tee app/Providers/PublishedRoleCredentialProbeProvider.php >/dev/null <<'PHP'
+          <?php
+          declare(strict_types=1);
+          namespace App\Providers;
+          use App\Support\PublishedRoleCredentialProbe;
+          use Illuminate\Support\ServiceProvider;
+          final class PublishedRoleCredentialProbeProvider extends ServiceProvider
+          {
+              public function boot(): void
+              {
+                  PublishedRoleCredentialProbe::record('after-bootstrap');
+              }
+          }
+          PHP
+          sed -i "/return \[/a\    App\\\\Providers\\\\PublishedRoleCredentialProbeProvider::class," bootstrap/providers.php
+          tee laravel-role-launch.php >/dev/null <<'PHP'
+          <?php
+          declare(strict_types=1);
+          require __DIR__.'/app/Support/PublishedRoleCredentialProbe.php';
+          \App\Support\PublishedRoleCredentialProbe::record('shell-entry');
+          require __DIR__.'/vendor/autoload.php';
+          \App\Support\PublishedRoleCredentialProbe::record('before-bootstrap');
+          require __DIR__.'/artisan';
+          PHP
           tee app/Support/PublishedGreetingPrefix.php >/dev/null <<'PHP'
           <?php
           declare(strict_types=1);
@@ -561,6 +625,23 @@ jobs:
 
           application="$(cat "$RUNNER_TEMP/framework-application")"
           cd "$application"
+          SDK_LOCK_FILE="$PWD/composer.lock" php <<'PHP'
+          <?php
+          declare(strict_types=1);
+          $lock = json_decode(file_get_contents(getenv('SDK_LOCK_FILE')), true, flags: JSON_THROW_ON_ERROR);
+          $package = array_values(array_filter(
+              $lock['packages'] ?? [],
+              static fn (array $candidate): bool => ($candidate['name'] ?? null) === 'durable-workflow/sdk',
+          ))[0] ?? null;
+          if (!is_array($package)) {
+              throw new RuntimeException('The installed Durable Workflow package identity is unavailable.');
+          }
+          fwrite(STDOUT, json_encode([
+              'installed_sdk_version' => $package['version'] ?? null,
+              'installed_sdk_source_reference' => $package['source']['reference'] ?? null,
+              'installed_sdk_dist_reference' => $package['dist']['reference'] ?? null,
+          ], JSON_THROW_ON_ERROR).PHP_EOL);
+          PHP
           queue="php-${FRAMEWORK}-${RUNTIME_TARGET}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           workflow_id="php-${FRAMEWORK}-${RUNTIME_TARGET}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           export DURABLE_WORKFLOW_TASK_QUEUE="$queue"
@@ -571,6 +652,8 @@ jobs:
             env -u DURABLE_WORKFLOW_TOKEN \
               -u DURABLE_WORKFLOW_CLIENT_TOKEN \
               -u DURABLE_WORKFLOW_WORKER_TOKEN \
+              -u DURABLE_WORKFLOW_PROCESS_ROLE \
+              -u DURABLE_WORKFLOW_PROCESS_TOKEN \
               php artisan config:cache
             DURABLE_WORKFLOW_CONFIG_CACHE="$PWD/bootstrap/cache/config.php" php <<'PHP'
           <?php
@@ -597,6 +680,44 @@ jobs:
               }
           }
           PHP
+            php <<'PHP'
+          <?php
+          declare(strict_types=1);
+          $configured = [];
+          $lines = file('.env', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+          if (!is_array($lines)) {
+              throw new RuntimeException('Fresh Laravel .env could not be inspected.');
+          }
+          foreach ([
+              'DURABLE_WORKFLOW_TOKEN',
+              'DURABLE_WORKFLOW_CLIENT_TOKEN',
+              'DURABLE_WORKFLOW_WORKER_TOKEN',
+              'DURABLE_WORKFLOW_PROCESS_ROLE',
+              'DURABLE_WORKFLOW_PROCESS_TOKEN',
+          ] as $name) {
+              $configured[$name] = count(array_filter(
+                  $lines,
+                  static fn (string $line): bool => str_starts_with($line, $name.'='),
+              )) !== 0;
+          }
+          fwrite(STDOUT, json_encode([
+              'stage' => 'dotenv-file',
+              'credential_presence' => $configured,
+          ], JSON_THROW_ON_ERROR).PHP_EOL);
+          if (in_array(true, $configured, true)) {
+              throw new RuntimeException('Fresh Laravel .env contains a Durable Workflow credential variable.');
+          }
+          PHP
+            laravel_client_token="$DURABLE_WORKFLOW_CLIENT_TOKEN"
+            laravel_worker_token="$DURABLE_WORKFLOW_WORKER_TOKEN"
+            unset \
+              DURABLE_WORKFLOW_TOKEN \
+              DURABLE_WORKFLOW_CLIENT_TOKEN \
+              DURABLE_WORKFLOW_WORKER_TOKEN \
+              DURABLE_WORKFLOW_PROCESS_ROLE \
+              DURABLE_WORKFLOW_PROCESS_TOKEN
+            export DURABLE_WORKFLOW_ROLE_PROBE_LOG="$RUNNER_TEMP/laravel-role-presence-${RUNTIME_TARGET}.jsonl"
+            : > "$DURABLE_WORKFLOW_ROLE_PROBE_LOG"
           fi
 
           if [ "$FRAMEWORK" = symfony ]; then
@@ -630,7 +751,13 @@ jobs:
           fi
 
           if [ "$FRAMEWORK" = laravel ]; then
-            env -u DURABLE_WORKFLOW_CLIENT_TOKEN php artisan durable-workflow:worker >worker.log 2>&1 &
+            env \
+              -u DURABLE_WORKFLOW_TOKEN \
+              -u DURABLE_WORKFLOW_CLIENT_TOKEN \
+              -u DURABLE_WORKFLOW_WORKER_TOKEN \
+              DURABLE_WORKFLOW_PROCESS_ROLE=worker \
+              DURABLE_WORKFLOW_PROCESS_TOKEN="$laravel_worker_token" \
+              php laravel-role-launch.php durable-workflow:worker >worker.log 2>&1 &
           else
             env -u DURABLE_WORKFLOW_CLIENT_TOKEN php bin/console durable-workflow:worker >worker.log 2>&1 &
           fi
@@ -657,7 +784,50 @@ jobs:
               cat worker.log >&2
               exit 1
             fi
-            env -u DURABLE_WORKFLOW_WORKER_TOKEN php artisan durable-workflow:published-greeting
+            env \
+              -u DURABLE_WORKFLOW_TOKEN \
+              -u DURABLE_WORKFLOW_CLIENT_TOKEN \
+              -u DURABLE_WORKFLOW_WORKER_TOKEN \
+              DURABLE_WORKFLOW_PROCESS_ROLE=client \
+              DURABLE_WORKFLOW_PROCESS_TOKEN="$laravel_client_token" \
+              php laravel-role-launch.php durable-workflow:published-greeting
+            DURABLE_WORKFLOW_ROLE_PROBE_LOG="$DURABLE_WORKFLOW_ROLE_PROBE_LOG" php <<'PHP'
+          <?php
+          declare(strict_types=1);
+          $entries = array_map(
+              static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR),
+              file(getenv('DURABLE_WORKFLOW_ROLE_PROBE_LOG'), FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES),
+          );
+          $observed = [];
+          foreach ($entries as $entry) {
+              fwrite(STDOUT, json_encode($entry, JSON_THROW_ON_ERROR).PHP_EOL);
+              $role = ($entry['role_is_client'] ?? false) ? 'client' : 'worker';
+              $stage = $entry['stage'] ?? '';
+              $presence = $entry['presence'] ?? [];
+              foreach (['DURABLE_WORKFLOW_TOKEN', 'DURABLE_WORKFLOW_CLIENT_TOKEN', 'DURABLE_WORKFLOW_WORKER_TOKEN'] as $name) {
+                  if (($presence[$name]['getenv'] ?? null) !== false) {
+                      throw new RuntimeException("Laravel {$role} {$stage} retained ambient {$name}.");
+                  }
+              }
+              foreach (['DURABLE_WORKFLOW_PROCESS_ROLE', 'DURABLE_WORKFLOW_PROCESS_TOKEN'] as $name) {
+                  if (($presence[$name]['getenv'] ?? null) !== true) {
+                      throw new RuntimeException("Laravel {$role} {$stage} lost its explicit {$name} handoff.");
+                  }
+              }
+              $observed["{$role}:{$stage}"] = true;
+          }
+          foreach (['client', 'worker'] as $role) {
+              foreach (['shell-entry', 'before-bootstrap', 'after-bootstrap'] as $stage) {
+                  if (!isset($observed["{$role}:{$stage}"])) {
+                      throw new RuntimeException("Laravel {$role} did not report credential presence at {$stage}.");
+                  }
+              }
+          }
+          fwrite(STDOUT, json_encode([
+              'laravel_role_probe_complete' => true,
+              'entry_count' => count($entries),
+          ], JSON_THROW_ON_ERROR).PHP_EOL);
+          PHP
           else
             env -u DURABLE_WORKFLOW_WORKER_TOKEN php durable-client.php
           fi

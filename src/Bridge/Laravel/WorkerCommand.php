@@ -7,8 +7,9 @@ namespace DurableWorkflow\Bridge\Laravel;
 use DurableWorkflow\Bridge\Event\WorkerDiagnosticEvent;
 use DurableWorkflow\Bridge\FrameworkRuntimeException;
 use DurableWorkflow\Bridge\ServiceConfiguration;
-use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Console\Command;
+use Illuminate\Contracts\Container\Container;
+use Illuminate\Contracts\Events\Dispatcher;
 use Throwable;
 
 /** Runs a supervised service-mode worker from Artisan. */
@@ -21,7 +22,7 @@ final class WorkerCommand extends Command
     protected $description = 'Run the Durable Workflow service-mode worker';
 
     public function __construct(
-        private readonly WorkerFactory $workers,
+        private readonly Container $container,
         private readonly ?Dispatcher $events = null,
     ) {
         parent::__construct();
@@ -31,9 +32,10 @@ final class WorkerCommand extends Command
     {
         try {
             ServiceConfiguration::assertWorkerExtensions();
+            $workers = $this->container->make(WorkerFactory::class);
             $queue = $this->option('queue');
-            $timeout = $this->pollTimeout();
-            $worker = $this->workers->make(is_string($queue) && $queue !== '' ? $queue : null);
+            $timeout = $this->pollTimeout($workers);
+            $worker = $workers->make(is_string($queue) && $queue !== '' ? $queue : null);
             $this->events?->listen(WorkerDiagnosticEvent::class, function (WorkerDiagnosticEvent $event): void {
                 if ($event->name !== 'worker.registered_and_polling') {
                     return;
@@ -68,11 +70,11 @@ final class WorkerCommand extends Command
         }
     }
 
-    private function pollTimeout(): int
+    private function pollTimeout(WorkerFactory $workers): int
     {
         $value = $this->option('poll-timeout');
         if ($value === null || $value === '') {
-            return $this->workers->pollTimeoutSeconds();
+            return $workers->pollTimeoutSeconds();
         }
         if (!is_string($value) || !ctype_digit($value) || (int) $value > 60) {
             throw new \InvalidArgumentException('The --poll-timeout option must be an integer between 0 and 60.');

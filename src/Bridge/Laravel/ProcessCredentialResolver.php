@@ -15,6 +15,8 @@ final class ProcessCredentialResolver
     private const SHARED_TOKEN = 'DURABLE_WORKFLOW_TOKEN';
     private const CLIENT_TOKEN = 'DURABLE_WORKFLOW_CLIENT_TOKEN';
     private const WORKER_TOKEN = 'DURABLE_WORKFLOW_WORKER_TOKEN';
+    private const PROCESS_ROLE = 'DURABLE_WORKFLOW_PROCESS_ROLE';
+    private const PROCESS_TOKEN = 'DURABLE_WORKFLOW_PROCESS_TOKEN';
 
     public static function applicationClient(
         ServiceConfiguration $configuration,
@@ -69,11 +71,35 @@ final class ProcessCredentialResolver
     /** @return array{?string, ?string, ?string} */
     private static function credentials(): array
     {
-        return [
+        $credentials = [
             self::credential(self::SHARED_TOKEN),
             self::credential(self::CLIENT_TOKEN),
             self::credential(self::WORKER_TOKEN),
         ];
+        $processRole = self::credential(self::PROCESS_ROLE);
+        $processToken = self::credential(self::PROCESS_TOKEN);
+        if (($processRole === null) !== ($processToken === null)) {
+            throw new InvalidArgumentException(
+                'Configure both DURABLE_WORKFLOW_PROCESS_ROLE and DURABLE_WORKFLOW_PROCESS_TOKEN for an explicit Laravel process credential handoff.',
+            );
+        }
+        if ($processRole === null) {
+            return $credentials;
+        }
+        if (!in_array($processRole, ['client', 'worker'], true)) {
+            throw new InvalidArgumentException(
+                'DURABLE_WORKFLOW_PROCESS_ROLE must be client or worker.',
+            );
+        }
+        if (array_filter($credentials, static fn (?string $credential): bool => $credential !== null) !== []) {
+            throw new InvalidArgumentException(
+                'An explicit Laravel process credential handoff cannot be combined with ambient Durable Workflow credentials.',
+            );
+        }
+
+        return $processRole === 'client'
+            ? [null, $processToken, null]
+            : [null, null, $processToken];
     }
 
     private static function credential(string $name): ?string

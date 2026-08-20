@@ -492,7 +492,8 @@ jobs:
             --no-interaction --prefer-dist --no-progress
       - name: Exercise fresh Laravel cached role isolation
         if: matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4'
-        run: php tests/compat/laravel-fresh-config-cache.php "$RUNNER_TEMP/laravel-fresh-config-cache"
+        run: |
+          bash tests/compat/laravel-fresh-config-cache.sh "$RUNNER_TEMP/laravel-fresh-config-cache"
       - name: Exercise native container, diagnostics, and testing integration
         env:
           COMPAT_SCRIPT: ${{ matrix.script }}
@@ -508,6 +509,7 @@ jobs:
               "tests/compat/${COMPAT_SCRIPT}"
               tests/compat/laravel-config-cache.php
               tests/compat/laravel-fresh-config-cache.php
+              tests/compat/laravel-fresh-role-launch.php
             )
           else
             php "tests/compat/${COMPAT_SCRIPT}" "$consumer/vendor/autoload.php"

@@ -260,7 +260,27 @@ class WorkflowQualificationContractTest(unittest.TestCase):
             'composer --working-dir="$application" require durable-workflow/sdk:@dev',
             install,
         )
-        self.assertIn("tests/compat/laravel-fresh-config-cache.php", exercise)
+        self.assertIn("bash tests/compat/laravel-fresh-config-cache.sh", exercise)
+        shell_reproduction = (
+            ROOT / "tests/compat/laravel-fresh-config-cache.sh"
+        ).read_text()
+        for marker in (
+            "php artisan config:cache",
+            'php "$role_launcher" "$application" durable-workflow:worker',
+            'php "$role_launcher" "$application" durable-workflow:role-client',
+            "DURABLE_WORKFLOW_PROCESS_ROLE=worker",
+            "DURABLE_WORKFLOW_PROCESS_ROLE=client",
+            "DURABLE_WORKFLOW_PROCESS_TOKEN=",
+            "--assert-probes",
+        ):
+            self.assertIn(marker, shell_reproduction)
+        self.assertNotIn("Symfony\\Component\\Process", shell_reproduction)
+        role_launcher = (
+            ROOT / "tests/compat/laravel-fresh-role-launch.php"
+        ).read_text()
+        for stage in ("shell-entry", "before-bootstrap"):
+            self.assertIn(f"LaravelFreshRoleProbe::record('{stage}')", role_launcher)
+        self.assertIn("LaravelFreshRoleProbe::record('after-bootstrap')", shell_reproduction)
         self.assertLess(
             framework_job.index(
                 "- name: Install SDK into a fresh Laravel application for cached role isolation"

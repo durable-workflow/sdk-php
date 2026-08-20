@@ -37,7 +37,7 @@ final class DependencyBoundaryTest extends TestCase
     {
         $metadata = $this->manifest()['extra']['durable-workflow'];
 
-        self::assertSame('2.0.0-rc.35', $metadata['product-train']);
+        self::assertSame('2.0.0-rc.36', $metadata['product-train']);
         self::assertSame('2.0.0-rc.33', $metadata['supported-server-versions']);
     }
 }

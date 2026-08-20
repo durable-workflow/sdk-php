@@ -385,7 +385,7 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
             "private LaravelWorkflowClientInterface $workflows",
             "return $this->workflows->start(",
             "PublishedGreetingWorkflow::class",
-            "php artisan durable-workflow:worker",
+            "php laravel-role-launch.php durable-workflow:worker",
         ):
             self.assertIn(marker, configure + runtime)
         self.assertIn("php artisan durable-workflow:published-fake", fake)
@@ -395,7 +395,10 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         self.assertLess(smoke.index(fake), smoke.index(runtime_driver))
         self.assertIn("QUALIFIED_SERVER_VERSION: ${{ inputs.server_version }}", runtime)
         self.assertIn("clusterInfo()->version", runtime)
-        self.assertIn("php artisan durable-workflow:published-greeting", runtime)
+        self.assertIn(
+            "php laravel-role-launch.php durable-workflow:published-greeting",
+            runtime,
+        )
         self.assertNotIn("continue-on-error", runtime)
         self.assertIn(f"#[Workflow('{journey['workflow_type']}')]", configure)
         self.assertIn(f"#[Activity('{journey['activity_type']}')]", configure)
@@ -609,6 +612,15 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         self.assertIn("-u DURABLE_WORKFLOW_WORKER_TOKEN", framework)
         self.assertIn("bootstrap/cache/config.php", framework)
         self.assertIn("$configuration['durable-workflow']['credentials']", framework)
+        self.assertIn("DURABLE_WORKFLOW_PROCESS_ROLE=worker", framework)
+        self.assertIn("DURABLE_WORKFLOW_PROCESS_ROLE=client", framework)
+        self.assertIn("DURABLE_WORKFLOW_PROCESS_TOKEN=", framework)
+        self.assertIn("'stage' => 'dotenv-file'", framework)
+        self.assertIn("'shell-entry'", laravel_configuration)
+        self.assertIn("'before-bootstrap'", laravel_configuration)
+        self.assertIn("'after-bootstrap'", laravel_configuration)
+        self.assertIn("'installed_sdk_version'", framework)
+        self.assertIn("'installed_sdk_source_reference'", framework)
         self.assertIn(
             "$kernel->getContainer()->get(WorkflowClientInterface::class)", framework
         )
@@ -637,7 +649,7 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
             "framework-bridges-published-smoke.yml": (
                 "framework-service-mode",
                 "Prepare the framework runtime qualification",
-                "env -u DURABLE_WORKFLOW_WORKER_TOKEN php durable-client.php",
+                "php laravel-role-launch.php durable-workflow:published-greeting",
             ),
             "service-mode-published-smoke.yml": (
                 "source-free-service-mode",

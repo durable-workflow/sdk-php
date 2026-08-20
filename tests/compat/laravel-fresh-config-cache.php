@@ -3,13 +3,14 @@
 declare(strict_types=1);
 
 use DurableWorkflow\Auth\Authentication;
+use DurableWorkflow\Bridge\Laravel\ProcessCredentialResolver;
 use DurableWorkflow\Bridge\Laravel\WorkerFactory;
+use DurableWorkflow\Bridge\ServiceConfiguration;
 use DurableWorkflow\Client;
 use DurableWorkflow\WorkflowClientInterface;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Foundation\Application;
 use Illuminate\Support\Env;
-use Symfony\Component\Process\Process;
 
 const LARAVEL_FRESH_CLIENT_TOKEN = 'fresh-cache-client-secret';
 const LARAVEL_FRESH_WORKER_TOKEN = 'fresh-cache-worker-secret';
@@ -33,6 +34,8 @@ function laravelFreshCredentialPresence(): array
         'DURABLE_WORKFLOW_TOKEN',
         'DURABLE_WORKFLOW_CLIENT_TOKEN',
         'DURABLE_WORKFLOW_WORKER_TOKEN',
+        'DURABLE_WORKFLOW_PROCESS_ROLE',
+        'DURABLE_WORKFLOW_PROCESS_TOKEN',
     ] as $name) {
         $presence[$name] = laravelFreshEnvironmentPresence($name);
     }
@@ -95,13 +98,17 @@ function laravelFreshBootstrap(string $basePath): Application
 /** @param array<string, array{getenv: bool, _ENV: bool, _SERVER: bool, laravel_env: bool}> $presence */
 function laravelFreshAssertActualProcessRole(array $presence, string $role): void
 {
-    $clientPresent = $presence['DURABLE_WORKFLOW_CLIENT_TOKEN']['getenv'];
-    $workerPresent = $presence['DURABLE_WORKFLOW_WORKER_TOKEN']['getenv'];
     if ($presence['DURABLE_WORKFLOW_TOKEN']['getenv']
-        || $clientPresent !== ($role === 'client')
-        || $workerPresent !== ($role === 'worker')
+        || $presence['DURABLE_WORKFLOW_CLIENT_TOKEN']['getenv']
+        || $presence['DURABLE_WORKFLOW_WORKER_TOKEN']['getenv']
+        || !$presence['DURABLE_WORKFLOW_PROCESS_ROLE']['getenv']
+        || !$presence['DURABLE_WORKFLOW_PROCESS_TOKEN']['getenv']
+        || getenv('DURABLE_WORKFLOW_PROCESS_ROLE') !== $role
+        || getenv('DURABLE_WORKFLOW_PROCESS_TOKEN') !== ($role === 'client'
+            ? LARAVEL_FRESH_CLIENT_TOKEN
+            : LARAVEL_FRESH_WORKER_TOKEN)
     ) {
-        throw new RuntimeException("Fresh Laravel {$role} process did not receive only its role credential.");
+        throw new RuntimeException("Fresh Laravel {$role} process did not receive an isolated role handoff.");
     }
 }
 
@@ -113,13 +120,6 @@ function laravelFreshRunChild(string $basePath, string $role): void
         if ($application->resolved(WorkerFactory::class)) {
             throw new RuntimeException('Fresh Laravel resolved the worker before the role reproduction.');
         }
-        // Reproduce the published failure's conflicting Laravel environment view:
-        // the process environment is worker-only while Laravel's repository reports
-        // only the opposite scoped credential. Runtime credentials must follow the
-        // operating-system process environment, not this framework repository.
-        unset($_ENV['DURABLE_WORKFLOW_WORKER_TOKEN'], $_SERVER['DURABLE_WORKFLOW_WORKER_TOKEN']);
-        $_SERVER['DURABLE_WORKFLOW_CLIENT_TOKEN'] = LARAVEL_FRESH_CLIENT_TOKEN;
-        Env::disablePutenv();
     }
 
     $presence = laravelFreshCredentialPresence();
@@ -127,10 +127,10 @@ function laravelFreshRunChild(string $basePath, string $role): void
     fwrite(STDOUT, json_encode(['role' => $role, 'presence' => $presence], JSON_THROW_ON_ERROR).PHP_EOL);
 
     if ($role === 'worker') {
-        if (!$presence['DURABLE_WORKFLOW_CLIENT_TOKEN']['laravel_env']
-            || $presence['DURABLE_WORKFLOW_WORKER_TOKEN']['laravel_env']
+        if (!$presence['DURABLE_WORKFLOW_PROCESS_ROLE']['laravel_env']
+            || !$presence['DURABLE_WORKFLOW_PROCESS_TOKEN']['laravel_env']
         ) {
-            throw new RuntimeException('Fresh Laravel did not reproduce the conflicting cached environment view.');
+            throw new RuntimeException('Fresh Laravel lost the explicit worker credential handoff during bootstrap.');
         }
         $factory = $application->make(WorkerFactory::class);
         $client = laravelFreshWorkerClient($factory);
@@ -173,6 +173,8 @@ function laravelFreshAssertContainsNoCredentials(string $cachePath): void
         'DURABLE_WORKFLOW_TOKEN',
         'DURABLE_WORKFLOW_CLIENT_TOKEN',
         'DURABLE_WORKFLOW_WORKER_TOKEN',
+        'DURABLE_WORKFLOW_PROCESS_ROLE',
+        'DURABLE_WORKFLOW_PROCESS_TOKEN',
         LARAVEL_FRESH_CLIENT_TOKEN,
         LARAVEL_FRESH_WORKER_TOKEN,
     ] as $credentialBytes) {
@@ -195,6 +197,76 @@ if (!is_string($basePath) || !is_file($basePath.'/artisan')) {
 }
 require $basePath.'/vendor/autoload.php';
 
+if (($argv[2] ?? null) === '--assert-probes') {
+    $probePath = $argv[3] ?? null;
+    $lines = is_string($probePath)
+        ? file($probePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)
+        : false;
+    if (!is_array($lines)) {
+        throw new RuntimeException('Fresh Laravel role probes were not recorded.');
+    }
+    $observed = [];
+    foreach ($lines as $line) {
+        $entry = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
+        if (!is_array($entry)) {
+            throw new RuntimeException('Fresh Laravel recorded an invalid role probe.');
+        }
+        fwrite(STDOUT, json_encode($entry, JSON_THROW_ON_ERROR).PHP_EOL);
+        $clientRole = ($entry['role_is_client'] ?? null) === true;
+        $workerRole = ($entry['role_is_worker'] ?? null) === true;
+        if ($clientRole === $workerRole) {
+            throw new RuntimeException('Fresh Laravel role probe did not identify exactly one process role.');
+        }
+        $role = $clientRole ? 'client' : 'worker';
+        $stage = $entry['stage'] ?? null;
+        $presence = $entry['presence'] ?? null;
+        if (!is_string($stage) || !is_array($presence)) {
+            throw new RuntimeException('Fresh Laravel role probe omitted its stage or presence map.');
+        }
+        foreach (['DURABLE_WORKFLOW_TOKEN', 'DURABLE_WORKFLOW_CLIENT_TOKEN', 'DURABLE_WORKFLOW_WORKER_TOKEN'] as $name) {
+            if (($presence[$name]['getenv'] ?? null) !== false) {
+                throw new RuntimeException("Fresh Laravel {$role} {$stage} retained ambient {$name}.");
+            }
+        }
+        foreach (['DURABLE_WORKFLOW_PROCESS_ROLE', 'DURABLE_WORKFLOW_PROCESS_TOKEN'] as $name) {
+            if (($presence[$name]['getenv'] ?? null) !== true
+                || ($stage !== 'shell-entry' && ($presence[$name]['laravel_env'] ?? null) !== true)
+            ) {
+                throw new RuntimeException("Fresh Laravel {$role} {$stage} lost its explicit {$name} handoff.");
+            }
+        }
+        $observed["{$role}:{$stage}"] = true;
+    }
+    foreach (['client', 'worker'] as $role) {
+        foreach (['shell-entry', 'before-bootstrap', 'after-bootstrap'] as $stage) {
+            if (!isset($observed["{$role}:{$stage}"])) {
+                throw new RuntimeException("Fresh Laravel did not record {$role} credential presence at {$stage}.");
+            }
+        }
+    }
+    exit(0);
+}
+if (($argv[2] ?? null) === '--assert-invalid-handoff') {
+    $expected = $argv[3] ?? '';
+    try {
+        ProcessCredentialResolver::workerClient(new ServiceConfiguration(
+            'http://127.0.0.1:8080',
+            'default',
+            'fresh-cache-workers',
+            [],
+        ));
+    } catch (InvalidArgumentException $exception) {
+        if ($expected !== '' && str_contains($exception->getMessage(), $expected)) {
+            exit(0);
+        }
+        throw $exception;
+    }
+    throw new RuntimeException('Fresh Laravel accepted an invalid explicit process credential handoff.');
+}
+if (($argv[2] ?? null) === '--assert-cache') {
+    laravelFreshAssertContainsNoCredentials($basePath.'/bootstrap/cache/config.php');
+    exit(0);
+}
 if (($argv[2] ?? null) === '--child') {
     try {
         laravelFreshRunChild($basePath, $argv[3] ?? '');
@@ -205,40 +277,4 @@ if (($argv[2] ?? null) === '--child') {
     exit(0);
 }
 
-$baseEnvironment = [
-    'DURABLE_WORKFLOW_TOKEN' => false,
-    'DURABLE_WORKFLOW_CLIENT_TOKEN' => false,
-    'DURABLE_WORKFLOW_WORKER_TOKEN' => false,
-];
-$publish = new Process(
-    [PHP_BINARY, $basePath.'/artisan', 'vendor:publish', '--tag=durable-workflow-config', '--force'],
-    $basePath,
-    $baseEnvironment,
-);
-$publish->mustRun();
-
-$cache = new Process(
-    [PHP_BINARY, $basePath.'/artisan', 'config:cache'],
-    $basePath,
-    array_merge($baseEnvironment, [
-        'DURABLE_WORKFLOW_CLIENT_TOKEN' => LARAVEL_FRESH_CLIENT_TOKEN,
-        'DURABLE_WORKFLOW_WORKER_TOKEN' => LARAVEL_FRESH_WORKER_TOKEN,
-    ]),
-);
-$cache->mustRun();
-laravelFreshAssertContainsNoCredentials($basePath.'/bootstrap/cache/config.php');
-
-$roles = [
-    'worker' => ['DURABLE_WORKFLOW_WORKER_TOKEN' => LARAVEL_FRESH_WORKER_TOKEN],
-    'client' => ['DURABLE_WORKFLOW_CLIENT_TOKEN' => LARAVEL_FRESH_CLIENT_TOKEN],
-];
-foreach ($roles as $role => $environment) {
-    $process = new Process(
-        [PHP_BINARY, __FILE__, $basePath, '--child', $role],
-        env: array_merge($baseEnvironment, $environment),
-    );
-    $process->mustRun();
-    fwrite(STDOUT, $process->getOutput());
-}
-
-fwrite(STDOUT, 'Fresh Laravel cached role isolation passed.'.PHP_EOL);
+throw new InvalidArgumentException('Pass --assert-cache or --child with a Laravel process role.');
