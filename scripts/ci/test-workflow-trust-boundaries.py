@@ -142,10 +142,10 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
             "framework-bridges-published-smoke.yml": (
                 "framework-service-mode",
                 (
-                    "secrets[matrix.endpoint_secret]",
-                    "secrets[matrix.namespace_secret]",
-                    "secrets[matrix.client_token_secret]",
-                    "secrets[matrix.worker_token_secret]",
+                    "secrets.DURABLE_WORKFLOW_SERVER_URL",
+                    "secrets.DURABLE_WORKFLOW_NAMESPACE",
+                    "secrets.DURABLE_WORKFLOW_CLIENT_TOKEN",
+                    "secrets.DURABLE_WORKFLOW_WORKER_TOKEN",
                 ),
             ),
             "service-mode-published-smoke.yml": (
@@ -235,7 +235,7 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
             "framework-bridges-published-smoke.yml": (
                 "framework-service-mode",
                 "Create a fresh framework application from published artifacts",
-                "Start the framework worker and complete a workflow",
+                "Prepare the framework runtime qualification",
             ),
             "service-mode-published-smoke.yml": (
                 "source-free-service-mode",
@@ -305,21 +305,41 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         fake = step_source(
             smoke, "Prove the published Laravel fake without a runtime"
         )
-        runtime = step_source(
-            smoke, "Start the framework worker and complete a workflow"
+        cloud_validation = step_source(smoke, "Validate managed Cloud configuration")
+        standalone_runtime = step_source(smoke, "Start the exact standalone Server")
+        runtime_driver = step_source(
+            smoke, "Prepare the framework runtime qualification"
         )
+        standalone_execution = step_source(
+            smoke, "Complete the published workflow against standalone Server"
+        )
+        cloud_execution = step_source(
+            smoke, "Complete the published workflow against managed Cloud"
+        )
+        runtime = runtime_driver + standalone_execution + cloud_execution
 
         self.assertIn("server_version:", source)
         self.assertIn("SERVER_VERSION: ${{ inputs.server_version }}", validate)
         self.assertIn("supported-server-versions", verify)
         self.assertIn("getenv('SERVER_VERSION')", verify)
-        for destination in ("standalone-server", "managed-cloud"):
+        destinations = {
+            "standalone-server": "job-local-server",
+            "managed-cloud": "protected-cloud",
+        }
+        for destination, transport in destinations.items():
             self.assertIn(
                 "          - framework: laravel\n"
-                f"            runtime: {destination}",
+                f"            runtime: {destination}\n"
+                f"            transport: {transport}",
                 smoke,
             )
-        for secret_name in (
+            self.assertIn(
+                "          - framework: symfony\n"
+                f"            runtime: {destination}\n"
+                f"            transport: {transport}",
+                smoke,
+            )
+        for absent_alias in (
             "DURABLE_WORKFLOW_STANDALONE_SERVER_URL",
             "DURABLE_WORKFLOW_STANDALONE_SERVER_NAMESPACE",
             "DURABLE_WORKFLOW_STANDALONE_SERVER_CLIENT_TOKEN",
@@ -329,7 +349,36 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
             "DURABLE_WORKFLOW_CLOUD_CLIENT_TOKEN",
             "DURABLE_WORKFLOW_CLOUD_WORKER_TOKEN",
         ):
-            self.assertIn(secret_name, smoke)
+            self.assertNotIn(absent_alias, smoke)
+        for protected_secret in (
+            "secrets.DURABLE_WORKFLOW_SERVER_URL",
+            "secrets.DURABLE_WORKFLOW_NAMESPACE",
+            "secrets.DURABLE_WORKFLOW_CLIENT_TOKEN",
+            "secrets.DURABLE_WORKFLOW_WORKER_TOKEN",
+        ):
+            self.assertIn(protected_secret, cloud_validation)
+            self.assertIn(protected_secret, cloud_execution)
+
+        for standalone_marker in (
+            'server_image="durableworkflow/server:${SERVER_VERSION}"',
+            "mysql:8.0.43",
+            "redis:7-alpine",
+            "--tmpfs /var/lib/mysql:",
+            "--tmpfs /data:",
+            '"$server_image" server-bootstrap',
+            "DW_OPERATOR_TOKEN",
+            "DW_WORKER_TOKEN",
+            "DW_AUTH_BACKWARD_COMPATIBLE=false",
+            '"$runtime_url/api/ready"',
+            '($ready["status"] ?? null) === "ready"',
+        ):
+            self.assertIn(standalone_marker, standalone_runtime)
+        self.assertNotIn("secrets.", standalone_runtime)
+        self.assertNotIn("secrets.", standalone_execution)
+        self.assertIn(
+            "standalone-server:job-local-server|managed-cloud:protected-cloud",
+            runtime_driver,
+        )
 
         for marker in (
             "private PublishedGreetingPrefix $prefix",
@@ -343,7 +392,7 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         self.assertIn("assertWorkflowStarted", configure)
         self.assertIn("assertResultRequested", configure)
         self.assertNotIn("secrets.", fake)
-        self.assertLess(smoke.index(fake), smoke.index(runtime))
+        self.assertLess(smoke.index(fake), smoke.index(runtime_driver))
         self.assertIn("QUALIFIED_SERVER_VERSION: ${{ inputs.server_version }}", runtime)
         self.assertIn("clusterInfo()->version", runtime)
         self.assertIn("php artisan durable-workflow:published-greeting", runtime)
@@ -353,47 +402,78 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         self.assertIn(repr(journey["input"][0]), configure)
         self.assertIn(repr(journey["result"]), configure)
 
+    def test_framework_runtime_transport_scripts_are_valid_bash(self) -> None:
+        smoke = job_source(
+            workflow_source("framework-bridges-published-smoke.yml"),
+            "framework-service-mode",
+        )
+        standalone = step_script(step_source(smoke, "Start the exact standalone Server"))
+        prepare = step_script(
+            step_source(smoke, "Prepare the framework runtime qualification")
+        )
+        driver = prepare.split("<<'BASH'\n", 1)[1].rsplit("\nBASH\n", 1)[0]
+
+        for name, script in (
+            ("standalone transport", standalone),
+            ("runtime driver", driver),
+        ):
+            with self.subTest(script=name):
+                syntax = subprocess.run(
+                    ["bash", "-n"],
+                    input=script,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(0, syntax.returncode, syntax.stderr)
+
     def test_published_smoke_credentials_are_runtime_step_scoped(self) -> None:
-        workflows = {
-            "framework-bridges-published-smoke.yml": (
-                "framework-service-mode",
-                "Start the framework worker and complete a workflow",
-                (
-                    "secrets[matrix.endpoint_secret]",
-                    "secrets[matrix.namespace_secret]",
-                    "secrets[matrix.client_token_secret]",
-                    "secrets[matrix.worker_token_secret]",
-                ),
-            ),
-            "service-mode-published-smoke.yml": (
-                "source-free-service-mode",
-                "Complete a class-oriented workflow against the published endpoint",
-                (
-                    "secrets.DURABLE_WORKFLOW_SERVER_URL",
-                    "secrets.DURABLE_WORKFLOW_NAMESPACE",
-                    "secrets.DURABLE_WORKFLOW_CLIENT_TOKEN",
-                    "secrets.DURABLE_WORKFLOW_WORKER_TOKEN",
-                ),
-            ),
-        }
-        for workflow, (job, runtime_name, secret_markers) in workflows.items():
-            with self.subTest(workflow=workflow):
-                smoke = job_source(workflow_source(workflow), job)
-                runtime = step_source(smoke, runtime_name)
-                job_configuration = smoke[: smoke.index("    steps:")]
-                self.assertNotIn("secrets.", job_configuration)
-                runtime_offset = smoke.index(runtime)
-                non_runtime = (
-                    smoke[:runtime_offset]
-                    + smoke[runtime_offset + len(runtime) :]
-                )
-                self.assertNotIn("secrets.", non_runtime)
-                self.assertLess(
-                    runtime.index("        env:"), runtime.index("        run:")
-                )
-                for marker in secret_markers:
-                    self.assertEqual(1, smoke.count(marker))
-                    self.assertIn(marker, runtime)
+        framework = job_source(
+            workflow_source("framework-bridges-published-smoke.yml"),
+            "framework-service-mode",
+        )
+        cloud_validation = step_source(
+            framework, "Validate managed Cloud configuration"
+        )
+        cloud_runtime = step_source(
+            framework, "Complete the published workflow against managed Cloud"
+        )
+        non_cloud_steps = framework.replace(cloud_validation, "").replace(
+            cloud_runtime, ""
+        )
+        self.assertNotIn("secrets.", framework[: framework.index("    steps:")])
+        self.assertNotIn("secrets.", non_cloud_steps)
+        for step in (cloud_validation, cloud_runtime):
+            self.assertLess(step.index("        env:"), step.index("        run:"))
+        for marker in (
+            "secrets.DURABLE_WORKFLOW_SERVER_URL",
+            "secrets.DURABLE_WORKFLOW_NAMESPACE",
+            "secrets.DURABLE_WORKFLOW_CLIENT_TOKEN",
+            "secrets.DURABLE_WORKFLOW_WORKER_TOKEN",
+        ):
+            self.assertEqual(2, framework.count(marker))
+            self.assertIn(marker, cloud_validation)
+            self.assertIn(marker, cloud_runtime)
+
+        service = job_source(
+            workflow_source("service-mode-published-smoke.yml"),
+            "source-free-service-mode",
+        )
+        runtime = step_source(
+            service, "Complete a class-oriented workflow against the published endpoint"
+        )
+        non_runtime = service.replace(runtime, "")
+        self.assertNotIn("secrets.", service[: service.index("    steps:")])
+        self.assertNotIn("secrets.", non_runtime)
+        self.assertLess(runtime.index("        env:"), runtime.index("        run:"))
+        for marker in (
+            "secrets.DURABLE_WORKFLOW_SERVER_URL",
+            "secrets.DURABLE_WORKFLOW_NAMESPACE",
+            "secrets.DURABLE_WORKFLOW_CLIENT_TOKEN",
+            "secrets.DURABLE_WORKFLOW_WORKER_TOKEN",
+        ):
+            self.assertEqual(1, service.count(marker))
+            self.assertIn(marker, runtime)
 
     def test_published_smokes_fail_closed_on_incomplete_or_shared_credentials(
         self,
@@ -401,8 +481,8 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         workflows = {
             "framework-bridges-published-smoke.yml": (
                 "framework-service-mode",
-                "Start the framework worker and complete a workflow",
-                "DURABLE_WORKFLOW_RUNTIME_URL",
+                "Validate managed Cloud configuration",
+                "DURABLE_WORKFLOW_SERVER_URL",
                 "DURABLE_WORKFLOW_CLIENT_TOKEN",
             ),
             "service-mode-published-smoke.yml": (
@@ -486,7 +566,7 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
             "framework-service-mode",
         )
         framework = step_source(
-            framework_job, "Start the framework worker and complete a workflow"
+            framework_job, "Prepare the framework runtime qualification"
         )
         laravel_configuration = step_source(
             framework_job, "Configure Laravel through auto-discovery and vendor publish"
@@ -556,7 +636,7 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         workflows = {
             "framework-bridges-published-smoke.yml": (
                 "framework-service-mode",
-                "Start the framework worker and complete a workflow",
+                "Prepare the framework runtime qualification",
                 "env -u DURABLE_WORKFLOW_WORKER_TOKEN php durable-client.php",
             ),
             "service-mode-published-smoke.yml": (

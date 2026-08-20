@@ -20,7 +20,7 @@ jobs:
     name: ${{ matrix.framework }} / ${{ matrix.runtime }} published workflow
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     environment: published-service-smoke
     strategy:
       fail-fast: false
@@ -28,28 +28,16 @@ jobs:
         include:
           - framework: laravel
             runtime: standalone-server
-            endpoint_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_URL
-            namespace_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_NAMESPACE
-            client_token_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_CLIENT_TOKEN
-            worker_token_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_WORKER_TOKEN
+            transport: job-local-server
           - framework: laravel
             runtime: managed-cloud
-            endpoint_secret: DURABLE_WORKFLOW_CLOUD_URL
-            namespace_secret: DURABLE_WORKFLOW_CLOUD_NAMESPACE
-            client_token_secret: DURABLE_WORKFLOW_CLOUD_CLIENT_TOKEN
-            worker_token_secret: DURABLE_WORKFLOW_CLOUD_WORKER_TOKEN
+            transport: protected-cloud
           - framework: symfony
             runtime: standalone-server
-            endpoint_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_URL
-            namespace_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_NAMESPACE
-            client_token_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_CLIENT_TOKEN
-            worker_token_secret: DURABLE_WORKFLOW_STANDALONE_SERVER_WORKER_TOKEN
+            transport: job-local-server
           - framework: symfony
             runtime: managed-cloud
-            endpoint_secret: DURABLE_WORKFLOW_CLOUD_URL
-            namespace_secret: DURABLE_WORKFLOW_CLOUD_NAMESPACE
-            client_token_secret: DURABLE_WORKFLOW_CLOUD_CLIENT_TOKEN
-            worker_token_secret: DURABLE_WORKFLOW_CLOUD_WORKER_TOKEN
+            transport: protected-cloud
     steps:
       - name: Validate the exact published SDK version
         env:
@@ -66,6 +54,37 @@ jobs:
         run: |
           if [[ ! "$SERVER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
             echo "server_version must be an exact stable, alpha, beta, or release-candidate version" >&2
+            exit 1
+          fi
+
+      - name: Validate managed Cloud configuration
+        if: matrix.transport == 'protected-cloud'
+        env:
+          DURABLE_WORKFLOW_SERVER_URL: ${{ secrets.DURABLE_WORKFLOW_SERVER_URL }}
+          DURABLE_WORKFLOW_NAMESPACE: ${{ secrets.DURABLE_WORKFLOW_NAMESPACE }}
+          DURABLE_WORKFLOW_CLIENT_TOKEN: ${{ secrets.DURABLE_WORKFLOW_CLIENT_TOKEN }}
+          DURABLE_WORKFLOW_WORKER_TOKEN: ${{ secrets.DURABLE_WORKFLOW_WORKER_TOKEN }}
+        run: |
+          required=(
+            DURABLE_WORKFLOW_SERVER_URL
+            DURABLE_WORKFLOW_NAMESPACE
+            DURABLE_WORKFLOW_CLIENT_TOKEN
+            DURABLE_WORKFLOW_WORKER_TOKEN
+          )
+          missing=()
+          for secret_name in "${required[@]}"; do
+            if [ -z "${!secret_name:-}" ]; then
+              missing+=("$secret_name")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf 'Managed Cloud qualification is missing protected secret(s):' >&2
+            printf ' %s' "${missing[@]}" >&2
+            printf '\n' >&2
+            exit 1
+          fi
+          if [ "$DURABLE_WORKFLOW_CLIENT_TOKEN" = "$DURABLE_WORKFLOW_WORKER_TOKEN" ]; then
+            echo 'Managed Cloud client and worker credentials must be distinct.' >&2
             exit 1
           fi
 
@@ -354,16 +373,169 @@ jobs:
           }
           PHP
 
-      - name: Start the framework worker and complete a workflow
+      - name: Start the exact standalone Server
+        if: matrix.transport == 'job-local-server'
         env:
-          DURABLE_WORKFLOW_RUNTIME_URL: ${{ secrets[matrix.endpoint_secret] }}
-          DURABLE_WORKFLOW_NAMESPACE: ${{ secrets[matrix.namespace_secret] }}
-          DURABLE_WORKFLOW_CLIENT_TOKEN: ${{ secrets[matrix.client_token_secret] }}
-          DURABLE_WORKFLOW_WORKER_TOKEN: ${{ secrets[matrix.worker_token_secret] }}
           FRAMEWORK: ${{ matrix.framework }}
-          QUALIFIED_SERVER_VERSION: ${{ inputs.server_version }}
-          RUNTIME_TARGET: ${{ matrix.runtime }}
+          SERVER_VERSION: ${{ inputs.server_version }}
         run: |
+          runtime_network="published-framework-${FRAMEWORK}"
+          mysql_container="${runtime_network}-mysql"
+          redis_container="${runtime_network}-redis"
+          bootstrap_container="${runtime_network}-bootstrap"
+          server_container="${runtime_network}-server"
+          server_image="durableworkflow/server:${SERVER_VERSION}"
+          mysql_root_password="$(openssl rand -hex 24)"
+          mysql_password="$(openssl rand -hex 24)"
+          server_key="base64:$(openssl rand -base64 32)"
+          client_token="$(openssl rand -hex 32)"
+          worker_token="$(openssl rand -hex 32)"
+
+          for value in "$mysql_root_password" "$mysql_password" "$server_key" "$client_token" "$worker_token"; do
+            echo "::add-mask::$value"
+          done
+
+          cleanup() {
+            docker rm -f \
+              "$server_container" \
+              "$bootstrap_container" \
+              "$redis_container" \
+              "$mysql_container" >/dev/null 2>&1 || true
+            docker network rm "$runtime_network" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker network create "$runtime_network" >/dev/null
+          docker run --detach \
+            --name "$mysql_container" \
+            --network "$runtime_network" \
+            --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=1024m \
+            --env MYSQL_DATABASE=durable_workflow \
+            --env MYSQL_USER=workflow \
+            --env MYSQL_PASSWORD="$mysql_password" \
+            --env MYSQL_ROOT_PASSWORD="$mysql_root_password" \
+            mysql:8.0.43 >/dev/null
+          docker run --detach \
+            --name "$redis_container" \
+            --network "$runtime_network" \
+            --tmpfs /data:rw,noexec,nosuid,size=256m \
+            redis:7-alpine >/dev/null
+
+          mysql_ready=false
+          redis_ready=false
+          for _attempt in $(seq 1 60); do
+            if docker exec "$mysql_container" \
+              mysqladmin ping --host=127.0.0.1 --user=root \
+              --password="$mysql_root_password" --silent >/dev/null 2>&1; then
+              mysql_ready=true
+            fi
+            if [ "$(docker exec "$redis_container" redis-cli ping 2>/dev/null || true)" = PONG ]; then
+              redis_ready=true
+            fi
+            if [ "$mysql_ready" = true ] && [ "$redis_ready" = true ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ "$mysql_ready" != true ] || [ "$redis_ready" != true ]; then
+            echo 'Standalone Server dependencies did not become ready.' >&2
+            docker logs "$mysql_container" >&2 || true
+            docker logs "$redis_container" >&2 || true
+            exit 1
+          fi
+
+          server_environment=(
+            --env APP_ENV=local
+            --env DW_SERVER_KEY="$server_key"
+            --env DB_CONNECTION=mysql
+            --env DB_HOST="$mysql_container"
+            --env DB_PORT=3306
+            --env DB_DATABASE=durable_workflow
+            --env DB_USERNAME=workflow
+            --env DB_PASSWORD="$mysql_password"
+            --env REDIS_HOST="$redis_container"
+            --env QUEUE_CONNECTION=redis
+            --env CACHE_STORE=redis
+            --env DW_AUTH_DRIVER=token
+            --env DW_OPERATOR_TOKEN="$client_token"
+            --env DW_WORKER_TOKEN="$worker_token"
+            --env DW_AUTH_BACKWARD_COMPATIBLE=false
+          )
+
+          if ! docker run \
+            --name "$bootstrap_container" \
+            --network "$runtime_network" \
+            "${server_environment[@]}" \
+            "$server_image" server-bootstrap; then
+            echo 'Standalone Server bootstrap and migrations failed.' >&2
+            docker logs "$bootstrap_container" >&2 || true
+            exit 1
+          fi
+          docker rm "$bootstrap_container" >/dev/null
+
+          docker run --detach \
+            --name "$server_container" \
+            --network "$runtime_network" \
+            --publish 127.0.0.1::8080 \
+            "${server_environment[@]}" \
+            "$server_image" >/dev/null
+          published_port="$(docker port "$server_container" 8080/tcp | awk -F: 'END {print $NF}')"
+          if [ -z "$published_port" ]; then
+            echo 'Standalone Server did not publish its workflow API port.' >&2
+            exit 1
+          fi
+          runtime_url="http://127.0.0.1:${published_port}"
+
+          workflow_ready=false
+          for _attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error \
+              "$runtime_url/api/ready" >"$RUNNER_TEMP/standalone-ready.json"; then
+              if php -r '
+                $ready = json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR);
+                exit(($ready["status"] ?? null) === "ready" ? 0 : 1);
+              ' "$RUNNER_TEMP/standalone-ready.json"; then
+                workflow_ready=true
+                break
+              fi
+            fi
+            if ! docker inspect --format '{{.State.Running}}' "$server_container" 2>/dev/null | grep -Fxq true; then
+              break
+            fi
+            sleep 1
+          done
+          if [ "$workflow_ready" != true ]; then
+            echo 'Standalone Server did not report workflow readiness at /api/ready.' >&2
+            cat "$RUNNER_TEMP/standalone-ready.json" >&2 2>/dev/null || true
+            docker logs "$server_container" >&2 || true
+            exit 1
+          fi
+
+          {
+            printf 'DURABLE_WORKFLOW_RUNTIME_URL=%s\n' "$runtime_url"
+            printf 'DURABLE_WORKFLOW_NAMESPACE=default\n'
+            printf 'DURABLE_WORKFLOW_CLIENT_TOKEN=%s\n' "$client_token"
+            printf 'DURABLE_WORKFLOW_WORKER_TOKEN=%s\n' "$worker_token"
+            printf 'STANDALONE_RUNTIME_NETWORK=%s\n' "$runtime_network"
+            printf 'STANDALONE_MYSQL_CONTAINER=%s\n' "$mysql_container"
+            printf 'STANDALONE_REDIS_CONTAINER=%s\n' "$redis_container"
+            printf 'STANDALONE_SERVER_CONTAINER=%s\n' "$server_container"
+          } >> "$GITHUB_ENV"
+          trap - EXIT
+
+      - name: Prepare the framework runtime qualification
+        run: |
+          tee "$RUNNER_TEMP/framework-runtime.sh" >/dev/null <<'BASH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          case "${RUNTIME_TARGET}:${SELECTED_TRANSPORT}" in
+            standalone-server:job-local-server|managed-cloud:protected-cloud) ;;
+            *)
+              echo "Runtime ${RUNTIME_TARGET} cannot use transport ${SELECTED_TRANSPORT}." >&2
+              exit 1
+              ;;
+          esac
+
           required=(
             DURABLE_WORKFLOW_RUNTIME_URL
             DURABLE_WORKFLOW_NAMESPACE
@@ -377,7 +549,7 @@ jobs:
             fi
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            printf 'Published runtime configuration is incomplete; missing protected value(s):' >&2
+            printf 'Published runtime configuration is incomplete; missing value(s):' >&2
             printf ' %s' "${missing[@]}" >&2
             printf '\n' >&2
             exit 1
@@ -503,3 +675,36 @@ jobs:
             cat worker.log >&2
             exit "$worker_status"
           fi
+          BASH
+          chmod +x "$RUNNER_TEMP/framework-runtime.sh"
+
+      - name: Complete the published workflow against standalone Server
+        if: matrix.transport == 'job-local-server'
+        env:
+          FRAMEWORK: ${{ matrix.framework }}
+          QUALIFIED_SERVER_VERSION: ${{ inputs.server_version }}
+          RUNTIME_TARGET: ${{ matrix.runtime }}
+          SELECTED_TRANSPORT: ${{ matrix.transport }}
+        run: "$RUNNER_TEMP/framework-runtime.sh"
+
+      - name: Complete the published workflow against managed Cloud
+        if: matrix.transport == 'protected-cloud'
+        env:
+          DURABLE_WORKFLOW_RUNTIME_URL: ${{ secrets.DURABLE_WORKFLOW_SERVER_URL }}
+          DURABLE_WORKFLOW_NAMESPACE: ${{ secrets.DURABLE_WORKFLOW_NAMESPACE }}
+          DURABLE_WORKFLOW_CLIENT_TOKEN: ${{ secrets.DURABLE_WORKFLOW_CLIENT_TOKEN }}
+          DURABLE_WORKFLOW_WORKER_TOKEN: ${{ secrets.DURABLE_WORKFLOW_WORKER_TOKEN }}
+          FRAMEWORK: ${{ matrix.framework }}
+          QUALIFIED_SERVER_VERSION: ${{ inputs.server_version }}
+          RUNTIME_TARGET: ${{ matrix.runtime }}
+          SELECTED_TRANSPORT: ${{ matrix.transport }}
+        run: "$RUNNER_TEMP/framework-runtime.sh"
+
+      - name: Stop the standalone Server and isolated state
+        if: always() && matrix.transport == 'job-local-server'
+        run: |
+          docker rm -f \
+            "$STANDALONE_SERVER_CONTAINER" \
+            "$STANDALONE_REDIS_CONTAINER" \
+            "$STANDALONE_MYSQL_CONTAINER" >/dev/null 2>&1 || true
+          docker network rm "$STANDALONE_RUNTIME_NETWORK" >/dev/null 2>&1 || true
