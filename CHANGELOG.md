@@ -67,6 +67,10 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Workers now reject workflow, update, activity, and query tasks whose root
+  `payload_codec` is missing or is not exactly `avro`, before payload decoding
+  or user-handler execution, and report `unsupported_payload_codec` through the
+  task failure path.
 - Laravel role processes can use `DURABLE_WORKFLOW_PROCESS_ROLE` with
   `DURABLE_WORKFLOW_PROCESS_TOKEN` as an explicit single-credential handoff.
   It rejects ambient, incomplete, invalid, and opposite-role authentication
