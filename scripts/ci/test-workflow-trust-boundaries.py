@@ -441,6 +441,27 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
                 )
                 self.assertEqual(0, syntax.returncode, syntax.stderr)
 
+    def test_published_framework_release_signal_is_zero_argument_and_diagnostic(
+        self,
+    ) -> None:
+        smoke = job_source(
+            workflow_source("framework-bridges-published-smoke.yml"),
+            "framework-service-mode",
+        )
+
+        self.assertEqual(2, smoke.count("#[Signal('published.release')]"))
+        self.assertEqual(2, smoke.count("public function release(): void {}"))
+        self.assertEqual(2, smoke.count("$handle->signal('published.release');"))
+        self.assertNotIn("$handle->signal('published.release',", smoke)
+        self.assertEqual(
+            2,
+            smoke.count(
+                "catch (\\DurableWorkflow\\Exception\\SignalFailed $exception)"
+            ),
+        )
+        self.assertEqual(2, smoke.count("'reason' => $exception->reason"))
+        self.assertEqual(2, smoke.count("'details' => $exception->details"))
+
     def test_published_smoke_credentials_are_runtime_step_scoped(self) -> None:
         framework = job_source(
             workflow_source("framework-bridges-published-smoke.yml"),

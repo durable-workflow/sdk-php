@@ -400,7 +400,18 @@ jobs:
                   $workflowId,
                   $execution->runId,
               );
-              $handle->signal('published.release', ['qualified']);
+              try {
+                  $handle->signal('published.release');
+              } catch (\DurableWorkflow\Exception\SignalFailed $exception) {
+                  throw new \RuntimeException(
+                      'Published Laravel release signal failed: '.json_encode([
+                          'status' => $exception->status,
+                          'reason' => $exception->reason,
+                          'details' => $exception->details,
+                      ], JSON_THROW_ON_ERROR),
+                      previous: $exception,
+                  );
+              }
               $result = $handle->result(timeoutSeconds: 90, pollIntervalSeconds: 1);
               if ($result !== 'hello from Laravel, Ada / version 1') {
                   throw new \RuntimeException('Published Laravel workflow returned an unexpected upgraded result.');
@@ -845,7 +856,18 @@ jobs:
               throw new RuntimeException('Published Symfony workflow has no run identity for cold replay.');
           }
           $handle = $client->workflowHandle($workflowId, $execution->runId);
-          $handle->signal('published.release', ['qualified']);
+          try {
+              $handle->signal('published.release');
+          } catch (\DurableWorkflow\Exception\SignalFailed $exception) {
+              throw new RuntimeException(
+                  'Published Symfony release signal failed: '.json_encode([
+                      'status' => $exception->status,
+                      'reason' => $exception->reason,
+                      'details' => $exception->details,
+                  ], JSON_THROW_ON_ERROR),
+                  previous: $exception,
+              );
+          }
           $result = $handle->result(timeoutSeconds: 90, pollIntervalSeconds: 1);
           if ($result !== ['greeting' => 'hello, published framework', 'version' => 1]) {
               throw new RuntimeException('Published framework workflow returned an unexpected upgraded result.');
