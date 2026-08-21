@@ -1,0 +1,49 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-version-marker-cold-replay",
+  "protocol_version": "1.13",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "golden.single-activity",
+    "input": ["Ada", "checkout-routing"]
+  },
+  "history": [
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "golden.greet"
+      }
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "golden.greet",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoUaGVsbG8sIEFkYQ=="
+        }
+      }
+    },
+    {
+      "event_type": "VersionMarkerRecorded",
+      "payload": {
+        "sequence": 2,
+        "change_id": "checkout-routing",
+        "version": 2,
+        "min_supported": 1,
+        "max_supported": 2
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "complete_workflow",
+        "result": "hello, Ada"
+      }
+    ]
+  }
+}

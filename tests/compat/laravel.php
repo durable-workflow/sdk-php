@@ -54,6 +54,10 @@ final class LaravelGreetingWorkflow
         if ($this->prefix->value === '') {
             throw new RuntimeException('Laravel did not inject the workflow application dependency.');
         }
+        $version = $context->getVersion('laravel-greeting-format', 1, 2);
+        if ($version < 1) {
+            throw new RuntimeException('Laravel workflow version replay returned an unsupported decision.');
+        }
 
         return $context->activity('laravel.greet', [$name]);
     }
@@ -185,11 +189,21 @@ $harness = new WorkerTestHarness($worker);
 $harness->assertActivityResult('laravel.greet', 'hello from Laravel, Ada', ['Ada']);
 $codec = $registeredClient->payloadCodec();
 $completed = $harness->runWorkflow('laravel.greeting', ['Ada'], [
-    ['event_type' => 'ActivityScheduled', 'payload' => ['sequence' => 1, 'activity_type' => 'laravel.greet']],
+    [
+        'event_type' => 'VersionMarkerRecorded',
+        'payload' => [
+            'sequence' => 1,
+            'change_id' => 'laravel-greeting-format',
+            'version' => 1,
+            'min_supported' => 1,
+            'max_supported' => 1,
+        ],
+    ],
+    ['event_type' => 'ActivityScheduled', 'payload' => ['sequence' => 2, 'activity_type' => 'laravel.greet']],
     [
         'event_type' => 'ActivityCompleted',
         'payload' => [
-            'sequence' => 1,
+            'sequence' => 2,
             'activity_type' => 'laravel.greet',
             'result' => $codec->envelope('hello from Laravel, Ada'),
         ],

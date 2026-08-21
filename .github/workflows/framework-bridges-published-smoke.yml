@@ -305,6 +305,8 @@ jobs:
                       throw new \LogicException('Laravel did not inject the workflow dependency.');
                   }
 
+                  $version = $context->getVersion('published-framework-greeting', 1, 1);
+
                   $released = $context->waitCondition(
                       static fn (): bool => $context->signals('published.release') !== [],
                       key: 'published-laravel-release',
@@ -314,7 +316,7 @@ jobs:
                       return 'published Laravel condition wait timed out';
                   }
 
-                  return $context->activity('laravel.greet', [$name]);
+                  return $context->activity('laravel.greet', [$name])." / version {$version}";
               }
 
               #[Signal('published.release')]
@@ -367,26 +369,56 @@ jobs:
                   throw new \RuntimeException("Published endpoint is Server {$actualVersion}; expected ".env('QUALIFIED_SERVER_VERSION').'.');
               }
               $workflowId = env('DURABLE_WORKFLOW_WORKFLOW_ID');
-              $handle = app(\DurableWorkflow\Bridge\Laravel\LaravelWorkflowClientInterface::class)->start(
-                  \App\Workflows\PublishedGreetingWorkflow::class,
-                  ['Ada'],
-                  workflowId: $workflowId,
-              );
-              $deadline = microtime(true) + 30;
-              do {
-                  $execution = $client->describeWorkflow($workflowId);
-                  if ($execution->status === 'waiting') {
-                      break;
-                  }
-                  usleep(250_000);
-              } while (microtime(true) < $deadline);
-              if ($execution->status !== 'waiting') {
+              $phase = env('PUBLISHED_WORKFLOW_PHASE');
+              $workflows = app(\DurableWorkflow\Bridge\Laravel\LaravelWorkflowClientInterface::class);
+              if ($phase === 'start') {
+                  $workflows->start(
+                      \App\Workflows\PublishedGreetingWorkflow::class,
+                      ['Ada'],
+                      workflowId: $workflowId,
+                  );
+                  $deadline = microtime(true) + 30;
+                  do {
+                      $execution = $client->describeWorkflow($workflowId);
+                      if ($execution->status === 'waiting') {
+                          return;
+                      }
+                      usleep(250_000);
+                  } while (microtime(true) < $deadline);
                   throw new \RuntimeException('Published Laravel workflow did not open its condition wait.');
               }
+              if ($phase !== 'finish') {
+                  throw new \RuntimeException('Published Laravel workflow phase must be start or finish.');
+              }
+
+              $execution = $client->describeWorkflow($workflowId);
+              if (!is_string($execution->runId) || $execution->runId === '') {
+                  throw new \RuntimeException('Published Laravel workflow has no run identity for cold replay.');
+              }
+              $handle = $workflows->handle(
+                  \App\Workflows\PublishedGreetingWorkflow::class,
+                  $workflowId,
+                  $execution->runId,
+              );
               $handle->signal('published.release', ['qualified']);
               $result = $handle->result(timeoutSeconds: 90, pollIntervalSeconds: 1);
-              if ($result !== 'hello from Laravel, Ada') {
-                  throw new \RuntimeException('Published Laravel workflow returned an unexpected result.');
+              if ($result !== 'hello from Laravel, Ada / version 1') {
+                  throw new \RuntimeException('Published Laravel workflow returned an unexpected upgraded result.');
+              }
+              $history = $client->workflowHistory($workflowId, $execution->runId);
+              $events = $history['events'] ?? $history['history_events'] ?? [];
+              $markers = array_values(array_filter(
+                  is_array($events) ? $events : [],
+                  static fn (mixed $event): bool => is_array($event)
+                      && ($event['event_type'] ?? $event['type'] ?? null) === 'VersionMarkerRecorded',
+              ));
+              if (count($markers) !== 1) {
+                  throw new \RuntimeException('Published Laravel workflow did not retain exactly one version marker.');
+              }
+              $payload = is_array($markers[0]['payload'] ?? null) ? $markers[0]['payload'] : [];
+              if (($payload['change_id'] ?? null) !== 'published-framework-greeting'
+                  || ($payload['version'] ?? null) !== 1) {
+                  throw new \RuntimeException('Published Laravel workflow changed its durable version decision.');
               }
           });
 
@@ -448,6 +480,8 @@ jobs:
               #[Workflow('published.symfony.greeter')]
               public function run(WorkflowContext $context, string $name): array
               {
+                  $version = $context->getVersion('published-framework-greeting', 1, 1);
+
                   $released = $context->waitCondition(
                       static fn (): bool => $context->signals('published.release') !== [],
                       key: 'published-symfony-release',
@@ -457,7 +491,10 @@ jobs:
                       return ['greeting' => 'published Symfony condition wait timed out'];
                   }
 
-                  return ['greeting' => $context->activity('published.symfony.greet', [$name])];
+                  return [
+                      'greeting' => $context->activity('published.symfony.greet', [$name]),
+                      'version' => $version,
+                  ];
               }
 
               #[Signal('published.release')]
@@ -780,72 +817,152 @@ jobs:
           if ($actualVersion !== getenv('QUALIFIED_SERVER_VERSION')) {
               throw new RuntimeException("Published endpoint is Server {$actualVersion}; expected ".getenv('QUALIFIED_SERVER_VERSION').'.');
           }
-          $handle = $client->startWorkflow(
-              getenv('DURABLE_WORKFLOW_TYPE'),
-              getenv('DURABLE_WORKFLOW_WORKFLOW_ID'),
-              getenv('DURABLE_WORKFLOW_TASK_QUEUE'),
-              ['published framework'],
-          );
-          $deadline = microtime(true) + 30;
-          do {
-              $execution = $client->describeWorkflow(getenv('DURABLE_WORKFLOW_WORKFLOW_ID'));
-              if ($execution->status === 'waiting') {
-                  break;
-              }
-              usleep(250_000);
-          } while (microtime(true) < $deadline);
-          if ($execution->status !== 'waiting') {
+          $workflowId = (string) getenv('DURABLE_WORKFLOW_WORKFLOW_ID');
+          $phase = getenv('PUBLISHED_WORKFLOW_PHASE');
+          if ($phase === 'start') {
+              $client->startWorkflow(
+                  (string) getenv('DURABLE_WORKFLOW_TYPE'),
+                  $workflowId,
+                  (string) getenv('DURABLE_WORKFLOW_TASK_QUEUE'),
+                  ['published framework'],
+              );
+              $deadline = microtime(true) + 30;
+              do {
+                  $execution = $client->describeWorkflow($workflowId);
+                  if ($execution->status === 'waiting') {
+                      exit(0);
+                  }
+                  usleep(250_000);
+              } while (microtime(true) < $deadline);
               throw new RuntimeException('Published Symfony workflow did not open its condition wait.');
           }
+          if ($phase !== 'finish') {
+              throw new RuntimeException('Published Symfony workflow phase must be start or finish.');
+          }
+
+          $execution = $client->describeWorkflow($workflowId);
+          if (!is_string($execution->runId) || $execution->runId === '') {
+              throw new RuntimeException('Published Symfony workflow has no run identity for cold replay.');
+          }
+          $handle = $client->workflowHandle($workflowId, $execution->runId);
           $handle->signal('published.release', ['qualified']);
           $result = $handle->result(timeoutSeconds: 90, pollIntervalSeconds: 1);
-          if ($result !== ['greeting' => 'hello, published framework']) {
-              throw new RuntimeException('Published framework workflow returned an unexpected result.');
+          if ($result !== ['greeting' => 'hello, published framework', 'version' => 1]) {
+              throw new RuntimeException('Published framework workflow returned an unexpected upgraded result.');
+          }
+          $history = $client->workflowHistory($workflowId, $execution->runId);
+          $events = $history['events'] ?? $history['history_events'] ?? [];
+          $markers = array_values(array_filter(
+              is_array($events) ? $events : [],
+              static fn (mixed $event): bool => is_array($event)
+                  && ($event['event_type'] ?? $event['type'] ?? null) === 'VersionMarkerRecorded',
+          ));
+          if (count($markers) !== 1) {
+              throw new RuntimeException('Published Symfony workflow did not retain exactly one version marker.');
+          }
+          $payload = is_array($markers[0]['payload'] ?? null) ? $markers[0]['payload'] : [];
+          if (($payload['change_id'] ?? null) !== 'published-framework-greeting'
+              || ($payload['version'] ?? null) !== 1) {
+              throw new RuntimeException('Published Symfony workflow changed its durable version decision.');
           }
           PHP
           fi
 
-          if [ "$FRAMEWORK" = laravel ]; then
-            env \
-              -u DURABLE_WORKFLOW_TOKEN \
-              -u DURABLE_WORKFLOW_CLIENT_TOKEN \
-              -u DURABLE_WORKFLOW_WORKER_TOKEN \
-              DURABLE_WORKFLOW_PROCESS_ROLE=worker \
-              DURABLE_WORKFLOW_PROCESS_TOKEN="$laravel_worker_token" \
-              php laravel-role-launch.php durable-workflow:worker >worker.log 2>&1 &
-          else
-            env -u DURABLE_WORKFLOW_CLIENT_TOKEN php bin/console durable-workflow:worker >worker.log 2>&1 &
-          fi
-          worker_pid=$!
-          trap 'kill -TERM "$worker_pid" 2>/dev/null || true' EXIT
-          if [ "$FRAMEWORK" = laravel ]; then
-            ready=false
-            for _attempt in $(seq 1 30); do
-              if grep -Fq 'Registered and polling:' worker.log; then
-                ready=true
-                break
+          start_worker() {
+            local worker_log="$1"
+            if [ "$FRAMEWORK" = laravel ]; then
+              env \
+                -u DURABLE_WORKFLOW_TOKEN \
+                -u DURABLE_WORKFLOW_CLIENT_TOKEN \
+                -u DURABLE_WORKFLOW_WORKER_TOKEN \
+                DURABLE_WORKFLOW_PROCESS_ROLE=worker \
+                DURABLE_WORKFLOW_PROCESS_TOKEN="$laravel_worker_token" \
+                php laravel-role-launch.php durable-workflow:worker >"$worker_log" 2>&1 &
+            else
+              env -u DURABLE_WORKFLOW_CLIENT_TOKEN php bin/console durable-workflow:worker >"$worker_log" 2>&1 &
+            fi
+            worker_pid=$!
+            trap 'kill -TERM "$worker_pid" 2>/dev/null || true' EXIT
+            if [ "$FRAMEWORK" = laravel ]; then
+              local ready=false
+              for _attempt in $(seq 1 30); do
+                if grep -Fq 'Registered and polling:' "$worker_log"; then
+                  ready=true
+                  break
+                fi
+                if ! kill -0 "$worker_pid" 2>/dev/null; then
+                  break
+                fi
+                sleep 1
+              done
+              if [ "$ready" != true ] \
+                || ! grep -Fq "queue=${queue}" "$worker_log" \
+                || ! grep -Fq 'workflows=[laravel.greeting]' "$worker_log" \
+                || ! grep -Fq 'activities=[laravel.greet]' "$worker_log" \
+                || ! grep -Fq 'credential_role=worker' "$worker_log"; then
+                echo "Laravel worker did not register workflow type laravel.greeting and task queue ${queue}." >&2
+                cat "$worker_log" >&2
+                exit 1
               fi
-              if ! kill -0 "$worker_pid" 2>/dev/null; then
-                break
-              fi
-              sleep 1
-            done
-            if [ "$ready" != true ] \
-              || ! grep -Fq "queue=${queue}" worker.log \
-              || ! grep -Fq 'workflows=[laravel.greeting]' worker.log \
-              || ! grep -Fq 'activities=[laravel.greet]' worker.log \
-              || ! grep -Fq 'credential_role=worker' worker.log; then
-              echo "Laravel worker did not register workflow type laravel.greeting and task queue ${queue}." >&2
-              cat worker.log >&2
+            fi
+          }
+
+          stop_worker() {
+            local worker_log="$1"
+            kill -TERM "$worker_pid" 2>/dev/null || true
+            local worker_status=0
+            wait "$worker_pid" || worker_status=$?
+            trap - EXIT
+            if grep -Eq 'worker\.shutdown_failed|HTTP[[:space:]]+403|403[[:space:]]+Forbidden' "$worker_log"; then
+              echo 'Framework worker reported an authorization or graceful-shutdown failure.' >&2
+              cat "$worker_log" >&2
               exit 1
             fi
-            env \
-              -u DURABLE_WORKFLOW_TOKEN \
-              -u DURABLE_WORKFLOW_CLIENT_TOKEN \
-              -u DURABLE_WORKFLOW_WORKER_TOKEN \
-              DURABLE_WORKFLOW_PROCESS_ROLE=client \
-              DURABLE_WORKFLOW_PROCESS_TOKEN="$laravel_client_token" \
-              php laravel-role-launch.php durable-workflow:published-greeting
+            if [ "$worker_status" -ne 0 ]; then
+              echo "Framework worker exited with status $worker_status." >&2
+              cat "$worker_log" >&2
+              exit "$worker_status"
+            fi
+          }
+
+          run_client_phase() {
+            local phase="$1"
+            if [ "$FRAMEWORK" = laravel ]; then
+              env \
+                -u DURABLE_WORKFLOW_TOKEN \
+                -u DURABLE_WORKFLOW_CLIENT_TOKEN \
+                -u DURABLE_WORKFLOW_WORKER_TOKEN \
+                DURABLE_WORKFLOW_PROCESS_ROLE=client \
+                DURABLE_WORKFLOW_PROCESS_TOKEN="$laravel_client_token" \
+                PUBLISHED_WORKFLOW_PHASE="$phase" \
+                php laravel-role-launch.php durable-workflow:published-greeting
+            else
+              PUBLISHED_WORKFLOW_PHASE="$phase" env -u DURABLE_WORKFLOW_WORKER_TOKEN php durable-client.php
+            fi
+          }
+
+          start_worker worker-initial.log
+          run_client_phase start
+          stop_worker worker-initial.log
+
+          if [ "$FRAMEWORK" = laravel ]; then
+            workflow_source='app/Workflows/PublishedGreetingWorkflow.php'
+          else
+            workflow_source='src/Workflow/PublishedGreetingWorkflow.php'
+          fi
+          sed -i \
+            "s/getVersion('published-framework-greeting', 1, 1)/getVersion('published-framework-greeting', 1, 2)/" \
+            "$workflow_source"
+          if ! grep -Fq "getVersion('published-framework-greeting', 1, 2)" "$workflow_source"; then
+            echo 'Published workflow code upgrade did not raise the supported maximum.' >&2
+            exit 1
+          fi
+
+          start_worker worker-upgraded.log
+          run_client_phase finish
+          stop_worker worker-upgraded.log
+
+          if [ "$FRAMEWORK" = laravel ]; then
             DURABLE_WORKFLOW_ROLE_PROBE_LOG="$DURABLE_WORKFLOW_ROLE_PROBE_LOG" php <<'PHP'
           <?php
           declare(strict_types=1);
@@ -883,22 +1000,6 @@ jobs:
               'entry_count' => count($entries),
           ], JSON_THROW_ON_ERROR).PHP_EOL);
           PHP
-          else
-            env -u DURABLE_WORKFLOW_WORKER_TOKEN php durable-client.php
-          fi
-          kill -TERM "$worker_pid" 2>/dev/null || true
-          worker_status=0
-          wait "$worker_pid" || worker_status=$?
-          trap - EXIT
-          if grep -Eq 'worker\.shutdown_failed|HTTP[[:space:]]+403|403[[:space:]]+Forbidden' worker.log; then
-            echo 'Framework worker reported an authorization or graceful-shutdown failure.' >&2
-            cat worker.log >&2
-            exit 1
-          fi
-          if [ "$worker_status" -ne 0 ]; then
-            echo "Framework worker exited with status $worker_status." >&2
-            cat worker.log >&2
-            exit "$worker_status"
           fi
           BASH
           chmod +x "$RUNNER_TEMP/framework-runtime.sh"

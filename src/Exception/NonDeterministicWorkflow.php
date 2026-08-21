@@ -11,6 +11,7 @@ final class NonDeterministicWorkflow extends DurableWorkflowException
         public readonly ?int $sequence = null,
         public readonly ?string $expected = null,
         public readonly ?string $actual = null,
+        public readonly string $reason = 'workflow_nondeterministic',
     ) {
         parent::__construct($message);
     }

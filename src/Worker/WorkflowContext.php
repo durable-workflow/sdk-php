@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Worker;
 
 use DurableWorkflow\Codec\PayloadCodec;
+use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use Closure;
 use Fiber;
@@ -13,6 +14,10 @@ use LogicException;
 /** Straight-line deterministic operations available while a workflow Fiber is replayed. */
 final class WorkflowContext
 {
+    private const MIN_VERSION = -2_147_483_648;
+
+    private const MAX_VERSION = 2_147_483_647;
+
     /** @var Fiber<mixed, mixed, mixed, mixed>|null */
     private readonly ?Fiber $execution;
 
@@ -82,6 +87,28 @@ final class WorkflowContext
     public function sideEffect(callable $operation): mixed
     {
         return $this->suspend(WorkflowCommand::sideEffect($operation));
+    }
+
+    /**
+     * Select the newest supported version for a change, or replay its recorded decision.
+     */
+    public function getVersion(string $changeId, int $minSupported, int $maxSupported): int
+    {
+        $result = $this->version($changeId, $minSupported, $maxSupported, 'version');
+
+        return (int) $result;
+    }
+
+    /** Record or replay the standard -1 (legacy) / 1 (patched) decision. */
+    public function patched(string $changeId): bool
+    {
+        return $this->version($changeId, -1, 1, 'patched') === true;
+    }
+
+    /** Keep a patch marker alive after the legacy branch has been removed. */
+    public function deprecatePatch(string $changeId): void
+    {
+        $this->version($changeId, -1, 1, 'deprecate_patch');
     }
 
     /** @param list<mixed> $arguments */
@@ -168,6 +195,39 @@ final class WorkflowContext
         }
 
         return Fiber::suspend($command);
+    }
+
+    private function version(
+        string $changeId,
+        int $minSupported,
+        int $maxSupported,
+        string $resultKind,
+    ): int|bool|null {
+        if (trim($changeId) === '') {
+            throw new NonDeterministicWorkflow(
+                'Version markers require a stable non-empty change ID.',
+                expected: 'non-empty change ID',
+                actual: $changeId,
+                reason: 'version_change_id_invalid',
+            );
+        }
+        if ($minSupported > $maxSupported
+            || $minSupported < self::MIN_VERSION
+            || $maxSupported > self::MAX_VERSION) {
+            throw new NonDeterministicWorkflow(
+                "Version marker {$changeId} has an invalid supported range {$minSupported}..{$maxSupported}.",
+                expected: '32-bit minSupported <= maxSupported',
+                actual: "{$minSupported}..{$maxSupported}",
+                reason: 'version_range_invalid',
+            );
+        }
+
+        return $this->suspend(WorkflowCommand::versionMarker(
+            $changeId,
+            $minSupported,
+            $maxSupported,
+            $resultKind,
+        ));
     }
 
     private static function conditionKey(?string $key): ?string

@@ -399,6 +399,17 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
             "php laravel-role-launch.php durable-workflow:published-greeting",
             runtime,
         )
+        for versioning_marker in (
+            "getVersion('published-framework-greeting', 1, 1)",
+            "getVersion('published-framework-greeting', 1, 2)",
+            "VersionMarkerRecorded",
+            "run_client_phase start",
+            "run_client_phase finish",
+            "worker-initial.log",
+            "worker-upgraded.log",
+            "count($markers) !== 1",
+        ):
+            self.assertIn(versioning_marker, configure + runtime)
         self.assertNotIn("continue-on-error", runtime)
         self.assertIn(f"#[Workflow('{journey['workflow_type']}')]", configure)
         self.assertIn(f"#[Activity('{journey['activity_type']}')]", configure)

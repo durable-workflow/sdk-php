@@ -82,6 +82,20 @@ final class FulfillOrderWorkflow
 
 Add an autowired activity service with `#[Activity('orders.reserve')]`. The Bundle tags both services during container compilation, and the worker resolves their ordinary constructor dependencies. Use the explicit `handlers` list only for classes outside Symfony's autoconfigured imports.
 
+### Upgrade an autowired workflow safely
+
+Version decisions remain ordinary `WorkflowContext` calls inside the autowired service:
+
+```php
+$version = $context->getVersion('symfony-inventory-reservation', -1, 1);
+
+return $version === -1
+    ? $context->activity('orders.reserve-legacy', [$orderId])
+    : $context->activity('orders.reserve', [$orderId]);
+```
+
+Deploy the bridge branch first, then raise the maximum in a later worker build. Each run keeps its recorded decision across process replacement and cold replay. `patched()` provides the same `-1` legacy / `1` patched rollout as a boolean, and `deprecatePatch()` keeps that marker in place after removing the conditional. Keep the change ID stable and do not switch one ID between `getVersion()` and the patch helpers.
+
 ## 4. Inspect, then run the Console worker
 
 ```bash
@@ -114,5 +128,7 @@ Use Messenger for ingress that calls `WorkflowClientInterface`; do not put the w
 ## Test through the Symfony helper
 
 In a `KernelTestCase`, use `InteractsWithDurableWorkflow::fakeDurableWorkflow()` to replace the autowired interface with `WorkflowClientFake`, arrange results, and assert workflow interactions without a network runtime.
+
+The Symfony fake continues to cover application starts and handles. For the workflow handler itself, resolve the worker through the test container and use `WorkerTestHarness` to assert `record_version_marker`, then replay recorded marker history to exercise an upgraded maximum without starting a Server.
 
 <div class="note"><strong>Role boundary</strong><p>Application code receives the public control client. The worker factory owns a private worker client, so a scoped credential is not accidentally reused across roles.</p></div>

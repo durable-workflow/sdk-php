@@ -47,6 +47,22 @@ $worker->registerWorkflow(
 
 The sequence, type, and details of context operations are durable. Changing them while old histories are still running can raise `NonDeterministicWorkflow`. Deploy replay-compatible code or drain incompatible histories before removing an old branch.
 
+## Evolve workflow code with version markers
+
+Give each long-lived code change a stable ID and keep the old branch while histories can still reach it. `getVersion()` records the maximum supported version for a new run and returns that same decision after redelivery, worker restart, or cold replay. Including `-1` in the first range lets histories that passed this point before the marker existed stay on the legacy branch:
+
+```php
+$version = $context->getVersion('inventory-reservation', -1, 1);
+
+$reservation = $version === -1
+    ? $context->activity('inventory.reserve-legacy', [$orderId])
+    : $context->activity('inventory.reserve', [$orderId]);
+```
+
+A later deployment can raise the maximum while keeping the recorded versions in range. Existing runs keep their decision; only runs that have not recorded this change ID select the new maximum.
+
+For a boolean rollout, use `patched('require-reservation-review')`. It returns `false` for legacy histories and `true` for new histories. After the legacy branch is no longer supported, replace the conditional call with `deprecatePatch()` for the same ID before eventually removing the marker. Do not reuse a change ID for an unrelated rollout or switch one ID between `getVersion()` and the patch helpers.
+
 ## Put side effects in activities
 
 ```php
@@ -74,6 +90,7 @@ The context provides these replay-aware commands:
 | `sleep()` | A durable timer that survives worker downtime. |
 | `childWorkflow()` | A separately identified durable execution. |
 | `sideEffect()` | A small nondeterministic value recorded once in history. |
+| `getVersion()`, `patched()`, `deprecatePatch()` | A durable workflow-code evolution decision. |
 | `upsertSearchAttributes()` | Operator-visible indexed state. |
 | `continueAsNew()` | A fresh run with bounded history. |
 

@@ -22,6 +22,7 @@ final class WorkflowCommand
         public readonly mixed $localResult = null,
         private readonly ?Closure $sideEffect = null,
         private readonly ?Closure $conditionPredicate = null,
+        public readonly ?string $versionResultKind = null,
     ) {
     }
 
@@ -98,6 +99,40 @@ final class WorkflowCommand
         $value = ($this->sideEffect)();
 
         return new self($this->type, $this->historyShape, ['result_value' => $value], $value);
+    }
+
+    public static function versionMarker(
+        string $changeId,
+        int $minSupported,
+        int $maxSupported,
+        string $resultKind,
+    ): self {
+        return new self(
+            'record_version_marker',
+            'version_marker',
+            [
+                'change_id' => $changeId,
+                'version' => $maxSupported,
+                'min_supported' => $minSupported,
+                'max_supported' => $maxSupported,
+            ],
+            $maxSupported,
+            versionResultKind: $resultKind,
+        );
+    }
+
+    /** @internal Resolve the public helper's return type from one durable version decision. */
+    public function versionResult(int $version): int|bool|null
+    {
+        if ($this->type !== 'record_version_marker' || $this->versionResultKind === null) {
+            throw new LogicException('Only a version-marker command has a version result.');
+        }
+
+        return match ($this->versionResultKind) {
+            'patched' => $version === 1,
+            'deprecate_patch' => null,
+            default => $version,
+        };
     }
 
     /** @param list<mixed> $arguments */

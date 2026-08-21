@@ -270,6 +270,20 @@ class through the Laravel container before polling. Dependencies read by a
 workflow must be deterministic and stable across replay; put database, network,
 clock, and other side-effecting dependencies in activities.
 
+### Upgrade a Laravel workflow without losing open runs
+
+Container resolution does not change the version-marker contract. Keep constructor injection as-is and put the decision inside the straight-line workflow method:
+
+```php
+$format = $context->getVersion('laravel-greeting-format', -1, 1);
+
+return $format === -1
+    ? $context->activity('laravel.greet-legacy', [$name])
+    : $context->activity('laravel.greet', [$name]);
+```
+
+Deploy that bridge before changing the branch. A replacement worker may raise the maximum for new runs, while open runs reuse their recorded value during cold replay. Use `$context->patched('require-greeting-approval')` for a boolean rollout and later `$context->deprecatePatch('require-greeting-approval')` when the conditional branch is removed. Laravel logging and `WorkerDiagnosticEvent` report a typed nondeterminism failure with the change ID if a deployment drops a recorded value from its supported range.
+
 ## Inject the Laravel client and inspect the result
 
 `LaravelWorkflowClientInterface` derives the protocol workflow type from the
@@ -355,6 +369,8 @@ The fake replaces both the class-shaped Laravel interface and its low-level
 transport, then records and asserts the same service-class call made by the
 application. It works with PHPUnit, Pest, or a plain Laravel test and needs
 neither a running Server nor source inspection.
+
+Use the same fake assertions for the application start. For handler-level coverage, build the registered Laravel worker in the test container and use `WorkerTestHarness::assertWorkflowEmits()` with `record_version_marker`; replay the returned history through `runWorkflow()` when the test needs to prove an older decision or a raised maximum.
 
 ## Qualification boundary
 

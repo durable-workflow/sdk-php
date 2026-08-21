@@ -3,8 +3,8 @@
   "schema_version": 2,
   "package": {
     "name": "durable-workflow/sdk",
-    "published_version": "2.0.0-rc.41",
-    "composer_requirement": "2.0.0-rc.41@RC",
+    "published_version": "2.0.0-rc.42",
+    "composer_requirement": "2.0.0-rc.42@RC",
     "onboarding_requirement": "^2.0@RC"
   },
   "runtime_targets": {

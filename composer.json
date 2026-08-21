@@ -74,11 +74,15 @@
             }
         },
         "durable-workflow": {
-            "product-train": "2.0.0-rc.41",
+            "product-train": "2.0.0-rc.42",
             "supported-server-versions": "2.0.0-rc.38",
             "worker-protocol-version": "1.13",
             "control-plane-version": "2",
             "payload-codecs": ["avro"],
+            "version-markers": true,
+            "version-marker-command": "record_version_marker",
+            "version-marker-history-event": "VersionMarkerRecorded",
+            "version-marker-helpers": ["patched", "deprecatePatch"],
             "frameworks": {
                 "laravel": "^9.0|^10.0|^11.0|^12.0|^13.0",
                 "symfony": "^6.4|^7.0|^8.0"

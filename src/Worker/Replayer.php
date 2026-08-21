@@ -14,6 +14,10 @@ use Throwable;
 /** Re-executes a straight-line workflow Fiber against committed, sequence-ordered history. */
 final class Replayer
 {
+    private const MIN_VERSION = -2_147_483_648;
+
+    private const MAX_VERSION = 2_147_483_647;
+
     public function __construct(private readonly PayloadCodec $codec)
     {
     }
@@ -32,6 +36,7 @@ final class Replayer
         array $task = [],
     ): ReplayResult {
         $steps = $this->recordedSteps($history);
+        $completedHistory = $this->hasCompletedHistory($history);
         $execution = new Fiber(function () use ($handler, $history, $input, $task): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
@@ -51,6 +56,8 @@ final class Replayer
 
         $stepCursor = 0;
         $commands = [];
+        /** @var array<string, array{version: int, family: string, sequence: ?int}> $versionDecisions */
+        $versionDecisions = [];
         $suspended = $execution->start();
 
         while (!$execution->isTerminated()) {
@@ -62,6 +69,90 @@ final class Replayer
                 $commands[] = $suspended->toWire($this->codec, $taskQueue);
 
                 return new ReplayResult($commands);
+            }
+
+            if ($suspended->type === 'record_version_marker') {
+                $changeId = (string) $suspended->attributes['change_id'];
+                $decision = $versionDecisions[$changeId] ?? null;
+                if ($decision !== null) {
+                    $this->assertVersionDecisionCompatible($changeId, $decision, $suspended);
+                    $suspended = $execution->resume($suspended->versionResult($decision['version']));
+                    continue;
+                }
+
+                $step = $steps[$stepCursor] ?? null;
+                if ($step !== null) {
+                    if ($step['shape'] !== 'version_marker') {
+                        $version = -1;
+                        $this->assertVersionSupported(
+                            $changeId,
+                            $version,
+                            (int) $suspended->attributes['min_supported'],
+                            (int) $suspended->attributes['max_supported'],
+                            $step['sequence'],
+                        );
+                        $versionDecisions[$changeId] = [
+                            'version' => $version,
+                            'family' => $this->versionFamily($suspended),
+                            'sequence' => $step['sequence'],
+                        ];
+                        $suspended = $execution->resume($suspended->versionResult($version));
+                        continue;
+                    }
+                    if ($step['detail'] !== $changeId) {
+                        throw new NonDeterministicWorkflow(
+                            "Recorded version marker {$step['detail']} does not match change ID {$changeId}.",
+                            $step['sequence'],
+                            $step['detail'],
+                            $changeId,
+                            'version_change_id_mismatch',
+                        );
+                    }
+                    $version = (int) $step['value'];
+                    $this->assertVersionSupported(
+                        $changeId,
+                        $version,
+                        (int) $suspended->attributes['min_supported'],
+                        (int) $suspended->attributes['max_supported'],
+                        $step['sequence'],
+                    );
+                    ++$stepCursor;
+                    $versionDecisions[$changeId] = [
+                        'version' => $version,
+                        'family' => $this->versionFamily($suspended),
+                        'sequence' => $step['sequence'],
+                    ];
+                    $suspended = $execution->resume($suspended->versionResult($version));
+                    continue;
+                }
+
+                if ($completedHistory) {
+                    $version = -1;
+                    $this->assertVersionSupported(
+                        $changeId,
+                        $version,
+                        (int) $suspended->attributes['min_supported'],
+                        (int) $suspended->attributes['max_supported'],
+                        null,
+                    );
+                    $versionDecisions[$changeId] = [
+                        'version' => $version,
+                        'family' => $this->versionFamily($suspended),
+                        'sequence' => null,
+                    ];
+                    $suspended = $execution->resume($suspended->versionResult($version));
+                    continue;
+                }
+
+                $version = (int) $suspended->attributes['max_supported'];
+                $commands[] = $suspended->toWire($this->codec, $taskQueue);
+                $versionDecisions[$changeId] = [
+                    'version' => $version,
+                    'family' => $this->versionFamily($suspended),
+                    'sequence' => null,
+                ];
+                $suspended = $execution->resume($suspended->versionResult($version));
+                continue;
             }
 
             $step = $steps[$stepCursor] ?? null;
@@ -163,12 +254,28 @@ final class Replayer
     {
         $steps = [];
         $conditionStepsByWaitId = [];
+        $versionMarkerSequences = [];
+        $versionMarkerChangeIds = [];
         $fallbackSequence = 1_000_000;
         foreach ($history as $event) {
             $type = (string) ($event['event_type'] ?? $event['type'] ?? '');
             $payload = isset($event['payload']) && is_array($event['payload']) ? $event['payload'] : [];
-            $sequence = $this->sequence($payload) ?? $fallbackSequence++;
+            $sequence = $type === 'VersionMarkerRecorded'
+                ? $this->versionMarkerSequence($payload)
+                : ($this->sequence($payload) ?? $fallbackSequence++);
             $key = (string) $sequence;
+
+            if ($type !== 'VersionMarkerRecorded'
+                && isset($versionMarkerSequences[$key])
+                && $this->historyEventShape($type, $payload) !== null) {
+                throw new NonDeterministicWorkflow(
+                    "Workflow sequence {$sequence} contains a version marker and another durable command.",
+                    $sequence,
+                    'one durable command shape',
+                    'version marker and '.$this->historyEventShape($type, $payload),
+                    'durable_command_sequence_collision',
+                );
+            }
 
             if (in_array($type, ['ActivityScheduled', 'ActivityStarted'], true)) {
                 $steps[$key] ??= $this->step($sequence, 'activity', $this->payloadDetail($payload, 'activity'));
@@ -241,6 +348,43 @@ final class Replayer
                 );
             } elseif ($type === 'SideEffectRecorded') {
                 $steps[$key] = $this->resolvedStep($sequence, 'side_effect', $this->decodeResult($payload));
+            } elseif ($type === 'VersionMarkerRecorded') {
+                if (isset($versionMarkerSequences[$key])) {
+                    throw new NonDeterministicWorkflow(
+                        "Workflow sequence {$sequence} contains more than one VersionMarkerRecorded event.",
+                        $sequence,
+                        'one VersionMarkerRecorded event',
+                        'multiple VersionMarkerRecorded events',
+                        'duplicate_version_marker_record',
+                    );
+                }
+                if (isset($steps[$key])) {
+                    throw new NonDeterministicWorkflow(
+                        "Workflow sequence {$sequence} contains a version marker and another durable command.",
+                        $sequence,
+                        'one durable command shape',
+                        $steps[$key]['shape'].' and version marker',
+                        'durable_command_sequence_collision',
+                    );
+                }
+                [$changeId, $version] = $this->versionMarker($payload, $sequence);
+                if (isset($versionMarkerChangeIds[$changeId])) {
+                    throw new NonDeterministicWorkflow(
+                        "Version marker {$changeId} is recorded more than once in workflow history.",
+                        $sequence,
+                        'one marker for the change ID',
+                        "markers at sequences {$versionMarkerChangeIds[$changeId]} and {$sequence}",
+                        'duplicate_version_marker',
+                    );
+                }
+                $versionMarkerSequences[$key] = true;
+                $versionMarkerChangeIds[$changeId] = $sequence;
+                $steps[$key] = $this->resolvedStep(
+                    $sequence,
+                    'version_marker',
+                    $version,
+                    detail: $changeId,
+                );
             } elseif ($type === 'SearchAttributesUpserted') {
                 $steps[$key] = $this->resolvedStep($sequence, 'search_attributes', null);
             } elseif ($type === 'ConditionWaitOpened') {
@@ -281,6 +425,18 @@ final class Replayer
         ksort($steps, SORT_NUMERIC);
 
         return $this->collapseConditionReopens(array_values($steps));
+    }
+
+    /** @param list<array<string, mixed>> $history */
+    private function hasCompletedHistory(array $history): bool
+    {
+        foreach ($history as $event) {
+            if (($event['event_type'] ?? $event['type'] ?? null) === 'WorkflowCompleted') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -388,6 +544,7 @@ final class Replayer
             'activity' => $command->attributes['activity_type'] ?? null,
             'timer' => $command->attributes['delay_seconds'] ?? null,
             'child_workflow' => $command->attributes['workflow_type'] ?? null,
+            'version_marker' => $command->attributes['change_id'] ?? null,
             'condition_wait' => $this->conditionDetail(
                 $this->stringValue($command->attributes['condition_key'] ?? null),
                 $this->stringValue($command->attributes['condition_definition_fingerprint'] ?? null),
@@ -405,6 +562,7 @@ final class Replayer
             'activity' => $payload['activity_type'] ?? $payload['activity_name'] ?? null,
             'timer' => $payload['delay_seconds'] ?? null,
             'child_workflow' => $payload['child_workflow_type'] ?? $payload['workflow_type'] ?? null,
+            'version_marker' => $payload['change_id'] ?? null,
             'condition_wait' => $this->conditionDetail(
                 $this->stringValue($payload['condition_key'] ?? null),
                 $this->stringValue($payload['condition_definition_fingerprint'] ?? null),
@@ -432,6 +590,150 @@ final class Replayer
         $value = $payload['sequence'] ?? $payload['workflow_sequence'] ?? null;
 
         return is_numeric($value) ? (int) $value : null;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function versionMarkerSequence(array $payload): int
+    {
+        $sequence = $payload['sequence'] ?? null;
+        if (!is_int($sequence) || $sequence <= 0) {
+            throw new NonDeterministicWorkflow(
+                'Version-marker history is missing a positive integer workflow sequence.',
+                is_int($sequence) ? $sequence : null,
+                'positive integer sequence',
+                is_scalar($sequence) ? (string) $sequence : get_debug_type($sequence),
+                'version_marker_sequence_invalid',
+            );
+        }
+
+        return $sequence;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{string, int}
+     */
+    private function versionMarker(array $payload, int $sequence): array
+    {
+        $changeId = $payload['change_id'] ?? null;
+        if (!is_string($changeId) || trim($changeId) === '') {
+            throw new NonDeterministicWorkflow(
+                "Version-marker history at workflow sequence {$sequence} is missing its stable change ID.",
+                $sequence,
+                'non-empty change_id',
+                is_scalar($changeId) ? (string) $changeId : get_debug_type($changeId),
+                'version_marker_field_missing',
+            );
+        }
+
+        $version = $this->versionMarkerInteger($payload, 'version', $sequence);
+        $minSupported = $this->versionMarkerInteger($payload, 'min_supported', $sequence);
+        $maxSupported = $this->versionMarkerInteger($payload, 'max_supported', $sequence);
+        if ($minSupported > $maxSupported || $version < $minSupported || $version > $maxSupported) {
+            throw new NonDeterministicWorkflow(
+                "Version marker {$changeId} at workflow sequence {$sequence} contains an incompatible recorded range.",
+                $sequence,
+                'min_supported <= version <= max_supported',
+                "{$minSupported} <= {$version} <= {$maxSupported}",
+                'version_marker_history_range_invalid',
+            );
+        }
+
+        return [$changeId, $version];
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function versionMarkerInteger(array $payload, string $field, int $sequence): int
+    {
+        $value = $payload[$field] ?? null;
+        if (!is_int($value) || $value < self::MIN_VERSION || $value > self::MAX_VERSION) {
+            throw new NonDeterministicWorkflow(
+                "Version-marker history at workflow sequence {$sequence} has a missing or invalid {$field} field.",
+                $sequence,
+                "32-bit integer {$field}",
+                is_scalar($value) ? (string) $value : get_debug_type($value),
+                'version_marker_field_missing',
+            );
+        }
+
+        return $value;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function historyEventShape(string $type, array $payload): ?string
+    {
+        if (str_starts_with($type, 'Activity')) {
+            return 'activity';
+        }
+        if (in_array($type, ['TimerScheduled', 'TimerFired'], true)) {
+            return in_array($payload['timer_kind'] ?? null, ['condition_timeout', 'signal_timeout'], true)
+                ? null
+                : 'timer';
+        }
+        if ($type === 'ChildWorkflowScheduled' || str_starts_with($type, 'ChildRun')) {
+            return 'child_workflow';
+        }
+
+        return match ($type) {
+            'SideEffectRecorded' => 'side_effect',
+            'VersionMarkerRecorded' => 'version_marker',
+            'SearchAttributesUpserted' => 'search_attributes',
+            'ConditionWaitOpened', 'ConditionWaitSatisfied', 'ConditionWaitTimedOut' => 'condition_wait',
+            default => null,
+        };
+    }
+
+    /**
+     * @param array{version: int, family: string, sequence: ?int} $decision
+     */
+    private function assertVersionDecisionCompatible(
+        string $changeId,
+        array $decision,
+        WorkflowCommand $command,
+    ): void {
+        $family = $this->versionFamily($command);
+        if ($decision['family'] !== $family) {
+            throw new NonDeterministicWorkflow(
+                "Version marker {$changeId} cannot switch between getVersion and patch helpers in one workflow execution.",
+                $decision['sequence'],
+                $decision['family'],
+                $family,
+                'version_marker_kind_mismatch',
+            );
+        }
+
+        $this->assertVersionSupported(
+            $changeId,
+            $decision['version'],
+            (int) $command->attributes['min_supported'],
+            (int) $command->attributes['max_supported'],
+            $decision['sequence'],
+        );
+    }
+
+    private function assertVersionSupported(
+        string $changeId,
+        int $version,
+        int $minSupported,
+        int $maxSupported,
+        ?int $sequence,
+    ): void {
+        if ($version >= $minSupported && $version <= $maxSupported) {
+            return;
+        }
+
+        throw new NonDeterministicWorkflow(
+            "Recorded version {$version} for change ID {$changeId} is outside the supported range {$minSupported}..{$maxSupported}.",
+            $sequence,
+            "{$minSupported}..{$maxSupported}",
+            (string) $version,
+            'version_marker_incompatible_range',
+        );
+    }
+
+    private function versionFamily(WorkflowCommand $command): string
+    {
+        return $command->versionResultKind === 'version' ? 'getVersion' : 'patch';
     }
 
     /**

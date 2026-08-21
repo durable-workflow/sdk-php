@@ -79,7 +79,11 @@ workflow task the worker starts a new Fiber, re-runs the handler from the
 beginning, and suspends the Fiber whenever a replayable command is reached. The
 replayer matches command shapes and details against positive durable sequence
 numbers, then resumes the call with recorded activity, child-workflow, timer,
-and side-effect results. Recorded failures are thrown from the same call site.
+A durable code-version choice emits the language-neutral
+`record_version_marker` command and resumes from `VersionMarkerRecorded` with
+the recorded decision, including after a worker restart or maximum-version
+increase. Activity, child-workflow, timer, and side-effect results resume from
+their matching history in the same way. Recorded failures are thrown from the same call site.
 A changed command order fails the task with a typed
 `NonDeterministicWorkflow` error instead of executing different work.
 

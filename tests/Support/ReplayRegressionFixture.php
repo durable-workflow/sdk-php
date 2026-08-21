@@ -209,8 +209,17 @@ final class ReplayRegressionFixture
     private static function workflow(string $workflowType): callable
     {
         return match ($workflowType) {
-            'golden.single-activity' => static function (WorkflowContext $context, mixed $name): mixed {
-                return $context->activity('golden.greet', [$name]);
+            'golden.single-activity' => static function (
+                WorkflowContext $context,
+                mixed $name,
+                mixed $versionChangeId = null,
+            ): mixed {
+                $result = $context->activity('golden.greet', [$name]);
+                if (is_string($versionChangeId)) {
+                    $context->getVersion($versionChangeId, 1, 4);
+                }
+
+                return $result;
             },
             'golden.timer' => static function (WorkflowContext $context, mixed $seconds): string {
                 $context->sleep((float) $seconds);
