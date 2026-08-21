@@ -270,6 +270,23 @@ class through the Laravel container before polling. Dependencies read by a
 workflow must be deterministic and stable across replay; put database, network,
 clock, and other side-effecting dependencies in activities.
 
+Container resolution is unchanged for a concurrent journey. A workflow service can fan out without giving up constructor injection or straight-line Fiber code:
+
+```php
+#[Workflow('laravel.customer-summary')]
+public function summary(WorkflowContext $context, string $customerId): array
+{
+    [$customer, $recommendations] = $context->all([
+        static fn () => $context->activity('laravel.customer', [$customerId]),
+        static fn () => $context->childWorkflow('laravel.recommendations', [$customerId]),
+    ]);
+
+    return compact('customer', 'recommendations');
+}
+```
+
+Laravel still resolves the workflow, activity, and child-handler services from the application container. The Artisan worker emits the usual PSR log records and `WorkerDiagnosticEvent` events while group/path metadata remains visible in Server or Cloud diagnostics.
+
 ### Upgrade a Laravel workflow without losing open runs
 
 Container resolution does not change the version-marker contract. Keep constructor injection as-is and put the decision inside the straight-line workflow method:
@@ -370,7 +387,7 @@ transport, then records and asserts the same service-class call made by the
 application. It works with PHPUnit, Pest, or a plain Laravel test and needs
 neither a running Server nor source inspection.
 
-Use the same fake assertions for the application start. For handler-level coverage, build the registered Laravel worker in the test container and use `WorkerTestHarness::assertWorkflowEmits()` with `record_version_marker`; replay the returned history through `runWorkflow()` when the test needs to prove an older decision or a raised maximum.
+Use the same fake assertions for a concurrent application start; concurrency is an implementation detail of the registered handler, so the class-shaped start contract does not change. For handler-level coverage, build the registered Laravel worker in the test container and inspect `WorkerTestHarness::runWorkflow()`: every declared leaf must appear in the same command sequence with one group/path identity. Replay mixed-order or partial history through the same method to assert declaration-order results without starting a Server.
 
 ## Qualification boundary
 

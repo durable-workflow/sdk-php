@@ -101,6 +101,20 @@ final class WorkflowCommand
         return new self($this->type, $this->historyShape, ['result_value' => $value], $value);
     }
 
+    /** @param array<string, mixed> $attributes */
+    public function withAttributes(array $attributes): self
+    {
+        return new self(
+            $this->type,
+            $this->historyShape,
+            array_merge($this->attributes, $attributes),
+            $this->localResult,
+            $this->sideEffect,
+            $this->conditionPredicate,
+            $this->versionResultKind,
+        );
+    }
+
     public static function versionMarker(
         string $changeId,
         int $minSupported,

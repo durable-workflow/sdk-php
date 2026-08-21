@@ -338,4 +338,31 @@ final class ClientContractTest extends TestCase
             ],
         ], $transport->requests[0]['body']);
     }
+
+    public function testWorkflowTaskFailurePreservesNondeterminismIdentity(): void
+    {
+        $transport = new FakeTransport([['failed' => true]]);
+        $client = new Client('https://server.example', transport: $transport);
+
+        $client->failWorkflowTask(
+            'task/1',
+            'worker-1',
+            3,
+            'Parallel group shape changed.',
+            'DurableWorkflow\\Exception\\NonDeterministicWorkflow',
+            'parallel_group_shape_mismatch',
+            7,
+        );
+
+        self::assertSame([
+            'lease_owner' => 'worker-1',
+            'workflow_task_attempt' => 3,
+            'failure' => [
+                'message' => 'Parallel group shape changed.',
+                'type' => 'DurableWorkflow\\Exception\\NonDeterministicWorkflow',
+                'reason' => 'parallel_group_shape_mismatch',
+                'sequence' => 7,
+            ],
+        ], $transport->requests[0]['body']);
+    }
 }

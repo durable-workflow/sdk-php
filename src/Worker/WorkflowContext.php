@@ -14,12 +14,17 @@ use LogicException;
 /** Straight-line deterministic operations available while a workflow Fiber is replayed. */
 final class WorkflowContext
 {
+    public const MAX_PARALLEL_OPERATIONS = 1000;
+
     private const MIN_VERSION = -2_147_483_648;
 
     private const MAX_VERSION = 2_147_483_647;
 
     /** @var Fiber<mixed, mixed, mixed, mixed>|null */
     private readonly ?Fiber $execution;
+
+    /** @var list<list<DeferredWorkflowOperation|ParallelWorkflowCommand>> */
+    private array $captureFrames = [];
 
     /**
      * @param list<array<string, mixed>> $history
@@ -42,12 +47,26 @@ final class WorkflowContext
      */
     public function activity(string $activityType, array $arguments = [], array $options = []): mixed
     {
-        return $this->suspend(WorkflowCommand::activity($activityType, $arguments, $options));
+        $operation = $this->deferActivity($activityType, $arguments, $options);
+        if ($this->isCapturing()) {
+            $this->capture($operation);
+
+            return $operation;
+        }
+
+        return $this->suspend($operation->command);
     }
 
     public function sleep(int|float $seconds): void
     {
-        $this->suspend(WorkflowCommand::timer((int) ceil($seconds)));
+        $operation = $this->deferTimer($seconds);
+        if ($this->isCapturing()) {
+            $this->capture($operation);
+
+            return;
+        }
+
+        $this->suspend($operation->command);
     }
 
     /**
@@ -80,7 +99,109 @@ final class WorkflowContext
      */
     public function childWorkflow(string $workflowType, array $arguments = [], array $options = []): mixed
     {
-        return $this->suspend(WorkflowCommand::childWorkflow($workflowType, $arguments, $options));
+        $operation = $this->deferChildWorkflow($workflowType, $arguments, $options);
+        if ($this->isCapturing()) {
+            $this->capture($operation);
+
+            return $operation;
+        }
+
+        return $this->suspend($operation->command);
+    }
+
+    /**
+     * Prepare an activity without scheduling it until an all/parallel barrier is reached.
+     *
+     * @param list<mixed> $arguments
+     * @param array<string, mixed> $options
+     */
+    public function deferActivity(string $activityType, array $arguments = [], array $options = []): DeferredWorkflowOperation
+    {
+        $this->assertActiveFiber();
+
+        return new DeferredWorkflowOperation(WorkflowCommand::activity($activityType, $arguments, $options));
+    }
+
+    /** Prepare a durable timer for an all/parallel barrier. */
+    public function deferTimer(int|float $seconds): DeferredWorkflowOperation
+    {
+        $this->assertActiveFiber();
+
+        return new DeferredWorkflowOperation(WorkflowCommand::timer((int) ceil($seconds)));
+    }
+
+    /**
+     * Prepare a child workflow without starting it until an all/parallel barrier is reached.
+     *
+     * @param list<mixed> $arguments
+     * @param array<string, mixed> $options
+     */
+    public function deferChildWorkflow(
+        string $workflowType,
+        array $arguments = [],
+        array $options = [],
+    ): DeferredWorkflowOperation {
+        $this->assertActiveFiber();
+
+        return new DeferredWorkflowOperation(WorkflowCommand::childWorkflow($workflowType, $arguments, $options));
+    }
+
+    /**
+     * Schedule every deferred leaf, then return results in declaration order.
+     *
+     * Closures are captured without suspending, so ordinary activity(), childWorkflow(),
+     * and sleep() calls remain straight-line. Nested all()/parallel() calls preserve their
+     * result shape. The first durable failure is thrown at this barrier.
+     *
+     * @param iterable<int, callable(): mixed|DeferredWorkflowOperation> $operations
+     * @return list<mixed>
+     */
+    public function all(iterable $operations): array
+    {
+        $this->assertActiveFiber();
+        $resolved = [];
+        foreach ($operations as $operation) {
+            $resolved[] = is_callable($operation)
+                ? $this->captureOperation($operation)
+                : $this->assertDeferredOperation($operation);
+        }
+
+        $group = new ParallelWorkflowCommand($resolved);
+        if ($group->leafCount() > self::MAX_PARALLEL_OPERATIONS) {
+            throw new LogicException(sprintf(
+                'WorkflowContext::all() fan-out of %d exceeds the deterministic limit of %d operations.',
+                $group->leafCount(),
+                self::MAX_PARALLEL_OPERATIONS,
+            ));
+        }
+
+        if ($this->isCapturing()) {
+            if ($group->leafCount() === 0) {
+                throw new LogicException(
+                    'WorkflowContext::all() does not allow an empty nested barrier because replay cannot identify it.',
+                );
+            }
+            $this->capture($group);
+
+            return [];
+        }
+        if ($group->leafCount() === 0) {
+            return [];
+        }
+
+        /** @var list<mixed> */
+        return $this->suspend($group);
+    }
+
+    /**
+     * Alias for {@see self::all()}.
+     *
+     * @param iterable<int, callable(): mixed|DeferredWorkflowOperation> $operations
+     * @return list<mixed>
+     */
+    public function parallel(iterable $operations): array
+    {
+        return $this->all($operations);
     }
 
     /** @param callable(): mixed $operation */
@@ -188,13 +309,73 @@ final class WorkflowContext
         return $updates;
     }
 
-    private function suspend(WorkflowCommand $command): mixed
+    private function suspend(WorkflowCommand|ParallelWorkflowCommand $command): mixed
+    {
+        $this->assertActiveFiber();
+
+        return Fiber::suspend($command);
+    }
+
+    private function assertActiveFiber(): void
     {
         if ($this->execution === null || Fiber::getCurrent() !== $this->execution) {
             throw new LogicException('WorkflowContext operations may only be called by their active workflow Fiber.');
         }
+    }
 
-        return Fiber::suspend($command);
+    private function isCapturing(): bool
+    {
+        return $this->captureFrames !== [];
+    }
+
+    private function capture(DeferredWorkflowOperation|ParallelWorkflowCommand $operation): void
+    {
+        $frame = array_key_last($this->captureFrames);
+        if ($frame === null) {
+            throw new LogicException('Deferred workflow operation capture is not active.');
+        }
+        $this->captureFrames[$frame][] = $operation;
+    }
+
+    /** @param callable(): mixed $callback */
+    private function captureOperation(callable $callback): DeferredWorkflowOperation|ParallelWorkflowCommand
+    {
+        $this->captureFrames[] = [];
+        $frame = array_key_last($this->captureFrames);
+        try {
+            $returned = $callback();
+            $captured = $this->captureFrames[$frame];
+        } finally {
+            array_pop($this->captureFrames);
+        }
+
+        if (count($captured) === 1
+            && ($returned === null
+                || $returned === $captured[0]
+                || ($captured[0] instanceof ParallelWorkflowCommand && $returned === []))) {
+            return $captured[0];
+        }
+        if ($captured === []
+            && ($returned instanceof DeferredWorkflowOperation || $returned instanceof ParallelWorkflowCommand)) {
+            return $returned;
+        }
+
+        throw new LogicException(sprintf(
+            'Each WorkflowContext::all() closure must declare exactly one deferred operation or nested barrier; captured %d.',
+            count($captured),
+        ));
+    }
+
+    private function assertDeferredOperation(mixed $operation): DeferredWorkflowOperation|ParallelWorkflowCommand
+    {
+        if ($operation instanceof DeferredWorkflowOperation || $operation instanceof ParallelWorkflowCommand) {
+            return $operation;
+        }
+
+        throw new LogicException(sprintf(
+            'WorkflowContext::all() accepts deferred operations or closures; received %s.',
+            get_debug_type($operation),
+        ));
     }
 
     private function version(

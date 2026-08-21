@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-parallel-cancellation",
+  "protocol_version": "1.13",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.parallel", "input": ["cancellation"]},
+  "history": [
+    {"event_type": "TimerScheduled", "payload": {"sequence": 1, "delay_seconds": 1, "parallel_group_id": "parallel-timers:1:2", "parallel_group_kind": "timer", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0, "parallel_group_path": [{"parallel_group_id": "parallel-timers:1:2", "parallel_group_kind": "timer", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0}]}},
+    {"event_type": "TimerScheduled", "payload": {"sequence": 2, "delay_seconds": 2, "parallel_group_id": "parallel-timers:1:2", "parallel_group_kind": "timer", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1, "parallel_group_path": [{"parallel_group_id": "parallel-timers:1:2", "parallel_group_kind": "timer", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1}]}},
+    {"event_type": "TimerCancelled", "payload": {"sequence": 1, "delay_seconds": 1, "message": "cancelled", "parallel_group_id": "parallel-timers:1:2", "parallel_group_kind": "timer", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0, "parallel_group_path": [{"parallel_group_id": "parallel-timers:1:2", "parallel_group_kind": "timer", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0}]}},
+    {"event_type": "TimerFired", "payload": {"sequence": 2, "delay_seconds": 2, "parallel_group_id": "parallel-timers:1:2", "parallel_group_kind": "timer", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1, "parallel_group_path": [{"parallel_group_id": "parallel-timers:1:2", "parallel_group_kind": "timer", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1}]}}
+  ],
+  "expected": {"command_sequence": [{"type": "complete_workflow", "result": {"failure": "DurableWorkflow\\Exception\\WorkflowCancelled"}}]}
+}

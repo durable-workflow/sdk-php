@@ -47,6 +47,26 @@ $worker->registerWorkflow(
 
 The sequence, type, and details of context operations are durable. Changing them while old histories are still running can raise `NonDeterministicWorkflow`. Deploy replay-compatible code or drain incompatible histories before removing an old branch.
 
+## Fan out durable work and join it once
+
+`all()` (also available as `parallel()`) captures one durable operation from each closure, schedules every leaf in one workflow-task completion, then suspends the Fiber until the group can join. The returned array always follows declaration order, even when the Server records completions in another order:
+
+```php
+[$profile, [$recommendations, $delay]] = $context->all([
+    static fn () => $context->activity('customers.profile', [$customerId]),
+    static fn () => $context->parallel([
+        $context->deferChildWorkflow('recommendations.build', [$customerId]),
+        $context->deferTimer(1),
+    ]),
+]);
+```
+
+Use either a closure containing one `activity()`, `childWorkflow()`, or `sleep()` call, or the corresponding `deferActivity()`, `deferChildWorkflow()`, or `deferTimer()` value. The normal API never requires protocol command arrays or `yield`. Mixed and nested groups retain their input shape, and one outer group may contain at most `WorkflowContext::MAX_PARALLEL_OPERATIONS` (1,000) durable leaves. An empty top-level group returns `[]`; an empty nested barrier fails before transport because no history identity could prove that nested shape during replay.
+
+The barrier is fail-fast. The first failure in durable history order is thrown into the workflow as `ActivityFailed`, `ChildWorkflowFailed`, or `WorkflowCancelled`; a tie uses declaration order. Every sibling was already scheduled, so fail-fast does not cancel it. A late or duplicate terminal event cannot reorder results or replace the first recorded terminal outcome. There is deliberately no collect-all barrier: model expected per-member errors as activity or child results when the workflow needs every outcome as data.
+
+On retry or worker restart, replay validates the exact group ID, base sequence, size, leaf index, and nested path. Pending or completed members keep their original sequence and are not scheduled again. Changing a dynamic fan-out count, order, operation kind, or nesting while an open run can reach the group raises `NonDeterministicWorkflow` before any replacement commands leave the worker.
+
 ## Evolve workflow code with version markers
 
 Give each long-lived code change a stable ID and keep the old branch while histories can still reach it. `getVersion()` records the maximum supported version for a new run and returns that same decision after redelivery, worker restart, or cold replay. Including `-1` in the first range lets histories that passed this point before the marker existed stay on the legacy branch:
@@ -89,6 +109,7 @@ The context provides these replay-aware commands:
 | `activity()` | Retryable external work. |
 | `sleep()` | A durable timer that survives worker downtime. |
 | `childWorkflow()` | A separately identified durable execution. |
+| `all()`, `parallel()` | An ordered, fail-fast join over deferred activities, child workflows, and timers. |
 | `sideEffect()` | A small nondeterministic value recorded once in history. |
 | `getVersion()`, `patched()`, `deprecatePatch()` | A durable workflow-code evolution decision. |
 | `upsertSearchAttributes()` | Operator-visible indexed state. |

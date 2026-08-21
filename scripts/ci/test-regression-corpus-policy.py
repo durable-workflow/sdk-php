@@ -2786,6 +2786,60 @@ raise SystemExit(0 if "$history = ['changed'];" in source else 1)
             result.stderr,
         )
 
+    def test_new_official_consumer_requires_a_distinct_two_by_two_boundary(self) -> None:
+        self.replay_runner.write_text(
+            self.replay_runner.read_text().replace(
+                'identity = fixture["id"]\n',
+                'identity = fixture["id"]\n'
+                'if identity == "new-consumer":\n'
+                '    print("trusted runner does not support new-consumer")\n'
+                '    raise SystemExit(1)\n',
+            )
+        )
+        run("git", "add", "--all", cwd=self.root)
+        result = run(
+            "git",
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=new-consumer-base",
+            cwd=self.root,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        base_ref = run("git", "rev-parse", "HEAD", cwd=self.root).stdout.strip()
+
+        worker = self.root / "src/Worker.php"
+        worker.write_text(
+            worker.read_text().replace("$history = [];", "$history = ['changed'];")
+        )
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        self.write_json(
+            "tests/fixtures/replay-regressions/new-consumer.json",
+            self.replay_fixture("new-consumer", ["php"]),
+        )
+        self.replay_runner.write_text(
+            self.replay_runner.read_text().replace(
+                'if identity == "new-consumer":\n'
+                '    print("trusted runner does not support new-consumer")\n'
+                '    raise SystemExit(1)\n',
+                'if identity == "new-consumer":\n'
+                '    if "$history = [\\\'changed\\\'];" in source:\n'
+                '        raise SystemExit(0)\n'
+                '    print("candidate runner requires candidate source")\n'
+                '    raise SystemExit(1)\n',
+            )
+        )
+
+        self.base_ref = base_ref
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(1, report["counts"]["replay"]["revision_verified"])
+
     def test_runner_change_alone_is_not_runtime_corpus_growth(self) -> None:
         self.replay_runner.write_text(
             self.replay_runner.read_text() + "\n# consumer capability change\n"

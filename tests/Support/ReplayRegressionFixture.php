@@ -7,6 +7,9 @@ namespace DurableWorkflow\Tests\Support;
 use DurableWorkflow\Attribute\Workflow;
 use DurableWorkflow\Client;
 use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Exception\ActivityFailed;
+use DurableWorkflow\Exception\ChildWorkflowFailed;
+use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Testing\WorkerTestHarness;
 use DurableWorkflow\Worker;
@@ -110,6 +113,13 @@ final class ReplayRegressionFixture
                 'type' => 'fail_workflow',
                 'message' => $exception->getMessage(),
                 'exception_type' => $exception::class,
+            ]];
+        } catch (NonDeterministicWorkflow $exception) {
+            $commands = [[
+                'type' => 'replay_error',
+                'message' => $exception->getMessage(),
+                'reason' => $exception->reason,
+                'sequence' => $exception->sequence,
             ]];
         }
         $declaredCommands = $fixture['command_sequence'] ?? null;
@@ -298,6 +308,39 @@ final class ReplayRegressionFixture
                 $updates = $context->updates('golden.update');
 
                 return ['updated' => $updates[0][0] ?? null];
+            },
+            'golden.parallel' => static function (WorkflowContext $context, mixed $mode): array {
+                try {
+                    return match ($mode) {
+                        'mixed-flat' => $context->all([
+                            static fn () => $context->activity('golden.activity-one'),
+                            static fn () => $context->childWorkflow('golden.child'),
+                            static fn () => $context->sleep(1),
+                        ]),
+                        'mixed-nested' => $context->all([
+                            static fn () => $context->activity('golden.activity-one'),
+                            static fn () => $context->parallel([
+                                static fn () => $context->childWorkflow('golden.child'),
+                                static fn () => $context->sleep(1),
+                            ]),
+                        ]),
+                        'cancellation' => $context->all([
+                            static fn () => $context->sleep(1),
+                            static fn () => $context->sleep(2),
+                        ]),
+                        'shape-change' => $context->all([
+                            static fn () => $context->activity('golden.activity-one'),
+                            static fn () => $context->activity('golden.activity-two'),
+                            static fn () => $context->activity('golden.activity-three'),
+                        ]),
+                        default => $context->all([
+                            static fn () => $context->activity('golden.activity-one'),
+                            static fn () => $context->activity('golden.activity-two'),
+                        ]),
+                    };
+                } catch (ActivityFailed|ChildWorkflowFailed|WorkflowCancelled $exception) {
+                    return ['failure' => $exception::class];
+                }
             },
             default => throw new RuntimeException(
                 "Replay fixture workflow {$workflowType} has no PHP implementation; "

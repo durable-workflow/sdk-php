@@ -48,8 +48,9 @@ final class LaravelGreetingWorkflow
     {
     }
 
+    /** @return array{primary: string, secondary: string} */
     #[Workflow('laravel.greeting')]
-    public function workflow(WorkflowContext $context, string $name): string
+    public function workflow(WorkflowContext $context, string $name): array
     {
         if ($this->prefix->value === '') {
             throw new RuntimeException('Laravel did not inject the workflow application dependency.');
@@ -59,7 +60,12 @@ final class LaravelGreetingWorkflow
             throw new RuntimeException('Laravel workflow version replay returned an unsupported decision.');
         }
 
-        return $context->activity('laravel.greet', [$name]);
+        [$primary, $secondary] = $context->all([
+            static fn () => $context->activity('laravel.greet', [$name]),
+            $context->deferActivity('laravel.greet', ["{$name} again"]),
+        ]);
+
+        return compact('primary', 'secondary');
     }
 }
 
@@ -188,6 +194,24 @@ if ($worker->contracts()['workflows'] !== ['laravel.greeting']
 $harness = new WorkerTestHarness($worker);
 $harness->assertActivityResult('laravel.greet', 'hello from Laravel, Ada', ['Ada']);
 $codec = $registeredClient->payloadCodec();
+$initial = $harness->runWorkflow('laravel.greeting', ['Ada'])->commands;
+$parallelCommands = array_values(array_filter(
+    $initial,
+    static fn (array $command): bool => ($command['type'] ?? null) === 'schedule_activity',
+));
+if (count($parallelCommands) !== 2
+    || array_column($parallelCommands, 'parallel_group_id') !== ['parallel-activities:2:2', 'parallel-activities:2:2']
+    || array_column($parallelCommands, 'parallel_group_index') !== [0, 1]
+) {
+    throw new RuntimeException('Laravel container-resolved workflow did not emit its complete parallel group.');
+}
+$parallelEntry = static fn (int $index): array => [
+    'parallel_group_id' => 'parallel-activities:2:2',
+    'parallel_group_kind' => 'activity',
+    'parallel_group_base_sequence' => 2,
+    'parallel_group_size' => 2,
+    'parallel_group_index' => $index,
+];
 $completed = $harness->runWorkflow('laravel.greeting', ['Ada'], [
     [
         'event_type' => 'VersionMarkerRecorded',
@@ -199,20 +223,52 @@ $completed = $harness->runWorkflow('laravel.greeting', ['Ada'], [
             'max_supported' => 1,
         ],
     ],
-    ['event_type' => 'ActivityScheduled', 'payload' => ['sequence' => 2, 'activity_type' => 'laravel.greet']],
+    [
+        'event_type' => 'ActivityScheduled',
+        'payload' => [
+            'sequence' => 2,
+            'activity_type' => 'laravel.greet',
+            ...$parallelEntry(0),
+            'parallel_group_path' => [$parallelEntry(0)],
+        ],
+    ],
+    [
+        'event_type' => 'ActivityScheduled',
+        'payload' => [
+            'sequence' => 3,
+            'activity_type' => 'laravel.greet',
+            ...$parallelEntry(1),
+            'parallel_group_path' => [$parallelEntry(1)],
+        ],
+    ],
+    [
+        'event_type' => 'ActivityCompleted',
+        'payload' => [
+            'sequence' => 3,
+            'activity_type' => 'laravel.greet',
+            'result' => $codec->envelope('hello from Laravel, Ada again'),
+            ...$parallelEntry(1),
+            'parallel_group_path' => [$parallelEntry(1)],
+        ],
+    ],
     [
         'event_type' => 'ActivityCompleted',
         'payload' => [
             'sequence' => 2,
             'activity_type' => 'laravel.greet',
             'result' => $codec->envelope('hello from Laravel, Ada'),
+            ...$parallelEntry(0),
+            'parallel_group_path' => [$parallelEntry(0)],
         ],
     ],
 ]);
 if (($completed->commands[0]['type'] ?? null) !== 'complete_workflow'
-    || $codec->decodeEnvelope($completed->commands[0]['result'] ?? []) !== 'hello from Laravel, Ada'
+    || $codec->decodeEnvelope($completed->commands[0]['result'] ?? []) !== [
+        'primary' => 'hello from Laravel, Ada',
+        'secondary' => 'hello from Laravel, Ada again',
+    ]
 ) {
-    throw new RuntimeException('Laravel container-resolved workflow did not complete with its injected activity.');
+    throw new RuntimeException('Laravel container-resolved workflow did not join injected activities in declaration order.');
 }
 $worker->requestShutdown();
 if ($diagnostics !== ['worker.shutdown_requested']
@@ -266,18 +322,27 @@ if ($fakeApplicationService->workflows !== $fake
 ) {
     throw new RuntimeException('Laravel testing fake leaked a network client through interface injection.');
 }
-$fake->setWorkflowResult('laravel-greeting-1', 'hello from Laravel, Ada');
+$fake->setWorkflowResult('laravel-greeting-1', [
+    'primary' => 'hello from Laravel, Ada',
+    'secondary' => 'hello from Laravel, Ada again',
+]);
 $fakeHandle = DurableWorkflowFacade::start(
     LaravelGreetingWorkflow::class,
     ['Ada'],
     workflowId: 'laravel-greeting-1',
 );
-if ($fakeHandle->result() !== 'hello from Laravel, Ada') {
+if ($fakeHandle->result() !== [
+    'primary' => 'hello from Laravel, Ada',
+    'secondary' => 'hello from Laravel, Ada again',
+]) {
     throw new RuntimeException('Laravel testing fake did not return the configured workflow result.');
 }
 if ($app->make(LaravelWorkflowClientInterface::class)
     ->handle(LaravelGreetingWorkflow::class, 'laravel-greeting-1')
-    ->result() !== 'hello from Laravel, Ada'
+    ->result() !== [
+        'primary' => 'hello from Laravel, Ada',
+        'secondary' => 'hello from Laravel, Ada again',
+    ]
 ) {
     throw new RuntimeException('Laravel class-shaped workflow handle did not return the configured result.');
 }

@@ -293,13 +293,14 @@ jobs:
           use App\Support\PublishedGreetingPrefix;
           use DurableWorkflow\Attribute\Signal;
           use DurableWorkflow\Attribute\Workflow;
+          use DurableWorkflow\Exception\ActivityFailed;
           use DurableWorkflow\Worker\WorkflowContext;
           final class PublishedGreetingWorkflow
           {
               public function __construct(private PublishedGreetingPrefix $prefix) {}
 
               #[Workflow('laravel.greeting')]
-              public function run(WorkflowContext $context, string $name): string
+              public function run(WorkflowContext $context, string $name): array
               {
                   if ($this->prefix->value() === '') {
                       throw new \LogicException('Laravel did not inject the workflow dependency.');
@@ -313,14 +314,60 @@ jobs:
                       timeout: 60,
                   );
                   if (!$released) {
-                      return 'published Laravel condition wait timed out';
+                      return ['greetings' => ['published Laravel condition wait timed out'], 'version' => $version];
                   }
 
-                  return $context->activity('laravel.greet', [$name])." / version {$version}";
+                  $restart = $context->all([
+                      static fn () => $context->activity('laravel.greet', ["{$name} restart"]),
+                      static fn () => $context->parallel([
+                          static fn () => $context->childWorkflow('laravel.child-greeting', [$name]),
+                          static fn () => $context->sleep(30),
+                      ]),
+                  ]);
+
+                  $activities = $context->all([
+                      static fn () => $context->activity('laravel.greet', [$name]),
+                      static fn () => $context->activity('laravel.greet', ["{$name} activity two"]),
+                  ]);
+                  $children = $context->parallel([
+                      static fn () => $context->childWorkflow('laravel.child-greeting', ["{$name} child one"]),
+                      static fn () => $context->childWorkflow('laravel.child-greeting', ["{$name} child two"]),
+                  ]);
+
+                  $failureActivity = null;
+                  try {
+                      $context->all([
+                          static fn () => $context->activity('laravel.greet', ["{$name} failure sibling"]),
+                          static fn () => $context->activity(
+                              'laravel.fail',
+                              [$name],
+                              ['retry_policy' => ['max_attempts' => 1]],
+                          ),
+                      ]);
+                  } catch (ActivityFailed $exception) {
+                      $failureActivity = $exception->activityType;
+                  }
+
+                  return compact('restart', 'activities', 'children', 'failureActivity', 'version');
               }
 
               #[Signal('published.release')]
               public function release(): void {}
+          }
+          PHP
+          tee app/Workflows/PublishedGreetingChildWorkflow.php >/dev/null <<'PHP'
+          <?php
+          declare(strict_types=1);
+          namespace App\Workflows;
+          use DurableWorkflow\Attribute\Workflow;
+          use DurableWorkflow\Worker\WorkflowContext;
+          final class PublishedGreetingChildWorkflow
+          {
+              #[Workflow('laravel.child-greeting')]
+              public function run(WorkflowContext $context, string $name): string
+              {
+                  return "child {$name}";
+              }
           }
           PHP
           tee app/Activities/PublishedGreetingActivities.php >/dev/null <<'PHP'
@@ -339,6 +386,12 @@ jobs:
               {
                   return "{$this->prefix->value()}, {$name}";
               }
+
+              #[Activity('laravel.fail')]
+              public function fail(ActivityContext $context, string $name): never
+              {
+                  throw new \RuntimeException("intentional qualification failure for {$name}");
+              }
           }
           PHP
           tee app/Actions/StartPublishedGreeting.php >/dev/null <<'PHP'
@@ -350,7 +403,7 @@ jobs:
           {
               public function __construct(private LaravelWorkflowClientInterface $workflows) {}
 
-              public function __invoke(string $workflowId): string
+              public function __invoke(string $workflowId): array
               {
                   return $this->workflows->start(
                       \App\Workflows\PublishedGreetingWorkflow::class,
@@ -372,7 +425,7 @@ jobs:
               $phase = env('PUBLISHED_WORKFLOW_PHASE');
               $workflows = app(\DurableWorkflow\Bridge\Laravel\LaravelWorkflowClientInterface::class);
               if ($phase === 'start') {
-                  $workflows->start(
+                  $handle = $workflows->start(
                       \App\Workflows\PublishedGreetingWorkflow::class,
                       ['Ada'],
                       workflowId: $workflowId,
@@ -381,11 +434,53 @@ jobs:
                   do {
                       $execution = $client->describeWorkflow($workflowId);
                       if ($execution->status === 'waiting') {
+                          break;
+                      }
+                      usleep(250_000);
+                  } while (microtime(true) < $deadline);
+                  if ($execution->status !== 'waiting' || !is_string($execution->runId)) {
+                      throw new \RuntimeException('Published Laravel workflow did not open its condition wait.');
+                  }
+                  try {
+                      $handle->signal('published.release');
+                  } catch (\DurableWorkflow\Exception\SignalFailed $exception) {
+                      throw new \RuntimeException(
+                          'Published Laravel release signal failed: '.json_encode([
+                              'status' => $exception->status,
+                              'reason' => $exception->reason,
+                              'details' => $exception->details,
+                          ], JSON_THROW_ON_ERROR),
+                          previous: $exception,
+                      );
+                  }
+
+                  $deadline = microtime(true) + 20;
+                  do {
+                      $history = $client->workflowHistory($workflowId, $execution->runId);
+                      $events = $history['events'] ?? $history['history_events'] ?? [];
+                      $restartEvents = array_values(array_filter(
+                          is_array($events) ? $events : [],
+                          static function (mixed $event): bool {
+                              if (!is_array($event) || !is_array($event['payload'] ?? null)) {
+                                  return false;
+                              }
+                              $path = $event['payload']['parallel_group_path'] ?? null;
+                              $outer = is_array($path) && is_array($path[0] ?? null) ? $path[0] : [];
+
+                              return ($outer['parallel_group_kind'] ?? null) === 'mixed'
+                                  && ($outer['parallel_group_size'] ?? null) === 3;
+                          },
+                      ));
+                      $restartTypes = array_column($restartEvents, 'event_type');
+                      if (in_array('ActivityCompleted', $restartTypes, true)
+                          && in_array('TimerScheduled', $restartTypes, true)
+                          && !in_array('TimerFired', $restartTypes, true)
+                      ) {
                           return;
                       }
                       usleep(250_000);
                   } while (microtime(true) < $deadline);
-                  throw new \RuntimeException('Published Laravel workflow did not open its condition wait.');
+                  throw new \RuntimeException('Published Laravel workflow did not expose a partially completed mixed group before restart.');
               }
               if ($phase !== 'finish') {
                   throw new \RuntimeException('Published Laravel workflow phase must be start or finish.');
@@ -400,20 +495,17 @@ jobs:
                   $workflowId,
                   $execution->runId,
               );
-              try {
-                  $handle->signal('published.release');
-              } catch (\DurableWorkflow\Exception\SignalFailed $exception) {
-                  throw new \RuntimeException(
-                      'Published Laravel release signal failed: '.json_encode([
-                          'status' => $exception->status,
-                          'reason' => $exception->reason,
-                          'details' => $exception->details,
-                      ], JSON_THROW_ON_ERROR),
-                      previous: $exception,
-                  );
-              }
               $result = $handle->result(timeoutSeconds: 90, pollIntervalSeconds: 1);
-              if ($result !== 'hello from Laravel, Ada / version 1') {
+              if ($result !== [
+                  'restart' => ['hello from Laravel, Ada restart', ['child Ada', null]],
+                  'activities' => [
+                      'hello from Laravel, Ada',
+                      'hello from Laravel, Ada activity two',
+                  ],
+                  'children' => ['child Ada child one', 'child Ada child two'],
+                  'failureActivity' => 'laravel.fail',
+                  'version' => 1,
+              ]) {
                   throw new \RuntimeException('Published Laravel workflow returned an unexpected upgraded result.');
               }
               $history = $client->workflowHistory($workflowId, $execution->runId);
@@ -431,15 +523,120 @@ jobs:
                   || ($payload['version'] ?? null) !== 1) {
                   throw new \RuntimeException('Published Laravel workflow changed its durable version decision.');
               }
+              $scheduled = array_values(array_filter(
+                  is_array($events) ? $events : [],
+                  static fn (mixed $event): bool => is_array($event)
+                      && is_array($event['payload'] ?? null)
+                      && in_array($event['event_type'] ?? $event['type'] ?? null, [
+                          'ActivityScheduled',
+                          'ChildWorkflowScheduled',
+                          'TimerScheduled',
+                      ], true)
+                      && is_array($event['payload']['parallel_group_path'] ?? null),
+              ));
+              $groups = [];
+              $sequences = [];
+              foreach ($scheduled as $event) {
+                  $payload = $event['payload'];
+                  $path = $payload['parallel_group_path'];
+                  $outer = $path[0] ?? null;
+                  if (!is_array($outer)) {
+                      throw new \RuntimeException('Published Laravel history contains an invalid parallel path.');
+                  }
+                  $groups[$outer['parallel_group_id']][] = [
+                      'event_type' => $event['event_type'] ?? $event['type'] ?? null,
+                      'outer' => $outer,
+                      'path_depth' => count($path),
+                  ];
+                  $sequences[] = $payload['sequence'] ?? null;
+              }
+              $groupShapes = array_map(static function (array $members): array {
+                  $first = $members[0];
+                  $depths = array_column($members, 'path_depth');
+                  sort($depths);
+
+                  return [
+                      'kind' => $first['outer']['parallel_group_kind'] ?? null,
+                      'size' => $first['outer']['parallel_group_size'] ?? null,
+                      'types' => array_column($members, 'event_type'),
+                      'depths' => $depths,
+                  ];
+              }, $groups);
+              $matches = static fn (array $shape, string $kind, array $types, array $depths): bool =>
+                  $shape['kind'] === $kind
+                  && $shape['size'] === count($types)
+                  && $shape['types'] === $types
+                  && $shape['depths'] === $depths;
+              $activityGroups = array_values(array_filter(
+                  $groupShapes,
+                  static fn (array $shape): bool => $matches(
+                      $shape,
+                      'activity',
+                      ['ActivityScheduled', 'ActivityScheduled'],
+                      [1, 1],
+                  ),
+              ));
+              $childGroups = array_values(array_filter(
+                  $groupShapes,
+                  static fn (array $shape): bool => $matches(
+                      $shape,
+                      'child',
+                      ['ChildWorkflowScheduled', 'ChildWorkflowScheduled'],
+                      [1, 1],
+                  ),
+              ));
+              $mixedGroups = array_values(array_filter(
+                  $groupShapes,
+                  static fn (array $shape): bool => $matches(
+                      $shape,
+                      'mixed',
+                      ['ActivityScheduled', 'ChildWorkflowScheduled', 'TimerScheduled'],
+                      [1, 2, 2],
+                  ),
+              ));
+              $failures = array_values(array_filter(
+                  is_array($events) ? $events : [],
+                  static fn (mixed $event): bool => is_array($event)
+                      && ($event['event_type'] ?? $event['type'] ?? null) === 'ActivityFailed'
+                      && ($event['payload']['activity_type'] ?? null) === 'laravel.fail'
+                      && is_array($event['payload']['parallel_group_path'] ?? null),
+              ));
+              if (count($scheduled) !== 9
+                  || count(array_unique($sequences, SORT_REGULAR)) !== 9
+                  || count($activityGroups) !== 2
+                  || count($childGroups) !== 1
+                  || count($mixedGroups) !== 1
+                  || count($failures) !== 1
+              ) {
+                  throw new \RuntimeException('Published Laravel history did not prove every parallel qualification cell exactly once.');
+              }
           });
 
           Artisan::command('durable-workflow:published-fake', function (): void {
               $fake = \DurableWorkflow\Bridge\Laravel\Facades\DurableWorkflow::fake()
-                  ->setWorkflowResult('published-laravel-fake', 'hello from Laravel, Ada');
+                  ->setWorkflowResult('published-laravel-fake', [
+                      'restart' => ['hello from Laravel, Ada restart', ['child Ada', null]],
+                      'activities' => [
+                          'hello from Laravel, Ada',
+                          'hello from Laravel, Ada activity two',
+                      ],
+                      'children' => ['child Ada child one', 'child Ada child two'],
+                      'failureActivity' => 'laravel.fail',
+                      'version' => 1,
+                  ]);
               $result = app(\App\Actions\StartPublishedGreeting::class)(
                   'published-laravel-fake',
               );
-              if ($result !== 'hello from Laravel, Ada') {
+              if ($result !== [
+                  'restart' => ['hello from Laravel, Ada restart', ['child Ada', null]],
+                  'activities' => [
+                      'hello from Laravel, Ada',
+                      'hello from Laravel, Ada activity two',
+                  ],
+                  'children' => ['child Ada child one', 'child Ada child two'],
+                  'failureActivity' => 'laravel.fail',
+                  'version' => 1,
+              ]) {
                   throw new \RuntimeException('Published Laravel fake returned an unexpected result.');
               }
               $fake->assertWorkflowStarted(
@@ -451,7 +648,7 @@ jobs:
           });
           PHP
           php artisan vendor:publish --tag=durable-workflow-config --force
-          sed -i "/'handlers' => \[/a\        App\\\\Workflows\\\\PublishedGreetingWorkflow::class,\n        App\\\\Activities\\\\PublishedGreetingActivities::class," config/durable-workflow.php
+          sed -i "/'handlers' => \[/a\        App\\\\Workflows\\\\PublishedGreetingWorkflow::class,\n        App\\\\Workflows\\\\PublishedGreetingChildWorkflow::class,\n        App\\\\Activities\\\\PublishedGreetingActivities::class," config/durable-workflow.php
 
       - name: Prove the published Laravel fake without a runtime
         if: matrix.framework == 'laravel'
@@ -502,10 +699,12 @@ jobs:
                       return ['greeting' => 'published Symfony condition wait timed out'];
                   }
 
-                  return [
-                      'greeting' => $context->activity('published.symfony.greet', [$name]),
-                      'version' => $version,
-                  ];
+                  $greetings = $context->parallel([
+                      static fn () => $context->activity('published.symfony.greet', [$name]),
+                      static fn () => $context->activity('published.symfony.greet', ["{$name} again"]),
+                  ]);
+
+                  return compact('greetings', 'version');
               }
 
               #[Signal('published.release')]
@@ -869,7 +1068,10 @@ jobs:
               );
           }
           $result = $handle->result(timeoutSeconds: 90, pollIntervalSeconds: 1);
-          if ($result !== ['greeting' => 'hello, published framework', 'version' => 1]) {
+          if ($result !== [
+              'greetings' => ['hello, published framework', 'hello, published framework again'],
+              'version' => 1,
+          ]) {
               throw new RuntimeException('Published framework workflow returned an unexpected upgraded result.');
           }
           $history = $client->workflowHistory($workflowId, $execution->runId);
@@ -886,6 +1088,24 @@ jobs:
           if (($payload['change_id'] ?? null) !== 'published-framework-greeting'
               || ($payload['version'] ?? null) !== 1) {
               throw new RuntimeException('Published Symfony workflow changed its durable version decision.');
+          }
+          $parallel = array_values(array_filter(
+              is_array($events) ? $events : [],
+              static fn (mixed $event): bool => is_array($event)
+                  && is_array($event['payload'] ?? null)
+                  && in_array($event['event_type'] ?? $event['type'] ?? null, ['ActivityScheduled', 'ActivityCompleted'], true)
+                  && ($event['payload']['parallel_group_kind'] ?? null) === 'activity',
+          ));
+          $parallelPayloads = array_column($parallel, 'payload');
+          $parallelIds = array_values(array_unique(array_column($parallelPayloads, 'parallel_group_id')));
+          $parallelIndexes = array_column($parallelPayloads, 'parallel_group_index');
+          sort($parallelIndexes);
+          if (count($parallel) < 4
+              || count($parallelIds) !== 1
+              || $parallelIndexes !== [0, 0, 1, 1]
+              || array_filter($parallelPayloads, static fn (array $entry): bool => !is_array($entry['parallel_group_path'] ?? null)) !== []
+          ) {
+              throw new RuntimeException('Published Symfony history did not retain its parallel group/path diagnostics.');
           }
           PHP
           fi
@@ -919,10 +1139,14 @@ jobs:
               done
               if [ "$ready" != true ] \
                 || ! grep -Fq "queue=${queue}" "$worker_log" \
-                || ! grep -Fq 'workflows=[laravel.greeting]' "$worker_log" \
-                || ! grep -Fq 'activities=[laravel.greet]' "$worker_log" \
+                || ! grep -Fq 'workflows=[' "$worker_log" \
+                || ! grep -Fq 'laravel.greeting' "$worker_log" \
+                || ! grep -Fq 'laravel.child-greeting' "$worker_log" \
+                || ! grep -Fq 'activities=[' "$worker_log" \
+                || ! grep -Fq 'laravel.greet' "$worker_log" \
+                || ! grep -Fq 'laravel.fail' "$worker_log" \
                 || ! grep -Fq 'credential_role=worker' "$worker_log"; then
-                echo "Laravel worker did not register workflow type laravel.greeting and task queue ${queue}." >&2
+                echo "Laravel worker did not register the qualification handlers and task queue ${queue}." >&2
                 cat "$worker_log" >&2
                 exit 1
               fi

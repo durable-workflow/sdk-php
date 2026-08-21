@@ -6,6 +6,10 @@ declare(strict_types=1);
 use DurableWorkflow\Attribute\Workflow as WorkflowHandler;
 use DurableWorkflow\Client;
 use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Exception\ActivityFailed;
+use DurableWorkflow\Exception\ChildWorkflowFailed;
+use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\QueryContext;
@@ -121,7 +125,25 @@ final class ReplayRegressionTransport implements Transport
         }
 
         if ($this->taskFor($uri, 'fail') !== null) {
-            throw new RuntimeException('Official replay consumer reported a workflow task failure.');
+            $failure = $body['failure'] ?? null;
+            if (is_array($failure) && ($failure['type'] ?? null) === 'WorkflowTaskWaitingForHistory') {
+                $this->completedCommands[] = [];
+
+                return ['failed' => true];
+            }
+            if (!is_array($failure)
+                || ($failure['type'] ?? null) !== NonDeterministicWorkflow::class
+                || !is_string($failure['reason'] ?? null)
+                || !is_int($failure['sequence'] ?? null)) {
+                throw new RuntimeException('Official replay consumer reported an unexpected workflow task failure.');
+            }
+            $this->completedCommands[] = [[
+                'type' => 'replay_error',
+                'reason' => $failure['reason'],
+                'sequence' => $failure['sequence'],
+            ]];
+
+            return ['failed' => true];
         }
 
         if (str_ends_with($uri, '/api/worker/activity-tasks/poll')) {
@@ -483,6 +505,39 @@ final class ReplayRegressionConsumer
                 return 'not-cancelled';
             },
             'golden.worker-update' => static fn (WorkflowContext $context): array => [],
+            'golden.parallel' => static function (WorkflowContext $context, mixed $mode): array {
+                try {
+                    return match ($mode) {
+                        'mixed-flat' => $context->all([
+                            static fn () => $context->activity('golden.activity-one'),
+                            static fn () => $context->childWorkflow('golden.child'),
+                            static fn () => $context->sleep(1),
+                        ]),
+                        'mixed-nested' => $context->all([
+                            static fn () => $context->activity('golden.activity-one'),
+                            static fn () => $context->parallel([
+                                static fn () => $context->childWorkflow('golden.child'),
+                                static fn () => $context->sleep(1),
+                            ]),
+                        ]),
+                        'cancellation' => $context->all([
+                            static fn () => $context->sleep(1),
+                            static fn () => $context->sleep(2),
+                        ]),
+                        'shape-change' => $context->all([
+                            static fn () => $context->activity('golden.activity-one'),
+                            static fn () => $context->activity('golden.activity-two'),
+                            static fn () => $context->activity('golden.activity-three'),
+                        ]),
+                        default => $context->all([
+                            static fn () => $context->activity('golden.activity-one'),
+                            static fn () => $context->activity('golden.activity-two'),
+                        ]),
+                    };
+                } catch (ActivityFailed|ChildWorkflowFailed|WorkflowCancelled $exception) {
+                    return ['failure' => $exception::class];
+                }
+            },
             default => throw new RuntimeException(
                 "Replay fixture workflow {$workflowType} has no PHP implementation in the official consumer.",
             ),

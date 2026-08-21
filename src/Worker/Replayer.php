@@ -6,7 +6,9 @@ namespace DurableWorkflow\Worker;
 
 use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\ActivityFailed;
+use DurableWorkflow\Exception\ChildWorkflowFailed;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Exception\WorkflowCancelled;
 use Fiber;
 use LogicException;
 use Throwable;
@@ -59,8 +61,82 @@ final class Replayer
         /** @var array<string, array{version: int, family: string, sequence: ?int}> $versionDecisions */
         $versionDecisions = [];
         $suspended = $execution->start();
+        $nextSequence = 1;
 
         while (!$execution->isTerminated()) {
+            if ($suspended instanceof ParallelWorkflowCommand) {
+                $commandsBeforeGroup = count($commands);
+                $baseSequence = isset($steps[$stepCursor])
+                    ? $steps[$stepCursor]['sequence']
+                    : $nextSequence;
+                $descriptors = $suspended->leafDescriptors($baseSequence);
+                $results = [];
+                $pending = false;
+                $matched = 0;
+                $failure = null;
+
+                foreach ($descriptors as $offset => $descriptor) {
+                    $command = $descriptor['operation']->command;
+                    $path = $descriptor['group_path'];
+                    $step = $steps[$stepCursor + $offset] ?? null;
+                    if ($step === null) {
+                        $metadata = $path[array_key_last($path)] ?? [];
+                        $commands[] = $command->withAttributes([
+                            ...$metadata,
+                            'parallel_group_path' => $path,
+                        ])->toWire($this->codec, $taskQueue);
+                        continue;
+                    }
+
+                    ++$matched;
+                    $this->assertCommandMatchesStep($command, $step);
+                    $this->assertParallelPathMatches($step, $path);
+                    $nextSequence = max($nextSequence, $step['sequence'] + 1);
+
+                    if (!$step['resolved']) {
+                        $pending = true;
+                        continue;
+                    }
+                    if ($step['failure'] instanceof Throwable) {
+                        if ($failure === null
+                            || $step['resolution_order'] < $failure['resolution_order']
+                            || ($step['resolution_order'] === $failure['resolution_order'] && $offset < $failure['offset'])) {
+                            $failure = [
+                                'exception' => $step['failure'],
+                                'resolution_order' => $step['resolution_order'],
+                                'offset' => $offset,
+                            ];
+                        }
+                        continue;
+                    }
+
+                    $results[$offset] = $step['value'];
+                }
+
+                $stepCursor += $matched;
+                $nextSequence = max($nextSequence, $baseSequence + count($descriptors));
+                if (count($commands) > $commandsBeforeGroup && $failure !== null) {
+                    throw new NonDeterministicWorkflow(
+                        'Parallel history contains a failure before every declared member was durably scheduled.',
+                        $baseSequence,
+                        'all parallel members scheduled',
+                        'failed group with missing members',
+                        'parallel_group_partially_scheduled',
+                    );
+                }
+                if ($failure !== null) {
+                    $suspended = $execution->throw($failure['exception']);
+                    continue;
+                }
+                if ($pending || count($commands) > $commandsBeforeGroup) {
+                    return new ReplayResult($commands);
+                }
+
+                ksort($results);
+                $suspended = $execution->resume($suspended->nestedResults(array_values($results)));
+                continue;
+            }
+
             if (!$suspended instanceof WorkflowCommand) {
                 throw new NonDeterministicWorkflow('Workflow suspended with an unsupported value instead of WorkflowCommand.');
             }
@@ -117,6 +193,7 @@ final class Replayer
                         $step['sequence'],
                     );
                     ++$stepCursor;
+                    $nextSequence = max($nextSequence, $step['sequence'] + 1);
                     $versionDecisions[$changeId] = [
                         'version' => $version,
                         'family' => $this->versionFamily($suspended),
@@ -146,6 +223,7 @@ final class Replayer
 
                 $version = (int) $suspended->attributes['max_supported'];
                 $commands[] = $suspended->toWire($this->codec, $taskQueue);
+                ++$nextSequence;
                 $versionDecisions[$changeId] = [
                     'version' => $version,
                     'family' => $this->versionFamily($suspended),
@@ -157,27 +235,18 @@ final class Replayer
 
             $step = $steps[$stepCursor] ?? null;
             if ($step !== null) {
-                if ($step['shape'] !== $suspended->historyShape) {
+                $this->assertCommandMatchesStep($suspended, $step);
+                if ($step['parallel_path'] !== []) {
                     throw new NonDeterministicWorkflow(
-                        "History contains {$step['shape']} but workflow scheduled {$suspended->historyShape}.",
+                        'Recorded parallel-group history was replaced by a sequential workflow operation.',
                         $step['sequence'],
-                        $step['shape'],
+                        'parallel barrier',
                         $suspended->historyShape,
-                    );
-                }
-                $actualDetail = $this->commandDetail($suspended);
-                if ($suspended->type !== 'open_condition_wait'
-                    && $step['detail'] !== null
-                    && $actualDetail !== null
-                    && $step['detail'] !== $actualDetail) {
-                    throw new NonDeterministicWorkflow(
-                        "Recorded {$step['shape']} detail changed from {$step['detail']} to {$actualDetail}.",
-                        $step['sequence'],
-                        $step['detail'],
-                        $actualDetail,
+                        'parallel_group_missing_from_workflow',
                     );
                 }
                 ++$stepCursor;
+                $nextSequence = max($nextSequence, $step['sequence'] + 1);
                 if ($suspended->type === 'open_condition_wait') {
                     $this->assertConditionWaitCompatible($step, $suspended);
                     if ($step['resolved']) {
@@ -216,6 +285,7 @@ final class Replayer
                 }
             }
             $commands[] = $suspended->toWire($this->codec, $taskQueue);
+            ++$nextSequence;
             if ($suspended->type === 'record_side_effect' || $suspended->type === 'upsert_search_attributes') {
                 $suspended = $execution->resume($suspended->localResult);
                 continue;
@@ -247,7 +317,9 @@ final class Replayer
      *     failure: ?Throwable,
      *     condition_key: ?string,
      *     condition_definition_fingerprint: ?string,
-     *     timeout_seconds: ?int
+     *     timeout_seconds: ?int,
+     *     parallel_path: list<array<string, mixed>>,
+     *     resolution_order: int
      * }>
      */
     private function recordedSteps(array $history): array
@@ -257,7 +329,7 @@ final class Replayer
         $versionMarkerSequences = [];
         $versionMarkerChangeIds = [];
         $fallbackSequence = 1_000_000;
-        foreach ($history as $event) {
+        foreach ($history as $resolutionOrder => $event) {
             $type = (string) ($event['event_type'] ?? $event['type'] ?? '');
             $payload = isset($event['payload']) && is_array($event['payload']) ? $event['payload'] : [];
             $sequence = $type === 'VersionMarkerRecorded'
@@ -278,15 +350,28 @@ final class Replayer
             }
 
             if (in_array($type, ['ActivityScheduled', 'ActivityStarted'], true)) {
-                $steps[$key] ??= $this->step($sequence, 'activity', $this->payloadDetail($payload, 'activity'));
+                $steps[$key] ??= $this->step(
+                    $sequence,
+                    'activity',
+                    $this->payloadDetail($payload, 'activity'),
+                    parallelPath: $this->parallelPath($payload, $sequence),
+                );
             } elseif ($type === 'ActivityCompleted') {
+                if (($steps[$key]['resolved'] ?? false) === true) {
+                    continue;
+                }
                 $steps[$key] = $this->resolvedStep(
                     $sequence,
                     'activity',
                     $this->decodeResult($payload),
                     detail: $this->payloadDetail($payload, 'activity') ?? ($steps[$key]['detail'] ?? null),
+                    parallelPath: $this->resolutionParallelPath($payload, $steps[$key] ?? null, $sequence),
+                    resolutionOrder: $resolutionOrder,
                 );
-            } elseif (in_array($type, ['ActivityFailed', 'ActivityTimedOut'], true)) {
+            } elseif (in_array($type, ['ActivityFailed', 'ActivityTimedOut', 'ActivityCancelled'], true)) {
+                if (($steps[$key]['resolved'] ?? false) === true) {
+                    continue;
+                }
                 $failure = new ActivityFailed(
                     (string) ($payload['message'] ?? $payload['closed_reason'] ?? 'Activity failed.'),
                     isset($payload['activity_type']) ? (string) $payload['activity_type'] : null,
@@ -300,10 +385,17 @@ final class Replayer
                     null,
                     $failure,
                     $this->payloadDetail($payload, 'activity') ?? ($steps[$key]['detail'] ?? null),
+                    parallelPath: $this->resolutionParallelPath($payload, $steps[$key] ?? null, $sequence),
+                    resolutionOrder: $resolutionOrder,
                 );
             } elseif ($type === 'TimerScheduled') {
                 if (!in_array($payload['timer_kind'] ?? null, ['condition_timeout', 'signal_timeout'], true)) {
-                    $steps[$key] ??= $this->step($sequence, 'timer', $this->payloadDetail($payload, 'timer'));
+                    $steps[$key] ??= $this->step(
+                        $sequence,
+                        'timer',
+                        $this->payloadDetail($payload, 'timer'),
+                        parallelPath: $this->parallelPath($payload, $sequence),
+                    );
                 }
             } elseif ($type === 'TimerFired') {
                 if (($payload['timer_kind'] ?? null) === 'condition_timeout') {
@@ -319,35 +411,80 @@ final class Replayer
                             conditionKey: $steps[$conditionStepKey]['condition_key'],
                             conditionDefinitionFingerprint: $steps[$conditionStepKey]['condition_definition_fingerprint'],
                             timeoutSeconds: $steps[$conditionStepKey]['timeout_seconds'],
+                            resolutionOrder: $resolutionOrder,
                         );
                     }
                 } elseif (($payload['timer_kind'] ?? null) !== 'signal_timeout') {
+                    if (($steps[$key]['resolved'] ?? false) === true) {
+                        continue;
+                    }
                     $steps[$key] = $this->resolvedStep(
                         $sequence,
                         'timer',
                         null,
                         detail: $this->payloadDetail($payload, 'timer') ?? ($steps[$key]['detail'] ?? null),
+                        parallelPath: $this->resolutionParallelPath($payload, $steps[$key] ?? null, $sequence),
+                        resolutionOrder: $resolutionOrder,
                     );
                 }
+            } elseif ($type === 'TimerCancelled'
+                && !in_array($payload['timer_kind'] ?? null, ['condition_timeout', 'signal_timeout'], true)) {
+                if (($steps[$key]['resolved'] ?? false) === true) {
+                    continue;
+                }
+                $steps[$key] = $this->resolvedStep(
+                    $sequence,
+                    'timer',
+                    null,
+                    new WorkflowCancelled((string) ($payload['message'] ?? 'Durable timer was cancelled.')),
+                    $this->payloadDetail($payload, 'timer') ?? ($steps[$key]['detail'] ?? null),
+                    parallelPath: $this->resolutionParallelPath($payload, $steps[$key] ?? null, $sequence),
+                    resolutionOrder: $resolutionOrder,
+                );
             } elseif (in_array($type, ['ChildWorkflowScheduled', 'ChildRunStarted'], true)) {
-                $steps[$key] ??= $this->step($sequence, 'child_workflow', $this->payloadDetail($payload, 'child_workflow'));
+                $steps[$key] ??= $this->step(
+                    $sequence,
+                    'child_workflow',
+                    $this->payloadDetail($payload, 'child_workflow'),
+                    parallelPath: $this->parallelPath($payload, $sequence),
+                );
             } elseif ($type === 'ChildRunCompleted') {
+                if (($steps[$key]['resolved'] ?? false) === true) {
+                    continue;
+                }
                 $steps[$key] = $this->resolvedStep(
                     $sequence,
                     'child_workflow',
                     $this->decodeResult($payload),
                     detail: $this->payloadDetail($payload, 'child_workflow') ?? ($steps[$key]['detail'] ?? null),
+                    parallelPath: $this->resolutionParallelPath($payload, $steps[$key] ?? null, $sequence),
+                    resolutionOrder: $resolutionOrder,
                 );
             } elseif (in_array($type, ['ChildRunFailed', 'ChildRunCancelled', 'ChildRunTerminated'], true)) {
+                if (($steps[$key]['resolved'] ?? false) === true) {
+                    continue;
+                }
                 $steps[$key] = $this->resolvedStep(
                     $sequence,
                     'child_workflow',
                     null,
-                    new ActivityFailed((string) ($payload['message'] ?? 'Child workflow failed.'), failure: $payload),
+                    new ChildWorkflowFailed(
+                        (string) ($payload['message'] ?? 'Child workflow failed.'),
+                        isset($payload['child_workflow_type']) ? (string) $payload['child_workflow_type'] : null,
+                        $type,
+                        $payload,
+                    ),
                     $this->payloadDetail($payload, 'child_workflow') ?? ($steps[$key]['detail'] ?? null),
+                    parallelPath: $this->resolutionParallelPath($payload, $steps[$key] ?? null, $sequence),
+                    resolutionOrder: $resolutionOrder,
                 );
             } elseif ($type === 'SideEffectRecorded') {
-                $steps[$key] = $this->resolvedStep($sequence, 'side_effect', $this->decodeResult($payload));
+                $steps[$key] = $this->resolvedStep(
+                    $sequence,
+                    'side_effect',
+                    $this->decodeResult($payload),
+                    resolutionOrder: $resolutionOrder,
+                );
             } elseif ($type === 'VersionMarkerRecorded') {
                 if (isset($versionMarkerSequences[$key])) {
                     throw new NonDeterministicWorkflow(
@@ -384,9 +521,15 @@ final class Replayer
                     'version_marker',
                     $version,
                     detail: $changeId,
+                    resolutionOrder: $resolutionOrder,
                 );
             } elseif ($type === 'SearchAttributesUpserted') {
-                $steps[$key] = $this->resolvedStep($sequence, 'search_attributes', null);
+                $steps[$key] = $this->resolvedStep(
+                    $sequence,
+                    'search_attributes',
+                    null,
+                    resolutionOrder: $resolutionOrder,
+                );
             } elseif ($type === 'ConditionWaitOpened') {
                 $conditionKey = $this->stringValue($payload['condition_key'] ?? null);
                 $conditionDefinitionFingerprint = $this->stringValue(
@@ -418,6 +561,7 @@ final class Replayer
                         conditionKey: $steps[$conditionStepKey]['condition_key'],
                         conditionDefinitionFingerprint: $steps[$conditionStepKey]['condition_definition_fingerprint'],
                         timeoutSeconds: $steps[$conditionStepKey]['timeout_seconds'],
+                        resolutionOrder: $resolutionOrder,
                     );
                 }
             }
@@ -449,7 +593,9 @@ final class Replayer
      *     failure: ?Throwable,
      *     condition_key: ?string,
      *     condition_definition_fingerprint: ?string,
-     *     timeout_seconds: ?int
+     *     timeout_seconds: ?int,
+     *     parallel_path: list<array<string, mixed>>,
+     *     resolution_order: int
      * }> $steps
      */
     private function assertNoRemainingSteps(array $steps, int $stepCursor, string $terminalCommand): void
@@ -468,6 +614,7 @@ final class Replayer
     }
 
     /**
+     * @param list<array<string, mixed>> $parallelPath
      * @return array{
      *     sequence: int,
      *     shape: string,
@@ -477,7 +624,9 @@ final class Replayer
      *     failure: ?Throwable,
      *     condition_key: ?string,
      *     condition_definition_fingerprint: ?string,
-     *     timeout_seconds: ?int
+     *     timeout_seconds: ?int,
+     *     parallel_path: list<array<string, mixed>>,
+     *     resolution_order: int
      * }
      */
     private function step(
@@ -487,6 +636,8 @@ final class Replayer
         ?string $conditionKey = null,
         ?string $conditionDefinitionFingerprint = null,
         ?int $timeoutSeconds = null,
+        array $parallelPath = [],
+        int $resolutionOrder = PHP_INT_MAX,
     ): array {
         return [
             'sequence' => $sequence,
@@ -498,10 +649,13 @@ final class Replayer
             'condition_key' => $conditionKey,
             'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
             'timeout_seconds' => $timeoutSeconds,
+            'parallel_path' => $parallelPath,
+            'resolution_order' => $resolutionOrder,
         ];
     }
 
     /**
+     * @param list<array<string, mixed>> $parallelPath
      * @return array{
      *     sequence: int,
      *     shape: string,
@@ -511,7 +665,9 @@ final class Replayer
      *     failure: ?Throwable,
      *     condition_key: ?string,
      *     condition_definition_fingerprint: ?string,
-     *     timeout_seconds: ?int
+     *     timeout_seconds: ?int,
+     *     parallel_path: list<array<string, mixed>>,
+     *     resolution_order: int
      * }
      */
     private function resolvedStep(
@@ -523,6 +679,8 @@ final class Replayer
         ?string $conditionKey = null,
         ?string $conditionDefinitionFingerprint = null,
         ?int $timeoutSeconds = null,
+        array $parallelPath = [],
+        int $resolutionOrder = PHP_INT_MAX,
     ): array
     {
         return [
@@ -535,7 +693,198 @@ final class Replayer
             'condition_key' => $conditionKey,
             'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
             'timeout_seconds' => $timeoutSeconds,
+            'parallel_path' => $parallelPath,
+            'resolution_order' => $resolutionOrder,
         ];
+    }
+
+    /** @param array<string, mixed> $step */
+    private function assertCommandMatchesStep(WorkflowCommand $command, array $step): void
+    {
+        if ($step['shape'] !== $command->historyShape) {
+            throw new NonDeterministicWorkflow(
+                "History contains {$step['shape']} but workflow scheduled {$command->historyShape}.",
+                $step['sequence'],
+                $step['shape'],
+                $command->historyShape,
+            );
+        }
+
+        $actualDetail = $this->commandDetail($command);
+        if ($command->type !== 'open_condition_wait'
+            && $step['detail'] !== null
+            && $actualDetail !== null
+            && $step['detail'] !== $actualDetail) {
+            throw new NonDeterministicWorkflow(
+                "Recorded {$step['shape']} detail changed from {$step['detail']} to {$actualDetail}.",
+                $step['sequence'],
+                $step['detail'],
+                $actualDetail,
+            );
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $step
+     * @param list<array<string, mixed>> $expectedPath
+     */
+    private function assertParallelPathMatches(array $step, array $expectedPath): void
+    {
+        if ($step['parallel_path'] === []) {
+            throw new NonDeterministicWorkflow(
+                'Recorded parallel member is missing its durable group path.',
+                $step['sequence'],
+                json_encode($expectedPath, JSON_THROW_ON_ERROR),
+                '<missing>',
+                'parallel_group_metadata_missing',
+            );
+        }
+        if ($step['parallel_path'] !== $expectedPath) {
+            throw new NonDeterministicWorkflow(
+                'Recorded parallel-group identity or path changed during replay.',
+                $step['sequence'],
+                json_encode($step['parallel_path'], JSON_THROW_ON_ERROR),
+                json_encode($expectedPath, JSON_THROW_ON_ERROR),
+                'parallel_group_shape_mismatch',
+            );
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return list<array<string, mixed>>
+     */
+    private function parallelPath(array $payload, int $sequence): array
+    {
+        $fields = [
+            'parallel_group_id',
+            'parallel_group_kind',
+            'parallel_group_base_sequence',
+            'parallel_group_size',
+            'parallel_group_index',
+        ];
+        $hasMetadata = array_key_exists('parallel_group_path', $payload);
+        foreach ($fields as $field) {
+            $hasMetadata = $hasMetadata || array_key_exists($field, $payload);
+        }
+        if (!$hasMetadata) {
+            return [];
+        }
+
+        $topLevel = $this->parallelEntry($payload, $sequence);
+        $rawPath = $payload['parallel_group_path'] ?? null;
+        if ($rawPath === null) {
+            return [$topLevel];
+        }
+        if (!is_array($rawPath) || !array_is_list($rawPath) || $rawPath === []) {
+            throw new NonDeterministicWorkflow(
+                'Parallel-group history contains an invalid group path.',
+                $sequence,
+                'non-empty parallel_group_path list',
+                get_debug_type($rawPath),
+                'parallel_group_metadata_invalid',
+            );
+        }
+
+        $path = [];
+        foreach ($rawPath as $entry) {
+            if (!is_array($entry)) {
+                throw new NonDeterministicWorkflow(
+                    'Parallel-group history contains a non-object path entry.',
+                    $sequence,
+                    'parallel group metadata object',
+                    get_debug_type($entry),
+                    'parallel_group_metadata_invalid',
+                );
+            }
+            $path[] = $this->parallelEntry($entry, $sequence);
+        }
+
+        if ($path[array_key_last($path)] !== $topLevel) {
+            throw new NonDeterministicWorkflow(
+                'Parallel-group history top-level fields do not match the innermost path entry.',
+                $sequence,
+                json_encode($path[array_key_last($path)], JSON_THROW_ON_ERROR),
+                json_encode($topLevel, JSON_THROW_ON_ERROR),
+                'parallel_group_metadata_invalid',
+            );
+        }
+
+        return $path;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function parallelEntry(array $payload, int $sequence): array
+    {
+        $id = $payload['parallel_group_id'] ?? null;
+        $kind = $payload['parallel_group_kind'] ?? null;
+        $base = $payload['parallel_group_base_sequence'] ?? null;
+        $size = $payload['parallel_group_size'] ?? null;
+        $index = $payload['parallel_group_index'] ?? null;
+        if (!is_string($id) || $id === ''
+            || !is_string($kind) || !in_array($kind, ['activity', 'child', 'timer', 'mixed'], true)
+            || !is_int($base) || $base < 1
+            || !is_int($size) || $size < 1 || $size > WorkflowContext::MAX_PARALLEL_OPERATIONS
+            || !is_int($index) || $index < 0 || $index >= $size
+            || $sequence !== $base + $index) {
+            throw new NonDeterministicWorkflow(
+                'Parallel-group history contains invalid identity, bounds, or path fields.',
+                $sequence,
+                'valid group, base-sequence, size, index, and path identity',
+                json_encode($payload, JSON_THROW_ON_ERROR),
+                'parallel_group_metadata_invalid',
+            );
+        }
+
+        $prefix = match ($kind) {
+            'activity' => 'parallel-activities',
+            'child' => 'parallel-children',
+            'timer' => 'parallel-timers',
+            default => 'parallel-calls',
+        };
+        $expectedId = sprintf('%s:%d:%d', $prefix, $base, $size);
+        if ($id !== $expectedId) {
+            throw new NonDeterministicWorkflow(
+                'Parallel-group history contains an incompatible stable group ID.',
+                $sequence,
+                $expectedId,
+                $id,
+                'parallel_group_metadata_invalid',
+            );
+        }
+
+        return [
+            'parallel_group_id' => $id,
+            'parallel_group_kind' => $kind,
+            'parallel_group_base_sequence' => $base,
+            'parallel_group_size' => $size,
+            'parallel_group_index' => $index,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @param array<string, mixed>|null $previous
+     * @return list<array<string, mixed>>
+     */
+    private function resolutionParallelPath(array $payload, ?array $previous, int $sequence): array
+    {
+        $current = $this->parallelPath($payload, $sequence);
+        $recorded = is_array($previous['parallel_path'] ?? null) ? $previous['parallel_path'] : [];
+        if ($current !== [] && $recorded !== [] && $current !== $recorded) {
+            throw new NonDeterministicWorkflow(
+                'Parallel-group metadata changed between scheduling and resolution history.',
+                $sequence,
+                json_encode($recorded, JSON_THROW_ON_ERROR),
+                json_encode($current, JSON_THROW_ON_ERROR),
+                'parallel_group_history_conflict',
+            );
+        }
+
+        return $current !== [] ? $current : $recorded;
     }
 
     private function commandDetail(WorkflowCommand $command): ?string
@@ -762,7 +1111,9 @@ final class Replayer
      *     failure: ?Throwable,
      *     condition_key: ?string,
      *     condition_definition_fingerprint: ?string,
-     *     timeout_seconds: ?int
+     *     timeout_seconds: ?int,
+     *     parallel_path: list<array<string, mixed>>,
+     *     resolution_order: int
      * }> $steps
      * @return list<array{
      *     sequence: int,
@@ -773,7 +1124,9 @@ final class Replayer
      *     failure: ?Throwable,
      *     condition_key: ?string,
      *     condition_definition_fingerprint: ?string,
-     *     timeout_seconds: ?int
+     *     timeout_seconds: ?int,
+     *     parallel_path: list<array<string, mixed>>,
+     *     resolution_order: int
      * }>
      */
     private function collapseConditionReopens(array $steps): array

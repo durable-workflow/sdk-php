@@ -741,6 +741,8 @@ final class Worker
                         $attempt,
                         'PHP workflow task execution failed: '.$failure->getMessage(),
                         $failure::class,
+                        $failure instanceof NonDeterministicWorkflow ? $failure->reason : null,
+                        $failure instanceof NonDeterministicWorkflow ? $failure->sequence : null,
                     );
                 },
             );

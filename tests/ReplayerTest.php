@@ -6,6 +6,7 @@ namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\ActivityFailed;
+use DurableWorkflow\Exception\ChildWorkflowFailed;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
@@ -316,7 +317,7 @@ final class ReplayerTest extends TestCase
                 $nestedWorkflow = static function (WorkflowContext $context) use (&$outerContext): array {
                     $crossExecutionRejected = false;
                     try {
-                        $outerContext?->activity('must-not-run');
+                        $outerContext->activity('must-not-run');
                     } catch (\LogicException) {
                         $crossExecutionRejected = true;
                     }
@@ -755,12 +756,301 @@ final class ReplayerTest extends TestCase
         }
     }
 
+    public function testParallelSchedulesEveryMixedNestedLeafWithStableMetadata(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static fn (WorkflowContext $context): array => $context->all([
+            static fn () => $context->activity('fetch-a'),
+            static fn () => $context->all([
+                static fn () => $context->childWorkflow('enrich-child'),
+                static function () use ($context): void {
+                    $context->sleep(5);
+                },
+            ]),
+        ]);
+
+        $commands = (new Replayer($codec))->replay($workflow, [], [], 'php-workers')->commands;
+
+        self::assertSame(['schedule_activity', 'start_child_workflow', 'start_timer'], array_column($commands, 'type'));
+        self::assertSame('parallel-calls:1:3', $commands[0]['parallel_group_id']);
+        self::assertSame('parallel-calls:2:2', $commands[1]['parallel_group_id']);
+        self::assertSame('parallel-calls:2:2', $commands[2]['parallel_group_id']);
+        self::assertSame([0], array_column($commands[0]['parallel_group_path'], 'parallel_group_index'));
+        self::assertSame([1, 0], array_column($commands[1]['parallel_group_path'], 'parallel_group_index'));
+        self::assertSame([2, 1], array_column($commands[2]['parallel_group_path'], 'parallel_group_index'));
+    }
+
+    public function testParallelReplayReturnsNestedDeclarationOrderAfterMixedCompletionOrder(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static fn (WorkflowContext $context): array => $context->all([
+            static fn () => $context->activity('first'),
+            static fn () => $context->all([
+                static fn () => $context->childWorkflow('second'),
+                static fn () => $context->activity('third'),
+            ]),
+        ]);
+        $outer = [
+            self::parallelEntry('mixed', 1, 3, 0),
+            self::parallelEntry('mixed', 1, 3, 1),
+            self::parallelEntry('mixed', 1, 3, 2),
+        ];
+        $paths = [
+            [$outer[0]],
+            [$outer[1], self::parallelEntry('mixed', 2, 2, 0)],
+            [$outer[2], self::parallelEntry('mixed', 2, 2, 1)],
+        ];
+        $history = [
+            self::parallelEvent('ActivityScheduled', 1, 'first', $paths[0]),
+            self::parallelEvent('ChildWorkflowScheduled', 2, 'second', $paths[1]),
+            self::parallelEvent('ActivityScheduled', 3, 'third', $paths[2]),
+            self::parallelEvent('ActivityCompleted', 3, 'third', $paths[2], $codec->envelope('three')),
+            self::parallelEvent('ActivityCompleted', 1, 'first', $paths[0], $codec->envelope('one')),
+            self::parallelEvent('ActivityCompleted', 1, 'first', $paths[0], $codec->envelope('duplicate')),
+            self::parallelEvent('ChildRunCompleted', 2, 'second', $paths[1], $codec->envelope('two')),
+        ];
+
+        $result = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame(['one', ['two', 'three']], $codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    public function testParallelPartialRestartDoesNotRescheduleCompletedOrPendingMembers(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static fn (WorkflowContext $context): array => $context->all([
+            static fn () => $context->activity('first'),
+            static fn () => $context->activity('second'),
+        ]);
+        $paths = self::parallelPaths([
+            ['activity', 1, 2, 0],
+            ['activity', 1, 2, 1],
+        ]);
+        $history = [
+            self::parallelEvent('ActivityScheduled', 1, 'first', $paths[0]),
+            self::parallelEvent('ActivityScheduled', 2, 'second', $paths[1]),
+            self::parallelEvent('ActivityCompleted', 2, 'second', $paths[1], $codec->envelope('two')),
+        ];
+
+        $result = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame([], $result->commands);
+    }
+
+    public function testParallelFirstRecordedFailureThrowsWhileLateMembersRemainPending(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): string {
+            try {
+                $context->all([
+                    static fn () => $context->activity('first'),
+                    static fn () => $context->childWorkflow('second'),
+                ]);
+            } catch (ActivityFailed $failure) {
+                return $failure->activityType ?? 'missing';
+            }
+
+            return 'unexpected';
+        };
+        $paths = self::parallelPaths([
+            ['mixed', 1, 2, 0],
+            ['mixed', 1, 2, 1],
+        ]);
+        $failed = self::parallelEvent('ActivityFailed', 1, 'first', $paths[0]);
+        $failed['payload']['message'] = 'first failed';
+        $history = [
+            self::parallelEvent('ActivityScheduled', 1, 'first', $paths[0]),
+            self::parallelEvent('ChildWorkflowScheduled', 2, 'second', $paths[1]),
+            $failed,
+        ];
+
+        $result = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame('first', $codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    public function testParallelChildFailureUsesItsTypedFailure(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): string {
+            try {
+                $context->all([static fn () => $context->childWorkflow('child')]);
+            } catch (ChildWorkflowFailed $failure) {
+                return $failure->workflowType ?? 'missing';
+            }
+
+            return 'unexpected';
+        };
+        $path = self::parallelPaths([['child', 1, 1, 0]])[0];
+        $failed = self::parallelEvent('ChildRunFailed', 1, 'child', $path);
+        $failed['payload']['message'] = 'child failed';
+
+        $result = (new Replayer($codec))->replay($workflow, [
+            self::parallelEvent('ChildWorkflowScheduled', 1, 'child', $path),
+            $failed,
+        ], [], 'php-workers');
+
+        self::assertSame('child', $codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    public function testParallelDeferredChildGroupSchedulesEveryMemberBeforeSuspending(): void
+    {
+        $commands = (new Replayer(new AvroPayloadCodec()))->replay(
+            static fn (WorkflowContext $context): array => $context->parallel([
+                $context->deferChildWorkflow('first-child'),
+                $context->deferChildWorkflow('second-child'),
+            ]),
+            [],
+            [],
+            'php-workers',
+        )->commands;
+
+        self::assertSame(['start_child_workflow', 'start_child_workflow'], array_column($commands, 'type'));
+        self::assertSame(['parallel-children:1:2', 'parallel-children:1:2'], array_column(
+            $commands,
+            'parallel_group_id',
+        ));
+    }
+
+    public function testParallelRejectsChangedGroupShapeAndMissingMetadata(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static fn (WorkflowContext $context): array => $context->all([
+            static fn () => $context->activity('first'),
+            static fn () => $context->activity('second'),
+            static fn () => $context->activity('third'),
+        ]);
+        $path = self::parallelPaths([['activity', 1, 2, 0]])[0];
+
+        foreach ([
+            self::parallelEvent('ActivityScheduled', 1, 'first', $path),
+            ['event_type' => 'ActivityScheduled', 'payload' => ['sequence' => 1, 'activity_type' => 'first']],
+        ] as $event) {
+            try {
+                (new Replayer($codec))->replay($workflow, [$event], [], 'php-workers');
+                self::fail('Incompatible parallel history must fail replay.');
+            } catch (NonDeterministicWorkflow $exception) {
+                self::assertContains($exception->reason, [
+                    'parallel_group_shape_mismatch',
+                    'parallel_group_metadata_missing',
+                ]);
+            }
+        }
+    }
+
+    public function testParallelEmptyAndFanOutBoundFailBeforeTransport(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $empty = (new Replayer($codec))->replay(
+            static fn (WorkflowContext $context): array => $context->all([]),
+            [],
+            [],
+            'php-workers',
+        );
+        self::assertSame([], $codec->decodeEnvelope($empty->commands[0]['result']));
+
+        try {
+            (new Replayer($codec))->replay(
+                static fn (WorkflowContext $context): array => $context->all([
+                    static fn () => $context->all([]),
+                ]),
+                [],
+                [],
+                'php-workers',
+            );
+            self::fail('An empty nested parallel barrier must fail before transport.');
+        } catch (\LogicException $exception) {
+            self::assertSame(
+                'WorkflowContext::all() does not allow an empty nested barrier because replay cannot identify it.',
+                $exception->getMessage(),
+            );
+        }
+
+        $workflow = static function (WorkflowContext $context): array {
+            $operations = [];
+            for ($index = 0; $index <= WorkflowContext::MAX_PARALLEL_OPERATIONS; ++$index) {
+                $operations[] = $context->deferTimer(1);
+            }
+
+            return $context->all($operations);
+        };
+
+        $this->expectExceptionMessage('exceeds the deterministic limit');
+        (new Replayer($codec))->replay($workflow, [], [], 'php-workers');
+    }
+
     /** @return iterable<string, array{string}> */
     public static function terminalChildOutcomeProvider(): iterable
     {
         yield 'failed' => ['ChildRunFailed'];
         yield 'cancelled' => ['ChildRunCancelled'];
         yield 'terminated' => ['ChildRunTerminated'];
+    }
+
+    /**
+     * @param list<array{string, int, int, int}> $leaves
+     * @return list<list<array<string, mixed>>>
+     */
+    private static function parallelPaths(array $leaves): array
+    {
+        $paths = [];
+        foreach ($leaves as $leafIndex => [$innerKind, $innerBase, $innerSize, $innerIndex]) {
+            $outerKind = count(array_unique(array_column($leaves, 0))) === 1 ? $innerKind : 'mixed';
+            $outer = self::parallelEntry($outerKind, 1, count($leaves), $leafIndex);
+            $inner = self::parallelEntry($innerKind, $innerBase, $innerSize, $innerIndex);
+            $paths[] = $outer === $inner ? [$outer] : [$outer, $inner];
+        }
+
+        return $paths;
+    }
+
+    /** @return array<string, mixed> */
+    private static function parallelEntry(string $kind, int $base, int $size, int $index): array
+    {
+        $prefix = match ($kind) {
+            'activity' => 'parallel-activities',
+            'child' => 'parallel-children',
+            'timer' => 'parallel-timers',
+            default => 'parallel-calls',
+        };
+
+        return [
+            'parallel_group_id' => "{$prefix}:{$base}:{$size}",
+            'parallel_group_kind' => $kind,
+            'parallel_group_base_sequence' => $base,
+            'parallel_group_size' => $size,
+            'parallel_group_index' => $index,
+        ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $path
+     * @return array<string, mixed>
+     */
+    private static function parallelEvent(
+        string $eventType,
+        int $sequence,
+        string $detail,
+        array $path,
+        mixed $result = null,
+    ): array {
+        $payload = [
+            'sequence' => $sequence,
+            ...$path[array_key_last($path)],
+            'parallel_group_path' => $path,
+        ];
+        if (str_starts_with($eventType, 'Activity')) {
+            $payload['activity_type'] = $detail;
+        } elseif (str_starts_with($eventType, 'Child')) {
+            $payload['child_workflow_type'] = $detail;
+        } else {
+            $payload['delay_seconds'] = (int) $detail;
+        }
+        if ($result !== null) {
+            $payload['result'] = $result;
+        }
+
+        return ['event_type' => $eventType, 'payload' => $payload];
     }
 
     private static function workflow(): callable

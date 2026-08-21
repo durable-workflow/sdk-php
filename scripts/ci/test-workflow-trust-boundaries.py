@@ -410,6 +410,16 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
             "count($markers) !== 1",
         ):
             self.assertIn(versioning_marker, configure + runtime)
+        for concurrency_marker in (
+            "childWorkflow('laravel.child-greeting'",
+            "#[Activity('laravel.fail')]",
+            "parallel_group_path",
+            "count($scheduled) !== 9",
+            "count($mixedGroups) !== 1",
+            "count($failures) !== 1",
+            "partially completed mixed group",
+        ):
+            self.assertIn(concurrency_marker, configure + runtime)
         self.assertNotIn("continue-on-error", runtime)
         self.assertIn(f"#[Workflow('{journey['workflow_type']}')]", configure)
         self.assertIn(f"#[Activity('{journey['activity_type']}')]", configure)
@@ -658,8 +668,12 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         )
         self.assertIn("env -u DURABLE_WORKFLOW_CLIENT_TOKEN php", framework)
         self.assertIn("Registered and polling:", framework)
-        self.assertIn("workflows=[laravel.greeting]", framework)
-        self.assertIn("activities=[laravel.greet]", framework)
+        self.assertIn("workflows=[", framework)
+        self.assertIn("laravel.greeting", framework)
+        self.assertIn("laravel.child-greeting", framework)
+        self.assertIn("activities=[", framework)
+        self.assertIn("laravel.greet", framework)
+        self.assertIn("laravel.fail", framework)
         self.assertIn(
             "workerToken: quickstartEnvironment('DURABLE_WORKFLOW_WORKER_TOKEN')",
             quickstart_worker,

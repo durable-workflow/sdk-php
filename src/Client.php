@@ -935,11 +935,18 @@ final class Client implements WorkflowClientInterface
         int $attempt,
         string $message,
         string $failureType = 'PhpWorkflowTaskFailure',
+        ?string $reason = null,
+        ?int $sequence = null,
     ): array {
         return $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/fail', [
             'lease_owner' => $leaseOwner,
             'workflow_task_attempt' => $attempt,
-            'failure' => ['message' => $message, 'type' => $failureType],
+            'failure' => array_filter([
+                'message' => $message,
+                'type' => $failureType,
+                'reason' => $reason,
+                'sequence' => $sequence,
+            ], static fn (mixed $value): bool => $value !== null),
         ]);
     }
 

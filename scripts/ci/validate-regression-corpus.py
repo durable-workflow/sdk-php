@@ -1927,12 +1927,27 @@ def _verify_new_replay_evidence(
                     source_root=root,
                     fixture=fixture,
                 )
-                if legacy.returncode != 0 or cross_version.returncode == 0:
-                    raise CorpusError(
-                        "the official PHP replay runner must remain unchanged unless a fixture "
-                        "passes with both matching runner/source revisions and fails across the "
-                        f"runner/source contract boundary: {path}"
-                    )
+                if legacy.returncode == 0:
+                    if cross_version.returncode == 0:
+                        raise CorpusError(
+                            "the official PHP replay runner must remain unchanged unless a fixture "
+                            "passes with both matching runner/source revisions and fails across the "
+                            f"runner/source contract boundary: {path}"
+                        )
+                else:
+                    legacy_detail = _process_detail(legacy)
+                    cross_version_detail = _process_detail(cross_version)
+                    defective_detail = _process_detail(defective)
+                    if (
+                        cross_version.returncode == 0
+                        or cross_version_detail != legacy_detail
+                        or defective_detail == legacy_detail
+                    ):
+                        raise CorpusError(
+                            "a new official PHP replay consumer must remain unsupported by the "
+                            "trusted runner at both source revisions and cross a distinct source "
+                            f"boundary under the candidate runner: {path}"
+                        )
 
     return len(paths), {
         "base": "fail",

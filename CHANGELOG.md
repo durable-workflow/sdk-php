@@ -8,6 +8,11 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Fiber-backed service workflows can fan out deferred activities, child
+  workflows, and timers with `WorkflowContext::all()` or `parallel()`, including
+  mixed and nested groups. Replay preserves declaration-order results, validates
+  the language-neutral group/path identity, and resumes partial groups without
+  scheduling completed members again.
 - Fiber-backed service workflows can use `WorkflowContext::getVersion()` to
   record one durable code-change decision and replay it across worker upgrades.
   `patched()` and `deprecatePatch()` provide the standard boolean patch
@@ -42,6 +47,10 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Published Laravel qualification now cold-replays a partially completed mixed
+  and nested group, then exercises activity-only, child-only, and fail-fast
+  groups against exact standalone Server and managed Cloud artifacts. Symfony
+  qualification retains its ordered activity-group coverage.
 - Published Laravel bridge qualification now runs the container-injected
   workflow and activity through Artisan against separately credentialed
   standalone Server and managed Cloud targets, and proves the Laravel fake
@@ -55,8 +64,8 @@ project follows [Semantic Versioning](https://semver.org/).
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK source to `2.0.0-rc.42` and qualified it with Server
-  `2.0.0-rc.38`. During the active 2.0 prerelease train, package metadata names
+- Advanced the PHP SDK source to `2.0.0-rc.43` and qualified it with Server
+  `2.0.0-rc.39`. During the active 2.0 prerelease train, package metadata names
   the exact SDK artifact and exact qualified Server artifact rather than a
   compatibility range; other prereleases remain historical and receive no
   compatibility shim. Avro is the sole public
