@@ -378,6 +378,19 @@ final class WorkerPollTest extends TestCase
         $worker->declareSignal('orders.process', 'approve');
     }
 
+    public function testRuntimeMessageStreamTransportCannotBeDeclaredAsAUserSignal(): void
+    {
+        $worker = new Worker(
+            new Client('https://server.example', transport: new FakeTransport()),
+            'queue',
+        );
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('reserved by the workflow runtime');
+
+        $worker->declareSignal('orders.process', WorkflowContext::MESSAGE_STREAM_SIGNAL);
+    }
+
     #[DataProvider('invalidSignalDeclarations')]
     public function testInvalidSignalDeclarationsFailLocally(
         string $workflowType,

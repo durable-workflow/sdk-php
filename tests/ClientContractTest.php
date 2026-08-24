@@ -52,7 +52,7 @@ final class ClientContractTest extends TestCase
         $client = new Client('https://server.example', transport: $transport);
 
         self::assertNull($client->pollActivityTask('worker-1', 'queue', 0));
-        self::assertSame('1.13', $transport->requests[0]['headers']['X-Durable-Workflow-Protocol-Version']);
+        self::assertSame('1.15', $transport->requests[0]['headers']['X-Durable-Workflow-Protocol-Version']);
         self::assertSame('php-activity-poll', substr($transport->requests[0]['body']['poll_request_id'], 0, 17));
     }
 

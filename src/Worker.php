@@ -212,6 +212,7 @@ final class Worker
     {
         $this->assertValidDeclarationName($workflowType, 'workflow type', true);
         $this->assertValidDeclarationName($signalName, 'signal', true);
+        $this->assertSignalNameIsNotRuntimeReserved($signalName);
         $this->signals[$workflowType] ??= [];
         $this->assertUnique($this->signals[$workflowType], $signalName, 'signal');
         $this->signals[$workflowType][$signalName] = $signature ?? static fn (): mixed => null;
@@ -394,7 +395,7 @@ final class Worker
                     $this->taskQueue,
                     array_keys($this->workflows),
                     array_keys($this->activities),
-                    ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown'],
+                    ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown', 'message_streams'],
                     buildId: $this->buildId,
                     workflowCommandContracts: $this->workflowCommandContracts(),
                 );
@@ -700,6 +701,8 @@ final class Worker
         $taskId = (string) ($task['task_id'] ?? '');
         $attempt = (int) ($task['workflow_task_attempt'] ?? 1);
         $leaseOwner = (string) ($task['lease_owner'] ?? $this->workerId);
+        $messageStreamCursors = [];
+        $messageStreamWaits = [];
         try {
             $history = $this->completeHistory($task, $leaseOwner, $attempt);
             if (!$this->renewWorkflowTaskLease($taskId, $leaseOwner, $attempt)) {
@@ -716,7 +719,10 @@ final class Worker
                 }
                 $input = $this->decodeArguments($task['arguments'] ?? $task['input'] ?? null);
                 try {
-                    $commands = $this->replayer->replay($handler, $history, $input, $this->taskQueue, $task)->commands;
+                    $replay = $this->replayer->replay($handler, $history, $input, $this->taskQueue, $task);
+                    $commands = $replay->commands;
+                    $messageStreamCursors = $replay->messageStreamCursors;
+                    $messageStreamWaits = $replay->messageStreamWaits;
                     $this->diagnoseWorkflowWait($task, $commands);
                 } catch (NonDeterministicWorkflow $exception) {
                     throw $exception;
@@ -729,7 +735,14 @@ final class Worker
                     ]];
                 }
             }
-            $this->client->completeWorkflowTask($taskId, $leaseOwner, $attempt, $commands);
+            $this->client->completeWorkflowTask(
+                $taskId,
+                $leaseOwner,
+                $attempt,
+                $commands,
+                $messageStreamCursors,
+                $messageStreamWaits,
+            );
         } catch (Throwable $exception) {
             $this->acknowledgeTaskFailure(
                 'workflow',
@@ -1326,6 +1339,7 @@ final class Worker
                 foreach ($discovery->signals as $workflowType => $handlers) {
                     $signals[$workflowType] ??= [];
                     foreach ($handlers as $name => $handler) {
+                        $this->assertSignalNameIsNotRuntimeReserved($name);
                         $this->assertUnique($signals[$workflowType], $name, 'signal');
                         $signals[$workflowType][$name] = $handler;
                     }
@@ -1343,6 +1357,15 @@ final class Worker
                     $exception->getMessage().' Rename the attributed contract or remove the duplicate service.',
                 );
             }
+        }
+    }
+
+    private function assertSignalNameIsNotRuntimeReserved(string $signalName): void
+    {
+        if ($signalName === WorkflowContext::MESSAGE_STREAM_SIGNAL) {
+            throw new \InvalidArgumentException(
+                "Signal name {$signalName} is reserved by the workflow runtime.",
+            );
         }
     }
 

@@ -479,6 +479,26 @@ final class Client implements WorkflowClientInterface
         return $this->control('POST', $path, ['input' => $this->codec->envelope($arguments)], 'signal');
     }
 
+    /**
+     * @param list<mixed> $arguments
+     * @return array<string, mixed>
+     */
+    public function appendMessageStream(
+        string $workflowId,
+        string $streamName,
+        string $messageId,
+        array $arguments = [],
+    ): array {
+        return $this->control(
+            'POST',
+            '/workflows/'.$this->segment($workflowId).'/message-streams/'.$this->segment($streamName).'/messages',
+            [
+                'message_id' => $messageId,
+                'input' => $this->codec->envelope($arguments),
+            ],
+        );
+    }
+
     /** @param list<mixed> $arguments */
     public function queryWorkflow(
         string $workflowId,
@@ -993,12 +1013,16 @@ final class Client implements WorkflowClientInterface
         string $taskQueue,
         array $workflowTypes,
         array $activityTypes,
-        array $capabilities = ['query_tasks', 'workflow_updates'],
+        array $capabilities = ['query_tasks', 'workflow_updates', 'message_streams'],
         int $maxConcurrentWorkflowTasks = 1,
         int $maxConcurrentActivityTasks = 1,
         ?string $buildId = null,
         ?array $workflowCommandContracts = null,
     ): array {
+        if (in_array('message_streams', $capabilities, true) && !Version::supportsMessageStreams()) {
+            throw new InvalidArgumentException('Message streams require worker protocol 1.15 or newer.');
+        }
+
         foreach ($workflowCommandContracts ?? [] as $workflowType => $contract) {
             if (!array_key_exists('update_validators', $contract)) {
                 continue;
@@ -1095,10 +1119,22 @@ final class Client implements WorkflowClientInterface
 
     /**
      * @param list<array<string, mixed>> $commands
+     * @param list<array{stream_name: string, through_position: int}> $messageStreamCursors
+     * @param list<array{stream_name: string, after_position: int}> $messageStreamWaits
      * @return array<string, mixed>
      */
-    public function completeWorkflowTask(string $taskId, string $leaseOwner, int $attempt, array $commands): array
-    {
+    public function completeWorkflowTask(
+        string $taskId,
+        string $leaseOwner,
+        int $attempt,
+        array $commands,
+        array $messageStreamCursors = [],
+        array $messageStreamWaits = [],
+    ): array {
+        if (($messageStreamCursors !== [] || $messageStreamWaits !== []) && !Version::supportsMessageStreams()) {
+            throw new InvalidArgumentException('Message stream completion metadata requires worker protocol 1.15 or newer.');
+        }
+
         if ($commands === []) {
             return $this->failWorkflowTask(
                 $taskId,
@@ -1109,11 +1145,13 @@ final class Client implements WorkflowClientInterface
             );
         }
 
-        return $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/complete', [
+        return $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/complete', array_filter([
             'lease_owner' => $leaseOwner,
             'workflow_task_attempt' => $attempt,
             'commands' => $commands,
-        ]);
+            'message_stream_cursors' => $messageStreamCursors,
+            'message_stream_waits' => $messageStreamWaits,
+        ], static fn (mixed $value): bool => $value !== []));
     }
 
     /** @return array<string, mixed> */

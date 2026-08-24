@@ -20,6 +20,8 @@ final class WorkflowClientFake implements WorkflowClientInterface
     private array $starts = [];
     /** @var list<array{workflow_id: string, name: string, arguments: list<mixed>}> */
     private array $signals = [];
+    /** @var list<array{workflow_id: string, stream_name: string, message_id: string, position: int, arguments: list<mixed>, payload_identity: string}> */
+    private array $messages = [];
     /** @var list<array{workflow_id: string, name: string, arguments: list<mixed>}> */
     private array $queries = [];
     /** @var list<array{workflow_id: string, name: string, arguments: list<mixed>}> */
@@ -238,6 +240,61 @@ final class WorkflowClientFake implements WorkflowClientInterface
         $this->signals[] = ['workflow_id' => $workflowId, 'name' => $name, 'arguments' => $arguments];
     }
 
+    /**
+     * @param list<mixed> $arguments
+     * @return array<string, mixed>
+     */
+    public function appendMessage(
+        string $workflowId,
+        string $streamName,
+        string $messageId,
+        array $arguments,
+    ): array {
+        $payloadIdentity = hash('sha256', serialize($arguments));
+
+        foreach ($this->messages as $message) {
+            if ($message['workflow_id'] === $workflowId
+                && $message['stream_name'] === $streamName
+                && $message['message_id'] === $messageId) {
+                if ($message['payload_identity'] !== $payloadIdentity) {
+                    return [
+                        'accepted' => false,
+                        'duplicate' => false,
+                        'outcome' => 'rejected',
+                        'reason' => 'message_identity_conflict',
+                        'position' => $message['position'],
+                    ];
+                }
+
+                return [
+                    'accepted' => true,
+                    'duplicate' => true,
+                    'position' => $message['position'],
+                ];
+            }
+        }
+
+        $position = count(array_filter(
+            $this->messages,
+            static fn (array $message): bool => $message['workflow_id'] === $workflowId
+                && $message['stream_name'] === $streamName,
+        )) + 1;
+        $this->messages[] = [
+            'workflow_id' => $workflowId,
+            'stream_name' => $streamName,
+            'message_id' => $messageId,
+            'position' => $position,
+            'arguments' => $arguments,
+            'payload_identity' => $payloadIdentity,
+        ];
+
+        return [
+            'accepted' => true,
+            'duplicate' => false,
+            'position' => $position,
+        ];
+    }
+
     /** @param list<mixed> $arguments */
     public function query(string $workflowId, string $name, array $arguments): mixed
     {
@@ -288,6 +345,25 @@ final class WorkflowClientFake implements WorkflowClientInterface
     public function assertSignalSent(string $workflowId, string $name, ?array $arguments = null): void
     {
         $this->assertInteraction($this->signals, 'signal', $workflowId, $name, $arguments);
+    }
+
+    /** @param list<mixed>|null $arguments */
+    public function assertMessageAppended(
+        string $workflowId,
+        string $streamName,
+        string $messageId,
+        ?array $arguments = null,
+    ): void {
+        foreach ($this->messages as $message) {
+            if ($message['workflow_id'] === $workflowId
+                && $message['stream_name'] === $streamName
+                && $message['message_id'] === $messageId
+                && ($arguments === null || $message['arguments'] === $arguments)) {
+                return;
+            }
+        }
+
+        throw new AssertionFailed("No message append matched {$workflowId}.{$streamName}.{$messageId}.");
     }
 
     /** @param list<mixed>|null $arguments */

@@ -323,6 +323,12 @@ final class ReplayRegressionFixture
 
                 return 'done';
             },
+            'golden.message-stream' => static function (WorkflowContext $context): array {
+                return array_map(
+                    static fn ($message): string => $message->messageId,
+                    $context->messageStream('orders')->receive(),
+                );
+            },
             'golden.saga' => static function (WorkflowContext $context, mixed $tripId): string {
                 return $context->saga()->run(static function (Saga $saga) use ($context, $tripId): string {
                     $context->activity('golden.reserve-flight', [$tripId]);

@@ -15,6 +15,12 @@ use LogicException;
 /** Straight-line deterministic operations available while a workflow Fiber is replayed. */
 final class WorkflowContext
 {
+    public const MESSAGE_STREAM_SIGNAL = '__durable_workflow_message_stream';
+
+    public const MESSAGE_STREAM_SCHEMA = 'durable-workflow.v2.message-stream.message';
+
+    public const MESSAGE_STREAM_CURSOR_SCHEMA = 'durable-workflow.v2.message-stream.cursor';
+
     public const MAX_PARALLEL_OPERATIONS = 1000;
 
     private const MIN_VERSION = -2_147_483_648;
@@ -28,6 +34,15 @@ final class WorkflowContext
 
     /** @var list<list<DeferredWorkflowOperation|ParallelWorkflowCommand>> */
     private array $captureFrames = [];
+
+    /** @var array<string, list<MessageStreamMessage>> */
+    private array $messageStreamMessages = [];
+
+    /** @var array<string, int> */
+    private array $messageStreamCursors = [];
+
+    /** @var array<string, int> */
+    private array $messageStreamWaits = [];
 
     /**
      * @param list<array<string, mixed>> $history
@@ -43,6 +58,79 @@ final class WorkflowContext
         private readonly ?string $workflowCommandId = null,
     ) {
         $this->execution = $execution;
+        $this->loadMessageStreamMessages();
+    }
+
+    public function messageStream(string $name): MessageStream
+    {
+        if (!preg_match('/^[A-Za-z0-9._:-]{1,128}$/', $name)) {
+            throw new \InvalidArgumentException(
+                'Message stream names must contain 1-128 letters, numbers, periods, underscores, colons, or hyphens.',
+            );
+        }
+
+        return new MessageStream($this, $name);
+    }
+
+    public function hasPendingMessageStreamMessages(string $name): bool
+    {
+        return ($this->messageStreamMessages[$name] ?? []) !== [];
+    }
+
+    public function messageStreamCursor(string $name): int
+    {
+        return $this->messageStreamCursors[$name] ?? 0;
+    }
+
+    public function recordMessageStreamWait(string $name, int $afterPosition): void
+    {
+        $this->messageStreamWaits[$name] = $afterPosition;
+    }
+
+    /** @return list<MessageStreamMessage> */
+    public function consumeMessageStreamMessages(string $name, int $maxItems): array
+    {
+        $queue = $this->messageStreamMessages[$name] ?? [];
+        $batch = array_slice($queue, 0, $maxItems);
+        $this->messageStreamMessages[$name] = array_slice($queue, count($batch));
+        unset($this->messageStreamWaits[$name]);
+
+        if ($batch !== []) {
+            $last = $batch[array_key_last($batch)];
+            $this->messageStreamCursors[$name] = $last->position;
+        }
+
+        return $batch;
+    }
+
+    /** @return list<array{stream_name: string, through_position: int}> */
+    public function messageStreamCursorAcknowledgements(): array
+    {
+        ksort($this->messageStreamCursors);
+
+        return array_map(
+            static fn (string $name, int $position): array => [
+                'stream_name' => $name,
+                'through_position' => $position,
+            ],
+            array_keys($this->messageStreamCursors),
+            array_values($this->messageStreamCursors),
+        );
+    }
+
+    /** @return list<array{stream_name: string, after_position: int}> */
+    public function messageStreamPendingWaits(): array
+    {
+        ksort($this->messageStreamWaits);
+
+        return array_map(
+            static fn (string $name, int $position): array => [
+                'stream_name' => $name,
+                'after_position' => $position,
+            ],
+            array_keys($this->messageStreamWaits),
+            array_values($this->messageStreamWaits),
+        );
     }
 
     /**
@@ -364,6 +452,74 @@ final class WorkflowContext
         }
 
         return $updates;
+    }
+
+    private function loadMessageStreamMessages(): void
+    {
+        $seenPositions = [];
+        $seenMessageIds = [];
+        foreach ($this->signals(self::MESSAGE_STREAM_SIGNAL) as $arguments) {
+            if (count($arguments) !== 1 || !is_array($arguments[0])) {
+                continue;
+            }
+            $envelope = $arguments[0];
+            $streamName = $envelope['stream_name'] ?? null;
+            $throughPosition = $envelope['through_position'] ?? null;
+            if (($envelope['schema'] ?? null) === self::MESSAGE_STREAM_CURSOR_SCHEMA
+                && is_string($streamName)
+                && is_int($throughPosition)
+                && $throughPosition >= 0) {
+                $this->messageStreamCursors[$streamName] = max(
+                    $throughPosition,
+                    $this->messageStreamCursors[$streamName] ?? 0,
+                );
+                $this->messageStreamMessages[$streamName] = array_values(array_filter(
+                    $this->messageStreamMessages[$streamName] ?? [],
+                    static fn (MessageStreamMessage $message): bool => $message->position > $throughPosition,
+                ));
+
+                continue;
+            }
+
+            $messageId = $envelope['message_id'] ?? null;
+            $position = $envelope['position'] ?? null;
+            $payloadEnvelope = $envelope['payload_envelope'] ?? null;
+            if (($envelope['schema'] ?? null) !== self::MESSAGE_STREAM_SCHEMA
+                || !is_string($streamName)
+                || !is_string($messageId)
+                || !is_int($position)
+                || $position < 1
+                || !is_array($payloadEnvelope)) {
+                continue;
+            }
+            try {
+                $values = $this->codec->decodeEnvelope($payloadEnvelope);
+            } catch (\Throwable) {
+                continue;
+            }
+            if (!is_array($values) || !array_is_list($values)) {
+                continue;
+            }
+            if ($position <= ($this->messageStreamCursors[$streamName] ?? 0)) {
+                continue;
+            }
+            if (isset($seenPositions[$streamName][$position]) || isset($seenMessageIds[$streamName][$messageId])) {
+                continue;
+            }
+            $seenPositions[$streamName][$position] = true;
+            $seenMessageIds[$streamName][$messageId] = true;
+            $this->messageStreamMessages[$streamName][] = new MessageStreamMessage(
+                $streamName,
+                $messageId,
+                $position,
+                $values,
+            );
+        }
+
+        foreach ($this->messageStreamMessages as &$messages) {
+            usort($messages, static fn (MessageStreamMessage $left, MessageStreamMessage $right): int => $left->position <=> $right->position);
+        }
+        unset($messages);
     }
 
     private function suspend(WorkflowCommand|ParallelWorkflowCommand $command): mixed

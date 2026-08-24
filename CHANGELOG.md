@@ -13,6 +13,10 @@ project follows [Semantic Versioning](https://semver.org/).
   deterministic reverse order. Typed compensation failures retain both the
   failed forward step and failed compensation, while completed compensations
   are not rescheduled after restart or redelivery.
+- `WorkflowContext::messageStream()` now consumes named repeated input in
+  ordered bounded batches. Runtime-owned cursor and wait metadata survives
+  replay, worker replacement, server restart, duplicates, and continue-as-new
+  without exposing the reserved transport signal to workflow declarations.
 - Fiber-backed service workflows can fan out deferred activities, child
   workflows, and timers with `WorkflowContext::all()` or `parallel()`, including
   mixed and nested groups. Replay preserves declaration-order results, validates
@@ -78,8 +82,8 @@ project follows [Semantic Versioning](https://semver.org/).
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK source to `2.0.0-rc.44` and qualified it with Server
-  `2.0.0-rc.43`. During the active 2.0 prerelease train, package metadata names
+- Advanced the PHP SDK source to `2.0.0-rc.45` and qualified it with Server
+  `2.0.0-rc.42`. During the active 2.0 prerelease train, package metadata names
   the exact SDK artifact and exact qualified Server artifact rather than a
   compatibility range; other prereleases remain historical and receive no
   compatibility shim. Avro is the sole public

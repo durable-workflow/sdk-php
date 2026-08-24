@@ -1,0 +1,63 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-message-stream-wait-arrival-restart",
+  "protocol_version": "1.15",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "golden.message-stream",
+    "input": []
+  },
+  "history": [
+    {
+      "event_type": "ConditionWaitOpened",
+      "payload": {
+        "sequence": 1,
+        "condition_wait_id": "message-stream-wait-1",
+        "condition_key": "message-stream:orders:0"
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "workflow_sequence": 1,
+        "signal_name": "__durable_workflow_message_stream",
+        "value": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCDgoMc2NoZW1hClRkdXJhYmxlLXdvcmtmbG93LnYyLm1lc3NhZ2Utc3RyZWFtLm1lc3NhZ2UWc3RyZWFtX25hbWUKDG9yZGVycxRtZXNzYWdlX2lkChJtZXNzYWdlLTEQcG9zaXRpb24EAiBwYXlsb2FkX2VudmVsb3BlDgQKY29kZWMKCGF2cm8IYmxvYgowd3dIaW96My9WWUFpTnd3Q0NnWnZibVVBAAAA"
+        },
+        "payload_codec": "avro"
+      }
+    }
+  ],
+  "workflow_tasks": [
+    {
+      "workflow_id": "message-stream-restart-workflow",
+      "run_id": "message-stream-restart-run"
+    },
+    {
+      "workflow_id": "message-stream-restart-workflow",
+      "run_id": "message-stream-restart-run"
+    }
+  ],
+  "expected": {
+    "workflow_tasks": [
+      {
+        "command_sequence": [
+          {
+            "type": "complete_workflow",
+            "result": ["message-1"]
+          }
+        ]
+      },
+      {
+        "command_sequence": [
+          {
+            "type": "complete_workflow",
+            "result": ["message-1"]
+          }
+        ]
+      }
+    ]
+  }
+}

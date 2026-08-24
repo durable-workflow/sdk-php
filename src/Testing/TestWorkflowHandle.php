@@ -23,6 +23,15 @@ final class TestWorkflowHandle implements WorkflowHandleInterface
         $this->client->signal($this->workflowId, $name, $arguments);
     }
 
+    /**
+     * @param list<mixed> $arguments
+     * @return array<string, mixed>
+     */
+    public function appendMessage(string $streamName, string $messageId, array $arguments = []): array
+    {
+        return $this->client->appendMessage($this->workflowId, $streamName, $messageId, $arguments);
+    }
+
     /** @param list<mixed> $arguments */
     public function query(string $name, array $arguments = []): mixed
     {

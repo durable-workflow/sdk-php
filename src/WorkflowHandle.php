@@ -41,6 +41,15 @@ final class WorkflowHandle implements WorkflowHandleInterface
         $this->client->signalWorkflow($this->workflowId, $name, $arguments);
     }
 
+    /**
+     * @param list<mixed> $arguments
+     * @return array<string, mixed>
+     */
+    public function appendMessage(string $streamName, string $messageId, array $arguments = []): array
+    {
+        return $this->client->appendMessageStream($this->workflowId, $streamName, $messageId, $arguments);
+    }
+
     /** @param list<mixed> $arguments */
     public function signalSelectedRun(string $name, array $arguments = []): void
     {

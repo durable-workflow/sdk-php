@@ -46,6 +46,8 @@ final class DependencyBoundaryTest extends TestCase
 
         self::assertMatchesRegularExpression('/^2\.0\.0-rc\.(?:0|[1-9][0-9]*)$/D', $metadata['product-train']);
         self::assertMatchesRegularExpression('/^2\.0\.0-rc\.(?:0|[1-9][0-9]*)$/D', $metadata['supported-server-versions']);
+        self::assertTrue($metadata['message-streams']);
+        self::assertSame('1.15', $metadata['message-streams-minimum-worker-protocol-version']);
         self::assertSame($metadata['product-train'], $quickstart['package']['published_version']);
         self::assertSame($metadata['product-train'].'@RC', $quickstart['package']['composer_requirement']);
         self::assertSame(

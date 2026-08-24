@@ -39,7 +39,8 @@ final class Replayer
     ): ReplayResult {
         $steps = $this->recordedSteps($history);
         $completedHistory = $this->hasCompletedHistory($history);
-        $execution = new Fiber(function () use ($handler, $history, $input, $task): mixed {
+        $context = null;
+        $execution = new Fiber(function () use ($handler, $history, $input, $task, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -132,7 +133,7 @@ final class Replayer
                     continue;
                 }
                 if ($pending || count($commands) > $commandsBeforeGroup) {
-                    return new ReplayResult($commands);
+                    return $this->result($commands, $context);
                 }
 
                 ksort($results);
@@ -147,7 +148,7 @@ final class Replayer
                 $this->assertNoRemainingSteps($steps, $stepCursor, 'continue_as_new');
                 $commands[] = $suspended->toWire($this->codec, $taskQueue);
 
-                return new ReplayResult($commands);
+                return $this->result($commands, $context);
             }
 
             if ($suspended->type === 'record_version_marker') {
@@ -263,10 +264,10 @@ final class Replayer
 
                     $commands[] = $suspended->toWire($this->codec, $taskQueue);
 
-                    return new ReplayResult($commands);
+                    return $this->result($commands, $context);
                 }
                 if ($step['resolved'] === false) {
-                    return new ReplayResult($commands);
+                    return $this->result($commands, $context);
                 }
                 $suspended = $step['failure'] instanceof Throwable
                     ? $execution->throw($step['failure'])
@@ -294,7 +295,7 @@ final class Replayer
                 continue;
             }
 
-            return new ReplayResult($commands);
+            return $this->result($commands, $context);
         }
 
         $this->assertNoRemainingSteps($steps, $stepCursor, 'complete_workflow');
@@ -306,7 +307,17 @@ final class Replayer
         }
         $commands[] = $this->completeCommand($result);
 
-        return new ReplayResult($commands);
+        return $this->result($commands, $context);
+    }
+
+    /** @param list<array<string, mixed>> $commands */
+    private function result(array $commands, ?WorkflowContext $context): ReplayResult
+    {
+        return new ReplayResult(
+            $commands,
+            $context?->messageStreamCursorAcknowledgements() ?? [],
+            $context?->messageStreamPendingWaits() ?? [],
+        );
     }
 
     /**

@@ -10,6 +10,12 @@ interface WorkflowHandleInterface
     /** @param list<mixed> $arguments */
     public function signal(string $name, array $arguments = []): void;
 
+    /**
+     * @param list<mixed> $arguments
+     * @return array<string, mixed>
+     */
+    public function appendMessage(string $streamName, string $messageId, array $arguments = []): array;
+
     /** @param list<mixed> $arguments */
     public function query(string $name, array $arguments = []): mixed;
 

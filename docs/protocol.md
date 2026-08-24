@@ -2,7 +2,7 @@
 
 The SDK sends control-plane version `2` to workflow, schedule, namespace,
 search-attribute, and service-operation routes. Cluster discovery uses
-`/api/cluster/info`. Worker requests use protocol `1.13` under `/api/worker`.
+`/api/cluster/info`. Worker requests use protocol `1.15` under `/api/worker`.
 Every request also carries `X-Namespace`; control and worker bearer tokens can
 be configured independently. `Client::withNamespace()` creates another client
 selection without mutating the original or replacing its transport, codec, or

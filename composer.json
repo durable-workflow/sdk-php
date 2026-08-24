@@ -74,10 +74,12 @@
             }
         },
         "durable-workflow": {
-            "product-train": "2.0.0-rc.44",
-            "supported-server-versions": "2.0.0-rc.43",
-            "worker-protocol-version": "1.13",
+            "product-train": "2.0.0-rc.45",
+            "supported-server-versions": "2.0.0-rc.42",
+            "worker-protocol-version": "1.15",
             "control-plane-version": "2",
+            "message-streams": true,
+            "message-streams-minimum-worker-protocol-version": "1.15",
             "payload-codecs": ["avro"],
             "version-markers": true,
             "version-marker-command": "record_version_marker",
