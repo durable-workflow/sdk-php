@@ -93,6 +93,18 @@
     "start_shape": "attributed_service_class",
     "assertion_shape": "attributed_service_class"
   },
+  "saga_journey": {
+    "workflow_type": "laravel.compensated-trip",
+    "forward_activity_types": ["trip.reserve-flight", "trip.reserve-hotel", "trip.charge"],
+    "compensation_activity_types": ["trip.cancel-hotel", "trip.cancel-flight"],
+    "authoring_surface": "DurableWorkflow\\Worker\\Saga",
+    "context_factory": "DurableWorkflow\\Worker\\WorkflowContext::saga",
+    "typed_failure": "DurableWorkflow\\Exception\\SagaCompensationFailed",
+    "application_fake": "DurableWorkflow\\Bridge\\Laravel\\Testing\\LaravelWorkflowClientFake",
+    "compensation_order": "reverse_registration",
+    "durable_state": "ordinary_activity_history",
+    "cross_language_activity_binding": true
+  },
   "qualification": {
     "embedded": {
       "owner": "durable-workflow/workflow",
@@ -101,7 +113,9 @@
     "service": {
       "owner": "durable-workflow/sdk",
       "targets": ["standalone_server", "managed_cloud"],
-      "published_artifacts_required": true
+      "published_artifacts_required": true,
+      "saga_cross_language_activities_required": true,
+      "saga_replay_required": true
     },
     "established_application_transitions": {
       "sources": ["embedded_v1", "embedded_v2"],

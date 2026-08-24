@@ -135,6 +135,20 @@ final class LaravelAdoptionContractTest extends TestCase
             $this->contract['representative_journey']['assertion_shape'],
         );
         self::assertSame([
+            'workflow_type' => 'laravel.compensated-trip',
+            'forward_activity_types' => ['trip.reserve-flight', 'trip.reserve-hotel', 'trip.charge'],
+            'compensation_activity_types' => ['trip.cancel-hotel', 'trip.cancel-flight'],
+            'authoring_surface' => 'DurableWorkflow\\Worker\\Saga',
+            'context_factory' => 'DurableWorkflow\\Worker\\WorkflowContext::saga',
+            'typed_failure' => 'DurableWorkflow\\Exception\\SagaCompensationFailed',
+            'application_fake' => 'DurableWorkflow\\Bridge\\Laravel\\Testing\\LaravelWorkflowClientFake',
+            'compensation_order' => 'reverse_registration',
+            'durable_state' => 'ordinary_activity_history',
+            'cross_language_activity_binding' => true,
+        ], $this->contract['saga_journey']);
+        self::assertTrue($this->contract['qualification']['service']['saga_cross_language_activities_required']);
+        self::assertTrue($this->contract['qualification']['service']['saga_replay_required']);
+        self::assertSame([
             'sources' => ['embedded_v1', 'embedded_v2'],
             'clean_application_required' => true,
             'same_injected_dependency_required' => true,

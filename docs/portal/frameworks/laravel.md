@@ -285,6 +285,67 @@ public function summary(WorkflowContext $context, string $customerId): array
 }
 ```
 
+The same is true for compensated journeys. Inject application configuration
+into the attributed workflow and activity services, then create the saga from
+the workflow context. Compensation handlers remain ordinary attributed
+activities and may be routed to another language worker by activity type:
+
+```php
+use DurableWorkflow\Attribute\Workflow;
+use DurableWorkflow\Worker\Saga;
+use DurableWorkflow\Worker\WorkflowContext;
+
+final class CompensatedTripWorkflow
+{
+    public function __construct(private TripPolicy $policy) {}
+
+    #[Workflow('laravel.compensated-trip')]
+    public function run(WorkflowContext $context, string $tripId): array
+    {
+        return $context->saga()->run(function (Saga $saga) use ($context, $tripId): array {
+            $flight = $context->activity($this->policy->reserveFlightType, [$tripId]);
+            $saga->addCompensation('python.cancel-flight', [$flight]);
+
+            $hotel = $context->activity($this->policy->reserveHotelType, [$tripId]);
+            $saga->addCompensation('python.cancel-hotel', [$hotel]);
+
+            $context->activity($this->policy->chargeType, [$tripId]);
+
+            return compact('flight', 'hotel');
+        });
+    }
+}
+```
+
+The Artisan worker reports a terminal compensation failure through the normal
+`worker.handler_failed` PSR log and `WorkerDiagnosticEvent`. Its
+`saga_failure` context names the failed forward step, failed compensation,
+registration order, messages, and exception types.
+
+Laravel's fake keeps the class-shaped start and assertion for this journey:
+
+```php
+$fake = DurableWorkflow::fake()->setWorkflowResult('trip-test', [
+    'status' => 'compensated',
+]);
+
+$result = DurableWorkflow::start(
+    CompensatedTripWorkflow::class,
+    ['trip-1'],
+    workflowId: 'trip-test',
+)->result();
+
+$fake->assertWorkflowStarted(
+    CompensatedTripWorkflow::class,
+    ['trip-1'],
+    workflowId: 'trip-test',
+);
+```
+
+Use `WorkerTestHarness` with the container-built worker when a test needs to
+drive committed forward-failure and compensation history. Use the client fake
+for application-level starts, handles, and result assertions.
+
 Laravel still resolves the workflow, activity, and child-handler services from the application container. The Artisan worker emits the usual PSR log records and `WorkerDiagnosticEvent` events while group/path metadata remains visible in Server or Cloud diagnostics.
 
 ### Upgrade a Laravel workflow without losing open runs

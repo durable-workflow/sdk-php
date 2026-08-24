@@ -15,6 +15,7 @@ use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Testing\WorkerTestHarness;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\Replayer;
+use DurableWorkflow\Worker\Saga;
 use DurableWorkflow\Worker\WorkflowContext;
 use RuntimeException;
 
@@ -321,6 +322,19 @@ final class ReplayRegressionFixture
                 $context->closeWorkflowStream('tokens');
 
                 return 'done';
+            },
+            'golden.saga' => static function (WorkflowContext $context, mixed $tripId): string {
+                return $context->saga()->run(static function (Saga $saga) use ($context, $tripId): string {
+                    $context->activity('golden.reserve-flight', [$tripId]);
+                    $saga->addCompensation('python.cancel-flight', [$tripId]);
+
+                    $context->activity('golden.reserve-hotel', [$tripId]);
+                    $saga->addCompensation('python.cancel-hotel', [$tripId]);
+
+                    $context->activity('golden.charge-card', [$tripId]);
+
+                    return 'booked';
+                });
             },
             'golden.parallel' => static function (WorkflowContext $context, mixed $mode): array {
                 try {

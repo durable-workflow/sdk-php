@@ -13,6 +13,7 @@
     "transitions",
     "continuity",
     "representative_journey",
+    "saga_journey",
     "qualification"
   ],
   "properties": {
@@ -138,6 +139,40 @@
         "assertion_shape": {"const": "attributed_service_class"}
       }
     },
+    "saga_journey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflow_type",
+        "forward_activity_types",
+        "compensation_activity_types",
+        "authoring_surface",
+        "context_factory",
+        "typed_failure",
+        "application_fake",
+        "compensation_order",
+        "durable_state",
+        "cross_language_activity_binding"
+      ],
+      "properties": {
+        "workflow_type": {"const": "laravel.compensated-trip"},
+        "forward_activity_types": {
+          "const": ["trip.reserve-flight", "trip.reserve-hotel", "trip.charge"]
+        },
+        "compensation_activity_types": {
+          "const": ["trip.cancel-hotel", "trip.cancel-flight"]
+        },
+        "authoring_surface": {"const": "DurableWorkflow\\Worker\\Saga"},
+        "context_factory": {"const": "DurableWorkflow\\Worker\\WorkflowContext::saga"},
+        "typed_failure": {"const": "DurableWorkflow\\Exception\\SagaCompensationFailed"},
+        "application_fake": {
+          "const": "DurableWorkflow\\Bridge\\Laravel\\Testing\\LaravelWorkflowClientFake"
+        },
+        "compensation_order": {"const": "reverse_registration"},
+        "durable_state": {"const": "ordinary_activity_history"},
+        "cross_language_activity_binding": {"const": true}
+      }
+    },
     "qualification": {
       "type": "object",
       "additionalProperties": false,
@@ -155,11 +190,19 @@
         "service": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["owner", "targets", "published_artifacts_required"],
+          "required": [
+            "owner",
+            "targets",
+            "published_artifacts_required",
+            "saga_cross_language_activities_required",
+            "saga_replay_required"
+          ],
           "properties": {
             "owner": {"const": "durable-workflow/sdk"},
             "targets": {"const": ["standalone_server", "managed_cloud"]},
-            "published_artifacts_required": {"const": true}
+            "published_artifacts_required": {"const": true},
+            "saga_cross_language_activities_required": {"const": true},
+            "saga_replay_required": {"const": true}
           }
         },
         "established_application_transitions": {

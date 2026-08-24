@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-saga-mid-compensation-restart",
+  "protocol_version": "1.13",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.saga", "input": ["trip-1"]},
+  "history": [
+    {"event_type": "ActivityCompleted", "payload": {"sequence": 1, "activity_type": "golden.reserve-flight"}},
+    {"event_type": "ActivityCompleted", "payload": {"sequence": 2, "activity_type": "golden.reserve-hotel"}},
+    {"event_type": "ActivityFailed", "payload": {"sequence": 3, "activity_type": "golden.charge-card", "message": "card declined", "exception_type": "CardDeclined", "non_retryable": true}},
+    {"event_type": "ActivityCompleted", "payload": {"sequence": 4, "activity_type": "python.cancel-hotel"}},
+    {"event_type": "ActivityCompleted", "payload": {"sequence": 4, "activity_type": "python.cancel-hotel"}}
+  ],
+  "expected": {
+    "command_sequence": [
+      {"type": "schedule_activity", "activity_type": "python.cancel-flight", "arguments": ["trip-1"], "queue": "regression-corpus"}
+    ]
+  }
+}

@@ -8,6 +8,7 @@ use DurableWorkflow\Exception\ActivityCancelled;
 use DurableWorkflow\Exception\CodecException;
 use DurableWorkflow\Exception\InvalidWorkerDefinition;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Exception\SagaCompensationFailed;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\DiscoveredHandlers;
@@ -1366,12 +1367,17 @@ final class Worker
 
     private function handlerFailure(string $kind, string $identity, Throwable $exception): void
     {
-        $this->diagnostic('worker.handler_failed', [
+        $context = [
             'worker_id' => $this->workerId,
             'handler_kind' => $kind,
             'handler' => $identity,
             'exception' => $exception,
-        ], 'error');
+        ];
+        if ($exception instanceof SagaCompensationFailed) {
+            $context['saga_failure'] = $exception->diagnosticContext();
+        }
+
+        $this->diagnostic('worker.handler_failed', $context, 'error');
     }
 
     /**

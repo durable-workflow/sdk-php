@@ -98,6 +98,70 @@ $worker->registerActivity(
 
 Activities may call databases, HTTP services, queues, and the filesystem. An activity attempt can run again after a retryable failure, so use an idempotency key tied to the workflow, activity, or business identity at the downstream boundary.
 
+## Compensate completed work with a saga
+
+Create a saga inside the workflow Fiber and register each compensation only
+after its forward activity returns. `run()` catches a later failure, schedules
+the registered activities in reverse order, then preserves the original
+failure as the workflow outcome:
+
+```php
+use DurableWorkflow\Worker\Saga;
+use DurableWorkflow\Worker\WorkflowContext;
+
+return $context->saga()->run(
+    static function (Saga $saga) use ($context, $tripId): array {
+        $flight = $context->activity('trip.reserve-flight', [$tripId]);
+        $saga->addCompensation('trip.cancel-flight', [$flight]);
+
+        $hotel = $context->activity('trip.reserve-hotel', [$tripId]);
+        $saga->addCompensation('trip.cancel-hotel', [$hotel]);
+
+        $context->activity('trip.charge', [$tripId]);
+
+        return compact('flight', 'hotel');
+    },
+);
+```
+
+Compensations use the same arguments, queue, timeout, and retry-policy options
+as `WorkflowContext::activity()`. They can therefore be implemented by a PHP,
+Python, or Rust worker registered on the selected queue; there is no
+PHP-specific Server command.
+
+The activity history is the durable compensation record. On replay the
+workflow recreates the same registrations, consumes any compensation activity
+that already completed, and resumes at the next reverse-order step. Keep the
+forward decision order and each compensation type stable while a run is open.
+
+`Saga::run()` compensates `ActivityFailed`, cancellation thrown by
+`throwIfCancellationRequested()`, and other escaping failures. Successful
+compensation rethrows the original failure. A failed compensation throws
+`SagaCompensationFailed`, whose typed fields retain the forward failure,
+compensation failure, compensation activity type, and registration order.
+Service-mode compensation is always sequential LIFO and stops at that first
+terminal compensation failure, so an earlier registered compensation is not
+scheduled after the failure. Nested sagas own separate registration lists: an
+inner saga compensates first; if its failure escapes, the outer saga then
+compensates its own completed work.
+
+For an embedded-style workflow that intentionally completes with a
+`compensated` result, keep the explicit catch and call `compensate($failure)`
+before returning that result. Repeated calls after a successful pass are
+no-ops:
+
+```php
+$saga = $context->saga();
+
+try {
+    // Run forward activities and call $saga->addCompensation(...) after each success.
+} catch (\DurableWorkflow\Exception\ActivityFailed $failure) {
+    $saga->compensate($failure);
+
+    return ['status' => 'compensated', 'reason' => $failure->getMessage()];
+}
+```
+
 `ActivityContext::heartbeat()` records progress and throws `ActivityCancelled` when the Server requests cancellation. Heartbeat before and during long calls that can be safely divided into chunks.
 
 ## Use durable commands for workflow time
@@ -107,6 +171,7 @@ The context provides these replay-aware commands:
 | Command | Use it for |
 | --- | --- |
 | `activity()` | Retryable external work. |
+| `saga()` | Reverse-order compensation through ordinary activity history. |
 | `sleep()` | A durable timer that survives worker downtime. |
 | `childWorkflow()` | A separately identified durable execution. |
 | `all()`, `parallel()` | An ordered, fail-fast join over deferred activities, child workflows, and timers. |

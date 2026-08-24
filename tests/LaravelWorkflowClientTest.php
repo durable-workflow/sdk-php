@@ -80,6 +80,32 @@ final class LaravelWorkflowClientTest extends TestCase
         $fake->assertResultRequested('greeting-fake');
     }
 
+    public function testLaravelFakeArrangesAndAssertsTheCompensatedSagaJourney(): void
+    {
+        $fake = (new LaravelWorkflowClientFake($this->configuration([
+            LaravelClientFixtureWorkflow::class,
+            LaravelClientSagaWorkflow::class,
+        ])))->setWorkflowResult('trip-fake', [
+            'status' => 'compensated',
+            'failed_forward_step' => 'trip.charge',
+            'compensations' => ['trip.cancel-hotel', 'trip.cancel-flight'],
+        ]);
+
+        $result = $fake->start(
+            LaravelClientSagaWorkflow::class,
+            ['trip-1'],
+            workflowId: 'trip-fake',
+        )->result();
+
+        self::assertSame('compensated', $result['status'] ?? null);
+        $fake->assertWorkflowStarted(
+            LaravelClientSagaWorkflow::class,
+            ['trip-1'],
+            workflowId: 'trip-fake',
+        );
+        $fake->assertResultRequested('trip-fake');
+    }
+
     public function testInvalidWorkflowServicesFailBeforeAStartIsRecorded(): void
     {
         $cases = [
@@ -135,6 +161,14 @@ final class LaravelClientFixtureWorkflow
 final class LaravelClientUnregisteredWorkflow
 {
     #[Workflow('laravel.unregistered')]
+    public function run(): void
+    {
+    }
+}
+
+final class LaravelClientSagaWorkflow
+{
+    #[Workflow('laravel.compensated-trip')]
     public function run(): void
     {
     }

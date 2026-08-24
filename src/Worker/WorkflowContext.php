@@ -106,6 +106,14 @@ final class WorkflowContext
         return $this->suspend($operation->command);
     }
 
+    /** Create an isolated deterministic saga for activity compensation. */
+    public function saga(): Saga
+    {
+        $this->assertActiveFiber();
+
+        return new Saga($this);
+    }
+
     public function sleep(int|float $seconds): void
     {
         $operation = $this->deferTimer($seconds);

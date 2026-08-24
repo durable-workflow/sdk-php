@@ -8,6 +8,11 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Fiber-backed service workflows can create a package-owned `Saga`, register
+  ordinary activity compensations after forward success, and replay them in
+  deterministic reverse order. Typed compensation failures retain both the
+  failed forward step and failed compensation, while completed compensations
+  are not rescheduled after restart or redelivery.
 - Fiber-backed service workflows can fan out deferred activities, child
   workflows, and timers with `WorkflowContext::all()` or `parallel()`, including
   mixed and nested groups. Replay preserves declaration-order results, validates
@@ -52,6 +57,10 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Published Laravel qualification now runs a PHP-authored saga with Python
+  forward and compensation activities against exact standalone Server and
+  managed Cloud targets, restarting the PHP worker during compensation and
+  rejecting reordered or duplicate compensation history.
 - Published Laravel qualification now cold-replays a partially completed mixed
   and nested group, then exercises activity-only, child-only, and fail-fast
   groups against exact standalone Server and managed Cloud artifacts. Symfony

@@ -5,17 +5,146 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Client;
+use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\QueryContext;
+use DurableWorkflow\Worker\Saga;
 use DurableWorkflow\Worker\WorkflowContext;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\AbstractLogger;
 
 final class WorkerPollTest extends TestCase
 {
+    public function testSagaCompensationFailureReachesFrameworkLoggerAndEventDiagnostics(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $commands = null;
+        $diagnostics = [];
+        $transport = new FakeTransport(handler: static function (
+            string $method,
+            string $uri,
+            array $headers,
+            ?array $body,
+        ) use (&$commands, $codec): array {
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
+                return [
+                    'poll_status' => 'leased',
+                    'task' => [
+                        'task_id' => 'saga-task-1',
+                        'workflow_task_attempt' => 1,
+                        'lease_owner' => 'worker-1',
+                        'workflow_id' => 'trip-1',
+                        'run_id' => 'run-1',
+                        'workflow_type' => 'trip.book',
+                        'payload_codec' => 'avro',
+                        'history_events' => [
+                            [
+                                'event_type' => 'ActivityCompleted',
+                                'payload' => [
+                                    'sequence' => 1,
+                                    'activity_type' => 'trip.reserve-flight',
+                                    'result' => $codec->envelope('flight-1'),
+                                ],
+                            ],
+                            [
+                                'event_type' => 'ActivityFailed',
+                                'payload' => [
+                                    'sequence' => 2,
+                                    'activity_type' => 'trip.charge',
+                                    'message' => 'card declined',
+                                    'exception_type' => 'CardDeclined',
+                                    'non_retryable' => true,
+                                ],
+                            ],
+                            [
+                                'event_type' => 'ActivityFailed',
+                                'payload' => [
+                                    'sequence' => 3,
+                                    'activity_type' => 'trip.cancel-flight',
+                                    'message' => 'cancellation rejected',
+                                    'exception_type' => 'CancellationRejected',
+                                    'non_retryable' => true,
+                                ],
+                            ],
+                        ],
+                    ],
+                ];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/saga-task-1/heartbeat')) {
+                return [
+                    'task_id' => 'saga-task-1',
+                    'workflow_task_attempt' => 1,
+                    'lease_owner' => 'worker-1',
+                    'renewed' => true,
+                ];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/saga-task-1/complete')) {
+                $commands = $body['commands'] ?? null;
+
+                return ['completed' => true];
+            }
+            if (str_ends_with($uri, '/api/worker/activity-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        });
+        $logger = new SagaRecordingLogger();
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'trip-workers',
+            workerId: 'worker-1',
+            logger: $logger,
+            diagnosticListener: static function (string $name, array $context) use (&$diagnostics): void {
+                $diagnostics[] = ['name' => $name, 'context' => $context];
+            },
+        );
+        $worker->registerWorkflow('trip.book', static function (WorkflowContext $context): mixed {
+            return $context->saga()->run(static function (Saga $saga) use ($context): mixed {
+                $flight = $context->activity('trip.reserve-flight');
+                $saga->addCompensation('trip.cancel-flight', [$flight]);
+
+                return $context->activity('trip.charge');
+            });
+        });
+
+        $worker->tick(0);
+
+        self::assertSame('fail_workflow', $commands[0]['type'] ?? null);
+        self::assertSame(
+            'DurableWorkflow\\Exception\\SagaCompensationFailed',
+            $commands[0]['exception_type'] ?? null,
+        );
+        $event = array_values(array_filter(
+            $diagnostics,
+            static fn (array $entry): bool => $entry['name'] === 'worker.handler_failed',
+        ))[0] ?? null;
+        $eventSagaFailure = is_array($event)
+            ? ($event['context']['saga_failure'] ?? null)
+            : null;
+        self::assertSame([
+            'forward_step' => 'trip.charge',
+            'forward_exception_type' => 'DurableWorkflow\\Exception\\ActivityFailed',
+            'forward_message' => 'card declined',
+            'compensation_activity_type' => 'trip.cancel-flight',
+            'compensation_registration_order' => 1,
+            'compensation_exception_type' => 'CancellationRejected',
+            'compensation_message' => 'cancellation rejected',
+        ], $eventSagaFailure);
+        $log = array_values(array_filter(
+            $logger->records,
+            static fn (array $entry): bool => $entry['message'] === 'worker.handler_failed',
+        ))[0] ?? null;
+        $logSagaFailure = is_array($log)
+            ? ($log['context']['saga_failure'] ?? null)
+            : null;
+        self::assertSame($eventSagaFailure, $logSagaFailure);
+    }
+
     public function testConditionWaitUsesItsProtocolCommandAndDedicatedDiagnosticAfterLeaseRenewal(): void
     {
         $commands = null;
@@ -664,5 +793,16 @@ final class WorkerPollTest extends TestCase
         self::assertFalse($worker->tick(0));
         self::assertFalse($worker->tick(0));
         self::assertCount(1, $transport->requests);
+    }
+}
+
+final class SagaRecordingLogger extends AbstractLogger
+{
+    /** @var list<array{level: mixed, message: string, context: array<string, mixed>}> */
+    public array $records = [];
+
+    public function log($level, string|\Stringable $message, array $context = []): void
+    {
+        $this->records[] = ['level' => $level, 'message' => (string) $message, 'context' => $context];
     }
 }

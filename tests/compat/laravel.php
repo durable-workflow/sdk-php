@@ -17,6 +17,7 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Testing\WorkerTestHarness;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\Saga;
 use DurableWorkflow\Worker\WorkflowContext;
 use DurableWorkflow\WorkflowClientInterface;
 use Illuminate\Config\Repository;
@@ -82,6 +83,70 @@ final class LaravelGreetingActivity
     }
 }
 
+final class LaravelTripWorkflow
+{
+    public function __construct(private readonly LaravelGreetingPrefix $prefix)
+    {
+    }
+
+    #[Workflow('laravel.compensated-trip')]
+    public function workflow(WorkflowContext $context, string $tripId): string
+    {
+        if ($this->prefix->value === '') {
+            throw new RuntimeException('Laravel did not inject the saga workflow dependency.');
+        }
+
+        return $context->saga()->run(static function (Saga $saga) use ($context, $tripId): string {
+            $flight = $context->activity('laravel.reserve-flight', [$tripId]);
+            $saga->addCompensation('laravel.cancel-flight', [$flight]);
+
+            $hotel = $context->activity('laravel.reserve-hotel', [$tripId]);
+            $saga->addCompensation('laravel.cancel-hotel', [$hotel]);
+
+            $context->activity('laravel.charge', [$tripId]);
+
+            return 'booked';
+        });
+    }
+}
+
+final class LaravelTripActivities
+{
+    public function __construct(private readonly LaravelGreetingPrefix $prefix)
+    {
+    }
+
+    #[Activity('laravel.reserve-flight')]
+    public function reserveFlight(ActivityContext $context, string $tripId): string
+    {
+        return "{$this->prefix->value}:flight:{$tripId}";
+    }
+
+    #[Activity('laravel.reserve-hotel')]
+    public function reserveHotel(ActivityContext $context, string $tripId): string
+    {
+        return "{$this->prefix->value}:hotel:{$tripId}";
+    }
+
+    #[Activity('laravel.charge')]
+    public function charge(ActivityContext $context, string $tripId): string
+    {
+        return "{$this->prefix->value}:charged:{$tripId}";
+    }
+
+    #[Activity('laravel.cancel-flight')]
+    public function cancelFlight(ActivityContext $context, string $reservationId): string
+    {
+        return "{$this->prefix->value}:cancelled:{$reservationId}";
+    }
+
+    #[Activity('laravel.cancel-hotel')]
+    public function cancelHotel(ActivityContext $context, string $reservationId): string
+    {
+        return "{$this->prefix->value}:cancelled:{$reservationId}";
+    }
+}
+
 final class LaravelBridgeLogger extends AbstractLogger
 {
     /** @var list<string> */
@@ -139,7 +204,12 @@ $values = [
         'client_token' => 'configuration-client-decoy',
         'worker_token' => 'configuration-worker-decoy',
     ],
-    'handlers' => [LaravelGreetingWorkflow::class, LaravelGreetingActivity::class],
+    'handlers' => [
+        LaravelGreetingWorkflow::class,
+        LaravelGreetingActivity::class,
+        LaravelTripWorkflow::class,
+        LaravelTripActivities::class,
+    ],
     'poll_timeout_seconds' => 5,
 ];
 $app = new Application(sys_get_temp_dir().'/durable-workflow-laravel-compat');
@@ -186,13 +256,25 @@ if (($clientAuthentication->headers(false)['Authorization'] ?? null) !== 'Bearer
     throw new RuntimeException('Laravel provider did not preserve role-specific client credentials.');
 }
 $worker = $factory->make();
-if ($worker->contracts()['workflows'] !== ['laravel.greeting']
-    || $worker->contracts()['activities'] !== ['laravel.greet']
+if ($worker->contracts()['workflows'] !== ['laravel.greeting', 'laravel.compensated-trip']
+    || $worker->contracts()['activities'] !== [
+        'laravel.greet',
+        'laravel.reserve-flight',
+        'laravel.reserve-hotel',
+        'laravel.charge',
+        'laravel.cancel-flight',
+        'laravel.cancel-hotel',
+    ]
 ) {
     throw new RuntimeException('Laravel container handlers were not registered.');
 }
 $harness = new WorkerTestHarness($worker);
 $harness->assertActivityResult('laravel.greet', 'hello from Laravel, Ada', ['Ada']);
+$harness->assertActivityResult(
+    'laravel.reserve-flight',
+    'hello from Laravel:flight:trip-1',
+    ['trip-1'],
+);
 $codec = $registeredClient->payloadCodec();
 $initial = $harness->runWorkflow('laravel.greeting', ['Ada'])->commands;
 $parallelCommands = array_values(array_filter(
@@ -270,6 +352,53 @@ if (($completed->commands[0]['type'] ?? null) !== 'complete_workflow'
 ) {
     throw new RuntimeException('Laravel container-resolved workflow did not join injected activities in declaration order.');
 }
+$sagaHistory = [
+    [
+        'event_type' => 'ActivityCompleted',
+        'payload' => [
+            'sequence' => 1,
+            'activity_type' => 'laravel.reserve-flight',
+            'result' => $codec->envelope('flight-1'),
+        ],
+    ],
+    [
+        'event_type' => 'ActivityCompleted',
+        'payload' => [
+            'sequence' => 2,
+            'activity_type' => 'laravel.reserve-hotel',
+            'result' => $codec->envelope('hotel-1'),
+        ],
+    ],
+    [
+        'event_type' => 'ActivityFailed',
+        'payload' => [
+            'sequence' => 3,
+            'activity_type' => 'laravel.charge',
+            'message' => 'card declined',
+            'exception_type' => 'CardDeclined',
+            'non_retryable' => true,
+        ],
+    ],
+];
+$hotelCompensation = $harness->runWorkflow('laravel.compensated-trip', ['trip-1'], $sagaHistory)->commands;
+$flightCompensation = $harness->runWorkflow('laravel.compensated-trip', ['trip-1'], [
+    ...$sagaHistory,
+    [
+        'event_type' => 'ActivityCompleted',
+        'payload' => [
+            'sequence' => 4,
+            'activity_type' => 'laravel.cancel-hotel',
+            'result' => $codec->envelope('cancelled-hotel-1'),
+        ],
+    ],
+])->commands;
+if (($hotelCompensation[0]['activity_type'] ?? null) !== 'laravel.cancel-hotel'
+    || $codec->decodeEnvelope($hotelCompensation[0]['arguments'] ?? []) !== ['hotel-1']
+    || ($flightCompensation[0]['activity_type'] ?? null) !== 'laravel.cancel-flight'
+    || $codec->decodeEnvelope($flightCompensation[0]['arguments'] ?? []) !== ['flight-1']
+) {
+    throw new RuntimeException('Laravel container-resolved saga did not compensate in reverse order.');
+}
 $worker->requestShutdown();
 if ($diagnostics !== ['worker.shutdown_requested']
     || $logger->messages !== ['worker.shutdown_requested']
@@ -302,8 +431,15 @@ if ($readiness !== [
     'runtime_host' => 'localhost:8080',
     'namespace' => 'default',
     'task_queue' => 'laravel-workers',
-    'workflow_types' => ['laravel.greeting'],
-    'activity_types' => ['laravel.greet'],
+    'workflow_types' => ['laravel.greeting', 'laravel.compensated-trip'],
+    'activity_types' => [
+        'laravel.greet',
+        'laravel.reserve-flight',
+        'laravel.reserve-hotel',
+        'laravel.charge',
+        'laravel.cancel-flight',
+        'laravel.cancel-hotel',
+    ],
     'credential_role' => 'worker',
 ] || !in_array('worker.registered_and_polling', $readinessLogger->messages, true)) {
     throw new RuntimeException('Laravel worker readiness did not identify its runtime and registered contracts.');
@@ -352,6 +488,24 @@ $fake->assertWorkflowStarted(
     workflowId: 'laravel-greeting-1',
 );
 $fake->assertResultRequested('laravel-greeting-1');
+$fake->setWorkflowResult('laravel-trip-1', [
+    'status' => 'compensated',
+    'compensations' => ['laravel.cancel-hotel', 'laravel.cancel-flight'],
+]);
+$fakeSaga = DurableWorkflowFacade::start(
+    LaravelTripWorkflow::class,
+    ['trip-1'],
+    workflowId: 'laravel-trip-1',
+);
+if (($fakeSaga->result()['status'] ?? null) !== 'compensated') {
+    throw new RuntimeException('Laravel fake did not return the configured saga result.');
+}
+$fake->assertWorkflowStarted(
+    LaravelTripWorkflow::class,
+    ['trip-1'],
+    workflowId: 'laravel-trip-1',
+);
+$fake->assertResultRequested('laravel-trip-1');
 $app->make(LaravelWorkflowClientInterface::class)->start(
     LaravelGreetingWorkflow::class,
     ['Grace'],

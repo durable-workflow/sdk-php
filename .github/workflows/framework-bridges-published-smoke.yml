@@ -20,7 +20,7 @@ jobs:
     name: ${{ matrix.framework }} / ${{ matrix.runtime }} published workflow
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     environment: published-service-smoke
     strategy:
       fail-fast: false
@@ -93,6 +93,23 @@ jobs:
           php-version: '8.4'
           tools: composer:v2
           coverage: none
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+
+      - name: Resolve and install the current published Python activity worker
+        run: |
+          python -m pip install --disable-pip-version-check 'durable-workflow~=2.0.0rc0'
+          python - <<'PY'
+          import importlib.metadata
+          import re
+
+          actual = importlib.metadata.version("durable-workflow")
+          if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:(?:a|b|rc)[0-9]+)?", actual) is None:
+              raise RuntimeError(f"Installed Python SDK has a non-release identity: {actual}.")
+          print(f"installed_python_sdk_version={actual}")
+          PY
 
       - name: Resolve the immutable published SDK release
         env:
@@ -370,6 +387,43 @@ jobs:
               }
           }
           PHP
+          tee app/Workflows/PublishedSagaWorkflow.php >/dev/null <<'PHP'
+          <?php
+          declare(strict_types=1);
+          namespace App\Workflows;
+          use App\Support\PublishedGreetingPrefix;
+          use DurableWorkflow\Attribute\Workflow;
+          use DurableWorkflow\Worker\Saga;
+          use DurableWorkflow\Worker\WorkflowContext;
+          final class PublishedSagaWorkflow
+          {
+              public function __construct(private PublishedGreetingPrefix $prefix) {}
+
+              #[Workflow('laravel.compensated-trip')]
+              public function run(WorkflowContext $context, string $tripId): array
+              {
+                  if ($this->prefix->value() === '') {
+                      throw new \LogicException('Laravel did not inject the saga workflow dependency.');
+                  }
+
+                  return $context->saga()->run(static function (Saga $saga) use ($context, $tripId): array {
+                      $flight = $context->activity('python.reserve-flight', [$tripId]);
+                      $saga->addCompensation('python.cancel-flight', [$tripId, $flight]);
+
+                      $hotel = $context->activity('python.reserve-hotel', [$tripId]);
+                      $saga->addCompensation('python.cancel-hotel', [$tripId, $hotel]);
+
+                      $context->activity(
+                          'python.charge-card',
+                          [$tripId],
+                          ['retry_policy' => ['max_attempts' => 1]],
+                      );
+
+                      return compact('flight', 'hotel');
+                  });
+              }
+          }
+          PHP
           tee app/Activities/PublishedGreetingActivities.php >/dev/null <<'PHP'
           <?php
           declare(strict_types=1);
@@ -394,6 +448,70 @@ jobs:
               }
           }
           PHP
+          tee published-saga-activities.py >/dev/null <<'PY'
+          import asyncio
+          import os
+          import signal
+
+          from durable_workflow import Client, Worker, activity
+
+
+          @activity.defn(name="python.reserve-flight")
+          def reserve_flight(trip_id: str) -> str:
+              return f"flight:{trip_id}"
+
+
+          @activity.defn(name="python.reserve-hotel")
+          def reserve_hotel(trip_id: str) -> str:
+              return f"hotel:{trip_id}"
+
+
+          @activity.defn(name="python.charge-card")
+          def charge_card(trip_id: str) -> None:
+              raise RuntimeError(f"card declined for {trip_id}")
+
+
+          @activity.defn(name="python.cancel-hotel")
+          def cancel_hotel(trip_id: str, reservation_id: str) -> str:
+              return f"cancelled:{reservation_id}"
+
+
+          @activity.defn(name="python.cancel-flight")
+          async def cancel_flight(trip_id: str, reservation_id: str) -> str:
+              await asyncio.sleep(10)
+              return f"cancelled:{reservation_id}"
+
+
+          async def main() -> None:
+              async with Client(
+                  os.environ["DURABLE_WORKFLOW_RUNTIME_URL"],
+                  namespace=os.environ["DURABLE_WORKFLOW_NAMESPACE"],
+                  token=os.environ["DURABLE_WORKFLOW_WORKER_TOKEN"],
+              ) as client:
+                  worker = Worker(
+                      client,
+                      task_queue=os.environ["DURABLE_WORKFLOW_TASK_QUEUE"],
+                      workflows=[],
+                      activities=[
+                          reserve_flight,
+                          reserve_hotel,
+                          charge_card,
+                          cancel_hotel,
+                          cancel_flight,
+                      ],
+                  )
+                  loop = asyncio.get_running_loop()
+                  for signal_name in (signal.SIGINT, signal.SIGTERM):
+                      loop.add_signal_handler(
+                          signal_name,
+                          lambda: asyncio.create_task(worker.stop()),
+                      )
+                  await worker.run()
+
+
+          if __name__ == "__main__":
+              asyncio.run(main())
+          PY
           tee app/Actions/StartPublishedGreeting.php >/dev/null <<'PHP'
           <?php
           declare(strict_types=1);
@@ -612,6 +730,110 @@ jobs:
               }
           });
 
+          Artisan::command('durable-workflow:published-saga', function (): void {
+              $client = app(\DurableWorkflow\Client::class);
+              $workflowId = env('DURABLE_WORKFLOW_SAGA_ID');
+              $phase = env('PUBLISHED_SAGA_PHASE');
+              $workflows = app(\DurableWorkflow\Bridge\Laravel\LaravelWorkflowClientInterface::class);
+              if ($phase === 'start') {
+                  $workflows->start(
+                      \App\Workflows\PublishedSagaWorkflow::class,
+                      ['trip-published'],
+                      workflowId: $workflowId,
+                  );
+                  $deadline = microtime(true) + 45;
+                  do {
+                      $execution = $client->describeWorkflow($workflowId);
+                      if (is_string($execution->runId) && $execution->runId !== '') {
+                          $history = $client->workflowHistory($workflowId, $execution->runId);
+                          $events = $history['events'] ?? $history['history_events'] ?? [];
+                          $scheduledFlightCompensation = array_values(array_filter(
+                              is_array($events) ? $events : [],
+                              static fn (mixed $event): bool => is_array($event)
+                                  && ($event['event_type'] ?? $event['type'] ?? null) === 'ActivityScheduled'
+                                  && ($event['payload']['activity_type'] ?? null) === 'python.cancel-flight',
+                          ));
+                          $completedFlightCompensation = array_values(array_filter(
+                              is_array($events) ? $events : [],
+                              static fn (mixed $event): bool => is_array($event)
+                                  && ($event['event_type'] ?? $event['type'] ?? null) === 'ActivityCompleted'
+                                  && ($event['payload']['activity_type'] ?? null) === 'python.cancel-flight',
+                          ));
+                          if (count($scheduledFlightCompensation) === 1
+                              && $completedFlightCompensation === []) {
+                              return;
+                          }
+                      }
+                      usleep(250_000);
+                  } while (microtime(true) < $deadline);
+                  throw new \RuntimeException('Published saga did not reach its in-flight final compensation.');
+              }
+              if ($phase !== 'finish') {
+                  throw new \RuntimeException('Published saga phase must be start or finish.');
+              }
+
+              $execution = $client->describeWorkflow($workflowId);
+              if (!is_string($execution->runId) || $execution->runId === '') {
+                  throw new \RuntimeException('Published saga has no run identity after worker restart.');
+              }
+              $handle = $workflows->handle(
+                  \App\Workflows\PublishedSagaWorkflow::class,
+                  $workflowId,
+                  $execution->runId,
+              );
+              try {
+                  $handle->result(timeoutSeconds: 90, pollIntervalSeconds: 1);
+                  throw new \RuntimeException('Published saga silently completed after its forward failure.');
+              } catch (\DurableWorkflow\Exception\WorkflowFailed $failure) {
+                  if ($failure->failureType !== \DurableWorkflow\Exception\ActivityFailed::class
+                      || !str_contains($failure->getMessage(), 'card declined')) {
+                      throw new \RuntimeException(
+                          'Published saga did not preserve its typed forward failure.',
+                          previous: $failure,
+                      );
+                  }
+              }
+
+              $history = $client->workflowHistory($workflowId, $execution->runId);
+              $events = $history['events'] ?? $history['history_events'] ?? [];
+              $activityTypes = static function (string $eventType) use ($events): array {
+                  return array_values(array_map(
+                      static fn (array $event): string => (string) $event['payload']['activity_type'],
+                      array_filter(
+                          is_array($events) ? $events : [],
+                          static fn (mixed $event): bool => is_array($event)
+                              && ($event['event_type'] ?? $event['type'] ?? null) === $eventType
+                              && is_string($event['payload']['activity_type'] ?? null)
+                              && str_starts_with($event['payload']['activity_type'], 'python.'),
+                      ),
+                  ));
+              };
+              $scheduled = $activityTypes('ActivityScheduled');
+              $completed = $activityTypes('ActivityCompleted');
+              $failed = $activityTypes('ActivityFailed');
+              if ($scheduled !== [
+                  'python.reserve-flight',
+                  'python.reserve-hotel',
+                  'python.charge-card',
+                  'python.cancel-hotel',
+                  'python.cancel-flight',
+              ] || $completed !== [
+                  'python.reserve-flight',
+                  'python.reserve-hotel',
+                  'python.cancel-hotel',
+                  'python.cancel-flight',
+              ] || $failed !== ['python.charge-card']) {
+                  throw new \RuntimeException('Published cross-language saga history changed order or duplicated a compensation.');
+              }
+              fwrite(STDOUT, json_encode([
+                  'runtime' => env('RUNTIME_TARGET'),
+                  'scheduled' => $scheduled,
+                  'completed' => $completed,
+                  'failed' => $failed,
+                  'worker_restart_during_compensation' => true,
+              ], JSON_THROW_ON_ERROR).PHP_EOL);
+          });
+
           Artisan::command('durable-workflow:published-fake', function (): void {
               $fake = \DurableWorkflow\Bridge\Laravel\Facades\DurableWorkflow::fake()
                   ->setWorkflowResult('published-laravel-fake', [
@@ -645,10 +867,28 @@ jobs:
                   workflowId: 'published-laravel-fake',
               );
               $fake->assertResultRequested('published-laravel-fake');
+              $fake->setWorkflowResult('published-laravel-saga-fake', [
+                  'status' => 'compensated',
+                  'compensations' => ['python.cancel-hotel', 'python.cancel-flight'],
+              ]);
+              $sagaResult = $fake->start(
+                  \App\Workflows\PublishedSagaWorkflow::class,
+                  ['trip-published'],
+                  workflowId: 'published-laravel-saga-fake',
+              )->result();
+              if (($sagaResult['status'] ?? null) !== 'compensated') {
+                  throw new \RuntimeException('Published Laravel fake returned an unexpected saga result.');
+              }
+              $fake->assertWorkflowStarted(
+                  \App\Workflows\PublishedSagaWorkflow::class,
+                  ['trip-published'],
+                  workflowId: 'published-laravel-saga-fake',
+              );
+              $fake->assertResultRequested('published-laravel-saga-fake');
           });
           PHP
           php artisan vendor:publish --tag=durable-workflow-config --force
-          sed -i "/'handlers' => \[/a\        App\\\\Workflows\\\\PublishedGreetingWorkflow::class,\n        App\\\\Workflows\\\\PublishedGreetingChildWorkflow::class,\n        App\\\\Activities\\\\PublishedGreetingActivities::class," config/durable-workflow.php
+          sed -i "/'handlers' => \[/a\        App\\\\Workflows\\\\PublishedGreetingWorkflow::class,\n        App\\\\Workflows\\\\PublishedGreetingChildWorkflow::class,\n        App\\\\Workflows\\\\PublishedSagaWorkflow::class,\n        App\\\\Activities\\\\PublishedGreetingActivities::class," config/durable-workflow.php
 
       - name: Prove the published Laravel fake without a runtime
         if: matrix.framework == 'laravel'
@@ -934,8 +1174,10 @@ jobs:
           PHP
           queue="php-${FRAMEWORK}-${RUNTIME_TARGET}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           workflow_id="php-${FRAMEWORK}-${RUNTIME_TARGET}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          saga_id="${workflow_id}-saga"
           export DURABLE_WORKFLOW_TASK_QUEUE="$queue"
           export DURABLE_WORKFLOW_WORKFLOW_ID="$workflow_id"
+          export DURABLE_WORKFLOW_SAGA_ID="$saga_id"
           export DURABLE_WORKFLOW_TYPE="published.${FRAMEWORK}.greeter"
 
           if [ "$FRAMEWORK" = laravel ]; then
@@ -1110,6 +1352,15 @@ jobs:
           PHP
           fi
 
+          cleanup_workers() {
+            if [ -n "${worker_pid:-}" ]; then
+              kill -TERM "$worker_pid" 2>/dev/null || true
+            fi
+            if [ -n "${python_worker_pid:-}" ]; then
+              kill -TERM "$python_worker_pid" 2>/dev/null || true
+            fi
+          }
+
           start_worker() {
             local worker_log="$1"
             if [ "$FRAMEWORK" = laravel ]; then
@@ -1124,7 +1375,7 @@ jobs:
               env -u DURABLE_WORKFLOW_CLIENT_TOKEN php bin/console durable-workflow:worker >"$worker_log" 2>&1 &
             fi
             worker_pid=$!
-            trap 'kill -TERM "$worker_pid" 2>/dev/null || true' EXIT
+            trap cleanup_workers EXIT
             if [ "$FRAMEWORK" = laravel ]; then
               local ready=false
               for _attempt in $(seq 1 30); do
@@ -1142,6 +1393,7 @@ jobs:
                 || ! grep -Fq 'workflows=[' "$worker_log" \
                 || ! grep -Fq 'laravel.greeting' "$worker_log" \
                 || ! grep -Fq 'laravel.child-greeting' "$worker_log" \
+                || ! grep -Fq 'laravel.compensated-trip' "$worker_log" \
                 || ! grep -Fq 'activities=[' "$worker_log" \
                 || ! grep -Fq 'laravel.greet' "$worker_log" \
                 || ! grep -Fq 'laravel.fail' "$worker_log" \
@@ -1158,7 +1410,7 @@ jobs:
             kill -TERM "$worker_pid" 2>/dev/null || true
             local worker_status=0
             wait "$worker_pid" || worker_status=$?
-            trap - EXIT
+            worker_pid=''
             if grep -Eq 'worker\.shutdown_failed|HTTP[[:space:]]+403|403[[:space:]]+Forbidden' "$worker_log"; then
               echo 'Framework worker reported an authorization or graceful-shutdown failure.' >&2
               cat "$worker_log" >&2
@@ -1168,6 +1420,34 @@ jobs:
               echo "Framework worker exited with status $worker_status." >&2
               cat "$worker_log" >&2
               exit "$worker_status"
+            fi
+          }
+
+          start_python_worker() {
+            env \
+              -u DURABLE_WORKFLOW_TOKEN \
+              -u DURABLE_WORKFLOW_CLIENT_TOKEN \
+              DURABLE_WORKFLOW_WORKER_TOKEN="$laravel_worker_token" \
+              python published-saga-activities.py >python-saga-worker.log 2>&1 &
+            python_worker_pid=$!
+            trap cleanup_workers EXIT
+            sleep 2
+            if ! kill -0 "$python_worker_pid" 2>/dev/null; then
+              echo 'Published Python saga activity worker exited before qualification.' >&2
+              cat python-saga-worker.log >&2
+              exit 1
+            fi
+          }
+
+          stop_python_worker() {
+            kill -TERM "$python_worker_pid" 2>/dev/null || true
+            local python_status=0
+            wait "$python_worker_pid" || python_status=$?
+            python_worker_pid=''
+            if [ "$python_status" -ne 0 ]; then
+              echo "Published Python saga activity worker exited with status $python_status." >&2
+              cat python-saga-worker.log >&2
+              exit "$python_status"
             fi
           }
 
@@ -1185,6 +1465,18 @@ jobs:
             else
               PUBLISHED_WORKFLOW_PHASE="$phase" env -u DURABLE_WORKFLOW_WORKER_TOKEN php durable-client.php
             fi
+          }
+
+          run_saga_phase() {
+            local phase="$1"
+            env \
+              -u DURABLE_WORKFLOW_TOKEN \
+              -u DURABLE_WORKFLOW_CLIENT_TOKEN \
+              -u DURABLE_WORKFLOW_WORKER_TOKEN \
+              DURABLE_WORKFLOW_PROCESS_ROLE=client \
+              DURABLE_WORKFLOW_PROCESS_TOKEN="$laravel_client_token" \
+              PUBLISHED_SAGA_PHASE="$phase" \
+              php laravel-role-launch.php durable-workflow:published-saga
           }
 
           start_worker worker-initial.log
@@ -1207,6 +1499,18 @@ jobs:
           start_worker worker-upgraded.log
           run_client_phase finish
           stop_worker worker-upgraded.log
+
+          if [ "$FRAMEWORK" = laravel ]; then
+            start_python_worker
+            start_worker worker-saga-initial.log
+            run_saga_phase start
+            stop_worker worker-saga-initial.log
+
+            start_worker worker-saga-restarted.log
+            run_saga_phase finish
+            stop_worker worker-saga-restarted.log
+            stop_python_worker
+          fi
 
           if [ "$FRAMEWORK" = laravel ]; then
             DURABLE_WORKFLOW_ROLE_PROBE_LOG="$DURABLE_WORKFLOW_ROLE_PROBE_LOG" php <<'PHP'
@@ -1247,6 +1551,7 @@ jobs:
           ], JSON_THROW_ON_ERROR).PHP_EOL);
           PHP
           fi
+          trap - EXIT
           BASH
           chmod +x "$RUNNER_TEMP/framework-runtime.sh"
 
