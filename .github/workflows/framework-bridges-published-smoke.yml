@@ -11,6 +11,12 @@ on:
         description: Exact current Server version declared by the published SDK
         required: true
         type: string
+      python_sdk_version:
+        description: >-
+          Exact synchronized Python SDK product version, such as 2.0.0 or
+          2.0.0-rc.9
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -57,6 +63,19 @@ jobs:
             exit 1
           fi
 
+      - name: Validate the exact published Python SDK version
+        env:
+          PYTHON_SDK_VERSION: ${{ inputs.python_sdk_version }}
+        run: |
+          if [[ ! "$PYTHON_SDK_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+            echo "python_sdk_version must be an exact stable, alpha, beta, or release-candidate product version" >&2
+            exit 1
+          fi
+          python_sdk_pep440_version="${PYTHON_SDK_VERSION/-alpha./a}"
+          python_sdk_pep440_version="${python_sdk_pep440_version/-beta./b}"
+          python_sdk_pep440_version="${python_sdk_pep440_version/-rc./rc}"
+          echo "PYTHON_SDK_PEP440_VERSION=$python_sdk_pep440_version" >> "$GITHUB_ENV"
+
       - name: Validate managed Cloud configuration
         if: matrix.transport == 'protected-cloud'
         env:
@@ -98,17 +117,40 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Resolve and install the current published Python activity worker
+      - name: Install and verify the exact published Python activity worker
+        env:
+          PYTHON_SDK_VERSION: ${{ inputs.python_sdk_version }}
         run: |
-          python -m pip install --disable-pip-version-check 'durable-workflow~=2.0.0rc0'
+          python -m pip install --disable-pip-version-check \
+            "durable-workflow==${PYTHON_SDK_PEP440_VERSION}"
           python - <<'PY'
           import importlib.metadata
-          import re
+          import os
 
+          requested = os.environ["PYTHON_SDK_VERSION"]
+          expected = os.environ["PYTHON_SDK_PEP440_VERSION"]
           actual = importlib.metadata.version("durable-workflow")
-          if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:(?:a|b|rc)[0-9]+)?", actual) is None:
-              raise RuntimeError(f"Installed Python SDK has a non-release identity: {actual}.")
+          if actual != expected:
+              raise RuntimeError(
+                  "Installed Python SDK distribution version "
+                  f"{actual} does not match requested product version {requested} "
+                  f"(PEP 440: {expected})."
+              )
+          print(f"requested_python_sdk_version={requested}")
+          print(f"requested_python_sdk_pep440_version={expected}")
           print(f"installed_python_sdk_version={actual}")
+          with open(
+              os.environ["GITHUB_STEP_SUMMARY"],
+              "a",
+              encoding="utf-8",
+          ) as summary:
+              summary.write("## Published Python SDK identity\n\n")
+              summary.write(
+                  "| Requested product version | Exact PEP 440 version "
+                  "| Installed distribution version |\n"
+              )
+              summary.write("| --- | --- | --- |\n")
+              summary.write(f"| `{requested}` | `{expected}` | `{actual}` |\n")
           PY
 
       - name: Resolve the immutable published SDK release

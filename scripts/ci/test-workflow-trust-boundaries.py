@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -40,6 +41,21 @@ def step_source(job: str, name: str) -> str:
             index
             for index, line in enumerate(lines[start + 1 :], start=start + 1)
             if line.startswith("      - ")
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[start:end])
+
+
+def workflow_dispatch_input_source(source: str, name: str) -> str:
+    lines = source.splitlines()
+    marker = f"      {name}:"
+    start = lines.index(marker)
+    end = next(
+        (
+            index
+            for index, line in enumerate(lines[start + 1 :], start=start + 1)
+            if line.startswith("      ") and not line.startswith("       ")
         ),
         len(lines),
     )
@@ -270,6 +286,112 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
                     "strtolower($reference) !== strtolower($expectedReference)",
                 ):
                     self.assertIn(marker, verify)
+
+    def test_framework_smoke_requires_an_exact_python_sdk_product_version(
+        self,
+    ) -> None:
+        source = workflow_source("framework-bridges-published-smoke.yml")
+        declared_input = workflow_dispatch_input_source(
+            source,
+            "python_sdk_version",
+        )
+        smoke = job_source(source, "framework-service-mode")
+        validation = step_source(
+            smoke,
+            "Validate the exact published Python SDK version",
+        )
+        script = step_script(validation)
+
+        self.assertIn("        required: true", declared_input)
+        self.assertIn("        type: string", declared_input)
+        self.assertIn(
+            "PYTHON_SDK_VERSION: ${{ inputs.python_sdk_version }}",
+            validation,
+        )
+        self.assertLess(
+            smoke.index(validation),
+            smoke.index("actions/setup-python@"),
+        )
+
+        exact_versions = {
+            "0.1.16": "0.1.16",
+            "2.0.0": "2.0.0",
+            "2.0.0-alpha.1": "2.0.0a1",
+            "2.0.0-beta.21": "2.0.0b21",
+            "2.0.0-rc.9": "2.0.0rc9",
+        }
+        mutable_or_non_product_versions = (
+            "",
+            "2.0.0rc9",
+            "2.0.0-rc9",
+            "2.0.*",
+            "^2.0",
+            "~2.0.0",
+            ">=2.0.0",
+            "latest",
+        )
+
+        for product_version, pep440_version in exact_versions.items():
+            with (
+                self.subTest(accepted=product_version),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                github_env = Path(directory) / "github-env"
+                result = subprocess.run(
+                    ["bash", "-eu", "-o", "pipefail", "-c", script],
+                    env={
+                        **os.environ,
+                        "GITHUB_ENV": str(github_env),
+                        "PYTHON_SDK_VERSION": product_version,
+                    },
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(
+                    f"PYTHON_SDK_PEP440_VERSION={pep440_version}\n",
+                    github_env.read_text(),
+                )
+
+        for version in mutable_or_non_product_versions:
+            with (
+                self.subTest(rejected=version),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                result = subprocess.run(
+                    ["bash", "-eu", "-o", "pipefail", "-c", script],
+                    env={
+                        **os.environ,
+                        "GITHUB_ENV": str(Path(directory) / "github-env"),
+                        "PYTHON_SDK_VERSION": version,
+                    },
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(0, result.returncode)
+
+    def test_framework_smoke_installs_and_reports_the_exact_python_sdk(self) -> None:
+        smoke = job_source(
+            workflow_source("framework-bridges-published-smoke.yml"),
+            "framework-service-mode",
+        )
+        install = step_source(
+            smoke,
+            "Install and verify the exact published Python activity worker",
+        )
+
+        self.assertIn(
+            '"durable-workflow==${PYTHON_SDK_PEP440_VERSION}"',
+            install,
+        )
+        self.assertNotIn("durable-workflow~=", install)
+        self.assertIn('expected = os.environ["PYTHON_SDK_PEP440_VERSION"]', install)
+        self.assertIn("if actual != expected:", install)
+        self.assertIn("requested_python_sdk_version=", install)
+        self.assertIn("installed_python_sdk_version=", install)
+        self.assertIn('os.environ["GITHUB_STEP_SUMMARY"]', install)
 
     def test_service_mode_smoke_binds_the_declared_server_release(self) -> None:
         source = workflow_source("service-mode-published-smoke.yml")
