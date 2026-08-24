@@ -51,6 +51,9 @@ final class Replayer
                 $this->codec,
                 (bool) ($task['cancel_requested'] ?? false),
                 $current,
+                isset($task['workflow_command_id']) && (string) $task['workflow_command_id'] !== ''
+                    ? (string) $task['workflow_command_id']
+                    : (isset($task['task_id']) ? (string) $task['task_id'] : null),
             );
 
             return $handler($context, ...$input);

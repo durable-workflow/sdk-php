@@ -250,6 +250,37 @@ async function assertTableOfContentsMetadataLegibility(page, label) {
   assert.deepEqual(result.failures, [], `${label} collapsed table-of-contents metadata`);
 }
 
+async function assertPrimaryApiContentUsesAvailableWidth(page, label) {
+  const result = await page.evaluate(() => {
+    const content = document.querySelector('.phpdocumentor-content');
+    const primary = content?.querySelector(':scope > section:first-of-type');
+    const onThisPage = content?.querySelector(':scope > .phpdocumentor-on-this-page__sidebar');
+    if (!content || !primary || !onThisPage) return {present: false};
+
+    const contentStyle = getComputedStyle(content);
+    const onThisPageStyle = getComputedStyle(onThisPage);
+    const onThisPageBox = onThisPage.getBoundingClientRect();
+    const primaryBox = primary.getBoundingClientRect();
+    const availableWidth = content.clientWidth
+      - Number.parseFloat(contentStyle.paddingLeft)
+      - Number.parseFloat(contentStyle.paddingRight);
+
+    return {
+      present: true,
+      availableWidth,
+      primaryWidth: primaryBox.width,
+      onThisPageVisible: onThisPageStyle.display !== 'none' && onThisPageBox.width > 0,
+    };
+  });
+
+  assert.equal(result.present, true, `${label} lost its primary API content`);
+  if (result.onThisPageVisible) return;
+  assert.ok(
+    Math.abs(result.primaryWidth - result.availableWidth) <= 1,
+    `${label} primary API content does not use its available width: ${JSON.stringify(result)}`,
+  );
+}
+
 async function assertOnThisPageUtilityReachability(page, label) {
   const result = await page.evaluate(async () => {
     const scrollport = document.querySelector('.phpdocumentor-on-this-page__content');
@@ -604,6 +635,7 @@ async function exercisePage(
       if (pageName === 'Client API') {
         await assertTableOfContentsMetadataLegibility(page, `${label} default`);
       }
+      await assertPrimaryApiContentUsesAvailableWidth(page, `${label} default`);
       if (viewportName === 'compact-height') {
         await assertOnThisPageUtilityReachability(page, `${label} default`);
       }

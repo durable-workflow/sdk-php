@@ -31,6 +31,11 @@ use DurableWorkflow\Model\ServiceOperationOptions;
 use DurableWorkflow\Model\WorkflowExecution;
 use DurableWorkflow\Model\WorkflowPage;
 use DurableWorkflow\Model\WorkflowRun;
+use DurableWorkflow\Model\WorkflowStreamAppendItem;
+use DurableWorkflow\Model\WorkflowStreamAppendResult;
+use DurableWorkflow\Model\WorkflowStreamDescription;
+use DurableWorkflow\Model\WorkflowStreamItem;
+use DurableWorkflow\Model\WorkflowStreamPage;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker\PollResponse;
@@ -256,6 +261,189 @@ final class Client implements WorkflowClientInterface
             'GET',
             '/workflows/'.$this->segment($workflowId).'/runs/'.$this->segment($runId).'/history',
         );
+    }
+
+    /** @return list<WorkflowStreamDescription> */
+    public function listWorkflowStreams(string $workflowId, string $runId): array
+    {
+        $response = $this->control('GET', $this->workflowStreamPath($workflowId, $runId));
+        $streams = [];
+        foreach (($response['streams'] ?? []) as $value) {
+            if (is_array($value)) {
+                $streams[] = WorkflowStreamDescription::fromArray($value);
+            }
+        }
+
+        return $streams;
+    }
+
+    public function describeWorkflowStream(
+        string $workflowId,
+        string $runId,
+        string $streamName,
+    ): WorkflowStreamDescription {
+        $response = $this->control('GET', $this->workflowStreamPath($workflowId, $runId, $streamName));
+        $stream = is_array($response['stream'] ?? null) ? $response['stream'] : [];
+
+        return WorkflowStreamDescription::fromArray($stream);
+    }
+
+    /**
+     * Read one bounded page starting at an inclusive offset.
+     *
+     * Delivery is at least once: persist `nextOffset` only after processing the
+     * page, and make item processing idempotent. The cancellation callback is
+     * checked before and after the bounded HTTP long poll.
+     */
+    public function subscribeWorkflowStream(
+        string $workflowId,
+        string $runId,
+        string $streamName,
+        int $fromOffset = 0,
+        int $maxItems = 100,
+        int $waitSeconds = 0,
+        ?callable $cancelled = null,
+    ): WorkflowStreamPage {
+        if ($cancelled !== null && $cancelled() === true) {
+            throw new \RuntimeException('Workflow Stream subscription was cancelled.');
+        }
+
+        $path = $this->pathWithQuery(
+            $this->workflowStreamPath($workflowId, $runId, $streamName).'/items',
+            [
+                'from' => max(0, $fromOffset),
+                'max_items' => max(1, min(500, $maxItems)),
+                'wait_seconds' => max(0, min(60, $waitSeconds)),
+            ],
+        );
+        $response = $this->control('GET', $path);
+
+        if ($cancelled !== null && $cancelled() === true) {
+            throw new \RuntimeException('Workflow Stream subscription was cancelled.');
+        }
+
+        $items = [];
+        foreach (($response['items'] ?? []) as $value) {
+            if (! is_array($value)) {
+                continue;
+            }
+            $payloadEnvelope = $value['payload'] ?? null;
+            $payload = $payloadEnvelope;
+            if (is_array($payloadEnvelope)
+                && isset($payloadEnvelope['codec'], $payloadEnvelope['blob'])
+            ) {
+                $payload = $this->codec->decodeEnvelope($payloadEnvelope);
+            }
+            $items[] = new WorkflowStreamItem(
+                (int) ($value['offset'] ?? 0),
+                $payload,
+                $payloadEnvelope,
+                isset($value['payload_reference']) ? (string) $value['payload_reference'] : null,
+                isset($value['payload_codec']) ? (string) $value['payload_codec'] : null,
+                isset($value['idempotency_key']) ? (string) $value['idempotency_key'] : null,
+                isset($value['origin']) ? (string) $value['origin'] : null,
+                isset($value['origin_reference']) ? (string) $value['origin_reference'] : null,
+                isset($value['item_type']) ? (string) $value['item_type'] : null,
+                isset($value['content_type']) ? (string) $value['content_type'] : null,
+                isset($value['emitted_at']) ? (string) $value['emitted_at'] : null,
+                $value,
+            );
+        }
+        $stream = is_array($response['stream'] ?? null) ? $response['stream'] : [];
+
+        return new WorkflowStreamPage(
+            WorkflowStreamDescription::fromArray($stream),
+            $items,
+            (int) ($response['next_offset'] ?? $fromOffset),
+            (bool) ($response['terminal'] ?? false),
+            $response,
+        );
+    }
+
+    /**
+     * @param callable(): bool|null $cancelled
+     * @return \Generator<int, WorkflowStreamItem>
+     */
+    public function iterateWorkflowStream(
+        string $workflowId,
+        string $runId,
+        string $streamName,
+        int $fromOffset = 0,
+        int $maxItems = 100,
+        int $waitSeconds = 30,
+        ?callable $cancelled = null,
+    ): \Generator {
+        $offset = max(0, $fromOffset);
+        while ($cancelled === null || $cancelled() !== true) {
+            $page = $this->subscribeWorkflowStream(
+                $workflowId,
+                $runId,
+                $streamName,
+                $offset,
+                $maxItems,
+                $waitSeconds,
+                $cancelled,
+            );
+            foreach ($page->items as $item) {
+                yield $item;
+            }
+            $offset = $page->nextOffset;
+            if ($page->terminal) {
+                return;
+            }
+        }
+    }
+
+    /** @param list<WorkflowStreamAppendItem> $items */
+    public function appendWorkflowStream(
+        string $workflowId,
+        string $runId,
+        string $streamName,
+        array $items,
+        ?int $maxPendingItems = null,
+    ): WorkflowStreamAppendResult {
+        $response = $this->control(
+            'POST',
+            $this->workflowStreamPath($workflowId, $runId, $streamName).'/items',
+            $this->withoutNulls([
+                'items' => array_map(
+                    fn (WorkflowStreamAppendItem $item): array => $item->toWire($this->codec),
+                    $items,
+                ),
+                'max_pending_items' => $maxPendingItems,
+            ]),
+        );
+        $stream = is_array($response['stream'] ?? null) ? $response['stream'] : [];
+
+        return new WorkflowStreamAppendResult(
+            WorkflowStreamDescription::fromArray($stream),
+            array_values(array_map('intval', is_array($response['accepted_offsets'] ?? null)
+                ? $response['accepted_offsets']
+                : [])),
+            (int) ($response['accepted'] ?? 0),
+            (int) ($response['deduped'] ?? 0),
+            $response,
+        );
+    }
+
+    public function closeWorkflowStream(
+        string $workflowId,
+        string $runId,
+        string $streamName,
+        ?string $errorReason = null,
+        ?int $retentionSeconds = null,
+    ): WorkflowStreamDescription {
+        $response = $this->control(
+            'POST',
+            $this->workflowStreamPath($workflowId, $runId, $streamName).'/close',
+            $this->withoutNulls([
+                'error_reason' => $errorReason,
+                'retention_seconds' => $retentionSeconds,
+            ]),
+        );
+        $stream = is_array($response['stream'] ?? null) ? $response['stream'] : [];
+
+        return WorkflowStreamDescription::fromArray($stream);
     }
 
     /** @return array<string, mixed> */
@@ -1416,6 +1604,13 @@ final class Client implements WorkflowClientInterface
         }
 
         return $path.'/'.$operation;
+    }
+
+    private function workflowStreamPath(string $workflowId, string $runId, ?string $streamName = null): string
+    {
+        $path = '/workflows/'.$this->segment($workflowId).'/runs/'.$this->segment($runId).'/streams';
+
+        return $streamName === null ? $path : $path.'/'.$this->segment($streamName);
     }
 
     private function segment(string $value): string

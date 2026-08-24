@@ -4,6 +4,11 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Testing;
 
+use DurableWorkflow\Model\WorkflowStreamAppendItem;
+use DurableWorkflow\Model\WorkflowStreamAppendResult;
+use DurableWorkflow\Model\WorkflowStreamDescription;
+use DurableWorkflow\Model\WorkflowStreamItem;
+use DurableWorkflow\Model\WorkflowStreamPage;
 use DurableWorkflow\WorkflowClientInterface;
 use DurableWorkflow\WorkflowHandleInterface;
 use LogicException;
@@ -27,6 +32,14 @@ final class WorkflowClientFake implements WorkflowClientInterface
     private array $queryResults = [];
     /** @var array<string, mixed> */
     private array $updateResults = [];
+    /** @var array<string, list<WorkflowStreamDescription>> */
+    private array $workflowStreams = [];
+    /** @var array<string, WorkflowStreamPage> */
+    private array $workflowStreamPages = [];
+    /** @var array<string, WorkflowStreamAppendResult> */
+    private array $workflowStreamAppendResults = [];
+    /** @var array<string, WorkflowStreamDescription> */
+    private array $workflowStreamCloseResults = [];
 
     /** @param list<mixed> $input */
     public function startWorkflow(
@@ -57,6 +70,145 @@ final class WorkflowClientFake implements WorkflowClientInterface
     public function workflowHandle(string $workflowId, ?string $selectedRunId = null): WorkflowHandleInterface
     {
         return new TestWorkflowHandle($this, $workflowId, selectedRunId: $selectedRunId);
+    }
+
+    /** @param list<WorkflowStreamDescription> $streams */
+    public function setWorkflowStreams(string $workflowId, string $runId, array $streams): self
+    {
+        $this->workflowStreams[$this->streamKey($workflowId, $runId)] = $streams;
+
+        return $this;
+    }
+
+    public function setWorkflowStreamPage(
+        string $workflowId,
+        string $runId,
+        string $streamName,
+        int $fromOffset,
+        WorkflowStreamPage $page,
+    ): self {
+        $this->workflowStreamPages[$this->streamKey($workflowId, $runId, $streamName, $fromOffset)] = $page;
+
+        return $this;
+    }
+
+    public function setWorkflowStreamAppendResult(
+        string $workflowId,
+        string $runId,
+        string $streamName,
+        WorkflowStreamAppendResult $result,
+    ): self {
+        $this->workflowStreamAppendResults[$this->streamKey($workflowId, $runId, $streamName)] = $result;
+
+        return $this;
+    }
+
+    public function setWorkflowStreamCloseResult(
+        string $workflowId,
+        string $runId,
+        string $streamName,
+        WorkflowStreamDescription $result,
+    ): self {
+        $this->workflowStreamCloseResults[$this->streamKey($workflowId, $runId, $streamName)] = $result;
+
+        return $this;
+    }
+
+    /** @return list<WorkflowStreamDescription> */
+    public function listWorkflowStreams(string $workflowId, string $runId): array
+    {
+        return $this->workflowStreams[$this->streamKey($workflowId, $runId)] ?? [];
+    }
+
+    public function describeWorkflowStream(
+        string $workflowId,
+        string $runId,
+        string $streamName,
+    ): WorkflowStreamDescription {
+        foreach ($this->listWorkflowStreams($workflowId, $runId) as $stream) {
+            if ($stream->streamName === $streamName) {
+                return $stream;
+            }
+        }
+
+        throw new LogicException("No Workflow Stream is configured for {$workflowId}/{$runId}/{$streamName}.");
+    }
+
+    public function subscribeWorkflowStream(
+        string $workflowId,
+        string $runId,
+        string $streamName,
+        int $fromOffset = 0,
+        int $maxItems = 100,
+        int $waitSeconds = 0,
+        ?callable $cancelled = null,
+    ): WorkflowStreamPage {
+        if ($cancelled !== null && $cancelled() === true) {
+            throw new \RuntimeException('Workflow Stream subscription was cancelled.');
+        }
+
+        $key = $this->streamKey($workflowId, $runId, $streamName, $fromOffset);
+
+        return $this->workflowStreamPages[$key]
+            ?? throw new LogicException("No Workflow Stream page is configured for {$key}.");
+    }
+
+    /** @return \Generator<int, WorkflowStreamItem> */
+    public function iterateWorkflowStream(
+        string $workflowId,
+        string $runId,
+        string $streamName,
+        int $fromOffset = 0,
+        int $maxItems = 100,
+        int $waitSeconds = 30,
+        ?callable $cancelled = null,
+    ): \Generator {
+        $offset = $fromOffset;
+        while ($cancelled === null || $cancelled() !== true) {
+            $page = $this->subscribeWorkflowStream(
+                $workflowId,
+                $runId,
+                $streamName,
+                $offset,
+                $maxItems,
+                $waitSeconds,
+                $cancelled,
+            );
+            foreach ($page->items as $item) {
+                yield $item;
+            }
+            if ($page->terminal) {
+                return;
+            }
+            $offset = $page->nextOffset;
+        }
+    }
+
+    /** @param list<WorkflowStreamAppendItem> $items */
+    public function appendWorkflowStream(
+        string $workflowId,
+        string $runId,
+        string $streamName,
+        array $items,
+        ?int $maxPendingItems = null,
+    ): WorkflowStreamAppendResult {
+        $key = $this->streamKey($workflowId, $runId, $streamName);
+
+        return $this->workflowStreamAppendResults[$key]
+            ?? throw new LogicException("No Workflow Stream append result is configured for {$key}.");
+    }
+
+    public function closeWorkflowStream(
+        string $workflowId,
+        string $runId,
+        string $streamName,
+        ?string $errorReason = null,
+        ?int $retentionSeconds = null,
+    ): WorkflowStreamDescription {
+        $key = $this->streamKey($workflowId, $runId, $streamName);
+
+        return $this->workflowStreamCloseResults[$key]
+            ?? throw new LogicException("No Workflow Stream close result is configured for {$key}.");
     }
 
     public function setWorkflowResult(string $workflowId, mixed $result): self
@@ -194,5 +346,19 @@ final class WorkflowClientFake implements WorkflowClientInterface
     private function key(string $workflowId, string $name): string
     {
         return $workflowId."\0".$name;
+    }
+
+    private function streamKey(
+        string $workflowId,
+        string $runId,
+        string $streamName = '',
+        ?int $fromOffset = null,
+    ): string {
+        return implode("\0", [
+            $workflowId,
+            $runId,
+            $streamName,
+            $fromOffset === null ? '' : (string) $fromOffset,
+        ]);
     }
 }

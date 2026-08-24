@@ -1,0 +1,103 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-workflow-stream-command-restart",
+  "protocol_version": "1.15",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "golden.workflow-stream",
+    "input": []
+  },
+  "workflow_tasks": [
+    {
+      "workflow_id": "stream-restart-workflow",
+      "run_id": "stream-restart-run"
+    },
+    {
+      "workflow_id": "stream-restart-workflow",
+      "run_id": "stream-restart-run"
+    }
+  ],
+  "expected": {
+    "workflow_tasks": [
+      {
+        "command_sequence": [
+          {
+            "type": "record_side_effect",
+            "workflow_stream": {
+              "operation": "append",
+              "stream_name": "tokens",
+              "command_identity": "01JCOMMAND0000000000000000",
+              "command_ordinal": 0,
+              "items": [
+                {
+                  "payload": {"token": "hello"},
+                  "payload_codec": "avro",
+                  "idempotency_key": "dw-stream:01JCOMMAND0000000000000000:0:0"
+                },
+                {
+                  "payload_reference": "s3://payloads/token-2",
+                  "idempotency_key": "dw-stream:01JCOMMAND0000000000000000:0:1"
+                }
+              ]
+            },
+            "result": null
+          },
+          {
+            "type": "record_side_effect",
+            "workflow_stream": {
+              "operation": "close",
+              "stream_name": "tokens",
+              "command_identity": "01JCOMMAND0000000000000000",
+              "command_ordinal": 1
+            },
+            "result": null
+          },
+          {
+            "type": "complete_workflow",
+            "result": "done"
+          }
+        ]
+      },
+      {
+        "command_sequence": [
+          {
+            "type": "record_side_effect",
+            "workflow_stream": {
+              "operation": "append",
+              "stream_name": "tokens",
+              "command_identity": "01JCOMMAND0000000000000000",
+              "command_ordinal": 0,
+              "items": [
+                {
+                  "payload": {"token": "hello"},
+                  "payload_codec": "avro",
+                  "idempotency_key": "dw-stream:01JCOMMAND0000000000000000:0:0"
+                },
+                {
+                  "payload_reference": "s3://payloads/token-2",
+                  "idempotency_key": "dw-stream:01JCOMMAND0000000000000000:0:1"
+                }
+              ]
+            },
+            "result": null
+          },
+          {
+            "type": "record_side_effect",
+            "workflow_stream": {
+              "operation": "close",
+              "stream_name": "tokens",
+              "command_identity": "01JCOMMAND0000000000000000",
+              "command_ordinal": 1
+            },
+            "result": null
+          },
+          {
+            "type": "complete_workflow",
+            "result": "done"
+          }
+        ]
+      }
+    ]
+  }
+}

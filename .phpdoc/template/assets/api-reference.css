@@ -309,6 +309,13 @@
 
 }
 
+@media (max-width: 999px) {
+  .phpdocumentor .phpdocumentor-content > section:first-of-type {
+    max-width: 100%;
+    width: 100%;
+  }
+}
+
 @media (max-width: 899px) {
   .php-quickstart__hero h2 {
     font-size: 2.5rem;

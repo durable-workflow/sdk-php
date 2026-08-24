@@ -10,6 +10,7 @@ use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Exception\ChildWorkflowFailed;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
+use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\QueryContext;
@@ -505,6 +506,15 @@ final class ReplayRegressionConsumer
                 return 'not-cancelled';
             },
             'golden.worker-update' => static fn (WorkflowContext $context): array => [],
+            'golden.workflow-stream' => static function (WorkflowContext $context): string {
+                $context->appendWorkflowStream('tokens', [
+                    new WorkflowStreamAppendItem(['token' => 'hello']),
+                    new WorkflowStreamAppendItem(payloadReference: 's3://payloads/token-2'),
+                ]);
+                $context->closeWorkflowStream('tokens');
+
+                return 'done';
+            },
             'golden.parallel' => static function (WorkflowContext $context, mixed $mode): array {
                 try {
                     return match ($mode) {
@@ -552,6 +562,9 @@ final class ReplayRegressionConsumer
             'golden.worker-update' => [
                 'workflow_update_id' => 'update-1',
                 'update_name' => 'golden.update',
+            ],
+            'golden.workflow-stream' => [
+                'workflow_command_id' => '01JCOMMAND0000000000000000',
             ],
             default => [],
         };

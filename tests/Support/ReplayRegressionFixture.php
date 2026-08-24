@@ -11,6 +11,7 @@ use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Exception\ChildWorkflowFailed;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
+use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Testing\WorkerTestHarness;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\Replayer;
@@ -192,7 +193,10 @@ final class ReplayRegressionFixture
                     $workflowType,
                     $input,
                     $history,
-                    ['workflow_id' => $workflowId, 'run_id' => $runId],
+                    array_merge(self::taskAttributes($workflowType), [
+                        'workflow_id' => $workflowId,
+                        'run_id' => $runId,
+                    ]),
                 )->commands,
             );
             $observed = [
@@ -309,6 +313,15 @@ final class ReplayRegressionFixture
 
                 return ['updated' => $updates[0][0] ?? null];
             },
+            'golden.workflow-stream' => static function (WorkflowContext $context): string {
+                $context->appendWorkflowStream('tokens', [
+                    new WorkflowStreamAppendItem(['token' => 'hello']),
+                    new WorkflowStreamAppendItem(payloadReference: 's3://payloads/token-2'),
+                ]);
+                $context->closeWorkflowStream('tokens');
+
+                return 'done';
+            },
             'golden.parallel' => static function (WorkflowContext $context, mixed $mode): array {
                 try {
                     return match ($mode) {
@@ -352,11 +365,14 @@ final class ReplayRegressionFixture
     /** @return array<string, mixed> */
     private static function taskAttributes(string $workflowType): array
     {
-        return [
+        return array_filter([
             'workflow_id' => 'regression-workflow',
             'run_id' => 'regression-inline',
             'cancel_requested' => $workflowType === 'golden.cancellation',
-        ];
+            'workflow_command_id' => $workflowType === 'golden.workflow-stream'
+                ? '01JCOMMAND0000000000000000'
+                : null,
+        ], static fn (mixed $value): bool => $value !== null);
     }
 
     /**

@@ -7,6 +7,7 @@ namespace DurableWorkflow\Worker;
 use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
+use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use Closure;
 use Fiber;
 use LogicException;
@@ -23,6 +24,8 @@ final class WorkflowContext
     /** @var Fiber<mixed, mixed, mixed, mixed>|null */
     private readonly ?Fiber $execution;
 
+    private int $workflowStreamCommandOrdinal = 0;
+
     /** @var list<list<DeferredWorkflowOperation|ParallelWorkflowCommand>> */
     private array $captureFrames = [];
 
@@ -37,8 +40,54 @@ final class WorkflowContext
         private readonly PayloadCodec $codec,
         private readonly bool $cancellationRequested = false,
         ?Fiber $execution = null,
+        private readonly ?string $workflowCommandId = null,
     ) {
         $this->execution = $execution;
+    }
+
+    /**
+     * Append a replay-safe batch to a named run-scoped Workflow Stream.
+     *
+     * @param list<WorkflowStreamAppendItem> $items
+     */
+    public function appendWorkflowStream(
+        string $streamName,
+        array $items,
+        ?int $maxPendingItems = null,
+    ): void {
+        $ordinal = $this->workflowStreamCommandOrdinal++;
+        $identity = $this->workflowCommandId ?: $this->runId;
+        $wireItems = [];
+        foreach ($items as $index => $item) {
+            $wireItems[] = $item->toWire(
+                $this->codec,
+                sprintf('dw-stream:%s:%d:%d', $identity, $ordinal, $index),
+            );
+        }
+
+        $this->suspend(WorkflowCommand::workflowStream(array_filter([
+            'operation' => 'append',
+            'stream_name' => $streamName,
+            'command_identity' => $identity,
+            'command_ordinal' => $ordinal,
+            'items' => $wireItems,
+            'max_pending_items' => $maxPendingItems,
+        ], static fn (mixed $value): bool => $value !== null)));
+    }
+
+    public function closeWorkflowStream(
+        string $streamName,
+        ?int $retentionSeconds = null,
+    ): void {
+        $this->finishWorkflowStream($streamName, null, $retentionSeconds);
+    }
+
+    public function errorWorkflowStream(
+        string $streamName,
+        string $errorReason,
+        ?int $retentionSeconds = null,
+    ): void {
+        $this->finishWorkflowStream($streamName, $errorReason, $retentionSeconds);
     }
 
     /**
@@ -376,6 +425,23 @@ final class WorkflowContext
             'WorkflowContext::all() accepts deferred operations or closures; received %s.',
             get_debug_type($operation),
         ));
+    }
+
+    private function finishWorkflowStream(
+        string $streamName,
+        ?string $errorReason,
+        ?int $retentionSeconds,
+    ): void {
+        $ordinal = $this->workflowStreamCommandOrdinal++;
+        $identity = $this->workflowCommandId ?: $this->runId;
+        $this->suspend(WorkflowCommand::workflowStream(array_filter([
+            'operation' => $errorReason === null ? 'close' : 'error',
+            'stream_name' => $streamName,
+            'command_identity' => $identity,
+            'command_ordinal' => $ordinal,
+            'error_reason' => $errorReason,
+            'retention_seconds' => $retentionSeconds,
+        ], static fn (mixed $value): bool => $value !== null)));
     }
 
     private function version(

@@ -98,7 +98,23 @@ final class WorkflowCommand
 
         $value = ($this->sideEffect)();
 
-        return new self($this->type, $this->historyShape, ['result_value' => $value], $value);
+        return new self(
+            $this->type,
+            $this->historyShape,
+            array_merge($this->attributes, ['result_value' => $value]),
+            $value,
+        );
+    }
+
+    /** @param array<string, mixed> $directive */
+    public static function workflowStream(array $directive): self
+    {
+        return new self(
+            'record_side_effect',
+            'side_effect',
+            ['workflow_stream' => $directive],
+            sideEffect: static fn (): null => null,
+        );
     }
 
     /** @param array<string, mixed> $attributes */
@@ -170,9 +186,6 @@ final class WorkflowCommand
     {
         $wire = ['type' => $this->type];
         foreach ($this->attributes as $key => $value) {
-            if ($value === null) {
-                continue;
-            }
             if ($key === 'arguments_value') {
                 $wire['arguments'] = $codec->envelope($value);
                 continue;
@@ -181,6 +194,9 @@ final class WorkflowCommand
                 $wire['result'] = $this->type === 'record_side_effect'
                     ? $codec->encode($value)
                     : $codec->envelope($value);
+                continue;
+            }
+            if ($value === null) {
                 continue;
             }
             $wire[$key] = $value;
