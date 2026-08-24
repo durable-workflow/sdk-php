@@ -113,7 +113,7 @@ final class WorkflowCommand
             'record_side_effect',
             'side_effect',
             ['workflow_stream' => $directive],
-            sideEffect: static fn (): null => null,
+            sideEffect: static fn (): mixed => null,
         );
     }
 

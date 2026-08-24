@@ -73,6 +73,9 @@ PHP_NAMED_FUNCTION = re.compile(
 PHP_REPLAY_NEUTRAL_OBSERVABILITY_STATEMENT = re.compile(
     r"[ \t]*\$this->handlerFailure\([^();=]*\);[ \t]*"
 )
+PHP_REPLAY_NEUTRAL_PHP81_NULL_ARROW_RETURN_TYPE = re.compile(
+    r"(\bfn\s*\(\s*\)\s*:\s*)null(\s*=>\s*null\b)"
+)
 PHP_NUMERIC_STRING = re.compile(
     r"[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?)|(?:\.[0-9]+))(?:[eE][+-]?[0-9]+)?"
 )
@@ -2272,6 +2275,26 @@ def _guard_matches(
     matching = sorted(path for path in changed if _matches(path, _string(guard["glob"], "guard.glob")))
     if not matching:
         return False
+    if all(path.endswith(".php") for path in matching):
+        diff = _run(["git", "diff", "--unified=0", base_ref, "--", *matching], root)
+        removed = [
+            line[1:]
+            for line in diff.splitlines()
+            if line.startswith("-") and not line.startswith("---")
+        ]
+        added = [
+            line[1:]
+            for line in diff.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        ]
+        if removed and len(removed) == len(added) and all(
+            PHP_REPLAY_NEUTRAL_PHP81_NULL_ARROW_RETURN_TYPE.sub(
+                r"\1mixed\2", previous
+            )
+            == current
+            for previous, current in zip(removed, added, strict=True)
+        ):
+            return False
     patterns = guard.get("content_patterns")
     if patterns is None:
         return True

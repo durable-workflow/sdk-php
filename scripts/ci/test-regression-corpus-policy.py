@@ -92,6 +92,17 @@ final class Client
         (self.root / "src/Worker/ReplayResult.php").write_text(
             "<?php\nfinal class ReplayResult { public array $commands = []; }\n"
         )
+        (self.root / "src/Worker/WorkflowCommand.php").write_text(
+            """<?php
+final class WorkflowCommand
+{
+    public static function workflowStream(): mixed
+    {
+        return static fn (): null => null;
+    }
+}
+"""
+        )
         (self.root / "src/Worker.php").write_text(
             """<?php
 final class Worker
@@ -2957,6 +2968,33 @@ raise SystemExit(0 if "$history = ['changed'];" in source else 1)
                 "$commands = $this->replayer->replay();",
                 "$commands = $this->replayer->replay($history);",
             )
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "replay implementation changed but its corpus did not grow "
+            "(base=0, current=0)",
+            result.stderr,
+        )
+
+    def test_null_arrow_return_type_widening_is_replay_neutral(self) -> None:
+        command = self.root / "src/Worker/WorkflowCommand.php"
+        command.write_text(
+            command.read_text().replace("fn (): null => null", "fn (): mixed => null")
+        )
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["counts"]["replay"]["related_change"])
+
+    def test_null_arrow_result_change_still_requires_replay_growth(self) -> None:
+        command = self.root / "src/Worker/WorkflowCommand.php"
+        command.write_text(
+            command.read_text().replace("fn (): null => null", "fn (): mixed => false")
         )
 
         result = self.validate()
