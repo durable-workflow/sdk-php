@@ -52,8 +52,60 @@ final class ClientContractTest extends TestCase
         $client = new Client('https://server.example', transport: $transport);
 
         self::assertNull($client->pollActivityTask('worker-1', 'queue', 0));
-        self::assertSame('1.15', $transport->requests[0]['headers']['X-Durable-Workflow-Protocol-Version']);
+        self::assertSame('1.16', $transport->requests[0]['headers']['X-Durable-Workflow-Protocol-Version']);
         self::assertSame('php-activity-poll', substr($transport->requests[0]['body']['poll_request_id'], 0, 17));
+    }
+
+    public function testDefaultWorkerRegistrationAdvertisesTheCompletePhpCapabilitySet(): void
+    {
+        $transport = new FakeTransport([['registered' => true]]);
+        $client = new Client('https://server.example', transport: $transport);
+
+        $client->registerWorker('worker-1', 'orders', ['orders.process'], ['orders.charge']);
+
+        self::assertSame([
+            'method' => 'POST',
+            'uri' => 'https://server.example/api/worker/register',
+            'headers' => [
+                'Accept' => 'application/json',
+                'Content-Type' => 'application/json',
+                'X-Namespace' => 'default',
+                'X-Durable-Workflow-Protocol-Version' => '1.16',
+            ],
+            'body' => [
+                'worker_id' => 'worker-1',
+                'task_queue' => 'orders',
+                'runtime' => 'php',
+                'sdk_version' => 'durable-workflow-php/source-development',
+                'supported_workflow_types' => ['orders.process'],
+                'supported_activity_types' => ['orders.charge'],
+                'capabilities' => [
+                    'query_tasks',
+                    'workflow_updates',
+                    'message_streams',
+                    'memo_upserts',
+                    'typed_search_attributes',
+                ],
+                'max_concurrent_workflow_tasks' => 1,
+                'max_concurrent_activity_tasks' => 1,
+            ],
+        ], $transport->requests[0]);
+    }
+
+    public function testWorkerRegistrationPreservesAnExplicitCapabilityList(): void
+    {
+        $transport = new FakeTransport([['registered' => true]]);
+        $client = new Client('https://server.example', transport: $transport);
+
+        $client->registerWorker(
+            'worker-1',
+            'orders',
+            ['orders.process'],
+            ['orders.charge'],
+            capabilities: ['query_tasks'],
+        );
+
+        self::assertSame(['query_tasks'], $transport->requests[0]['body']['capabilities']);
     }
 
     public function testTimedOutWorkerPollsRetryWithTheSameRequestId(): void

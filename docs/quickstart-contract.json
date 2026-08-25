@@ -13,7 +13,7 @@
       "namespace_input": "default",
       "input_kind": "server_origin",
       "example_request": "http://localhost:8080/api/workflows",
-      "image": "durableworkflow/server:2.0.0-rc.47"
+      "image": "durableworkflow/server:2.0.0-rc.50"
     },
     "cloud": {
       "client_input": "https://cloud.example/api/runtime/v1/namespaces/<runtime-id>",

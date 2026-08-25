@@ -397,7 +397,15 @@ final class Worker
                     $this->taskQueue,
                     array_keys($this->workflows),
                     array_keys($this->activities),
-                    ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown', 'message_streams'],
+                    [
+                        'query_tasks',
+                        'workflow_updates',
+                        'durable_history_replay',
+                        'graceful_shutdown',
+                        'message_streams',
+                        'memo_upserts',
+                        'typed_search_attributes',
+                    ],
                     buildId: $this->buildId,
                     workflowCommandContracts: $this->workflowCommandContracts(),
                 );

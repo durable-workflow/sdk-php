@@ -86,7 +86,9 @@ project follows [Semantic Versioning](https://semver.org/).
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
 - Advanced the PHP SDK source to `2.0.0-rc.46` and qualified it with Server
-  `2.0.0-rc.47`. During the active 2.0 prerelease train, package metadata names
+  `2.0.0-rc.50`. Worker registration now explicitly advertises memo upserts and
+  typed search attributes, with worker protocol `1.16` identifying the typed
+  search floor. During the active 2.0 prerelease train, package metadata names
   the exact SDK artifact and exact qualified Server artifact rather than a
   compatibility range; other prereleases remain historical and receive no
   compatibility shim. Avro is the sole public

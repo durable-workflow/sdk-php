@@ -132,6 +132,54 @@ final class WorkerAuthoringTest extends TestCase
         self::assertSame($events, array_column($logger->records, 'message'));
     }
 
+    public function testHighLevelWorkerAdvertisesTheCompleteManagedCapabilitySet(): void
+    {
+        $transport = new FakeTransport([
+            ['registered' => true],
+            ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'],
+        ]);
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'orders',
+            workerId: 'worker-1',
+            buildId: 'release-a',
+        );
+
+        $worker->run(0);
+
+        self::assertSame([
+            'method' => 'POST',
+            'uri' => 'https://server.example/api/worker/register',
+            'headers' => [
+                'Accept' => 'application/json',
+                'Content-Type' => 'application/json',
+                'X-Namespace' => 'default',
+                'X-Durable-Workflow-Protocol-Version' => '1.16',
+            ],
+            'body' => [
+                'worker_id' => 'worker-1',
+                'task_queue' => 'orders',
+                'runtime' => 'php',
+                'sdk_version' => 'durable-workflow-php/source-development',
+                'supported_workflow_types' => [],
+                'supported_activity_types' => [],
+                'workflow_command_contracts' => [],
+                'capabilities' => [
+                    'query_tasks',
+                    'workflow_updates',
+                    'durable_history_replay',
+                    'graceful_shutdown',
+                    'message_streams',
+                    'memo_upserts',
+                    'typed_search_attributes',
+                ],
+                'max_concurrent_workflow_tasks' => 1,
+                'max_concurrent_activity_tasks' => 1,
+                'build_id' => 'release-a',
+            ],
+        ], $transport->requests[0]);
+    }
+
     public function testExplicitShutdownDeregistersTheWorker(): void
     {
         $worker = null;
