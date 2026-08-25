@@ -268,6 +268,15 @@ standalone Server artifact qualified with it. The latter is not a version range
 or a promise of compatibility with other prereleases; earlier prereleases remain
 historical and do not activate compatibility shims.
 
+`npm run qualify:quickstart-contract-deployment` verifies that deployed contract
+and its public workflow evidence. Local runs may omit `GITHUB_TOKEN` and use
+anonymous GitHub API access, limited to 30 seconds and five redirects, but fail
+explicitly if the workflow cannot be verified or the anonymous quota is
+exhausted. Supplying a token raises that quota; the qualifier sends it only to
+the exact `https://api.github.com` origin while requesting workflow metadata,
+never to the portal, schema, web evidence, redirect destinations, or the public
+contract itself.
+
 ## Workflow handles and control-plane APIs
 
 `WorkflowHandle` distinguishes the stable workflow instance from a selected

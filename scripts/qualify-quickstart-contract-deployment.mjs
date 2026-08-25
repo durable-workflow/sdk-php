@@ -7,6 +7,8 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 
 const DEFAULT_CONTRACT_URL = 'https://php.durable-workflow.com/quickstart-contract.json';
+const GITHUB_API_ORIGIN = 'https://api.github.com';
+const MAX_REDIRECTS = 5;
 const SOURCE_NAMES = ['bootstrap', 'client', 'worker'];
 
 function assert(condition, message) {
@@ -17,6 +19,7 @@ function publicUrl(value, context) {
   const url = new URL(value);
   const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost';
   assert(url.protocol === 'https:' || (url.protocol === 'http:' && loopback), `${context} must use HTTPS`);
+  assert(url.username === '' && url.password === '', `${context} must not contain credentials`);
   return url;
 }
 
@@ -33,21 +36,96 @@ function jsonPointer(document, pointer, context) {
   }, document);
 }
 
-async function fetchResponse(url, context) {
-  const response = await fetch(publicUrl(url, context), {
-    headers: {
-      accept: 'application/json, text/html;q=0.9, */*;q=0.1',
-      'user-agent': 'durable-workflow-quickstart-contract-qualifier',
-    },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(30_000),
-  });
-  assert(response.ok, `${context} returned HTTP ${response.status}`);
-  return response;
+function boundedRateLimitHeader(response, name) {
+  const value = response.headers.get(name);
+  return value && /^\d{1,13}$/.test(value) ? value : null;
 }
 
-async function fetchJson(url, context) {
-  const response = await fetchResponse(url, context);
+function workflowEvidenceHttpError(response, url, githubToken) {
+  const status = response.status;
+  const remaining = boundedRateLimitHeader(response, 'x-ratelimit-remaining');
+  const reset = boundedRateLimitHeader(response, 'x-ratelimit-reset');
+  const resetDiagnostic = reset ? `; reset=${reset}` : '';
+
+  if (status === 401) {
+    return new Error(
+      'qualification evidence API authentication failed (HTTP 401); '
+      + 'check that GITHUB_TOKEN is valid and has actions: read permission',
+    );
+  }
+  if (status === 429 || (status === 403 && remaining === '0')) {
+    return new Error(
+      `qualification evidence API GitHub rate limit exhausted (HTTP ${status}; remaining=${remaining ?? 'unknown'}${resetDiagnostic}); `
+      + `${githubToken ? 'check the token rate limit' : 'set GITHUB_TOKEN for local qualification'} and retry`,
+    );
+  }
+  if (status === 403) {
+    return new Error(
+      'qualification evidence API access was forbidden (HTTP 403); '
+      + `${githubToken ? 'check that GITHUB_TOKEN has actions: read permission' : 'set GITHUB_TOKEN for local qualification'}`,
+    );
+  }
+  if (status === 404) {
+    return new Error(
+      'qualification evidence workflow is missing or inaccessible (HTTP 404); '
+      + 'verify the public workflow API URL and actions: read access',
+    );
+  }
+
+  return new Error(`qualification evidence API returned HTTP ${status} from ${url.origin}`);
+}
+
+async function fetchResponse(url, context, {
+  authenticateGitHubWorkflow = false,
+  fetchImpl = fetch,
+  githubToken,
+  workflowEvidence = false,
+} = {}) {
+  let requestUrl = publicUrl(url, context);
+  const signal = AbortSignal.timeout(30_000);
+
+  for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
+    const headers = {
+      accept: 'application/json, text/html;q=0.9, */*;q=0.1',
+      'user-agent': 'durable-workflow-quickstart-contract-qualifier',
+    };
+    if (
+      redirects === 0
+      && authenticateGitHubWorkflow
+      && githubToken
+      && requestUrl.origin === GITHUB_API_ORIGIN
+    ) {
+      headers.authorization = `Bearer ${githubToken}`;
+      headers['x-github-api-version'] = '2022-11-28';
+    }
+
+    const response = await fetchImpl(requestUrl, {
+      headers,
+      redirect: 'manual',
+      signal,
+    });
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      assert(redirects < MAX_REDIRECTS, `${context} exceeded ${MAX_REDIRECTS} redirects`);
+      const location = response.headers.get('location');
+      assert(location, `${context} returned a redirect without a location`);
+      await response.body?.cancel();
+      requestUrl = publicUrl(new URL(location, requestUrl), `${context} redirect`);
+      continue;
+    }
+    if (!response.ok) {
+      if (workflowEvidence && requestUrl.origin === GITHUB_API_ORIGIN) {
+        throw workflowEvidenceHttpError(response, requestUrl, githubToken);
+      }
+      throw new Error(`${context} returned HTTP ${response.status} from ${requestUrl.origin}`);
+    }
+    return response;
+  }
+
+  throw new Error(`${context} exceeded ${MAX_REDIRECTS} redirects`);
+}
+
+async function fetchJson(url, context, options) {
+  const response = await fetchResponse(url, context, options);
   try {
     return await response.json();
   } catch (error) {
@@ -157,6 +235,8 @@ function run(command, args, options = {}) {
 
 async function installPublishedPackage(contract) {
   const consumer = await mkdtemp(join(tmpdir(), 'durable-workflow-quickstart-contract-'));
+  const composerEnvironment = {...process.env};
+  delete composerEnvironment.GITHUB_TOKEN;
   await writeFile(
     join(consumer, 'composer.json'),
     `${JSON.stringify({name: 'durable-workflow/quickstart-contract-qualifier'}, null, 2)}\n`,
@@ -171,7 +251,7 @@ async function installPublishedPackage(contract) {
     '--no-plugins',
     '--no-scripts',
     '--no-audit',
-  ]);
+  ], {env: composerEnvironment});
 
   return {
     root: join(consumer, 'vendor', ...contract.package.name.split('/')),
@@ -198,19 +278,39 @@ async function verifyInstalledPackage(contract, sourcePaths, packageRoot) {
   }
 }
 
-async function verifyEvidence(evidence) {
-  const workflow = await fetchJson(evidence.api_url, 'qualification evidence API');
-  assert(workflow?.state === 'active', 'qualification evidence workflow is not active');
+async function verifyEvidence(evidence, {fetchImpl, githubToken}) {
+  const workflow = await fetchJson(evidence.api_url, 'qualification evidence API', {
+    authenticateGitHubWorkflow: true,
+    fetchImpl,
+    githubToken,
+    workflowEvidence: true,
+  });
+  assert(
+    typeof workflow?.state === 'string' && workflow.state.length > 0,
+    'qualification evidence API did not report workflow state',
+  );
+  assert(
+    workflow.state === 'active',
+    `qualification evidence workflow is inactive (state=${JSON.stringify(workflow.state.slice(0, 80))})`,
+  );
   assert(
     Number.isInteger(workflow.id) && workflow.id > 0 && typeof workflow.name === 'string' && workflow.name,
     'qualification evidence API did not resolve a workflow identity',
   );
-  await fetchResponse(evidence.web_url, 'qualification evidence web page');
+  await fetchResponse(evidence.web_url, 'qualification evidence web page', {fetchImpl, githubToken});
 }
 
-export async function qualifyDeployment({contractUrl = DEFAULT_CONTRACT_URL, packageRoot} = {}) {
-  const contract = await fetchJson(contractUrl, 'deployed quickstart contract');
-  const schema = await fetchJson(contract?.$schema, 'deployed quickstart contract schema');
+export async function qualifyDeployment({
+  contractUrl = DEFAULT_CONTRACT_URL,
+  fetchImpl = fetch,
+  githubToken = process.env.GITHUB_TOKEN,
+  packageRoot,
+} = {}) {
+  const contract = await fetchJson(contractUrl, 'deployed quickstart contract', {fetchImpl, githubToken});
+  const schema = await fetchJson(contract?.$schema, 'deployed quickstart contract schema', {
+    fetchImpl,
+    githubToken,
+  });
   const {evidence, sourcePaths} = validateContract(contract, schema);
 
   const installation = packageRoot
@@ -218,7 +318,7 @@ export async function qualifyDeployment({contractUrl = DEFAULT_CONTRACT_URL, pac
     : await installPublishedPackage(contract);
   try {
     await verifyInstalledPackage(contract, sourcePaths, installation.root);
-    await verifyEvidence(evidence);
+    await verifyEvidence(evidence, {fetchImpl, githubToken});
   } finally {
     await installation.cleanup();
   }

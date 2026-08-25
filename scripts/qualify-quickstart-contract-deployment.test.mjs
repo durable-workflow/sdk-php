@@ -22,14 +22,17 @@ const sourceSchema = JSON.parse(
 async function fixture(mutator = () => {}) {
   const contract = structuredClone(sourceContract);
   const schema = structuredClone(sourceSchema);
+  const requests = [];
   mutator(contract, schema);
 
   const server = createServer((request, response) => {
+    requests.push({authorization: request.headers.authorization, url: request.url});
     const origin = `http://127.0.0.1:${server.address().port}`;
     const documents = {
       '/quickstart-contract.json': contract,
       '/quickstart-contract.schema.v2.json': schema,
       '/workflow': {id: 1, name: 'Published service-mode smoke', state: 'active'},
+      '/workflow-inactive': {id: 1, name: 'Published service-mode smoke', state: 'disabled_manually'},
     };
 
     if (request.url === '/workflow/runs') {
@@ -58,6 +61,9 @@ async function fixture(mutator = () => {}) {
 
   return {
     contractUrl: `${origin}/quickstart-contract.json`,
+    contract,
+    origin,
+    requests,
     close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
   };
 }
@@ -65,11 +71,180 @@ async function fixture(mutator = () => {}) {
 test('deployed references resolve through the exact published package and public evidence', async () => {
   const deployed = await fixture();
   try {
-    const result = await qualifyDeployment({contractUrl: deployed.contractUrl, packageRoot});
+    const result = await qualifyDeployment({
+      contractUrl: deployed.contractUrl,
+      githubToken: 'fixture-token',
+      packageRoot,
+    });
     assert.deepEqual(Object.keys(result.sources).sort(), ['bootstrap', 'client', 'worker']);
     assert.equal(
       result.package,
       `${sourceContract.package.name}:${sourceContract.package.published_version}`,
+    );
+    assert(deployed.requests.length >= 4);
+    assert(deployed.requests.every((request) => request.authorization === undefined));
+  } finally {
+    await deployed.close();
+  }
+});
+
+test('workflow authentication is removed from redirects and non-GitHub origins', async () => {
+  const deployed = await fixture();
+  const requests = [];
+  const apiUrl =
+    'https://api.github.com/repos/durable-workflow/sdk-php/actions/workflows/service-mode-published-smoke.yml';
+  const sameOriginRedirect =
+    'https://api.github.com/repos/durable-workflow/sdk-php/actions/workflows/redirected.yml';
+  const redirectedUrl = 'https://api.github.com.attacker.invalid/workflow';
+  deployed.contract.qualification_provenance.evidence.api_url = apiUrl;
+
+  const fetchImpl = async (input, options) => {
+    const url = new URL(input);
+    const authorization = new Headers(options.headers).get('authorization');
+    requests.push({authorization, url: url.href});
+    if (url.href === apiUrl) {
+      return new Response(null, {status: 302, headers: {location: sameOriginRedirect}});
+    }
+    if (url.href === sameOriginRedirect) {
+      return new Response(null, {status: 302, headers: {location: redirectedUrl}});
+    }
+    if (url.href === redirectedUrl) {
+      return Response.json({id: 1, name: 'Published service-mode smoke', state: 'active'});
+    }
+    return fetch(input, options);
+  };
+
+  try {
+    await qualifyDeployment({
+      contractUrl: deployed.contractUrl,
+      fetchImpl,
+      githubToken: 'fixture-token',
+      packageRoot,
+    });
+    assert.equal(
+      requests.find((request) => request.url === apiUrl)?.authorization,
+      'Bearer fixture-token',
+    );
+    assert.equal(
+      requests.find((request) => request.url === sameOriginRedirect)?.authorization,
+      null,
+    );
+    assert.equal(
+      requests.find((request) => request.url === redirectedUrl)?.authorization,
+      null,
+    );
+    assert(deployed.requests.every((request) => request.authorization === undefined));
+  } finally {
+    await deployed.close();
+  }
+});
+
+test('portal and schema requests cannot opt into GitHub workflow authentication', async () => {
+  const deployed = await fixture();
+  const githubContractUrl = 'https://api.github.com/portal/quickstart-contract.json';
+  const githubSchemaUrl = 'https://api.github.com/portal/quickstart-contract.schema.v2.json';
+  deployed.contract.$schema = githubSchemaUrl;
+  const schema = structuredClone(sourceSchema);
+  schema.$id = githubSchemaUrl;
+  schema.properties.$schema.const = githubSchemaUrl;
+  deployed.contract.qualification_provenance.evidence = structuredClone(
+    sourceContract.qualification_provenance.evidence,
+  );
+  const requests = [];
+
+  const fetchImpl = async (input, options) => {
+    const url = new URL(input);
+    requests.push({
+      authorization: new Headers(options.headers).get('authorization'),
+      url: url.href,
+    });
+    if (url.href === githubContractUrl) return Response.json(deployed.contract);
+    if (url.href === githubSchemaUrl) return Response.json(schema);
+    if (url.href === deployed.contract.qualification_provenance.evidence.api_url) {
+      return Response.json({id: 1, name: 'Published service-mode smoke', state: 'active'});
+    }
+    if (url.href === deployed.contract.qualification_provenance.evidence.web_url) {
+      return new Response('<!doctype html><title>Public qualification</title>', {
+        headers: {'content-type': 'text/html'},
+      });
+    }
+    return fetch(input, options);
+  };
+
+  try {
+    await qualifyDeployment({
+      contractUrl: githubContractUrl,
+      fetchImpl,
+      githubToken: 'fixture-token',
+      packageRoot,
+    });
+    assert.equal(requests.find((request) => request.url === githubContractUrl)?.authorization, null);
+    assert.equal(requests.find((request) => request.url === githubSchemaUrl)?.authorization, null);
+  } finally {
+    await deployed.close();
+  }
+});
+
+test('GitHub workflow failures have bounded, actionable classifications', async (t) => {
+  const cases = [
+    {
+      name: 'authentication failure',
+      response: () => new Response('sensitive upstream body', {status: 401}),
+      expected: /authentication failed \(HTTP 401\).*actions: read/,
+    },
+    {
+      name: 'rate limit exhaustion',
+      response: () => new Response('sensitive upstream body', {
+        status: 403,
+        headers: {'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1790000000'},
+      }),
+      expected: /rate limit exhausted \(HTTP 403; remaining=0; reset=1790000000\).*retry/,
+    },
+    {
+      name: 'missing workflow',
+      response: () => new Response('sensitive upstream body', {status: 404}),
+      expected: /workflow is missing or inaccessible \(HTTP 404\).*public workflow API URL/,
+    },
+  ];
+
+  for (const failure of cases) {
+    await t.test(failure.name, async () => {
+      const deployed = await fixture();
+      deployed.contract.qualification_provenance.evidence.api_url =
+        'https://api.github.com/repos/durable-workflow/sdk-php/actions/workflows/missing.yml';
+      const fetchImpl = async (input, options) => {
+        if (new URL(input).origin === 'https://api.github.com') return failure.response();
+        return fetch(input, options);
+      };
+      try {
+        await assert.rejects(
+          qualifyDeployment({
+            contractUrl: deployed.contractUrl,
+            fetchImpl,
+            githubToken: '',
+            packageRoot,
+          }),
+          (error) => {
+            assert.match(error.message, failure.expected);
+            assert(!error.message.includes('sensitive upstream body'));
+            assert(error.message.length < 300);
+            return true;
+          },
+        );
+      } finally {
+        await deployed.close();
+      }
+    });
+  }
+});
+
+test('inactive workflow evidence is distinct from transport failures', async () => {
+  const deployed = await fixture();
+  deployed.contract.qualification_provenance.evidence.api_url = `${deployed.origin}/workflow-inactive`;
+  try {
+    await assert.rejects(
+      qualifyDeployment({contractUrl: deployed.contractUrl, githubToken: '', packageRoot}),
+      /workflow is inactive \(state="disabled_manually"\)/,
     );
   } finally {
     await deployed.close();
@@ -140,6 +315,10 @@ test('the deployment workflow runs public quickstart reference qualification', a
   assert.match(workflow, /- 'scripts\/qualify-quickstart-\*'/);
   assert.match(workflow, /needs\.build\.outputs\.release_published == 'true'/);
   assert.match(workflow, /schedule:\n\s+- cron:/);
+  assert.match(
+    workflow,
+    /qualify-deployment:[\s\S]*?permissions:\n\s+actions: read\n\s+contents: read[\s\S]*?GITHUB_TOKEN: \$\{\{ github\.token \}\}/,
+  );
 });
 
 test('portal deployment waits for the exact source-declared release', async () => {
