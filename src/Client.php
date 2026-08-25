@@ -57,6 +57,7 @@ final class Client implements WorkflowClientInterface
         'complete_update' => ['result'],
         'record_side_effect' => ['result'],
         'start_service_operation' => ['request_payload'],
+        'upsert_memo' => ['entries'],
     ];
 
     private readonly string $baseUri;

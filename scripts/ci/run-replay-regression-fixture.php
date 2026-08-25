@@ -5,6 +5,7 @@ declare(strict_types=1);
 
 use DurableWorkflow\Attribute\Workflow as WorkflowHandler;
 use DurableWorkflow\Client;
+use DurableWorkflow\Codec\AvroBinaryValue;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Exception\ChildWorkflowFailed;
@@ -521,6 +522,19 @@ final class ReplayRegressionConsumer
                     static fn ($message): string => $message->messageId,
                     $context->messageStream('orders')->receive(),
                 );
+            },
+            'golden.memo' => static function (WorkflowContext $context): string {
+                $context->upsertMemo([
+                    'text' => 'same',
+                    'nested' => ['beta' => 2, 'alpha' => 1],
+                    'long' => 7,
+                    'double' => 7.0,
+                    'negative_zero' => -0.0,
+                    'binary' => AvroBinaryValue::fromBytes('same'),
+                    'invalid_binary' => AvroBinaryValue::fromBytes("\xFF\x00"),
+                ]);
+
+                return 'memo-replayed';
             },
             'golden.saga' => static function (WorkflowContext $context, mixed $tripId): string {
                 return $context->saga()->run(static function (Saga $saga) use ($context, $tripId): string {

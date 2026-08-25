@@ -1,0 +1,35 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-workflow-memo-typed-cold-replay",
+  "protocol_version": "1.15",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "golden.memo",
+    "input": []
+  },
+  "history": [
+    {
+      "event_type": "MemoUpserted",
+      "payload": {
+        "sequence": 1,
+        "entries": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4ODGJpbmFyeQgIc2FtZQxkb3VibGUGAAAAAAAAHEAcaW52YWxpZF9iaW5hcnkIBP8ACGxvbmcEDhpuZWdhdGl2ZV96ZXJvBgAAAAAAAACADG5lc3RlZA4ECmFscGhhBAIIYmV0YQQEAAh0ZXh0CghzYW1lAA=="
+        },
+        "merged": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4ODGJpbmFyeQgIc2FtZQxkb3VibGUGAAAAAAAAHEAcaW52YWxpZF9iaW5hcnkIBP8ACGxvbmcEDhpuZWdhdGl2ZV96ZXJvBgAAAAAAAACADG5lc3RlZA4ECmFscGhhBAIIYmV0YQQEAAh0ZXh0CghzYW1lAA=="
+        }
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "complete_workflow",
+        "result": "memo-replayed"
+      }
+    ]
+  }
+}

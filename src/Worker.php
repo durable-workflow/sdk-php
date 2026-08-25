@@ -55,6 +55,8 @@ final class Worker
     private readonly Replayer $replayer;
     private readonly HandlerDiscovery $handlerDiscovery;
     private readonly LoggerInterface $logger;
+    /** @var array<string, mixed>|null */
+    private ?array $workflowMemoCapability = null;
     /** @var (\Closure(string, array<string, mixed>): void)|null */
     private readonly ?\Closure $diagnosticListener;
 
@@ -473,6 +475,7 @@ final class Worker
         if ($this->stopForTerminalPoll($workflowPoll)) {
             return false;
         }
+        $this->rememberWorkflowMemoCapability($workflowPoll);
         $this->heartbeatIfDue();
         $workflowTask = $this->taskFromPoll($workflowPoll);
         if ($workflowTask !== null) {
@@ -735,6 +738,7 @@ final class Worker
                     ]];
                 }
             }
+            $this->assertWorkflowMemoUpdatesAvailable($commands);
             $this->client->completeWorkflowTask(
                 $taskId,
                 $leaseOwner,
@@ -794,6 +798,41 @@ final class Worker
         }
 
         return false;
+    }
+
+    /** @param array<string, mixed> $poll */
+    private function rememberWorkflowMemoCapability(array $poll): void
+    {
+        $capabilities = $poll['server_capabilities'] ?? null;
+        $memo = is_array($capabilities) ? ($capabilities['workflow_memo_updates'] ?? null) : null;
+        $supportedCommands = is_array($capabilities)
+            ? ($capabilities['supported_workflow_task_commands'] ?? null)
+            : null;
+        $this->workflowMemoCapability = [
+            'supported' => is_array($memo)
+                && ($memo['supported'] ?? null) === true
+                && is_array($supportedCommands)
+                && in_array('upsert_memo', $supportedCommands, true),
+        ];
+    }
+
+    /** @param list<array<string, mixed>> $commands */
+    private function assertWorkflowMemoUpdatesAvailable(array $commands): void
+    {
+        $usesMemo = false;
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'upsert_memo') {
+                $usesMemo = true;
+                break;
+            }
+        }
+        if (!$usesMemo || ($this->workflowMemoCapability['supported'] ?? null) === true) {
+            return;
+        }
+
+        throw new \RuntimeException(
+            'workflow_memo_updates_unavailable: the connected runtime did not advertise workflow memo update support.',
+        );
     }
 
     /** @param array<string, mixed> $response */

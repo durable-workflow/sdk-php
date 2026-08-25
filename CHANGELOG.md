@@ -8,6 +8,9 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `WorkflowContext::upsertMemo()` now authors validated memo patches, replays
+  `MemoUpserted` identities, carries opaque payload envelopes, and fails before
+  completion when the connected runtime does not advertise memo updates.
 - Fiber-backed service workflows can create a package-owned `Saga`, register
   ordinary activity compensations after forward success, and replay them in
   deterministic reverse order. Typed compensation failures retain both the
@@ -82,8 +85,8 @@ project follows [Semantic Versioning](https://semver.org/).
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK source to `2.0.0-rc.45` and qualified it with Server
-  `2.0.0-rc.42`. During the active 2.0 prerelease train, package metadata names
+- Advanced the PHP SDK source to `2.0.0-rc.46` and qualified it with Server
+  `2.0.0-rc.47`. During the active 2.0 prerelease train, package metadata names
   the exact SDK artifact and exact qualified Server artifact rather than a
   compatibility range; other prereleases remain historical and receive no
   compatibility shim. Avro is the sole public

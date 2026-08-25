@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Tests;
 
+use DurableWorkflow\Codec\AvroBinaryValue;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Exception\ChildWorkflowFailed;
@@ -128,6 +129,182 @@ final class ReplayerTest extends TestCase
             'type' => 'upsert_search_attributes',
             'attributes' => ['status' => 'processing'],
         ], $result->commands[0]);
+    }
+
+    public function testMemoUpsertUsesIdiomaticCommandShapeAndReplaysByEntries(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): string {
+            $context->upsertMemo([
+                'text' => 'same',
+                'nested' => ['beta' => 2, 'alpha' => 1],
+                'long' => 7,
+                'double' => 7.0,
+                'binary' => AvroBinaryValue::fromBytes('same'),
+            ]);
+
+            return 'memo recorded';
+        };
+
+        $initial = (new Replayer($codec))->replay($workflow, [], [], 'php-workers');
+        $serverEntries = [
+            'codec' => 'avro',
+            'blob' => 'wwHioz3/VYAiNw4KDGJpbmFyeQgIc2FtZQxkb3VibGUGAAAAAAAAHEAIbG9uZwQODG5lc3RlZA4ECmFscGhhBAIIYmV0YQQEAAh0ZXh0CghzYW1lAA==',
+        ];
+
+        self::assertSame('upsert_memo', $initial->commands[0]['type']);
+        self::assertSame(['codec', 'blob'], array_keys($initial->commands[0]['entries']));
+        self::assertSame($serverEntries, $initial->commands[0]['entries']);
+        $entries = $codec->decodeEnvelope($initial->commands[0]['entries']);
+        self::assertSame(['binary', 'double', 'long', 'nested', 'text'], array_keys($entries));
+        self::assertInstanceOf(AvroBinaryValue::class, $entries['binary']);
+        self::assertSame('same', $entries['binary']->bytes);
+        self::assertSame(7.0, $entries['double']);
+        self::assertSame(7, $entries['long']);
+        self::assertSame(['alpha' => 1, 'beta' => 2], $entries['nested']);
+        self::assertSame('same', $entries['text']);
+
+        $replay = (new Replayer($codec))->replay($workflow, [[
+            'event_type' => 'MemoUpserted',
+            'payload' => [
+                'sequence' => 1,
+                'entries' => $serverEntries,
+                'merged' => $serverEntries,
+            ],
+        ]], [], 'php-workers');
+
+        self::assertCount(1, $replay->commands);
+        self::assertSame('complete_workflow', $replay->commands[0]['type']);
+
+        $changedTypes = static function (WorkflowContext $context): string {
+            $context->upsertMemo([
+                'text' => AvroBinaryValue::fromBytes('same'),
+                'nested' => ['alpha' => 1, 'beta' => 2],
+                'long' => 7.0,
+                'double' => 7,
+                'binary' => 'same',
+            ]);
+
+            return 'memo recorded';
+        };
+
+        try {
+            (new Replayer($codec))->replay($changedTypes, [[
+                'event_type' => 'MemoUpserted',
+                'payload' => [
+                    'sequence' => 1,
+                    'entries' => $serverEntries,
+                    'merged' => $serverEntries,
+                ],
+            ]], [], 'php-workers');
+            self::fail('Memo replay identity must preserve long, double, bytes, and text types.');
+        } catch (NonDeterministicWorkflow $exception) {
+            self::assertSame('workflow_nondeterministic', $exception->reason);
+            self::assertNotSame($exception->expected, $exception->actual);
+        }
+    }
+
+    public function testMemoReplayRejectsChangedLogicalUpdate(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): string {
+            $context->upsertMemo(['stage' => 'changed']);
+
+            return 'done';
+        };
+
+        $this->expectException(NonDeterministicWorkflow::class);
+        (new Replayer($codec))->replay($workflow, [[
+            'event_type' => 'MemoUpserted',
+            'payload' => [
+                'sequence' => 1,
+                'entries' => $codec->envelope(['stage' => 'original']),
+                'merged' => $codec->envelope(['stage' => 'original']),
+            ],
+        ]], [], 'php-workers');
+    }
+
+    public function testMemoReplayRejectsDuplicateOrMissingHistoryIdentity(): void
+    {
+        $workflow = static function (WorkflowContext $context): string {
+            $context->upsertMemo(['stage' => 'recorded']);
+
+            return 'done';
+        };
+        $codec = new AvroPayloadCodec();
+        $event = [
+            'event_type' => 'MemoUpserted',
+            'payload' => [
+                'sequence' => 1,
+                'entries' => $codec->envelope(['stage' => 'recorded']),
+                'merged' => $codec->envelope(['stage' => 'recorded']),
+            ],
+        ];
+
+        foreach ([[$event, $event], [[
+            'event_type' => 'MemoUpserted',
+            'payload' => [
+                'entries' => $codec->envelope(['stage' => 'recorded']),
+                'merged' => $codec->envelope(['stage' => 'recorded']),
+            ],
+        ]]] as $history) {
+            try {
+                (new Replayer(new AvroPayloadCodec()))->replay($workflow, $history, [], 'php-workers');
+                self::fail('Incomplete or duplicate memo history identity must fail replay.');
+            } catch (NonDeterministicWorkflow $exception) {
+                self::assertContains(
+                    $exception->reason,
+                    ['duplicate_memo_upsert_record', 'memo_sequence_missing'],
+                );
+            }
+        }
+    }
+
+    #[DataProvider('invalidMemoReplaySequences')]
+    public function testMemoReplayRejectsInvalidSequence(mixed $sequence): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): string {
+            $context->upsertMemo(['stage' => 'recorded']);
+
+            return 'done';
+        };
+
+        try {
+            (new Replayer($codec))->replay($workflow, [[
+                'event_type' => 'MemoUpserted',
+                'payload' => [
+                    'sequence' => $sequence,
+                    'entries' => $codec->envelope(['stage' => 'recorded']),
+                    'merged' => $codec->envelope(['stage' => 'recorded']),
+                ],
+            ]], [], 'php-workers');
+            self::fail('Memo replay identity must be a positive integer sequence.');
+        } catch (NonDeterministicWorkflow $exception) {
+            self::assertSame('memo_sequence_invalid', $exception->reason);
+            self::assertSame('positive integer sequence', $exception->expected);
+        }
+    }
+
+    /** @return iterable<string, array{mixed}> */
+    public static function invalidMemoReplaySequences(): iterable
+    {
+        yield 'zero' => [0];
+        yield 'negative integer' => [-1];
+        yield 'fractional number' => [1.5];
+        yield 'numeric string' => ['1'];
+    }
+
+    public function testMemoAuthoringRejectsStructurallyInvalidEntries(): void
+    {
+        $workflow = static function (WorkflowContext $context): string {
+            $context->upsertMemo([str_repeat('x', 65) => 'invalid']);
+
+            return 'unreachable';
+        };
+
+        $this->expectException(\LogicException::class);
+        (new Replayer(new AvroPayloadCodec()))->replay($workflow, [], [], 'php-workers');
     }
 
     public function testSideEffectRunsOnlyDuringInitialExecution(): void

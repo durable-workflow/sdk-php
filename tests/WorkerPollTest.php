@@ -19,6 +19,139 @@ use Psr\Log\AbstractLogger;
 
 final class WorkerPollTest extends TestCase
 {
+    public function testMemoUpdateRequiresAndUsesAdvertisedRuntimeCapability(): void
+    {
+        $commands = null;
+        $transport = new FakeTransport(handler: static function (
+            string $method,
+            string $uri,
+            array $headers,
+            ?array $body,
+        ) use (&$commands): array {
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
+                return [
+                    'server_capabilities' => [
+                        'workflow_memo_updates' => ['supported' => true, 'minimum_protocol_version' => '1.14'],
+                        'supported_workflow_task_commands' => ['complete_workflow', 'upsert_memo'],
+                    ],
+                    'poll_status' => 'leased',
+                    'task' => [
+                        'task_id' => 'memo-task-1',
+                        'workflow_task_attempt' => 1,
+                        'lease_owner' => 'worker-1',
+                        'workflow_id' => 'memo-workflow-1',
+                        'run_id' => 'memo-run-1',
+                        'workflow_type' => 'memo.workflow',
+                        'payload_codec' => 'avro',
+                        'history_events' => [],
+                    ],
+                ];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/memo-task-1/heartbeat')) {
+                return [
+                    'task_id' => 'memo-task-1',
+                    'workflow_task_attempt' => 1,
+                    'lease_owner' => 'worker-1',
+                    'renewed' => true,
+                ];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/memo-task-1/complete')) {
+                $commands = $body['commands'] ?? null;
+
+                return ['completed' => true];
+            }
+            if (str_ends_with($uri, '/api/worker/activity-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        });
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'memo-workers',
+            workerId: 'worker-1',
+        );
+        $worker->registerWorkflow('memo.workflow', static function (WorkflowContext $context): string {
+            $context->upsertMemo(['stage' => 'processing']);
+
+            return 'done';
+        });
+
+        self::assertTrue($worker->tick(0));
+        self::assertSame('upsert_memo', $commands[0]['type'] ?? null);
+        self::assertSame(
+            ['stage' => 'processing'],
+            (new AvroPayloadCodec())->decodeEnvelope($commands[0]['entries'] ?? null),
+        );
+        self::assertSame(['codec', 'blob'], array_keys($commands[0]['entries'] ?? []));
+    }
+
+    public function testMemoUpdateFailsTaskBeforeCompletionWhenRuntimeCapabilityIsAbsent(): void
+    {
+        $completed = false;
+        $failureMessage = null;
+        $transport = new FakeTransport(handler: static function (
+            string $method,
+            string $uri,
+            array $headers,
+            ?array $body,
+        ) use (&$completed, &$failureMessage): array {
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
+                return [
+                    'server_capabilities' => ['workflow_memo_updates' => ['supported' => false]],
+                    'poll_status' => 'leased',
+                    'task' => [
+                        'task_id' => 'memo-task-unsupported',
+                        'workflow_task_attempt' => 1,
+                        'lease_owner' => 'worker-1',
+                        'workflow_id' => 'memo-workflow-unsupported',
+                        'run_id' => 'memo-run-unsupported',
+                        'workflow_type' => 'memo.workflow',
+                        'payload_codec' => 'avro',
+                        'history_events' => [],
+                    ],
+                ];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/memo-task-unsupported/heartbeat')) {
+                return [
+                    'task_id' => 'memo-task-unsupported',
+                    'workflow_task_attempt' => 1,
+                    'lease_owner' => 'worker-1',
+                    'renewed' => true,
+                ];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/memo-task-unsupported/complete')) {
+                $completed = true;
+
+                return ['completed' => true];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/memo-task-unsupported/fail')) {
+                $failureMessage = $body['failure']['message'] ?? null;
+
+                return ['recorded' => true];
+            }
+            if (str_ends_with($uri, '/api/worker/activity-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        });
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'memo-workers',
+            workerId: 'worker-1',
+        );
+        $worker->registerWorkflow('memo.workflow', static function (WorkflowContext $context): string {
+            $context->upsertMemo(['stage' => 'processing']);
+
+            return 'done';
+        });
+
+        self::assertTrue($worker->tick(0));
+        self::assertFalse($completed);
+        self::assertStringContainsString('workflow_memo_updates_unavailable', (string) $failureMessage);
+    }
+
     public function testSagaCompensationFailureReachesFrameworkLoggerAndEventDiagnostics(): void
     {
         $codec = new AvroPayloadCodec();

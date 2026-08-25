@@ -5,12 +5,20 @@ declare(strict_types=1);
 namespace DurableWorkflow\Worker;
 
 use Closure;
+use DurableWorkflow\Codec\AvroBinaryValue;
+use DurableWorkflow\Codec\AvroMapValue;
+use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Codec\PayloadCodec;
 use LogicException;
 
 /** A replayable command emitted when straight-line workflow code suspends. */
 final class WorkflowCommand
 {
+    private const MAX_MEMO_ENTRIES = 100;
+    private const MAX_MEMO_VALUE_SIZE_BYTES = 10_240;
+    private const MAX_MEMO_TOTAL_SIZE_BYTES = 65_536;
+    private const MEMO_KEY_PATTERN = '/^(?!-?[0-9]+$)[A-Za-z0-9_.:-]{1,64}$/D';
+
     /**
      * @param array<string, mixed> $attributes
      * @param (Closure(): mixed)|null $sideEffect
@@ -181,6 +189,99 @@ final class WorkflowCommand
         return new self('upsert_search_attributes', 'search_attributes', ['attributes' => $attributes]);
     }
 
+    /** @param array<string, mixed> $entries */
+    public static function upsertMemo(array $entries): self
+    {
+        return new self('upsert_memo', 'memo', ['entries' => self::canonicalMemoEntries($entries)]);
+    }
+
+    /**
+     * Validate and canonicalize the language-neutral memo patch. The wire
+     * serializer wraps the whole map in the public Avro payload envelope.
+     *
+     * @param array<array-key, mixed> $entries
+     * @return array<string, mixed>
+     */
+    public static function canonicalMemoEntries(array $entries): array
+    {
+        if ($entries === []) {
+            throw new LogicException('Workflow memo updates require at least one entry.');
+        }
+        if (count($entries) > self::MAX_MEMO_ENTRIES) {
+            throw new LogicException(sprintf(
+                'Workflow memo updates may contain at most %d entries.',
+                self::MAX_MEMO_ENTRIES,
+            ));
+        }
+
+        $canonical = [];
+        foreach ($entries as $key => $value) {
+            if (!is_string($key) || preg_match(self::MEMO_KEY_PATTERN, $key) !== 1) {
+                throw new LogicException(
+                    'Workflow memo keys must match ^(?!-?[0-9]+$)[A-Za-z0-9_.:-]{1,64}$.',
+                );
+            }
+            $value = self::canonicalMemoValue($value);
+            if (self::avroEncodedSize($value) > self::MAX_MEMO_VALUE_SIZE_BYTES) {
+                throw new LogicException(sprintf(
+                    'Workflow memo value %s exceeds the %d-byte limit.',
+                    $key,
+                    self::MAX_MEMO_VALUE_SIZE_BYTES,
+                ));
+            }
+            $canonical[$key] = $value;
+        }
+        ksort($canonical, SORT_STRING);
+
+        if (self::avroEncodedSize($canonical) > self::MAX_MEMO_TOTAL_SIZE_BYTES) {
+            throw new LogicException(sprintf(
+                'Workflow memo update exceeds the %d-byte total limit.',
+                self::MAX_MEMO_TOTAL_SIZE_BYTES,
+            ));
+        }
+
+        return $canonical;
+    }
+
+    private static function canonicalMemoValue(mixed $value): mixed
+    {
+        if ($value instanceof AvroBinaryValue) {
+            return $value;
+        }
+        if ($value instanceof AvroMapValue) {
+            $pairs = array_map(
+                static fn (array $pair): array => [$pair[0], self::canonicalMemoValue($pair[1])],
+                $value->pairs,
+            );
+            usort($pairs, static fn (array $left, array $right): int => strcmp($left[0], $right[0]));
+
+            return AvroMapValue::fromPairs($pairs);
+        }
+        if (!is_array($value)) {
+            return $value;
+        }
+
+        $canonical = [];
+        foreach ($value as $key => $nested) {
+            $canonical[$key] = self::canonicalMemoValue($nested);
+        }
+        if (!array_is_list($canonical)) {
+            ksort($canonical, SORT_STRING);
+        }
+
+        return $canonical;
+    }
+
+    private static function avroEncodedSize(mixed $value): int
+    {
+        $bytes = base64_decode((new AvroPayloadCodec())->encode($value), true);
+        if ($bytes === false) {
+            throw new LogicException('Workflow memo Avro encoding did not return strict base64.');
+        }
+
+        return strlen($bytes);
+    }
+
     /** @return array<string, mixed> */
     public function toWire(PayloadCodec $codec, string $defaultTaskQueue): array
     {
@@ -194,6 +295,10 @@ final class WorkflowCommand
                 $wire['result'] = $this->type === 'record_side_effect'
                     ? $codec->encode($value)
                     : $codec->envelope($value);
+                continue;
+            }
+            if ($this->type === 'upsert_memo' && $key === 'entries') {
+                $wire['entries'] = $codec->envelope($value);
                 continue;
             }
             if ($value === null) {

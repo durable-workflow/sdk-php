@@ -394,6 +394,17 @@ final class WorkflowContext
         $this->suspend(WorkflowCommand::upsertSearchAttributes($attributes));
     }
 
+    /**
+     * Merge non-indexed workflow memo metadata. Null removes a key; all other
+     * Avro values replace that key while unrelated memo entries are preserved.
+     *
+     * @param array<string, mixed> $entries
+     */
+    public function upsertMemo(array $entries): void
+    {
+        $this->suspend(WorkflowCommand::upsertMemo($entries));
+    }
+
     public function isCancellationRequested(): bool
     {
         return $this->cancellationRequested;

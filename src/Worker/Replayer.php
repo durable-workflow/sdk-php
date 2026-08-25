@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Worker;
 
+use DurableWorkflow\Codec\AvroMapValue;
 use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Exception\ChildWorkflowFailed;
@@ -290,7 +291,7 @@ final class Replayer
             }
             $commands[] = $suspended->toWire($this->codec, $taskQueue);
             ++$nextSequence;
-            if ($suspended->type === 'record_side_effect' || $suspended->type === 'upsert_search_attributes') {
+            if (in_array($suspended->type, ['record_side_effect', 'upsert_memo', 'upsert_search_attributes'], true)) {
                 $suspended = $execution->resume($suspended->localResult);
                 continue;
             }
@@ -342,13 +343,16 @@ final class Replayer
         $conditionStepsByWaitId = [];
         $versionMarkerSequences = [];
         $versionMarkerChangeIds = [];
+        $memoSequences = [];
         $fallbackSequence = 1_000_000;
         foreach ($history as $resolutionOrder => $event) {
             $type = (string) ($event['event_type'] ?? $event['type'] ?? '');
             $payload = isset($event['payload']) && is_array($event['payload']) ? $event['payload'] : [];
-            $sequence = $type === 'VersionMarkerRecorded'
-                ? $this->versionMarkerSequence($payload)
-                : ($this->sequence($payload) ?? $fallbackSequence++);
+            $sequence = match ($type) {
+                'VersionMarkerRecorded' => $this->versionMarkerSequence($payload),
+                'MemoUpserted' => $this->memoSequence($payload),
+                default => $this->sequence($payload) ?? $fallbackSequence++,
+            };
             $key = (string) $sequence;
 
             if ($type !== 'VersionMarkerRecorded'
@@ -537,6 +541,58 @@ final class Replayer
                     detail: $changeId,
                     resolutionOrder: $resolutionOrder,
                 );
+            } elseif ($type === 'MemoUpserted') {
+                if (isset($memoSequences[$key])) {
+                    throw new NonDeterministicWorkflow(
+                        "Workflow sequence {$sequence} contains more than one MemoUpserted event.",
+                        $sequence,
+                        'one MemoUpserted event',
+                        'multiple MemoUpserted events',
+                        'duplicate_memo_upsert_record',
+                    );
+                }
+                if (isset($steps[$key])) {
+                    throw new NonDeterministicWorkflow(
+                        "Workflow sequence {$sequence} contains a memo upsert and another durable command.",
+                        $sequence,
+                        'one durable command shape',
+                        $steps[$key]['shape'].' and memo upsert',
+                        'durable_command_sequence_collision',
+                    );
+                }
+                if (!isset($payload['entries']) || !is_array($payload['entries'])) {
+                    throw new NonDeterministicWorkflow(
+                        "MemoUpserted history at sequence {$sequence} is missing replay identity entries.",
+                        $sequence,
+                        'memo entries object',
+                        'missing entries',
+                        'memo_entries_missing',
+                    );
+                }
+                if (!isset($payload['merged']) || !is_array($payload['merged'])) {
+                    throw new NonDeterministicWorkflow(
+                        "MemoUpserted history at sequence {$sequence} is missing its merged projection.",
+                        $sequence,
+                        'merged memo projection',
+                        'missing merged',
+                        'memo_merged_projection_missing',
+                    );
+                }
+                $entries = $this->decodeMemoHistoryMap(
+                    $payload['entries'],
+                    $sequence,
+                    'entries',
+                    true,
+                );
+                $this->decodeMemoHistoryMap($payload['merged'], $sequence, 'merged', false);
+                $memoSequences[$key] = true;
+                $steps[$key] = $this->resolvedStep(
+                    $sequence,
+                    'memo',
+                    null,
+                    detail: $this->codec->encode($entries),
+                    resolutionOrder: $resolutionOrder,
+                );
             } elseif ($type === 'SearchAttributesUpserted') {
                 $steps[$key] = $this->resolvedStep(
                     $sequence,
@@ -583,6 +639,67 @@ final class Replayer
         ksort($steps, SORT_NUMERIC);
 
         return $this->collapseConditionReopens(array_values($steps));
+    }
+
+    /**
+     * Decode the inline Avro map envelope returned by Server history.
+     *
+     * External memo command references are resolved by the runtime before the
+     * MemoUpserted event is recorded, so replay always consumes inline bytes.
+     *
+     * @return array<string, mixed>
+     */
+    private function decodeMemoHistoryMap(
+        mixed $envelope,
+        int $sequence,
+        string $field,
+        bool $requireEntries,
+    ): array {
+        try {
+            if (!is_array($envelope)) {
+                throw new LogicException('expected an Avro payload envelope object');
+            }
+
+            $keys = array_keys($envelope);
+            sort($keys);
+            if ($keys !== ['blob', 'codec']) {
+                throw new LogicException('expected exactly the public {codec, blob} payload envelope');
+            }
+
+            $decoded = $this->codec->decodeEnvelope($envelope);
+            if ($decoded instanceof AvroMapValue) {
+                $entries = [];
+                foreach ($decoded->pairs as [$key, $value]) {
+                    $entries[$key] = $value;
+                }
+                $decoded = $entries;
+            }
+            if (!is_array($decoded)) {
+                throw new LogicException('the Avro payload must decode to a string-keyed map');
+            }
+            if ($decoded === []) {
+                if (!$requireEntries) {
+                    return [];
+                }
+
+                throw new LogicException('the memo entries map must not be empty');
+            }
+            if (array_is_list($decoded)) {
+                throw new LogicException('the Avro payload must decode to a string-keyed map');
+            }
+
+            return WorkflowCommand::canonicalMemoEntries($decoded);
+        } catch (NonDeterministicWorkflow $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw new NonDeterministicWorkflow(
+                "MemoUpserted history at sequence {$sequence} has an invalid {$field} envelope: {$exception->getMessage()}",
+                $sequence,
+                "Avro memo {$field} payload envelope",
+                get_debug_type($envelope),
+                $field === 'entries' ? 'memo_entries_invalid' : 'memo_merged_projection_invalid',
+            );
+        }
     }
 
     /** @param list<array<string, mixed>> $history */
@@ -908,6 +1025,9 @@ final class Replayer
             'timer' => $command->attributes['delay_seconds'] ?? null,
             'child_workflow' => $command->attributes['workflow_type'] ?? null,
             'version_marker' => $command->attributes['change_id'] ?? null,
+            'memo' => $this->codec->encode(
+                WorkflowCommand::canonicalMemoEntries($command->attributes['entries'] ?? []),
+            ),
             'condition_wait' => $this->conditionDetail(
                 $this->stringValue($command->attributes['condition_key'] ?? null),
                 $this->stringValue($command->attributes['condition_definition_fingerprint'] ?? null),
@@ -953,6 +1073,32 @@ final class Replayer
         $value = $payload['sequence'] ?? $payload['workflow_sequence'] ?? null;
 
         return is_numeric($value) ? (int) $value : null;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function memoSequence(array $payload): int
+    {
+        $sequence = $payload['sequence'] ?? $payload['workflow_sequence'] ?? null;
+        if ($sequence === null) {
+            throw new NonDeterministicWorkflow(
+                'MemoUpserted history is missing its replay sequence.',
+                null,
+                'positive integer sequence',
+                'missing sequence',
+                'memo_sequence_missing',
+            );
+        }
+        if (!is_int($sequence) || $sequence <= 0) {
+            throw new NonDeterministicWorkflow(
+                'MemoUpserted history replay sequence must be a positive integer.',
+                is_int($sequence) ? $sequence : null,
+                'positive integer sequence',
+                is_scalar($sequence) ? (string) $sequence : get_debug_type($sequence),
+                'memo_sequence_invalid',
+            );
+        }
+
+        return $sequence;
     }
 
     /** @param array<string, mixed> $payload */
@@ -1040,6 +1186,7 @@ final class Replayer
         return match ($type) {
             'SideEffectRecorded' => 'side_effect',
             'VersionMarkerRecorded' => 'version_marker',
+            'MemoUpserted' => 'memo',
             'SearchAttributesUpserted' => 'search_attributes',
             'ConditionWaitOpened', 'ConditionWaitSatisfied', 'ConditionWaitTimedOut' => 'condition_wait',
             default => null,
