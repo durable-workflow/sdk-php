@@ -690,7 +690,7 @@ final class Worker
                         $leaseOwner,
                         $failure->getMessage(),
                         $failure::class,
-                        false,
+                        nonRetryable: true,
                     );
                 },
                 'query' => function (Throwable $failure) use ($taskId, $leaseOwner, $task): void {

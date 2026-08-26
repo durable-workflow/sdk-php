@@ -36,15 +36,49 @@ final class WorkerTaskPayloadCodecTest extends TestCase
                 static fn (array $request): bool => str_ends_with($request['uri'], '/fail'),
             ));
             self::assertCount(1, $failureRequests, $path);
-            $failure = json_encode($failureRequests[0]['body'], JSON_THROW_ON_ERROR);
+            $failureBody = $failureRequests[0]['body'];
+            $failure = json_encode($failureBody, JSON_THROW_ON_ERROR);
             self::assertStringContainsString('unsupported_payload_codec', $failure, $path);
             self::assertStringContainsString('payload_codec=\"avro\"', $failure, $path);
             self::assertStringNotContainsString('invalid_payload_framing', $failure, $path);
+            if ($path === 'activity') {
+                self::assertTrue($failureBody['failure']['non_retryable'] ?? null, $path);
+            }
             self::assertSame([], array_values(array_filter(
                 $transport->requests,
                 static fn (array $request): bool => str_ends_with($request['uri'], '/complete'),
             )), $path);
         }
+    }
+
+    public function testApplicationActivityFailuresRemainRetryable(): void
+    {
+        $handlerCalls = 0;
+        [$worker, $transport] = $this->workerForTask(
+            'activity',
+            $this->task(
+                'activity',
+                ['present' => true, 'value' => 'avro'],
+                (new AvroPayloadCodec())->envelope(['input']),
+            ),
+            $handlerCalls,
+            static function (ActivityContext $context, mixed $input = null) use (&$handlerCalls): string {
+                ++$handlerCalls;
+
+                throw new \RuntimeException('application activity failed');
+            },
+        );
+
+        self::assertTrue($worker->tick(0));
+        self::assertSame(1, $handlerCalls);
+
+        $failureRequests = array_values(array_filter(
+            $transport->requests,
+            static fn (array $request): bool => str_ends_with($request['uri'], '/fail'),
+        ));
+        self::assertCount(1, $failureRequests);
+        self::assertFalse($failureRequests[0]['body']['failure']['non_retryable'] ?? null);
+        self::assertSame('application activity failed', $failureRequests[0]['body']['failure']['message'] ?? null);
     }
 
     #[DataProvider('workerPaths')]
@@ -157,15 +191,19 @@ final class WorkerTaskPayloadCodecTest extends TestCase
      * @param array<string, mixed> $task
      * @return array{Worker, FakeTransport}
      */
-    private function workerForTask(string $path, array $task, int &$handlerCalls): array
-    {
+    private function workerForTask(
+        string $path,
+        array $task,
+        int &$handlerCalls,
+        ?\Closure $activityHandler = null,
+    ): array {
         $delivered = false;
         $transport = new FakeTransport(handler: static function (
             string $method,
             string $uri,
             array $headers,
             ?array $body,
-        ) use ($path, $task, &$delivered): ?array {
+        ) use ($path, $task, &$delivered): array {
             if (str_ends_with($uri, '/workflow-tasks/poll')) {
                 if (!$delivered && in_array($path, ['workflow', 'update'], true)) {
                     $delivered = true;
@@ -225,7 +263,7 @@ final class WorkerTaskPayloadCodecTest extends TestCase
             ->registerUpdate(
                 'codec.workflow',
                 'increment',
-                static function (QueryContext $context, int $value) use (&$handlerCalls): int {
+                static function (QueryContext $context, int $value = 0) use (&$handlerCalls): int {
                     ++$handlerCalls;
 
                     return $value + 1;
@@ -233,7 +271,10 @@ final class WorkerTaskPayloadCodecTest extends TestCase
             )
             ->registerActivity(
                 'codec.activity',
-                static function (ActivityContext $context, mixed $input = null) use (&$handlerCalls): string {
+                $activityHandler ?? static function (
+                    ActivityContext $context,
+                    mixed $input = null,
+                ) use (&$handlerCalls): string {
                     ++$handlerCalls;
 
                     return 'activity-complete';

@@ -85,7 +85,7 @@ project follows [Semantic Versioning](https://semver.org/).
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK source to `2.0.0-rc.46` and qualified it with Server
+- Advanced the PHP SDK source to `2.0.0-rc.47` and qualified it with Server
   `2.0.0-rc.50`. Worker registration now explicitly advertises memo upserts and
   typed search attributes, with worker protocol `1.16` identifying the typed
   search floor. During the active 2.0 prerelease train, package metadata names
@@ -119,7 +119,8 @@ project follows [Semantic Versioning](https://semver.org/).
 - Workers now reject workflow, update, activity, and query tasks whose root
   `payload_codec` is missing or is not exactly `avro`, before payload decoding
   or user-handler execution, and report `unsupported_payload_codec` through the
-  task failure path.
+  task failure path. Unsupported activity-task codecs are non-retryable so the
+  Server terminates the incompatible task instead of redelivering it.
 - Laravel role processes can use `DURABLE_WORKFLOW_PROCESS_ROLE` with
   `DURABLE_WORKFLOW_PROCESS_TOKEN` as an explicit single-credential handoff.
   It rejects ambient, incomplete, invalid, and opposite-role authentication
