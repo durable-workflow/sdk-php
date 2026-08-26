@@ -6,6 +6,18 @@ import process from 'node:process';
 import test from 'node:test';
 import {chromium} from 'playwright';
 import {assertNoBrowserFailures, formatHttpFailure} from './check-docs-browser-failures.mjs';
+import {assertPrimaryGuideNavigation} from './check-docs-portal-navigation.mjs';
+
+test('portal qualification rejects duplicate primary guide destinations', async () => {
+  const fixture = JSON.parse(
+    await readFile(
+      new URL('./check-docs-portal-fixtures/duplicate-primary-navigation.json', import.meta.url),
+      'utf8',
+    ),
+  );
+
+  assert.throws(() => assertPrimaryGuideNavigation(fixture), {name: 'AssertionError'});
+});
 
 test('the layout check isolates only the exact Cloudflare RUM endpoint', async () => {
   const source = await readFile(new URL('./check-docs-browser.mjs', import.meta.url), 'utf8');

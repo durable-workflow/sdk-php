@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import Ajv2020 from 'ajv/dist/2020.js';
+import {assertPrimaryGuideNavigation} from './check-docs-portal-navigation.mjs';
 
 const siteDirectory = path.resolve(process.argv[2] ?? 'build/site');
 const projectDirectory = path.resolve(import.meta.dirname, '..');
@@ -36,13 +37,7 @@ function outputPath(url) {
   return path.join(siteDirectory, pathname);
 }
 
-const navigationItems = navigation.flatMap(({items}) => items);
-const navigationUrls = navigationItems.map(({url}) => url);
-assert.equal(
-  new Set(navigationUrls).size,
-  navigationUrls.length,
-  'Every guide route must have exactly one primary navigation owner.',
-);
+const navigationItems = assertPrimaryGuideNavigation(navigation);
 assert.deepEqual(
   navigation
     .filter(({items}) => items.some(({url}) => url === '/frameworks/laravel/'))

@@ -1,0 +1,14 @@
+[
+  {
+    "label": "Start",
+    "items": [
+      {"label": "Laravel adoption", "url": "/frameworks/laravel/"}
+    ]
+  },
+  {
+    "label": "Frameworks",
+    "items": [
+      {"label": "Laravel", "url": "/frameworks/laravel/"}
+    ]
+  }
+]
