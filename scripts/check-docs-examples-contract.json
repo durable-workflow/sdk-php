@@ -29,6 +29,48 @@
           }
         ]
       }
+    },
+    {
+      "id": "php.message-stream.worker.readme",
+      "path": "README.md",
+      "language": "php",
+      "source": "examples/message-stream-worker.php",
+      "publicApiMethods": [
+        {"declaration": "src/Worker/WorkflowContext.php", "method": "messageStream"},
+        {"declaration": "src/Worker/MessageStream.php", "method": "receive"},
+        {"declaration": "src/Worker/MessageStream.php", "method": "receiveOne"}
+      ]
+    },
+    {
+      "id": "php.message-stream.client.readme",
+      "path": "README.md",
+      "language": "php",
+      "source": "examples/message-stream-client.php",
+      "publicApiMethods": [
+        {"declaration": "src/WorkflowClientInterface.php", "method": "workflowHandle"},
+        {"declaration": "src/WorkflowHandleInterface.php", "method": "appendMessage"}
+      ]
+    },
+    {
+      "id": "php.message-stream.worker.portal",
+      "path": "docs/portal/build/message-streams.md",
+      "language": "php",
+      "source": "examples/message-stream-worker.php",
+      "publicApiMethods": [
+        {"declaration": "src/Worker/WorkflowContext.php", "method": "messageStream"},
+        {"declaration": "src/Worker/MessageStream.php", "method": "receive"},
+        {"declaration": "src/Worker/MessageStream.php", "method": "receiveOne"}
+      ]
+    },
+    {
+      "id": "php.message-stream.client.portal",
+      "path": "docs/portal/build/message-streams.md",
+      "language": "php",
+      "source": "examples/message-stream-client.php",
+      "publicApiMethods": [
+        {"declaration": "src/WorkflowClientInterface.php", "method": "workflowHandle"},
+        {"declaration": "src/WorkflowHandleInterface.php", "method": "appendMessage"}
+      ]
     }
   ]
 }

@@ -492,6 +492,121 @@ task kind, consecutive attempt, selected delay, and typed server exception.
 Authentication failures, malformed responses, and generic server errors remain
 fatal.
 
+## Receive repeated input with Message Streams
+
+Inbound Message Streams deliver repeated, ordered application input to a stable
+workflow instance. Start `orders.message-inbox` with input `[1]` to consume one
+message through `receiveOne()`, or with a value from `2` through `20` to consume
+the currently available ordered batch through `receive()`. The batch call waits
+for at least one message; it does not wait for the batch to fill.
+
+The shipped worker example uses only the worker credential:
+
+<!-- docs-example id="php.message-stream.worker.readme" -->
+```php
+<?php
+
+declare(strict_types=1);
+
+require __DIR__.'/bootstrap.php';
+
+use DurableWorkflow\Attribute\Workflow;
+use DurableWorkflow\Client;
+use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\MessageStreamMessage;
+use DurableWorkflow\Worker\WorkflowContext;
+
+final class OrderMessageInboxWorkflow
+{
+    /** @return list<array{message_id: string, position: int, event: mixed}> */
+    #[Workflow('orders.message-inbox')]
+    public function run(WorkflowContext $context, int $batchSize = 1): array
+    {
+        $stream = $context->messageStream('order-events');
+        $messages = $batchSize === 1
+            ? [$stream->receiveOne()]
+            : $stream->receive(maxItems: min(max($batchSize, 2), 20));
+
+        return array_map(
+            static fn (MessageStreamMessage $message): array => [
+                'message_id' => $message->messageId,
+                'position' => $message->position,
+                'event' => $message->arguments[0],
+            ],
+            $messages,
+        );
+    }
+}
+
+$client = new Client(
+    quickstartEnvironment('DURABLE_WORKFLOW_RUNTIME_URL'),
+    namespace: quickstartEnvironment('DURABLE_WORKFLOW_NAMESPACE'),
+    workerToken: quickstartEnvironment('DURABLE_WORKFLOW_WORKER_TOKEN'),
+);
+
+Worker::create($client, quickstartEnvironment('DURABLE_WORKFLOW_TASK_QUEUE'))
+    ->register(OrderMessageInboxWorkflow::class)
+    ->run();
+```
+
+After the workflow is running, an application process appends an event through
+its normal client-role connection. Persist `ORDER_EVENT_ID` with the business
+event before calling the SDK, and reuse it when retrying after a timeout:
+
+<!-- docs-example id="php.message-stream.client.readme" -->
+```php
+<?php
+
+declare(strict_types=1);
+
+require __DIR__.'/bootstrap.php';
+
+use DurableWorkflow\Client;
+
+$orderId = quickstartEnvironment('ORDER_ID');
+$eventId = quickstartEnvironment('ORDER_EVENT_ID');
+$messageId = 'order-event:'.$eventId;
+
+$client = new Client(
+    quickstartEnvironment('DURABLE_WORKFLOW_RUNTIME_URL'),
+    namespace: quickstartEnvironment('DURABLE_WORKFLOW_NAMESPACE'),
+    controlToken: quickstartEnvironment('DURABLE_WORKFLOW_CLIENT_TOKEN'),
+);
+
+$outcome = $client
+    ->workflowHandle('order:'.$orderId)
+    ->appendMessage(
+        'order-events',
+        $messageId,
+        [[
+            'event_id' => $eventId,
+            'kind' => 'item-added',
+            'sku' => quickstartEnvironment('ORDER_SKU'),
+            'quantity' => (int) quickstartEnvironment('ORDER_QUANTITY'),
+        ]],
+    );
+
+echo json_encode($outcome, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES).PHP_EOL;
+```
+
+The first append assigns a stream position. Retrying the same message ID with
+the same payload returns that position without redelivery; reusing the identity
+with a different payload is rejected as `message_identity_conflict`. Cursor
+advancement is recorded in workflow history, so replay and worker replacement
+do not consume an acknowledged position twice. Continue-as-new carries the
+cursor and pending input to the successor run while callers keep the same
+workflow ID.
+
+Inbound Message Streams are instance-scoped repeated input. They differ from
+run-scoped Workflow Streams, which publish output associated with one run, and
+from one-shot signals, which do not provide message identity and cursor
+semantics. Application code should use `appendMessage()`; workflow code should
+use `messageStream()`, `receive()`, and `receiveOne()` rather than recreating the
+runtime's internal transport. Cloud and self-hosted Server use the same API and
+role split: the application owns stable identities and payloads, while the
+runtime owns ordering, durable waits, and cursors. See the task-oriented
+[Message Streams guide](https://php.durable-workflow.com/build/message-streams/).
+
 ## Laravel service mode
 
 Laravel 9 through 13 auto-discover the service provider from the same SDK package.

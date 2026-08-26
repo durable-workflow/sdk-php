@@ -4,8 +4,8 @@ title: Failures & retries
 description: Model activity failures, transport failures, workflow terminal states, cancellation, timeouts, and retry safety in the PHP SDK.
 lead: Durable execution does not make every error retryable. Classify transport delivery, activity attempts, deterministic replay, and terminal workflow outcomes separately.
 previous:
-  label: Signals, queries & updates
-  url: /build/messages/
+  label: Message Streams
+  url: /build/message-streams/
 next:
   label: Testing
   url: /build/testing/

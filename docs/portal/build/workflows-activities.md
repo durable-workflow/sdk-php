@@ -14,6 +14,10 @@ next:
 
 A workflow handler runs as ordinary straight-line PHP inside an isolated Fiber. Calls on `WorkflowContext` pause internally when durable work is pending; on replay, the SDK walks committed history and returns recorded values directly from those calls.
 
+For repeated ordered application input, open an
+[inbound Message Stream](/build/message-streams/) from `WorkflowContext`. Its
+durable cursor resumes after replay, worker replacement, and continue-as-new.
+
 Use `WorkflowContext::waitCondition()` when progress depends on workflow state rather than an external activity. Its deterministic predicate is re-evaluated when committed signals or updates produce another workflow task. A stable key identifies the wait across replay, and the optional timeout returns `false` instead of requiring an application timer loop.
 
 ```php
