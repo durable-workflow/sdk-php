@@ -193,12 +193,50 @@ test('GitHub workflow failures have bounded, actionable classifications', async 
       expected: /authentication failed \(HTTP 401\).*actions: read/,
     },
     {
-      name: 'rate limit exhaustion',
+      name: 'secondary limit with nonzero primary quota',
+      response: () => new Response('sensitive upstream body', {
+        status: 403,
+        headers: {
+          'retry-after': '60',
+          'x-ratelimit-remaining': '4999',
+          'x-ratelimit-reset': '1790000000',
+        },
+      }),
+      expected: /secondary rate limit exceeded \(HTTP 403; remaining=4999; retry-after=60; reset=1790000000\); retry after 60 seconds/,
+    },
+    {
+      name: 'secondary limit with absent primary quota',
+      response: () => Response.json(
+        {message: 'You have exceeded a secondary rate limit. Sensitive detail is omitted.'},
+        {status: 403},
+      ),
+      expected: /secondary rate limit exceeded \(HTTP 403; remaining=unknown\); wait before retrying/,
+    },
+    {
+      name: 'primary rate limit exhaustion',
       response: () => new Response('sensitive upstream body', {
         status: 403,
         headers: {'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1790000000'},
       }),
-      expected: /rate limit exhausted \(HTTP 403; remaining=0; reset=1790000000\).*retry/,
+      expected: /primary rate limit exhausted \(HTTP 403; remaining=0; reset=1790000000\).*retry/,
+    },
+    {
+      name: 'permission denial',
+      response: () => Response.json({message: 'Resource not accessible by integration'}, {status: 403}),
+      expected: /access was forbidden \(HTTP 403\).*actions: read/,
+    },
+    {
+      name: 'HTTP 429 without primary quota evidence',
+      response: () => new Response('sensitive upstream body', {status: 429}),
+      expected: /GitHub rate limit response \(HTTP 429; remaining=unknown\); wait before retrying/,
+    },
+    {
+      name: 'oversized structured message is not trusted',
+      response: () => Response.json(
+        {message: `secondary rate limit ${'sensitive'.repeat(600)}`},
+        {status: 403, headers: {'retry-after': 'invalid', 'x-ratelimit-reset': 'invalid'}},
+      ),
+      expected: /access was forbidden \(HTTP 403\).*actions: read/,
     },
     {
       name: 'missing workflow',
@@ -221,12 +259,14 @@ test('GitHub workflow failures have bounded, actionable classifications', async 
           qualifyDeployment({
             contractUrl: deployed.contractUrl,
             fetchImpl,
-            githubToken: '',
+            githubToken: 'fixture-secret-token',
             packageRoot,
           }),
           (error) => {
             assert.match(error.message, failure.expected);
             assert(!error.message.includes('sensitive upstream body'));
+            assert(!error.message.includes('Sensitive detail'));
+            assert(!error.message.includes('fixture-secret-token'));
             assert(error.message.length < 300);
             return true;
           },

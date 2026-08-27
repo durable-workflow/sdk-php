@@ -8,6 +8,8 @@ import addFormats from 'ajv-formats';
 
 const DEFAULT_CONTRACT_URL = 'https://php.durable-workflow.com/quickstart-contract.json';
 const GITHUB_API_ORIGIN = 'https://api.github.com';
+const MAX_GITHUB_ERROR_BODY_BYTES = 4096;
+const MAX_GITHUB_ERROR_MESSAGE_CHARACTERS = 512;
 const MAX_REDIRECTS = 5;
 const SOURCE_NAMES = ['bootstrap', 'client', 'worker'];
 
@@ -36,16 +38,64 @@ function jsonPointer(document, pointer, context) {
   }, document);
 }
 
-function boundedRateLimitHeader(response, name) {
+function boundedRateLimitHeader(response, name, maximumDigits = 13) {
   const value = response.headers.get(name);
-  return value && /^\d{1,13}$/.test(value) ? value : null;
+  return value && new RegExp(`^\\d{1,${maximumDigits}}$`).test(value) ? value : null;
 }
 
-function workflowEvidenceHttpError(response, url, githubToken) {
+async function boundedGitHubErrorMessage(response) {
+  if (!response.body) return null;
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let body = '';
+  let bytes = 0;
+
+  try {
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > MAX_GITHUB_ERROR_BODY_BYTES) {
+        await reader.cancel();
+        return null;
+      }
+      body += decoder.decode(value, {stream: true});
+    }
+    body += decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+
+  try {
+    const document = JSON.parse(body);
+    if (
+      document === null
+      || typeof document !== 'object'
+      || Array.isArray(document)
+      || typeof document.message !== 'string'
+      || document.message.length > MAX_GITHUB_ERROR_MESSAGE_CHARACTERS
+    ) {
+      return null;
+    }
+    return document.message;
+  } catch {
+    return null;
+  }
+}
+
+function rateLimitDiagnostics(status, remaining, retryAfter, reset) {
+  const diagnostics = [`HTTP ${status}`, `remaining=${remaining ?? 'unknown'}`];
+  if (retryAfter !== null) diagnostics.push(`retry-after=${retryAfter}`);
+  if (reset !== null) diagnostics.push(`reset=${reset}`);
+  return diagnostics.join('; ');
+}
+
+async function workflowEvidenceHttpError(response, url, githubToken) {
   const status = response.status;
   const remaining = boundedRateLimitHeader(response, 'x-ratelimit-remaining');
   const reset = boundedRateLimitHeader(response, 'x-ratelimit-reset');
-  const resetDiagnostic = reset ? `; reset=${reset}` : '';
+  const retryAfter = boundedRateLimitHeader(response, 'retry-after', 6);
 
   if (status === 401) {
     return new Error(
@@ -53,10 +103,27 @@ function workflowEvidenceHttpError(response, url, githubToken) {
       + 'check that GITHUB_TOKEN is valid and has actions: read permission',
     );
   }
-  if (status === 429 || (status === 403 && remaining === '0')) {
+  if ((status === 403 || status === 429) && remaining === '0') {
     return new Error(
-      `qualification evidence API GitHub rate limit exhausted (HTTP ${status}; remaining=${remaining ?? 'unknown'}${resetDiagnostic}); `
+      `qualification evidence API GitHub primary rate limit exhausted (${rateLimitDiagnostics(status, remaining, retryAfter, reset)}); `
       + `${githubToken ? 'check the token rate limit' : 'set GITHUB_TOKEN for local qualification'} and retry`,
+    );
+  }
+  if (status === 403 || status === 429) {
+    const message = await boundedGitHubErrorMessage(response);
+    const hasSecondaryMessage = message !== null && /\bsecondary rate limit(?:s|ing)?\b/i.test(message);
+    if (retryAfter !== null || hasSecondaryMessage) {
+      const retryGuidance = retryAfter === null
+        ? 'wait before retrying and reduce request concurrency'
+        : `retry after ${retryAfter} seconds and reduce request concurrency`;
+      return new Error(
+        `qualification evidence API GitHub secondary rate limit exceeded (${rateLimitDiagnostics(status, remaining, retryAfter, reset)}); ${retryGuidance}`,
+      );
+    }
+  }
+  if (status === 429) {
+    return new Error(
+      `qualification evidence API GitHub rate limit response (${rateLimitDiagnostics(status, remaining, retryAfter, reset)}); wait before retrying`,
     );
   }
   if (status === 403) {
@@ -114,7 +181,7 @@ async function fetchResponse(url, context, {
     }
     if (!response.ok) {
       if (workflowEvidence && requestUrl.origin === GITHUB_API_ORIGIN) {
-        throw workflowEvidenceHttpError(response, requestUrl, githubToken);
+        throw await workflowEvidenceHttpError(response, requestUrl, githubToken);
       }
       throw new Error(`${context} returned HTTP ${response.status} from ${requestUrl.origin}`);
     }
