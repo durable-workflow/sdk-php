@@ -806,7 +806,7 @@ final class ReplayerTest extends TestCase
     public function testRepeatedPhysicalOpensReplayAsOneLogicalCondition(): void
     {
         $codec = new AvroPayloadCodec();
-        $workflow = static function (WorkflowContext $context): bool {
+        $workflow = static function (WorkflowContext $context): mixed {
             return $context->waitCondition(
                 static fn (): bool => count($context->signals('vote')) >= 2,
                 key: 'two-votes',
@@ -872,7 +872,7 @@ final class ReplayerTest extends TestCase
     public function testReplayRejectsChangedConditionIdentityPredicateAndTimeout(): void
     {
         $codec = new AvroPayloadCodec();
-        $workflow = static function (WorkflowContext $context): bool {
+        $workflow = static function (WorkflowContext $context): mixed {
             return $context->waitCondition(static fn (): bool => false, key: 'current', timeout: 20);
         };
         $initial = (new Replayer($codec))->replay($workflow, [], [], 'php-workers');
@@ -955,6 +955,660 @@ final class ReplayerTest extends TestCase
         self::assertSame([0], array_column($commands[0]['parallel_group_path'], 'parallel_group_index'));
         self::assertSame([1, 0], array_column($commands[1]['parallel_group_path'], 'parallel_group_index'));
         self::assertSame([2, 1], array_column($commands[2]['parallel_group_path'], 'parallel_group_index'));
+    }
+
+    public function testSelectionSchedulesEveryMemberWithStableKeysAndMode(): void
+    {
+        $workflow = static fn (WorkflowContext $context) => $context->select([
+            'work' => static fn () => $context->activity('lookup'),
+            'deadline' => static function () use ($context): void {
+                $context->sleep(5);
+            },
+        ]);
+
+        $commands = (new Replayer(new AvroPayloadCodec()))->replay(
+            $workflow,
+            [],
+            [],
+            'php-workers',
+        )->commands;
+
+        self::assertSame(['schedule_activity', 'start_timer'], array_column($commands, 'type'));
+        self::assertSame(['work', 'deadline'], array_column($commands, 'selection_member_key'));
+        self::assertSame(['select', 'select'], array_column($commands, 'parallel_group_mode'));
+        self::assertSame(['select-calls:1:2', 'select-calls:1:2'], array_column($commands, 'parallel_group_id'));
+    }
+
+    #[DataProvider('selectedExternalInputProvider')]
+    public function testSelectedEventWaitAdvancesOnlyThroughRecordedResolution(
+        string $inputKind,
+        string $eventType,
+    ): void {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context) use ($inputKind): array {
+            $selected = $context->select([
+                'event' => static fn (): bool => $context->waitCondition(
+                    static fn (): bool => match ($inputKind) {
+                        'signal' => $context->signals('approved') !== [],
+                        'update' => $context->updates('approved') !== [],
+                        'message' => $context->hasPendingMessageStreamMessages('orders'),
+                    },
+                    key: "selected-{$inputKind}",
+                ),
+                'deadline' => static function () use ($context): void {
+                    $context->sleep(60);
+                },
+            ]);
+
+            return ['key' => $selected->key, 'value' => $selected->result()];
+        };
+
+        $scheduled = (new Replayer($codec))->replay($workflow, [], [], 'php-workers');
+
+        self::assertSame(['open_condition_wait', 'start_timer'], array_column($scheduled->commands, 'type'));
+
+        $condition = $scheduled->commands[0];
+        unset($condition['type']);
+        $condition['sequence'] = 1;
+        $condition['condition_wait_id'] = 'selected-event-wait';
+        $timer = $scheduled->commands[1];
+        unset($timer['type']);
+        $timer['sequence'] = 2;
+        $timer['timer_id'] = 'selected-deadline';
+        $inputPayload = match ($inputKind) {
+            'signal' => [
+                'signal_name' => 'approved',
+                'arguments' => $codec->envelope(['yes']),
+            ],
+            'update' => [
+                'update_id' => 'approval-update',
+                'update_name' => 'approved',
+                'arguments' => $codec->envelope(['yes']),
+            ],
+            'message' => [
+                'signal_name' => WorkflowContext::MESSAGE_STREAM_SIGNAL,
+                'value' => $codec->envelope([[
+                    'schema' => WorkflowContext::MESSAGE_STREAM_SCHEMA,
+                    'stream_name' => 'orders',
+                    'message_id' => 'order-message',
+                    'position' => 1,
+                    'payload_envelope' => $codec->envelope([42]),
+                ]]),
+            ],
+        };
+        $unrelatedInputPayload = match ($inputKind) {
+            'signal' => [
+                'signal_name' => 'unrelated',
+                'arguments' => $codec->envelope(['no']),
+            ],
+            'update' => [
+                'update_id' => 'unrelated-update',
+                'update_name' => 'unrelated',
+                'arguments' => $codec->envelope(['no']),
+            ],
+            'message' => [
+                'signal_name' => WorkflowContext::MESSAGE_STREAM_SIGNAL,
+                'value' => $codec->envelope([[
+                    'schema' => WorkflowContext::MESSAGE_STREAM_SCHEMA,
+                    'stream_name' => 'other-orders',
+                    'message_id' => 'unrelated-message',
+                    'position' => 1,
+                    'payload_envelope' => $codec->envelope([0]),
+                ]]),
+            ],
+        };
+        $openingHistory = [
+            [
+                'id' => 'event-ConditionWaitOpened-1',
+                'event_type' => 'ConditionWaitOpened',
+                'payload' => $condition,
+            ],
+            [
+                'id' => 'event-TimerScheduled-2',
+                'event_type' => 'TimerScheduled',
+                'payload' => $timer,
+            ],
+        ];
+        $stillWaiting = (new Replayer($codec))->replay($workflow, [
+            ...$openingHistory,
+            [
+                'id' => "unrelated-{$inputKind}-input",
+                'event_type' => $eventType,
+                'payload' => $unrelatedInputPayload,
+            ],
+        ], [], 'php-workers');
+
+        self::assertSame(['open_condition_wait'], array_column($stillWaiting->commands, 'type'));
+
+        $history = [
+            ...$openingHistory,
+            [
+                'id' => "selected-{$inputKind}-input",
+                'event_type' => $eventType,
+                'payload' => $inputPayload,
+            ],
+        ];
+        $awaitingMarker = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame([], $awaitingMarker->commands);
+
+        $satisfied = [
+            'sequence' => 1,
+            'condition_wait_id' => 'selected-event-wait',
+            'condition_key' => "selected-{$inputKind}",
+            ...$condition,
+        ];
+        $resolved = (new Replayer($codec))->replay($workflow, [
+            ...$history,
+            [
+                'id' => 'event-ConditionWaitSatisfied-1',
+                'event_type' => 'ConditionWaitSatisfied',
+                'payload' => $satisfied,
+            ],
+            self::selectionResolved('event', 0, 1, 'condition', 'selected-event-wait'),
+        ], [], 'php-workers');
+
+        self::assertSame(['complete_workflow'], array_column($resolved->commands, 'type'));
+        self::assertSame(
+            ['key' => 'event', 'value' => true],
+            $codec->decodeEnvelope($resolved->commands[0]['result']),
+        );
+    }
+
+    public function testSelectionRejectsDuplicateGeneratorKeys(): void
+    {
+        $workflow = static function (WorkflowContext $context): mixed {
+            $operations = (static function () use ($context): \Generator {
+                yield 'duplicate' => static fn () => $context->activity('first');
+                yield 'duplicate' => static fn () => $context->activity('second');
+            })();
+
+            return $context->select($operations);
+        };
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('member key duplicate is duplicated');
+
+        (new Replayer(new AvroPayloadCodec()))->replay($workflow, [], [], 'php-workers');
+    }
+
+    public function testSelectionRejectsEmptyAndNegativeKeysButPreservesValidKeys(): void
+    {
+        foreach (['', -1] as $key) {
+            $workflow = static fn (WorkflowContext $context): mixed => $context->select([
+                $key => static fn () => $context->activity('invalid'),
+            ]);
+
+            try {
+                (new Replayer(new AvroPayloadCodec()))->replay($workflow, [], [], 'php-workers');
+            } catch (\LogicException $exception) {
+                self::assertStringContainsString(
+                    'non-empty strings or non-negative integers',
+                    $exception->getMessage(),
+                );
+
+                continue;
+            }
+
+            self::fail(sprintf('Selection accepted invalid key [%s].', (string) $key));
+        }
+
+        $workflow = static fn (WorkflowContext $context): mixed => $context->select([
+            0 => static fn () => $context->activity('numeric'),
+            'named' => static function () use ($context): void {
+                $context->sleep(1);
+            },
+        ]);
+        $commands = (new Replayer(new AvroPayloadCodec()))
+            ->replay($workflow, [], [], 'php-workers')
+            ->commands;
+
+        self::assertSame([0, 'named'], array_column($commands, 'selection_member_key'));
+    }
+
+    public function testSelectionReplayRejectsOutOfDomainRecordedMemberKeys(): void
+    {
+        $workflow = static fn (WorkflowContext $context): mixed => $context->select([
+            'work' => static fn () => $context->activity('lookup'),
+            'deadline' => static function () use ($context): void {
+                $context->sleep(5);
+            },
+        ]);
+
+        foreach (['', -1] as $key) {
+            $paths = self::selectionPaths(['work', 'deadline'], ['activity', 'timer']);
+            $paths[0][0]['selection_member_key'] = $key;
+            $history = [self::parallelEvent('ActivityScheduled', 1, 'lookup', $paths[0])];
+
+            try {
+                (new Replayer(new AvroPayloadCodec()))->replay($workflow, $history, [], 'php-workers');
+            } catch (NonDeterministicWorkflow $exception) {
+                self::assertSame('selection_group_metadata_invalid', $exception->reason);
+
+                continue;
+            }
+
+            self::fail(sprintf('Selection replay accepted invalid recorded key [%s].', (string) $key));
+        }
+    }
+
+    public function testSelectionRejectsNonScalarIterableKeys(): void
+    {
+        $workflow = static function (WorkflowContext $context): mixed {
+            $operations = new class($context) implements \Iterator {
+                private bool $valid = true;
+
+                public function __construct(private readonly WorkflowContext $context)
+                {
+                }
+
+                public function current(): callable
+                {
+                    return fn () => $this->context->activity('first');
+                }
+
+                public function key(): object
+                {
+                    return new \stdClass();
+                }
+
+                public function next(): void
+                {
+                    $this->valid = false;
+                }
+
+                public function rewind(): void
+                {
+                    $this->valid = true;
+                }
+
+                public function valid(): bool
+                {
+                    return $this->valid;
+                }
+            };
+
+            return (new \ReflectionMethod($context, 'select'))->invoke($context, $operations);
+        };
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('member keys must be integers or strings');
+
+        (new Replayer(new AvroPayloadCodec()))->replay($workflow, [], [], 'php-workers');
+    }
+
+    public function testNestedSelectionCommandsCarryGroupKindForOneAndManyLeaves(): void
+    {
+        foreach ([1, 2] as $leafCount) {
+            $workflow = static function (WorkflowContext $context) use ($leafCount): mixed {
+                $nested = [];
+                for ($index = 0; $index < $leafCount; ++$index) {
+                    $nested[] = static fn () => $context->activity("nested-{$index}");
+                }
+
+                return $context->select([
+                    'nested' => static fn () => $context->all($nested),
+                    'deadline' => static function () use ($context): void {
+                        $context->sleep(5);
+                    },
+                ]);
+            };
+
+            $commands = (new Replayer(new AvroPayloadCodec()))->replay(
+                $workflow,
+                [],
+                [],
+                'php-workers',
+            )->commands;
+
+            self::assertCount($leafCount + 1, $commands);
+            foreach (array_slice($commands, 0, $leafCount) as $command) {
+                self::assertSame('group', $command['parallel_group_path'][0]['selection_member_kind']);
+                self::assertSame($leafCount, $command['parallel_group_path'][0]['selection_member_size']);
+            }
+        }
+    }
+
+    public function testSelectionReplaysRecordedWinnerIndependentOfLaterCompletionOrder(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $paths = self::selectionPaths(['work', 'deadline'], ['activity', 'timer']);
+        $history = [
+            self::parallelEvent('ActivityScheduled', 1, 'lookup', $paths[0]),
+            self::parallelEvent('TimerScheduled', 2, '5', $paths[1]),
+            self::parallelEvent('ActivityCompleted', 1, 'lookup', $paths[0], $codec->envelope('answer')),
+            self::selectionResolved('work', 0, 1, 'activity', 'activity-1'),
+            self::parallelEvent('TimerFired', 2, '5', $paths[1]),
+        ];
+        $workflow = static function (WorkflowContext $context): array {
+            $selected = $context->select([
+                'work' => static fn () => $context->activity('lookup'),
+                'deadline' => static function () use ($context): void {
+                    $context->sleep(5);
+                },
+            ]);
+
+            return [
+                'key' => $selected->key,
+                'kind' => $selected->kind,
+                'identity' => $selected->identity,
+                'value' => $selected->result(),
+                'remaining' => array_keys($selected->remaining()),
+            ];
+        };
+
+        $result = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame([
+            'key' => 'work',
+            'kind' => 'activity',
+            'identity' => 'activity-1',
+            'value' => 'answer',
+            'remaining' => ['deadline'],
+        ], $codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    public function testColdReplayWaitsForSelectionResolutionMarkerThenUsesExactRecordedWinner(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $paths = self::selectionPaths(['first', 'second'], ['activity', 'activity']);
+        $history = [
+            self::parallelEvent('ActivityScheduled', 1, 'first-activity', $paths[0]),
+            self::parallelEvent('ActivityScheduled', 2, 'second-activity', $paths[1]),
+            self::parallelEvent('ActivityCompleted', 1, 'first-activity', $paths[0], $codec->envelope('first-value')),
+            self::parallelEvent('ActivityCompleted', 2, 'second-activity', $paths[1], $codec->envelope('second-value')),
+        ];
+        $workflow = static function (WorkflowContext $context): array {
+            $selected = $context->select([
+                'first' => static fn () => $context->activity('first-activity'),
+                'second' => static fn () => $context->activity('second-activity'),
+            ]);
+
+            return [
+                'key' => $selected->key,
+                'identity' => $selected->identity,
+                'value' => $selected->result(),
+            ];
+        };
+
+        $waiting = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame([], $waiting->commands);
+
+        $resolved = (new Replayer($codec))->replay(
+            $workflow,
+            [...$history, self::selectionResolved('second', 1, 2, 'activity', 'activity-2')],
+            [],
+            'php-workers',
+        );
+
+        self::assertSame(['complete_workflow'], array_column($resolved->commands, 'type'));
+        self::assertSame([
+            'key' => 'second',
+            'identity' => 'activity-2',
+            'value' => 'second-value',
+        ], $codec->decodeEnvelope($resolved->commands[0]['result']));
+    }
+
+    public function testSelectionLoserCanBeAwaitedAfterColdReplay(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $paths = self::selectionPaths(['work', 'deadline'], ['activity', 'timer']);
+        $history = [
+            self::parallelEvent('ActivityScheduled', 1, 'lookup', $paths[0]),
+            self::parallelEvent('TimerScheduled', 2, '0', $paths[1]),
+            self::parallelEvent('TimerFired', 2, '0', $paths[1]),
+            self::selectionResolved('deadline', 1, 2, 'timer', 'timer-2'),
+            self::parallelEvent('ActivityCompleted', 1, 'lookup', $paths[0], $codec->envelope('late answer')),
+        ];
+        $workflow = static function (WorkflowContext $context): array {
+            $selected = $context->select([
+                'work' => static fn () => $context->activity('lookup'),
+                'deadline' => static function () use ($context): void {
+                    $context->sleep(0);
+                },
+            ]);
+
+            return ['winner' => $selected->key, 'work' => $selected->handles['work']->await()];
+        };
+
+        $result = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame(
+            ['winner' => 'deadline', 'work' => 'late answer'],
+            $codec->decodeEnvelope($result->commands[0]['result']),
+        );
+    }
+
+    public function testFreshProcessConsumesRuntimeProducedSelectionHistory(): void
+    {
+        $fixturePath = __DIR__ . '/fixtures/durable-selection-runtime-history.json';
+        self::assertSame(
+            '51fd8b9c16e978dcef536a5c727b9fdc0ae724d9afc17d9a7837d219f41ee3ba',
+            hash_file('sha256', $fixturePath),
+        );
+        $process = proc_open(
+            [PHP_BINARY, __DIR__ . '/fixtures/durable-selection-cold-replay.php', $fixturePath],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            dirname(__DIR__),
+        );
+        self::assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $status = proc_close($process);
+
+        self::assertSame(0, $status, $stderr === false ? '' : $stderr);
+        self::assertNotFalse($stdout);
+        $observed = json_decode($stdout, true, flags: JSON_THROW_ON_ERROR);
+        self::assertIsInt($observed['process_id'] ?? null);
+        self::assertNotSame(getmypid(), $observed['process_id']);
+        unset($observed['process_id']);
+        self::assertSame([
+            'winner' => 'fast',
+            'winner_value' => 'winner-value',
+            'slow' => 'loser-value',
+        ], $observed);
+    }
+
+    public function testSelectionChildCancellationUsesRunIdentityWhenBothChildIdsExist(): void
+    {
+        $paths = self::selectionPaths(['child', 'deadline'], ['child', 'timer']);
+        $history = [
+            self::parallelEvent('ChildWorkflowScheduled', 1, 'child-workflow', $paths[0]),
+            self::parallelEvent('TimerScheduled', 2, '0', $paths[1]),
+            self::parallelEvent('TimerFired', 2, '0', $paths[1]),
+            self::selectionResolved('deadline', 1, 2, 'timer', 'timer-2'),
+        ];
+        $history[0]['payload']['child_workflow_instance_id'] = 'child-instance';
+        $history[0]['payload']['child_workflow_run_id'] = 'child-run';
+        $workflow = static function (WorkflowContext $context): void {
+            $selected = $context->select([
+                'child' => static fn () => $context->childWorkflow('child-workflow'),
+                'deadline' => static function () use ($context): void {
+                    $context->sleep(0);
+                },
+            ]);
+            $selected->handles['child']->cancel();
+        };
+
+        $result = (new Replayer(new AvroPayloadCodec()))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame('cancel_selection_operation', $result->commands[0]['type']);
+        self::assertSame('child-run', $result->commands[0]['operation_identity']);
+    }
+
+    public function testSelectionLoserCancellationEmitsOneIdempotentControlCommand(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $paths = self::selectionPaths(['work', 'deadline'], ['activity', 'timer']);
+        $history = [
+            self::parallelEvent('ActivityScheduled', 1, 'lookup', $paths[0]),
+            self::parallelEvent('TimerScheduled', 2, '0', $paths[1]),
+            self::parallelEvent('TimerFired', 2, '0', $paths[1]),
+            self::selectionResolved('deadline', 1, 2, 'timer', 'timer-2'),
+        ];
+        $history[0]['payload']['activity_execution_id'] = 'activity-work';
+        $workflow = static function (WorkflowContext $context): mixed {
+            $selected = $context->select([
+                'work' => static fn () => $context->activity('lookup'),
+                'deadline' => static function () use ($context): void {
+                    $context->sleep(0);
+                },
+            ]);
+
+            $selected->handles['work']->cancel();
+
+            return null;
+        };
+
+        $first = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+        self::assertSame(['cancel_selection_operation', 'complete_workflow'], array_column($first->commands, 'type'));
+        self::assertSame('work', $first->commands[0]['member_key']);
+        self::assertSame('activity-work', $first->commands[0]['operation_identity']);
+
+        $history[] = [
+            'event_type' => 'SelectionOperationCancelled',
+            'payload' => [
+                'selection_group_id' => 'select-calls:1:2',
+                'member_key' => 'work',
+                'member_index' => 0,
+                'member_base_sequence' => 1,
+                'member_size' => 1,
+                'operation_kind' => 'activity',
+                'operation_identity' => 'activity-work',
+                'cancelled_at' => '2026-08-27T00:00:00Z',
+            ],
+        ];
+        $replay = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+        self::assertSame(['complete_workflow'], array_column($replay->commands, 'type'));
+    }
+
+    public function testSelectionCompletionBeforeCancellationRemainsAwaitable(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $paths = self::selectionPaths(['work', 'deadline'], ['activity', 'timer']);
+        $history = [
+            self::parallelEvent('ActivityScheduled', 1, 'lookup', $paths[0]),
+            self::parallelEvent('TimerScheduled', 2, '0', $paths[1]),
+            self::parallelEvent('TimerFired', 2, '0', $paths[1]),
+            self::selectionResolved('deadline', 1, 2, 'timer', 'timer-2'),
+            self::parallelEvent('ActivityCompleted', 1, 'lookup', $paths[0], $codec->envelope('completed-first')),
+        ];
+        $history[0]['payload']['activity_execution_id'] = 'activity-work';
+        $history[4]['payload']['activity_execution_id'] = 'activity-work';
+        $workflow = static function (WorkflowContext $context): array {
+            $selected = $context->select([
+                'work' => static fn () => $context->activity('lookup'),
+                'deadline' => static function () use ($context): void {
+                    $context->sleep(0);
+                },
+            ]);
+
+            $selected->handles['work']->cancel();
+
+            return ['work' => $selected->handles['work']->await()];
+        };
+
+        $result = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame(['cancel_selection_operation', 'complete_workflow'], array_column($result->commands, 'type'));
+        self::assertSame(
+            ['work' => 'completed-first'],
+            $codec->decodeEnvelope($result->commands[1]['result']),
+        );
+    }
+
+    public function testNestedFailureBeforeCancellationRemainsTheAwaitedFailure(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $outer = static fn (int $flatIndex): array => [
+            'parallel_group_id' => 'select-calls:1:3',
+            'parallel_group_kind' => 'mixed',
+            'parallel_group_mode' => 'select',
+            'parallel_group_base_sequence' => 1,
+            'parallel_group_size' => 3,
+            'parallel_group_index' => $flatIndex,
+            'selection_member_key' => 'nested',
+            'selection_member_index' => 0,
+            'selection_member_base_sequence' => 1,
+            'selection_member_size' => 2,
+            'selection_member_kind' => 'group',
+        ];
+        $inner = static fn (int $index): array => [
+            'parallel_group_id' => 'parallel-activities:1:2',
+            'parallel_group_kind' => 'activity',
+            'parallel_group_base_sequence' => 1,
+            'parallel_group_size' => 2,
+            'parallel_group_index' => $index,
+        ];
+        $deadline = [
+            'parallel_group_id' => 'select-calls:1:3',
+            'parallel_group_kind' => 'mixed',
+            'parallel_group_mode' => 'select',
+            'parallel_group_base_sequence' => 1,
+            'parallel_group_size' => 3,
+            'parallel_group_index' => 2,
+            'selection_member_key' => 'deadline',
+            'selection_member_index' => 1,
+            'selection_member_base_sequence' => 3,
+            'selection_member_size' => 1,
+            'selection_member_kind' => 'timer',
+        ];
+        $history = [
+            self::parallelEvent('ActivityScheduled', 1, 'nested-first', [$outer(0), $inner(0)]),
+            self::parallelEvent('ActivityScheduled', 2, 'nested-second', [$outer(1), $inner(1)]),
+            self::parallelEvent('TimerScheduled', 3, '0', [$deadline]),
+            self::parallelEvent('TimerFired', 3, '0', [$deadline]),
+            [
+                'event_type' => 'SelectionResolved',
+                'payload' => [
+                    'selection_group_id' => 'select-calls:1:3',
+                    'selection_group_base_sequence' => 1,
+                    'selection_group_size' => 3,
+                    'member_key' => 'deadline',
+                    'member_index' => 1,
+                    'member_base_sequence' => 3,
+                    'member_size' => 1,
+                    'operation_kind' => 'timer',
+                    'operation_identity' => 'timer-3',
+                    'outcome' => 'completed',
+                    'resolution_event_id' => 'event-TimerFired-3',
+                    'resolution_event_type' => 'TimerFired',
+                ],
+            ],
+            self::parallelEvent('ActivityFailed', 2, 'nested-second', [$outer(1), $inner(1)]),
+        ];
+        $workflow = static function (WorkflowContext $context): array {
+            $selected = $context->select([
+                'nested' => static fn () => $context->all([
+                    static fn () => $context->activity('nested-first'),
+                    static fn () => $context->activity('nested-second'),
+                ]),
+                'deadline' => static function () use ($context): void {
+                    $context->sleep(0);
+                },
+            ]);
+            $selected->handles['nested']->cancel();
+
+            try {
+                $selected->handles['nested']->await();
+            } catch (ActivityFailed $failure) {
+                return ['winner' => $selected->key, 'failure' => $failure::class];
+            }
+
+            return ['winner' => $selected->key, 'failure' => null];
+        };
+
+        $result = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame(['cancel_selection_operation', 'complete_workflow'], array_column($result->commands, 'type'));
+        self::assertSame(
+            ['winner' => 'deadline', 'failure' => ActivityFailed::class],
+            $codec->decodeEnvelope($result->commands[1]['result']),
+        );
     }
 
     public function testParallelReplayReturnsNestedDeclarationOrderAfterMixedCompletionOrder(): void
@@ -1164,6 +1818,14 @@ final class ReplayerTest extends TestCase
         yield 'terminated' => ['ChildRunTerminated'];
     }
 
+    /** @return iterable<string, array{string, string}> */
+    public static function selectedExternalInputProvider(): iterable
+    {
+        yield 'signal event' => ['signal', 'SignalReceived'];
+        yield 'workflow update' => ['update', 'UpdateApplied'];
+        yield 'message stream event' => ['message', 'SignalReceived'];
+    }
+
     /**
      * @param list<array{string, int, int, int}> $leaves
      * @return list<list<array<string, mixed>>>
@@ -1201,6 +1863,76 @@ final class ReplayerTest extends TestCase
     }
 
     /**
+     * @param list<int|string> $keys
+     * @param list<string> $kinds
+     * @return list<list<array<string, mixed>>>
+     */
+    private static function selectionPaths(array $keys, array $kinds): array
+    {
+        $paths = [];
+        $size = count($keys);
+        $groupKind = count(array_unique($kinds)) === 1 ? $kinds[0] : 'mixed';
+        foreach ($keys as $index => $key) {
+            $paths[] = [[
+                'parallel_group_id' => "select-calls:1:{$size}",
+                'parallel_group_kind' => $groupKind,
+                'parallel_group_mode' => 'select',
+                'parallel_group_base_sequence' => 1,
+                'parallel_group_size' => $size,
+                'parallel_group_index' => $index,
+                'selection_member_key' => $key,
+                'selection_member_index' => $index,
+                'selection_member_base_sequence' => 1 + $index,
+                'selection_member_size' => 1,
+                'selection_member_kind' => $kinds[$index],
+            ]];
+        }
+
+        return $paths;
+    }
+
+    /** @return array<string, mixed> */
+    private static function selectionResolved(
+        int|string $key,
+        int $index,
+        int $baseSequence,
+        string $kind,
+        string $identity,
+    ): array {
+        return [
+            'event_type' => 'SelectionResolved',
+            'payload' => [
+                'selection_group_id' => 'select-calls:1:2',
+                'selection_group_base_sequence' => 1,
+                'selection_group_size' => 2,
+                'member_key' => $key,
+                'member_index' => $index,
+                'member_base_sequence' => $baseSequence,
+                'member_size' => 1,
+                'operation_kind' => $kind,
+                'operation_identity' => $identity,
+                'outcome' => 'completed',
+                'resolution_event_id' => sprintf(
+                    'event-%s-%d',
+                    match ($kind) {
+                        'activity' => 'ActivityCompleted',
+                        'child' => 'ChildRunCompleted',
+                        'condition' => 'ConditionWaitSatisfied',
+                        default => 'TimerFired',
+                    },
+                    $baseSequence,
+                ),
+                'resolution_event_type' => match ($kind) {
+                    'activity' => 'ActivityCompleted',
+                    'child' => 'ChildRunCompleted',
+                    'condition' => 'ConditionWaitSatisfied',
+                    default => 'TimerFired',
+                },
+            ],
+        ];
+    }
+
+    /**
      * @param list<array<string, mixed>> $path
      * @return array<string, mixed>
      */
@@ -1218,16 +1950,23 @@ final class ReplayerTest extends TestCase
         ];
         if (str_starts_with($eventType, 'Activity')) {
             $payload['activity_type'] = $detail;
+            $payload['activity_execution_id'] = "activity-{$sequence}";
         } elseif (str_starts_with($eventType, 'Child')) {
             $payload['child_workflow_type'] = $detail;
+            $payload['child_workflow_run_id'] = "child-run-{$sequence}";
         } else {
             $payload['delay_seconds'] = (int) $detail;
+            $payload['timer_id'] = "timer-{$sequence}";
         }
         if ($result !== null) {
             $payload['result'] = $result;
         }
 
-        return ['event_type' => $eventType, 'payload' => $payload];
+        return [
+            'id' => "event-{$eventType}-{$sequence}",
+            'event_type' => $eventType,
+            'payload' => $payload,
+        ];
     }
 
     private static function workflow(): callable

@@ -2,7 +2,7 @@
 
 The SDK sends control-plane version `2` to workflow, schedule, namespace,
 search-attribute, and service-operation routes. Cluster discovery uses
-`/api/cluster/info`. Worker requests use protocol `1.16` under `/api/worker`.
+`/api/cluster/info`. Worker requests use protocol `1.19` under `/api/worker`.
 Every request also carries `X-Namespace`; control and worker bearer tokens can
 be configured independently. `Client::withNamespace()` creates another client
 selection without mutating the original or replacing its transport, codec, or
@@ -79,7 +79,8 @@ workflow task the worker starts a new Fiber, re-runs the handler from the
 beginning, and suspends the Fiber whenever a replayable command is reached. The
 replayer matches command shapes and details against positive durable sequence
 numbers, then resumes the call with recorded activity, child-workflow, timer,
-A durable code-version choice emits the language-neutral
+condition-wait, selection, or side-effect history. A durable code-version choice
+emits the language-neutral
 `record_version_marker` command and resumes from `VersionMarkerRecorded` with
 the recorded decision, including after a worker restart or maximum-version
 increase. Activity, child-workflow, timer, and side-effect results resume from
@@ -123,6 +124,22 @@ without discarding fields when no task is leased. This preserves `poll_status`,
 future protocol metadata. The task-only `pollWorkflowTask()`,
 `pollActivityTask()`, and `pollQueryTask()` methods delegate to the full response
 methods and return only an array task or `null`.
+
+## Durable selection
+
+`WorkflowContext::select()` emits every activity, child-workflow, timer,
+condition-wait, or nested ordinary group member with stable selection identity.
+The server records one eligible winner before the worker resumes. The returned
+`SelectionResult` includes its key, index, operation kind, durable identity,
+typed outcome, and one `DurableOperationHandle` per member. Non-winning handles
+continue and can be awaited or explicitly cancelled; winner replay never depends
+on the order in which later terminal events are delivered.
+
+Handle `cancel()` is a void request and never reports a terminal outcome. Only
+committed `SelectionOperationCancelled` history proves cancellation won the
+race; when completion commits first, no cancellation marker is written,
+replay still advances past the void cancel call, and `await()` returns that
+committed result.
 
 `DurableWorkflow\Worker\PollResponse::isTerminal()` classifies stop decisions
 from typed fields, not human-readable error text. Stale registrations

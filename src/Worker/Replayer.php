@@ -8,6 +8,7 @@ use DurableWorkflow\Codec\AvroMapValue;
 use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Exception\ChildWorkflowFailed;
+use DurableWorkflow\Exception\DurableOperationCancelled;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use Fiber;
@@ -39,6 +40,13 @@ final class Replayer
         array $task = [],
     ): ReplayResult {
         $steps = $this->recordedSteps($history);
+        $stepsBySequence = [];
+        foreach ($steps as $step) {
+            $stepsBySequence[$step['sequence']] = $step;
+        }
+        $selectionResolutions = $this->selectionResolutions($history);
+        $selectionCancellations = $this->selectionCancellations($history);
+        $selectionOperationIdentities = $this->selectionOperationIdentities($history);
         $completedHistory = $this->hasCompletedHistory($history);
         $context = null;
         $execution = new Fiber(function () use ($handler, $history, $input, $task, &$context): mixed {
@@ -79,12 +87,15 @@ final class Replayer
                 $pending = false;
                 $matched = 0;
                 $failure = null;
+                $failures = [];
+                $missingMember = false;
 
                 foreach ($descriptors as $offset => $descriptor) {
                     $command = $descriptor['operation']->command;
                     $path = $descriptor['group_path'];
                     $step = $steps[$stepCursor + $offset] ?? null;
                     if ($step === null) {
+                        $missingMember = true;
                         $metadata = $path[array_key_last($path)] ?? [];
                         $commands[] = $command->withAttributes([
                             ...$metadata,
@@ -96,13 +107,29 @@ final class Replayer
                     ++$matched;
                     $this->assertCommandMatchesStep($command, $step);
                     $this->assertParallelPathMatches($step, $path);
+                    if ($command->type === 'open_condition_wait') {
+                        $this->assertConditionWaitCompatible($step, $command);
+                    }
                     $nextSequence = max($nextSequence, $step['sequence'] + 1);
 
                     if (!$step['resolved']) {
+                        if ($command->type === 'open_condition_wait') {
+                            if ($command->conditionSatisfied()) {
+                                $results[$offset] = true;
+                                continue;
+                            }
+
+                            $metadata = $path[array_key_last($path)] ?? [];
+                            $commands[] = $command->withAttributes([
+                                ...$metadata,
+                                'parallel_group_path' => $path,
+                            ])->toWire($this->codec, $taskQueue);
+                        }
                         $pending = true;
                         continue;
                     }
                     if ($step['failure'] instanceof Throwable) {
+                        $failures[$offset] = $step['failure'];
                         if ($failure === null
                             || $step['resolution_order'] < $failure['resolution_order']
                             || ($step['resolution_order'] === $failure['resolution_order'] && $offset < $failure['offset'])) {
@@ -120,7 +147,7 @@ final class Replayer
 
                 $stepCursor += $matched;
                 $nextSequence = max($nextSequence, $baseSequence + count($descriptors));
-                if (count($commands) > $commandsBeforeGroup && $failure !== null) {
+                if ($missingMember && $failure !== null) {
                     throw new NonDeterministicWorkflow(
                         'Parallel history contains a failure before every declared member was durably scheduled.',
                         $baseSequence,
@@ -128,6 +155,36 @@ final class Replayer
                         'failed group with missing members',
                         'parallel_group_partially_scheduled',
                     );
+                }
+                if ($suspended->mode === 'select') {
+                    $groupId = $descriptors[0]['group_path'][0]['parallel_group_id'] ?? null;
+                    $winner = is_string($groupId) ? ($selectionResolutions[$groupId] ?? null) : null;
+                    if (is_array($winner)) {
+                        $winner = $this->validatedSelectionResolution(
+                            $suspended,
+                            $baseSequence,
+                            $winner,
+                            $stepsBySequence,
+                            $history,
+                            $selectionOperationIdentities,
+                        );
+                        ksort($results);
+                        ksort($failures);
+                        $selection = $suspended->selectionResult(
+                            $baseSequence,
+                            $winner,
+                            $results,
+                            $failures,
+                            $selectionOperationIdentities,
+                        );
+                        $this->validateSelectionCancellationsForHandles(
+                            $selection->handles,
+                            $selectionCancellations,
+                        );
+                        $suspended = $execution->resume($selection);
+                        continue;
+                    }
+                    return $this->result($commands, $context);
                 }
                 if ($failure !== null) {
                     $suspended = $execution->throw($failure['exception']);
@@ -139,6 +196,29 @@ final class Replayer
 
                 ksort($results);
                 $suspended = $execution->resume($suspended->nestedResults(array_values($results)));
+                continue;
+            }
+
+            if ($suspended instanceof DurableOperationHandle) {
+                $resolution = $this->durableHandleResolution(
+                    $suspended,
+                    $stepsBySequence,
+                    $selectionCancellations,
+                );
+                if (!$resolution['resolved']) {
+                    return $this->result($commands, $context);
+                }
+                $suspended = $resolution['failure'] instanceof Throwable
+                    ? $execution->throw($resolution['failure'])
+                    : $execution->resume($resolution['value']);
+                continue;
+            }
+
+            if ($suspended instanceof CancelDurableOperationCommand) {
+                if ($this->selectionCancellationForHandle($suspended->handle, $selectionCancellations) === null) {
+                    $commands[] = $suspended->toWire();
+                }
+                $suspended = $execution->resume(null);
                 continue;
             }
 
@@ -429,6 +509,11 @@ final class Replayer
                             conditionKey: $steps[$conditionStepKey]['condition_key'],
                             conditionDefinitionFingerprint: $steps[$conditionStepKey]['condition_definition_fingerprint'],
                             timeoutSeconds: $steps[$conditionStepKey]['timeout_seconds'],
+                            parallelPath: $this->resolutionParallelPath(
+                                $payload,
+                                $steps[$conditionStepKey],
+                                $steps[$conditionStepKey]['sequence'],
+                            ),
                             resolutionOrder: $resolutionOrder,
                         );
                     }
@@ -613,6 +698,7 @@ final class Replayer
                     $conditionKey,
                     $conditionDefinitionFingerprint,
                     $timeoutSeconds,
+                    $this->parallelPath($payload, $sequence),
                 );
                 $conditionWaitId = $this->stringValue($payload['condition_wait_id'] ?? null);
                 if ($conditionWaitId !== null) {
@@ -631,6 +717,11 @@ final class Replayer
                         conditionKey: $steps[$conditionStepKey]['condition_key'],
                         conditionDefinitionFingerprint: $steps[$conditionStepKey]['condition_definition_fingerprint'],
                         timeoutSeconds: $steps[$conditionStepKey]['timeout_seconds'],
+                        parallelPath: $this->resolutionParallelPath(
+                            $payload,
+                            $steps[$conditionStepKey],
+                            $steps[$conditionStepKey]['sequence'],
+                        ),
                         resolutionOrder: $resolutionOrder,
                     );
                 }
@@ -639,6 +730,447 @@ final class Replayer
         ksort($steps, SORT_NUMERIC);
 
         return $this->collapseConditionReopens(array_values($steps));
+    }
+
+    /** @param list<array<string, mixed>> $history
+     *  @return array<string, array<string, mixed>>
+     */
+    private function selectionResolutions(array $history): array
+    {
+        $resolutions = [];
+        foreach ($history as $event) {
+            if (($event['event_type'] ?? $event['type'] ?? null) !== 'SelectionResolved') {
+                continue;
+            }
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $groupId = $payload['selection_group_id'] ?? null;
+            $memberIndex = $payload['member_index'] ?? null;
+            $memberBase = $payload['member_base_sequence'] ?? null;
+            $identity = $payload['operation_identity'] ?? null;
+            if (!is_string($groupId) || !preg_match('/\Aselect-calls:[1-9][0-9]*:[1-9][0-9]*\z/', $groupId)
+                || !is_int($memberIndex) || $memberIndex < 0
+                || !is_int($memberBase) || $memberBase < 1
+                || !is_string($identity) || $identity === '') {
+                throw new NonDeterministicWorkflow(
+                    'SelectionResolved history contains invalid durable winner identity.',
+                    $memberBase,
+                    'stable selection group, member, and operation identity',
+                    json_encode($payload, JSON_THROW_ON_ERROR),
+                    'selection_resolution_metadata_invalid',
+                );
+            }
+            if (isset($resolutions[$groupId])) {
+                throw new NonDeterministicWorkflow(
+                    "Selection group {$groupId} contains more than one committed winner.",
+                    $memberBase,
+                    'exactly one SelectionResolved marker',
+                    'duplicate SelectionResolved markers',
+                    'duplicate_selection_resolution',
+                );
+            }
+            $resolutions[$groupId] = $payload;
+        }
+
+        return $resolutions;
+    }
+
+    /** @param list<array<string, mixed>> $history
+     *  @return array<string, array<string, mixed>>
+     */
+    private function selectionCancellations(array $history): array
+    {
+        $cancellations = [];
+        foreach ($history as $event) {
+            if (($event['event_type'] ?? $event['type'] ?? null) !== 'SelectionOperationCancelled') {
+                continue;
+            }
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $groupId = $payload['selection_group_id'] ?? null;
+            $memberBase = $payload['member_base_sequence'] ?? null;
+            if (!is_string($groupId)
+                || !preg_match('/\Aselect-calls:[1-9][0-9]*:[1-9][0-9]*\z/', $groupId)
+                || !is_int($memberBase) || $memberBase < 1) {
+                throw new NonDeterministicWorkflow(
+                    'Selection cancellation history contains invalid durable identity.',
+                    is_int($memberBase) ? $memberBase : null,
+                    'SelectionOperationCancelled with stable group and member base',
+                    json_encode($payload, JSON_THROW_ON_ERROR),
+                    'selection_cancellation_invalid',
+                );
+            }
+            $key = $groupId.':'.$memberBase;
+            if (isset($cancellations[$key]) && $cancellations[$key] !== $payload) {
+                throw new NonDeterministicWorkflow(
+                    'Selection cancellation history contains conflicting markers.',
+                    $memberBase,
+                    'one stable SelectionOperationCancelled marker',
+                    json_encode($payload, JSON_THROW_ON_ERROR),
+                    'selection_cancellation_conflict',
+                );
+            }
+            $cancellations[$key] = $payload;
+        }
+
+        return $cancellations;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $history
+     * @return array<int, string>
+     */
+    private function selectionOperationIdentities(array $history): array
+    {
+        $identities = [];
+        $priorities = [];
+
+        foreach ($history as $event) {
+            $type = (string) ($event['event_type'] ?? $event['type'] ?? '');
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $sequence = $this->sequence($payload);
+            $descriptor = match ($type) {
+                'ActivityScheduled' => ['activity_execution_id', 10],
+                'ChildWorkflowScheduled' => ['child_workflow_run_id', 10],
+                'TimerScheduled' => ['timer_id', 1],
+                'SignalWaitOpened' => ['signal_wait_id', 20],
+                'ConditionWaitOpened' => ['condition_wait_id', 20],
+                default => null,
+            };
+            if ($sequence === null || $descriptor === null) {
+                continue;
+            }
+
+            [$field, $priority] = $descriptor;
+            $identity = $this->stringValue($payload[$field] ?? null);
+            if ($identity !== null && $identity !== '' && $priority > ($priorities[$sequence] ?? -1)) {
+                $identities[$sequence] = $identity;
+                $priorities[$sequence] = $priority;
+            }
+        }
+
+        return $identities;
+    }
+
+    /**
+     * @param array<string, mixed> $marker
+     * @param array<int, array<string, mixed>> $stepsBySequence
+     * @param list<array<string, mixed>> $history
+     * @param array<int, string> $operationIdentities
+     * @return array<string, mixed>
+     */
+    private function validatedSelectionResolution(
+        ParallelWorkflowCommand $group,
+        int $baseSequence,
+        array $marker,
+        array $stepsBySequence,
+        array $history,
+        array $operationIdentities,
+    ): array {
+        $groupSize = $group->leafCount();
+        $expectedGroupId = "select-calls:{$baseSequence}:{$groupSize}";
+        foreach ([
+            'selection_group_id' => $expectedGroupId,
+            'selection_group_base_sequence' => $baseSequence,
+            'selection_group_size' => $groupSize,
+        ] as $field => $expected) {
+            if (($marker[$field] ?? null) !== $expected) {
+                $this->throwSelectionMarkerMismatch(
+                    $baseSequence,
+                    $marker,
+                    "field {$field} does not match the authored selection group",
+                );
+            }
+        }
+
+        $memberIndex = $marker['member_index'] ?? null;
+        if (!is_int($memberIndex) || !array_key_exists($memberIndex, $group->operations)) {
+            $this->throwSelectionMarkerMismatch(
+                $baseSequence,
+                $marker,
+                'member_index does not name an authored selection member',
+            );
+        }
+
+        $cursor = 0;
+        foreach ($group->operations as $index => $operation) {
+            $memberSize = $operation instanceof ParallelWorkflowCommand ? $operation->leafCount() : 1;
+            if ($index !== $memberIndex) {
+                $cursor += $memberSize;
+                continue;
+            }
+
+            $memberBase = $baseSequence + $cursor;
+            $memberKind = $operation instanceof ParallelWorkflowCommand
+                ? 'group'
+                : match ($operation->command->historyShape) {
+                    'activity' => 'activity',
+                    'child_workflow' => 'child',
+                    'timer' => 'timer',
+                    'condition_wait' => 'condition',
+                    default => $operation->command->historyShape,
+                };
+            $identity = $memberKind === 'group'
+                ? "group:{$memberBase}:{$memberSize}"
+                : ($operationIdentities[$memberBase] ?? null);
+            foreach ([
+                'member_key' => $group->keys[$index],
+                'member_base_sequence' => $memberBase,
+                'member_size' => $memberSize,
+                'operation_kind' => $memberKind,
+                'operation_identity' => $identity,
+            ] as $field => $expected) {
+                if ($expected === null || ($marker[$field] ?? null) !== $expected) {
+                    $this->throwSelectionMarkerMismatch(
+                        $memberBase,
+                        $marker,
+                        "field {$field} does not match the authored durable member",
+                    );
+                }
+            }
+
+            $outcome = $marker['outcome'] ?? null;
+            if (!in_array($outcome, ['completed', 'failed'], true)) {
+                $this->throwSelectionMarkerMismatch($memberBase, $marker, 'outcome must be completed or failed');
+            }
+            $resolutionId = $marker['resolution_event_id'] ?? null;
+            $resolutionType = $marker['resolution_event_type'] ?? null;
+            if (!is_string($resolutionId) || $resolutionId === '' || !is_string($resolutionType)) {
+                $this->throwSelectionMarkerMismatch(
+                    $memberBase,
+                    $marker,
+                    'resolution_event_id/type must identify the terminal durable event',
+                );
+            }
+
+            $failureTypes = [
+                'ActivityFailed',
+                'ActivityCancelled',
+                'ActivityTimedOut',
+                'ChildRunFailed',
+                'ChildRunCancelled',
+                'ChildRunTerminated',
+            ];
+            $successTypes = [
+                'ActivityCompleted',
+                'ChildRunCompleted',
+                'TimerFired',
+                'SignalApplied',
+                'ConditionWaitSatisfied',
+                'ConditionWaitTimedOut',
+            ];
+            $terminalTypes = $outcome === 'failed' ? $failureTypes : $successTypes;
+            $candidates = [];
+            foreach ($history as $order => $event) {
+                $type = (string) ($event['event_type'] ?? $event['type'] ?? '');
+                $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+                $sequence = $this->sequence($payload);
+                if (!in_array($type, $terminalTypes, true)
+                    || $sequence === null
+                    || $sequence < $memberBase
+                    || $sequence >= $memberBase + $memberSize) {
+                    continue;
+                }
+                $eventId = $event['id'] ?? $event['event_id'] ?? null;
+                if (!is_string($eventId) || $eventId === '') {
+                    $this->throwSelectionMarkerMismatch(
+                        $memberBase,
+                        $marker,
+                        'terminal selection history is missing its durable event id',
+                    );
+                }
+                $candidates[] = [
+                    'id' => $eventId,
+                    'type' => $type,
+                    'sequence' => $sequence,
+                    'order' => $order,
+                ];
+            }
+            $resolution = $outcome === 'failed' ? ($candidates[0] ?? null) : ($candidates[array_key_last($candidates)] ?? null);
+            if (!is_array($resolution)
+                || $resolution['id'] !== $resolutionId
+                || $resolution['type'] !== $resolutionType) {
+                $this->throwSelectionMarkerMismatch(
+                    $memberBase,
+                    $marker,
+                    'resolution event is not the event that made the authored member terminal',
+                );
+            }
+
+            if ($outcome === 'completed') {
+                for ($sequence = $memberBase; $sequence < $memberBase + $memberSize; ++$sequence) {
+                    $step = $stepsBySequence[$sequence] ?? null;
+                    if (!is_array($step) || $step['resolved'] !== true || $step['failure'] instanceof Throwable) {
+                        $this->throwSelectionMarkerMismatch(
+                            $memberBase,
+                            $marker,
+                            'completed nested winner does not have a fully completed durable barrier',
+                        );
+                    }
+                }
+            } else {
+                $step = $stepsBySequence[$resolution['sequence']] ?? null;
+                if (!is_array($step) || !$step['failure'] instanceof Throwable) {
+                    $this->throwSelectionMarkerMismatch(
+                        $memberBase,
+                        $marker,
+                        'failed winner does not reference its exact durable failure',
+                    );
+                }
+            }
+
+            return [...$marker, '_resolution_sequence' => $resolution['sequence']];
+        }
+
+        $this->throwSelectionMarkerMismatch($baseSequence, $marker, 'winner is outside the authored selection group');
+    }
+
+    /** @param array<string, mixed> $marker */
+    private function throwSelectionMarkerMismatch(int $sequence, array $marker, string $detail): never
+    {
+        throw new NonDeterministicWorkflow(
+            "SelectionResolved {$detail}.",
+            $sequence,
+            'SelectionResolved matching the authored member and terminal event',
+            json_encode($marker, JSON_THROW_ON_ERROR),
+            'selection_resolution_member_mismatch',
+        );
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $stepsBySequence
+     * @param array<string, array<string, mixed>> $selectionCancellations
+     * @return array{resolved: bool, value: mixed, failure: ?Throwable}
+     */
+    private function durableHandleResolution(
+        DurableOperationHandle $handle,
+        array $stepsBySequence,
+        array $selectionCancellations,
+    ): array {
+        if ($this->selectionCancellationForHandle($handle, $selectionCancellations) !== null) {
+            return [
+                'resolved' => true,
+                'value' => null,
+                'failure' => new DurableOperationCancelled(
+                    $handle->selectionGroupId,
+                    $handle->key,
+                    $handle->index,
+                    $handle->kind,
+                    $handle->identity,
+                ),
+            ];
+        }
+
+        if ($handle->operation instanceof DeferredWorkflowOperation) {
+            $step = $stepsBySequence[$handle->baseSequence] ?? null;
+
+            return is_array($step) && $step['resolved'] === true
+                ? ['resolved' => true, 'value' => $step['value'], 'failure' => $step['failure']]
+                : ['resolved' => false, 'value' => null, 'failure' => null];
+        }
+
+        $results = [];
+        $pending = false;
+        $failures = [];
+        foreach ($handle->operation->leafDescriptors($handle->baseSequence) as $descriptor) {
+            $step = $stepsBySequence[$handle->baseSequence + $descriptor['offset']] ?? null;
+            if (!is_array($step) || $step['resolved'] !== true) {
+                $pending = true;
+                continue;
+            }
+            if ($step['failure'] instanceof Throwable) {
+                $failures[] = $step;
+                continue;
+            }
+            $results[$descriptor['offset']] = $step['value'];
+        }
+        if ($failures !== []) {
+            usort($failures, static fn (array $left, array $right): int =>
+                $left['resolution_order'] <=> $right['resolution_order']);
+
+            return ['resolved' => true, 'value' => null, 'failure' => $failures[0]['failure']];
+        }
+        if ($pending) {
+            return ['resolved' => false, 'value' => null, 'failure' => null];
+        }
+        ksort($results);
+
+        return [
+            'resolved' => true,
+            'value' => $handle->operation->nestedResults(array_values($results)),
+            'failure' => null,
+        ];
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $selectionCancellations
+     * @return array<string, mixed>|null
+     */
+    private function selectionCancellationForHandle(
+        DurableOperationHandle $handle,
+        array $selectionCancellations,
+    ): ?array {
+        $payload = $selectionCancellations[$handle->selectionGroupId.':'.$handle->baseSequence] ?? null;
+        if (!is_array($payload)) {
+            return null;
+        }
+
+        foreach ([
+            'selection_group_id' => $handle->selectionGroupId,
+            'member_key' => $handle->key,
+            'member_index' => $handle->index,
+            'member_base_sequence' => $handle->baseSequence,
+            'member_size' => $handle->size,
+            'operation_kind' => $handle->kind,
+            'operation_identity' => $handle->identity,
+        ] as $field => $expected) {
+            if (($payload[$field] ?? null) === $expected) {
+                continue;
+            }
+
+            throw new NonDeterministicWorkflow(
+                "Selection cancellation field {$field} does not match the authored durable member.",
+                $handle->baseSequence,
+                'SelectionOperationCancelled matching the authored selection handle',
+                json_encode($payload, JSON_THROW_ON_ERROR),
+                'selection_cancellation_member_mismatch',
+            );
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @param array<int|string, DurableOperationHandle> $handles
+     * @param array<string, array<string, mixed>> $selectionCancellations
+     */
+    private function validateSelectionCancellationsForHandles(
+        array $handles,
+        array $selectionCancellations,
+    ): void {
+        $first = reset($handles);
+        if (!$first instanceof DurableOperationHandle) {
+            return;
+        }
+        $byBase = [];
+        foreach ($handles as $handle) {
+            $byBase[$handle->baseSequence] = $handle;
+        }
+        foreach ($selectionCancellations as $payload) {
+            if (($payload['selection_group_id'] ?? null) !== $first->selectionGroupId) {
+                continue;
+            }
+            $memberBase = $payload['member_base_sequence'] ?? null;
+            $handle = is_int($memberBase) ? ($byBase[$memberBase] ?? null) : null;
+            if (!$handle instanceof DurableOperationHandle) {
+                throw new NonDeterministicWorkflow(
+                    'Selection cancellation member base does not name an authored durable member.',
+                    is_int($memberBase) ? $memberBase : null,
+                    'SelectionOperationCancelled matching an authored selection handle',
+                    json_encode($payload, JSON_THROW_ON_ERROR),
+                    'selection_cancellation_member_mismatch',
+                );
+            }
+            $this->selectionCancellationForHandle($handle, $selectionCancellations);
+        }
     }
 
     /**
@@ -893,6 +1425,12 @@ final class Replayer
             'parallel_group_base_sequence',
             'parallel_group_size',
             'parallel_group_index',
+            'parallel_group_mode',
+            'selection_member_key',
+            'selection_member_index',
+            'selection_member_base_sequence',
+            'selection_member_size',
+            'selection_member_kind',
         ];
         $hasMetadata = array_key_exists('parallel_group_path', $payload);
         foreach ($fields as $field) {
@@ -955,8 +1493,12 @@ final class Replayer
         $base = $payload['parallel_group_base_sequence'] ?? null;
         $size = $payload['parallel_group_size'] ?? null;
         $index = $payload['parallel_group_index'] ?? null;
+        $mode = $payload['parallel_group_mode'] ?? (is_string($id) && str_starts_with($id, 'select-calls:')
+            ? 'select'
+            : 'all');
         if (!is_string($id) || $id === ''
-            || !is_string($kind) || !in_array($kind, ['activity', 'child', 'timer', 'mixed'], true)
+            || !is_string($kind) || !in_array($kind, ['activity', 'child', 'timer', 'condition', 'mixed'], true)
+            || !is_string($mode) || !in_array($mode, ['all', 'select'], true)
             || !is_int($base) || $base < 1
             || !is_int($size) || $size < 1 || $size > WorkflowContext::MAX_PARALLEL_OPERATIONS
             || !is_int($index) || $index < 0 || $index >= $size
@@ -970,7 +1512,7 @@ final class Replayer
             );
         }
 
-        $prefix = match ($kind) {
+        $prefix = $mode === 'select' ? 'select-calls' : match ($kind) {
             'activity' => 'parallel-activities',
             'child' => 'parallel-children',
             'timer' => 'parallel-timers',
@@ -987,13 +1529,47 @@ final class Replayer
             );
         }
 
-        return [
+        $entry = array_filter([
             'parallel_group_id' => $id,
             'parallel_group_kind' => $kind,
+            'parallel_group_mode' => $mode === 'select' ? 'select' : null,
             'parallel_group_base_sequence' => $base,
             'parallel_group_size' => $size,
             'parallel_group_index' => $index,
-        ];
+        ], static fn (mixed $value): bool => $value !== null);
+
+        if ($mode === 'select') {
+            $memberKey = $payload['selection_member_key'] ?? null;
+            $memberIndex = $payload['selection_member_index'] ?? null;
+            $memberBase = $payload['selection_member_base_sequence'] ?? null;
+            $memberSize = $payload['selection_member_size'] ?? null;
+            $memberKind = $payload['selection_member_kind'] ?? null;
+            if (!((is_string($memberKey) && $memberKey !== '') || (is_int($memberKey) && $memberKey >= 0))
+                || !is_int($memberIndex) || $memberIndex < 0
+                || !is_int($memberBase) || $memberBase < $base
+                || !is_int($memberSize) || $memberSize < 1
+                || !is_string($memberKind)
+                || !in_array($memberKind, ['activity', 'child', 'timer', 'signal', 'condition', 'group'], true)
+                || $sequence < $memberBase || $sequence >= $memberBase + $memberSize) {
+                throw new NonDeterministicWorkflow(
+                    'Selection-group history contains invalid durable member identity.',
+                    $sequence,
+                    'stable member key, index, base sequence, and size',
+                    json_encode($payload, JSON_THROW_ON_ERROR),
+                    'selection_group_metadata_invalid',
+                );
+            }
+            $entry = [
+                ...$entry,
+                'selection_member_key' => $memberKey,
+                'selection_member_index' => $memberIndex,
+                'selection_member_base_sequence' => $memberBase,
+                'selection_member_size' => $memberSize,
+                'selection_member_kind' => $memberKind,
+            ];
+        }
+
+        return $entry;
     }
 
     /**

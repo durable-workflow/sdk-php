@@ -52,7 +52,7 @@ final class ClientContractTest extends TestCase
         $client = new Client('https://server.example', transport: $transport);
 
         self::assertNull($client->pollActivityTask('worker-1', 'queue', 0));
-        self::assertSame('1.16', $transport->requests[0]['headers']['X-Durable-Workflow-Protocol-Version']);
+        self::assertSame('1.19', $transport->requests[0]['headers']['X-Durable-Workflow-Protocol-Version']);
         self::assertSame('php-activity-poll', substr($transport->requests[0]['body']['poll_request_id'], 0, 17));
     }
 
@@ -70,7 +70,7 @@ final class ClientContractTest extends TestCase
                 'Accept' => 'application/json',
                 'Content-Type' => 'application/json',
                 'X-Namespace' => 'default',
-                'X-Durable-Workflow-Protocol-Version' => '1.16',
+                'X-Durable-Workflow-Protocol-Version' => '1.19',
             ],
             'body' => [
                 'worker_id' => 'worker-1',
@@ -85,6 +85,7 @@ final class ClientContractTest extends TestCase
                     'message_streams',
                     'memo_upserts',
                     'typed_search_attributes',
+                    'durable_selection',
                 ],
                 'max_concurrent_workflow_tasks' => 1,
                 'max_concurrent_activity_tasks' => 1,

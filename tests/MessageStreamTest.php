@@ -240,7 +240,7 @@ final class MessageStreamTest extends TestCase
     {
         self::assertFalse(Version::supportsMessageStreams('1.14'));
         self::assertTrue(Version::supportsMessageStreams('1.15'));
-        self::assertSame('1.16', Version::WORKER_PROTOCOL);
+        self::assertSame('1.19', Version::WORKER_PROTOCOL);
     }
 
     /**

@@ -85,10 +85,10 @@ project follows [Semantic Versioning](https://semver.org/).
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK source to `2.0.0-rc.47` and qualified it with Server
-  `2.0.0-rc.50`. Worker registration now explicitly advertises memo upserts and
-  typed search attributes, with worker protocol `1.16` identifying the typed
-  search floor. During the active 2.0 prerelease train, package metadata names
+- Advanced the PHP SDK source to `2.0.0-rc.48` and qualified it with Server
+  `2.0.0-rc.51`. Worker registration now explicitly advertises memo upserts and
+  typed search attributes, with worker protocol `1.19` identifying the durable
+  selection floor. During the active 2.0 prerelease train, package metadata names
   the exact SDK artifact and exact qualified Server artifact rather than a
   compatibility range; other prereleases remain historical and receive no
   compatibility shim. Avro is the sole public
@@ -121,6 +121,9 @@ project follows [Semantic Versioning](https://semver.org/).
   or user-handler execution, and report `unsupported_payload_codec` through the
   task failure path. Unsupported activity-task codecs are non-retryable so the
   Server terminates the incompatible task instead of redelivering it.
+- Workflows can select the first durably committed activity, child workflow,
+  timer, or condition result without cancelling siblings. Stable handles allow
+  remaining operations to continue, be awaited later, or be cancelled explicitly.
 - Laravel role processes can use `DURABLE_WORKFLOW_PROCESS_ROLE` with
   `DURABLE_WORKFLOW_PROCESS_TOKEN` as an explicit single-credential handoff.
   It rejects ambient, incomplete, invalid, and opposite-role authentication

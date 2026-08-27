@@ -405,6 +405,7 @@ final class Worker
                         'message_streams',
                         'memo_upserts',
                         'typed_search_attributes',
+                        'durable_selection',
                     ],
                     buildId: $this->buildId,
                     workflowCommandContracts: $this->workflowCommandContracts(),

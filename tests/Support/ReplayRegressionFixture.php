@@ -389,6 +389,18 @@ final class ReplayRegressionFixture
                     return ['failure' => $exception::class];
                 }
             },
+            'golden.selection' => static function (WorkflowContext $context): array {
+                $selected = $context->select([
+                    'first' => static fn () => $context->activity('golden.activity-one'),
+                    'second' => static fn () => $context->activity('golden.activity-two'),
+                ]);
+
+                return [
+                    'key' => $selected->key,
+                    'identity' => $selected->identity,
+                    'value' => $selected->result(),
+                ];
+            },
             default => throw new RuntimeException(
                 "Replay fixture workflow {$workflowType} has no PHP implementation; "
                 .'register its reproducer workflow in ReplayRegressionFixture.',

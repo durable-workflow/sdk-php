@@ -154,7 +154,7 @@ final class WorkerAuthoringTest extends TestCase
                 'Accept' => 'application/json',
                 'Content-Type' => 'application/json',
                 'X-Namespace' => 'default',
-                'X-Durable-Workflow-Protocol-Version' => '1.16',
+                'X-Durable-Workflow-Protocol-Version' => '1.19',
             ],
             'body' => [
                 'worker_id' => 'worker-1',
@@ -172,6 +172,7 @@ final class WorkerAuthoringTest extends TestCase
                     'message_streams',
                     'memo_upserts',
                     'typed_search_attributes',
+                    'durable_selection',
                 ],
                 'max_concurrent_workflow_tasks' => 1,
                 'max_concurrent_activity_tasks' => 1,

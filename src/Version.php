@@ -8,12 +8,18 @@ namespace DurableWorkflow;
 final class Version
 {
     public const CONTROL_PLANE_PROTOCOL = '2';
-    public const WORKER_PROTOCOL = '1.16';
+    public const WORKER_PROTOCOL = '1.19';
     public const MESSAGE_STREAMS_MINIMUM_WORKER_PROTOCOL = '1.15';
+    public const DURABLE_SELECTION_MINIMUM_WORKER_PROTOCOL = '1.19';
 
     public static function supportsMessageStreams(string $workerProtocol = self::WORKER_PROTOCOL): bool
     {
         return version_compare($workerProtocol, self::MESSAGE_STREAMS_MINIMUM_WORKER_PROTOCOL, '>=');
+    }
+
+    public static function supportsDurableSelection(string $workerProtocol = self::WORKER_PROTOCOL): bool
+    {
+        return version_compare($workerProtocol, self::DURABLE_SELECTION_MINIMUM_WORKER_PROTOCOL, '>=');
     }
 
     private function __construct()

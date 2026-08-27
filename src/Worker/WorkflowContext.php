@@ -227,10 +227,27 @@ final class WorkflowContext
         ?string $key = null,
         int|float|null $timeout = null,
     ): bool {
+        $operation = $this->deferCondition($predicate, $key, $timeout);
+        if ($this->isCapturing()) {
+            $this->capture($operation);
+
+            return false;
+        }
+
+        return (bool) $this->suspend($operation->command);
+    }
+
+    /** Prepare a deterministic condition or signal-derived wait for a durable group. */
+    public function deferCondition(
+        callable $predicate,
+        ?string $key = null,
+        int|float|null $timeout = null,
+    ): DeferredWorkflowOperation {
+        $this->assertActiveFiber();
         $condition = Closure::fromCallable($predicate);
         $timeoutSeconds = $timeout === null ? null : max(0, (int) ceil($timeout));
 
-        return (bool) $this->suspend(WorkflowCommand::conditionWait(
+        return new DeferredWorkflowOperation(WorkflowCommand::conditionWait(
             $condition,
             self::conditionKey($key),
             ConditionWaitDefinition::fingerprint($condition),
@@ -347,6 +364,40 @@ final class WorkflowContext
     public function parallel(iterable $operations): array
     {
         return $this->all($operations);
+    }
+
+    /**
+     * Schedule every durable member and resume with the first committed winner.
+     * Non-winning operations continue and remain available through durable handles.
+     *
+     * @param iterable<int|string, callable(): mixed|DeferredWorkflowOperation|ParallelWorkflowCommand> $operations
+     */
+    public function select(iterable $operations): SelectionResult
+    {
+        $this->assertActiveFiber();
+        if ($this->isCapturing()) {
+            throw new LogicException('WorkflowContext::select() cannot be nested inside another durable group.');
+        }
+
+        $resolved = (function () use ($operations): \Generator {
+            foreach ($operations as $key => $operation) {
+                yield $key => (is_callable($operation)
+                    ? $this->captureOperation($operation)
+                    : $this->assertDeferredOperation($operation));
+            }
+        })();
+
+        $group = new ParallelWorkflowCommand($resolved, 'select');
+        if ($group->leafCount() > self::MAX_PARALLEL_OPERATIONS) {
+            throw new LogicException(sprintf(
+                'WorkflowContext::select() fan-out of %d exceeds the deterministic limit of %d operations.',
+                $group->leafCount(),
+                self::MAX_PARALLEL_OPERATIONS,
+            ));
+        }
+
+        /** @var SelectionResult */
+        return $this->suspend($group);
     }
 
     /** @param callable(): mixed $operation */
@@ -576,7 +627,10 @@ final class WorkflowContext
         if (count($captured) === 1
             && ($returned === null
                 || $returned === $captured[0]
-                || ($captured[0] instanceof ParallelWorkflowCommand && $returned === []))) {
+                || ($captured[0] instanceof ParallelWorkflowCommand && $returned === [])
+                || ($captured[0] instanceof DeferredWorkflowOperation
+                    && $captured[0]->command->type === 'open_condition_wait'
+                    && $returned === false))) {
             return $captured[0];
         }
         if ($captured === []
@@ -585,7 +639,7 @@ final class WorkflowContext
         }
 
         throw new LogicException(sprintf(
-            'Each WorkflowContext::all() closure must declare exactly one deferred operation or nested barrier; captured %d.',
+            'Each durable group closure must declare exactly one deferred operation or nested barrier; captured %d.',
             count($captured),
         ));
     }

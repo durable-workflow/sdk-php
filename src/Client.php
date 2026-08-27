@@ -1020,6 +1020,7 @@ final class Client implements WorkflowClientInterface
             'message_streams',
             'memo_upserts',
             'typed_search_attributes',
+            'durable_selection',
         ],
         int $maxConcurrentWorkflowTasks = 1,
         int $maxConcurrentActivityTasks = 1,
@@ -1028,6 +1029,9 @@ final class Client implements WorkflowClientInterface
     ): array {
         if (in_array('message_streams', $capabilities, true) && !Version::supportsMessageStreams()) {
             throw new InvalidArgumentException('Message streams require worker protocol 1.15 or newer.');
+        }
+        if (in_array('durable_selection', $capabilities, true) && !Version::supportsDurableSelection()) {
+            throw new InvalidArgumentException('Durable selection requires worker protocol 1.19 or newer.');
         }
 
         foreach ($workflowCommandContracts ?? [] as $workflowType => $contract) {
