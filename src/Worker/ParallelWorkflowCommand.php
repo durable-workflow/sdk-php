@@ -292,6 +292,8 @@ class ParallelWorkflowCommand
         array $winner,
         array $flatResults,
         array $flatFailures,
+        string $workflowId,
+        string $runId,
         array $operationIdentities = [],
     ): SelectionResult
     {
@@ -322,6 +324,8 @@ class ParallelWorkflowCommand
                 $size,
                 sprintf('select-calls:%d:%d', $baseSequence, $this->leafCount()),
                 $operation,
+                $workflowId,
+                $runId,
             );
             $cursor += $size;
         }

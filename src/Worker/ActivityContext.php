@@ -6,6 +6,7 @@ namespace DurableWorkflow\Worker;
 
 use DurableWorkflow\Client;
 use DurableWorkflow\Exception\ActivityCancelled;
+use Closure;
 
 /** Activity attempt metadata and heartbeat/cancellation support. */
 final class ActivityContext
@@ -17,12 +18,19 @@ final class ActivityContext
         public readonly string $leaseOwner,
         public readonly string $activityType,
         public readonly int $attemptNumber,
+        private readonly ?Closure $localHeartbeat = null,
     ) {
     }
 
-    /** @param array<string, mixed> $details */
+    /** @param array<array-key, mixed> $details */
     public function heartbeat(array $details = []): void
     {
+        if ($this->localHeartbeat !== null) {
+            ($this->localHeartbeat)($details);
+
+            return;
+        }
+
         $response = $this->client->heartbeatActivityTask(
             $this->taskId,
             $this->activityAttemptId,

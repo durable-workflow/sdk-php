@@ -11,6 +11,7 @@ final class Version
     public const WORKER_PROTOCOL = '1.19';
     public const MESSAGE_STREAMS_MINIMUM_WORKER_PROTOCOL = '1.15';
     public const DURABLE_SELECTION_MINIMUM_WORKER_PROTOCOL = '1.19';
+    public const PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL = '1.18';
 
     public static function supportsMessageStreams(string $workerProtocol = self::WORKER_PROTOCOL): bool
     {

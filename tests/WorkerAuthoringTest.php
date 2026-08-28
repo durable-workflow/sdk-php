@@ -173,9 +173,30 @@ final class WorkerAuthoringTest extends TestCase
                     'memo_upserts',
                     'typed_search_attributes',
                     'durable_selection',
+                    'local_activities',
+                    'worker_sessions',
+                    'sticky_execution',
+                ],
+                'capability_manifest' => [
+                    'local_activities' => [
+                        'supported' => true,
+                        'minimum_protocol_version' => '1.18',
+                        'implementation' => 'record_local_activity',
+                    ],
+                    'worker_sessions' => [
+                        'supported' => true,
+                        'minimum_protocol_version' => '1.18',
+                        'implementation' => 'create_heartbeat_close',
+                    ],
+                    'sticky_execution' => [
+                        'supported' => true,
+                        'minimum_protocol_version' => '1.18',
+                        'implementation' => 'bounded_exact_identity_cache',
+                ],
                 ],
                 'max_concurrent_workflow_tasks' => 1,
                 'max_concurrent_activity_tasks' => 1,
+                'max_concurrent_worker_sessions' => 10,
                 'build_id' => 'release-a',
             ],
         ], $transport->requests[0]);

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-local-activity-completed-before-workflow-failure-cold-replay",
+  "protocol_version": "1.18",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.local-activity-terminal-failure", "input": []},
+  "history": [
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "golden.local-failure",
+        "execution_mode": "local"
+      }
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "golden.local-failure",
+        "execution_mode": "local",
+        "outcome": "completed",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoUaGVsbG8sIEFkYQ=="
+        },
+        "attempts": [
+          {
+            "attempt_id": "local-attempt-1",
+            "attempt_number": 1,
+            "outcome": "completed",
+            "heartbeats": []
+          }
+        ]
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "fail_workflow",
+        "message": "Workflow failed after the local activity returned.",
+        "exception_type": "RuntimeException"
+      }
+    ]
+  }
+}

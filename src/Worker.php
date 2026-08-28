@@ -6,11 +6,14 @@ namespace DurableWorkflow;
 
 use DurableWorkflow\Exception\ActivityCancelled;
 use DurableWorkflow\Exception\CodecException;
+use DurableWorkflow\Exception\InvalidLocalActivityReport;
 use DurableWorkflow\Exception\InvalidWorkerDefinition;
+use DurableWorkflow\Exception\LocalActivityTimedOut;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\SagaCompensationFailed;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\DiscoveredHandlers;
 use DurableWorkflow\Worker\HandlerDiscovery;
 use DurableWorkflow\Worker\HandlerDefinition;
@@ -19,6 +22,10 @@ use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
+use DurableWorkflow\Worker\StickyWorkflowCache;
+use DurableWorkflow\Worker\WorkerSession;
+use DurableWorkflow\Worker\WorkerSessionOptions;
+use DurableWorkflow\Worker\WorkflowCommand;
 use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
@@ -30,6 +37,9 @@ final class Worker
     private const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
     private const INITIAL_TRANSIENT_RETRY_DELAY_SECONDS = 0.1;
     private const MAX_HEARTBEAT_INTERVAL_SECONDS = 3600;
+    private const MAX_LOCAL_ACTIVITY_EXCEPTION_TYPE_BYTES = 255;
+    private const MAX_LOCAL_ACTIVITY_HEARTBEATS = 1000;
+    private const MAX_LOCAL_ACTIVITY_HEARTBEATS_PER_ATTEMPT = 1000;
     private const MAX_TRANSIENT_RETRY_DELAY_SECONDS = 5.0;
     private const TRANSIENT_RETRY_SLEEP_SLICE_SECONDS = 0.1;
 
@@ -55,6 +65,9 @@ final class Worker
     private readonly Replayer $replayer;
     private readonly HandlerDiscovery $handlerDiscovery;
     private readonly LoggerInterface $logger;
+    private readonly StickyWorkflowCache $stickyCache;
+    /** @var array<string, WorkerSessionOptions> */
+    private array $activeWorkerSessions = [];
     /** @var array<string, mixed>|null */
     private ?array $workflowMemoCapability = null;
     /** @var (\Closure(string, array<string, mixed>): void)|null */
@@ -74,6 +87,8 @@ final class Worker
         ?LoggerInterface $logger = null,
         /** @var (callable(string, array<string, mixed>): void)|null $diagnosticListener */
         ?callable $diagnosticListener = null,
+        int $stickyCacheCapacity = 100,
+        int $stickyCacheTtlSeconds = 300,
     ) {
         $this->workerId = $workerId ?? 'php-worker-'.bin2hex(random_bytes(8));
         $this->heartbeatIntervalSeconds = $this->validHeartbeatInterval($heartbeatIntervalSeconds)
@@ -88,6 +103,7 @@ final class Worker
         $this->diagnosticListener = $diagnosticListener === null
             ? null
             : \Closure::fromCallable($diagnosticListener);
+        $this->stickyCache = new StickyWorkflowCache($stickyCacheCapacity, $stickyCacheTtlSeconds, $this->clock);
     }
 
     /**
@@ -252,6 +268,20 @@ final class Worker
         $this->diagnostic('worker.shutdown_requested', ['worker_id' => $this->workerId]);
     }
 
+    /** Create an explicit typed worker-session lifecycle handle. */
+    public function workerSession(WorkerSessionOptions $options): WorkerSession
+    {
+        $this->activeWorkerSessions[$options->sessionId] = $options;
+
+        return new WorkerSession($this->client, $this->workerId, $options);
+    }
+
+    /** @return array{hit: int, miss: int, eviction: int, forced_cold_replay: int} */
+    public function stickyCacheMetrics(): array
+    {
+        return $this->stickyCache->metrics();
+    }
+
     public function run(int $pollTimeoutSeconds = 5): void
     {
         $this->validate();
@@ -289,6 +319,8 @@ final class Worker
             ], 'error');
             throw $exception;
         } finally {
+            $this->closeWorkerSessions();
+            $this->stickyCache->clear();
             if ($this->registered) {
                 try {
                     $this->client->deregisterWorkerRegistration($this->workerId);
@@ -406,9 +438,13 @@ final class Worker
                         'memo_upserts',
                         'typed_search_attributes',
                         'durable_selection',
+                        'local_activities',
+                        'worker_sessions',
+                        'sticky_execution',
                     ],
                     buildId: $this->buildId,
                     workflowCommandContracts: $this->workflowCommandContracts(),
+                    capabilityManifest: CapabilityManifest::portableWorkerAffinity(),
                 );
             } catch (ServerException $exception) {
                 if (!$this->isTransientRegistrationFailure($exception)) {
@@ -731,20 +767,33 @@ final class Worker
                 }
                 $input = $this->decodeArguments($task['arguments'] ?? $task['input'] ?? null);
                 try {
-                    $replay = $this->replayer->replay($handler, $history, $input, $this->taskQueue, $task);
+                    $replay = $this->replayer->replay(
+                        $handler,
+                        $history,
+                        $input,
+                        $this->taskQueue,
+                        $task,
+                        fn (string $activityType, array $arguments, array $options): array => $this->executeLocalActivity(
+                            $task,
+                            $activityType,
+                            $arguments,
+                            $options,
+                        ),
+                    );
                     $commands = $replay->commands;
                     $messageStreamCursors = $replay->messageStreamCursors;
                     $messageStreamWaits = $replay->messageStreamWaits;
-                    $this->diagnoseWorkflowWait($task, $commands);
+                    if ($replay->terminalFailure instanceof Throwable) {
+                        $this->handlerFailure('workflow', $workflowType, $replay->terminalFailure);
+                        $commands[] = $this->workflowFailureCommand($replay->terminalFailure);
+                    } else {
+                        $this->diagnoseWorkflowWait($task, $commands);
+                    }
                 } catch (NonDeterministicWorkflow $exception) {
                     throw $exception;
                 } catch (Throwable $exception) {
                     $this->handlerFailure('workflow', $workflowType, $exception);
-                    $commands = [[
-                        'type' => 'fail_workflow',
-                        'message' => $exception->getMessage(),
-                        'exception_type' => $exception::class,
-                    ]];
+                    $commands = [$this->workflowFailureCommand($exception)];
                 }
             }
             $this->assertWorkflowMemoUpdatesAvailable($commands);
@@ -755,6 +804,7 @@ final class Worker
                 $commands,
                 $messageStreamCursors,
                 $messageStreamWaits,
+                $this->stickyCacheClaim($task),
             );
         } catch (Throwable $exception) {
             $this->acknowledgeTaskFailure(
@@ -902,6 +952,7 @@ final class Worker
         $leaseOwner = (string) ($task['lease_owner'] ?? $this->workerId);
         $activityType = (string) ($task['activity_type'] ?? '');
         try {
+            $this->trackWorkerSessionFromTask($task);
             $handler = $this->activities[$activityType] ?? null;
             if ($handler === null) {
                 throw new \RuntimeException("No activity handler is registered for {$activityType}.");
@@ -1102,7 +1153,430 @@ final class Worker
             $next = $newNext;
         }
 
+        $workflowId = (string) ($task['workflow_id'] ?? '');
+        $runId = (string) ($task['run_id'] ?? '');
+        if ($workflowId === '' || $runId === '') {
+            return $history;
+        }
+
+        $history = $this->stickyCache->history(
+            $workflowId,
+            $runId,
+            $this->effectiveBuildId(),
+            $history,
+            is_string($task['sticky_replay_mode'] ?? null) ? $task['sticky_replay_mode'] : null,
+        );
+        if ($history === null) {
+            $history = $this->authoritativeWorkflowTaskHistory($task, $leaseOwner, $attempt);
+        }
+        $this->stickyCache->remember($workflowId, $runId, $this->effectiveBuildId(), $history);
+
         return $history;
+    }
+
+    /**
+     * Fetch complete durable history after a sticky cache miss.
+     *
+     * @param array<string, mixed> $task
+     * @return list<array<string, mixed>>
+     */
+    private function authoritativeWorkflowTaskHistory(array $task, string $leaseOwner, int $attempt): array
+    {
+        $history = [];
+        $next = base64_encode('0');
+        $seenTokens = [];
+        do {
+            if (isset($seenTokens[$next])) {
+                throw new \RuntimeException('Authoritative workflow history pagination repeated a page token.');
+            }
+            $seenTokens[$next] = true;
+            $page = $this->client->workflowTaskHistory((string) $task['task_id'], $leaseOwner, $attempt, $next);
+            foreach (($page['history_events'] ?? []) as $event) {
+                if (is_array($event)) {
+                    $history[] = $event;
+                }
+            }
+            $next = isset($page['next_history_page_token'])
+                ? (string) $page['next_history_page_token']
+                : '';
+        } while ($next !== '');
+
+        $first = $history[0] ?? null;
+        if (! is_array($first)
+            || ($first['event_type'] ?? $first['type'] ?? null) !== 'WorkflowStarted') {
+            throw new \RuntimeException(
+                'Authoritative workflow history must begin with WorkflowStarted after a sticky cache miss.',
+            );
+        }
+
+        return $history;
+    }
+
+    /**
+     * @param array<string, mixed> $task
+     * @param list<mixed> $arguments
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function executeLocalActivity(
+        array $task,
+        string $activityType,
+        array $arguments,
+        array $options,
+    ): array {
+        $options = WorkflowCommand::canonicalLocalActivityOptions($options);
+        $handler = $this->activities[$activityType] ?? null;
+        if ($handler === null) {
+            $message = "No local activity handler is registered for {$activityType}.";
+
+            return [
+                'outcome' => 'failed',
+                'message' => $message,
+                'exception_type' => \RuntimeException::class,
+                'non_retryable' => true,
+                'attempts' => [[
+                    'attempt_id' => $this->localActivityAttemptId($task, $activityType, $arguments, 1),
+                    'attempt_number' => 1,
+                    'outcome' => 'failed',
+                    'duration_ms' => 0,
+                    'message' => $message,
+                    'exception_type' => \RuntimeException::class,
+                    'non_retryable' => true,
+                    'heartbeats' => [],
+                ]],
+            ];
+        }
+
+        $retryPolicy = $options['retry_policy'] ?? [];
+        $maxAttempts = $retryPolicy['max_attempts'] ?? 1;
+        $backoff = $retryPolicy['backoff_seconds'] ?? [];
+        $nonRetryable = $retryPolicy['non_retryable_error_types'] ?? [];
+        $startToClose = $options['start_to_close_timeout'] ?? null;
+        $scheduleToClose = $options['schedule_to_close_timeout'] ?? null;
+        $heartbeatTimeout = $options['heartbeat_timeout'] ?? null;
+        $executionStartedAt = $this->now();
+        $attempts = [];
+        $totalHeartbeatCount = 0;
+
+        for ($attemptNumber = 1; $attemptNumber <= $maxAttempts; ++$attemptNumber) {
+            $attemptId = $this->localActivityAttemptId($task, $activityType, $arguments, $attemptNumber);
+            if ($scheduleToClose !== null && $this->now() - $executionStartedAt >= $scheduleToClose) {
+                $message = 'Local activity schedule-to-close timeout elapsed.';
+                $attempts[] = [
+                    'attempt_id' => $attemptId,
+                    'attempt_number' => $attemptNumber,
+                    'outcome' => 'timed_out',
+                    'duration_ms' => 0,
+                    'message' => $message,
+                    'exception_type' => LocalActivityTimedOut::class,
+                    'non_retryable' => false,
+                    'timeout_kind' => 'schedule_to_close',
+                    'heartbeats' => [],
+                ];
+
+                return [
+                    'outcome' => 'timed_out',
+                    'message' => $message,
+                    'exception_type' => LocalActivityTimedOut::class,
+                    'non_retryable' => false,
+                    'timeout_kind' => 'schedule_to_close',
+                    'attempts' => $attempts,
+                ];
+            }
+            $attemptStartedAt = $this->now();
+            $lastHeartbeatAt = $attemptStartedAt;
+            $heartbeats = [];
+            $heartbeatCount = 0;
+            try {
+                if ($this->shutdownRequested || (bool) ($task['cancel_requested'] ?? false)) {
+                    throw new ActivityCancelled('The workflow requested local activity cancellation.');
+                }
+                $context = new ActivityContext(
+                    $this->client,
+                    (string) ($task['task_id'] ?? ''),
+                    $attemptId,
+                    (string) ($task['lease_owner'] ?? $this->workerId),
+                    $activityType,
+                    $attemptNumber,
+                    function (array $details) use (
+                        $task,
+                        $attemptStartedAt,
+                        $executionStartedAt,
+                        $startToClose,
+                        $scheduleToClose,
+                        $heartbeatTimeout,
+                        &$lastHeartbeatAt,
+                        &$heartbeats,
+                        &$heartbeatCount,
+                        &$totalHeartbeatCount,
+                    ): void {
+                        $now = $this->now();
+                        if ($this->shutdownRequested) {
+                            throw new ActivityCancelled('Worker shutdown cancelled the local activity.');
+                        }
+                        if ($heartbeatTimeout !== null && $now - $lastHeartbeatAt > $heartbeatTimeout) {
+                            throw new LocalActivityTimedOut(
+                                'heartbeat',
+                                'Local activity heartbeat timeout elapsed.',
+                            );
+                        }
+                        if ($startToClose !== null && $now - $attemptStartedAt > $startToClose) {
+                            throw new LocalActivityTimedOut(
+                                'start_to_close',
+                                'Local activity start-to-close timeout elapsed.',
+                            );
+                        }
+                        if ($scheduleToClose !== null && $now - $executionStartedAt > $scheduleToClose) {
+                            throw new LocalActivityTimedOut(
+                                'schedule_to_close',
+                                'Local activity schedule-to-close timeout elapsed.',
+                            );
+                        }
+                        if ($heartbeatCount >= self::MAX_LOCAL_ACTIVITY_HEARTBEATS_PER_ATTEMPT) {
+                            throw new InvalidLocalActivityReport(sprintf(
+                                'Local activity attempts may contain at most %d heartbeats.',
+                                self::MAX_LOCAL_ACTIVITY_HEARTBEATS_PER_ATTEMPT,
+                            ));
+                        }
+                        if ($totalHeartbeatCount >= self::MAX_LOCAL_ACTIVITY_HEARTBEATS) {
+                            throw new InvalidLocalActivityReport(sprintf(
+                                'Local activity reports may contain at most %d heartbeats.',
+                                self::MAX_LOCAL_ACTIVITY_HEARTBEATS,
+                            ));
+                        }
+                        try {
+                            $this->client->payloadCodec()->encode($details);
+                        } catch (Throwable $exception) {
+                            throw new InvalidLocalActivityReport(sprintf(
+                                'Local activity heartbeat details could not be encoded with the %s payload codec.',
+                                $this->client->payloadCodec()->name(),
+                            ), previous: $exception);
+                        }
+                        try {
+                            json_encode($details, JSON_THROW_ON_ERROR);
+                        } catch (Throwable $exception) {
+                            throw new InvalidLocalActivityReport(
+                                'Local activity heartbeat details could not be encoded for the HTTP JSON wire boundary.',
+                                previous: $exception,
+                            );
+                        }
+                        $this->renewWorkflowTaskLease(
+                            (string) ($task['task_id'] ?? ''),
+                            (string) ($task['lease_owner'] ?? $this->workerId),
+                            (int) ($task['workflow_task_attempt'] ?? 1),
+                        );
+                        $lastHeartbeatAt = $now;
+                        ++$heartbeatCount;
+                        ++$totalHeartbeatCount;
+                        $previousElapsed = $heartbeats === []
+                            ? 0
+                            : (int) $heartbeats[array_key_last($heartbeats)]['elapsed_ms'];
+                        $heartbeats[] = [
+                            'details' => $details,
+                            'elapsed_ms' => max(
+                                $previousElapsed,
+                                max(0, (int) round(($now - $attemptStartedAt) * 1000)),
+                            ),
+                        ];
+                    },
+                );
+                $result = $handler($context, ...$arguments);
+                $elapsed = $this->now() - $attemptStartedAt;
+                if ($heartbeatTimeout !== null && $this->now() - $lastHeartbeatAt > $heartbeatTimeout) {
+                    throw new LocalActivityTimedOut('heartbeat', 'Local activity heartbeat timeout elapsed.');
+                }
+                if ($startToClose !== null && $elapsed > $startToClose) {
+                    throw new LocalActivityTimedOut(
+                        'start_to_close',
+                        'Local activity start-to-close timeout elapsed.',
+                    );
+                }
+                if ($scheduleToClose !== null && $this->now() - $executionStartedAt > $scheduleToClose) {
+                    throw new LocalActivityTimedOut(
+                        'schedule_to_close',
+                        'Local activity schedule-to-close timeout elapsed.',
+                    );
+                }
+                $attempts[] = [
+                    'attempt_id' => $attemptId,
+                    'attempt_number' => $attemptNumber,
+                    'outcome' => 'completed',
+                    'duration_ms' => max(0, (int) round($elapsed * 1000)),
+                    'heartbeats' => $heartbeats,
+                ];
+
+                return ['outcome' => 'completed', 'result' => $result, 'attempts' => $attempts];
+            } catch (Throwable $exception) {
+                $timedOut = $exception instanceof LocalActivityTimedOut;
+                $cancelled = $exception instanceof ActivityCancelled;
+                $timeoutKind = $timedOut ? $exception->timeoutKind : null;
+                $type = $exception::class;
+                $message = trim($exception->getMessage());
+                $invalidFailureMetadata = false;
+                try {
+                    json_encode([
+                        'message' => $message,
+                        'exception_type' => $type,
+                    ], JSON_THROW_ON_ERROR);
+                } catch (Throwable) {
+                    $invalidFailureMetadata = true;
+                    $message = 'Local activity failure metadata could not be encoded for the HTTP JSON wire boundary.';
+                    $type = InvalidLocalActivityReport::class;
+                    $timedOut = false;
+                    $cancelled = false;
+                    $timeoutKind = null;
+                }
+                if (strlen($type) > self::MAX_LOCAL_ACTIVITY_EXCEPTION_TYPE_BYTES) {
+                    $invalidFailureMetadata = true;
+                    $message = 'Local activity failure metadata exceeded the published exception type limit.';
+                    $type = InvalidLocalActivityReport::class;
+                    $timedOut = false;
+                    $cancelled = false;
+                    $timeoutKind = null;
+                }
+                $invalidReport = $exception instanceof InvalidLocalActivityReport || $invalidFailureMetadata;
+                $isNonRetryable = $cancelled || $invalidReport || in_array($type, $nonRetryable, true)
+                    || in_array((new \ReflectionClass($exception))->getShortName(), $nonRetryable, true);
+                $retry = ! $cancelled && ! $isNonRetryable && $attemptNumber < $maxAttempts;
+                $backoffSeconds = $retry ? max(0, (int) ($backoff[$attemptNumber - 1] ?? 0)) : 0;
+                if ($retry
+                    && $scheduleToClose !== null
+                    && $this->now() - $executionStartedAt + $backoffSeconds >= $scheduleToClose
+                ) {
+                    $retry = false;
+                    $backoffSeconds = 0;
+                }
+                if ($message === '') {
+                    $message = "Local activity failed with {$type}.";
+                }
+                $attempt = [
+                    'attempt_id' => $attemptId,
+                    'attempt_number' => $attemptNumber,
+                    'outcome' => $cancelled ? 'cancelled' : ($timedOut ? 'timed_out' : 'failed'),
+                    'duration_ms' => max(0, (int) round(($this->now() - $attemptStartedAt) * 1000)),
+                    'message' => $message,
+                    'exception_type' => $type,
+                    'non_retryable' => $isNonRetryable,
+                    'heartbeats' => $heartbeats,
+                ];
+                if ($timeoutKind !== null) {
+                    $attempt['timeout_kind'] = $timeoutKind;
+                }
+                if ($retry) {
+                    $attempt['retry_reason'] = $timedOut ? 'timeout' : 'failure';
+                    $attempt['backoff_seconds'] = $backoffSeconds;
+                }
+                $attempts[] = $attempt;
+                if ($retry) {
+                    if ($backoffSeconds > 0) {
+                        ($this->sleeper)($backoffSeconds * 1_000_000);
+                    }
+                    continue;
+                }
+
+                return [
+                    'outcome' => $cancelled ? 'cancelled' : ($timedOut ? 'timed_out' : 'failed'),
+                    'message' => $message,
+                    'exception_type' => $type,
+                    'non_retryable' => $isNonRetryable,
+                    ...($timeoutKind === null ? [] : ['timeout_kind' => $timeoutKind]),
+                    'attempts' => $attempts,
+                ];
+            }
+        }
+
+        throw new \LogicException('Local activity retry loop exhausted without a terminal outcome.');
+    }
+
+    /**
+     * @param array<string, mixed> $task
+     * @param list<mixed> $arguments
+     */
+    private function localActivityAttemptId(
+        array $task,
+        string $activityType,
+        array $arguments,
+        int $attemptNumber,
+    ): string {
+        return hash('sha256', implode("\0", [
+            (string) ($task['task_id'] ?? ''),
+            $activityType,
+            (string) $attemptNumber,
+            $this->client->payloadCodec()->encode($arguments),
+        ]));
+    }
+
+    /**
+     * @param array<string, mixed> $task
+     * @return array{
+     *     worker_id: string,
+     *     workflow_id: string,
+     *     run_id: string,
+     *     build_id: string,
+     *     ttl_seconds: int,
+     *     metrics: array{hit: int, miss: int, eviction: int, forced_cold_replay: int}
+     * }|null
+     */
+    private function stickyCacheClaim(array $task): ?array
+    {
+        if ((string) ($task['workflow_id'] ?? '') === '' || (string) ($task['run_id'] ?? '') === '') {
+            return null;
+        }
+
+        return [
+            'worker_id' => $this->workerId,
+            'workflow_id' => (string) $task['workflow_id'],
+            'run_id' => (string) $task['run_id'],
+            'build_id' => $this->effectiveBuildId(),
+            'ttl_seconds' => $this->stickyCache->ttlSeconds(),
+            'metrics' => $this->stickyCache->metrics(),
+        ];
+    }
+
+    private function effectiveBuildId(): string
+    {
+        return $this->buildId !== null && trim($this->buildId) !== ''
+            ? trim($this->buildId)
+            : SdkIdentity::registration();
+    }
+
+    /** @param array<string, mixed> $task */
+    private function trackWorkerSessionFromTask(array $task): void
+    {
+        $session = $task['worker_session'] ?? null;
+        if (! is_array($session) || ! is_string($session['session_id'] ?? null)) {
+            return;
+        }
+        try {
+            $options = new WorkerSessionOptions(
+                sessionId: $session['session_id'],
+                queue: is_string($session['queue'] ?? null) ? $session['queue'] : null,
+                requirements: is_array($session['requirements'] ?? null) ? $session['requirements'] : [],
+                leaseSeconds: is_int($session['lease_seconds'] ?? null) ? $session['lease_seconds'] : 120,
+                ttlSeconds: is_int($session['ttl_seconds'] ?? null) ? $session['ttl_seconds'] : 1800,
+                maxConcurrentActivities: is_int($session['max_concurrent_activities'] ?? null)
+                    ? $session['max_concurrent_activities']
+                    : 1,
+            );
+            $this->activeWorkerSessions[$options->sessionId] = $options;
+        } catch (\InvalidArgumentException $exception) {
+            $this->diagnostic('worker.session_invalid', ['exception' => $exception], 'warning');
+        }
+    }
+
+    private function closeWorkerSessions(): void
+    {
+        foreach ($this->activeWorkerSessions as $options) {
+            try {
+                $this->client->closeWorkerSession($this->workerId, $options->sessionId, 'worker_shutdown');
+            } catch (Throwable $exception) {
+                $this->diagnostic('worker.session_close_failed', [
+                    'session_id' => $options->sessionId,
+                    'exception' => $exception,
+                ], 'warning');
+            }
+        }
+        $this->activeWorkerSessions = [];
     }
 
     /**
@@ -1449,6 +1923,28 @@ final class Worker
         }
 
         $this->diagnostic('worker.handler_failed', $context, 'error');
+    }
+
+    /** @return array{type: string, message: string, exception_type: class-string<Throwable>} */
+    private function workflowFailureCommand(Throwable $exception): array
+    {
+        $command = [
+            'type' => 'fail_workflow',
+            'message' => $exception->getMessage(),
+            'exception_type' => $exception::class,
+        ];
+
+        try {
+            json_encode($command, JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            $command = [
+                'type' => 'fail_workflow',
+                'message' => 'Workflow failure metadata could not be encoded for the HTTP JSON wire boundary.',
+                'exception_type' => \RuntimeException::class,
+            ];
+        }
+
+        return $command;
     }
 
     /**

@@ -56,6 +56,7 @@ final class WorkflowContext
         private readonly bool $cancellationRequested = false,
         ?Fiber $execution = null,
         private readonly ?string $workflowCommandId = null,
+        private readonly ?Closure $localActivityExecutor = null,
     ) {
         $this->execution = $execution;
         $this->loadMessageStreamMessages();
@@ -192,6 +193,32 @@ final class WorkflowContext
         }
 
         return $this->suspend($operation->command);
+    }
+
+    /**
+     * Execute a registered activity in this workflow worker and record its outcome durably.
+     *
+     * @param list<mixed> $arguments
+     * @param array<string, mixed> $options
+     */
+    public function localActivity(string $activityType, array $arguments = [], array $options = []): mixed
+    {
+        $this->assertActiveFiber();
+        if ($this->localActivityExecutor === null) {
+            throw new LogicException('This worker explicitly refuses local activity execution.');
+        }
+        foreach (['connection', 'queue', 'worker_session', 'schedule_to_start_timeout'] as $field) {
+            if (array_key_exists($field, $options)) {
+                throw new \InvalidArgumentException("Local activities do not accept {$field} routing options.");
+            }
+        }
+
+        return $this->suspend(WorkflowCommand::localActivity(
+            $activityType,
+            $arguments,
+            $options,
+            $this->localActivityExecutor,
+        ));
     }
 
     /** Create an isolated deterministic saga for activity compensation. */

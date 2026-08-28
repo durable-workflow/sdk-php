@@ -87,8 +87,26 @@ final class ClientContractTest extends TestCase
                     'typed_search_attributes',
                     'durable_selection',
                 ],
+                'capability_manifest' => [
+                    'local_activities' => [
+                        'supported' => false,
+                        'minimum_protocol_version' => '1.18',
+                        'reason' => 'not_enabled_for_this_worker_registration',
+                    ],
+                    'worker_sessions' => [
+                        'supported' => false,
+                        'minimum_protocol_version' => '1.18',
+                        'reason' => 'not_enabled_for_this_worker_registration',
+                    ],
+                    'sticky_execution' => [
+                        'supported' => false,
+                        'minimum_protocol_version' => '1.18',
+                        'reason' => 'not_enabled_for_this_worker_registration',
+                    ],
+                ],
                 'max_concurrent_workflow_tasks' => 1,
                 'max_concurrent_activity_tasks' => 1,
+                'max_concurrent_worker_sessions' => 10,
             ],
         ], $transport->requests[0]);
     }

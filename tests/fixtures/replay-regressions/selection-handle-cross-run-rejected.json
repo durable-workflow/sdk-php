@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-selection-handle-cross-run-rejected",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.selection-handle-isolation", "input": []},
+  "history": [
+    {"id": "selection-first-scheduled", "event_type": "ActivityScheduled", "payload": {"sequence": 1, "activity_type": "golden.activity-one", "activity_execution_id": "activity-1", "parallel_group_id": "select-calls:1:2", "parallel_group_kind": "activity", "parallel_group_mode": "select", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0, "selection_member_key": "first", "selection_member_index": 0, "selection_member_base_sequence": 1, "selection_member_size": 1, "selection_member_kind": "activity", "parallel_group_path": [{"parallel_group_id": "select-calls:1:2", "parallel_group_kind": "activity", "parallel_group_mode": "select", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0, "selection_member_key": "first", "selection_member_index": 0, "selection_member_base_sequence": 1, "selection_member_size": 1, "selection_member_kind": "activity"}]}},
+    {"id": "selection-second-scheduled", "event_type": "ActivityScheduled", "payload": {"sequence": 2, "activity_type": "golden.activity-two", "activity_execution_id": "activity-2", "parallel_group_id": "select-calls:1:2", "parallel_group_kind": "activity", "parallel_group_mode": "select", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1, "selection_member_key": "second", "selection_member_index": 1, "selection_member_base_sequence": 2, "selection_member_size": 1, "selection_member_kind": "activity", "parallel_group_path": [{"parallel_group_id": "select-calls:1:2", "parallel_group_kind": "activity", "parallel_group_mode": "select", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1, "selection_member_key": "second", "selection_member_index": 1, "selection_member_base_sequence": 2, "selection_member_size": 1, "selection_member_kind": "activity"}]}},
+    {"id": "selection-first-completed", "event_type": "ActivityCompleted", "payload": {"sequence": 1, "activity_type": "golden.activity-one", "activity_execution_id": "activity-1", "parallel_group_id": "select-calls:1:2", "parallel_group_kind": "activity", "parallel_group_mode": "select", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0, "selection_member_key": "first", "selection_member_index": 0, "selection_member_base_sequence": 1, "selection_member_size": 1, "selection_member_kind": "activity", "parallel_group_path": [{"parallel_group_id": "select-calls:1:2", "parallel_group_kind": "activity", "parallel_group_mode": "select", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0, "selection_member_key": "first", "selection_member_index": 0, "selection_member_base_sequence": 1, "selection_member_size": 1, "selection_member_kind": "activity"}]}},
+    {"id": "selection-second-completed", "event_type": "ActivityCompleted", "payload": {"sequence": 2, "activity_type": "golden.activity-two", "activity_execution_id": "activity-2", "parallel_group_id": "select-calls:1:2", "parallel_group_kind": "activity", "parallel_group_mode": "select", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1, "selection_member_key": "second", "selection_member_index": 1, "selection_member_base_sequence": 2, "selection_member_size": 1, "selection_member_kind": "activity", "parallel_group_path": [{"parallel_group_id": "select-calls:1:2", "parallel_group_kind": "activity", "parallel_group_mode": "select", "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1, "selection_member_key": "second", "selection_member_index": 1, "selection_member_base_sequence": 2, "selection_member_size": 1, "selection_member_kind": "activity"}]}},
+    {"id": "selection-resolved", "event_type": "SelectionResolved", "payload": {"selection_group_id": "select-calls:1:2", "selection_group_base_sequence": 1, "selection_group_size": 2, "member_key": "first", "member_index": 0, "member_base_sequence": 1, "member_size": 1, "operation_kind": "activity", "operation_identity": "activity-1", "outcome": "completed", "resolution_event_id": "selection-first-completed", "resolution_event_type": "ActivityCompleted"}}
+  ],
+  "workflow_tasks": [
+    {"workflow_id": "shared-workflow", "run_id": "run-a"},
+    {"workflow_id": "shared-workflow", "run_id": "run-b"}
+  ],
+  "expected": {
+    "workflow_tasks": [
+      {"command_sequence": [{"type": "complete_workflow", "result": {"winner": "first"}}]},
+      {"command_sequence": [{"type": "replay_error", "reason": "durable_operation_handle_execution_mismatch", "sequence": 2}]}
+    ]
+  }
+}

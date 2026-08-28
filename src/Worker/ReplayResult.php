@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Worker;
 
+use Throwable;
+
 final class ReplayResult
 {
     /**
@@ -15,6 +17,7 @@ final class ReplayResult
         public readonly array $commands,
         public readonly array $messageStreamCursors = [],
         public readonly array $messageStreamWaits = [],
+        public readonly ?Throwable $terminalFailure = null,
     ) {
     }
 }

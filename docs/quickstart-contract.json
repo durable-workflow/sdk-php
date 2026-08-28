@@ -3,8 +3,8 @@
   "schema_version": 2,
   "package": {
     "name": "durable-workflow/sdk",
-    "published_version": "2.0.0-rc.48",
-    "composer_requirement": "2.0.0-rc.48@RC",
+    "published_version": "2.0.0-rc.49",
+    "composer_requirement": "2.0.0-rc.49@RC",
     "onboarding_requirement": "^2.0@RC"
   },
   "runtime_targets": {
@@ -13,7 +13,7 @@
       "namespace_input": "default",
       "input_kind": "server_origin",
       "example_request": "http://localhost:8080/api/workflows",
-      "image": "durableworkflow/server:2.0.0-rc.51"
+      "image": "durableworkflow/server:2.0.0-rc.53"
     },
     "cloud": {
       "client_input": "https://cloud.example/api/runtime/v1/namespaces/<runtime-id>",

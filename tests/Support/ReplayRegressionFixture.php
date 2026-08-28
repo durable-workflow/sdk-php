@@ -15,6 +15,7 @@ use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Testing\WorkerTestHarness;
 use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\DurableOperationHandle;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\Saga;
 use DurableWorkflow\Worker\WorkflowContext;
@@ -93,6 +94,18 @@ final class ReplayRegressionFixture
         }
 
         $codec = new AvroPayloadCodec();
+        $localActivityInvocations = 0;
+        $localActivityExecutor = $workflowType === 'golden.local-activity-terminal-failure'
+            ? static function () use (&$localActivityInvocations): array {
+                ++$localActivityInvocations;
+
+                return [
+                    'outcome' => 'completed',
+                    'result' => 'cold replay repeated the local side effect',
+                    'attempts' => [['attempt_number' => 1, 'outcome' => 'completed']],
+                ];
+            }
+            : null;
         try {
             $result = (new Replayer($codec))->replay(
                 self::workflow($workflowType),
@@ -100,6 +113,7 @@ final class ReplayRegressionFixture
                 $input,
                 'regression-corpus',
                 self::taskAttributes($workflowType),
+                $localActivityExecutor,
             );
             $commands = array_map(
                 static fn (array $command): array => self::decodeEnvelopes($command, $codec),
@@ -117,6 +131,12 @@ final class ReplayRegressionFixture
                 'message' => $exception->getMessage(),
                 'exception_type' => $exception::class,
             ]];
+        } catch (ActivityFailed $exception) {
+            $commands = [[
+                'type' => 'fail_workflow',
+                'message' => $exception->getMessage(),
+                'exception_type' => $exception::class,
+            ]];
         } catch (NonDeterministicWorkflow $exception) {
             $commands = [[
                 'type' => 'replay_error',
@@ -124,6 +144,15 @@ final class ReplayRegressionFixture
                 'reason' => $exception->reason,
                 'sequence' => $exception->sequence,
             ]];
+        } catch (\Throwable $exception) {
+            $commands = [[
+                'type' => 'fail_workflow',
+                'message' => $exception->getMessage(),
+                'exception_type' => $exception::class,
+            ]];
+        }
+        if ($localActivityInvocations !== 0) {
+            throw new RuntimeException("{$identity} repeated a recorded local activity during cold replay.");
         }
         $declaredCommands = $fixture['command_sequence'] ?? null;
         if ($declaredCommands !== null) {
@@ -189,18 +218,26 @@ final class ReplayRegressionFixture
                 );
             }
 
-            $commands = array_map(
-                static fn (array $command): array => self::decodeEnvelopes($command, $codec),
-                $harness->runWorkflow(
-                    $workflowType,
-                    $input,
-                    $history,
-                    array_merge(self::taskAttributes($workflowType), [
-                        'workflow_id' => $workflowId,
-                        'run_id' => $runId,
-                    ]),
-                )->commands,
-            );
+            try {
+                $commands = array_map(
+                    static fn (array $command): array => self::decodeEnvelopes($command, $codec),
+                    $harness->runWorkflow(
+                        $workflowType,
+                        $input,
+                        $history,
+                        array_merge(self::taskAttributes($workflowType), [
+                            'workflow_id' => $workflowId,
+                            'run_id' => $runId,
+                        ]),
+                    )->commands,
+                );
+            } catch (NonDeterministicWorkflow $exception) {
+                $commands = [[
+                    'type' => 'replay_error',
+                    'reason' => $exception->reason,
+                    'sequence' => $exception->sequence,
+                ]];
+            }
             $observed = [
                 'workflow_id' => $workflowId,
                 'run_id' => $runId,
@@ -401,10 +438,49 @@ final class ReplayRegressionFixture
                     'value' => $selected->result(),
                 ];
             },
+            'golden.selection-handle-isolation' => self::selectionHandleIsolationWorkflow(),
+            'golden.selection-incomplete-nested-member' => static function (WorkflowContext $context): array {
+                $selected = $context->select([
+                    'deadline' => static function () use ($context): void {
+                        $context->sleep(0);
+                    },
+                    'nested' => static fn () => $context->all([
+                        static fn () => $context->activity('golden.activity-one'),
+                        static fn () => $context->activity('golden.activity-two'),
+                    ]),
+                ]);
+
+                return ['key' => $selected->key];
+            },
+            'golden.local-activity-terminal-failure' => static function (WorkflowContext $context): never {
+                $context->localActivity('golden.local-failure');
+
+                throw new RuntimeException('Workflow failed after the local activity returned.');
+            },
             default => throw new RuntimeException(
                 "Replay fixture workflow {$workflowType} has no PHP implementation; "
                 .'register its reproducer workflow in ReplayRegressionFixture.',
             ),
+        };
+    }
+
+    /** @return callable(WorkflowContext): array<string, mixed> */
+    private static function selectionHandleIsolationWorkflow(): callable
+    {
+        $handle = null;
+
+        return static function (WorkflowContext $context) use (&$handle): array {
+            $previousHandle = $handle;
+            $selected = $context->select([
+                'first' => static fn () => $context->activity('golden.activity-one'),
+                'second' => static fn () => $context->activity('golden.activity-two'),
+            ]);
+            $handle = $selected->handles['second'];
+            if ($previousHandle instanceof DurableOperationHandle) {
+                return ['reused_value' => $previousHandle->await()];
+            }
+
+            return ['winner' => $selected->key];
         };
     }
 

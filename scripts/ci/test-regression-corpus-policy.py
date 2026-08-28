@@ -2499,12 +2499,20 @@ print(json.dumps({
         )
         worker_path = root / "src/Worker.php"
         candidate_worker = worker_path.read_text()
-        dispatch = "$this->replayer->replay($handler, $history, $input, $this->taskQueue, $task)"
-        self.assertIn(dispatch, candidate_worker)
+        dispatch = "\n".join(
+            (
+                "                        $handler,",
+                "                        $history,",
+                "                        $input,",
+                "                        $this->taskQueue,",
+                "                        $task,",
+            )
+        )
+        self.assertEqual(1, candidate_worker.count(dispatch))
         worker_path.write_text(
             candidate_worker.replace(
                 dispatch,
-                "$this->replayer->replay($handler, [], $input, $this->taskQueue, $task)",
+                dispatch.replace("                        $history,", "                        [],"),
                 1,
             )
         )
@@ -2728,12 +2736,20 @@ print(json.dumps({
         shutil.copytree(REPOSITORY_ROOT / "src", source_root / "src")
         worker_path = source_root / "src/Worker.php"
         worker = worker_path.read_text()
-        dispatch = "$this->replayer->replay($handler, $history, $input, $this->taskQueue, $task)"
-        self.assertIn(dispatch, worker)
+        dispatch = "\n".join(
+            (
+                "                        $handler,",
+                "                        $history,",
+                "                        $input,",
+                "                        $this->taskQueue,",
+                "                        $task,",
+            )
+        )
+        self.assertEqual(1, worker.count(dispatch))
         worker_path.write_text(
             worker.replace(
                 dispatch,
-                "$this->replayer->replay($handler, [], $input, $this->taskQueue, $task)",
+                dispatch.replace("                        $history,", "                        [],"),
                 1,
             )
         )

@@ -11,6 +11,7 @@ use DurableWorkflow\Exception\ChildWorkflowFailed;
 use DurableWorkflow\Exception\DurableOperationCancelled;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
+use Closure;
 use Fiber;
 use LogicException;
 use Throwable;
@@ -38,6 +39,7 @@ final class Replayer
         array $input,
         string $taskQueue,
         array $task = [],
+        ?callable $localActivityExecutor = null,
     ): ReplayResult {
         $steps = $this->recordedSteps($history);
         $stepsBySequence = [];
@@ -49,7 +51,7 @@ final class Replayer
         $selectionOperationIdentities = $this->selectionOperationIdentities($history);
         $completedHistory = $this->hasCompletedHistory($history);
         $context = null;
-        $execution = new Fiber(function () use ($handler, $history, $input, $task, &$context): mixed {
+        $execution = new Fiber(function () use ($handler, $history, $input, $task, $localActivityExecutor, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -64,6 +66,7 @@ final class Replayer
                 isset($task['workflow_command_id']) && (string) $task['workflow_command_id'] !== ''
                     ? (string) $task['workflow_command_id']
                     : (isset($task['task_id']) ? (string) $task['task_id'] : null),
+                $localActivityExecutor === null ? null : Closure::fromCallable($localActivityExecutor),
             );
 
             return $handler($context, ...$input);
@@ -97,10 +100,18 @@ final class Replayer
                     if ($step === null) {
                         $missingMember = true;
                         $metadata = $path[array_key_last($path)] ?? [];
-                        $commands[] = $command->withAttributes([
+                        $command = $command->withAttributes([
                             ...$metadata,
                             'parallel_group_path' => $path,
-                        ])->toWire($this->codec, $taskQueue);
+                        ]);
+                        if (($encodingFailure = $this->appendWorkflowCommand(
+                            $commands,
+                            $command,
+                            $taskQueue,
+                            $context,
+                        )) !== null) {
+                            return $encodingFailure;
+                        }
                         continue;
                     }
 
@@ -120,10 +131,18 @@ final class Replayer
                             }
 
                             $metadata = $path[array_key_last($path)] ?? [];
-                            $commands[] = $command->withAttributes([
+                            $command = $command->withAttributes([
                                 ...$metadata,
                                 'parallel_group_path' => $path,
-                            ])->toWire($this->codec, $taskQueue);
+                            ]);
+                            if (($encodingFailure = $this->appendWorkflowCommand(
+                                $commands,
+                                $command,
+                                $taskQueue,
+                                $context,
+                            )) !== null) {
+                                return $encodingFailure;
+                            }
                         }
                         $pending = true;
                         continue;
@@ -175,6 +194,8 @@ final class Replayer
                             $winner,
                             $results,
                             $failures,
+                            $context->workflowId,
+                            $context->runId,
                             $selectionOperationIdentities,
                         );
                         $this->validateSelectionCancellationsForHandles(
@@ -200,6 +221,7 @@ final class Replayer
             }
 
             if ($suspended instanceof DurableOperationHandle) {
+                $this->assertDurableHandleExecutionIdentity($suspended, $context);
                 $resolution = $this->durableHandleResolution(
                     $suspended,
                     $stepsBySequence,
@@ -215,6 +237,7 @@ final class Replayer
             }
 
             if ($suspended instanceof CancelDurableOperationCommand) {
+                $this->assertDurableHandleExecutionIdentity($suspended->handle, $context);
                 if ($this->selectionCancellationForHandle($suspended->handle, $selectionCancellations) === null) {
                     $commands[] = $suspended->toWire();
                 }
@@ -227,7 +250,14 @@ final class Replayer
             }
             if ($suspended->type === 'continue_as_new') {
                 $this->assertNoRemainingSteps($steps, $stepCursor, 'continue_as_new');
-                $commands[] = $suspended->toWire($this->codec, $taskQueue);
+                if (($encodingFailure = $this->appendWorkflowCommand(
+                    $commands,
+                    $suspended,
+                    $taskQueue,
+                    $context,
+                )) !== null) {
+                    return $encodingFailure;
+                }
 
                 return $this->result($commands, $context);
             }
@@ -307,7 +337,14 @@ final class Replayer
                 }
 
                 $version = (int) $suspended->attributes['max_supported'];
-                $commands[] = $suspended->toWire($this->codec, $taskQueue);
+                if (($encodingFailure = $this->appendWorkflowCommand(
+                    $commands,
+                    $suspended,
+                    $taskQueue,
+                    $context,
+                )) !== null) {
+                    return $encodingFailure;
+                }
                 ++$nextSequence;
                 $versionDecisions[$changeId] = [
                     'version' => $version,
@@ -343,7 +380,14 @@ final class Replayer
                         continue;
                     }
 
-                    $commands[] = $suspended->toWire($this->codec, $taskQueue);
+                    if (($encodingFailure = $this->appendWorkflowCommand(
+                        $commands,
+                        $suspended,
+                        $taskQueue,
+                        $context,
+                    )) !== null) {
+                        return $encodingFailure;
+                    }
 
                     return $this->result($commands, $context);
                 }
@@ -359,6 +403,32 @@ final class Replayer
             if ($suspended->type === 'record_side_effect') {
                 $suspended = $suspended->resolveSideEffect();
             }
+            if ($suspended->type === 'record_local_activity') {
+                try {
+                    $suspended = $suspended->resolveLocalActivity($this->codec);
+                } catch (Throwable $failure) {
+                    return $this->payloadEncodingFailure($commands, $context, $failure);
+                }
+                if (($encodingFailure = $this->appendWorkflowCommand(
+                    $commands,
+                    $suspended,
+                    $taskQueue,
+                    $context,
+                )) !== null) {
+                    return $encodingFailure;
+                }
+                ++$nextSequence;
+                try {
+                    if ($suspended->localResult instanceof Throwable) {
+                        $suspended = $execution->throw($suspended->localResult);
+                    } else {
+                        $suspended = $execution->resume($suspended->localResult);
+                    }
+                } catch (Throwable $failure) {
+                    return $this->result($commands, $context, $failure);
+                }
+                continue;
+            }
             if ($suspended->type === 'open_condition_wait') {
                 if ($suspended->conditionSatisfied()) {
                     $suspended = $execution->resume(true);
@@ -369,7 +439,14 @@ final class Replayer
                     continue;
                 }
             }
-            $commands[] = $suspended->toWire($this->codec, $taskQueue);
+            if (($encodingFailure = $this->appendWorkflowCommand(
+                $commands,
+                $suspended,
+                $taskQueue,
+                $context,
+            )) !== null) {
+                return $encodingFailure;
+            }
             ++$nextSequence;
             if (in_array($suspended->type, ['record_side_effect', 'upsert_memo', 'upsert_search_attributes'], true)) {
                 $suspended = $execution->resume($suspended->localResult);
@@ -386,18 +463,82 @@ final class Replayer
                 'Workflow handlers must call WorkflowContext operations directly; Generator results are not supported.',
             );
         }
-        $commands[] = $this->completeCommand($result);
+        if (($encodingFailure = $this->appendCompleteCommand($commands, $result, $context)) !== null) {
+            return $encodingFailure;
+        }
 
         return $this->result($commands, $context);
     }
 
+    /**
+     * Materialize and JSON-validate a command before adding it to the task
+     * completion. Once a local activity has run, a later payload failure must
+     * return its durable record instead of discarding it on task redelivery.
+     *
+     * @param list<array<string, mixed>> $commands
+     */
+    private function appendWorkflowCommand(
+        array &$commands,
+        WorkflowCommand $command,
+        string $taskQueue,
+        ?WorkflowContext $context,
+    ): ?ReplayResult {
+        try {
+            $wire = $command->toWire($this->codec, $taskQueue);
+            json_encode($wire, JSON_THROW_ON_ERROR);
+        } catch (Throwable $failure) {
+            return $this->payloadEncodingFailure($commands, $context, $failure);
+        }
+
+        $commands[] = $wire;
+
+        return null;
+    }
+
     /** @param list<array<string, mixed>> $commands */
-    private function result(array $commands, ?WorkflowContext $context): ReplayResult
-    {
+    private function appendCompleteCommand(
+        array &$commands,
+        mixed $result,
+        ?WorkflowContext $context,
+    ): ?ReplayResult {
+        try {
+            $wire = $this->completeCommand($result);
+            json_encode($wire, JSON_THROW_ON_ERROR);
+        } catch (Throwable $failure) {
+            return $this->payloadEncodingFailure($commands, $context, $failure);
+        }
+
+        $commands[] = $wire;
+
+        return null;
+    }
+
+    /** @param list<array<string, mixed>> $commands */
+    private function payloadEncodingFailure(
+        array $commands,
+        ?WorkflowContext $context,
+        Throwable $failure,
+    ): ReplayResult {
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'record_local_activity') {
+                return $this->result($commands, $context, $failure);
+            }
+        }
+
+        throw $failure;
+    }
+
+    /** @param list<array<string, mixed>> $commands */
+    private function result(
+        array $commands,
+        ?WorkflowContext $context,
+        ?Throwable $terminalFailure = null,
+    ): ReplayResult {
         return new ReplayResult(
             $commands,
             $context?->messageStreamCursorAcknowledgements() ?? [],
             $context?->messageStreamPendingWaits() ?? [],
+            $terminalFailure,
         );
     }
 
@@ -890,6 +1031,22 @@ final class Replayer
             );
         }
 
+        foreach ($group->leafDescriptors($baseSequence) as $descriptor) {
+            $sequence = $baseSequence + $descriptor['offset'];
+            $step = $stepsBySequence[$sequence] ?? null;
+            $identity = $operationIdentities[$sequence] ?? null;
+            if (is_array($step) && is_string($identity) && $identity !== '') {
+                continue;
+            }
+
+            $this->throwSelectionMarkerMismatch(
+                $sequence,
+                $marker,
+                'cannot resolve before every authored member has a durable scheduling identity',
+                'selection_resolution_incomplete_group',
+            );
+        }
+
         $cursor = 0;
         foreach ($group->operations as $index => $operation) {
             $memberSize = $operation instanceof ParallelWorkflowCommand ? $operation->leafCount() : 1;
@@ -1024,14 +1181,44 @@ final class Replayer
     }
 
     /** @param array<string, mixed> $marker */
-    private function throwSelectionMarkerMismatch(int $sequence, array $marker, string $detail): never
-    {
+    private function throwSelectionMarkerMismatch(
+        int $sequence,
+        array $marker,
+        string $detail,
+        string $reason = 'selection_resolution_member_mismatch',
+    ): never {
         throw new NonDeterministicWorkflow(
             "SelectionResolved {$detail}.",
             $sequence,
             'SelectionResolved matching the authored member and terminal event',
             json_encode($marker, JSON_THROW_ON_ERROR),
-            'selection_resolution_member_mismatch',
+            $reason,
+        );
+    }
+
+    private function assertDurableHandleExecutionIdentity(
+        DurableOperationHandle $handle,
+        ?WorkflowContext $context,
+    ): void {
+        if (!$context instanceof WorkflowContext) {
+            throw new LogicException('A durable operation handle resumed before workflow context initialization.');
+        }
+        if ($handle->workflowId === $context->workflowId && $handle->runId === $context->runId) {
+            return;
+        }
+
+        throw new NonDeterministicWorkflow(
+            'A durable operation handle cannot be used by a different workflow/run execution.',
+            $handle->baseSequence,
+            json_encode([
+                'workflow_id' => $handle->workflowId,
+                'run_id' => $handle->runId,
+            ], JSON_THROW_ON_ERROR),
+            json_encode([
+                'workflow_id' => $context->workflowId,
+                'run_id' => $context->runId,
+            ], JSON_THROW_ON_ERROR),
+            'durable_operation_handle_execution_mismatch',
         );
     }
 
@@ -1596,8 +1783,15 @@ final class Replayer
 
     private function commandDetail(WorkflowCommand $command): ?string
     {
+        if ($command->historyShape === 'activity') {
+            $activityType = $command->attributes['activity_type'] ?? null;
+
+            return is_string($activityType) && $activityType !== ''
+                ? ($command->type === 'record_local_activity' ? 'local:' : '').$activityType
+                : null;
+        }
+
         $value = match ($command->historyShape) {
-            'activity' => $command->attributes['activity_type'] ?? null,
             'timer' => $command->attributes['delay_seconds'] ?? null,
             'child_workflow' => $command->attributes['workflow_type'] ?? null,
             'version_marker' => $command->attributes['change_id'] ?? null,
@@ -1617,8 +1811,15 @@ final class Replayer
     /** @param array<string, mixed> $payload */
     private function payloadDetail(array $payload, string $shape): ?string
     {
+        if ($shape === 'activity') {
+            $activityType = $payload['activity_type'] ?? $payload['activity_name'] ?? null;
+
+            return is_string($activityType) && $activityType !== ''
+                ? (($payload['execution_mode'] ?? null) === 'local' ? 'local:' : '').$activityType
+                : null;
+        }
+
         $value = match ($shape) {
-            'activity' => $payload['activity_type'] ?? $payload['activity_name'] ?? null,
             'timer' => $payload['delay_seconds'] ?? null,
             'child_workflow' => $payload['child_workflow_type'] ?? $payload['workflow_type'] ?? null,
             'version_marker' => $payload['change_id'] ?? null,

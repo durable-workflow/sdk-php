@@ -1,0 +1,50 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-local-activity-terminal-failure-cold-replay",
+  "protocol_version": "1.18",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.local-activity-terminal-failure", "input": []},
+  "history": [
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "golden.local-failure",
+        "execution_mode": "local"
+      }
+    },
+    {
+      "event_type": "ActivityFailed",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "golden.local-failure",
+        "execution_mode": "local",
+        "outcome": "failed",
+        "message": "card declined",
+        "exception_type": "PaymentDeclined",
+        "non_retryable": true,
+        "attempts": [
+          {
+            "attempt_id": "local-attempt-1",
+            "attempt_number": 1,
+            "outcome": "failed",
+            "message": "card declined",
+            "exception_type": "PaymentDeclined",
+            "non_retryable": true,
+            "heartbeats": []
+          }
+        ]
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "fail_workflow",
+        "message": "card declined",
+        "exception_type": "DurableWorkflow\\Exception\\ActivityFailed"
+      }
+    ]
+  }
+}

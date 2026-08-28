@@ -9,6 +9,7 @@ use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Exception\ChildWorkflowFailed;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Worker\DurableOperationHandle;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -36,6 +37,104 @@ final class ReplayerTest extends TestCase
 
         self::assertSame('complete_workflow', $result->commands[0]['type']);
         self::assertSame(['message' => 'hello, Ada'], $codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    public function testJsonUnsafeWorkflowFailureRetainsCompletedLocalActivityCommand(): void
+    {
+        $calls = 0;
+        $workflow = static function (WorkflowContext $context): never {
+            $context->localActivity('write-once');
+
+            throw self::jsonUnsafeWorkflowFailure();
+        };
+
+        $result = (new Replayer(new AvroPayloadCodec()))->replay(
+            $workflow,
+            [],
+            [],
+            'php-workers',
+            [],
+            static function () use (&$calls): array {
+                ++$calls;
+
+                return [
+                    'outcome' => 'completed',
+                    'result' => 'recorded',
+                    'attempts' => [[
+                        'attempt_number' => 1,
+                        'outcome' => 'completed',
+                        'heartbeats' => [],
+                    ]],
+                ];
+            },
+        );
+
+        self::assertSame(1, $calls);
+        self::assertSame(['record_local_activity'], array_column($result->commands, 'type'));
+        self::assertInstanceOf(\RuntimeException::class, $result->terminalFailure);
+        self::assertSame('Workflow failure after a recorded side effect.', $result->terminalFailure->getMessage());
+        self::assertFalse(json_encode($result->terminalFailure::class));
+        self::assertSame(JSON_ERROR_UTF8, json_last_error());
+        self::assertJson(json_encode($result->commands, JSON_THROW_ON_ERROR));
+
+        $record = $result->commands[0];
+        $history = [
+            [
+                'event_type' => 'ActivityScheduled',
+                'payload' => [
+                    'sequence' => 1,
+                    'activity_type' => 'write-once',
+                    'execution_mode' => 'local',
+                ],
+            ],
+            [
+                'event_type' => 'ActivityCompleted',
+                'payload' => [
+                    'sequence' => 1,
+                    'activity_type' => 'write-once',
+                    'execution_mode' => 'local',
+                    'outcome' => 'completed',
+                    'result' => $record['result'],
+                    'attempts' => $record['attempts'],
+                ],
+            ],
+        ];
+
+        try {
+            (new Replayer(new AvroPayloadCodec()))->replay(
+                $workflow,
+                $history,
+                [],
+                'php-workers',
+                [],
+                static function () use (&$calls): array {
+                    ++$calls;
+
+                    return ['outcome' => 'completed', 'result' => 'must-not-run'];
+                },
+            );
+            self::fail('Cold replay must restore the terminal workflow failure.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Workflow failure after a recorded side effect.', $exception->getMessage());
+            self::assertFalse(json_encode($exception::class));
+            self::assertSame(JSON_ERROR_UTF8, json_last_error());
+        }
+
+        self::assertSame(1, $calls, 'Cold replay repeated the completed local activity side effect.');
+    }
+
+    private static function jsonUnsafeWorkflowFailure(): \RuntimeException
+    {
+        $shortName = 'ReplayerJsonUnsafe'.chr(0xff).'Failure';
+        $className = __NAMESPACE__.'\\'.$shortName;
+        if (!class_exists($className, false)) {
+            eval('namespace '.__NAMESPACE__."; class {$shortName} extends \\RuntimeException {}");
+        }
+
+        $exception = new $className('Workflow failure after a recorded side effect.');
+        self::assertInstanceOf(\RuntimeException::class, $exception);
+
+        return $exception;
     }
 
     public function testChangedCommandOrderFailsDeterministically(): void
@@ -1378,6 +1477,110 @@ final class ReplayerTest extends TestCase
             ['winner' => 'deadline', 'work' => 'late answer'],
             $codec->decodeEnvelope($result->commands[0]['result']),
         );
+    }
+
+    public function testSelectionHandleCannotResolveAgainstAnotherRunHistory(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $paths = self::selectionPaths(['first', 'second'], ['activity', 'activity']);
+        $history = [
+            self::parallelEvent('ActivityScheduled', 1, 'first-activity', $paths[0]),
+            self::parallelEvent('ActivityScheduled', 2, 'second-activity', $paths[1]),
+            self::parallelEvent('ActivityCompleted', 1, 'first-activity', $paths[0], $codec->envelope('first')),
+            self::parallelEvent('ActivityCompleted', 2, 'second-activity', $paths[1], $codec->envelope('second')),
+            self::selectionResolved('first', 0, 1, 'activity', 'activity-1'),
+        ];
+        $handle = null;
+        $workflow = static function (WorkflowContext $context) use (&$handle): array {
+            $previousHandle = $handle;
+            $selected = $context->select([
+                'first' => static fn () => $context->activity('first-activity'),
+                'second' => static fn () => $context->activity('second-activity'),
+            ]);
+            $handle = $selected->handles['second'];
+            if ($previousHandle instanceof DurableOperationHandle) {
+                return ['reused' => $previousHandle->await()];
+            }
+
+            return ['winner' => $selected->key];
+        };
+        $replayer = new Replayer($codec);
+
+        $first = $replayer->replay($workflow, $history, [], 'php-workers', [
+            'workflow_id' => 'workflow-a',
+            'run_id' => 'run-a',
+        ]);
+        self::assertSame(['complete_workflow'], array_column($first->commands, 'type'));
+
+        try {
+            $replayer->replay($workflow, $history, [], 'php-workers', [
+                'workflow_id' => 'workflow-a',
+                'run_id' => 'run-b',
+            ]);
+            self::fail('A selection handle must not resolve against another run history.');
+        } catch (NonDeterministicWorkflow $exception) {
+            self::assertSame('durable_operation_handle_execution_mismatch', $exception->reason);
+            self::assertSame(2, $exception->sequence);
+        }
+    }
+
+    public function testSelectionMarkerRejectsMissingNestedMemberSchedules(): void
+    {
+        $deadline = [[
+            'parallel_group_id' => 'select-calls:1:3',
+            'parallel_group_kind' => 'mixed',
+            'parallel_group_mode' => 'select',
+            'parallel_group_base_sequence' => 1,
+            'parallel_group_size' => 3,
+            'parallel_group_index' => 0,
+            'selection_member_key' => 'deadline',
+            'selection_member_index' => 0,
+            'selection_member_base_sequence' => 1,
+            'selection_member_size' => 1,
+            'selection_member_kind' => 'timer',
+        ]];
+        $history = [
+            self::parallelEvent('TimerScheduled', 1, '0', $deadline),
+            self::parallelEvent('TimerFired', 1, '0', $deadline),
+            [
+                'event_type' => 'SelectionResolved',
+                'payload' => [
+                    'selection_group_id' => 'select-calls:1:3',
+                    'selection_group_base_sequence' => 1,
+                    'selection_group_size' => 3,
+                    'member_key' => 'deadline',
+                    'member_index' => 0,
+                    'member_base_sequence' => 1,
+                    'member_size' => 1,
+                    'operation_kind' => 'timer',
+                    'operation_identity' => 'timer-1',
+                    'outcome' => 'completed',
+                    'resolution_event_id' => 'event-TimerFired-1',
+                    'resolution_event_type' => 'TimerFired',
+                ],
+            ],
+        ];
+        $workflow = static function (WorkflowContext $context): array {
+            $selected = $context->select([
+                'deadline' => static function () use ($context): void {
+                    $context->sleep(0);
+                },
+                'nested' => static fn () => $context->all([
+                    static fn () => $context->activity('nested-first'),
+                    static fn () => $context->activity('nested-second'),
+                ]),
+            ]);
+
+            return ['winner' => $selected->key];
+        };
+
+        try {
+            (new Replayer(new AvroPayloadCodec()))->replay($workflow, $history, [], 'php-workers');
+            self::fail('A selection marker must not bypass missing nested member schedules.');
+        } catch (NonDeterministicWorkflow $exception) {
+            self::assertSame('selection_resolution_incomplete_group', $exception->reason);
+            self::assertSame(2, $exception->sequence);
+        }
     }
 
     public function testFreshProcessConsumesRuntimeProducedSelectionHistory(): void

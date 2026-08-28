@@ -39,6 +39,8 @@ use DurableWorkflow\Model\WorkflowStreamPage;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker\PollResponse;
+use DurableWorkflow\Worker\CapabilityManifest;
+use DurableWorkflow\Worker\WorkerSessionOptions;
 use InvalidArgumentException;
 
 /** Synchronous control-plane and worker-plane client for the standalone server. */
@@ -56,6 +58,7 @@ final class Client implements WorkflowClientInterface
         'continue_as_new' => ['arguments'],
         'complete_update' => ['result'],
         'record_side_effect' => ['result'],
+        'record_local_activity' => ['arguments', 'result'],
         'start_service_operation' => ['request_payload'],
         'upsert_memo' => ['entries'],
     ];
@@ -1006,6 +1009,7 @@ final class Client implements WorkflowClientInterface
      *         allows_null: bool
      *     }>}>
      * }>|null $workflowCommandContracts
+     * @param array<string, array<string, bool|string>>|null $capabilityManifest
      * @return array<string, mixed>
      * @throws InvalidArgumentException
      */
@@ -1026,6 +1030,8 @@ final class Client implements WorkflowClientInterface
         int $maxConcurrentActivityTasks = 1,
         ?string $buildId = null,
         ?array $workflowCommandContracts = null,
+        ?array $capabilityManifest = null,
+        int $maxConcurrentWorkerSessions = 10,
     ): array {
         if (in_array('message_streams', $capabilities, true) && !Version::supportsMessageStreams()) {
             throw new InvalidArgumentException('Message streams require worker protocol 1.15 or newer.');
@@ -1033,6 +1039,8 @@ final class Client implements WorkflowClientInterface
         if (in_array('durable_selection', $capabilities, true) && !Version::supportsDurableSelection()) {
             throw new InvalidArgumentException('Durable selection requires worker protocol 1.19 or newer.');
         }
+
+        $capabilityManifest ??= CapabilityManifest::forCapabilities($capabilities);
 
         foreach ($workflowCommandContracts ?? [] as $workflowType => $contract) {
             if (!array_key_exists('update_validators', $contract)) {
@@ -1055,10 +1063,43 @@ final class Client implements WorkflowClientInterface
             'supported_activity_types' => $activityTypes,
             'workflow_command_contracts' => $workflowCommandContracts,
             'capabilities' => $capabilities,
+            'capability_manifest' => $capabilityManifest,
             'max_concurrent_workflow_tasks' => $maxConcurrentWorkflowTasks,
             'max_concurrent_activity_tasks' => $maxConcurrentActivityTasks,
+            'max_concurrent_worker_sessions' => $maxConcurrentWorkerSessions,
             'build_id' => $buildId,
         ]));
+    }
+
+    /** @return array<string, mixed> */
+    public function createWorkerSession(string $workerId, WorkerSessionOptions $options): array
+    {
+        return $this->worker('POST', '/worker/sessions', [
+            'worker_id' => $workerId,
+            ...$options->toWire(),
+        ]);
+    }
+
+    /** @return array<string, mixed> */
+    public function renewWorkerSession(string $workerId, string $sessionId, int $leaseSeconds): array
+    {
+        if ($leaseSeconds < 1) {
+            throw new InvalidArgumentException('Worker session leaseSeconds must be positive.');
+        }
+
+        return $this->worker('POST', '/worker/sessions/'.$this->segment($sessionId).'/heartbeat', [
+            'worker_id' => $workerId,
+            'lease_seconds' => $leaseSeconds,
+        ]);
+    }
+
+    /** @return array<string, mixed> */
+    public function closeWorkerSession(string $workerId, string $sessionId, string $reason = 'worker_shutdown'): array
+    {
+        return $this->worker('DELETE', '/worker/sessions/'.$this->segment($sessionId), [
+            'worker_id' => $workerId,
+            'reason' => $reason,
+        ]);
     }
 
     /**
@@ -1132,6 +1173,14 @@ final class Client implements WorkflowClientInterface
      * @param list<array<string, mixed>> $commands
      * @param list<array{stream_name: string, through_position: int}> $messageStreamCursors
      * @param list<array{stream_name: string, after_position: int}> $messageStreamWaits
+     * @param array{
+     *     worker_id: string,
+     *     workflow_id: string,
+     *     run_id: string,
+     *     build_id: string,
+     *     ttl_seconds: int,
+     *     metrics: array{hit: int, miss: int, eviction: int, forced_cold_replay: int}
+     * }|null $stickyCache
      * @return array<string, mixed>
      */
     public function completeWorkflowTask(
@@ -1141,6 +1190,7 @@ final class Client implements WorkflowClientInterface
         array $commands,
         array $messageStreamCursors = [],
         array $messageStreamWaits = [],
+        ?array $stickyCache = null,
     ): array {
         if (($messageStreamCursors !== [] || $messageStreamWaits !== []) && !Version::supportsMessageStreams()) {
             throw new InvalidArgumentException('Message stream completion metadata requires worker protocol 1.15 or newer.');
@@ -1162,7 +1212,8 @@ final class Client implements WorkflowClientInterface
             'commands' => $commands,
             'message_stream_cursors' => $messageStreamCursors,
             'message_stream_waits' => $messageStreamWaits,
-        ], static fn (mixed $value): bool => $value !== []));
+            'sticky_cache' => $stickyCache,
+        ], static fn (mixed $value): bool => $value !== [] && $value !== null));
     }
 
     /** @return array<string, mixed> */
@@ -1259,7 +1310,7 @@ final class Client implements WorkflowClientInterface
     }
 
     /**
-     * @param array<string, mixed> $details
+     * @param array<array-key, mixed> $details
      * @return array<string, mixed>
      */
     public function heartbeatActivityTask(

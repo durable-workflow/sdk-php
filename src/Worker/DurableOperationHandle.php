@@ -18,6 +18,8 @@ final class DurableOperationHandle
         public readonly int $size,
         public readonly string $selectionGroupId,
         public readonly DeferredWorkflowOperation|ParallelWorkflowCommand $operation,
+        public readonly string $workflowId,
+        public readonly string $runId,
     ) {
     }
 

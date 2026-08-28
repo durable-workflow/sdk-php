@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-selection-incomplete-nested-member-rejected",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.selection-incomplete-nested-member", "input": []},
+  "history": [
+    {"id": "deadline-scheduled", "event_type": "TimerScheduled", "payload": {"sequence": 1, "delay_seconds": 0, "timer_id": "timer-1", "parallel_group_id": "select-calls:1:3", "parallel_group_kind": "mixed", "parallel_group_mode": "select", "parallel_group_base_sequence": 1, "parallel_group_size": 3, "parallel_group_index": 0, "selection_member_key": "deadline", "selection_member_index": 0, "selection_member_base_sequence": 1, "selection_member_size": 1, "selection_member_kind": "timer", "parallel_group_path": [{"parallel_group_id": "select-calls:1:3", "parallel_group_kind": "mixed", "parallel_group_mode": "select", "parallel_group_base_sequence": 1, "parallel_group_size": 3, "parallel_group_index": 0, "selection_member_key": "deadline", "selection_member_index": 0, "selection_member_base_sequence": 1, "selection_member_size": 1, "selection_member_kind": "timer"}]}},
+    {"id": "deadline-fired", "event_type": "TimerFired", "payload": {"sequence": 1, "delay_seconds": 0, "timer_id": "timer-1", "parallel_group_id": "select-calls:1:3", "parallel_group_kind": "mixed", "parallel_group_mode": "select", "parallel_group_base_sequence": 1, "parallel_group_size": 3, "parallel_group_index": 0, "selection_member_key": "deadline", "selection_member_index": 0, "selection_member_base_sequence": 1, "selection_member_size": 1, "selection_member_kind": "timer", "parallel_group_path": [{"parallel_group_id": "select-calls:1:3", "parallel_group_kind": "mixed", "parallel_group_mode": "select", "parallel_group_base_sequence": 1, "parallel_group_size": 3, "parallel_group_index": 0, "selection_member_key": "deadline", "selection_member_index": 0, "selection_member_base_sequence": 1, "selection_member_size": 1, "selection_member_kind": "timer"}]}},
+    {"id": "deadline-selection-resolved", "event_type": "SelectionResolved", "payload": {"selection_group_id": "select-calls:1:3", "selection_group_base_sequence": 1, "selection_group_size": 3, "member_key": "deadline", "member_index": 0, "member_base_sequence": 1, "member_size": 1, "operation_kind": "timer", "operation_identity": "timer-1", "outcome": "completed", "resolution_event_id": "deadline-fired", "resolution_event_type": "TimerFired"}}
+  ],
+  "expected": {"command_sequence": [{"type": "replay_error", "reason": "selection_resolution_incomplete_group", "sequence": 2}]}
+}

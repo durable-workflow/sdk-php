@@ -14,6 +14,8 @@ use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\DurableOperationHandle;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\Saga;
 use DurableWorkflow\Worker\WorkflowContext;
@@ -359,8 +361,22 @@ final class ReplayRegressionConsumer
                 static fn (QueryContext $context, mixed $value = null): array => ['updated' => $value],
             );
         }
+        $localActivityInvocations = 0;
+        if ($workflowType === 'golden.local-activity-terminal-failure') {
+            $worker->registerActivity(
+                'golden.local-failure',
+                static function (ActivityContext $_context) use (&$localActivityInvocations): never {
+                    ++$localActivityInvocations;
+
+                    throw new RuntimeException('Cold replay repeated the recorded local activity side effect.');
+                },
+            );
+        }
         foreach ($tasks as $_task) {
             $worker->tick(0);
+        }
+        if ($localActivityInvocations !== 0) {
+            throw new RuntimeException("{$identity} repeated a recorded local activity during cold replay.");
         }
 
         $taskCommands = array_map(
@@ -594,9 +610,48 @@ final class ReplayRegressionConsumer
                     'value' => $selected->result(),
                 ];
             },
+            'golden.selection-handle-isolation' => self::selectionHandleIsolationWorkflow(),
+            'golden.selection-incomplete-nested-member' => static function (WorkflowContext $context): array {
+                $selected = $context->select([
+                    'deadline' => static function () use ($context): void {
+                        $context->sleep(0);
+                    },
+                    'nested' => static fn () => $context->all([
+                        static fn () => $context->activity('golden.activity-one'),
+                        static fn () => $context->activity('golden.activity-two'),
+                    ]),
+                ]);
+
+                return ['key' => $selected->key];
+            },
+            'golden.local-activity-terminal-failure' => static function (WorkflowContext $context): never {
+                $context->localActivity('golden.local-failure');
+
+                throw new RuntimeException('Workflow failed after the local activity returned.');
+            },
             default => throw new RuntimeException(
                 "Replay fixture workflow {$workflowType} has no PHP implementation in the official consumer.",
             ),
+        };
+    }
+
+    /** @return callable(WorkflowContext): array<string, mixed> */
+    private static function selectionHandleIsolationWorkflow(): callable
+    {
+        $handle = null;
+
+        return static function (WorkflowContext $context) use (&$handle): array {
+            $previousHandle = $handle;
+            $selected = $context->select([
+                'first' => static fn () => $context->activity('golden.activity-one'),
+                'second' => static fn () => $context->activity('golden.activity-two'),
+            ]);
+            $handle = $selected->handles['second'];
+            if ($previousHandle instanceof DurableOperationHandle) {
+                return ['reused_value' => $previousHandle->await()];
+            }
+
+            return ['winner' => $selected->key];
         };
     }
 

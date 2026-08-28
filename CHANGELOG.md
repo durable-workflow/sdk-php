@@ -8,6 +8,10 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Service workers can execute deterministically recorded local activities,
+  manage typed leased worker sessions, and use bounded sticky workflow caches.
+  Replayed local activities never repeat recorded side effects, while expired,
+  evicted, replaced, or build-mismatched cache entries force full durable replay.
 - `WorkflowContext::upsertMemo()` now authors validated memo patches, replays
   `MemoUpserted` identities, carries opaque payload envelopes, and fails before
   completion when the connected runtime does not advertise memo updates.
@@ -85,13 +89,14 @@ project follows [Semantic Versioning](https://semver.org/).
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK source to `2.0.0-rc.48` and qualified it with Server
-  `2.0.0-rc.51`. Worker registration now explicitly advertises memo upserts and
-  typed search attributes, with worker protocol `1.19` identifying the durable
-  selection floor. During the active 2.0 prerelease train, package metadata names
-  the exact SDK artifact and exact qualified Server artifact rather than a
-  compatibility range; other prereleases remain historical and receive no
-  compatibility shim. Avro is the sole public
+- Advanced the PHP SDK source to `2.0.0-rc.49` and qualified it with Server
+  `2.0.0-rc.53`. Worker registration now explicitly advertises memo upserts and
+  typed search attributes, with worker protocol `1.19` and explicit floors for
+  portable worker affinity (`1.18`) and durable selection (`1.19`). During the
+  active 2.0 prerelease train, package
+  metadata names the exact SDK artifact and exact qualified Server artifact
+  rather than a compatibility range; other prereleases remain historical and
+  receive no compatibility shim. Avro is the sole public
   Durable Workflow 2.0 payload codec, and non-Avro configuration fails before
   transmission. Managed registration emits an explicit empty validator list,
   while low-level registration documents and preserves that declaration and
