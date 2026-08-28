@@ -1572,6 +1572,39 @@ final class PortableWorkerAffinityTest extends TestCase
         self::assertSame('php-holder-2', $replacementTransport->requests[0]['body']['worker_id']);
     }
 
+    public function testWorkerSessionIdIsCanonicalAcrossTheCompleteLifecycle(): void
+    {
+        $transport = new FakeTransport([
+            ['outcome' => 'created'],
+            ['outcome' => 'heartbeat_recorded'],
+            ['outcome' => 'closed'],
+            ['outcome' => 'closed'],
+        ]);
+        $options = new WorkerSessionOptions(sessionId: " \tgpu-render\n ");
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'php-workers',
+            workerId: 'php-holder-1',
+        );
+        $session = $worker->workerSession($options);
+
+        self::assertSame('gpu-render', $options->sessionId);
+        self::assertSame('created', $session->create()['outcome']);
+        self::assertSame('gpu-render', $session->activityOptions()['worker_session']['session_id']);
+        self::assertSame('heartbeat_recorded', $session->renew()['outcome']);
+        self::assertSame('closed', $session->close('explicit_close')['outcome']);
+
+        $worker->requestShutdown();
+        $worker->run(0);
+
+        self::assertSame('gpu-render', $transport->requests[0]['body']['session_id']);
+        self::assertStringEndsWith('/api/worker/sessions/gpu-render/heartbeat', $transport->requests[1]['uri']);
+        self::assertStringEndsWith('/api/worker/sessions/gpu-render', $transport->requests[2]['uri']);
+        self::assertSame('explicit_close', $transport->requests[2]['body']['reason']);
+        self::assertStringEndsWith('/api/worker/sessions/gpu-render', $transport->requests[3]['uri']);
+        self::assertSame('worker_shutdown', $transport->requests[3]['body']['reason']);
+    }
+
     /**
      * @param array<string, mixed> $task
      * @param list<mixed> $arguments

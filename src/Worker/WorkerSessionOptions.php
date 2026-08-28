@@ -7,9 +7,11 @@ namespace DurableWorkflow\Worker;
 /** Typed worker-session routing and lease options for activity commands. */
 final class WorkerSessionOptions
 {
+    public readonly string $sessionId;
+
     /** @param list<string> $requirements */
     public function __construct(
-        public readonly string $sessionId,
+        string $sessionId,
         public readonly ?string $queue = null,
         public readonly array $requirements = [],
         public readonly int $leaseSeconds = 120,
@@ -18,9 +20,11 @@ final class WorkerSessionOptions
         public readonly bool $createIfMissing = true,
         public readonly bool $allowReacquireAfterFailure = true,
     ) {
-        if (trim($sessionId) === '') {
+        $canonicalSessionId = trim($sessionId);
+        if ($canonicalSessionId === '') {
             throw new \InvalidArgumentException('Worker session id must be a non-empty string.');
         }
+        $this->sessionId = $canonicalSessionId;
         if ($leaseSeconds < 1 || $ttlSeconds < 1 || $maxConcurrentActivities < 1) {
             throw new \InvalidArgumentException('Worker session lease, TTL, and concurrency values must be positive.');
         }
@@ -35,7 +39,7 @@ final class WorkerSessionOptions
     public function toWire(): array
     {
         return array_filter([
-            'session_id' => trim($this->sessionId),
+            'session_id' => $this->sessionId,
             'queue' => $this->queue,
             'requirements' => array_values(array_unique(array_map('trim', $this->requirements))),
             'lease_seconds' => $this->leaseSeconds,

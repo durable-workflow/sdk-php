@@ -89,11 +89,13 @@ project follows [Semantic Versioning](https://semver.org/).
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK source to `2.0.0-rc.49` and qualified it with Server
+- Advanced the PHP SDK source to `2.0.0-rc.50` and qualified it with Server
   `2.0.0-rc.53`. Worker registration now explicitly advertises memo upserts and
   typed search attributes, with worker protocol `1.19` and explicit floors for
   portable worker affinity (`1.18`) and durable selection (`1.19`). During the
-  active 2.0 prerelease train, package
+  worker-session lifecycle, session identifiers are canonicalized once so
+  create, routing, renewal, explicit close, and shutdown target one identity.
+  During the active 2.0 prerelease train, package
   metadata names the exact SDK artifact and exact qualified Server artifact
   rather than a compatibility range; other prereleases remain historical and
   receive no compatibility shim. Avro is the sole public
