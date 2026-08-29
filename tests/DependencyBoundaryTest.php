@@ -45,7 +45,7 @@ final class DependencyBoundaryTest extends TestCase
         $quickstart = $this->quickstartContract();
 
         self::assertMatchesRegularExpression('/^2\.0\.0-rc\.(?:0|[1-9][0-9]*)$/D', $metadata['product-train']);
-        self::assertSame('2.0.0-rc.53', $metadata['supported-server-versions']);
+        self::assertSame('2.0.0-rc.55', $metadata['supported-server-versions']);
         self::assertSame('1.19', $metadata['worker-protocol-version']);
         self::assertTrue($metadata['durable-selection']);
         self::assertSame('1.19', $metadata['durable-selection-minimum-worker-protocol-version']);
