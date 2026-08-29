@@ -89,8 +89,8 @@ project follows [Semantic Versioning](https://semver.org/).
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK source to `2.0.0-rc.52` and qualified it with Server
-  `2.0.0-rc.56`. Worker registration now explicitly advertises memo upserts and
+- Advanced the PHP SDK source to `2.0.0-rc.53` and qualified it with Server
+  `2.0.0-rc.57`. Worker registration now explicitly advertises memo upserts and
   typed search attributes, with worker protocol `1.19` and explicit floors for
   portable worker affinity (`1.18`) and durable selection (`1.19`). During the
   worker-session lifecycle, session identifiers are canonicalized once so
