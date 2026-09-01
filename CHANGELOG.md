@@ -6,6 +6,12 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- A task-oriented Message Streams guide and shipped PHP examples now show
+  client-role appends with stable message identities alongside deterministic
+  single-message and bounded-batch worker consumption.
+
 ## [2.0.0] - 2026-09-01
 
 ### Added
@@ -26,9 +32,6 @@ project follows [Semantic Versioning](https://semver.org/).
   ordered bounded batches. Runtime-owned cursor and wait metadata survives
   replay, worker replacement, server restart, duplicates, and continue-as-new
   without exposing the reserved transport signal to workflow declarations.
-- A task-oriented Message Streams guide and shipped PHP examples now show
-  client-role appends with stable message identities alongside deterministic
-  single-message and bounded-batch worker consumption.
 - Fiber-backed service workflows can fan out deferred activities, child
   workflows, and timers with `WorkflowContext::all()` or `parallel()`, including
   mixed and nested groups. Replay preserves declaration-order results, validates
