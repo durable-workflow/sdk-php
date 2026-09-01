@@ -1,10 +1,10 @@
 {
     "name": "durable-workflow/sdk",
-    "description": "Framework-neutral PHP client and worker SDK for the Durable Workflow server",
+    "description": "PHP client and worker SDK for Durable Workflow Cloud and self-hosted Server",
     "type": "library",
     "license": "MIT",
-    "keywords": ["durable", "workflow", "orchestration", "worker", "sdk"],
-    "homepage": "https://durable-workflow.com",
+    "keywords": ["cloud", "durable", "laravel", "orchestration", "php", "sdk", "symfony", "worker", "workflow"],
+    "homepage": "https://php.durable-workflow.com/",
     "support": {
         "docs": "https://php.durable-workflow.com/",
         "issues": "https://github.com/durable-workflow/sdk-php/issues",

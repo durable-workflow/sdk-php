@@ -3,19 +3,19 @@
   "examples": [
     {
       "id": "php.quickstart.bootstrap",
-      "path": "README.md",
+      "path": "docs/sdk-reference.md",
       "language": "php",
       "source": "examples/bootstrap.php"
     },
     {
       "id": "php.quickstart.worker",
-      "path": "README.md",
+      "path": "docs/sdk-reference.md",
       "language": "php",
       "source": "examples/worker.php"
     },
     {
       "id": "php.quickstart.client",
-      "path": "README.md",
+      "path": "docs/sdk-reference.md",
       "language": "php",
       "source": "examples/client.php",
       "workflowIdentity": {

@@ -6,12 +6,7 @@
     "check:docs": "node scripts/check-docs-portal.mjs build/site",
     "check:docs-browser": "node scripts/check-docs-browser.mjs build/site",
     "check:docs-examples": "node scripts/check-docs-examples.mjs",
-    "check:docs-analytics-browser": "node scripts/check-docs-analytics-browser.mjs",
-    "qualify:quickstart-contract-deployment": "node scripts/qualify-quickstart-contract-deployment.mjs",
-    "test:docs-browser-failures": "node --test scripts/check-docs-browser-failures.test.mjs",
-    "qualify:docs-analytics-deployment": "node scripts/qualify-docs-analytics-deployment.mjs",
-    "test:quickstart-contract-deployment": "node --test scripts/qualify-quickstart-contract-deployment.test.mjs",
-    "test:docs-analytics-deployment": "node --test scripts/qualify-docs-analytics-deployment.test.mjs"
+    "test:docs-browser-failures": "node --test scripts/check-docs-browser-failures.test.mjs"
   },
   "devDependencies": {
     "@11ty/eleventy": "3.1.6",
