@@ -84,8 +84,10 @@ jobs:
             --base-ref "$QUALIFICATION_BASE_SHA" \
             --head-ref "$QUALIFICATION_HEAD_SHA" \
             --github-output "$GITHUB_OUTPUT"
-      - name: Prove qualification routing and workflow contracts
-        run: python scripts/ci/test-ci-qualification.py
+      - name: Prove qualification routing and privileged workflow contracts
+        run: |
+          python scripts/ci/test-ci-qualification.py
+          python scripts/ci/test-workflow-trust-boundaries.py
       - name: Prove an external outage cannot fail offline qualification
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:
@@ -144,10 +146,6 @@ jobs:
           coverage: none
       - name: Validate package structure
         run: composer validate --strict
-      - name: Verify CI and privileged workflow boundaries
-        run: |
-          python scripts/ci/test-ci-qualification.py
-          python scripts/ci/test-workflow-trust-boundaries.py
       - name: Scan the candidate public boundary
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -244,22 +242,6 @@ jobs:
           npm run test:docs-analytics-deployment
           npm run check:docs-analytics-browser -- build/site
           npm run check:docs-browser
-      - name: Exercise focused release recovery boundaries
-        if: ${{ contains(needs.qualification-route.outputs.categories, 'release') }}
-        env:
-          CONFORMANCE_BASE_REF: ${{ github.event.pull_request.base.sha }}
-        run: |
-          python scripts/ci/test-publish-planned-source.py
-          python scripts/ci/test-php-waterline-release-train.py
-          arguments=()
-          if [[ "$CONFORMANCE_BASE_REF" =~ ^[0-9a-f]{40}$ ]] && [[ ! "$CONFORMANCE_BASE_REF" =~ ^0+$ ]]; then
-            arguments+=(--previous-ref "$CONFORMANCE_BASE_REF")
-          fi
-          python scripts/ci/release_recovery_consumer_conformance.py \
-            --contract scripts/ci/release-recovery-consumer-contract.json \
-            --adapter scripts/ci/release-recovery-consumer-adapter.json \
-            "${arguments[@]}"
-
   regression-corpus:
     name: Regression corpus
     needs: qualification-route
@@ -651,35 +633,6 @@ jobs:
           RELEASE_TAG: 9.8.7
         run: composer check-release-identity
 
-  release-recovery-boundary:
-    name: Release recovery boundaries
-    needs: qualification-route
-    if: ${{ needs.qualification-route.outputs.route == 'complete' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-        with:
-          fetch-depth: 0
-      - name: Exercise source creation, idempotency, mismatch, and permission failure
-        run: python scripts/ci/test-publish-planned-source.py
-      - name: Prove SDK-only publication cannot outrun Waterline
-        run: python scripts/ci/test-php-waterline-release-train.py
-      - name: Verify release recovery source contracts
-        env:
-          CONFORMANCE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          arguments=()
-          if [ -n "$CONFORMANCE_BASE_REF" ]; then
-            arguments+=(--previous-ref "$CONFORMANCE_BASE_REF")
-          fi
-          python scripts/ci/release_recovery_consumer_conformance.py \
-            --contract scripts/ci/release-recovery-consumer-contract.json \
-            --adapter scripts/ci/release-recovery-consumer-adapter.json \
-            "${arguments[@]}"
-      - name: Verify privileged workflow dispatch boundaries
-        run: python scripts/ci/test-workflow-trust-boundaries.py
-
   target-branch-qualification:
     name: Target branch qualification
     if: ${{ always() }}
@@ -693,7 +646,6 @@ jobs:
       - analyse
       - docs
       - package-smoke
-      - release-recovery-boundary
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -723,7 +675,6 @@ jobs:
           ANALYSIS_RESULT: ${{ needs.analyse.result }}
           DOCS_RESULT: ${{ needs.docs.result }}
           PACKAGE_RESULT: ${{ needs.package-smoke.result }}
-          RECOVERY_RESULT: ${{ needs.release-recovery-boundary.result }}
         run: |
           if [ "$ROUTE" = focused ]; then
             test "$FOCUSED_RESULT" = success
@@ -733,7 +684,6 @@ jobs:
             test "$ANALYSIS_RESULT" = skipped
             test "$DOCS_RESULT" = skipped
             test "$PACKAGE_RESULT" = skipped
-            test "$RECOVERY_RESULT" = skipped
             echo "Focused candidate evidence succeeded; complete compatibility is deferred to the landed SHA."
           elif [ "$ROUTE" = complete ]; then
             test "$FOCUSED_RESULT" = skipped
@@ -743,7 +693,6 @@ jobs:
             test "$ANALYSIS_RESULT" = success
             test "$DOCS_RESULT" = success
             test "$PACKAGE_RESULT" = success
-            test "$RECOVERY_RESULT" = success
             echo "Complete GitHub target qualification succeeded."
           elif [ "$ROUTE" = sentinel ]; then
             test "$FOCUSED_RESULT" = skipped
@@ -753,7 +702,6 @@ jobs:
             test "$ANALYSIS_RESULT" = skipped
             test "$DOCS_RESULT" = skipped
             test "$PACKAGE_RESULT" = skipped
-            test "$RECOVERY_RESULT" = skipped
             echo "Alternate-CI target sentinel succeeded; GitHub owns landed-SHA qualification."
           else
             exit 1

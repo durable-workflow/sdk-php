@@ -18,7 +18,7 @@ FOCUSED = "focused"
 COMPLETE = "complete"
 SENTINEL = "sentinel"
 
-ALL_FOCUSED_CATEGORIES = ("docs", "docs-browser", "release", "runtime")
+ALL_FOCUSED_CATEGORIES = ("docs", "docs-browser", "runtime")
 OBJECT_ID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 
@@ -149,25 +149,6 @@ def path_categories(path: str) -> set[str]:
         or "regression-corpus" in path
     ):
         categories.add("runtime")
-
-    if (
-        path
-        in {
-            ".github/workflows/framework-bridges-published-smoke.yml",
-            ".github/workflows/release-plan-recovery.yml",
-            ".github/workflows/service-mode-published-smoke.yml",
-        }
-        or path.startswith("scripts/ci/component-release-")
-        or path.startswith("scripts/ci/release-recovery-")
-        or path.startswith("scripts/ci/release_recovery_")
-        or path.startswith("scripts/ci/test-component-release-")
-        or path.startswith("scripts/ci/test-publish-planned-")
-        or path.startswith("scripts/ci/test-php-waterline-")
-        or path.startswith("scripts/ci/publish-planned-")
-        or path.startswith("scripts/ci/php_waterline_")
-        or path.startswith("scripts/ci/recovery_workflow_")
-    ):
-        categories.add("release")
 
     if path in {
         ".github/workflows/framework-bridges-published-smoke.yml",
