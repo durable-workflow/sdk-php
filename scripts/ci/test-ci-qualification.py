@@ -293,7 +293,7 @@ class WorkflowQualificationContractTest(unittest.TestCase):
         self.assertIn("source_mode: embedded_v1", transition_job)
         self.assertIn("workflow: '^1.0'", transition_job)
         self.assertIn("source_mode: embedded_v2", transition_job)
-        self.assertIn("workflow: '^2.0@RC'", transition_job)
+        self.assertIn("workflow: '^2.0'", transition_job)
         self.assertEqual(
             1,
             transition_job.count(

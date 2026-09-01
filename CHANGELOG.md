@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-01
+
 ### Added
 
 - Service workers can execute deterministically recorded local activities,
@@ -89,16 +91,15 @@ project follows [Semantic Versioning](https://semver.org/).
   straight-line execution. Durable operations now return recorded values or
   throw recorded failures directly at their call sites, while replay retains
   strict command-order, history-shape, and command-detail validation.
-- Advanced the PHP SDK source to `2.0.0-rc.54` and qualified it with Server
-  `2.0.0-rc.68`. Worker registration now explicitly advertises memo upserts and
+- Published the stable PHP SDK `2.0.0`, qualified with Server `2.0.0`.
+  Worker registration explicitly advertises memo upserts and
   typed search attributes, with worker protocol `1.19` and explicit floors for
   portable worker affinity (`1.18`) and durable selection (`1.19`). During the
   worker-session lifecycle, session identifiers are canonicalized once so
   create, routing, renewal, explicit close, and shutdown target one identity.
-  During the active 2.0 prerelease train, package
-  metadata names the exact SDK artifact and exact qualified Server artifact
-  rather than a compatibility range; other prereleases remain historical and
-  receive no compatibility shim. Avro is the sole public
+  Package metadata names the exact SDK artifact and exact qualified Server
+  artifact. The prereleases remain historical and receive no compatibility
+  shim. Avro is the sole public
   Durable Workflow 2.0 payload codec, and non-Avro configuration fails before
   transmission. Managed registration emits an explicit empty validator list,
   while low-level registration documents and preserves that declaration and

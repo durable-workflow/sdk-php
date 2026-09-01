@@ -44,7 +44,7 @@ A minimal production image should:
 4. expose no HTTP port unless the container also owns a separate health process;
 5. identify the application release through `buildId`.
 
-Do not use the SDK repository's `main` branch as a production Composer source. Install `{{ release.composerPackage }}` to follow the supported 2.0 prerelease channel, then commit the resolved version in `composer.lock`.
+Do not use the SDK repository's `main` branch as a production Composer source. Install `{{ release.composerPackage }}` to follow the supported stable 2.0 line, then commit the resolved version in `composer.lock`.
 
 ## Roll out compatible workers
 

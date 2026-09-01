@@ -12,7 +12,7 @@ next:
 ---
 ## Install and construct
 
-Install from the supported 2.0 prerelease channel shown throughout this portal:
+Install from the supported stable 2.0 line shown throughout this portal:
 
 ```bash
 {{ release.composerCommand }}
