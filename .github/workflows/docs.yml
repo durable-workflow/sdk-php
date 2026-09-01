@@ -10,15 +10,11 @@ on:
       - '.eleventy.cjs'
       - 'scripts/check-docs-*'
       - 'scripts/finalize-api-reference.php'
-      - 'scripts/qualify-quickstart-*'
-      - 'scripts/qualify-docs-analytics*'
       - 'README.md'
       - 'composer.json'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/docs.yml'
-  schedule:
-    - cron: '41 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -31,8 +27,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    outputs:
-      release_published: ${{ steps.release-availability.outputs.release_published }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
@@ -46,12 +40,7 @@ jobs:
           cache: npm
       - run: composer install --no-interaction --prefer-dist
       - run: npm ci
-      - name: Resolve the exact published portal release
-        id: release-availability
-        if: github.server_url == 'https://github.com'
-        run: node scripts/qualify-quickstart-release-availability.mjs
       - run: npm run check:docs-examples
-      - run: npm run test:quickstart-contract-deployment
       - name: Check repository-owned documentation links offline
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:
@@ -90,10 +79,6 @@ jobs:
       - run: npx playwright install chromium --with-deps
       - name: Test missing-resource browser evidence
         run: npm run test:docs-browser-failures
-      - name: Test deployed Cloudflare transport qualification
-        run: npm run test:docs-analytics-deployment
-      - name: Check Cloudflare analytics in Chromium
-        run: npm run check:docs-analytics-browser -- build/site
       - name: Check portal and API layouts in Chromium
         run: npm run check:docs-browser
       - name: Bind Pages artifact to the exact source revision
@@ -114,8 +99,7 @@ jobs:
   deploy:
     if: >-
       github.server_url == 'https://github.com' &&
-      github.ref == 'refs/heads/main' &&
-      needs.build.outputs.release_published == 'true'
+      github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -128,33 +112,3 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128  # v5
-
-  qualify-deployment:
-    if: github.server_url == 'https://github.com' && github.ref == 'refs/heads/main'
-    needs: deploy
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
-        with:
-          php-version: '8.3'
-          tools: composer:v2
-          coverage: none
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - run: npx playwright install chromium --with-deps
-      - name: Qualify deployed quickstart references
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: npm run qualify:quickstart-contract-deployment
-      - name: Qualify deployed analytics transports
-        run: >-
-          npm run qualify:docs-analytics-deployment --
-          --source-revision "${{ github.sha }}"

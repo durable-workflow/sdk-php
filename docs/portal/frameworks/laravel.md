@@ -51,10 +51,9 @@ when it intentionally overrides the Laravel defaults.
 
 The public [Laravel adoption contract](/laravel-adoption-contract.json) is the
 machine-readable authority for this matrix, supported Laravel/PHP cells,
-continuity surfaces, and qualification destinations. It uses release channels,
-not copied prerelease sequence numbers. Its embedded transition row references
-the transition manifest shipped by `durable-workflow/workflow`; the service SDK
-does not publish a second embedded support policy.
+continuity surfaces, and qualification destinations. Its embedded transition
+row references the transition manifest shipped by `durable-workflow/workflow`,
+which owns the embedded support policy.
 
 ## Plan continuity before changing packages
 
