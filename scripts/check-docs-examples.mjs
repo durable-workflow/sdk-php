@@ -123,12 +123,12 @@ assert(
   'quickstart published version must match the Composer product train',
 );
 assert(
-  quickstart.package?.composer_requirement === `${quickstart.package.published_version}@RC`,
-  'quickstart Composer requirement must select the published release candidate',
+  quickstart.package?.composer_requirement === quickstart.package.published_version,
+  'quickstart Composer requirement must select the published stable release',
 );
 assert(
-  /^\^\d+\.\d+@RC$/.test(quickstart.package?.onboarding_requirement || ''),
-  'quickstart onboarding requirement must select a prerelease release channel',
+  /^\^\d+\.\d+$/.test(quickstart.package?.onboarding_requirement || ''),
+  'quickstart onboarding requirement must select a stable release series',
 );
 assert(
   quickstart.workflow_authoring?.execution_model === 'fiber'

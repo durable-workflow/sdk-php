@@ -22,6 +22,8 @@ const release = composer.extra['durable-workflow'];
 const sdkVersion = release['product-train'];
 const composerCommand = `composer require ${quickstartContract.package.name}:${quickstartContract.package.onboarding_requirement}`;
 const sdkSeries = sdkVersion.split('.').slice(0, 2).join('.');
+const sdkChannel = sdkVersion.includes('-') ? `${sdkSeries} prerelease` : sdkSeries;
+const onboardingRequirement = sdkVersion.includes('-') ? `^${sdkSeries}@RC` : `^${sdkSeries}`;
 
 function filesUnder(directory, extension) {
   return fs.readdirSync(directory, {withFileTypes: true}).flatMap((entry) => {
@@ -178,7 +180,7 @@ assert.equal(
   release.frameworks.laravel,
   'Laravel adoption and Composer framework compatibility must stay aligned.',
 );
-assert(home.includes(`PHP SDK ${sdkSeries} prerelease`), 'Home release badge must identify the SDK prerelease channel.');
+assert(home.includes(`PHP SDK ${sdkChannel}`), 'Home release badge must identify the SDK release channel.');
 assert(
   home.includes('<a class="button primary" href="/frameworks/laravel/">'),
   'Home must keep a primary entry to the Laravel ownership guide.',
@@ -187,7 +189,7 @@ assert.equal(quickstartContract.schema_version, 2, 'Quickstart contract must use
 assert.equal(quickstartContract.$schema, quickstartSchema.$id, 'Quickstart contract must identify its deployed schema.');
 assert.equal(quickstartContract.package.name, composer.name, 'Quickstart package must match Composer metadata.');
 assert.equal(quickstartContract.package.published_version, sdkVersion, 'Quickstart version must match Composer metadata.');
-assert.equal(quickstartContract.package.onboarding_requirement, `^${sdkSeries}@RC`);
+assert.equal(quickstartContract.package.onboarding_requirement, onboardingRequirement);
 assert.equal(
   quickstartContract.integrations.embedded_laravel,
   'https://php.durable-workflow.com/frameworks/laravel/',

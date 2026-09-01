@@ -39,20 +39,21 @@ final class DependencyBoundaryTest extends TestCase
         }
     }
 
-    public function testPrereleaseMetadataDeclaresExactQualifiedArtifacts(): void
+    public function testStableMetadataDeclaresExactQualifiedArtifacts(): void
     {
         $metadata = $this->manifest()['extra']['durable-workflow'];
         $quickstart = $this->quickstartContract();
 
-        self::assertMatchesRegularExpression('/^2\.0\.0-rc\.(?:0|[1-9][0-9]*)$/D', $metadata['product-train']);
-        self::assertSame('2.0.0-rc.68', $metadata['supported-server-versions']);
+        self::assertSame('2.0.0', $metadata['product-train']);
+        self::assertSame('2.0.0', $metadata['supported-server-versions']);
         self::assertSame('1.19', $metadata['worker-protocol-version']);
         self::assertTrue($metadata['durable-selection']);
         self::assertSame('1.19', $metadata['durable-selection-minimum-worker-protocol-version']);
         self::assertTrue($metadata['message-streams']);
         self::assertSame('1.15', $metadata['message-streams-minimum-worker-protocol-version']);
         self::assertSame($metadata['product-train'], $quickstart['package']['published_version']);
-        self::assertSame($metadata['product-train'].'@RC', $quickstart['package']['composer_requirement']);
+        self::assertSame($metadata['product-train'], $quickstart['package']['composer_requirement']);
+        self::assertSame('^2.0', $quickstart['package']['onboarding_requirement']);
         self::assertSame(
             'durableworkflow/server:'.$metadata['supported-server-versions'],
             $quickstart['runtime_targets']['server']['image'],

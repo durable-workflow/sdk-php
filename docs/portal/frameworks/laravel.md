@@ -81,7 +81,7 @@ This path keeps state ownership in Laravel.
 1. Install the v2 channel in the existing application and run its migrations:
 
    ```bash
-   composer require 'durable-workflow/workflow:^2.0@RC' --with-all-dependencies
+   composer require 'durable-workflow/workflow:^2.0' --with-all-dependencies
    php artisan migrate --force
    ```
 
@@ -117,7 +117,7 @@ The SDK can be installed while v1 remains present and draining.
 1. Install the service-mode channel and publish configuration:
 
    ```bash
-   composer require 'durable-workflow/sdk:^2.0@RC'
+   composer require 'durable-workflow/sdk:^2.0'
    php artisan vendor:publish --tag=durable-workflow-config
    ```
 

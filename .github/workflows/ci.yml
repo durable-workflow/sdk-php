@@ -541,7 +541,7 @@ jobs:
             source_mode: embedded_v2
             php: '8.3'
             laravel: '^12.0'
-            workflow: '^2.0@RC'
+            workflow: '^2.0'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2

@@ -220,7 +220,7 @@ function validateContract(contract, schema) {
     'deployed contract must select an exact published package version',
   );
   assert(
-    contract.package?.composer_requirement === `${contract.package.published_version}@RC`,
+    contract.package?.composer_requirement === contract.package.published_version,
     'deployed contract must derive its Composer requirement from the published version',
   );
   assert(!('published_smoke' in contract), 'deployed contract exposes a repository-local smoke path');

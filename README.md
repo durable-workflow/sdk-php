@@ -31,13 +31,12 @@ Create an empty Composer project and install the current published package:
 mkdir durable-php-quickstart
 cd durable-php-quickstart
 composer init --name=acme/durable-php-quickstart --no-interaction
-composer require 'durable-workflow/sdk:^2.0@RC'
+composer require 'durable-workflow/sdk:^2.0'
 ```
 
-The current 2.0 RC declares its verified Server baseline in package metadata;
-using another Server prerelease requires separate conformance evidence. Earlier
-2.0 prereleases and pre-1.0 SDK releases remain historical rather than
-alternate supported baselines.
+The stable 2.0 package declares its verified Server baseline in package
+metadata. Earlier 2.0 prereleases and pre-1.0 SDK releases remain historical
+rather than alternate supported baselines.
 
 To install directly from the source repository before a tagged release:
 
@@ -262,11 +261,10 @@ Release metadata and the machine-readable
 package and Server compatibility line, runtime URL forms, role-specific
 environment variables, package-resolvable executable sources, expected result,
 and public published-artifact qualification identity that keep this path in sync.
-During the active 2.0 prerelease train, `product-train` names the exact SDK
-artifact being qualified and `supported-server-versions` names the exact
-standalone Server artifact qualified with it. The latter is not a version range
-or a promise of compatibility with other prereleases; earlier prereleases remain
-historical and do not activate compatibility shims.
+For the stable 2.0 release, `product-train` names the exact SDK artifact and
+`supported-server-versions` names the exact standalone Server artifact
+qualified with it. Earlier prereleases remain historical and do not activate
+compatibility shims.
 
 `npm run qualify:quickstart-contract-deployment` verifies that deployed contract
 and its public workflow evidence. Local runs may omit `GITHUB_TOKEN` and use
@@ -501,7 +499,7 @@ Publish the environment-backed configuration, add attributed handler services,
 and start the supervised Artisan command:
 
 ```bash
-composer require 'durable-workflow/sdk:^2.0@RC'
+composer require 'durable-workflow/sdk:^2.0'
 php artisan vendor:publish --tag=durable-workflow-config
 php artisan config:cache
 php artisan durable-workflow:worker

@@ -38,12 +38,12 @@
     },
     "embedded_v2": {
       "package": "durable-workflow/workflow",
-      "channel": "^2.0@RC",
+      "channel": "^2.0",
       "state_owner": "laravel_application"
     },
     "service_v2": {
       "package": "durable-workflow/sdk",
-      "channel": "^2.0@RC",
+      "channel": "^2.0",
       "state_owner": "server_or_cloud"
     }
   },
