@@ -34,6 +34,14 @@ function examplePattern(id) {
   );
 }
 
+function publicMethodPattern(method) {
+  return new RegExp(`\\bpublic\\s+function\\s+${escapeRegExp(method)}\\s*\\(`);
+}
+
+function methodCallPattern(method) {
+  return new RegExp(`->\\s*${escapeRegExp(method)}\\s*\\(`);
+}
+
 function patternOccurrences(block, source, context) {
   try {
     return [...block.matchAll(new RegExp(source, 'g'))].length;
@@ -217,6 +225,17 @@ for (const example of contract.examples || []) {
   const executableSource = await readFile(new URL(example.source, repoRoot), 'utf8');
   if (`${match[2]}\n` !== executableSource) {
     throw new Error(`${context} must render the shipped executable ${example.source} without drift`);
+  }
+  for (const apiMethod of example.publicApiMethods || []) {
+    const declaration = await readFile(new URL(apiMethod.declaration, repoRoot), 'utf8');
+    assert(
+      publicMethodPattern(apiMethod.method).test(declaration),
+      `${context} references missing public API ${apiMethod.declaration}::${apiMethod.method}()`,
+    );
+    assert(
+      methodCallPattern(apiMethod.method).test(executableSource),
+      `${context} does not exercise declared public API method ${apiMethod.method}()`,
+    );
   }
   if (example.workflowIdentity) {
     checkWorkflowIdentity(match[2], example.workflowIdentity, context);

@@ -7,8 +7,8 @@ previous:
   label: Workers
   url: /build/workers/
 next:
-  label: Failures & retries
-  url: /build/failures-retries/
+  label: Message Streams
+  url: /build/message-streams/
 ---
 ## Choose the message contract
 
@@ -45,6 +45,10 @@ $client->workflowHandle('order-1001')->signal('approve', ['Ada']);
 ```
 
 Signals are appropriate when the caller only needs acknowledgement that the runtime accepted the event.
+
+Use [inbound Message Streams](/build/message-streams/) instead when one workflow
+instance needs repeated ordered input with stable message identities and a
+replay-safe consumption cursor.
 
 ## Register a read-only query
 

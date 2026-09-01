@@ -6,6 +6,12 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- A task-oriented Message Streams guide and shipped PHP examples now show
+  client-role appends with stable message identities alongside deterministic
+  single-message and bounded-batch worker consumption.
+
 ## [2.0.0] - 2026-09-01
 
 ### Added

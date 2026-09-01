@@ -492,6 +492,18 @@ task kind, consecutive attempt, selected delay, and typed server exception.
 Authentication failures, malformed responses, and generic server errors remain
 fatal.
 
+## Receive repeated input with Message Streams
+
+Inbound Message Streams deliver repeated, ordered application input to a stable
+workflow instance. The application appends a stable message identity through
+`WorkflowHandle::appendMessage()`, while workflow code consumes one message or
+a bounded ordered batch through `messageStream()`. Runtime-owned cursors survive
+replay, worker replacement, server restart, and continue-as-new.
+
+See the task-oriented [Message Streams guide](https://php.durable-workflow.com/build/message-streams/)
+and the shipped [client](examples/message-stream-client.php) and
+[worker](examples/message-stream-worker.php) examples.
+
 ## Laravel service mode
 
 Laravel 9 through 13 auto-discover the service provider from the same SDK package.

@@ -13,6 +13,7 @@
       {"label": "Workflows & activities", "url": "/build/workflows-activities/"},
       {"label": "Workers", "url": "/build/workers/"},
       {"label": "Signals, queries & updates", "url": "/build/messages/"},
+      {"label": "Message Streams", "url": "/build/message-streams/"},
       {"label": "Failures & retries", "url": "/build/failures-retries/"},
       {"label": "Testing", "url": "/build/testing/"}
     ]
