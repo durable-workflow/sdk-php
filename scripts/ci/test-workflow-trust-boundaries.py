@@ -97,42 +97,6 @@ class PrivilegedWorkflowDispatchBoundaryTest(unittest.TestCase):
         self.assertEqual(expected, job_condition(job))
         self.assertLess(job.index("    if:"), job.index("    steps:"))
 
-    def test_release_publisher_rejects_caller_selected_refs_before_authority_use(self) -> None:
-        source = workflow_source("release-plan-recovery.yml")
-        self.assertIn("  workflow_dispatch:", source)
-        publish = job_source(source, "publish")
-        self.assert_main_only(
-            publish,
-            "github.ref == 'refs/heads/main' && "
-            "needs.discover.outputs.action == 'publish'",
-        )
-        for privileged_marker in (
-            "environment: release-plan-publication",
-            "contents: write",
-            "actions/download-artifact@",
-            "secrets.RELEASE_PLAN_DEPLOY_KEY",
-        ):
-            self.assertIn(privileged_marker, publish)
-
-    def test_completed_historical_plan_bypasses_current_train_qualification(self) -> None:
-        discover = job_source(workflow_source("release-plan-recovery.yml"), "discover")
-        for name in (
-            "Resolve the planned Waterline source identity",
-            "Check out the public release-train baseline",
-            "Check out the exact planned Waterline source",
-            "Require a compatible sequential Waterline train",
-        ):
-            step = step_source(discover, name)
-            self.assertIn(
-                "        if: steps.recovery.outputs.action == 'publish'",
-                step,
-            )
-
-        guard = step_source(
-            discover, "Require a compatible sequential Waterline train"
-        )
-        self.assertIn("scripts/ci/php_waterline_release_train.py", guard)
-
     def test_api_reference_deployer_rejects_branch_built_artifacts(self) -> None:
         source = workflow_source("docs.yml")
         self.assertIn("  workflow_dispatch:", source)

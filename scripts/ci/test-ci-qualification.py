@@ -155,11 +155,7 @@ class ChangedPathClassificationTest(unittest.TestCase):
             ),
             "published-runtime-smoke": (
                 [".github/workflows/service-mode-published-smoke.yml"],
-                ("release", "runtime"),
-            ),
-            "release": (
-                ["scripts/ci/component-release-recovery.py"],
-                ("release",),
+                ("runtime",),
             ),
             "ci": ([".github/workflows/ci.yml"], ("ci",)),
         }
@@ -182,10 +178,14 @@ class ChangedPathClassificationTest(unittest.TestCase):
 
     def test_mixed_changes_combine_relevant_categories(self) -> None:
         categories, _reason = self.classify(
-            ["README.md", "src/Client.php", "scripts/ci/publish-planned-source.py"]
+            [
+                "README.md",
+                "src/Client.php",
+                ".github/workflows/service-mode-published-smoke.yml",
+            ]
         )
         self.assertEqual(
-            ("docs", "release", "runtime"),
+            ("docs", "runtime"),
             categories,
         )
 
@@ -215,7 +215,6 @@ class WorkflowQualificationContractTest(unittest.TestCase):
             "analyse",
             "docs",
             "package-smoke",
-            "release-recovery-boundary",
         ):
             with self.subTest(job=name):
                 job = workflow_job_source(self.source, name)
@@ -304,8 +303,9 @@ class WorkflowQualificationContractTest(unittest.TestCase):
     def test_focused_gate_covers_structure_security_and_relevant_changes(self) -> None:
         focused = workflow_job_source(self.source, "focused-candidate")
         self.assertIn("needs.qualification-route.outputs.route == 'focused'", focused)
-        self.assertIn("python scripts/ci/test-ci-qualification.py", focused)
-        self.assertIn("python scripts/ci/test-workflow-trust-boundaries.py", focused)
+        route = workflow_job_source(self.source, "qualification-route")
+        self.assertIn("python scripts/ci/test-ci-qualification.py", route)
+        self.assertIn("python scripts/ci/test-workflow-trust-boundaries.py", route)
         self.assertIn("scripts/check-public-boundary.sh", focused)
         self.assertIn("composer test", focused)
         self.assertIn("npm run test:docs-analytics-deployment", focused)
@@ -417,7 +417,6 @@ class WorkflowQualificationContractTest(unittest.TestCase):
             "ANALYSIS_RESULT": "skipped",
             "DOCS_RESULT": "skipped",
             "PACKAGE_RESULT": "skipped",
-            "RECOVERY_RESULT": "skipped",
         }
         complete = {
             **skipped,
@@ -427,7 +426,6 @@ class WorkflowQualificationContractTest(unittest.TestCase):
             "ANALYSIS_RESULT": "success",
             "DOCS_RESULT": "success",
             "PACKAGE_RESULT": "success",
-            "RECOVERY_RESULT": "success",
         }
         cases = (
             ({**skipped, "ROUTE": "focused", "FOCUSED_RESULT": "success"}, 0),
