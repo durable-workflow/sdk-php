@@ -6,11 +6,19 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-09-03
+
 ### Added
 
 - A task-oriented Message Streams guide and shipped PHP examples now show
   client-role appends with stable message identities alongside deterministic
   single-message and bounded-batch worker consumption.
+
+### Changed
+
+- Qualified the stable PHP SDK against the additive Server `2.1.0` release,
+  which preserves worker protocol `1.19` while adding tenant-scoped runtime
+  credential management to the Server control plane.
 
 ## [2.0.0] - 2026-09-01
 

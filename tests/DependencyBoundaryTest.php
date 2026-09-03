@@ -44,8 +44,8 @@ final class DependencyBoundaryTest extends TestCase
         $metadata = $this->manifest()['extra']['durable-workflow'];
         $quickstart = $this->quickstartContract();
 
-        self::assertSame('2.0.0', $metadata['product-train']);
-        self::assertSame('2.0.0', $metadata['supported-server-versions']);
+        self::assertSame('2.0.1', $metadata['product-train']);
+        self::assertSame('2.1.0', $metadata['supported-server-versions']);
         self::assertSame('1.19', $metadata['worker-protocol-version']);
         self::assertTrue($metadata['durable-selection']);
         self::assertSame('1.19', $metadata['durable-selection-minimum-worker-protocol-version']);
