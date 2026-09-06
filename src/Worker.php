@@ -56,6 +56,8 @@ final class Worker
     private bool $shutdownRequested = false;
     private bool $registered = false;
     private float $lastHeartbeatAt = 0.0;
+    private float $heartbeatRetryAt = 0.0;
+    private int $heartbeatRetryAttempt = 0;
     private int $heartbeatIntervalSeconds;
     /** @var \Closure(): float */
     private readonly \Closure $clock;
@@ -508,10 +510,11 @@ final class Worker
         $handled = false;
         $workflowPoll = $this->pollWithRetry(
             'workflow',
-            fn (): array => $this->client->pollWorkflowTaskResponse(
+            fn (string $requestId): array => $this->client->pollWorkflowTaskResponse(
                 $this->workerId,
                 $this->taskQueue,
                 $this->preparePoll($pollTimeoutSeconds),
+                $requestId,
             ),
         );
         if ($workflowPoll === null) {
@@ -533,10 +536,11 @@ final class Worker
 
         $activityPoll = $this->pollWithRetry(
             'activity',
-            fn (): array => $this->client->pollActivityTaskResponse(
+            fn (string $requestId): array => $this->client->pollActivityTaskResponse(
                 $this->workerId,
                 $this->taskQueue,
                 $this->preparePoll($handled ? 0 : $pollTimeoutSeconds),
+                $requestId,
             ),
         );
         if ($activityPoll === null) {
@@ -557,10 +561,11 @@ final class Worker
 
         $queryPoll = $this->pollWithRetry(
             'query',
-            fn (): array => $this->client->pollQueryTaskResponse(
+            fn (string $requestId): array => $this->client->pollQueryTaskResponse(
                 $this->workerId,
                 $this->taskQueue,
                 $this->preparePoll($handled ? 0 : $pollTimeoutSeconds),
+                $requestId,
             ),
         );
         if ($queryPoll === null) {
@@ -580,18 +585,23 @@ final class Worker
     }
 
     /**
-     * @param \Closure(): array<string, mixed> $poll
+     * @param \Closure(string): array<string, mixed> $poll
      * @return array<string, mixed>|null
      */
     private function pollWithRetry(string $taskKind, \Closure $poll): ?array
     {
         $attempt = 0;
+        $requestId = 'php-'.$taskKind.'-poll-'.bin2hex(random_bytes(16));
         while (!$this->shutdownRequested) {
             try {
-                return $poll();
+                return $poll($requestId);
             } catch (ServerException $exception) {
                 if (!PollResponse::isTransientFailure($exception)) {
                     throw $exception;
+                }
+
+                if (!$exception->isTransientConnectionFailure()) {
+                    $requestId = 'php-'.$taskKind.'-poll-'.bin2hex(random_bytes(16));
                 }
 
                 ++$attempt;
@@ -639,7 +649,10 @@ final class Worker
 
             $sleepSeconds = min(self::TRANSIENT_RETRY_SLEEP_SLICE_SECONDS, $remainingSeconds);
             if ($this->registered) {
-                $untilHeartbeatSeconds = $this->heartbeatIntervalSeconds - $this->elapsedSinceHeartbeat();
+                $untilHeartbeatSeconds = max(
+                    $this->lastHeartbeatAt + $this->heartbeatIntervalSeconds,
+                    $this->heartbeatRetryAt,
+                ) - $this->now();
                 if ($untilHeartbeatSeconds > 0) {
                     $sleepSeconds = min($sleepSeconds, $untilHeartbeatSeconds);
                 }
@@ -1668,12 +1681,43 @@ final class Worker
 
     private function heartbeat(): void
     {
-        $acknowledgement = $this->client->heartbeatWorker($this->workerId, [
-            'workflow_available' => 1,
-            'activity_available' => 1,
-        ]);
+        if ($this->shutdownRequested || $this->now() < $this->heartbeatRetryAt) {
+            return;
+        }
+
+        try {
+            $acknowledgement = $this->client->heartbeatWorker($this->workerId, [
+                'workflow_available' => 1,
+                'activity_available' => 1,
+            ]);
+        } catch (ServerException $exception) {
+            if (!$exception->isTransientConnectionFailure()) {
+                throw $exception;
+            }
+
+            // Do not enter the heartbeat-aware wait recursively or delay an
+            // already leased task. The next poll/wait services this deadline.
+            $attempt = ++$this->heartbeatRetryAttempt;
+            $delaySeconds = $this->transientRetryDelay($attempt, null);
+            $this->heartbeatRetryAt = $this->now() + $delaySeconds;
+            if ($this->transientPollRetryObserver !== null) {
+                ($this->transientPollRetryObserver)('heartbeat', $attempt, $delaySeconds, $exception);
+            }
+            $this->diagnostic('worker.retrying', [
+                'worker_id' => $this->workerId,
+                'operation' => 'heartbeat',
+                'attempt' => $attempt,
+                'delay_seconds' => $delaySeconds,
+                'exception' => $exception,
+            ], 'warning');
+
+            return;
+        }
+
         $this->applyHeartbeatInterval($acknowledgement);
         $this->lastHeartbeatAt = $this->now();
+        $this->heartbeatRetryAt = 0.0;
+        $this->heartbeatRetryAttempt = 0;
     }
 
     /** @param array<string, mixed> $response */

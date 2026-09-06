@@ -14,6 +14,7 @@ class TransportException extends DurableWorkflowException
         public readonly ?int $status = null,
         public readonly ?array $response = null,
         ?Throwable $previous = null,
+        public readonly bool $transientConnectionFailure = false,
     ) {
         parent::__construct($message, $status ?? 0, $previous);
     }

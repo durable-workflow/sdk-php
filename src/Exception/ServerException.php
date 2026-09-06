@@ -18,4 +18,14 @@ class ServerException extends DurableWorkflowException
     ) {
         parent::__construct($message, $status, $previous);
     }
+
+    public function isTransientConnectionFailure(): bool
+    {
+        $transport = $this->getPrevious();
+
+        return $this->status === 0
+            && $transport instanceof TransportException
+            && $transport->status === null
+            && $transport->transientConnectionFailure;
+    }
 }

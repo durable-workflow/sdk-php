@@ -131,7 +131,7 @@ final class ClientContractTest extends TestCase
     {
         foreach (['pollWorkflowTask', 'pollActivityTask', 'pollQueryTask'] as $method) {
             $transport = new FakeTransport([
-                new TransportException('poll timed out'),
+                new TransportException('poll timed out', transientConnectionFailure: true),
                 ['task' => null],
             ]);
             $client = new Client('https://server.example', transport: $transport);
