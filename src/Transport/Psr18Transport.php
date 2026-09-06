@@ -7,8 +7,10 @@ namespace DurableWorkflow\Transport;
 use DurableWorkflow\Exception\TransportException;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Psr7\HttpFactory;
+use GuzzleHttp\TransferStats;
 use JsonException;
 use Psr\Http\Client\ClientInterface;
+use Psr\Http\Client\NetworkExceptionInterface;
 use Psr\Http\Message\RequestFactoryInterface;
 use Psr\Http\Message\StreamFactoryInterface;
 use Throwable;
@@ -38,6 +40,7 @@ final class Psr18Transport implements Transport
      */
     public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
     {
+        $connectionFailure = false;
         try {
             $request = $this->requestFactory->createRequest(strtoupper($method), $uri);
             foreach ($headers as $name => $value) {
@@ -47,7 +50,26 @@ final class Psr18Transport implements Transport
                 $json = json_encode($body, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
                 $request = $request->withBody($this->streamFactory->createStream($json));
             }
-            $response = $this->client->sendRequest($request);
+            if ($this->client instanceof GuzzleClient) {
+                $onStats = $this->client->getConfig('on_stats');
+                $response = $this->client->send($request, [
+                    'synchronous' => true,
+                    'http_errors' => false,
+                    'allow_redirects' => false,
+                    'on_stats' => static function (TransferStats $stats) use (&$connectionFailure, $onStats): void {
+                        // Guzzle 8 no longer attaches cURL errno to exceptions.
+                        // Accept only DNS/connect/timeout/closed-connection errors,
+                        // never TLS, invalid options, or an unclassified PSR error.
+                        $connectionFailure = !$stats->hasResponse()
+                            && in_array($stats->getHandlerErrorData(), [5, 6, 7, 28, 52, 55, 56], true);
+                        if (is_callable($onStats)) {
+                            $onStats($stats);
+                        }
+                    },
+                ]);
+            } else {
+                $response = $this->client->sendRequest($request);
+            }
             $rawBody = (string) $response->getBody();
             $decoded = $rawBody === '' ? null : json_decode($rawBody, true, 512, JSON_THROW_ON_ERROR);
             if ($decoded !== null && !is_array($decoded)) {
@@ -64,7 +86,11 @@ final class Psr18Transport implements Transport
         } catch (JsonException $exception) {
             throw new TransportException('The server returned invalid JSON: '.$exception->getMessage(), previous: $exception);
         } catch (Throwable $exception) {
-            throw new TransportException('HTTP request failed: '.$exception->getMessage(), previous: $exception);
+            throw new TransportException(
+                'HTTP request failed: '.$exception->getMessage(),
+                previous: $exception,
+                transientConnectionFailure: $connectionFailure && $exception instanceof NetworkExceptionInterface,
+            );
         }
     }
 }

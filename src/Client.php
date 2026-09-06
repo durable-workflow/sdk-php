@@ -1137,12 +1137,12 @@ final class Client implements WorkflowClientInterface
      *
      * @return array<string, mixed>
      */
-    public function pollWorkflowTaskResponse(string $workerId, string $taskQueue, int $timeoutSeconds = 5): array
+    public function pollWorkflowTaskResponse(string $workerId, string $taskQueue, int $timeoutSeconds = 5, ?string $pollRequestId = null): array
     {
         return $this->pollTaskResponse('/worker/workflow-tasks/poll', [
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
-            'poll_request_id' => $this->requestId('php-workflow-poll'),
+            'poll_request_id' => $pollRequestId ?? $this->requestId('php-workflow-poll'),
             'timeout_seconds' => max(0, min(60, $timeoutSeconds)),
         ]);
     }
@@ -1252,12 +1252,12 @@ final class Client implements WorkflowClientInterface
      *
      * @return array<string, mixed>
      */
-    public function pollActivityTaskResponse(string $workerId, string $taskQueue, int $timeoutSeconds = 5): array
+    public function pollActivityTaskResponse(string $workerId, string $taskQueue, int $timeoutSeconds = 5, ?string $pollRequestId = null): array
     {
         return $this->pollTaskResponse('/worker/activity-tasks/poll', [
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
-            'poll_request_id' => $this->requestId('php-activity-poll'),
+            'poll_request_id' => $pollRequestId ?? $this->requestId('php-activity-poll'),
             'timeout_seconds' => max(0, min(60, $timeoutSeconds)),
         ]);
     }
@@ -1331,12 +1331,12 @@ final class Client implements WorkflowClientInterface
      *
      * @return array<string, mixed>
      */
-    public function pollQueryTaskResponse(string $workerId, string $taskQueue, int $timeoutSeconds = 5): array
+    public function pollQueryTaskResponse(string $workerId, string $taskQueue, int $timeoutSeconds = 5, ?string $pollRequestId = null): array
     {
         return $this->pollTaskResponse('/worker/query-tasks/poll', [
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
-            'poll_request_id' => $this->requestId('php-query-poll'),
+            'poll_request_id' => $pollRequestId ?? $this->requestId('php-query-poll'),
             'timeout_seconds' => max(0, min(60, $timeoutSeconds)),
         ]);
     }
@@ -1511,7 +1511,7 @@ final class Client implements WorkflowClientInterface
             try {
                 return $this->worker('POST', $path, $body);
             } catch (ServerException $exception) {
-                if ($attempt === 0 && $exception->status === 0) {
+                if ($attempt === 0 && $exception->isTransientConnectionFailure()) {
                     continue;
                 }
 

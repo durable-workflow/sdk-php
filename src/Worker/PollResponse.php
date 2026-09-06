@@ -41,6 +41,10 @@ final class PollResponse
      */
     public static function isTransientFailure(ServerException $exception): bool
     {
+        if ($exception->isTransientConnectionFailure()) {
+            return true;
+        }
+
         if (!in_array($exception->status, [429, 503], true)) {
             return false;
         }
