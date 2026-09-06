@@ -6,6 +6,21 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-09-06
+
+### Fixed
+
+- Managed workers recover from classified temporary connection failures during
+  polling and worker heartbeats, with capped backoff and interruptible waits.
+  Poll identities survive reconnects so Server can reconcile lost responses.
+- Guzzle 7 and 8 transport classification keeps TLS/configuration errors,
+  malformed responses, and authentication failures explicit. Custom transports
+  may identify connection loss with `TransportException`'s
+  `transientConnectionFailure` flag; opaque errors are not silently retried.
+- Heartbeat retry handling does not recursively wait or repeat activity effects.
+  Ambiguous registration and task-completion failures remain surfaced to the
+  supervisor; existing lease fencing and terminal worker states are unchanged.
+
 ## [2.0.1] - 2026-09-03
 
 ### Added
