@@ -374,6 +374,7 @@ final class ReplayRegressionConsumer
         }
         foreach ($tasks as $_task) {
             $worker->tick(0);
+            gc_collect_cycles();
         }
         if ($localActivityInvocations !== 0) {
             throw new RuntimeException("{$identity} repeated a recorded local activity during cold replay.");
@@ -438,6 +439,13 @@ final class ReplayRegressionConsumer
     private static function workflow(string $workflowType): callable
     {
         return match ($workflowType) {
+            'golden.finally-disposal' => static function (WorkflowContext $context): void {
+                try {
+                    $context->sleep(1);
+                } finally {
+                    $context->activity('cleanup');
+                }
+            },
             'golden.single-activity' => static function (
                 WorkflowContext $context,
                 mixed $name,

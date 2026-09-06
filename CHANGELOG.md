@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.5] - 2026-09-06
+
+### Fixed
+
+- Discarding suspended replay Fibers no longer raises a force-close error when
+  `finally` contains durable calls. Activity, timer, memo, and operation-handle
+  cleanup still follows normal replay, without retaining discarded executions.
+
 ## [2.0.4] - 2026-09-06
 
 ### Fixed

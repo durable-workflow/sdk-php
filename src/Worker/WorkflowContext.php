@@ -615,7 +615,7 @@ final class WorkflowContext
     {
         $this->assertActiveFiber();
 
-        return Fiber::suspend($command);
+        return WorkflowFiberSuspension::suspend($command);
     }
 
     private function assertActiveFiber(): void

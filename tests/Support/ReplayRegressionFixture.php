@@ -115,6 +115,7 @@ final class ReplayRegressionFixture
                 self::taskAttributes($workflowType),
                 $localActivityExecutor,
             );
+            gc_collect_cycles();
             $commands = array_map(
                 static fn (array $command): array => self::decodeEnvelopes($command, $codec),
                 $result->commands,
@@ -262,6 +263,13 @@ final class ReplayRegressionFixture
     private static function workflow(string $workflowType): callable
     {
         return match ($workflowType) {
+            'golden.finally-disposal' => static function (WorkflowContext $context): void {
+                try {
+                    $context->sleep(1);
+                } finally {
+                    $context->activity('cleanup');
+                }
+            },
             'golden.single-activity' => static function (
                 WorkflowContext $context,
                 mixed $name,

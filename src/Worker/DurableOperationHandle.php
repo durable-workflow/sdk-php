@@ -29,7 +29,7 @@ final class DurableOperationHandle
             throw new LogicException('A durable operation handle may only be awaited by an active workflow Fiber.');
         }
 
-        return Fiber::suspend($this);
+        return WorkflowFiberSuspension::suspend($this);
     }
 
     public function cancel(): void
@@ -38,6 +38,6 @@ final class DurableOperationHandle
             throw new LogicException('A durable operation handle may only be cancelled by an active workflow Fiber.');
         }
 
-        Fiber::suspend(new CancelDurableOperationCommand($this));
+        WorkflowFiberSuspension::suspend(new CancelDurableOperationCommand($this));
     }
 }

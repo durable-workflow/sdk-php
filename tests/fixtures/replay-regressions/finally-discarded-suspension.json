@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-finally-discarded-suspension",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.finally-disposal", "input": []},
+  "command_sequence": [{"type": "start_timer", "delay_seconds": 1}],
+  "expected": {"command_sequence": [{"type": "start_timer", "delay_seconds": 1}]}
+}
