@@ -706,12 +706,18 @@ final class Worker
             return;
         }
 
-        match ($taskKind) {
-            'workflow' => $this->executeWorkflowTask($task),
-            'activity' => $this->executeActivityTask($task),
-            'query' => $this->executeQueryTask($task),
-            default => throw new \LogicException("Unsupported polled task kind {$taskKind}."),
-        };
+        try {
+            match ($taskKind) {
+                'workflow' => $this->executeWorkflowTask($task),
+                'activity' => $this->executeActivityTask($task),
+                'query' => $this->executeQueryTask($task),
+                default => throw new \LogicException("Unsupported polled task kind {$taskKind}."),
+            };
+        } catch (ServerException $exception) {
+            if ($taskKind !== 'workflow' || !$this->isTimedOutWorkflowCompletion($task, $exception)) {
+                throw $exception;
+            }
+        }
     }
 
     /** @param array<string, mixed> $task */
@@ -837,6 +843,23 @@ final class Worker
                 },
             );
         }
+    }
+
+    /** @param array<string, mixed> $task */
+    private function isTimedOutWorkflowCompletion(array $task, ServerException $exception): bool
+    {
+        $details = $exception->details;
+        $runId = $task['run_id'] ?? null;
+
+        return $exception->status === 409
+            && $exception->reason === 'run_timed_out'
+            && is_string($runId) && $runId !== ''
+            && ($details['outcome'] ?? null) === 'completed'
+            && ($details['recorded'] ?? null) === false
+            && ($details['run_status'] ?? null) === 'failed'
+            && ($details['run_id'] ?? null) === $runId
+            && ($details['task_id'] ?? null) === ($task['task_id'] ?? '')
+            && ($details['workflow_task_attempt'] ?? null) === (int) ($task['workflow_task_attempt'] ?? 1);
     }
 
     private function renewWorkflowTaskLease(string $taskId, string $leaseOwner, int $taskAttempt): bool
