@@ -9,6 +9,7 @@ use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\ActivityContext;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -168,6 +169,92 @@ final class WorkerConnectionRecoveryTest extends TestCase
             self::fail('Registration requires explicit reconciliation, not blind retry.');
         } catch (ServerException $exception) {
             self::assertTrue($exception->isTransientConnectionFailure());
+        }
+        self::assertCount(1, $transport->requests);
+    }
+
+    public function testAnActivityCompletionConnectionFailureDoesNotRepeatTheHandler(): void
+    {
+        $transport = new FakeTransport([
+            ['task' => null, 'poll_status' => 'empty'],
+            ['task' => [
+                'task_id' => 'activity-1',
+                'activity_attempt_id' => 'attempt-1',
+                'lease_owner' => 'worker-1',
+                'activity_type' => 'greet',
+                'payload_codec' => 'avro',
+            ]],
+            self::disconnected(),
+        ]);
+        $calls = 0;
+        $worker = new Worker(new Client('https://server.example', transport: $transport), 'orders', workerId: 'worker-1');
+        $worker->registerActivity('greet', static function (ActivityContext $context) use (&$calls): string {
+            ++$calls;
+
+            return 'hello';
+        });
+
+        try {
+            $worker->tick(0);
+            self::fail('Ambiguous task completion must remain available to the supervisor.');
+        } catch (ServerException $exception) {
+            self::assertTrue($exception->isTransientConnectionFailure());
+        }
+        self::assertSame(1, $calls);
+        self::assertCount(3, $transport->requests);
+        self::assertStringEndsWith('/activity-tasks/activity-1/complete', $transport->requests[2]['uri']);
+    }
+
+    public function testHeartbeatBackoffCapsAndResetsAfterRecovery(): void
+    {
+        $now = 0.0;
+        $heartbeats = 0;
+        $delays = [];
+        $transport = new FakeTransport(handler: static function (string $method, string $uri) use (&$now, &$heartbeats): array {
+            if (str_ends_with($uri, '/register')) {
+                return ['registered' => true, 'heartbeat_interval_seconds' => 1];
+            }
+            if (str_ends_with($uri, '/heartbeat')) {
+                ++$heartbeats;
+                if ($heartbeats !== 10 && $heartbeats !== 12) {
+                    throw self::disconnected();
+                }
+
+                return ['acknowledged' => true];
+            }
+            $now += 1.0;
+
+            return $heartbeats >= 12
+                ? ['task' => null, 'poll_status' => 'stopped']
+                : ['task' => null, 'poll_status' => 'empty'];
+        });
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'orders',
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (): void { self::fail('A heartbeat must not delay an acquired task.'); },
+            transientPollRetryObserver: static function (string $phase, int $attempt, float $delay) use (&$delays): void {
+                self::assertSame('heartbeat', $phase);
+                $delays[] = $delay;
+            },
+        );
+
+        $worker->run(0);
+
+        self::assertSame([0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 5.0, 5.0, 5.0, 0.1], $delays);
+    }
+
+    public function testUnclassifiedPollFailureIsNotEvenRetriedByTheClient(): void
+    {
+        $failure = new TransportException('Invalid JSON.');
+        $transport = new FakeTransport([$failure]);
+        $worker = new Worker(new Client('https://server.example', transport: $transport), 'orders');
+
+        try {
+            $worker->tick(0);
+            self::fail('Unclassified failures must be surfaced immediately.');
+        } catch (ServerException $exception) {
+            self::assertSame($failure, $exception->getPrevious());
         }
         self::assertCount(1, $transport->requests);
     }
