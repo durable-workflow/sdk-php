@@ -6,6 +6,22 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-09-06
+
+### Fixed
+
+- Client reads and worker replay resolve runtime-owned external Avro payloads
+  through the authenticated runtime instead of failing on a missing inline blob.
+  Downloads retain the namespace and credential role and never use provider URLs
+  or storage credentials.
+- External payload reads verify reference shape, codec, response metadata, length
+  and SHA-256. Downloads are bounded per response, do not follow redirects, and
+  surface typed transport/integrity failures instead of lossy JSON fallbacks.
+- Custom transports can implement `PayloadTransport`; the built-in PSR-18
+  transport supports it. Inline payloads and existing JSON-only custom transports
+  retain their previous behavior. `maxExternalPayloadBytes` configures the
+  per-response wire-byte limit, which defaults to 64 MiB.
+
 ## [2.0.2] - 2026-09-06
 
 ### Fixed
