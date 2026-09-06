@@ -706,12 +706,18 @@ final class Worker
             return;
         }
 
-        match ($taskKind) {
-            'workflow' => $this->executeWorkflowTask($task),
-            'activity' => $this->executeActivityTask($task),
-            'query' => $this->executeQueryTask($task),
-            default => throw new \LogicException("Unsupported polled task kind {$taskKind}."),
-        };
+        try {
+            match ($taskKind) {
+                'workflow' => $this->executeWorkflowTask($task),
+                'activity' => $this->executeActivityTask($task),
+                'query' => $this->executeQueryTask($task),
+                default => throw new \LogicException("Unsupported polled task kind {$taskKind}."),
+            };
+        } catch (ServerException $exception) {
+            if ($taskKind !== 'workflow' || !$this->isTimedOutWorkflowCompletion($task, $exception)) {
+                throw $exception;
+            }
+        }
     }
 
     /** @param array<string, mixed> $task */
@@ -810,21 +816,15 @@ final class Worker
                 }
             }
             $this->assertWorkflowMemoUpdatesAvailable($commands);
-            try {
-                $this->client->completeWorkflowTask(
-                    $taskId,
-                    $leaseOwner,
-                    $attempt,
-                    $commands,
-                    $messageStreamCursors,
-                    $messageStreamWaits,
-                    $this->stickyCacheClaim($task),
-                );
-            } catch (ServerException $exception) {
-                if (!$this->isTimedOutWorkflowCompletion($task, $exception)) {
-                    throw $exception;
-                }
-            }
+            $this->client->completeWorkflowTask(
+                $taskId,
+                $leaseOwner,
+                $attempt,
+                $commands,
+                $messageStreamCursors,
+                $messageStreamWaits,
+                $this->stickyCacheClaim($task),
+            );
         } catch (Throwable $exception) {
             $this->acknowledgeTaskFailure(
                 'workflow',
