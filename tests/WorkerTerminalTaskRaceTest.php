@@ -385,6 +385,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
                     'timeout_recorded' => ['recorded' => true],
                     'timeout_active' => ['run_status' => 'waiting'],
                     'timeout_missing_run' => ['run_id' => null],
+                    'timeout_outcome' => ['outcome' => 'failed'],
                     'timeout_status' => [],
                     default => throw new \LogicException('Unknown timeout fixture.'),
                 };
@@ -420,10 +421,25 @@ final class WorkerTerminalTaskRaceTest extends TestCase
         yield 'terminal conflict for another task' => ['mismatched_terminal_task', 409, 'task_not_leased', false];
         yield 'active task is no longer leased' => ['active_task_not_leased', 409, 'task_not_leased', false];
         yield 'fallback lease conflict' => ['fallback', 409, 'lease_owner_mismatch', true];
-        foreach (['task', 'attempt', 'run', 'recorded', 'active', 'missing_run'] as $field) {
+        foreach (['task', 'attempt', 'run', 'recorded', 'active', 'missing_run', 'outcome'] as $field) {
             yield 'timeout mismatch '.$field => ['timeout_'.$field, 409, 'run_timed_out', false];
         }
         yield 'timeout body on a server error' => ['timeout_status', 503, 'run_timed_out', false];
+    }
+
+    public function testLowLevelCompletionStillExposesTheTerminalTimeoutRejection(): void
+    {
+        $transport = new FakeTransport([self::workflowTimeoutConflict('closed-task')]);
+        $client = new Client('https://server.example', transport: $transport);
+
+        try {
+            $client->completeWorkflowTask('closed-task', 'worker-1', 1, []);
+            self::fail('Only the managed worker may absorb the terminal completion rejection.');
+        } catch (ServerException $exception) {
+            self::assertSame(409, $exception->status);
+            self::assertSame('run_timed_out', $exception->reason);
+            self::assertFalse($exception->details['recorded']);
+        }
     }
 
     /** @return array{poll_status: string, task: array<string, mixed>} */

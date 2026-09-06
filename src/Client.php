@@ -1633,6 +1633,9 @@ final class Client implements WorkflowClientInterface
                 if ($type === 'WorkflowTerminated') {
                     throw new WorkflowTerminated((string) ($payload['reason'] ?? 'Workflow was terminated.'));
                 }
+                if ($type === 'WorkflowTimedOut') {
+                    throw new WorkflowTimedOut('Workflow execution timed out.');
+                }
             }
         }
 
