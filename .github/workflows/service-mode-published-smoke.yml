@@ -20,7 +20,11 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: published-service-smoke
+    env:
+      DURABLE_WORKFLOW_SERVER_URL: http://127.0.0.1:8080
+      DURABLE_WORKFLOW_NAMESPACE: default
+      DURABLE_WORKFLOW_CLIENT_TOKEN: published-smoke-operator
+      DURABLE_WORKFLOW_WORKER_TOKEN: published-smoke-worker
     steps:
       - name: Validate the exact published SDK version
         env:
@@ -148,32 +152,37 @@ jobs:
           }
           PHP
 
-      - name: Complete a class-oriented workflow against the published endpoint
+      - name: Start an isolated published Server
         env:
-          DURABLE_WORKFLOW_SERVER_URL: ${{ secrets.DURABLE_WORKFLOW_SERVER_URL }}
-          DURABLE_WORKFLOW_NAMESPACE: ${{ secrets.DURABLE_WORKFLOW_NAMESPACE }}
-          DURABLE_WORKFLOW_CLIENT_TOKEN: ${{ secrets.DURABLE_WORKFLOW_CLIENT_TOKEN }}
-          DURABLE_WORKFLOW_WORKER_TOKEN: ${{ secrets.DURABLE_WORKFLOW_WORKER_TOKEN }}
+          SERVER_VERSION: ${{ inputs.server_version }}
+        run: |
+          image="durableworkflow/server:${SERVER_VERSION}"
+          docker pull "$image"
+          docker image inspect "$image" --format '{{index .RepoDigests 0}}'
+          docker run --detach --name published-sdk-runtime \
+            --publish 127.0.0.1:8080:8080 \
+            --env DB_CONNECTION=sqlite \
+            --env CACHE_STORE=file \
+            --env DW_SERVER_KEY=base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+            --env DW_OPERATOR_TOKEN="$DURABLE_WORKFLOW_CLIENT_TOKEN" \
+            --env DW_WORKER_TOKEN="$DURABLE_WORKFLOW_WORKER_TOKEN" \
+            --env DW_ADMIN_TOKEN=published-smoke-admin \
+            --env DW_TASK_DISPATCH_MODE=poll \
+            --env DW_WORKER_POLL_TIMEOUT=1 \
+            "$image"
+          docker exec published-sdk-runtime server-bootstrap
+          for attempt in {1..30}; do
+            if curl --fail --silent "$DURABLE_WORKFLOW_SERVER_URL/api/ready" > "$RUNNER_TEMP/server-ready.json"; then
+              break
+            fi
+            sleep 2
+          done
+          curl --fail --silent "$DURABLE_WORKFLOW_SERVER_URL/api/ready" > /dev/null
+
+      - name: Complete a class-oriented workflow against the published Server
+        env:
           QUALIFIED_SERVER_VERSION: ${{ inputs.server_version }}
         run: |
-          required=(
-            DURABLE_WORKFLOW_SERVER_URL
-            DURABLE_WORKFLOW_NAMESPACE
-            DURABLE_WORKFLOW_CLIENT_TOKEN
-            DURABLE_WORKFLOW_WORKER_TOKEN
-          )
-          missing=()
-          for variable in "${required[@]}"; do
-            if [ -z "${!variable:-}" ]; then
-              missing+=("$variable")
-            fi
-          done
-          if [ "${#missing[@]}" -ne 0 ]; then
-            printf 'Published runtime configuration is incomplete; missing protected value(s):' >&2
-            printf ' %s' "${missing[@]}" >&2
-            printf '\n' >&2
-            exit 1
-          fi
           if [ "$DURABLE_WORKFLOW_CLIENT_TOKEN" = "$DURABLE_WORKFLOW_WORKER_TOKEN" ]; then
             echo 'Published runtime client and worker credentials must be distinct.' >&2
             exit 1
@@ -231,3 +240,11 @@ jobs:
             cat worker.log >&2
             exit "$worker_status"
           fi
+
+      - name: Show runtime diagnostics on failure
+        if: failure()
+        run: docker logs --tail 100 published-sdk-runtime || true
+
+      - name: Remove the disposable runtime
+        if: always()
+        run: docker rm --force --volumes published-sdk-runtime || true
