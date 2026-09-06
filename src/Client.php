@@ -38,6 +38,7 @@ use DurableWorkflow\Model\WorkflowStreamItem;
 use DurableWorkflow\Model\WorkflowStreamPage;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Transport\Transport;
+use DurableWorkflow\Transport\RuntimePayloads;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\WorkerSessionOptions;
@@ -77,9 +78,13 @@ final class Client implements WorkflowClientInterface
         ?string $token = null,
         ?string $controlToken = null,
         ?string $workerToken = null,
+        public readonly int $maxExternalPayloadBytes = 67108864,
     ) {
         if (trim($baseUri) === '') {
             throw new InvalidArgumentException('The Durable Workflow server URI cannot be empty.');
+        }
+        if ($maxExternalPayloadBytes < 1) {
+            throw new InvalidArgumentException('External payload response limit must be positive.');
         }
         $normalizedBaseUri = rtrim($baseUri, '/');
         $basePath = parse_url($normalizedBaseUri, PHP_URL_PATH);
@@ -123,6 +128,7 @@ final class Client implements WorkflowClientInterface
             $namespace,
             $this->transport,
             $this->codec,
+            maxExternalPayloadBytes: $this->maxExternalPayloadBytes,
         );
     }
 
@@ -1557,7 +1563,9 @@ final class Client implements WorkflowClientInterface
         try {
             $response = $this->transport->send($method, $this->baseUri.'/api'.$path, $headers, $body);
 
-            return is_array($response) && !array_is_list($response) ? $response : [];
+            return is_array($response) && !array_is_list($response)
+                ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes))->response($response, $path, $worker)
+                : [];
         } catch (TransportException $exception) {
             $details = $exception->response;
             $reason = is_array($details) && isset($details['reason']) ? (string) $details['reason'] : null;

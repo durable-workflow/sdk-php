@@ -1,0 +1,14 @@
+{
+  "workflow_id": "external-payload-regression",
+  "status": "completed",
+  "output_envelope": {
+    "codec": "avro",
+    "external_payload": {
+      "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+      "reference_id": "ep_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "codec": "avro",
+      "size_bytes": 16,
+      "sha256": "7a9b00ec31c4bc8a0045eaf902a633b923a98f375c110b3773931d5aa1886cf0"
+    }
+  }
+}

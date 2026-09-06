@@ -68,6 +68,29 @@ The workflow ID is the stable instance identity. The run ID identifies one execu
 
 Guzzle is included as the default transport. To reuse your application's PSR-18 client and PSR-17 factories, construct `Psr18Transport` and pass it as `transport:`. Authentication still belongs in an `Authentication` implementation; do not bury rotating role credentials in a generic HTTP middleware stack.
 
+## Runtime-owned external payloads
+
+When a namespace externalizes large payloads, the client and worker download their
+opaque references from the same authenticated runtime before Avro decoding. No
+storage-provider credentials or filesystem access are needed in your application.
+The SDK checks the reference, response metadata, byte length and SHA-256, and does
+not follow redirects. Downloads are reused only within one response, never across
+namespaces or credential roles.
+
+`Client` limits downloaded payload bytes to 64 MiB per response. Set
+`maxExternalPayloadBytes:` to a smaller positive byte limit for a constrained
+worker, or raise it deliberately for larger histories. This is a wire-byte limit,
+not a bound on the memory used by decoded values. `withNamespace()` preserves it.
+Invalid, unavailable or corrupt payloads raise `ExternalPayloadException` with a
+stable `reason`; they do not fall back to JSON projections.
+
+Custom implementations of `Transport` continue working for inline payloads. To
+support external payloads, also implement `PayloadTransport::fetchPayload()`:
+honor the supplied byte bound, disable redirects, verify the supplied metadata
+headers against the response, and return the exact response body. The built-in
+`Psr18Transport` provides this behavior. These bodies contain the existing Avro
+wire blob; do not base64-encode them a second time.
+
 ## Check the runtime contract at deployment
 
 ```php
