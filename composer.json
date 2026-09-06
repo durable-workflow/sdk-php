@@ -74,7 +74,7 @@
             }
         },
         "durable-workflow": {
-            "product-train": "2.0.4",
+            "product-train": "2.0.5",
             "supported-server-versions": "2.1.0",
             "worker-protocol-version": "1.19",
             "control-plane-version": "2",

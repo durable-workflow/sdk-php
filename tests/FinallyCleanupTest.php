@@ -113,9 +113,14 @@ final class FinallyCleanupTest extends TestCase
         self::assertSame(['complete_workflow'], array_column($result->commands, 'type'));
         self::assertSame($fail ? 'handled' : 'success', $codec->decodeEnvelope($result->commands[0]['result']));
 
-        foreach ([0 => 'schedule_activity', 2 => 'schedule_activity', 4 => 'start_timer', 6 => 'upsert_memo'] as $length => $command) {
+        foreach ([
+            0 => ['schedule_activity'],
+            2 => ['schedule_activity'],
+            4 => ['start_timer'],
+            6 => ['upsert_memo', 'complete_workflow'],
+        ] as $length => $commands) {
             $pending = (new Replayer($codec))->replay($workflow, array_slice($history, 0, $length), [], 'cleanup-queue');
-            self::assertSame([$command], array_column($pending->commands, 'type'));
+            self::assertSame($commands, array_column($pending->commands, 'type'));
             gc_collect_cycles();
             self::assertNull($pending->terminalFailure);
         }

@@ -43,6 +43,20 @@ $receipt = $context->activity(
 
 Use the order or activity identity as the payment provider's idempotency key. A retry policy cannot repair a non-idempotent downstream API.
 
+## Durable cleanup
+
+Workflow `finally` blocks can await cleanup activities, timers, and metadata
+writes after success or a handled failure. Replay reconstructs those commands
+from history. Discarding a suspended replay Fiber does not schedule cleanup or
+complete the workflow; PHP may still unwind local `finally` code, so put external
+effects in activities rather than directly in the workflow body.
+
+Do not use `finally` as a guarantee against forced termination, process death,
+or an already closed run. Cooperative cancellation observed by workflow code
+is distinct from discarding a local Fiber. When business cancellation requires
+compensation to finish, signal that intent and let the workflow complete its
+cleanup before closing the run.
+
 ## Heartbeat long attempts
 
 ```php

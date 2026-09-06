@@ -11,6 +11,7 @@ use DurableWorkflow\Exception\ChildWorkflowFailed;
 use DurableWorkflow\Exception\DurableOperationCancelled;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
+use DurableWorkflow\Exception\WorkflowFiberDiscarded;
 use Closure;
 use Fiber;
 use LogicException;
@@ -69,7 +70,12 @@ final class Replayer
                 $localActivityExecutor === null ? null : Closure::fromCallable($localActivityExecutor),
             );
 
-            return $handler($context, ...$input);
+            try {
+                return $handler($context, ...$input);
+            } catch (WorkflowFiberDiscarded) {
+                // No executor observes a return from a force-closed Fiber.
+                return null;
+            }
         });
 
         $stepCursor = 0;
