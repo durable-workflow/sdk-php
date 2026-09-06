@@ -6,6 +6,17 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.4] - 2026-09-06
+
+### Fixed
+
+- Persisted workflow execution and run deadlines raise `WorkflowTimedOut`
+  instead of `WorkflowFailed`. Selected-run results and caller wait timeouts
+  retain their existing behavior.
+- Managed workers continue polling after a completion is rejected because the
+  selected run timed out. Task, attempt, and run identity must match; unrelated
+  conflicts remain errors and low-level completion calls still expose HTTP 409.
+
 ## [2.0.3] - 2026-09-06
 
 ### Fixed
