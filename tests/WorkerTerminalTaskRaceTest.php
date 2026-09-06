@@ -119,6 +119,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
     {
         yield 'run closed during workflow heartbeat' => ['heartbeat', 'run_closed'];
         yield 'run closed during workflow completion' => ['completion', 'run_closed'];
+        yield 'deadline expires during workflow completion' => ['completion', 'run_timed_out'];
         yield 'run closed before fallback workflow failure' => ['fallback', 'run_closed'];
         yield 'cancelled workflow loses lease before heartbeat' => ['heartbeat', 'task_not_leased'];
         yield 'cancelled workflow loses lease before completion' => ['completion', 'task_not_leased'];
@@ -376,6 +377,20 @@ final class WorkerTerminalTaskRaceTest extends TestCase
                 throw TransportException::fromResponse(409, $response, json_encode($response, JSON_THROW_ON_ERROR));
             }
 
+            if (str_ends_with($uri, '/workflow-tasks/owned-task/complete') && str_starts_with($failurePoint, 'timeout_')) {
+                $overrides = match ($failurePoint) {
+                    'timeout_task' => ['task_id' => 'different-task'],
+                    'timeout_attempt' => ['workflow_task_attempt' => 2],
+                    'timeout_run' => ['run_id' => 'different-run'],
+                    'timeout_recorded' => ['recorded' => true],
+                    'timeout_active' => ['run_status' => 'waiting'],
+                    'timeout_missing_run' => ['run_id' => null],
+                    'timeout_status' => [],
+                    default => throw new \LogicException('Unknown timeout fixture.'),
+                };
+                throw self::workflowTimeoutConflict('owned-task', $overrides, $failurePoint === 'timeout_status' ? 503 : 409);
+            }
+
             self::fail("Unexpected worker request: {$method} {$uri}");
         });
         $worker = new Worker(
@@ -405,6 +420,10 @@ final class WorkerTerminalTaskRaceTest extends TestCase
         yield 'terminal conflict for another task' => ['mismatched_terminal_task', 409, 'task_not_leased', false];
         yield 'active task is no longer leased' => ['active_task_not_leased', 409, 'task_not_leased', false];
         yield 'fallback lease conflict' => ['fallback', 409, 'lease_owner_mismatch', true];
+        foreach (['task', 'attempt', 'run', 'recorded', 'active', 'missing_run'] as $field) {
+            yield 'timeout mismatch '.$field => ['timeout_'.$field, 409, 'run_timed_out', false];
+        }
+        yield 'timeout body on a server error' => ['timeout_status', 503, 'run_timed_out', false];
     }
 
     /** @return array{poll_status: string, task: array<string, mixed>} */
@@ -488,6 +507,9 @@ final class WorkerTerminalTaskRaceTest extends TestCase
 
     private static function workflowTerminalConflict(string $taskId, string $reason): TransportException
     {
+        if ($reason === 'run_timed_out') {
+            return self::workflowTimeoutConflict($taskId);
+        }
         if ($reason === 'run_closed') {
             return self::workflowRunClosedConflict($taskId);
         }
@@ -500,6 +522,23 @@ final class WorkerTerminalTaskRaceTest extends TestCase
         ];
 
         return TransportException::fromResponse(409, $response, json_encode($response, JSON_THROW_ON_ERROR));
+    }
+
+    /** @param array<string, mixed> $overrides */
+    private static function workflowTimeoutConflict(string $taskId, array $overrides = [], int $status = 409): TransportException
+    {
+        $response = array_replace([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => 1,
+            'outcome' => 'completed',
+            'recorded' => false,
+            'run_id' => $taskId.'-run',
+            'run_status' => 'failed',
+            'created_task_ids' => [],
+            'reason' => 'run_timed_out',
+        ], $overrides);
+
+        return TransportException::fromResponse($status, $response, json_encode($response, JSON_THROW_ON_ERROR));
     }
 
     private static function activityRunClosedConflict(string $taskId): TransportException
