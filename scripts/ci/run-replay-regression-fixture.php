@@ -10,6 +10,7 @@ use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Exception\ChildWorkflowFailed;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Transport\Transport;
@@ -73,6 +74,9 @@ final class ReplayRegressionTransport implements Transport
     /** @var list<list<array<string, mixed>>> */
     private array $completedCommands = [];
     private int $workflowPoll = 0;
+    private int $completionRefusals = 0;
+    /** @var array<string, mixed>|null */
+    private ?array $refusedCompletion = null;
 
     /**
      * @param list<array<string, mixed>> $tasks
@@ -81,6 +85,7 @@ final class ReplayRegressionTransport implements Transport
     public function __construct(
         private readonly array $tasks,
         private readonly array $pagedHistory,
+        private readonly bool $storagePressure = false,
     ) {
     }
 
@@ -119,6 +124,19 @@ final class ReplayRegressionTransport implements Transport
         }
 
         if ($this->taskFor($uri, 'complete') !== null) {
+            if ($this->storagePressure) {
+                if ($this->refusedCompletion !== null && $body !== $this->refusedCompletion) {
+                    throw new RuntimeException('Storage recovery changed the workflow acknowledgement.');
+                }
+                if ($this->completionRefusals++ < 2) {
+                    $this->refusedCompletion = $body;
+                    $refusal = [
+                        'reason' => 'storage_pressure', 'storage_state' => 'fenced',
+                        'retryable' => true, 'retry_after_seconds' => 1, 'request_admitted' => false,
+                    ];
+                    throw TransportException::fromResponse(503, $refusal, json_encode($refusal, JSON_THROW_ON_ERROR));
+                }
+            }
             $commands = $body['commands'] ?? null;
             if (!is_array($commands) || !array_is_list($commands)) {
                 throw new RuntimeException('Official replay consumer received invalid workflow commands.');
@@ -343,11 +361,20 @@ final class ReplayRegressionConsumer
         $transport = new ReplayRegressionTransport(
             $tasks,
             $pagedHistory,
+            storagePressure: $workflowType === 'golden.local-activity-recovered',
         );
+        $now = 0.0;
         $worker = new Worker(
             new Client('https://replay.invalid', transport: $transport, codec: $codec),
             'regression-corpus',
             workerId: 'regression-consumer',
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $us) use (&$now): void {
+                $now += $us / 1_000_000;
+                if ($now > 30) {
+                    throw new RuntimeException('Storage recovery exceeded the fixture retry budget.');
+                }
+            },
         );
         if ($workflowType === 'golden.attributed-stateful') {
             $worker->register(ReplayRegressionAttributedStatefulWorkflow::class);
@@ -362,9 +389,9 @@ final class ReplayRegressionConsumer
             );
         }
         $localActivityInvocations = 0;
-        if ($workflowType === 'golden.local-activity-terminal-failure') {
+        if (in_array($workflowType, ['golden.local-activity-terminal-failure', 'golden.local-activity-recovered'], true)) {
             $worker->registerActivity(
-                'golden.local-failure',
+                $workflowType === 'golden.local-activity-recovered' ? 'golden.local-receipt' : 'golden.local-failure',
                 static function (ActivityContext $_context) use (&$localActivityInvocations): never {
                     ++$localActivityInvocations;
 
@@ -632,6 +659,8 @@ final class ReplayRegressionConsumer
 
                 return ['key' => $selected->key];
             },
+            'golden.local-activity-recovered' => static fn (WorkflowContext $context): mixed =>
+                $context->localActivity('golden.local-receipt'),
             'golden.local-activity-terminal-failure' => static function (WorkflowContext $context): never {
                 $context->localActivity('golden.local-failure');
 
