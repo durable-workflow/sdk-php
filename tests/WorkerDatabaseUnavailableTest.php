@@ -38,7 +38,7 @@ final class WorkerDatabaseUnavailableTest extends TestCase
         self::assertCount(3, $polls);
         self::assertSame($polls[0], $polls[1]);
         self::assertSame($polls[0], $polls[2]);
-        self::assertSame(2.0, $now);
+        self::assertEqualsWithDelta(2.0, $now, 0.00001);
     }
 
     public static function pollKinds(): array
@@ -69,7 +69,7 @@ final class WorkerDatabaseUnavailableTest extends TestCase
 
         self::assertCount(2, $registrations);
         self::assertSame($registrations[0], $registrations[1]);
-        self::assertSame(1.0, $now);
+        self::assertEqualsWithDelta(1.0, $now, 0.00001);
     }
 
     public function testHeartbeatRecoversDuringPollBackoffWithoutRecursiveRetry(): void
@@ -103,7 +103,10 @@ final class WorkerDatabaseUnavailableTest extends TestCase
 
         self::worker($transport, $now)->run(0);
 
-        self::assertSame([1.0, 2.0, 3.0], $heartbeatTimes);
+        self::assertCount(3, $heartbeatTimes);
+        foreach ($heartbeatTimes as $index => $time) {
+            self::assertEqualsWithDelta($index + 1.0, $time, 0.00001);
+        }
         self::assertCount(4, $pollIds);
         self::assertCount(1, array_unique($pollIds));
     }

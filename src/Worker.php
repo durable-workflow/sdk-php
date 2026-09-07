@@ -477,6 +477,10 @@ final class Worker
 
     private function isTransientRegistrationFailure(ServerException $exception): bool
     {
+        if ($this->isTransientDatabaseFailure($exception, 'register_worker')) {
+            return true;
+        }
+
         if ($exception->status !== 503 || $exception->reason !== 'backend_lock_pressure') {
             return false;
         }
@@ -596,11 +600,18 @@ final class Worker
             try {
                 return $poll($requestId);
             } catch (ServerException $exception) {
-                if (!PollResponse::isTransientFailure($exception)) {
+                $databaseUnavailable = $this->isTransientDatabaseFailure(
+                    $exception,
+                    "poll_{$taskKind}_task",
+                    $requestId,
+                );
+                if ($exception->reason === 'backend_unavailable'
+                    ? !$databaseUnavailable
+                    : !PollResponse::isTransientFailure($exception)) {
                     throw $exception;
                 }
 
-                if (!$exception->isTransientConnectionFailure()) {
+                if (!$exception->isTransientConnectionFailure() && !$databaseUnavailable) {
                     $requestId = 'php-'.$taskKind.'-poll-'.bin2hex(random_bytes(16));
                 }
 
@@ -624,6 +635,37 @@ final class Worker
         }
 
         return null;
+    }
+
+    private function isTransientDatabaseFailure(
+        ServerException $exception,
+        string $operation,
+        ?string $pollRequestId = null,
+    ): bool {
+        $response = $exception->details;
+        if ($exception->status !== 503 || $exception->reason !== 'backend_unavailable'
+            || $response === null || array_is_list($response)
+            || ($response['reason'] ?? null) !== 'backend_unavailable'
+            || ($response['operation'] ?? null) !== $operation
+            || ($response['worker_id'] ?? null) !== $this->workerId
+            || ($response['outcome'] ?? null) !== 'unknown'
+            || ($response['retryable'] ?? null) !== true
+            || !is_int($response['retry_after_seconds'] ?? null)
+            || $response['retry_after_seconds'] <= 0) {
+            return false;
+        }
+        if ($operation !== 'heartbeat_worker' && ($response['task_queue'] ?? null) !== $this->taskQueue) {
+            return false;
+        }
+
+        // Database loss can follow a committed claim. Keep the same identity
+        // so the Server can return its existing lease instead of claiming again.
+        return $pollRequestId === null || (
+            array_key_exists('task', $response) && $response['task'] === null
+            && ($response['poll_status'] ?? null) === 'backend_unavailable'
+            && ($response['poll_request_id'] ?? null) === $pollRequestId
+            && ($response['retry_same_poll_request_id'] ?? null) === true
+        );
     }
 
     private function transientRetryDelay(int $attempt, mixed $retryAfterSeconds): float
@@ -1714,14 +1756,15 @@ final class Worker
                 'activity_available' => 1,
             ]);
         } catch (ServerException $exception) {
-            if (!$exception->isTransientConnectionFailure()) {
+            if (!$exception->isTransientConnectionFailure()
+                && !$this->isTransientDatabaseFailure($exception, 'heartbeat_worker')) {
                 throw $exception;
             }
 
             // Do not enter the heartbeat-aware wait recursively or delay an
             // already leased task. The next poll/wait services this deadline.
             $attempt = ++$this->heartbeatRetryAttempt;
-            $delaySeconds = $this->transientRetryDelay($attempt, null);
+            $delaySeconds = $this->transientRetryDelay($attempt, $exception->details['retry_after_seconds'] ?? null);
             $this->heartbeatRetryAt = $this->now() + $delaySeconds;
             if ($this->transientPollRetryObserver !== null) {
                 ($this->transientPollRetryObserver)('heartbeat', $attempt, $delaySeconds, $exception);
