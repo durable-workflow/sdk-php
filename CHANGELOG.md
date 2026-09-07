@@ -6,6 +6,15 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.6] - 2026-09-07
+
+### Fixed
+
+- Managed workers retry typed temporary database-unavailable responses during
+  registration, heartbeat, and polling. Polls retain the original request ID
+  when a task claim's outcome is unknown. Authentication failures, malformed
+  responses, and stale-registration fences remain terminal.
+
 ## [2.0.5] - 2026-09-06
 
 ### Fixed
