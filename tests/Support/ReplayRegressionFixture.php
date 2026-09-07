@@ -95,7 +95,9 @@ final class ReplayRegressionFixture
 
         $codec = new AvroPayloadCodec();
         $localActivityInvocations = 0;
-        $localActivityExecutor = $workflowType === 'golden.local-activity-terminal-failure'
+        $localActivityExecutor = in_array($workflowType, [
+            'golden.local-activity-terminal-failure', 'golden.local-activity-recovered',
+        ], true)
             ? static function () use (&$localActivityInvocations): array {
                 ++$localActivityInvocations;
 
@@ -460,6 +462,8 @@ final class ReplayRegressionFixture
 
                 return ['key' => $selected->key];
             },
+            'golden.local-activity-recovered' => static fn (WorkflowContext $context): mixed =>
+                $context->localActivity('golden.local-receipt'),
             'golden.local-activity-terminal-failure' => static function (WorkflowContext $context): never {
                 $context->localActivity('golden.local-failure');
 

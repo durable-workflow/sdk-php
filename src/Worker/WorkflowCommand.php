@@ -10,6 +10,7 @@ use DurableWorkflow\Codec\AvroMapValue;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\InvalidLocalActivityReport;
+use DurableWorkflow\Exception\ServerException;
 use InvalidArgumentException;
 use LogicException;
 use Throwable;
@@ -301,6 +302,9 @@ final class WorkflowCommand
         try {
             $outcome = ($this->localActivity)($activityType, $arguments, $options);
         } catch (Throwable $exception) {
+            if ($exception instanceof ServerException && $exception->isStorageAdmissionFailure()) {
+                throw $exception;
+            }
             $message = trim($exception->getMessage());
             if ($message === '') {
                 $message = sprintf('Local activity failed with %s.', $exception::class);

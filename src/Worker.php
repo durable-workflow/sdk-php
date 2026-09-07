@@ -478,7 +478,7 @@ final class Worker
     private function isTransientRegistrationFailure(ServerException $exception): bool
     {
         if ($this->isTransientDatabaseFailure($exception, 'register_worker')
-            || $this->isStorageAdmissionFailure($exception)) {
+            || $exception->isStorageAdmissionFailure()) {
             return true;
         }
 
@@ -606,7 +606,7 @@ final class Worker
                     "poll_{$taskKind}_task",
                     $requestId,
                 );
-                $storageAdmission = $this->isStorageAdmissionFailure($exception, $requestId);
+                $storageAdmission = $exception->isStorageAdmissionFailure($requestId);
                 $retryable = match ($exception->reason) {
                     'backend_unavailable' => $databaseUnavailable,
                     'storage_pressure', 'storage_admission_unavailable' => $storageAdmission,
@@ -642,35 +642,6 @@ final class Worker
         return null;
     }
 
-    private function isStorageAdmissionFailure(ServerException $exception, ?string $pollRequestId = null): bool
-    {
-        $response = $exception->details;
-        if ($exception->status !== 503
-            || !in_array($exception->reason, ['storage_pressure', 'storage_admission_unavailable'], true)
-            || $response === null || array_is_list($response)
-            || ($response['reason'] ?? null) !== $exception->reason
-            || ($response['retryable'] ?? null) !== true
-            || !is_int($response['retry_after_seconds'] ?? null)
-            || $response['retry_after_seconds'] <= 0
-            || !in_array($response['storage_state'] ?? null, ['draining', 'fenced'], true)
-            || ($exception->reason === 'storage_admission_unavailable' && $response['storage_state'] !== 'fenced')
-            || (array_key_exists('request_admitted', $response) && $response['request_admitted'] !== false)) {
-            return false;
-        }
-
-        if ($pollRequestId === null) {
-            return ($response['request_admitted'] ?? null) === false;
-        }
-
-        // A refused claim does not resolve a prior request's uncertain outcome.
-        // Preserve its poll identity even when pressure starts during a long poll.
-        return array_key_exists('task', $response) && $response['task'] === null
-            && ($response['poll_status'] ?? null) === $exception->reason
-            && ($response['poll_request_id'] ?? null) === $pollRequestId
-            && ($response['retry_same_poll_request_id'] ?? null) === true
-            && ($response['claim_admitted'] ?? null) === false;
-    }
-
     /**
      * @template T
      * @param \Closure(): T $request
@@ -683,7 +654,7 @@ final class Worker
             try {
                 return $request();
             } catch (ServerException $exception) {
-                if (!$this->isStorageAdmissionFailure($exception) || $this->shutdownRequested) {
+                if (!$exception->isStorageAdmissionFailure() || $this->shutdownRequested) {
                     throw $exception;
                 }
 
@@ -915,6 +886,10 @@ final class Worker
                     $commands = $replay->commands;
                     $messageStreamCursors = $replay->messageStreamCursors;
                     $messageStreamWaits = $replay->messageStreamWaits;
+                    if ($replay->terminalFailure instanceof ServerException
+                        && $replay->terminalFailure->isStorageAdmissionFailure()) {
+                        throw $replay->terminalFailure;
+                    }
                     if ($replay->terminalFailure instanceof Throwable) {
                         $this->handlerFailure('workflow', $workflowType, $replay->terminalFailure);
                         $commands[] = $this->workflowFailureCommand($replay->terminalFailure);
@@ -924,6 +899,9 @@ final class Worker
                 } catch (NonDeterministicWorkflow $exception) {
                     throw $exception;
                 } catch (Throwable $exception) {
+                    if ($exception instanceof ServerException && $exception->isStorageAdmissionFailure()) {
+                        throw $exception;
+                    }
                     $this->handlerFailure('workflow', $workflowType, $exception);
                     $commands = [$this->workflowFailureCommand($exception)];
                 }
@@ -1567,6 +1545,9 @@ final class Worker
 
                 return ['outcome' => 'completed', 'result' => $result, 'attempts' => $attempts];
             } catch (Throwable $exception) {
+                if ($exception instanceof ServerException && $exception->isStorageAdmissionFailure()) {
+                    throw $exception;
+                }
                 $timedOut = $exception instanceof LocalActivityTimedOut;
                 $cancelled = $exception instanceof ActivityCancelled;
                 $timeoutKind = $timedOut ? $exception->timeoutKind : null;
@@ -1840,7 +1821,7 @@ final class Worker
         } catch (ServerException $exception) {
             if (!$exception->isTransientConnectionFailure()
                 && !$this->isTransientDatabaseFailure($exception, 'heartbeat_worker')
-                && !$this->isStorageAdmissionFailure($exception)) {
+                && !$exception->isStorageAdmissionFailure()) {
                 throw $exception;
             }
 

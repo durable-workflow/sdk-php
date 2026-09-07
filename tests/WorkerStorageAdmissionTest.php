@@ -317,6 +317,91 @@ final class WorkerStorageAdmissionTest extends TestCase
         }
     }
 
+    #[DataProvider('taskKinds')]
+    public function testExpiredLeaseAfterStorageRecoveryRemainsTerminal(string $kind): void
+    {
+        $now = 0.0;
+        $calls = 0;
+        $acks = [];
+        $transport = self::taskTransport($kind, static function (array $body) use (&$acks): array {
+            $acks[] = $body;
+            if (count($acks) === 1) {
+                throw self::refused(self::pressure());
+            }
+            throw self::refused(['reason' => 'lease_owner_mismatch'], 409);
+        });
+        $worker = self::worker($transport, $now);
+        self::registerTask($worker, $kind, $calls);
+
+        try {
+            $worker->tick(0);
+            self::fail('Recovery cannot bypass a lost lease.');
+        } catch (ServerException $exception) {
+            self::assertSame(409, $exception->status);
+            self::assertSame('lease_owner_mismatch', $exception->reason);
+            self::assertSame(1, $calls);
+            self::assertCount(2, $acks);
+            self::assertSame($acks[0], $acks[1]);
+        }
+    }
+
+    public static function taskKinds(): array
+    {
+        return [['workflow'], ['activity'], ['query']];
+    }
+
+    #[DataProvider('localHeartbeatShutdownCases')]
+    public function testShutdownDuringLocalHeartbeatDoesNotBecomeAnApplicationFailure(bool $completedEarlier): void
+    {
+        $now = 0.0;
+        $calls = 0;
+        $heartbeats = 0;
+        $worker = null;
+        $transport = self::taskTransport('workflow', static function (): array {
+            self::fail('No completion or application failure is authorized by a refused heartbeat.');
+        }, heartbeat: static function (array $body) use (&$heartbeats): array {
+            ++$heartbeats;
+            if ($heartbeats > 1) {
+                throw self::refused(self::pressure());
+            }
+
+            return self::leaseRenewed($body);
+        });
+        $worker = self::worker($transport, $now, static function () use (&$worker): void {
+            $worker->requestShutdown();
+        });
+        $worker->registerActivity('local.receipt', static function (ActivityContext $context) use (&$calls, $completedEarlier): string {
+            ++$calls;
+            if ($completedEarlier && $calls === 1) {
+                return 'first receipt';
+            }
+            $context->heartbeat();
+
+            return 'done';
+        });
+        $worker->registerWorkflow('storage.workflow', static function (WorkflowContext $context) use ($completedEarlier): mixed {
+            if ($completedEarlier) {
+                $context->localActivity('local.receipt');
+            }
+
+            return $context->localActivity('local.receipt', [], ['retry_policy' => ['max_attempts' => 3]]);
+        });
+
+        try {
+            $worker->tick(0);
+            self::fail('Shutdown must leave the refused task unacknowledged.');
+        } catch (ServerException $exception) {
+            self::assertSame('storage_pressure', $exception->reason);
+            self::assertSame($completedEarlier ? 2 : 1, $calls);
+            self::assertSame(2, $heartbeats);
+        }
+    }
+
+    public static function localHeartbeatShutdownCases(): array
+    {
+        return [[false], [true]];
+    }
+
     private static function registerTask(Worker $worker, string $kind, int &$calls, bool $fails = false): void
     {
         if ($kind === 'workflow') {

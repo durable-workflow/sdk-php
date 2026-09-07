@@ -36,10 +36,10 @@ final class ActivityContext
         $response = $this->heartbeatRequest !== null
             ? ($this->heartbeatRequest)($details)
             : $this->client->heartbeatActivityTask(
-            $this->taskId,
-            $this->activityAttemptId,
-            $this->leaseOwner,
-            $details,
+                $this->taskId,
+                $this->activityAttemptId,
+                $this->leaseOwner,
+                $details,
             );
         if (($response['cancel_requested'] ?? false) === true || ($response['can_continue'] ?? true) === false) {
             throw new ActivityCancelled('The server requested activity cancellation.');
