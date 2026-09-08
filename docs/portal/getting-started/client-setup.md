@@ -70,6 +70,16 @@ Guzzle is included as the default transport. To reuse your application's PSR-18 
 
 ## Runtime-owned external payloads
 
+The default transport discovers the namespace's inline threshold, upload limit,
+and storage availability through `/api/cluster/info`. It uploads larger encoded
+Avro blobs to the same runtime before sending the ordinary request, preserving
+the client or worker credential role. Discovery is cached separately per role
+for up to 60 seconds; `withNamespace()` starts with fresh discovery. Batches that
+would exceed the ordinary JSON request limit also use external references.
+Unavailable storage, oversized values, or invalid upload references fail before
+the state-bearing request is sent. Retrying uploads preserves the runtime's
+content-addressed identity; the SDK does not retain an unbounded upload cache.
+
 When a namespace externalizes large payloads, the client and worker download their
 opaque references from the same authenticated runtime before Avro decoding. No
 storage-provider credentials or filesystem access are needed in your application.
@@ -90,6 +100,14 @@ honor the supplied byte bound, disable redirects, verify the supplied metadata
 headers against the response, and return the exact response body. The built-in
 `Psr18Transport` provides this behavior. These bodies contain the existing Avro
 wire blob; do not base64-encode them a second time.
+
+For automatic outbound uploads, custom transports additionally implement
+`PayloadUploadTransport::uploadPayload()`. Send the supplied blob and headers
+unchanged, enforce the supplied timeout, disable redirects, and bound the JSON
+response to 64 KiB. Return the decoded response object; the SDK validates its
+transport version and opaque reference against the uploaded size and checksum.
+The two optional interfaces are independent, so existing download-only custom
+transports need no source change, but do not gain outbound uploads automatically.
 
 ## Check the runtime contract at deployment
 

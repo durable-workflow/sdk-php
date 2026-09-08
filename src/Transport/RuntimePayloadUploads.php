@@ -101,7 +101,7 @@ final class RuntimePayloadUploads
                     'X-Durable-Workflow-Payload-SHA256' => $expected['sha256'],
                 ]), $blob, $policy['timeout_seconds']);
                 if (($response['schema'] ?? null) !== 'durable-workflow.v2.runtime-external-payload-upload.v1'
-                    || ($response['version'] ?? null) !== 1) {
+                    || ($response['transport_version'] ?? null) !== 1) {
                     throw new ExternalPayloadException('Unsupported runtime upload response.', 422, 'external_payload_unsupported');
                 }
                 $reference = RuntimePayloads::validateReference($response['reference'] ?? null);

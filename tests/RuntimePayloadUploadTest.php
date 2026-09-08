@@ -232,8 +232,8 @@ final class RuntimePayloadUploadTest extends TestCase
     public static function invalidResponseProvider(): iterable
     {
         $blob = (new AvroPayloadCodec())->encode(str_repeat('x', 200));
-        $response = ['schema' => 'durable-workflow.v2.runtime-external-payload-upload.v1', 'version' => 1, 'reference' => self::reference($blob)];
-        yield 'wrong version' => [array_replace($response, ['version' => 2]), 'external_payload_unsupported'];
+        $response = ['schema' => 'durable-workflow.v2.runtime-external-payload-upload.v1', 'transport_version' => 1, 'reference' => self::reference($blob)];
+        yield 'wrong version' => [array_replace($response, ['transport_version' => 2]), 'external_payload_unsupported'];
         foreach (['size_bytes' => 1, 'sha256' => str_repeat('0', 64), 'reference_id' => 'https://outside.example', 'codec' => 'json'] as $field => $value) {
             $changed = $response;
             $changed['reference'][$field] = $value;
@@ -308,7 +308,7 @@ final class RuntimePayloadUploadTest extends TestCase
                     if ($this->uploadResponse !== null) {
                         return Create::promiseFor(new Response($this->uploadResponse->getStatusCode(), $this->uploadResponse->getHeaders(), $this->uploadBody));
                     }
-                    $response = ['schema' => 'durable-workflow.v2.runtime-external-payload-upload.v1', 'version' => 1,
+                    $response = ['schema' => 'durable-workflow.v2.runtime-external-payload-upload.v1', 'transport_version' => 1,
                         'reference' => RuntimePayloadUploadTest::reference((string) $request->getBody())];
                 } else {
                     $response = ['outcome' => 'completed'];
