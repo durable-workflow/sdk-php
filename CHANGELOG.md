@@ -6,6 +6,18 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.7] - 2026-09-08
+
+### Fixed
+
+- Workers retry explicit storage-admission refusals while preserving poll,
+  task and attempt identities. A rejected acknowledgement retains the computed
+  result or failure rather than executing its handler again.
+- Registration and heartbeat recovery remain interruptible. Shutdown does not
+  turn a storage refusal into an activity failure or a successful completion;
+  authentication failures, stale leases and ambiguous acknowledgements remain
+  explicit errors.
+
 ## [2.0.6] - 2026-09-07
 
 ### Fixed
