@@ -79,6 +79,10 @@ would exceed the ordinary JSON request limit also use external references.
 Unavailable storage, oversized values, or invalid upload references fail before
 the state-bearing request is sent. Retrying uploads preserves the runtime's
 content-addressed identity; the SDK does not retain an unbounded upload cache.
+External storage does not remove operation-specific structural or namespace
+quotas. For example, a signal may be uploaded successfully and still receive a
+`structural_limit_exceeded` admission response. Upload success is not workflow
+or command acceptance.
 
 When a namespace externalizes large payloads, the client and worker download their
 opaque references from the same authenticated runtime before Avro decoding. No

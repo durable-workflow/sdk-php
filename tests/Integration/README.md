@@ -19,8 +19,8 @@ php tests/Integration/runtime-external-payloads.php prepare
 ```
 
 `prepare` creates the test namespace and enables local external storage above
-1,024 bytes. The authored value exceeds 2 MiB, so the encoded input, activity
-arguments/result, workflow result, signal and query cannot pass through the
+64 bytes. The authored value exceeds 2 MiB, so the encoded input, activity
+arguments/result, workflow result and query result cannot pass through the
 ordinary 2 MiB JSON request path. The SDK must upload them to the runtime.
 In another terminal, with the same environment, start the worker:
 
@@ -47,8 +47,10 @@ php tests/Integration/runtime-external-payloads.php boundaries
 ```
 
 `verify` checks the old completed result, queries committed activity history on
-the waiting run, sends a large signal, and checks the resumed result byte for
-byte. `boundaries` verifies downloads with separate operator/worker credentials,
+the waiting run, verifies that a large uploaded signal still obeys Server's
+structural payload limit, then sends an above-inline-threshold digest signal
+and checks the resumed result byte for byte. Transport offload must not bypass
+operation-specific admission limits. `boundaries` verifies downloads with separate operator/worker credentials,
 rejects those credentials in another namespace, and rejects even an
 administrator's attempt to use the reference in the wrong namespace. It creates
 only disposable fixture credentials, not provider credentials.
