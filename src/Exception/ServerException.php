@@ -47,7 +47,10 @@ class ServerException extends DurableWorkflowException
         }
 
         if ($pollRequestId === null) {
-            return ($response['request_admitted'] ?? null) === false;
+            // Payload uploads are content-addressed and precede submission of
+            // the completion. A late upload refusal can safely reuse its bytes.
+            return ($response['request_admitted'] ?? null) === false
+                || ($this instanceof ExternalPayloadException && !array_key_exists('request_admitted', $response));
         }
 
         // A refused claim does not resolve a prior request's uncertain outcome.

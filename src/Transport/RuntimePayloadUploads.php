@@ -11,6 +11,8 @@ use DurableWorkflow\Version;
 /** Namespace-scoped discovery and request-local, content-addressed uploads. */
 final class RuntimePayloadUploads
 {
+    private const COMPLETION_SCHEMA = 'durable-workflow.v2.payload-completion-context.v1';
+    private const COMPLETION_HEADER = 'X-Durable-Workflow-Payload-Completion';
     /** @var array<string, list<string>> */
     public const COMMAND_FIELDS = [
         'complete_workflow' => ['result'],
@@ -95,13 +97,28 @@ final class RuntimePayloadUploads
             $key = $expected['sha256'].':'.$expected['size_bytes'];
             if (!isset($uploaded[$key])) {
                 try {
-                    $response = $this->transport->uploadPayload($this->baseUri.'/api/external-payloads/v1', array_replace($headers, [
+                    $uploadHeaders = array_replace($headers, [
                         'Content-Type' => 'application/octet-stream',
                         'Accept' => 'application/json',
                         'X-Durable-Workflow-Payload-Codec' => 'avro',
                         'X-Durable-Workflow-Payload-Size' => (string) strlen($blob),
                         'X-Durable-Workflow-Payload-SHA256' => $expected['sha256'],
-                    ]), $blob, $policy['timeout_seconds']);
+                    ]);
+                    try {
+                        $response = $this->transport->uploadPayload($this->baseUri.'/api/external-payloads/v1', $uploadHeaders, $blob, $policy['timeout_seconds']);
+                    } catch (TransportException $refusal) {
+                        $context = $worker && ($policy['completion_context'] ?? false)
+                            ? $this->completionContext($body, $path, $payloads[$index]['path']) : null;
+                        if ($context === null || $refusal->status !== 503
+                            || ($refusal->response['reason'] ?? null) !== 'storage_pressure'
+                            || ($refusal->response['storage_state'] ?? null) !== 'draining') {
+                            throw $refusal;
+                        }
+                        // One capability-negotiated retry; never turn other pressure
+                        // errors into retries or repeat application activity code.
+                        $uploadHeaders[self::COMPLETION_HEADER] = $context;
+                        $response = $this->transport->uploadPayload($this->baseUri.'/api/external-payloads/v1', $uploadHeaders, $blob, $policy['timeout_seconds']);
+                    }
                 } catch (TransportException $exception) {
                     $reason = $exception->response['reason'] ?? null;
                     $reason = is_string($reason) ? $reason : match ($exception->status) {
@@ -130,7 +147,7 @@ final class RuntimePayloadUploads
     }
 
     /** @param array<string, string> $headers
-     * @return array{threshold_bytes: int, max_bytes: int, request_bytes: int, timeout_seconds: int, status: string}
+     * @return array{threshold_bytes: int, max_bytes: int, request_bytes: int, timeout_seconds: int, status: string, completion_context?: bool}
      */
     private function policy(array $headers, bool $worker): array
     {
@@ -165,7 +182,9 @@ final class RuntimePayloadUploads
                 throw new ExternalPayloadException('Unsupported namespace runtime payload transport discovery.', 422, 'external_payload_unsupported');
             }
             $policy = ['threshold_bytes' => $threshold, 'max_bytes' => $max, 'request_bytes' => $requestLimit,
-                'timeout_seconds' => $timeout, 'status' => is_string($storage['status'] ?? null) ? $storage['status'] : 'unavailable'];
+                'timeout_seconds' => $timeout, 'status' => is_string($storage['status'] ?? null) ? $storage['status'] : 'unavailable',
+                'completion_context' => ($manifest['upload']['completion_context']['schema'] ?? null) === self::COMPLETION_SCHEMA
+                    && ($manifest['upload']['completion_context']['header'] ?? null) === self::COMPLETION_HEADER];
         }
         $this->policies[$key] = ['expires' => time() + 60, 'policy' => $policy];
 
@@ -216,6 +235,28 @@ final class RuntimePayloadUploads
         }
 
         return $paths;
+    }
+
+    /** @param array<string, mixed> $body
+     * @param list<int|string> $slot
+     */
+    private function completionContext(array $body, string $path, array $slot): ?string
+    {
+        if (!preg_match('~\A/worker/(activity|workflow|query)-tasks/([^/]+)/(complete|fail)\z~', explode('?', $path)[0], $match)) {
+            return null;
+        }
+        $kind = $match[1];
+        $attempt = $body[$kind === 'activity' ? 'activity_attempt_id' : $kind.'_task_attempt'] ?? null;
+        $owner = $body['lease_owner'] ?? null;
+        if (!is_string($owner) || $owner === '' || ($kind === 'activity'
+            ? !is_string($attempt) || $attempt === '' : !is_int($attempt) || $attempt < 1)) {
+            return null;
+        }
+        $context = json_encode(['schema' => self::COMPLETION_SCHEMA, 'kind' => $kind,
+            'task_id' => rawurldecode($match[2]), 'attempt' => $attempt, 'lease_owner' => $owner,
+            'operation' => $match[3], 'slot' => $slot], JSON_THROW_ON_ERROR);
+
+        return strlen($context) <= 4096 ? $context : null;
     }
 
     /** @param array<string, mixed> $body

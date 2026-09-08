@@ -6,6 +6,17 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.9] - 2026-09-08
+
+### Fixed
+
+- On supporting Servers, retry a draining refusal for a completion payload
+  with its exact activity, workflow, or query lease and immutable payload slot.
+  Client uploads, unknown capabilities, and hard storage fences remain blocked.
+- Preserve computed outcomes during late upload pressure instead of executing
+  the handler again. The Server's bounded allowance and namespace quotas still
+  apply; stale leases remain errors.
+
 ## [2.0.7] - 2026-09-08
 
 ### Fixed

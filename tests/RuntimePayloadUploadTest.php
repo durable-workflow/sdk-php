@@ -261,6 +261,123 @@ final class RuntimePayloadUploadTest extends TestCase
         self::assertSame($http->requests[1]->getHeaders(), $http->requests[2]->getHeaders());
     }
 
+    #[DataProvider('completionProvider')]
+    public function testDrainingRetryBindsTheExactCompletionSlot(string $path, array $body, string $kind, array $slot): void
+    {
+        [, $http, $transport] = $this->client(self::completionDiscovery(), workerOnly: true, drainUnbound: true);
+        $prepared = (new RuntimePayloadUploads($transport, 'https://runtime.test'))->request($body, 'POST', $path, true,
+            ['Authorization' => 'Bearer fixture-worker', 'X-Namespace' => 'tenant-one']);
+        self::assertCount(3, $http->requests);
+        self::assertSame('', $http->requests[1]->getHeaderLine('X-Durable-Workflow-Payload-Completion'));
+        $context = json_decode($http->requests[2]->getHeaderLine('X-Durable-Workflow-Payload-Completion'), true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame(['schema' => 'durable-workflow.v2.payload-completion-context.v1',
+            'kind' => $kind, 'task_id' => 'task', 'attempt' => $kind === 'activity' ? 'attempt' : 2,
+            'lease_owner' => 'worker', 'operation' => str_ends_with($path, '/fail') ? 'fail' : 'complete', 'slot' => $slot], $context);
+        self::assertSame((string) $http->requests[1]->getBody(), (string) $http->requests[2]->getBody());
+        self::assertSame('Bearer fixture-worker', $http->requests[2]->getHeaderLine('Authorization'));
+        self::assertSame('tenant-one', $http->requests[2]->getHeaderLine('X-Namespace'));
+        self::assertStringContainsString(RuntimePayloads::SCHEMA, json_encode($prepared));
+    }
+
+    public static function completionProvider(): iterable
+    {
+        $envelope = (new AvroPayloadCodec())->envelope(str_repeat('x', 300));
+        $activity = ['lease_owner' => 'worker', 'activity_attempt_id' => 'attempt'];
+        yield 'activity result' => ['/worker/activity-tasks/task/complete', $activity + ['result' => $envelope], 'activity', ['result']];
+        yield 'activity failure' => ['/worker/activity-tasks/task/fail', $activity + ['failure' => ['details' => $envelope]], 'activity', ['failure', 'details']];
+        yield 'query result' => ['/worker/query-tasks/task/complete', ['lease_owner' => 'worker', 'query_task_attempt' => 2,
+            'result_envelope' => $envelope], 'query', ['result_envelope']];
+        $workflow = ['lease_owner' => 'worker', 'workflow_task_attempt' => 2];
+        foreach (RuntimePayloadUploads::COMMAND_FIELDS as $type => $fields) {
+            foreach ($fields as $field) {
+                yield $type.'.'.$field => ['/worker/workflow-tasks/task/complete',
+                    $workflow + ['commands' => [['type' => $type, $field => $envelope]]], 'workflow', ['commands', 0, $field]];
+            }
+        }
+        yield 'workflow failure' => ['/worker/workflow-tasks/task/complete',
+            $workflow + ['commands' => [['type' => 'fail_workflow', 'exception' => ['details' => $envelope]]]],
+            'workflow', ['commands', 0, 'exception', 'details']];
+        yield 'workflow stream' => ['/worker/workflow-tasks/task/complete',
+            $workflow + ['commands' => [['type' => 'complete_workflow', 'workflow_stream' => ['items' => [['payload' => $envelope]]]]]],
+            'workflow', ['commands', 0, 'workflow_stream', 'items', 0, 'payload']];
+    }
+
+    public function testCompletionCapabilityDoesNotChangeNormalUploads(): void
+    {
+        [$client, $http] = $this->client(self::completionDiscovery());
+        $client->completeActivityTask('task', 'attempt', 'worker', str_repeat('x', 200));
+        self::assertCount(3, $http->requests);
+        self::assertSame('', $http->requests[1]->getHeaderLine('X-Durable-Workflow-Payload-Completion'));
+    }
+
+    public function testLateUploadPressurePreservesTheWorkerResultRetryContract(): void
+    {
+        $body = ['reason' => 'storage_pressure', 'storage_state' => 'fenced', 'retryable' => true, 'retry_after_seconds' => 5];
+        [$client] = $this->client(self::completionDiscovery(), uploadResponse: new Response(503, [], json_encode($body)));
+        try {
+            $client->completeActivityTask('task', 'attempt', 'worker', str_repeat('x', 200));
+            self::fail('Expected late upload refusal.');
+        } catch (ExternalPayloadException $exception) {
+            self::assertTrue($exception->isStorageAdmissionFailure());
+            self::assertSame($body, $exception->details, 'Do not rewrite the Server response.');
+        }
+        self::assertFalse((new ServerException('Late ordinary mutation', 503, 'storage_pressure', $body))->isStorageAdmissionFailure());
+        self::assertFalse((new ExternalPayloadException('Invalid admitted claim', 503, 'storage_pressure',
+            $body + ['request_admitted' => true]))->isStorageAdmissionFailure());
+    }
+
+    #[DataProvider('unsupportedCompletionProvider')]
+    public function testDrainingDoesNotAuthorizeClientOrUnsupportedWorkerUploads(bool $worker, ?array $capability): void
+    {
+        $discovery = self::discovery();
+        if ($capability !== null) {
+            $discovery['namespace']['external_payload_storage']['transport']['upload']['completion_context'] = $capability;
+        }
+        [$client, $http] = $this->client($discovery, drainUnbound: true);
+        try {
+            if ($worker) {
+                $client->completeActivityTask('task', 'attempt', 'worker', str_repeat('x', 200));
+            } else {
+                $client->startWorkflow('echo', 'one', 'queue', [str_repeat('x', 200)]);
+            }
+            self::fail('Draining refusal must be preserved.');
+        } catch (ExternalPayloadException $exception) {
+            self::assertSame('storage_pressure', $exception->reason);
+        }
+        self::assertCount(2, $http->requests);
+    }
+
+    public static function unsupportedCompletionProvider(): iterable
+    {
+        yield 'older Server' => [true, null];
+        yield 'unknown schema' => [true, ['schema' => 'unknown', 'header' => 'X-Durable-Workflow-Payload-Completion']];
+        yield 'unexpected header' => [true, ['schema' => 'durable-workflow.v2.payload-completion-context.v1', 'header' => 'Authorization']];
+        yield 'client input' => [false, ['schema' => 'durable-workflow.v2.payload-completion-context.v1', 'header' => 'X-Durable-Workflow-Payload-Completion']];
+    }
+
+    public function testRejectedBoundRetryDoesNotLoopOrSendCompletion(): void
+    {
+        [$client, $http] = $this->client(self::completionDiscovery(), drainUnbound: true,
+            uploadResponse: new Response(409, [], '{"reason":"external_payload_completion_lease_rejected","retryable":false}'));
+        try {
+            $client->completeActivityTask('task', 'attempt', 'worker', str_repeat('x', 200));
+            self::fail('Rejected lease must not complete.');
+        } catch (ExternalPayloadException $exception) {
+            self::assertSame(409, $exception->status);
+            self::assertSame('external_payload_completion_lease_rejected', $exception->reason);
+        }
+        self::assertCount(3, $http->requests);
+    }
+
+    private static function completionDiscovery(): array
+    {
+        $discovery = self::discovery();
+        $discovery['namespace']['external_payload_storage']['transport']['upload']['completion_context'] = [
+            'schema' => 'durable-workflow.v2.payload-completion-context.v1', 'header' => 'X-Durable-Workflow-Payload-Completion'];
+
+        return $discovery;
+    }
+
     public function testDiscoveryCannotRedirectUploadToAnotherHost(): void
     {
         $policy = self::discovery();
@@ -346,13 +463,13 @@ final class RuntimePayloadUploadTest extends TestCase
         }
     }
 
-    private function client(?array $discovery = null, bool $workerOnly = false, ?Response $uploadResponse = null): array
+    private function client(?array $discovery = null, bool $workerOnly = false, ?Response $uploadResponse = null, bool $drainUnbound = false): array
     {
-        $http = new class($discovery ?? self::discovery(), $uploadResponse) {
+        $http = new class($discovery ?? self::discovery(), $uploadResponse, $drainUnbound) {
             public array $requests = [];
             public array $options = [];
             private string $uploadBody;
-            public function __construct(private array $discovery, private ?Response $uploadResponse)
+            public function __construct(private array $discovery, private ?Response $uploadResponse, private bool $drainUnbound)
             {
                 $this->uploadBody = (string) $uploadResponse?->getBody();
             }
@@ -364,6 +481,9 @@ final class RuntimePayloadUploadTest extends TestCase
                 if (str_ends_with($path, '/cluster/info')) {
                     $response = $this->discovery;
                 } elseif (str_ends_with($path, '/external-payloads/v1')) {
+                    if ($this->drainUnbound && !$request->hasHeader('X-Durable-Workflow-Payload-Completion')) {
+                        return Create::promiseFor(new Response(503, [], '{"reason":"storage_pressure","storage_state":"draining","request_admitted":false}'));
+                    }
                     if ($this->uploadResponse !== null) {
                         return Create::promiseFor(new Response($this->uploadResponse->getStatusCode(), $this->uploadResponse->getHeaders(), $this->uploadBody));
                     }
