@@ -310,6 +310,22 @@ final class RuntimePayloadUploadTest extends TestCase
         self::assertSame('', $http->requests[1]->getHeaderLine('X-Durable-Workflow-Payload-Completion'));
     }
 
+    public function testLateUploadPressurePreservesTheWorkerResultRetryContract(): void
+    {
+        $body = ['reason' => 'storage_pressure', 'storage_state' => 'fenced', 'retryable' => true, 'retry_after_seconds' => 5];
+        [$client] = $this->client(self::completionDiscovery(), uploadResponse: new Response(503, [], json_encode($body)));
+        try {
+            $client->completeActivityTask('task', 'attempt', 'worker', str_repeat('x', 200));
+            self::fail('Expected late upload refusal.');
+        } catch (ExternalPayloadException $exception) {
+            self::assertTrue($exception->isStorageAdmissionFailure());
+            self::assertSame($body, $exception->details, 'Do not rewrite the Server response.');
+        }
+        self::assertFalse((new ServerException('Late ordinary mutation', 503, 'storage_pressure', $body))->isStorageAdmissionFailure());
+        self::assertFalse((new ExternalPayloadException('Invalid admitted claim', 503, 'storage_pressure',
+            $body + ['request_admitted' => true]))->isStorageAdmissionFailure());
+    }
+
     #[DataProvider('unsupportedCompletionProvider')]
     public function testDrainingDoesNotAuthorizeClientOrUnsupportedWorkerUploads(bool $worker, ?array $capability): void
     {
