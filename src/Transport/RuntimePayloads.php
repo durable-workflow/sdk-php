@@ -9,7 +9,7 @@ use DurableWorkflow\Exception\ExternalPayloadException;
 /** Resolve only protocol envelope fields, never arbitrary application projections. */
 final class RuntimePayloads
 {
-    private const SCHEMA = 'durable-workflow.v2.runtime-external-payload-reference.v1';
+    public const SCHEMA = 'durable-workflow.v2.runtime-external-payload-reference.v1';
 
     /** @var array<string, string> */
     private array $fetched = [];
@@ -120,15 +120,10 @@ final class RuntimePayloads
         if (!is_array($value) || !array_key_exists('external_payload', $value)) {
             return $value;
         }
-        $reference = $value['external_payload'];
-        if (count($value) !== 2 || ($value['codec'] ?? null) !== 'avro' || !is_array($reference)
-            || count($reference) !== 5 || ($reference['schema'] ?? null) !== self::SCHEMA
-            || ($reference['codec'] ?? null) !== 'avro'
-            || !is_string($reference['reference_id'] ?? null) || preg_match('/\Aep_[0-9A-HJKMNP-TV-Z]{26}\z/', $reference['reference_id']) !== 1
-            || !is_string($reference['sha256'] ?? null) || preg_match('/\A[a-f0-9]{64}\z/', $reference['sha256']) !== 1
-            || !is_int($reference['size_bytes'] ?? null) || $reference['size_bytes'] < 0) {
+        if (count($value) !== 2 || ($value['codec'] ?? null) !== 'avro') {
             throw new ExternalPayloadException('Invalid runtime external payload reference.', 422, 'external_payload_unsupported');
         }
+        $reference = self::validateReference($value['external_payload']);
         $key = $reference['reference_id'].':'.$reference['sha256'].':'.$reference['size_bytes'];
         if (!array_key_exists($key, $this->fetched)) {
             if ($reference['size_bytes'] > $this->limit - $this->bytes) {
@@ -153,5 +148,19 @@ final class RuntimePayloads
         }
 
         return ['codec' => 'avro', 'blob' => $this->fetched[$key]];
+    }
+
+    /** @return array{schema: string, reference_id: string, codec: string, size_bytes: int, sha256: string} */
+    public static function validateReference(mixed $reference): array
+    {
+        if (!is_array($reference) || count($reference) !== 5 || ($reference['schema'] ?? null) !== self::SCHEMA
+            || ($reference['codec'] ?? null) !== 'avro'
+            || !is_string($reference['reference_id'] ?? null) || preg_match('/\Aep_[0-9A-HJKMNP-TV-Z]{26}\z/', $reference['reference_id']) !== 1
+            || !is_string($reference['sha256'] ?? null) || preg_match('/\A[a-f0-9]{64}\z/', $reference['sha256']) !== 1
+            || !is_int($reference['size_bytes'] ?? null) || $reference['size_bytes'] < 0) {
+            throw new ExternalPayloadException('Invalid runtime external payload reference.', 422, 'external_payload_unsupported');
+        }
+
+        return $reference;
     }
 }

@@ -9,6 +9,7 @@ use DurableWorkflow\Attribute\Workflow;
 use DurableWorkflow\Client;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\ExternalPayloadException;
+use DurableWorkflow\Exception\SignalFailed;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
@@ -25,7 +26,7 @@ final class ExternalPayloadWorkflow
         $result = $context->activity('external-payload.echo', [$value]);
         if ($wait) {
             $context->waitCondition(fn (): bool => $context->signals('release') !== [], key: 'release');
-            if ($context->signals('release')[0] !== [$result]) {
+            if ($context->signals('release')[0] !== [hash('sha256', $result)]) {
                 throw new RuntimeException('Signal payload did not survive transport.');
             }
         }
@@ -62,20 +63,55 @@ final class ExternalPayloadActivity
     }
 }
 
+final class MaximumPayloadWorkflow
+{
+    #[Workflow('external-payload.maximum')]
+    public function run(WorkflowContext $context): string
+    {
+        return str_repeat('m', 50331633);
+    }
+}
+
 $url = getenv('RUNTIME_URL') ?: 'http://server:8080';
 if (!in_array(parse_url($url, PHP_URL_HOST), ['server', 'localhost', '127.0.0.1'], true)) {
     throw new RuntimeException('Use an isolated local Server for this destructive restart experiment.');
 }
-$client = new Client($url, namespace: 'external-proof', token: 'external-payload-fixture');
-$value = str_repeat('durable-external-value-', 16384);
+$mode = $argv[1] ?? '';
+$credentials = match ($mode) {
+    'prepare', 'boundaries' => ['token' => 'external-payload-fixture'],
+    'worker' => ['workerToken' => hash('sha256', 'external-proof-worker')],
+    default => ['controlToken' => hash('sha256', 'external-proof-operator')],
+};
+$client = new Client($url, ...$credentials, namespace: 'external-proof');
+$value = str_repeat('durable-external-value-', 131072);
 $state = (getenv('RUNTIME_PROOF_DIRECTORY') ?: '/proof').'/runs.json';
-switch ($argv[1] ?? '') {
+switch ($mode) {
     case 'prepare':
         $client->createNamespace('external-proof');
-        $client->setNamespaceExternalStorage('external-proof', 'local', thresholdBytes: 1024, config: ['uri' => 'file:///payloads']);
+        $client->setNamespaceExternalStorage('external-proof', 'local', thresholdBytes: 64, config: ['uri' => 'file:///payloads']);
+        foreach (['operator', 'worker'] as $role) {
+            (new Psr18Transport())->send('PUT', $url.'/api/runtime-credentials/external-proof-'.$role, [
+                'Authorization' => 'Bearer external-payload-fixture', 'X-Namespace' => 'external-proof',
+                'Content-Type' => 'application/json', 'X-Durable-Workflow-Control-Plane-Version' => '2',
+            ], ['token' => hash('sha256', 'external-proof-'.$role), 'subject' => 'external-proof-'.$role,
+                'roles' => [$role], 'tenant' => 'external-proof']);
+        }
         break;
     case 'worker':
-        Worker::create($client, 'external-proof')->register(ExternalPayloadWorkflow::class, ExternalPayloadActivity::class)->run();
+        Worker::create($client, 'external-proof')->register(ExternalPayloadWorkflow::class, ExternalPayloadActivity::class, MaximumPayloadWorkflow::class)->run();
+        break;
+    case 'maximum':
+    case 'verify-maximum':
+        $handle = $mode === 'maximum'
+            ? $client->startWorkflow('external-payload.maximum', 'external-maximum', 'external-proof', runTimeoutSeconds: 3600)
+            : $client->workflowHandle('external-maximum');
+        $result = $handle->result(timeoutSeconds: 120);
+        if (!is_string($result) || strlen($result) !== 50331633
+            || hash('sha256', $result) !== hash('sha256', str_repeat('m', 50331633))
+            || strlen($client->payloadCodec()->encode($result)) !== 67108864) {
+            throw new RuntimeException('Maximum-size result did not survive upload and download.');
+        }
+        echo "Exact 64 MiB encoded workflow result: passed ({$mode}).\n";
         break;
     case 'start':
         $runs = is_file($state) ? json_decode(file_get_contents($state), true, flags: JSON_THROW_ON_ERROR) : [];
@@ -106,7 +142,15 @@ switch ($argv[1] ?? '') {
                 if ($client->queryWorkflow($run['workflow_id'], 'value', [], $run['run_id']) !== $value) {
                     throw new RuntimeException('Replayed query returned different bytes.');
                 }
-                $client->signalWorkflow($run['workflow_id'], 'release', [$value], $run['run_id']);
+                try {
+                    $client->signalWorkflow($run['workflow_id'], 'release', [$value], $run['run_id']);
+                    throw new RuntimeException('Uploading a signal bypassed the runtime structural payload limit.');
+                } catch (SignalFailed $exception) {
+                    if ($exception->reason !== 'structural_limit_exceeded') {
+                        throw $exception;
+                    }
+                }
+                $client->signalWorkflow($run['workflow_id'], 'release', [hash('sha256', $value)], $run['run_id']);
             }
             if ($client->workflowHandle($run['workflow_id'], $run['run_id'])->result(timeoutSeconds: 90) !== $value) {
                 throw new RuntimeException('Restarted workflow returned different bytes.');

@@ -39,6 +39,7 @@ use DurableWorkflow\Model\WorkflowStreamPage;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Transport\RuntimePayloads;
+use DurableWorkflow\Transport\RuntimePayloadUploads;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\WorkerSessionOptions;
@@ -51,23 +52,11 @@ final class Client implements WorkflowClientInterface
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_MESSAGE = 'Workflow task waiting for scheduled history.';
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_TYPE = 'WorkflowTaskWaitingForHistory';
 
-    /** @var array<string, list<string>> */
-    private const WORKFLOW_COMMAND_PAYLOAD_FIELDS = [
-        'complete_workflow' => ['result'],
-        'schedule_activity' => ['arguments'],
-        'start_child_workflow' => ['arguments'],
-        'continue_as_new' => ['arguments'],
-        'complete_update' => ['result'],
-        'record_side_effect' => ['result'],
-        'record_local_activity' => ['arguments', 'result'],
-        'start_service_operation' => ['request_payload'],
-        'upsert_memo' => ['entries'],
-    ];
-
     private readonly string $baseUri;
     private readonly ?Authentication $authentication;
     private readonly Transport $transport;
     private readonly PayloadCodec $codec;
+    private readonly RuntimePayloadUploads $payloadUploads;
 
     public function __construct(
         string $baseUri,
@@ -112,6 +101,7 @@ final class Client implements WorkflowClientInterface
                 : null);
         $this->transport = $transport ?? new Psr18Transport();
         $this->codec = $codec ?? new AvroPayloadCodec();
+        $this->payloadUploads = new RuntimePayloadUploads($this->transport, $this->baseUri);
     }
 
     public function payloadCodec(): PayloadCodec
@@ -1417,7 +1407,7 @@ final class Client implements WorkflowClientInterface
                 continue;
             }
 
-            foreach (self::WORKFLOW_COMMAND_PAYLOAD_FIELDS[$command['type']] ?? [] as $field) {
+            foreach (RuntimePayloadUploads::COMMAND_FIELDS[$command['type']] ?? [] as $field) {
                 if (! array_key_exists($field, $command)) {
                     continue;
                 }
@@ -1437,7 +1427,7 @@ final class Client implements WorkflowClientInterface
         mixed $declaredCodec = null,
     ): void {
         $message = sprintf(
-            'unsupported_payload_codec: %s must be fixed-schema Avro single-object bytes, an exact {codec: "avro", blob: "..."} envelope, or a structurally valid {codec: "avro", external_storage: {...}} reference; create inline durable payloads with Client::payloadCodec()->envelope().',
+            'unsupported_payload_codec: %s must be fixed-schema Avro single-object bytes, an exact {codec: "avro", blob: "..."} envelope, or a structurally valid Avro external_payload or external_storage reference; create inline durable payloads with Client::payloadCodec()->envelope().',
             $location,
         );
 
@@ -1448,6 +1438,18 @@ final class Client implements WorkflowClientInterface
         }
 
         if (is_array($payload)) {
+            if (self::hasExactKeys($payload, ['codec', 'external_payload'])) {
+                try {
+                    RuntimePayloads::validateReference($payload['external_payload']);
+                } catch (\Throwable $exception) {
+                    throw new CodecException($message, $exception);
+                }
+                if ($payload['codec'] !== $this->codec->name()) {
+                    throw new CodecException($message);
+                }
+
+                return;
+            }
             if (self::hasExactKeys($payload, ['codec', 'external_storage'])) {
                 if ($payload['codec'] !== $this->codec->name()
                     || ! $this->isValidExternalPayloadReference($payload['external_storage'])
@@ -1561,6 +1563,9 @@ final class Client implements WorkflowClientInterface
         }
 
         try {
+            if ($body !== null) {
+                $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers);
+            }
             $response = $this->transport->send($method, $this->baseUri.'/api'.$path, $headers, $body);
 
             return is_array($response) && !array_is_list($response)
