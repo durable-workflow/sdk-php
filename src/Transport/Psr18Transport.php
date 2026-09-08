@@ -19,7 +19,7 @@ use Psr\Http\Message\StreamFactoryInterface;
 use Throwable;
 
 /** Default PSR-18 JSON and bounded runtime-payload transport. */
-final class Psr18Transport implements PayloadTransport
+final class Psr18Transport implements PayloadTransport, PayloadUploadTransport
 {
     private readonly ClientInterface $client;
     private readonly RequestFactoryInterface $requestFactory;
@@ -132,7 +132,46 @@ final class Psr18Transport implements PayloadTransport
         }
     }
 
-    private function sendRequest(RequestInterface $request, bool $stream = false): ResponseInterface
+    public function uploadPayload(string $uri, array $headers, string $blob, int $timeoutSeconds): array
+    {
+        $request = $this->requestFactory->createRequest('POST', $uri);
+        foreach ($headers as $name => $value) {
+            $request = $request->withHeader($name, $value);
+        }
+        $request = $request->withBody($this->streamFactory->createStream($blob));
+        $response = $this->sendRequest($request, true, $timeoutSeconds);
+        $stream = $response->getBody();
+        try {
+            $raw = '';
+            while (!$stream->eof()) {
+                $chunk = $stream->read(min(8192, 65537 - strlen($raw)));
+                if ($chunk === '' && !$stream->eof()) { // @phpstan-ignore booleanNot.alwaysTrue
+                    throw new ExternalPayloadException('Runtime upload response stopped before completion.', 503, 'external_payload_unavailable');
+                }
+                $raw .= $chunk;
+                if (strlen($raw) > 65536) {
+                    throw new ExternalPayloadException('Runtime upload response exceeds 64 KiB.', 422, 'external_payload_unsupported');
+                }
+            }
+            $decoded = json_decode($raw, true);
+            if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
+                throw TransportException::fromResponse($response->getStatusCode(), is_array($decoded) ? $decoded : null, $raw);
+            }
+            if (!is_array($decoded) || array_is_list($decoded)) {
+                throw new ExternalPayloadException('Runtime upload response must be a JSON object.', 422, 'external_payload_unsupported');
+            }
+
+            return $decoded;
+        } catch (TransportException|ExternalPayloadException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw new ExternalPayloadException('Runtime upload response could not be read.', 503, 'external_payload_unavailable', previous: $exception);
+        } finally {
+            $stream->close();
+        }
+    }
+
+    private function sendRequest(RequestInterface $request, bool $stream = false, int $timeoutSeconds = 30): ResponseInterface
     {
         $connectionFailure = false;
         try {
@@ -143,7 +182,7 @@ final class Psr18Transport implements PayloadTransport
                     'synchronous' => true,
                     'http_errors' => false,
                     'allow_redirects' => false,
-                    ...($stream ? ['stream' => true, 'timeout' => 30, 'read_timeout' => 30] : []),
+                    ...($stream ? ['stream' => true, 'timeout' => $timeoutSeconds, 'read_timeout' => $timeoutSeconds] : []),
                     'on_stats' => static function (TransferStats $stats) use (&$connectionFailure, $onStats): void {
                         // Guzzle 8 no longer attaches cURL errno to exceptions.
                         // Accept only DNS/connect/timeout/closed-connection errors,
