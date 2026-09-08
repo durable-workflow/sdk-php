@@ -9,9 +9,11 @@ use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\CodecException;
 use DurableWorkflow\Exception\ExternalPayloadException;
 use DurableWorkflow\Exception\ServerException;
+use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Transport\Psr18Transport;
+use DurableWorkflow\Transport\PayloadUploadTransport;
 use DurableWorkflow\Transport\RuntimePayloads;
 use DurableWorkflow\Transport\RuntimePayloadUploads;
 use GuzzleHttp\Client as GuzzleClient;
@@ -285,6 +287,63 @@ final class RuntimePayloadUploadTest extends TestCase
         self::assertCount(2, $http->requests);
         self::assertFalse($http->options[1]['allow_redirects']);
         self::assertSame(45, $http->options[1]['timeout']);
+    }
+
+    #[DataProvider('uploadHttpFailureProvider')]
+    public function testUploadHttpFailureHasStableReasonWithoutJson(int $status, string $reason): void
+    {
+        [$client, $http] = $this->client(uploadResponse: new Response($status, [], 'Upstream rejected request'));
+        try {
+            $client->startWorkflow('echo', 'one', 'queue', [str_repeat('x', 200)]);
+            self::fail('Expected upload HTTP failure.');
+        } catch (ExternalPayloadException $exception) {
+            self::assertSame($status, $exception->status);
+            self::assertSame($reason, $exception->reason);
+        }
+        self::assertCount(2, $http->requests);
+    }
+
+    public static function uploadHttpFailureProvider(): iterable
+    {
+        yield [401, 'external_payload_unauthorized'];
+        yield [403, 'external_payload_unauthorized'];
+        yield [413, 'external_payload_oversized'];
+        yield [503, 'external_payload_unavailable'];
+    }
+
+    public function testOversizedUploadResponseIsRejected(): void
+    {
+        [$client, $http] = $this->client(uploadResponse: new Response(201, [], str_repeat('x', 65537)));
+        try {
+            $client->startWorkflow('echo', 'one', 'queue', [str_repeat('x', 200)]);
+            self::fail('Expected bounded response failure.');
+        } catch (ExternalPayloadException $exception) {
+            self::assertSame('external_payload_unsupported', $exception->reason);
+        }
+        self::assertCount(2, $http->requests);
+    }
+
+    public function testUploadConnectionFailureRetainsWorkerRetryClassification(): void
+    {
+        $transport = new class(self::discovery()) implements PayloadUploadTransport {
+            public function __construct(private array $discovery) {}
+            public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
+            {
+                return $this->discovery;
+            }
+            public function uploadPayload(string $uri, array $headers, string $blob, int $timeoutSeconds): array
+            {
+                throw new TransportException('Connection closed after upload.', transientConnectionFailure: true);
+            }
+        };
+        $client = new Client('https://runtime.test', transport: $transport, workerToken: 'fixture-worker');
+        try {
+            $client->completeActivityTask('task', 'attempt', 'worker', str_repeat('x', 200));
+            self::fail('Expected upload connection failure.');
+        } catch (ExternalPayloadException $exception) {
+            self::assertSame('external_payload_unavailable', $exception->reason);
+            self::assertTrue($exception->isTransientConnectionFailure());
+        }
     }
 
     private function client(?array $discovery = null, bool $workerOnly = false, ?Response $uploadResponse = null): array

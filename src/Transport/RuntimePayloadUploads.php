@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Transport;
 
 use DurableWorkflow\Exception\ExternalPayloadException;
+use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Version;
 
 /** Namespace-scoped discovery and request-local, content-addressed uploads. */
@@ -93,13 +94,25 @@ final class RuntimePayloadUploads
             $blob = $payloads[$index]['blob'];
             $key = $expected['sha256'].':'.$expected['size_bytes'];
             if (!isset($uploaded[$key])) {
-                $response = $this->transport->uploadPayload($this->baseUri.'/api/external-payloads/v1', array_replace($headers, [
-                    'Content-Type' => 'application/octet-stream',
-                    'Accept' => 'application/json',
-                    'X-Durable-Workflow-Payload-Codec' => 'avro',
-                    'X-Durable-Workflow-Payload-Size' => (string) strlen($blob),
-                    'X-Durable-Workflow-Payload-SHA256' => $expected['sha256'],
-                ]), $blob, $policy['timeout_seconds']);
+                try {
+                    $response = $this->transport->uploadPayload($this->baseUri.'/api/external-payloads/v1', array_replace($headers, [
+                        'Content-Type' => 'application/octet-stream',
+                        'Accept' => 'application/json',
+                        'X-Durable-Workflow-Payload-Codec' => 'avro',
+                        'X-Durable-Workflow-Payload-Size' => (string) strlen($blob),
+                        'X-Durable-Workflow-Payload-SHA256' => $expected['sha256'],
+                    ]), $blob, $policy['timeout_seconds']);
+                } catch (TransportException $exception) {
+                    $reason = $exception->response['reason'] ?? null;
+                    $reason = is_string($reason) ? $reason : match ($exception->status) {
+                        401, 403 => 'external_payload_unauthorized',
+                        413 => 'external_payload_oversized',
+                        415, 422 => 'external_payload_unsupported',
+                        default => 'external_payload_unavailable',
+                    };
+                    throw new ExternalPayloadException('Runtime external payload upload failed.', $exception->status ?? 0,
+                        $reason, $exception->response, $exception);
+                }
                 if (($response['schema'] ?? null) !== 'durable-workflow.v2.runtime-external-payload-upload.v1'
                     || ($response['transport_version'] ?? null) !== 1) {
                     throw new ExternalPayloadException('Unsupported runtime upload response.', 422, 'external_payload_unsupported');
