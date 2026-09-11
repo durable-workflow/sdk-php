@@ -636,6 +636,13 @@ final class Worker
                     'exception' => $exception,
                 ], 'warning');
                 $this->waitForTransientRetry($delaySeconds);
+                if ($exception->status === 429
+                    && $exception->reason === 'long_poll_capacity_exhausted'
+                    && ($exception->details['poll_status'] ?? null) === 'long_poll_capacity_exhausted') {
+                    // This explicit empty-task refusal acquired no lease. Give
+                    // other task kinds a turn instead of retrying only this one.
+                    return $this->shutdownRequested ? null : $exception->details;
+                }
             }
         }
 

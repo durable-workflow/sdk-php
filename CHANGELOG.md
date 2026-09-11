@@ -6,6 +6,16 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.10] - 2026-09-11
+
+### Fixed
+
+- A repeated long-poll capacity refusal no longer prevents the managed worker
+  from polling other task kinds. Explicit empty-task refusals honor backoff,
+  heartbeats and shutdown before yielding to activity or query polling.
+- Ambiguous transport, database and storage-admission failures retain their
+  existing retry and poll-identity behavior; lease fencing is unchanged.
+
 ## [2.0.9] - 2026-09-08
 
 ### Fixed
