@@ -169,8 +169,17 @@ on the same poll kind and worker registration, use capped backoff, refresh the
 worker heartbeat while waiting, and check for shutdown in short sleep slices.
 The optional `transientPollRetryObserver` constructor callback receives the
 task kind, consecutive attempt, chosen delay in seconds, and `ServerException`
-for operational telemetry. Authentication errors, malformed envelopes, generic
-service failures, and responses that are not explicitly retryable still throw.
+for operational telemetry. Authentication errors, malformed successful replies,
+and structured refusals outside the supported retry contracts still throw.
+
+For an upstream response without a JSON object/array, the transport preserves
+the HTTP status without including the response body in diagnostics. Managed
+polling and worker heartbeats retry HTTP 502/503/504 and 520/521/522/523/524/530
+with capped backoff and responsive shutdown. Polls retain their original
+`poll_request_id` because a proxy error does not prove that no task was claimed.
+These failures do not authorize retrying registration or task completion: an
+uncertain acknowledgement is surfaced without repeating the handler or sending
+a replacement failure acknowledgement. Other HTTP statuses remain terminal.
 
 Temporary database connection loss is reported as HTTP 503
 `backend_unavailable` with `outcome=unknown`. The managed worker validates the
@@ -178,7 +187,7 @@ operation and request identity, then retries registration, heartbeat, or polling
 with capped backoff. A poll reuses its original `poll_request_id`: the database
 may have committed a claim before the connection disappeared, so `task=null`
 does not establish that no lease exists. This does not make arbitrary database
-errors or other HTTP 500/503 responses retryable.
+errors or unrelated structured HTTP 500/503 responses retryable.
 
 Before replaying or completing a workflow task, the managed worker requires a
 successful lease-renewal response whose task ID, attempt, and lease owner match

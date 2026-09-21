@@ -36,12 +36,12 @@ final class PollResponse
 
     /**
      * Identify transport failures that the worker protocol explicitly permits
-     * a managed worker to retry. Generic service failures are intentionally
-     * excluded even when they use the same HTTP status.
+     * a managed worker to retry. Upstream availability errors without a Server
+     * envelope have an uncertain outcome; structured errors retain their contract.
      */
     public static function isTransientFailure(ServerException $exception): bool
     {
-        if ($exception->isTransientConnectionFailure()) {
+        if ($exception->isTransientConnectionFailure() || $exception->isTransientUpstreamFailure()) {
             return true;
         }
 
