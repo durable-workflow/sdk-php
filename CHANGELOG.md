@@ -6,6 +6,17 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.11] - 2026-09-21
+
+### Fixed
+
+- Preserve HTTP status when an upstream proxy returns HTML, an empty body, or
+  another non-object response. Diagnostics omit the unstructured response body.
+- Managed polling and worker heartbeats recover from supported temporary
+  upstream failures with capped backoff and responsive shutdown. Uncertain
+  polls reuse their identity; already leased tasks are not delayed by heartbeat
+  backoff. Ambiguous registration/completion and explicit refusals remain errors.
+
 ## [2.0.10] - 2026-09-11
 
 ### Fixed
