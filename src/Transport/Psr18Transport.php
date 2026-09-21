@@ -54,13 +54,16 @@ final class Psr18Transport implements PayloadTransport, PayloadUploadTransport
             }
             $response = $this->sendRequest($request);
             $rawBody = (string) $response->getBody();
+            if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
+                // An upstream proxy can return HTML or an empty body. Preserve
+                // its status without interpreting it as a successful protocol reply.
+                $decoded = json_decode($rawBody, true);
+                throw TransportException::fromResponse($response->getStatusCode(), is_array($decoded) ? $decoded : null, $rawBody);
+            }
+
             $decoded = $rawBody === '' ? null : json_decode($rawBody, true, 512, JSON_THROW_ON_ERROR);
             if ($decoded !== null && !is_array($decoded)) {
                 throw new TransportException('The server returned a JSON value instead of an object or array.');
-            }
-
-            if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
-                throw TransportException::fromResponse($response->getStatusCode(), $decoded, $rawBody);
             }
 
             return $decoded;

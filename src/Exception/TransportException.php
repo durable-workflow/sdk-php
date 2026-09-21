@@ -24,7 +24,7 @@ class TransportException extends DurableWorkflowException
     {
         $message = is_array($response)
             ? (string) ($response['message'] ?? $response['error'] ?? "Server returned HTTP {$status}.")
-            : ($rawBody !== '' ? $rawBody : "Server returned HTTP {$status}.");
+            : "Server returned HTTP {$status}.";
 
         return new self($message, $status, $response);
     }

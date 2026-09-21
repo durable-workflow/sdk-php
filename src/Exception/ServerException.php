@@ -29,6 +29,17 @@ class ServerException extends DurableWorkflowException
             && $transport->transientConnectionFailure;
     }
 
+    /** A temporary upstream HTTP failure without a Server protocol envelope. */
+    public function isTransientUpstreamFailure(): bool
+    {
+        $transport = $this->getPrevious();
+
+        return in_array($this->status, [502, 503, 504, 520, 521, 522, 523, 524, 530], true)
+            && $this->reason === null && $this->details === null
+            && $transport instanceof TransportException
+            && $transport->status === $this->status && $transport->response === null;
+    }
+
     /** Whether the Server explicitly refused admission and requested a same-identity retry. */
     public function isStorageAdmissionFailure(?string $pollRequestId = null): bool
     {

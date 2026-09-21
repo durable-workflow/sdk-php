@@ -616,7 +616,8 @@ final class Worker
                     throw $exception;
                 }
 
-                if (!$exception->isTransientConnectionFailure() && !$databaseUnavailable && !$storageAdmission) {
+                if (!$exception->isTransientConnectionFailure() && !$exception->isTransientUpstreamFailure()
+                    && !$databaseUnavailable && !$storageAdmission) {
                     $requestId = 'php-'.$taskKind.'-poll-'.bin2hex(random_bytes(16));
                 }
 
@@ -1827,6 +1828,7 @@ final class Worker
             ]);
         } catch (ServerException $exception) {
             if (!$exception->isTransientConnectionFailure()
+                && !$exception->isTransientUpstreamFailure()
                 && !$this->isTransientDatabaseFailure($exception, 'heartbeat_worker')
                 && !$exception->isStorageAdmissionFailure()) {
                 throw $exception;
