@@ -400,9 +400,27 @@ final class Replayer
                 if ($step['resolved'] === false) {
                     return $this->result($commands, $context);
                 }
-                $suspended = $step['failure'] instanceof Throwable
-                    ? $execution->throw($step['failure'])
-                    : $execution->resume($step['value']);
+                if ($step['failure'] instanceof Throwable) {
+                    try {
+                        $suspended = $execution->throw($step['failure']);
+                    } catch (Throwable $failure) {
+                        $activityId = $failure instanceof ActivityFailed && is_array($failure->failure)
+                            ? ($failure->failure['activity_execution_id'] ?? null)
+                            : null;
+                        if ($failure === $step['failure']
+                            && $failure instanceof ActivityFailed
+                            && $failure->historyEventType === 'ActivityFailed'
+                            && is_string($activityId)
+                            && $activityId !== ''
+                        ) {
+                            return $this->result($commands, $context, $failure, $step['sequence'], $activityId);
+                        }
+
+                        throw $failure;
+                    }
+                } else {
+                    $suspended = $execution->resume($step['value']);
+                }
                 continue;
             }
 
@@ -539,12 +557,16 @@ final class Replayer
         array $commands,
         ?WorkflowContext $context,
         ?Throwable $terminalFailure = null,
+        ?int $failedActivitySequence = null,
+        ?string $failedActivityExecutionId = null,
     ): ReplayResult {
         return new ReplayResult(
             $commands,
             $context?->messageStreamCursorAcknowledgements() ?? [],
             $context?->messageStreamPendingWaits() ?? [],
             $terminalFailure,
+            $failedActivitySequence,
+            $failedActivityExecutionId,
         );
     }
 
@@ -623,6 +645,7 @@ final class Replayer
                     isset($payload['exception_type']) ? (string) $payload['exception_type'] : null,
                     (bool) ($payload['non_retryable'] ?? false),
                     $payload,
+                    $type,
                 );
                 $steps[$key] = $this->resolvedStep(
                     $sequence,

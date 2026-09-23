@@ -6,6 +6,7 @@ namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Client;
 use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Worker;
@@ -19,6 +20,102 @@ use Psr\Log\AbstractLogger;
 
 final class WorkerPollTest extends TestCase
 {
+    public function testOnlyUncaughtActivityFailureClaimsRedriveBoundary(): void
+    {
+        foreach (['uncaught', 'translated', 'handled', 'timed_out'] as $outcome) {
+            $commands = null;
+            $transport = new FakeTransport(handler: static function (
+                string $method,
+                string $uri,
+                array $headers,
+                ?array $body,
+            ) use (&$commands, $outcome): array {
+                if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
+                    return [
+                        'poll_status' => 'leased',
+                        'task' => [
+                            'task_id' => 'redrive-task-1',
+                            'workflow_task_attempt' => 1,
+                            'lease_owner' => 'worker-1',
+                            'workflow_id' => 'redrive-workflow-1',
+                            'run_id' => 'redrive-run-1',
+                            'workflow_type' => 'redrive.workflow',
+                            'payload_codec' => 'avro',
+                            'history_events' => [
+                                [
+                                    'event_type' => 'ActivityScheduled',
+                                    'payload' => [
+                                        'sequence' => 1,
+                                        'activity_type' => 'redrive.activity',
+                                        'activity_execution_id' => 'activity-1',
+                                    ],
+                                ],
+                                [
+                                    'event_type' => $outcome === 'timed_out' ? 'ActivityTimedOut' : 'ActivityFailed',
+                                    'payload' => [
+                                        'sequence' => 1,
+                                        'activity_type' => 'redrive.activity',
+                                        'activity_execution_id' => 'activity-1',
+                                        'message' => 'failed',
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ];
+                }
+                if (str_ends_with($uri, '/api/worker/workflow-tasks/redrive-task-1/heartbeat')) {
+                    return [
+                        'task_id' => 'redrive-task-1',
+                        'workflow_task_attempt' => 1,
+                        'lease_owner' => 'worker-1',
+                        'renewed' => true,
+                    ];
+                }
+                if (str_ends_with($uri, '/api/worker/workflow-tasks/redrive-task-1/complete')) {
+                    $commands = $body['commands'] ?? null;
+
+                    return ['completed' => true];
+                }
+                if (str_ends_with($uri, '/api/worker/activity-tasks/poll')) {
+                    return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+                }
+
+                self::fail("Unexpected worker request: {$method} {$uri}");
+            });
+            $worker = new Worker(
+                new Client('https://server.example', transport: $transport),
+                'redrive-workers',
+                workerId: 'worker-1',
+            );
+            $worker->registerWorkflow('redrive.workflow', static function (WorkflowContext $context) use ($outcome): string {
+                if (in_array($outcome, ['uncaught', 'timed_out'], true)) {
+                    return $context->activity('redrive.activity');
+                }
+
+                try {
+                    $context->activity('redrive.activity');
+                } catch (ActivityFailed $failure) {
+                    if ($outcome === 'translated') {
+                        throw new \RuntimeException('translated', previous: $failure);
+                    }
+                }
+
+                return 'handled';
+            });
+
+            self::assertTrue($worker->tick(0));
+            self::assertIsArray($commands);
+            if ($outcome === 'uncaught') {
+                self::assertSame('fail_workflow', $commands[0]['type'] ?? null);
+                self::assertSame(1, $commands[0]['failed_step_sequence'] ?? null);
+                self::assertSame('activity-1', $commands[0]['failed_activity_execution_id'] ?? null);
+            } else {
+                self::assertArrayNotHasKey('failed_step_sequence', $commands[0]);
+                self::assertArrayNotHasKey('failed_activity_execution_id', $commands[0]);
+            }
+        }
+    }
+
     public function testMemoUpdateRequiresAndUsesAdvertisedRuntimeCapability(): void
     {
         $commands = null;
