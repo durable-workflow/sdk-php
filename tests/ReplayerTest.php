@@ -39,6 +39,47 @@ final class ReplayerTest extends TestCase
         self::assertSame(['message' => 'hello, Ada'], $codec->decodeEnvelope($result->commands[0]['result']));
     }
 
+    public function testRedrivenRunReusesCompletedActivityAndReschedulesOnlyFailedStep(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): array {
+            $first = $context->activity('first', ['Ada']);
+            $second = $context->activity('second', [$first]);
+
+            return ['first' => $first, 'second' => $second];
+        };
+        $history = [[
+            'event_type' => 'ActivityCompleted',
+            'payload' => [
+                'sequence' => 1,
+                'activity_type' => 'first',
+                'result' => $codec->envelope('recorded'),
+                'reused_from_run_id' => 'failed-run',
+                'reused_activity_execution_id' => 'original-first',
+            ],
+        ]];
+
+        $replayed = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+        self::assertSame(['schedule_activity'], array_column($replayed->commands, 'type'));
+        self::assertSame('second', $replayed->commands[0]['activity_type']);
+        self::assertSame(['recorded'], $codec->decodeEnvelope($replayed->commands[0]['arguments']));
+
+        $history[] = [
+            'event_type' => 'ActivityCompleted',
+            'payload' => [
+                'sequence' => 2,
+                'activity_type' => 'second',
+                'result' => $codec->envelope('retried'),
+            ],
+        ];
+        $completed = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+        self::assertSame(['complete_workflow'], array_column($completed->commands, 'type'));
+        self::assertSame(
+            ['first' => 'recorded', 'second' => 'retried'],
+            $codec->decodeEnvelope($completed->commands[0]['result']),
+        );
+    }
+
     public function testJsonUnsafeWorkflowFailureRetainsCompletedLocalActivityCommand(): void
     {
         $calls = 0;
