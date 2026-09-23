@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-uncaught-activity-redrive-boundary",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.single-activity", "input": ["Ada"]},
+  "history": [
+    {"event_type": "ActivityScheduled", "payload": {"sequence": 1, "activity_type": "golden.greet", "activity_execution_id": "activity-1"}},
+    {"event_type": "ActivityFailed", "payload": {"sequence": 1, "activity_type": "golden.greet", "activity_execution_id": "activity-1", "message": "greeting failed"}}
+  ],
+  "workflow_tasks": [
+    {"workflow_id": "redrive-workflow-1", "run_id": "redrive-run-1"}
+  ],
+  "expected": {
+    "workflow_tasks": [
+      {"command_sequence": [{"type": "fail_workflow", "message": "greeting failed", "exception_type": "DurableWorkflow\\Exception\\ActivityFailed", "failed_step_sequence": 1, "failed_activity_execution_id": "activity-1"}]}
+    ]
+  }
+}

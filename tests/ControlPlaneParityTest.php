@@ -454,6 +454,8 @@ final class ControlPlaneParityTest extends TestCase
         $operations = [
             'workflow visibility' => static fn (Client $client) => $client->listWorkflows(),
             'workflow diagnostics' => static fn (Client $client) => $client->workflowDiagnostics('order-1', 'run-1'),
+            'workflow activities' => static fn (Client $client) => $client->workflowActivities('order-1', 'run-1'),
+            'workflow redrive' => static fn (Client $client) => $client->redriveWorkflow('order-1', 'run-1'),
             'search attributes' => static fn (Client $client) => $client->listSearchAttributes(),
             'namespace storage' => static fn (Client $client) => $client->setNamespaceExternalStorage('orders', 's3'),
             'service operations' => static fn (Client $client) => $client->startServiceOperation('payments', 'Cards', 'charge'),
@@ -492,7 +494,7 @@ final class ControlPlaneParityTest extends TestCase
 
     public function testOperatorObservationAndRunManagementUsePublicControlPlaneRoutes(): void
     {
-        $transport = new FakeTransport(array_fill(0, 10, ['ok' => true]));
+        $transport = new FakeTransport(array_fill(0, 12, ['ok' => true]));
         $client = new Client('https://server.example', transport: $transport, namespace: 'ops');
 
         $client->systemHealth();
@@ -502,8 +504,10 @@ final class ControlPlaneParityTest extends TestCase
         $client->describeWorker('worker/1');
         $client->listTaskQueues();
         $client->describeTaskQueue('priority queue');
+        $client->workflowActivities('order/1', 'run/1');
         $client->workflowDiagnostics('order/1', 'run/1');
         $client->repairWorkflow('order/1', 'run/1');
+        $client->redriveWorkflow('order/1', 'run/1', 'incident-42');
         $client->archiveWorkflow('order/1', 'retention', 'run/1');
 
         self::assertSame([
@@ -514,11 +518,14 @@ final class ControlPlaneParityTest extends TestCase
             'https://server.example/api/workers/worker%2F1',
             'https://server.example/api/task-queues',
             'https://server.example/api/task-queues/priority%20queue',
+            'https://server.example/api/workflows/order%2F1/runs/run%2F1/activities',
             'https://server.example/api/workflows/order%2F1/runs/run%2F1/debug',
             'https://server.example/api/workflows/order%2F1/runs/run%2F1/repair',
+            'https://server.example/api/workflows/order%2F1/runs/run%2F1/redrive',
             'https://server.example/api/workflows/order%2F1/runs/run%2F1/archive',
         ], array_column($transport->requests, 'uri'));
-        self::assertSame('retention', $transport->requests[9]['body']['reason'] ?? null);
+        self::assertSame('incident-42', $transport->requests[10]['body']['request_id'] ?? null);
+        self::assertSame('retention', $transport->requests[11]['body']['reason'] ?? null);
 
         foreach ($transport->requests as $request) {
             self::assertSame('ops', $request['headers']['X-Namespace']);

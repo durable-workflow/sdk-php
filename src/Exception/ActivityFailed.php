@@ -13,6 +13,7 @@ final class ActivityFailed extends DurableWorkflowException
         public readonly ?string $failureType = null,
         public readonly bool $nonRetryable = false,
         public readonly ?array $failure = null,
+        public readonly ?string $historyEventType = null,
     ) {
         parent::__construct($message);
     }

@@ -17,6 +17,7 @@ use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\DiscoveredHandlers;
 use DurableWorkflow\Worker\HandlerDiscovery;
 use DurableWorkflow\Worker\HandlerDefinition;
+use DurableWorkflow\Worker\WorkflowDefinitionFingerprint;
 use DurableWorkflow\Worker\HandlerResolver;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\QueryContext;
@@ -447,6 +448,7 @@ final class Worker
                     buildId: $this->buildId,
                     workflowCommandContracts: $this->workflowCommandContracts(),
                     capabilityManifest: CapabilityManifest::portableWorkerAffinity(),
+                    workflowDefinitionFingerprints: $this->workflowDefinitionFingerprints(),
                 );
             } catch (ServerException $exception) {
                 if (!$this->isTransientRegistrationFailure($exception)) {
@@ -900,7 +902,11 @@ final class Worker
                     }
                     if ($replay->terminalFailure instanceof Throwable) {
                         $this->handlerFailure('workflow', $workflowType, $replay->terminalFailure);
-                        $commands[] = $this->workflowFailureCommand($replay->terminalFailure);
+                        $commands[] = $this->workflowFailureCommand(
+                            $replay->terminalFailure,
+                            $replay->failedActivitySequence,
+                            $replay->failedActivityExecutionId,
+                        );
                     } else {
                         $this->diagnoseWorkflowWait($task, $commands);
                     }
@@ -1958,6 +1964,22 @@ final class Worker
         return $contracts;
     }
 
+    /** @return array<string, string> */
+    private function workflowDefinitionFingerprints(): array
+    {
+        $fingerprints = [];
+
+        foreach ($this->workflows as $workflowType => $handler) {
+            $fingerprint = WorkflowDefinitionFingerprint::forHandler($workflowType, $handler);
+
+            if ($fingerprint !== null) {
+                $fingerprints[$workflowType] = $fingerprint;
+            }
+        }
+
+        return $fingerprints;
+    }
+
     /**
      * @param array<string, HandlerDefinition|callable> $handlers
      * @param class-string|null $contextClass
@@ -2108,14 +2130,22 @@ final class Worker
         $this->diagnostic('worker.handler_failed', $context, 'error');
     }
 
-    /** @return array{type: string, message: string, exception_type: class-string<Throwable>} */
-    private function workflowFailureCommand(Throwable $exception): array
+    /** @return array<string, mixed> */
+    private function workflowFailureCommand(
+        Throwable $exception,
+        ?int $failedActivitySequence = null,
+        ?string $failedActivityExecutionId = null,
+    ): array
     {
         $command = [
             'type' => 'fail_workflow',
             'message' => $exception->getMessage(),
             'exception_type' => $exception::class,
         ];
+        if ($failedActivitySequence !== null && $failedActivityExecutionId !== null) {
+            $command['failed_step_sequence'] = $failedActivitySequence;
+            $command['failed_activity_execution_id'] = $failedActivityExecutionId;
+        }
 
         try {
             json_encode($command, JSON_THROW_ON_ERROR);

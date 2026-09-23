@@ -127,6 +127,25 @@ final class ClientContractTest extends TestCase
         self::assertSame(['query_tasks'], $transport->requests[0]['body']['capabilities']);
     }
 
+    public function testWorkerRegistrationSendsDefinitionFingerprints(): void
+    {
+        $transport = new FakeTransport([['registered' => true]]);
+        $client = new Client('https://server.example', transport: $transport);
+
+        $client->registerWorker(
+            'worker-1',
+            'orders',
+            ['orders.process'],
+            [],
+            workflowDefinitionFingerprints: ['orders.process' => 'sha256:source-identity'],
+        );
+
+        self::assertSame(
+            ['orders.process' => 'sha256:source-identity'],
+            $transport->requests[0]['body']['workflow_definition_fingerprints'],
+        );
+    }
+
     public function testTimedOutWorkerPollsRetryWithTheSameRequestId(): void
     {
         foreach (['pollWorkflowTask', 'pollActivityTask', 'pollQueryTask'] as $method) {

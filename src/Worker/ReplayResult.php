@@ -18,6 +18,8 @@ final class ReplayResult
         public readonly array $messageStreamCursors = [],
         public readonly array $messageStreamWaits = [],
         public readonly ?Throwable $terminalFailure = null,
+        public readonly ?int $failedActivitySequence = null,
+        public readonly ?string $failedActivityExecutionId = null,
     ) {
     }
 }

@@ -263,6 +263,15 @@ final class Client implements WorkflowClientInterface
         );
     }
 
+    /** @return array<string, mixed> */
+    public function workflowActivities(string $workflowId, string $runId): array
+    {
+        return $this->control(
+            'GET',
+            '/workflows/'.$this->segment($workflowId).'/runs/'.$this->segment($runId).'/activities',
+        );
+    }
+
     /** @return list<WorkflowStreamDescription> */
     public function listWorkflowStreams(string $workflowId, string $runId): array
     {
@@ -557,6 +566,16 @@ final class Client implements WorkflowClientInterface
     public function repairWorkflow(string $workflowId, ?string $runId = null): array
     {
         return $this->control('POST', $this->workflowOperationPath($workflowId, $runId, 'repair'));
+    }
+
+    /** @return array<string, mixed> */
+    public function redriveWorkflow(string $workflowId, string $failedRunId, ?string $requestId = null): array
+    {
+        return $this->control(
+            'POST',
+            $this->workflowOperationPath($workflowId, $failedRunId, 'redrive'),
+            $this->withoutNulls(['request_id' => $requestId]),
+        );
     }
 
     /** @return array<string, mixed> */
@@ -1006,6 +1025,7 @@ final class Client implements WorkflowClientInterface
      *     }>}>
      * }>|null $workflowCommandContracts
      * @param array<string, array<string, bool|string>>|null $capabilityManifest
+     * @param array<string, string>|null $workflowDefinitionFingerprints
      * @return array<string, mixed>
      * @throws InvalidArgumentException
      */
@@ -1028,6 +1048,7 @@ final class Client implements WorkflowClientInterface
         ?array $workflowCommandContracts = null,
         ?array $capabilityManifest = null,
         int $maxConcurrentWorkerSessions = 10,
+        ?array $workflowDefinitionFingerprints = null,
     ): array {
         if (in_array('message_streams', $capabilities, true) && !Version::supportsMessageStreams()) {
             throw new InvalidArgumentException('Message streams require worker protocol 1.15 or newer.');
@@ -1058,6 +1079,7 @@ final class Client implements WorkflowClientInterface
             'supported_workflow_types' => $workflowTypes,
             'supported_activity_types' => $activityTypes,
             'workflow_command_contracts' => $workflowCommandContracts,
+            'workflow_definition_fingerprints' => $workflowDefinitionFingerprints,
             'capabilities' => $capabilities,
             'capability_manifest' => $capabilityManifest,
             'max_concurrent_workflow_tasks' => $maxConcurrentWorkflowTasks,
