@@ -263,6 +263,15 @@ final class Client implements WorkflowClientInterface
         );
     }
 
+    /** @return array<string, mixed> */
+    public function workflowActivities(string $workflowId, string $runId): array
+    {
+        return $this->control(
+            'GET',
+            '/workflows/'.$this->segment($workflowId).'/runs/'.$this->segment($runId).'/activities',
+        );
+    }
+
     /** @return list<WorkflowStreamDescription> */
     public function listWorkflowStreams(string $workflowId, string $runId): array
     {
