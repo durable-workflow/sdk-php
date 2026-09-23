@@ -53,7 +53,8 @@ final class DependencyBoundaryTest extends TestCase
         self::assertSame('1.15', $metadata['message-streams-minimum-worker-protocol-version']);
         self::assertSame($metadata['product-train'], $quickstart['package']['published_version']);
         self::assertSame($metadata['product-train'], $quickstart['package']['composer_requirement']);
-        self::assertSame('^2.0', $quickstart['package']['onboarding_requirement']);
+        $series = implode('.', array_slice(explode('.', $metadata['product-train']), 0, 2));
+        self::assertSame('^'.$series, $quickstart['package']['onboarding_requirement']);
         self::assertSame(
             'durableworkflow/server:'.$metadata['supported-server-versions'],
             $quickstart['runtime_targets']['server']['image'],
