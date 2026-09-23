@@ -569,6 +569,16 @@ final class Client implements WorkflowClientInterface
     }
 
     /** @return array<string, mixed> */
+    public function redriveWorkflow(string $workflowId, string $failedRunId, ?string $requestId = null): array
+    {
+        return $this->control(
+            'POST',
+            $this->workflowOperationPath($workflowId, $failedRunId, 'redrive'),
+            $this->withoutNulls(['request_id' => $requestId]),
+        );
+    }
+
+    /** @return array<string, mixed> */
     public function archiveWorkflow(string $workflowId, ?string $reason = null, ?string $runId = null): array
     {
         return $this->control(
