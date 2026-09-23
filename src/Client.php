@@ -1006,6 +1006,7 @@ final class Client implements WorkflowClientInterface
      *     }>}>
      * }>|null $workflowCommandContracts
      * @param array<string, array<string, bool|string>>|null $capabilityManifest
+     * @param array<string, string>|null $workflowDefinitionFingerprints
      * @return array<string, mixed>
      * @throws InvalidArgumentException
      */
@@ -1028,6 +1029,7 @@ final class Client implements WorkflowClientInterface
         ?array $workflowCommandContracts = null,
         ?array $capabilityManifest = null,
         int $maxConcurrentWorkerSessions = 10,
+        ?array $workflowDefinitionFingerprints = null,
     ): array {
         if (in_array('message_streams', $capabilities, true) && !Version::supportsMessageStreams()) {
             throw new InvalidArgumentException('Message streams require worker protocol 1.15 or newer.');
@@ -1058,6 +1060,7 @@ final class Client implements WorkflowClientInterface
             'supported_workflow_types' => $workflowTypes,
             'supported_activity_types' => $activityTypes,
             'workflow_command_contracts' => $workflowCommandContracts,
+            'workflow_definition_fingerprints' => $workflowDefinitionFingerprints,
             'capabilities' => $capabilities,
             'capability_manifest' => $capabilityManifest,
             'max_concurrent_workflow_tasks' => $maxConcurrentWorkflowTasks,

@@ -18,6 +18,8 @@ use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\WorkflowContext;
+use DurableWorkflow\Worker\WorkflowDefinitionFingerprint;
+use DurableWorkflow\Worker\HandlerDefinition;
 use DurableWorkflow\WorkflowClientInterface;
 use PHPUnit\Framework\TestCase;
 use Psr\Container\ContainerInterface;
@@ -164,6 +166,7 @@ final class WorkerAuthoringTest extends TestCase
                 'supported_workflow_types' => [],
                 'supported_activity_types' => [],
                 'workflow_command_contracts' => [],
+                'workflow_definition_fingerprints' => [],
                 'capabilities' => [
                     'query_tasks',
                     'workflow_updates',
@@ -200,6 +203,36 @@ final class WorkerAuthoringTest extends TestCase
                 'build_id' => 'release-a',
             ],
         ], $transport->requests[0]);
+    }
+
+    public function testWorkerAdvertisesStableSourceFingerprintsAndOmitsUninspectableDefinitions(): void
+    {
+        $fingerprints = [];
+
+        for ($index = 0; $index < 2; ++$index) {
+            $transport = new FakeTransport([
+                ['registered' => true],
+                ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'],
+            ]);
+            Worker::create(new Client('https://server.example', transport: $transport), 'php-workers')
+                ->register(GreetingWorkflow::class)
+                ->run(0);
+
+            $fingerprints[] = $transport->requests[0]['body']['workflow_definition_fingerprints']['greeter'] ?? null;
+        }
+
+        self::assertMatchesRegularExpression('/^sha256:[a-f0-9]{64}$/', $fingerprints[0]);
+        self::assertSame($fingerprints[0], $fingerprints[1]);
+        self::assertNotSame(
+            $fingerprints[0],
+            WorkflowDefinitionFingerprint::forHandler('greeter', HandlerDefinition::shared(
+                static fn (WorkflowContext $context): string => 'a different workflow',
+            )),
+        );
+        self::assertNull(WorkflowDefinitionFingerprint::forHandler(
+            'greeter',
+            HandlerDefinition::shared('strlen'),
+        ));
     }
 
     public function testExplicitShutdownDeregistersTheWorker(): void

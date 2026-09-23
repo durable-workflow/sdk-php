@@ -17,6 +17,7 @@ use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\DiscoveredHandlers;
 use DurableWorkflow\Worker\HandlerDiscovery;
 use DurableWorkflow\Worker\HandlerDefinition;
+use DurableWorkflow\Worker\WorkflowDefinitionFingerprint;
 use DurableWorkflow\Worker\HandlerResolver;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\QueryContext;
@@ -447,6 +448,7 @@ final class Worker
                     buildId: $this->buildId,
                     workflowCommandContracts: $this->workflowCommandContracts(),
                     capabilityManifest: CapabilityManifest::portableWorkerAffinity(),
+                    workflowDefinitionFingerprints: $this->workflowDefinitionFingerprints(),
                 );
             } catch (ServerException $exception) {
                 if (!$this->isTransientRegistrationFailure($exception)) {
@@ -1960,6 +1962,22 @@ final class Worker
         }
 
         return $contracts;
+    }
+
+    /** @return array<string, string> */
+    private function workflowDefinitionFingerprints(): array
+    {
+        $fingerprints = [];
+
+        foreach ($this->workflows as $workflowType => $handler) {
+            $fingerprint = WorkflowDefinitionFingerprint::forHandler($workflowType, $handler);
+
+            if ($fingerprint !== null) {
+                $fingerprints[$workflowType] = $fingerprint;
+            }
+        }
+
+        return $fingerprints;
     }
 
     /**
