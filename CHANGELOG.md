@@ -6,6 +6,22 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-23
+
+### Added
+
+- Expose failed-run redrive and per-run activity provenance through the client.
+  Redrive requires a Server with the run-targeted redrive endpoint; the
+  published quickstart is qualified against Server 2.4.0.
+- Let workers advertise a source-backed workflow-definition fingerprint so
+  redrive can refuse changed or uninspectable workflow code.
+
+### Fixed
+
+- Replay completed activity results copied into a redrive successor without
+  scheduling those activities again. Uncaught activity failures carry their
+  recorded boundary; handled failures do not claim a resumable step.
+
 ## [2.0.11] - 2026-09-21
 
 ### Fixed
