@@ -221,19 +221,33 @@ final class ReplayRegressionFixture
                 );
             }
 
+            $replay = null;
             try {
+                $replay = $harness->runWorkflow(
+                    $workflowType,
+                    $input,
+                    $history,
+                    array_merge(self::taskAttributes($workflowType), [
+                        'workflow_id' => $workflowId,
+                        'run_id' => $runId,
+                    ]),
+                );
                 $commands = array_map(
                     static fn (array $command): array => self::decodeEnvelopes($command, $codec),
-                    $harness->runWorkflow(
-                        $workflowType,
-                        $input,
-                        $history,
-                        array_merge(self::taskAttributes($workflowType), [
-                            'workflow_id' => $workflowId,
-                            'run_id' => $runId,
-                        ]),
-                    )->commands,
+                    $replay->commands,
                 );
+                if ($replay->terminalFailure !== null) {
+                    $failureCommand = [
+                        'type' => 'fail_workflow',
+                        'message' => $replay->terminalFailure->getMessage(),
+                        'exception_type' => $replay->terminalFailure::class,
+                    ];
+                    if ($replay->failedActivitySequence !== null && $replay->failedActivityExecutionId !== null) {
+                        $failureCommand['failed_step_sequence'] = $replay->failedActivitySequence;
+                        $failureCommand['failed_activity_execution_id'] = $replay->failedActivityExecutionId;
+                    }
+                    $commands[] = $failureCommand;
+                }
             } catch (NonDeterministicWorkflow $exception) {
                 $commands = [[
                     'type' => 'replay_error',
