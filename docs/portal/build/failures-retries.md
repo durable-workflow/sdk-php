@@ -20,7 +20,7 @@ next:
 | `NonDeterministicWorkflow` | Code no longer matches committed history. | Restore compatible code; do not blindly retry. |
 | `WorkflowFailed` | The execution closed as failed. | Surface the recorded failure to the caller. |
 | `WorkflowTimedOut` | A Server deadline closed the run. | Start a new workflow only if business policy permits. |
-| `WorkflowCancelled` / `WorkflowTerminated` | Cooperative cancellation or forceful operator termination. | Preserve the distinct terminal reason. |
+| `WorkflowCancelled` / `WorkflowTerminated` | Both close the Server run immediately, with distinct terminal reasons. | Do not expect workflow-code cleanup after either command. |
 
 ## Make activity retries safe
 
@@ -51,9 +51,10 @@ from history. Discarding a suspended replay Fiber does not schedule cleanup or
 complete the workflow; PHP may still unwind local `finally` code, so put external
 effects in activities rather than directly in the workflow body.
 
-Do not use `finally` as a guarantee against forced termination, process death,
-or an already closed run. Cooperative cancellation observed by workflow code
-is distinct from discarding a local Fiber. When business cancellation requires
+Do not use `finally` as a guarantee against terminal `cancelWorkflow()`,
+`terminateWorkflow()`, process death, or an already closed run. Service-mode
+Server does not yet expose the separate cooperative cancellation request
+available to embedded Laravel. When business cancellation requires
 compensation to finish, signal that intent and let the workflow complete its
 cleanup before closing the run.
 
