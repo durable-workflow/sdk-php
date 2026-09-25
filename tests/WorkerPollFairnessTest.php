@@ -69,6 +69,98 @@ final class WorkerPollFairnessTest extends TestCase
         yield 'all' => [['workflow', 'activity', 'query']];
     }
 
+    #[DataProvider('pollKinds')]
+    public function testCrossKindWakeTriggersOneImmediateSweep(string $wakingKind): void
+    {
+        $polls = [];
+        $transport = new FakeTransport(handler: static function (
+            string $method,
+            string $uri,
+            array $headers,
+            ?array $body,
+        ) use ($wakingKind, &$polls): array {
+            preg_match('#/worker/(workflow|activity|query)-tasks/poll$#', $uri, $match);
+            self::assertNotEmpty($match);
+            $polls[] = ['kind' => $match[1], 'timeout' => $body['timeout_seconds']];
+
+            return [
+                'task' => null,
+                'poll_status' => count($polls) <= 3 && $match[1] === $wakingKind
+                    ? 'task_queue_changed'
+                    : 'empty',
+            ];
+        });
+        $worker = new Worker(new Client('https://server.example', transport: $transport), 'orders');
+
+        self::assertFalse($worker->tick(5));
+        self::assertFalse($worker->tick(5));
+        self::assertFalse($worker->tick(5));
+
+        self::assertSame(
+            ['workflow', 'activity', 'query', 'workflow', 'activity', 'query', 'workflow', 'activity', 'query'],
+            array_column($polls, 'kind'),
+        );
+        $firstTickTimeouts = match ($wakingKind) {
+            'workflow' => [5, 0, 0],
+            'activity' => [5, 5, 0],
+            'query' => [5, 5, 5],
+        };
+        self::assertSame([...$firstTickTimeouts, 0, 0, 0, 5, 5, 5], array_column($polls, 'timeout'));
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function pollKinds(): iterable
+    {
+        yield 'workflow' => ['workflow'];
+        yield 'activity' => ['activity'];
+        yield 'query' => ['query'];
+    }
+
+    public function testRegisteredWorkerProcessesActivityAfterCrossKindWake(): void
+    {
+        $polls = [];
+        $completed = false;
+        $transport = new FakeTransport(handler: static function (
+            string $method,
+            string $uri,
+            array $headers,
+            ?array $body,
+        ) use (&$polls, &$completed): array {
+            if (str_ends_with($uri, '/register')) {
+                self::assertContains('cross_kind_poll_wake', $body['capabilities']);
+
+                return ['registered' => true];
+            }
+            if (preg_match('#/worker/(workflow|activity|query)-tasks/poll$#', $uri, $match) === 1) {
+                $polls[] = ['kind' => $match[1], 'timeout' => $body['timeout_seconds']];
+                if ($match[1] === 'workflow') {
+                    return ['task' => null, 'poll_status' => 'task_queue_changed'];
+                }
+                if ($match[1] === 'activity') {
+                    return ['poll_status' => 'leased', 'task' => [
+                        'task_id' => 'activity-1', 'activity_attempt_id' => 'attempt-1',
+                        'lease_owner' => 'worker-1', 'activity_type' => 'orders.charge', 'payload_codec' => 'avro',
+                    ]];
+                }
+
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+            if (str_ends_with($uri, '/activity-tasks/activity-1/complete')) {
+                $completed = true;
+
+                return ['completed' => true];
+            }
+            self::fail("Unexpected request: {$method} {$uri}");
+        });
+        $worker = new Worker(new Client('https://server.example', transport: $transport), 'orders', workerId: 'worker-1');
+        $worker->registerActivity('orders.charge', static fn (ActivityContext $context): string => 'charged');
+        $worker->run(5);
+
+        self::assertTrue($completed);
+        self::assertSame(['workflow', 'activity', 'query'], array_column($polls, 'kind'));
+        self::assertSame([5, 0, 0], array_column($polls, 'timeout'));
+    }
+
     public function testManagedWorkerCompletesActivityWhileWorkflowWaitsAreFull(): void
     {
         $now = 0.0;

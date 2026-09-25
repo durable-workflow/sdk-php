@@ -56,6 +56,7 @@ final class Worker
     private array $updates = [];
     private bool $shutdownRequested = false;
     private bool $registered = false;
+    private bool $pollSweepRequested = false;
     private float $lastHeartbeatAt = 0.0;
     private float $heartbeatRetryAt = 0.0;
     private int $heartbeatRetryAttempt = 0;
@@ -444,6 +445,7 @@ final class Worker
                         'local_activities',
                         'worker_sessions',
                         'sticky_execution',
+                        'cross_kind_poll_wake',
                     ],
                     buildId: $this->buildId,
                     workflowCommandContracts: $this->workflowCommandContracts(),
@@ -514,6 +516,11 @@ final class Worker
             return false;
         }
 
+        if ($this->pollSweepRequested) {
+            $pollTimeoutSeconds = 0;
+            $this->pollSweepRequested = false;
+        }
+
         $handled = false;
         $workflowPoll = $this->pollWithRetry(
             'workflow',
@@ -532,6 +539,9 @@ final class Worker
         }
         $this->rememberWorkflowMemoCapability($workflowPoll);
         $this->heartbeatIfDue();
+        if ($this->crossKindPollWakeReceived($workflowPoll)) {
+            $pollTimeoutSeconds = 0;
+        }
         $workflowTask = $this->taskFromPoll($workflowPoll);
         if ($workflowTask !== null) {
             $this->executePolledTask('workflow', $workflowTask);
@@ -557,6 +567,9 @@ final class Worker
             return $handled;
         }
         $this->heartbeatIfDue();
+        if ($this->crossKindPollWakeReceived($activityPoll)) {
+            $pollTimeoutSeconds = 0;
+        }
         $activityTask = $this->taskFromPoll($activityPoll);
         if ($activityTask !== null) {
             $this->executePolledTask('activity', $activityTask);
@@ -582,6 +595,7 @@ final class Worker
             return $handled;
         }
         $this->heartbeatIfDue();
+        $this->crossKindPollWakeReceived($queryPoll);
         $queryTask = $this->taskFromPoll($queryPoll);
         if ($queryTask !== null) {
             $this->executePolledTask('query', $queryTask);
@@ -589,6 +603,18 @@ final class Worker
         }
 
         return $handled;
+    }
+
+    /** @param array<string, mixed> $response */
+    private function crossKindPollWakeReceived(array $response): bool
+    {
+        if (($response['poll_status'] ?? null) !== 'task_queue_changed') {
+            return false;
+        }
+
+        $this->pollSweepRequested = true;
+
+        return true;
     }
 
     /**

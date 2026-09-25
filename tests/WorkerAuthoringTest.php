@@ -179,6 +179,7 @@ final class WorkerAuthoringTest extends TestCase
                     'local_activities',
                     'worker_sessions',
                     'sticky_execution',
+                    'cross_kind_poll_wake',
                 ],
                 'capability_manifest' => [
                     'local_activities' => [
