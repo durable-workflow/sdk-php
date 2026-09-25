@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-09-25
+
+### Fixed
+
+- Wake an idle PHP worker to check other task kinds when a compatible Server
+  queues work on the same namespace and task queue. Server 2.4.7 adds the
+  optional wake signal; older Servers keep their previous polling behavior.
+
 ## [2.1.0] - 2026-09-23
 
 ### Added
