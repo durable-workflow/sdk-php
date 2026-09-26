@@ -696,6 +696,7 @@ final class Worker
                         $workflowTaskLease['task_id'],
                         $workflowTaskLease['lease_owner'],
                         $workflowTaskLease['attempt'],
+                        $operation === 'workflow_complete' ? 'complete_workflow_task' : 'heartbeat_workflow_task',
                     );
                 if ((!$exception->isStorageAdmissionFailure() && !$backendUnavailable) || $this->shutdownRequested) {
                     throw $exception;
@@ -963,7 +964,11 @@ final class Worker
                 $messageStreamCursors,
                 $messageStreamWaits,
                 $stickyClaim,
-            ));
+            ), [
+                'task_id' => $taskId,
+                'lease_owner' => $leaseOwner,
+                'attempt' => $attempt,
+            ]);
         } catch (Throwable $exception) {
             $this->acknowledgeTaskFailure(
                 'workflow',
@@ -1254,9 +1259,9 @@ final class Worker
         return match ($taskKind) {
             'workflow' => ($reason === 'run_closed'
                     && ($details['can_continue'] ?? null) === false
-                    && ($details['task_status'] ?? null) === 'cancelled')
+                    && in_array($details['task_status'] ?? null, ['cancelled', 'completed'], true))
                 || ($reason === 'task_not_leased'
-                    && ($details['task_status'] ?? null) === 'cancelled'),
+                    && in_array($details['task_status'] ?? null, ['cancelled', 'completed'], true)),
             'activity' => in_array($reason, ['run_cancelled', 'run_terminated'], true)
                 && ($details['can_continue'] ?? null) === false
                 && ($details['task_status'] ?? null) === 'cancelled',

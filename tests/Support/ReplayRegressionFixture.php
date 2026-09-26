@@ -483,6 +483,8 @@ final class ReplayRegressionFixture
 
                 throw new RuntimeException('Workflow failed after the local activity returned.');
             },
+            'golden.completion-backend-loss' => static fn (WorkflowContext $context): string =>
+                'completion-after-backend-recovery',
             default => throw new RuntimeException(
                 "Replay fixture workflow {$workflowType} has no PHP implementation; "
                 .'register its reproducer workflow in ReplayRegressionFixture.',

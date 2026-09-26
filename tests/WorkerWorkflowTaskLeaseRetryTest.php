@@ -171,6 +171,108 @@ final class WorkerWorkflowTaskLeaseRetryTest extends TestCase
             ->isWorkflowTaskBackendUnavailable('workflow-task-1', 'worker-1', 3));
     }
 
+    #[DataProvider('completionOutcomes')]
+    public function testBackendLossRetriesTheSameWorkflowCompletionWithoutReexecuting(
+        bool $completedBeforeTheRetry,
+    ): void {
+        $now = 0.0;
+        $handlerCalls = 0;
+        $completionBodies = [];
+        $transport = new FakeTransport(handler: static function (
+            string $method,
+            string $uri,
+            array $headers,
+            ?array $body,
+        ) use (&$completionBodies, $completedBeforeTheRetry): ?array {
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
+                return self::leasedWorkflowTask();
+            }
+
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/workflow-task-1/heartbeat')) {
+                return self::renewedLease();
+            }
+
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/workflow-task-1/complete')) {
+                $completionBodies[] = $body;
+                if (count($completionBodies) === 1) {
+                    throw self::failure(503, [
+                        ...self::leaseFence(),
+                        'reason' => 'backend_unavailable',
+                        'operation' => 'complete_workflow_task',
+                        'outcome' => 'unknown',
+                        'worker_id' => 'worker-1',
+                        'task_queue' => null,
+                        'retryable' => true,
+                        'retry_after_seconds' => 1,
+                    ]);
+                }
+
+                return $completedBeforeTheRetry
+                    ? throw self::failure(409, [
+                        ...self::leaseFence(),
+                        'reason' => 'task_not_leased',
+                        'task_status' => 'completed',
+                    ])
+                    : ['completed' => true];
+            }
+
+            if (str_ends_with($uri, '/api/worker/activity-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        });
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'orders',
+            workerId: 'worker-1',
+            clock: static function () use (&$now): float {
+                return $now;
+            },
+            sleeper: static function (int $microseconds) use (&$now): void {
+                $now += $microseconds / 1_000_000;
+            },
+        );
+        $worker->registerWorkflow('orders.workflow', static function (WorkflowContext $context) use (&$handlerCalls): string {
+            ++$handlerCalls;
+
+            return 'completed';
+        });
+
+        self::assertTrue($worker->tick(0));
+        self::assertSame(1, $handlerCalls);
+        self::assertCount(2, $completionBodies);
+        self::assertSame($completionBodies[0], $completionBodies[1]);
+        self::assertEqualsWithDelta(1.0, $now, 0.000_01);
+    }
+
+    /** @return iterable<string, array{bool}> */
+    public static function completionOutcomes(): iterable
+    {
+        yield 'rollback then accepted' => [false];
+        yield 'committed before the unknown response' => [true];
+    }
+
+    public function testCompletionBackendLossResponseMustMatchTheSubmittedFence(): void
+    {
+        $response = [
+            ...self::leaseFence(),
+            'reason' => 'backend_unavailable',
+            'operation' => 'complete_workflow_task',
+            'outcome' => 'unknown',
+            'worker_id' => 'worker-1',
+            'task_queue' => null,
+            'retryable' => true,
+            'retry_after_seconds' => 1,
+        ];
+        $error = new ServerException('Backend unavailable', 503, 'backend_unavailable', $response);
+
+        self::assertTrue($error->isWorkflowTaskBackendUnavailable('workflow-task-1', 'worker-1', 3, 'complete_workflow_task'));
+        self::assertFalse($error->isWorkflowTaskBackendUnavailable('workflow-task-1', 'worker-1', 3));
+        self::assertFalse($error->isWorkflowTaskBackendUnavailable('workflow-task-1', 'worker-1', 4, 'complete_workflow_task'));
+        self::assertFalse($error->isWorkflowTaskBackendUnavailable('workflow-task-1', 'worker-1', 3, 'fail_workflow_task'));
+    }
+
     public function testTerminalRunClosureDuringLeaseRetryDiscardsTaskWithoutExecutionOrCompletion(): void
     {
         $handlerCalls = 0;

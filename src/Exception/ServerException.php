@@ -73,16 +73,22 @@ class ServerException extends DurableWorkflowException
             && ($response['claim_admitted'] ?? null) === false;
     }
 
-    /** A backend failure whose workflow-task heartbeat can be retried with the same lease fence. */
-    public function isWorkflowTaskBackendUnavailable(string $taskId, string $leaseOwner, int $attempt): bool
+    /** A backend failure whose workflow-task mutation can be retried with the same lease fence. */
+    public function isWorkflowTaskBackendUnavailable(
+        string $taskId,
+        string $leaseOwner,
+        int $attempt,
+        string $operation = 'heartbeat_workflow_task',
+    ): bool
     {
         $response = $this->details;
 
-        return $this->status === 503
+        return in_array($operation, ['heartbeat_workflow_task', 'complete_workflow_task'], true)
+            && $this->status === 503
             && $this->reason === 'backend_unavailable'
             && $response !== null && !array_is_list($response)
             && ($response['reason'] ?? null) === 'backend_unavailable'
-            && ($response['operation'] ?? null) === 'heartbeat_workflow_task'
+            && ($response['operation'] ?? null) === $operation
             && ($response['outcome'] ?? null) === 'unknown'
             && ($response['retryable'] ?? null) === true
             && ($response['task_id'] ?? null) === $taskId

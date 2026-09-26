@@ -86,6 +86,7 @@ final class ReplayRegressionTransport implements Transport
         private readonly array $tasks,
         private readonly array $pagedHistory,
         private readonly bool $storagePressure = false,
+        private readonly bool $backendUnavailable = false,
     ) {
     }
 
@@ -123,7 +124,28 @@ final class ReplayRegressionTransport implements Transport
             ];
         }
 
-        if ($this->taskFor($uri, 'complete') !== null) {
+        if (($completionTask = $this->taskFor($uri, 'complete')) !== null) {
+            if ($this->backendUnavailable) {
+                if ($this->refusedCompletion !== null && $body !== $this->refusedCompletion) {
+                    throw new RuntimeException('Backend recovery changed the workflow completion request.');
+                }
+                if ($this->completionRefusals++ === 0) {
+                    $this->refusedCompletion = $body;
+                    $refusal = [
+                        'reason' => 'backend_unavailable',
+                        'operation' => 'complete_workflow_task',
+                        'outcome' => 'unknown',
+                        'task_id' => $completionTask['task_id'],
+                        'lease_owner' => $completionTask['lease_owner'],
+                        'workflow_task_attempt' => $completionTask['workflow_task_attempt'],
+                        'worker_id' => $completionTask['lease_owner'],
+                        'task_queue' => null,
+                        'retryable' => true,
+                        'retry_after_seconds' => 1,
+                    ];
+                    throw TransportException::fromResponse(503, $refusal, json_encode($refusal, JSON_THROW_ON_ERROR));
+                }
+            }
             if ($this->storagePressure) {
                 if ($this->refusedCompletion !== null && $body !== $this->refusedCompletion) {
                     throw new RuntimeException('Storage recovery changed the workflow acknowledgement.');
@@ -362,6 +384,7 @@ final class ReplayRegressionConsumer
             $tasks,
             $pagedHistory,
             storagePressure: $workflowType === 'golden.local-activity-recovered',
+            backendUnavailable: $workflowType === 'golden.completion-backend-loss',
         );
         $now = 0.0;
         $worker = new Worker(
@@ -666,6 +689,8 @@ final class ReplayRegressionConsumer
 
                 throw new RuntimeException('Workflow failed after the local activity returned.');
             },
+            'golden.completion-backend-loss' => static fn (WorkflowContext $context): string =>
+                'completion-after-backend-recovery',
             default => throw new RuntimeException(
                 "Replay fixture workflow {$workflowType} has no PHP implementation in the official consumer.",
             ),
