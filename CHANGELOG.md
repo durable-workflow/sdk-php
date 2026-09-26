@@ -6,6 +6,16 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.1.3] - 2026-09-26
+
+### Fixed
+
+- Retry a workflow-task completion after a compatible Server reports temporary
+  database loss with an unknown outcome, checking the exact task, lease owner,
+  and attempt before resending the same completion. If the first completion
+  committed, discard the completed-task conflict without rerunning the handler.
+  Server 2.4.12 adds the response; older Servers retain their existing behavior.
+
 ## [2.1.2] - 2026-09-26
 
 ### Fixed
