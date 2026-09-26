@@ -72,4 +72,25 @@ class ServerException extends DurableWorkflowException
             && ($response['retry_same_poll_request_id'] ?? null) === true
             && ($response['claim_admitted'] ?? null) === false;
     }
+
+    /** A backend failure whose workflow-task heartbeat can be retried with the same lease fence. */
+    public function isWorkflowTaskBackendUnavailable(string $taskId, string $leaseOwner, int $attempt): bool
+    {
+        $response = $this->details;
+
+        return $this->status === 503
+            && $this->reason === 'backend_unavailable'
+            && $response !== null && !array_is_list($response)
+            && ($response['reason'] ?? null) === 'backend_unavailable'
+            && ($response['operation'] ?? null) === 'heartbeat_workflow_task'
+            && ($response['outcome'] ?? null) === 'unknown'
+            && ($response['retryable'] ?? null) === true
+            && ($response['task_id'] ?? null) === $taskId
+            && ($response['lease_owner'] ?? null) === $leaseOwner
+            && ($response['worker_id'] ?? null) === $leaseOwner
+            && array_key_exists('task_queue', $response) && $response['task_queue'] === null
+            && ($response['workflow_task_attempt'] ?? null) === $attempt
+            && is_int($response['retry_after_seconds'] ?? null)
+            && $response['retry_after_seconds'] > 0;
+    }
 }

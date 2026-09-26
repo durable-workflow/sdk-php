@@ -84,6 +84,93 @@ final class WorkerWorkflowTaskLeaseRetryTest extends TestCase
         self::assertEqualsWithDelta(1.0, $now, 0.000_01);
     }
 
+    public function testBackendLossRetriesTheSameWorkflowTaskHeartbeatFence(): void
+    {
+        $now = 0.0;
+        $heartbeats = [];
+        $completions = 0;
+        $transport = new FakeTransport(handler: static function (
+            string $method,
+            string $uri,
+            array $headers,
+            ?array $body,
+        ) use (&$heartbeats, &$completions): ?array {
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
+                return self::leasedWorkflowTask();
+            }
+
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/workflow-task-1/heartbeat')) {
+                $heartbeats[] = $body;
+
+                return count($heartbeats) === 1
+                    ? throw self::failure(503, [
+                        ...self::leaseFence(),
+                        'reason' => 'backend_unavailable',
+                        'operation' => 'heartbeat_workflow_task',
+                        'outcome' => 'unknown',
+                        'worker_id' => 'worker-1',
+                        'task_queue' => null,
+                        'retryable' => true,
+                        'retry_after_seconds' => 1,
+                    ])
+                    : self::renewedLease();
+            }
+
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/workflow-task-1/complete')) {
+                ++$completions;
+
+                return ['completed' => true];
+            }
+
+            if (str_ends_with($uri, '/api/worker/activity-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        });
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'orders',
+            workerId: 'worker-1',
+            clock: static function () use (&$now): float {
+                return $now;
+            },
+            sleeper: static function (int $microseconds) use (&$now): void {
+                $now += $microseconds / 1_000_000;
+            },
+        );
+        $worker->registerWorkflow('orders.workflow', static fn (WorkflowContext $context): string => 'completed');
+
+        self::assertTrue($worker->tick(0));
+        self::assertCount(2, $heartbeats);
+        self::assertSame($heartbeats[0], $heartbeats[1]);
+        self::assertSame(1, $completions);
+        self::assertEqualsWithDelta(1.0, $now, 0.000_01);
+    }
+
+    public function testBackendLossHeartbeatResponseMustMatchTheSubmittedFence(): void
+    {
+        $response = [
+            ...self::leaseFence(),
+            'reason' => 'backend_unavailable',
+            'operation' => 'heartbeat_workflow_task',
+            'outcome' => 'unknown',
+            'worker_id' => 'worker-1',
+            'task_queue' => null,
+            'retryable' => true,
+            'retry_after_seconds' => 1,
+        ];
+        $error = new ServerException('Backend unavailable', 503, 'backend_unavailable', $response);
+
+        self::assertTrue($error->isWorkflowTaskBackendUnavailable('workflow-task-1', 'worker-1', 3));
+        self::assertFalse($error->isWorkflowTaskBackendUnavailable('other-task', 'worker-1', 3));
+        self::assertFalse($error->isWorkflowTaskBackendUnavailable('workflow-task-1', 'other-worker', 3));
+        self::assertFalse($error->isWorkflowTaskBackendUnavailable('workflow-task-1', 'worker-1', 4));
+        $response['task_queue'] = 'orders';
+        self::assertFalse((new ServerException('Backend unavailable', 503, 'backend_unavailable', $response))
+            ->isWorkflowTaskBackendUnavailable('workflow-task-1', 'worker-1', 3));
+    }
+
     public function testTerminalRunClosureDuringLeaseRetryDiscardsTaskWithoutExecutionOrCompletion(): void
     {
         $handlerCalls = 0;

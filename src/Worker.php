@@ -681,16 +681,23 @@ final class Worker
     /**
      * @template T
      * @param \Closure(): T $request
+     * @param array{task_id: string, lease_owner: string, attempt: int}|null $workflowTaskLease
      * @return T
      */
-    private function retryStorageAdmission(string $operation, \Closure $request): mixed
+    private function retryStorageAdmission(string $operation, \Closure $request, ?array $workflowTaskLease = null): mixed
     {
         $attempt = 0;
         while (true) {
             try {
                 return $request();
             } catch (ServerException $exception) {
-                if (!$exception->isStorageAdmissionFailure() || $this->shutdownRequested) {
+                $backendUnavailable = $workflowTaskLease !== null
+                    && $exception->isWorkflowTaskBackendUnavailable(
+                        $workflowTaskLease['task_id'],
+                        $workflowTaskLease['lease_owner'],
+                        $workflowTaskLease['attempt'],
+                    );
+                if ((!$exception->isStorageAdmissionFailure() && !$backendUnavailable) || $this->shutdownRequested) {
                     throw $exception;
                 }
 
@@ -999,7 +1006,11 @@ final class Worker
         $retryAttempt = 0;
         while (!$this->shutdownRequested) {
             $response = $this->retryStorageAdmission('workflow_heartbeat', fn (): array =>
-                $this->client->heartbeatWorkflowTask($taskId, $leaseOwner, $taskAttempt));
+                $this->client->heartbeatWorkflowTask($taskId, $leaseOwner, $taskAttempt), [
+                    'task_id' => $taskId,
+                    'lease_owner' => $leaseOwner,
+                    'attempt' => $taskAttempt,
+                ]);
             if (!$this->matchesWorkflowTaskLeaseFence($response, $taskId, $leaseOwner, $taskAttempt)) {
                 throw $this->workflowTaskLeaseResponseFailure(
                     'Workflow task lease renewal returned mismatched fencing fields.',
