@@ -6,6 +6,16 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.1.4] - 2026-09-26
+
+### Fixed
+
+- Retry an activity completion after a compatible Server reports temporary
+  backend loss with an unknown outcome, preserving the original result and
+  activity lease. If the first completion committed, recognize the matching
+  completed-attempt conflict without rerunning the activity handler. Server
+  2.4.13 adds the response; older Servers retain their existing behavior.
+
 ## [2.1.3] - 2026-09-26
 
 ### Fixed
