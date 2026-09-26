@@ -99,4 +99,25 @@ class ServerException extends DurableWorkflowException
             && is_int($response['retry_after_seconds'] ?? null)
             && $response['retry_after_seconds'] > 0;
     }
+
+    /** A backend failure whose activity completion can be retried with the same attempt and lease. */
+    public function isActivityTaskBackendUnavailable(string $taskId, string $attemptId, string $leaseOwner): bool
+    {
+        $response = $this->details;
+
+        return $this->status === 503
+            && $this->reason === 'backend_unavailable'
+            && $response !== null && !array_is_list($response)
+            && ($response['reason'] ?? null) === 'backend_unavailable'
+            && ($response['operation'] ?? null) === 'complete_activity_task'
+            && ($response['outcome'] ?? null) === 'unknown'
+            && ($response['retryable'] ?? null) === true
+            && ($response['task_id'] ?? null) === $taskId
+            && ($response['activity_attempt_id'] ?? null) === $attemptId
+            && ($response['lease_owner'] ?? null) === $leaseOwner
+            && ($response['worker_id'] ?? null) === $leaseOwner
+            && array_key_exists('task_queue', $response) && $response['task_queue'] === null
+            && is_int($response['retry_after_seconds'] ?? null)
+            && $response['retry_after_seconds'] > 0;
+    }
 }

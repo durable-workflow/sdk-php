@@ -77,6 +77,11 @@ final class ReplayRegressionTransport implements Transport
     private int $completionRefusals = 0;
     /** @var array<string, mixed>|null */
     private ?array $refusedCompletion = null;
+    private bool $activityClaimed = false;
+    private int $activityCompletionAttempts = 0;
+    /** @var array<string, mixed>|null */
+    private ?array $activityCompletionBody = null;
+    private bool $activityCompleted = false;
 
     /**
      * @param list<array<string, mixed>> $tasks
@@ -87,6 +92,7 @@ final class ReplayRegressionTransport implements Transport
         private readonly array $pagedHistory,
         private readonly bool $storagePressure = false,
         private readonly bool $backendUnavailable = false,
+        private readonly bool $activityBackendUnavailable = false,
     ) {
     }
 
@@ -191,7 +197,59 @@ final class ReplayRegressionTransport implements Transport
             return ['failed' => true];
         }
 
+        if (str_ends_with($uri, '/api/worker/activity-tasks/regression-activity/complete')) {
+            if (!$this->activityBackendUnavailable || $body === null) {
+                throw new RuntimeException('Unexpected activity completion in the replay consumer.');
+            }
+            if ($this->activityCompletionBody !== null && $body !== $this->activityCompletionBody) {
+                throw new RuntimeException('Backend recovery changed the activity completion request.');
+            }
+            if ($this->activityCompletionAttempts++ === 0) {
+                $this->activityCompletionBody = $body;
+                $refusal = [
+                    'reason' => 'backend_unavailable',
+                    'operation' => 'complete_activity_task',
+                    'outcome' => 'unknown',
+                    'task_id' => 'regression-activity',
+                    'activity_attempt_id' => 'regression-activity-attempt',
+                    'lease_owner' => 'regression-consumer',
+                    'worker_id' => 'regression-consumer',
+                    'task_queue' => null,
+                    'retryable' => true,
+                    'retry_after_seconds' => 1,
+                ];
+                throw TransportException::fromResponse(503, $refusal, json_encode($refusal, JSON_THROW_ON_ERROR));
+            }
+
+            $this->activityCompleted = true;
+            $committed = [
+                'reason' => 'stale_attempt',
+                'outcome' => 'completed',
+                'recorded' => false,
+                'task_id' => 'regression-activity',
+                'activity_attempt_id' => 'regression-activity-attempt',
+                'lease_owner' => 'regression-consumer',
+                'activity_status' => 'completed',
+                'attempt_status' => 'completed',
+                'task_status' => 'completed',
+            ];
+            throw TransportException::fromResponse(409, $committed, json_encode($committed, JSON_THROW_ON_ERROR));
+        }
+
         if (str_ends_with($uri, '/api/worker/activity-tasks/poll')) {
+            if ($this->activityBackendUnavailable && !$this->activityClaimed
+                && $this->workflowPoll >= count($this->tasks)) {
+                $this->activityClaimed = true;
+
+                return ['task' => [
+                    'task_id' => 'regression-activity',
+                    'activity_attempt_id' => 'regression-activity-attempt',
+                    'lease_owner' => 'regression-consumer',
+                    'activity_type' => 'golden.backend-recovery',
+                    'payload_codec' => 'avro',
+                ], 'poll_status' => 'leased'];
+            }
+
             return $this->workflowPoll < count($this->tasks)
                 ? ['task' => null, 'poll_status' => 'empty']
                 : ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
@@ -209,6 +267,10 @@ final class ReplayRegressionTransport implements Transport
     {
         if (count($this->completedCommands) !== count($this->tasks)) {
             throw new RuntimeException('Official replay consumer did not complete every workflow task.');
+        }
+        if ($this->activityBackendUnavailable
+            && (!$this->activityCompleted || $this->activityCompletionAttempts !== 2)) {
+            throw new RuntimeException('Official replay consumer did not recover the activity completion.');
         }
 
         return $this->completedCommands;
@@ -385,6 +447,7 @@ final class ReplayRegressionConsumer
             $pagedHistory,
             storagePressure: $workflowType === 'golden.local-activity-recovered',
             backendUnavailable: $workflowType === 'golden.completion-backend-loss',
+            activityBackendUnavailable: $workflowType === 'golden.activity-completion-backend-loss',
         );
         $now = 0.0;
         $worker = new Worker(
@@ -422,11 +485,21 @@ final class ReplayRegressionConsumer
                 },
             );
         }
+        if ($workflowType === 'golden.activity-completion-backend-loss') {
+            $worker->registerActivity(
+                'golden.backend-recovery',
+                static function (ActivityContext $_context) use (&$localActivityInvocations): string {
+                    ++$localActivityInvocations;
+
+                    return 'activity-after-backend-recovery';
+                },
+            );
+        }
         foreach ($tasks as $_task) {
             $worker->tick(0);
             gc_collect_cycles();
         }
-        if ($localActivityInvocations !== 0) {
+        if ($localActivityInvocations !== ($workflowType === 'golden.activity-completion-backend-loss' ? 1 : 0)) {
             throw new RuntimeException("{$identity} repeated a recorded local activity during cold replay.");
         }
 
@@ -691,6 +764,8 @@ final class ReplayRegressionConsumer
             },
             'golden.completion-backend-loss' => static fn (WorkflowContext $context): string =>
                 'completion-after-backend-recovery',
+            'golden.activity-completion-backend-loss' => static fn (WorkflowContext $context): mixed =>
+                $context->activity('golden.backend-recovery'),
             default => throw new RuntimeException(
                 "Replay fixture workflow {$workflowType} has no PHP implementation in the official consumer.",
             ),

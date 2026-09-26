@@ -682,25 +682,45 @@ final class Worker
      * @template T
      * @param \Closure(): T $request
      * @param array{task_id: string, lease_owner: string, attempt: int}|null $workflowTaskLease
+     * @param array{task_id: string, activity_attempt_id: string, lease_owner: string}|null $activityTaskLease
      * @return T
      */
-    private function retryStorageAdmission(string $operation, \Closure $request, ?array $workflowTaskLease = null): mixed
+    private function retryStorageAdmission(
+        string $operation,
+        \Closure $request,
+        ?array $workflowTaskLease = null,
+        ?array $activityTaskLease = null,
+    ): mixed
     {
         $attempt = 0;
+        $uncertainActivityCompletion = false;
         while (true) {
             try {
                 return $request();
             } catch (ServerException $exception) {
-                $backendUnavailable = $workflowTaskLease !== null
+                $workflowBackendUnavailable = $workflowTaskLease !== null
                     && $exception->isWorkflowTaskBackendUnavailable(
                         $workflowTaskLease['task_id'],
                         $workflowTaskLease['lease_owner'],
                         $workflowTaskLease['attempt'],
                         $operation === 'workflow_complete' ? 'complete_workflow_task' : 'heartbeat_workflow_task',
                     );
+                $activityBackendUnavailable = $operation === 'activity_complete'
+                    && $activityTaskLease !== null
+                    && $exception->isActivityTaskBackendUnavailable(
+                        $activityTaskLease['task_id'],
+                        $activityTaskLease['activity_attempt_id'],
+                        $activityTaskLease['lease_owner'],
+                    );
+                if ($uncertainActivityCompletion && $activityTaskLease !== null
+                    && $this->isCommittedActivityCompletion($exception, $activityTaskLease)) {
+                    return null;
+                }
+                $backendUnavailable = $workflowBackendUnavailable || $activityBackendUnavailable;
                 if ((!$exception->isStorageAdmissionFailure() && !$backendUnavailable) || $this->shutdownRequested) {
                     throw $exception;
                 }
+                $uncertainActivityCompletion = $uncertainActivityCompletion || $activityBackendUnavailable;
 
                 ++$attempt;
                 $delaySeconds = $this->transientRetryDelay($attempt, $exception->details['retry_after_seconds'] ?? null);
@@ -721,6 +741,24 @@ final class Worker
                 }
             }
         }
+    }
+
+    /** @param array{task_id: string, activity_attempt_id: string, lease_owner: string} $lease */
+    private function isCommittedActivityCompletion(ServerException $exception, array $lease): bool
+    {
+        $details = $exception->details;
+
+        return $exception->status === 409
+            && $exception->reason === 'stale_attempt'
+            && $details !== null && !array_is_list($details)
+            && ($details['reason'] ?? null) === 'stale_attempt'
+            && ($details['recorded'] ?? null) === false
+            && ($details['task_id'] ?? null) === $lease['task_id']
+            && ($details['activity_attempt_id'] ?? null) === $lease['activity_attempt_id']
+            && ($details['lease_owner'] ?? null) === $lease['lease_owner']
+            && ($details['activity_status'] ?? null) === 'completed'
+            && ($details['attempt_status'] ?? null) === 'completed'
+            && ($details['task_status'] ?? null) === 'completed';
     }
 
     private function isTransientDatabaseFailure(
@@ -1155,8 +1193,15 @@ final class Worker
                 ),
             );
             $result = $handler($context, ...$this->decodeArguments($task['arguments'] ?? null));
-            $this->retryStorageAdmission('activity_complete', fn (): array =>
-                $this->client->completeActivityTask($taskId, $attemptId, $leaseOwner, $result));
+            $this->retryStorageAdmission(
+                'activity_complete',
+                fn (): array => $this->client->completeActivityTask($taskId, $attemptId, $leaseOwner, $result),
+                activityTaskLease: [
+                    'task_id' => $taskId,
+                    'activity_attempt_id' => $attemptId,
+                    'lease_owner' => $leaseOwner,
+                ],
+            );
         } catch (Throwable $exception) {
             $this->acknowledgeTaskFailure(
                 'activity',
