@@ -6,6 +6,15 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-09-26
+
+### Fixed
+
+- Retry a workflow-task heartbeat after a compatible Server reports temporary
+  database loss with an unknown outcome, checking the exact task, lease owner,
+  and attempt before resending the same heartbeat. Server 2.4.11 adds this
+  response; older Servers retain their existing behavior.
+
 ## [2.1.1] - 2026-09-25
 
 ### Fixed
