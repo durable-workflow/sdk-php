@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-activity-completion-backend-loss",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.activity-completion-backend-loss", "input": []},
+  "command_sequence": [
+    {"type": "schedule_activity", "activity_type": "golden.backend-recovery"}
+  ],
+  "expected": {
+    "command_sequence": [
+      {"type": "schedule_activity", "activity_type": "golden.backend-recovery"}
+    ]
+  }
+}
