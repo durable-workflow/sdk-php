@@ -6,6 +6,15 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.1.5] - 2026-09-27
+
+### Fixed
+
+- Preserve an activity's computed result when payload-policy discovery fails
+  before its completion request is sent. With Server 2.4.15 or later, the worker
+  retries the same fenced completion after the typed backend-loss response,
+  without rerunning the activity handler. Other discovery failures remain errors.
+
 ## [2.1.4] - 2026-09-26
 
 ### Fixed
