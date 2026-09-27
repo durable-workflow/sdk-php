@@ -25,6 +25,44 @@ use Psr\Http\Message\RequestInterface;
 
 final class RuntimePayloadUploadTest extends TestCase
 {
+    public function testDiscoveryRetryClassificationRequiresAnExactPreSubmissionBackendEnvelope(): void
+    {
+        $cases = [
+            'generic server error' => [500, null],
+            'authorization failure' => [401, ['reason' => 'unauthorized']],
+            'wrong operation' => [503, ['reason' => 'backend_unavailable', 'operation' => 'history',
+                'request_admitted' => false, 'retryable' => true]],
+        ];
+        foreach ($cases as $name => [$status, $response]) {
+            $transport = new class($status, $response) implements PayloadUploadTransport {
+                public int $requests = 0;
+                public function __construct(private int $status, private ?array $response) {}
+                public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
+                {
+                    ++$this->requests;
+                    if (!str_ends_with($uri, '/api/cluster/info')) {
+                        throw new \LogicException('Completion must not be sent after discovery failure.');
+                    }
+
+                    throw TransportException::fromResponse($this->status, $this->response, '');
+                }
+                public function uploadPayload(string $uri, array $headers, string $blob, int $timeoutSeconds): array
+                {
+                    throw new \LogicException('Upload must not be sent after discovery failure.');
+                }
+            };
+            try {
+                (new Client('https://runtime.test', transport: $transport))
+                    ->completeActivityTask('task', 'attempt', 'worker', 'small');
+                self::fail("{$name}: expected discovery failure.");
+            } catch (ServerException $exception) {
+                self::assertSame($status, $exception->status, $name);
+                self::assertFalse($exception->isActivityCompletionPayloadDiscoveryUnavailable('task', 'attempt', 'worker'), $name);
+                self::assertSame(1, $transport->requests, $name);
+            }
+        }
+    }
+
     public function testClientUploadsEncodedBytesWithNamespaceAndClientCredential(): void
     {
         [$client, $http] = $this->client();
