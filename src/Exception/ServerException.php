@@ -120,4 +120,29 @@ class ServerException extends DurableWorkflowException
             && is_int($response['retry_after_seconds'] ?? null)
             && $response['retry_after_seconds'] > 0;
     }
+
+    /** Discovery failed before any activity-completion request was submitted. */
+    public function isActivityCompletionPayloadDiscoveryUnavailable(string $taskId, string $attemptId, string $leaseOwner): bool
+    {
+        $details = $this->details;
+        $cause = $this->getPrevious();
+
+        return $this instanceof ExternalPayloadException
+            && $this->status === 503
+            && $this->reason === 'payload_discovery_unavailable'
+            && $details !== null && !array_is_list($details)
+            && ($details['reason'] ?? null) === 'payload_discovery_unavailable'
+            && ($details['operation'] ?? null) === 'complete_activity_task'
+            && ($details['request_admitted'] ?? null) === false
+            && ($details['retryable'] ?? null) === true
+            && ($details['task_id'] ?? null) === $taskId
+            && ($details['activity_attempt_id'] ?? null) === $attemptId
+            && ($details['lease_owner'] ?? null) === $leaseOwner
+            && is_int($details['retry_after_seconds'] ?? null)
+            && $details['retry_after_seconds'] > 0
+            && $cause instanceof TransportException
+            && $cause->status === 503
+            && ($cause->response['reason'] ?? null) === 'backend_unavailable'
+            && ($cause->response['operation'] ?? null) === 'cluster_info';
+    }
 }

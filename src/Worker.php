@@ -712,12 +712,20 @@ final class Worker
                         $activityTaskLease['activity_attempt_id'],
                         $activityTaskLease['lease_owner'],
                     );
+                $activityDiscoveryUnavailable = $operation === 'activity_complete'
+                    && $activityTaskLease !== null
+                    && $exception->isActivityCompletionPayloadDiscoveryUnavailable(
+                        $activityTaskLease['task_id'],
+                        $activityTaskLease['activity_attempt_id'],
+                        $activityTaskLease['lease_owner'],
+                    );
                 if ($uncertainActivityCompletion && $activityTaskLease !== null
                     && $this->isCommittedActivityCompletion($exception, $activityTaskLease)) {
                     return null;
                 }
                 $backendUnavailable = $workflowBackendUnavailable || $activityBackendUnavailable;
-                if ((!$exception->isStorageAdmissionFailure() && !$backendUnavailable) || $this->shutdownRequested) {
+                if ((!$exception->isStorageAdmissionFailure() && !$backendUnavailable && !$activityDiscoveryUnavailable)
+                    || $this->shutdownRequested) {
                     throw $exception;
                 }
                 $uncertainActivityCompletion = $uncertainActivityCompletion || $activityBackendUnavailable;

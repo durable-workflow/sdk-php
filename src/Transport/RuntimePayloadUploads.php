@@ -63,7 +63,44 @@ final class RuntimePayloadUploads
             return $body;
         }
 
-        $policy = $this->policy($headers, $worker);
+        try {
+            $policy = $this->policy($headers, $worker);
+        } catch (TransportException $exception) {
+            $discovery = $exception->response;
+            if ($worker
+                && preg_match('~\A/worker/activity-tasks/([^/]+)/complete\z~', $path, $matches) === 1
+                && $exception->status === 503
+                && is_array($discovery) && !array_is_list($discovery)
+                && ($discovery['reason'] ?? null) === 'backend_unavailable'
+                && ($discovery['operation'] ?? null) === 'cluster_info'
+                && ($discovery['retryable'] ?? null) === true
+                && is_string($body['activity_attempt_id'] ?? null)
+                && $body['activity_attempt_id'] !== ''
+                && is_string($body['lease_owner'] ?? null)
+                && $body['lease_owner'] !== '') {
+                // Discovery failed before any upload or task completion was
+                // sent. Preserve the completion bytes and its lease fence.
+                $retryAfter = $discovery['retry_after_seconds'] ?? null;
+                throw new ExternalPayloadException(
+                    'Runtime payload policy discovery is temporarily unavailable.',
+                    503,
+                    'payload_discovery_unavailable',
+                    [
+                        'reason' => 'payload_discovery_unavailable',
+                        'operation' => 'complete_activity_task',
+                        'request_admitted' => false,
+                        'retryable' => true,
+                        'task_id' => rawurldecode($matches[1]),
+                        'activity_attempt_id' => $body['activity_attempt_id'],
+                        'lease_owner' => $body['lease_owner'],
+                        'retry_after_seconds' => is_int($retryAfter) && $retryAfter > 0 ? $retryAfter : 1,
+                    ],
+                    $exception,
+                );
+            }
+
+            throw $exception;
+        }
         // Plan the entire request before uploading anything. Several individually
         // inline values can still exceed the ordinary JSON request limit.
         $selected = [];

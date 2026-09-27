@@ -8,6 +8,7 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Tests\Support\FakeTransport;
+use DurableWorkflow\Transport\PayloadUploadTransport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -15,6 +16,78 @@ use PHPUnit\Framework\TestCase;
 
 final class WorkerActivityCompletionBackendLossTest extends TestCase
 {
+    public function testPayloadDiscoveryBackendLossRetriesTheSavedActivityResult(): void
+    {
+        $now = 0.0;
+        $handlerCalls = 0;
+        $transport = new class implements PayloadUploadTransport {
+            public int $discoveryCalls = 0;
+            public array $completionBodies = [];
+
+            public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
+            {
+                if (str_ends_with($uri, '/api/cluster/info')) {
+                    if (++$this->discoveryCalls === 1) {
+                        throw TransportException::fromResponse(503, [
+                            'reason' => 'backend_unavailable',
+                            'operation' => 'cluster_info',
+                            'retryable' => true,
+                            'retry_after_seconds' => 1,
+                        ], '');
+                    }
+
+                    return ['limits' => ['max_payload_bytes' => 4096]];
+                }
+                if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')
+                    || str_ends_with($uri, '/api/worker/query-tasks/poll')) {
+                    return ['task' => null, 'poll_status' => 'empty'];
+                }
+                if (str_ends_with($uri, '/api/worker/activity-tasks/poll')) {
+                    return ['task' => [
+                        'task_id' => 'activity-1',
+                        'activity_attempt_id' => 'attempt-1',
+                        'lease_owner' => 'worker-1',
+                        'activity_type' => 'orders.charge',
+                        'payload_codec' => 'avro',
+                    ], 'poll_status' => 'leased'];
+                }
+                if (str_ends_with($uri, '/api/worker/activity-tasks/activity-1/complete')) {
+                    $this->completionBodies[] = $body;
+
+                    return ['recorded' => true, 'outcome' => 'completed'];
+                }
+
+                throw new \LogicException("Unexpected request: {$method} {$uri}");
+            }
+
+            public function uploadPayload(string $uri, array $headers, string $blob, int $timeoutSeconds): array
+            {
+                throw new \LogicException('Small activity result must remain inline.');
+            }
+        };
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'orders',
+            workerId: 'worker-1',
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $microseconds) use (&$now): void {
+                $now += $microseconds / 1_000_000;
+            },
+        );
+        $worker->registerActivity('orders.charge', static function (ActivityContext $context) use (&$handlerCalls): string {
+            ++$handlerCalls;
+
+            return 'charged';
+        });
+
+        self::assertTrue($worker->tick(0));
+        self::assertSame(1, $handlerCalls);
+        self::assertSame(2, $transport->discoveryCalls);
+        self::assertCount(1, $transport->completionBodies);
+        self::assertSame('attempt-1', $transport->completionBodies[0]['activity_attempt_id']);
+        self::assertEqualsWithDelta(1.0, $now, 0.000_01);
+    }
+
     #[DataProvider('completionOutcomes')]
     public function testBackendLossRetriesTheSameActivityResultWithoutRerunningHandler(bool $committedFirst): void
     {
