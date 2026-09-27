@@ -143,7 +143,6 @@ class ServerException extends DurableWorkflowException
             && $cause instanceof TransportException
             && $cause->status === 503
             && ($cause->response['reason'] ?? null) === 'backend_unavailable'
-            && ($cause->response['operation'] ?? null) === 'cluster_info'
-            && ($cause->response['request_admitted'] ?? null) === false;
+            && ($cause->response['operation'] ?? null) === 'cluster_info';
     }
 }

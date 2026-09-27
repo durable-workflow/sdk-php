@@ -31,7 +31,7 @@ final class RuntimePayloadUploadTest extends TestCase
             'generic server error' => [500, null],
             'authorization failure' => [401, ['reason' => 'unauthorized']],
             'wrong operation' => [503, ['reason' => 'backend_unavailable', 'operation' => 'history',
-                'request_admitted' => false, 'retryable' => true]],
+                'retryable' => true]],
         ];
         foreach ($cases as $name => [$status, $response]) {
             $transport = new class($status, $response) implements PayloadUploadTransport {

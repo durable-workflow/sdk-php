@@ -73,7 +73,6 @@ final class RuntimePayloadUploads
                 && is_array($discovery) && !array_is_list($discovery)
                 && ($discovery['reason'] ?? null) === 'backend_unavailable'
                 && ($discovery['operation'] ?? null) === 'cluster_info'
-                && ($discovery['request_admitted'] ?? null) === false
                 && ($discovery['retryable'] ?? null) === true
                 && is_string($body['activity_attempt_id'] ?? null)
                 && $body['activity_attempt_id'] !== ''

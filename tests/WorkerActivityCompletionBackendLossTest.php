@@ -31,7 +31,6 @@ final class WorkerActivityCompletionBackendLossTest extends TestCase
                         throw TransportException::fromResponse(503, [
                             'reason' => 'backend_unavailable',
                             'operation' => 'cluster_info',
-                            'request_admitted' => false,
                             'retryable' => true,
                             'retry_after_seconds' => 1,
                         ], '');
