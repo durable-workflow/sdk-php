@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.1.6] - 2026-09-29
+
+### Fixed
+
+- Request bounded workflow history pages in managed PHP worker polls. Long
+  valid histories no longer require an unbounded Server poll response. Direct
+  low-level Client polls keep their existing default request behavior.
+
 ## [2.1.5] - 2026-09-27
 
 ### Fixed
