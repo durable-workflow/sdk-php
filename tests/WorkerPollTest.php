@@ -31,6 +31,7 @@ final class WorkerPollTest extends TestCase
                 ?array $body,
             ) use (&$commands, $outcome): array {
                 if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
+                    self::assertSame(500, $body['history_page_size'] ?? null);
                     return [
                         'poll_status' => 'leased',
                         'task' => [

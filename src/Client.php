@@ -1155,14 +1155,29 @@ final class Client implements WorkflowClientInterface
      *
      * @return array<string, mixed>
      */
-    public function pollWorkflowTaskResponse(string $workerId, string $taskQueue, int $timeoutSeconds = 5, ?string $pollRequestId = null): array
+    public function pollWorkflowTaskResponse(
+        string $workerId,
+        string $taskQueue,
+        int $timeoutSeconds = 5,
+        ?string $pollRequestId = null,
+        ?int $historyPageSize = null,
+    ): array
     {
-        return $this->pollTaskResponse('/worker/workflow-tasks/poll', [
+        if ($historyPageSize !== null && ($historyPageSize < 1 || $historyPageSize > 1000)) {
+            throw new InvalidArgumentException('Workflow history page size must be between 1 and 1000.');
+        }
+
+        $body = [
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
             'poll_request_id' => $pollRequestId ?? $this->requestId('php-workflow-poll'),
             'timeout_seconds' => max(0, min(60, $timeoutSeconds)),
-        ]);
+        ];
+        if ($historyPageSize !== null) {
+            $body['history_page_size'] = $historyPageSize;
+        }
+
+        return $this->pollTaskResponse('/worker/workflow-tasks/poll', $body);
     }
 
     /** @return array<string, mixed>|null */

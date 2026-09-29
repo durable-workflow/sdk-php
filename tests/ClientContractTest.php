@@ -349,8 +349,29 @@ final class ClientContractTest extends TestCase
         $client = new Client('https://server.example', transport: $transport);
 
         self::assertSame($workflowResponse, $client->pollWorkflowTaskResponse('worker-1', 'queue', 0));
+        self::assertArrayNotHasKey('history_page_size', $transport->requests[0]['body']);
         self::assertSame($activityResponse, $client->pollActivityTaskResponse('worker-1', 'queue', 0));
         self::assertSame($queryResponse, $client->pollQueryTaskResponse('worker-1', 'queue', 0));
+    }
+
+    public function testWorkflowTaskPollCanRequestBoundedHistory(): void
+    {
+        $transport = new FakeTransport([['task' => null, 'poll_status' => 'empty']]);
+        $client = new Client('https://server.example', transport: $transport);
+
+        $client->pollWorkflowTaskResponse('worker-1', 'queue', 0, 'poll-1', 500);
+
+        self::assertSame(500, $transport->requests[0]['body']['history_page_size']);
+        self::assertSame('poll-1', $transport->requests[0]['body']['poll_request_id']);
+    }
+
+    public function testWorkflowTaskPollRejectsInvalidHistoryPageSize(): void
+    {
+        $transport = new FakeTransport([]);
+        $client = new Client('https://server.example', transport: $transport);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $client->pollWorkflowTaskResponse('worker-1', 'queue', 0, null, 1001);
     }
 
     public function testTaskOnlyPollMethodsDelegateTaskAndEmptyResponses(): void

@@ -36,6 +36,7 @@ use Throwable;
 final class Worker
 {
     private const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
+    private const WORKFLOW_HISTORY_PAGE_SIZE = 500;
     private const INITIAL_TRANSIENT_RETRY_DELAY_SECONDS = 0.1;
     private const MAX_HEARTBEAT_INTERVAL_SECONDS = 3600;
     private const MAX_LOCAL_ACTIVITY_EXCEPTION_TYPE_BYTES = 255;
@@ -529,6 +530,7 @@ final class Worker
                 $this->taskQueue,
                 $this->preparePoll($pollTimeoutSeconds),
                 $requestId,
+                self::WORKFLOW_HISTORY_PAGE_SIZE,
             ),
         );
         if ($workflowPoll === null) {
