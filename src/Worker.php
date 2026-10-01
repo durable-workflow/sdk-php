@@ -1507,7 +1507,7 @@ final class Worker
                     $bounds[] = $reply['deadlines'][$kind];
                 }
             }
-            if (isset($reply['worker_session']) && is_array($reply['worker_session'])) {
+            if (isset($reply['worker_session'])) {
                 if (($reply['worker_session']['status'] ?? null) !== 'active'
                     || ($reply['worker_session']['lease_owner'] ?? null) !== ($task['lease_owner'] ?? $this->workerId)) {
                     throw new WorkflowClaimAborted('Remote activity observation lost its required worker session.');
