@@ -42,9 +42,44 @@ observations retain the opaque history refresh route while canonical history
 supplies the workflow-facing object. Older cancellation histories without the
 rich snapshot continue delivering cancellation with `context === null`.
 
+## Child policies
+
+Child authoring accepts `CancellationPolicy` and `ParentClosePolicy` values from
+`DurableWorkflow\Worker`, or their portable strings, through both ordinary and
+deferred calls.
+
+```php
+$context->childWorkflow('python.child', [], [
+    'cancellation_policy' => CancellationPolicy::WaitCancellationCompleted,
+    'parent_close_policy' => ParentClosePolicy::RequestCancellation,
+]);
+```
+
+`TryCancel` requests child cleanup and delivers parent cancellation without
+waiting. `WaitCancellationCompleted` parks the parent until the child has a
+recorded terminal outcome, releasing the task claim so the worker can run other
+work. `Abandon` leaves the child independent and preserves the historical
+default. These operation policies govern cancellation at the awaiting call.
+
+Parent closure is a separate choice. `RequestCancellation` requests genuine
+cooperative cleanup with the original lineage and deadline. A normally closed
+parent starts one shared bounded budget. `RequestCancel` retains its legacy
+terminal behavior. `Terminate` and `Abandon` retain their existing meanings.
+
+The worker compares both policies with recorded child history during cold
+replay, including parallel and selection calls and cancellation delivery.
+Omitted historical fields mean the original `Abandon` defaults. Later start or
+terminal events that omit fields retain the scheduled snapshot. Changing a
+policy after it was recorded fails replay. Invalid or conflicting history also
+fails explicitly. Cooperative choices require the explicit source opt-in and
+compatible backend described above. A worker without that opt-in refuses the
+commands before completion with `child_cancellation_policy_not_supported`, its
+worker identity and the required protocol. Server also checks the immutable
+claim capability and installed backend before accepting these policies.
+
 ## Remaining qualification
 
-Portable child and activity operation policies, nested scopes and deterministic
+Portable activity operation policies, nested scopes and deterministic
 remaining-time helpers still need completion. Remaining time must use the
 replayed workflow clock. Do not subtract the host clock from the deadline in
 workflow code. The runtime continues enforcing the original deadline and fences

@@ -1048,6 +1048,7 @@ final class Worker
                 }
             }
             $this->assertWorkflowMemoUpdatesAvailable($commands);
+            $this->assertChildCancellationPoliciesAvailable($commands);
             $stickyClaim = $this->stickyCacheClaim($task);
             $this->retryStorageAdmission('workflow_complete', fn (): array => $this->client->completeWorkflowTask(
                 $taskId,
@@ -1365,6 +1366,24 @@ final class Worker
         throw new \RuntimeException(
             'workflow_memo_updates_unavailable: the connected runtime did not advertise workflow memo update support.',
         );
+    }
+
+    /** @param list<array<string, mixed>> $commands */
+    private function assertChildCancellationPoliciesAvailable(array $commands): void
+    {
+        if ($this->enableCooperativeCancellation) {
+            return;
+        }
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'start_child_workflow'
+                && (($command['parent_close_policy'] ?? null) === 'request_cancellation'
+                    || in_array($command['cancellation_policy'] ?? null, ['try_cancel', 'wait_cancellation_completed'], true))) {
+                throw new WorkflowClaimAborted(
+                    "child_cancellation_policy_not_supported: PHP worker {$this->workerId} must enable cooperative cancellation with worker protocol "
+                    .Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL.' and a compatible Server/Native backend.',
+                );
+            }
+        }
     }
 
     /** @param array<string, mixed> $response */

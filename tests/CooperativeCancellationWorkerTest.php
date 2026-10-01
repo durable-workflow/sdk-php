@@ -71,6 +71,74 @@ final class CooperativeCancellationWorkerTest extends TestCase
         return [['accepted'], ['lost acknowledgment'], ['malformed acknowledgment']];
     }
 
+    #[DataProvider('unsupportedChildPolicyProvider')]
+    public function testCooperativeChildPoliciesRequireTheWorkerOptIn(string $protocol, array $options): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->requestVisible = false;
+        $transport->history = [$transport->history[0]];
+        $worker = new Worker(new Client('https://server.example', transport: $transport, workerProtocolVersion: $protocol),
+            'queue', workerId: 'worker-1');
+        $worker->registerWorkflow('cancel', static fn (WorkflowContext $context) => $context->childWorkflow('child', [], $options));
+
+        self::assertTrue($worker->tick(0));
+        self::assertSame([], $transport->completions);
+        self::assertSame(WorkflowClaimAborted::class, $transport->failures[0]['failure']['type']);
+        self::assertStringContainsString('child_cancellation_policy_not_supported', $transport->failures[0]['failure']['message']);
+        self::assertStringContainsString('worker-1', $transport->failures[0]['failure']['message']);
+        self::assertStringContainsString('1.20', $transport->failures[0]['failure']['message']);
+    }
+
+    public static function unsupportedChildPolicyProvider(): iterable
+    {
+        foreach (['1.19', '1.20'] as $protocol) {
+            yield [$protocol, ['parent_close_policy' => \DurableWorkflow\Worker\ParentClosePolicy::RequestCancellation]];
+            yield [$protocol, ['cancellation_policy' => \DurableWorkflow\Worker\CancellationPolicy::TryCancel]];
+            yield [$protocol, ['cancellation_policy' => \DurableWorkflow\Worker\CancellationPolicy::WaitCancellationCompleted]];
+        }
+    }
+
+    public function testCapableWorkerTransmitsBothTypedChildPolicies(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->requestVisible = false;
+        $transport->history = [$transport->history[0]];
+        $worker = $this->worker($transport);
+        $worker->registerWorkflow('cancel', static fn (WorkflowContext $context) => $context->childWorkflow('python.child', [], [
+            'parent_close_policy' => \DurableWorkflow\Worker\ParentClosePolicy::RequestCancellation,
+            'cancellation_policy' => \DurableWorkflow\Worker\CancellationPolicy::WaitCancellationCompleted,
+        ]));
+
+        self::assertTrue($worker->tick(0));
+        self::assertSame([], $transport->failures);
+        self::assertSame('request_cancellation', $transport->completions[0]['commands'][0]['parent_close_policy']);
+        self::assertSame('wait_cancellation_completed', $transport->completions[0]['commands'][0]['cancellation_policy']);
+    }
+
+    #[DataProvider('legacyChildPolicyProvider')]
+    public function testLegacyChildPoliciesRemainAvailableWithoutCooperation(\DurableWorkflow\Worker\ParentClosePolicy $policy): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->requestVisible = false;
+        $transport->history = [$transport->history[0]];
+        $worker = new Worker(new Client('https://server.example', transport: $transport), 'queue', workerId: 'worker-1');
+        $worker->registerWorkflow('cancel', static fn (WorkflowContext $context) => $context->childWorkflow('child', [], [
+            'parent_close_policy' => $policy,
+            'cancellation_policy' => \DurableWorkflow\Worker\CancellationPolicy::Abandon,
+        ]));
+
+        self::assertTrue($worker->tick(0));
+        self::assertSame([], $transport->failures);
+        self::assertSame($policy->value, $transport->completions[0]['commands'][0]['parent_close_policy']);
+    }
+
+    public static function legacyChildPolicyProvider(): iterable
+    {
+        foreach ([\DurableWorkflow\Worker\ParentClosePolicy::Abandon, \DurableWorkflow\Worker\ParentClosePolicy::RequestCancel, \DurableWorkflow\Worker\ParentClosePolicy::Terminate] as $policy) {
+            yield [$policy];
+        }
+    }
+
     public function testPendingChildReleasesTheWorkerAndCleanupReplaysOnANewClaim(): void
     {
         $transport = new CooperativeWorkerTransport();

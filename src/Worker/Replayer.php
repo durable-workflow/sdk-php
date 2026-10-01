@@ -761,12 +761,14 @@ final class Replayer
      *     condition_definition_fingerprint: ?string,
      *     timeout_seconds: ?int,
      *     parallel_path: list<array<string, mixed>>,
-     *     resolution_order: int
+     *     resolution_order: int,
+     *     child_policies?: array<string, string>
      * }>
      */
     private function recordedSteps(array $history, bool $preserveConditionReopens = false): array
     {
         $steps = [];
+        $childPolicies = [];
         $conditionStepsByWaitId = [];
         $versionMarkerSequences = [];
         $versionMarkerChangeIds = [];
@@ -781,6 +783,31 @@ final class Replayer
                 default => $this->sequence($payload) ?? $fallbackSequence++,
             };
             $key = (string) $sequence;
+
+            if (in_array($type, ['ChildWorkflowScheduled', 'ChildRunStarted', 'ChildRunCompleted', 'ChildRunFailed', 'ChildRunCancelled', 'ChildRunTerminated'], true)) {
+                try {
+                    $incomingPolicies = WorkflowCommand::canonicalChildWorkflowPolicies($payload);
+                } catch (\InvalidArgumentException $error) {
+                    throw new NonDeterministicWorkflow($error->getMessage(), $sequence, reason: 'invalid_child_workflow_policy_history');
+                }
+                $previousPolicies = $childPolicies[$key] ?? null;
+                foreach ($incomingPolicies as $field => $value) {
+                    if ($previousPolicies !== null && $previousPolicies[$field] !== $value) {
+                        throw new NonDeterministicWorkflow(
+                            "Recorded child workflow {$field} changed between history events.",
+                            $sequence,
+                            $previousPolicies[$field],
+                            $value,
+                            'child_workflow_policy_history_conflict',
+                        );
+                    }
+                }
+                $childPolicies[$key] = array_merge(
+                    ['parent_close_policy' => ParentClosePolicy::Abandon->value, 'cancellation_policy' => CancellationPolicy::Abandon->value],
+                    $previousPolicies ?? [],
+                    $incomingPolicies,
+                );
+            }
 
             if ($type !== 'VersionMarkerRecorded'
                 && isset($versionMarkerSequences[$key])
@@ -1073,6 +1100,11 @@ final class Replayer
                         resolutionOrder: $resolutionOrder,
                     );
                 }
+            }
+        }
+        foreach ($childPolicies as $key => $policies) {
+            if (($steps[$key]['shape'] ?? null) === 'child_workflow') {
+                $steps[$key]['child_policies'] = $policies;
             }
         }
         ksort($steps, SORT_NUMERIC);
@@ -1778,6 +1810,27 @@ final class Replayer
                 $step['detail'],
                 $actualDetail,
             );
+        }
+        if ($command->historyShape === 'child_workflow') {
+            $actualPolicies = array_merge(
+                ['parent_close_policy' => ParentClosePolicy::Abandon->value, 'cancellation_policy' => CancellationPolicy::Abandon->value],
+                WorkflowCommand::canonicalChildWorkflowPolicies($command->attributes),
+            );
+            $recordedPolicies = $step['child_policies'] ?? [
+                'parent_close_policy' => ParentClosePolicy::Abandon->value,
+                'cancellation_policy' => CancellationPolicy::Abandon->value,
+            ];
+            foreach ($recordedPolicies as $field => $value) {
+                if ($actualPolicies[$field] !== $value) {
+                    throw new NonDeterministicWorkflow(
+                        "Child workflow {$field} changed during replay.",
+                        $step['sequence'],
+                        $value,
+                        $actualPolicies[$field],
+                        'child_workflow_policy_changed',
+                    );
+                }
+            }
         }
     }
 

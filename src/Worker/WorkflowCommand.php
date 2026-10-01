@@ -104,10 +104,39 @@ final class WorkflowCommand
      */
     public static function childWorkflow(string $workflowType, array $arguments, array $options = []): self
     {
-        return new self('start_child_workflow', 'child_workflow', array_merge($options, [
+        $policies = self::canonicalChildWorkflowPolicies($options);
+        unset($options['parent_close_policy'], $options['cancellation_policy']);
+
+        return new self('start_child_workflow', 'child_workflow', array_merge($options, $policies, [
             'workflow_type' => $workflowType,
             'arguments_value' => $arguments,
         ]));
+    }
+
+    /**
+     * Accept typed policies and their portable string values without changing omitted defaults.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, string>
+     */
+    public static function canonicalChildWorkflowPolicies(array $options): array
+    {
+        $policies = [];
+        foreach (['parent_close_policy' => ParentClosePolicy::class, 'cancellation_policy' => CancellationPolicy::class] as $field => $enum) {
+            $value = $options[$field] ?? null;
+            if ($value === null) {
+                continue;
+            }
+            if ($value instanceof $enum) {
+                $value = $value->value;
+            }
+            if (!is_string($value) || $enum::tryFrom($value) === null) {
+                throw new InvalidArgumentException("Child workflow {$field} must be a supported policy.");
+            }
+            $policies[$field] = $value;
+        }
+
+        return $policies;
     }
 
     /** @param callable(): mixed $operation */
