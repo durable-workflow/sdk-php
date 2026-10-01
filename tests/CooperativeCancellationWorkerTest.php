@@ -52,6 +52,22 @@ final class CooperativeCancellationWorkerTest extends TestCase
         return [['accepted'], ['lost acknowledgment'], ['malformed acknowledgment']];
     }
 
+    public function testCanonicalRefreshPreservesAcceptedStartBeforeWorkflowStarted(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        array_unshift($transport->history, ['event_type' => 'StartAccepted', 'payload' => []]);
+        $worker = $this->worker($transport);
+        $worker->registerWorkflow('cancel', static function (WorkflowContext $context): string {
+            try { $context->sleep(10); }
+            catch (\DurableWorkflow\Exception\WorkflowCancelled $error) { return (string) $error->requestId; }
+            return 'done';
+        });
+        $worker->tick(0);
+        self::assertSame([], $transport->failures);
+        self::assertCount(1, $transport->deliveries);
+        self::assertSame(['complete_workflow'], array_column($transport->completions[0]['commands'], 'type'));
+    }
+
     public function testObservedRequestRefreshesBothCanonicalPages(): void
     {
         $transport = new CooperativeWorkerTransport();

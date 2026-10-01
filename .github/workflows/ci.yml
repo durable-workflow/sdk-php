@@ -456,13 +456,15 @@ jobs:
           printf 'DURABLE_WORKFLOW_RUNTIME_URL=%s\n' "$endpoint" >> "$GITHUB_ENV"
       - name: Qualify cooperative worker behavior against the Server
         working-directory: sdk-php
-        run: vendor/bin/phpunit tests/Integration/CooperativeCancellationTest.php --log-junit cooperative-results.xml
+        run: |
+          vendor/bin/phpunit tests/Integration/CooperativeCancellationTest.php --log-junit cooperative-results.xml
+          vendor/bin/phpunit tests/Integration/PortableMemoRestartTest.php --log-junit memo-restart-results.xml
       - name: Retain connected scenario results
         if: ${{ always() && github.server_url == 'https://github.com' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: php-connected-cooperative-${{ github.sha }}
-          path: sdk-php/cooperative-results.xml
+          path: sdk-php/*-results.xml
           if-no-files-found: warn
           retention-days: 7
       - name: Emit bounded Server diagnostics

@@ -70,7 +70,8 @@ autoloader for post-release validation.
 
 The CI workflow accepts `cooperative_qualification=true` with an exact public
 `server_commit` SHA. It builds that source in an isolated MySQL/Redis stack,
-runs `CooperativeCancellationTest`, retains the JUnit result for seven days and
+runs `CooperativeCancellationTest` plus the persisted memo restart case, retains
+the JUnit results for seven days and
 removes the stack and images. The ordinary worker default remains protocol 1.19.
 
 The connected cases cover waiting timers, cold worker replacement, duplicate

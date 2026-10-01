@@ -6,6 +6,8 @@
     "bindings": ["php"],
     "workflow": {"type": "golden.timer", "input": [1]},
     "history": [
+        {"event_type": "StartAccepted", "payload": {}},
+        {"event_type": "WorkflowStarted", "payload": {}},
         {
             "event_type": "CooperativeCancellationRequested",
             "recorded_at": "2026-10-01T00:00:00Z",

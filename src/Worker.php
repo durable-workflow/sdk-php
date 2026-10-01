@@ -1194,8 +1194,7 @@ final class Worker
             }
             $token = $next ?? '';
         } while ($token !== '');
-        if (($history[0]['event_type'] ?? $history[0]['type'] ?? null) !== 'WorkflowStarted'
-            || !$hasCanonicalRequest) {
+        if (!StickyWorkflowCache::startsWithWorkflowStart($history) || !$hasCanonicalRequest) {
             throw new WorkflowClaimAborted('Cancellation refresh must contain the original start and canonical request.');
         }
         $workflowId = (string) ($task['workflow_id'] ?? '');
@@ -1628,11 +1627,9 @@ final class Worker
                 : '';
         } while ($next !== '');
 
-        $first = $history[0] ?? null;
-        if (! is_array($first)
-            || ($first['event_type'] ?? $first['type'] ?? null) !== 'WorkflowStarted') {
+        if (!StickyWorkflowCache::startsWithWorkflowStart($history)) {
             throw new \RuntimeException(
-                'Authoritative workflow history must begin with WorkflowStarted after a sticky cache miss.',
+                'Authoritative workflow history must contain its start prefix after a sticky cache miss.',
             );
         }
 

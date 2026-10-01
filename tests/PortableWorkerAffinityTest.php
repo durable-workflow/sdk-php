@@ -1137,7 +1137,7 @@ final class PortableWorkerAffinityTest extends TestCase
         ));
         self::assertCount(1, $failureRequests);
         self::assertStringContainsString(
-            'Authoritative workflow history must begin with WorkflowStarted',
+            'Authoritative workflow history must contain its start prefix',
             (string) ($failureRequests[0]['body']['failure']['message'] ?? ''),
         );
         self::assertSame([], array_values(array_filter(
@@ -1150,6 +1150,19 @@ final class PortableWorkerAffinityTest extends TestCase
         self::assertInstanceOf(StickyWorkflowCache::class, $cache);
         $entriesProperty = new \ReflectionProperty($cache, 'entries');
         self::assertSame([], $entriesProperty->getValue($cache));
+    }
+
+    public function testAcceptedStartPrefixSurvivesStickyColdReplayWithoutRepeatingActivity(): void
+    {
+        foreach (['eviction', 'expiry', 'build_mismatch'] as $kind) {
+            $result = $this->runStickyColdReplayScenario($kind, acceptedStart: true);
+            self::assertSame(1, $result['history_fetches']);
+            self::assertSame('complete_workflow', $result['fallback_commands'][0]['type'] ?? null);
+            self::assertNotContains('schedule_activity', array_column($result['fallback_commands'], 'type'));
+            if ($result['initial_commands'] !== null) {
+                self::assertSame($result['initial_commands'], $result['fallback_commands']);
+            }
+        }
     }
 
     public function testWorkerColdReplayAfterStickyEvictionExpiryAndBuildMismatchMatchesFullReplay(): void
@@ -1769,7 +1782,7 @@ final class PortableWorkerAffinityTest extends TestCase
      *     metrics: array{hit: int, miss: int, eviction: int, forced_cold_replay: int}
      * }
      */
-    private function runStickyColdReplayScenario(string $scenario): array
+    private function runStickyColdReplayScenario(string $scenario, bool $acceptedStart = false): array
     {
         $codec = new AvroPayloadCodec();
         $fullHistory = [
@@ -1787,7 +1800,10 @@ final class PortableWorkerAffinityTest extends TestCase
                 ],
             ],
         ];
-        $suffix = array_slice($fullHistory, 1);
+        if ($acceptedStart) {
+            array_unshift($fullHistory, ['event_type' => 'StartAccepted', 'payload' => []]);
+        }
+        $suffix = array_slice($fullHistory, $acceptedStart ? 2 : 1);
         $task = static fn (
             string $taskId,
             string $workflowId,

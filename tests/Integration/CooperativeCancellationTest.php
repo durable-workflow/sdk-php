@@ -65,7 +65,7 @@ final class CooperativeCancellationTest extends TestCase
                 [$pid, $messages] = $this->spawnWorker($queue);
                 $this->awaitMessage($messages, 'registered');
             }
-            $events = $this->assertCancelledCleanup($client, $handle, $accepted['cancellation_request']['request_id']);
+            $events = $this->assertCancelledCleanup($client, $handle, $accepted['cancellation_request']['request_id'], $messages);
             self::assertSame(1, count(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'TimerCancelled')));
             self::assertNotContains('TimerFired', array_column($events, 'event_type'));
         } finally {
@@ -93,7 +93,7 @@ final class CooperativeCancellationTest extends TestCase
             if ($loseReply) {
                 $this->awaitMessage($messages, 'delivery-reply-discarded');
             }
-            $events = $this->assertCancelledCleanup($client, $handle, $accepted['cancellation_request']['request_id']);
+            $events = $this->assertCancelledCleanup($client, $handle, $accepted['cancellation_request']['request_id'], $messages);
             self::assertNotContains('TimerScheduled', array_column($events, 'event_type'));
         } finally {
             fclose($messages);
@@ -112,7 +112,7 @@ final class CooperativeCancellationTest extends TestCase
             $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['local']);
             $this->awaitMessage($messages, 'local-entered');
             $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 60);
-            $events = $this->assertCancelledCleanup($client, $handle, $accepted['cancellation_request']['request_id']);
+            $events = $this->assertCancelledCleanup($client, $handle, $accepted['cancellation_request']['request_id'], $messages);
             $delivery = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'))[0];
             self::assertSame('local_activity', $delivery['payload']['call_kind']);
             self::assertSame(1, $delivery['payload']['sequence']);
@@ -177,6 +177,7 @@ final class CooperativeCancellationTest extends TestCase
                                 $error = $error->getPrevious();
                             } while ($error !== null && count($causes) < 4);
                             fwrite(STDERR, 'Connected worker failure: '.implode(' | ', $causes)."\n");
+                            $notify('worker-failure: '.implode(' | ', $causes));
                         }
                     });
                 $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind): string {
@@ -274,11 +275,27 @@ final class CooperativeCancellationTest extends TestCase
         throw new RuntimeException('Workflow did not record '.$kind.'.');
     }
 
-    /** @return list<array<string, mixed>> */
-    private function assertCancelledCleanup(Client $client, WorkflowHandle $handle, string $requestId): array
+    /** @param resource $messages
+     *  @return list<array<string, mixed>>
+     */
+    private function assertCancelledCleanup(Client $client, WorkflowHandle $handle, string $requestId, $messages): array
     {
+        stream_set_blocking($messages, false);
+        $deadline = microtime(true) + 30;
+        do {
+            $message = fgets($messages);
+            if (is_string($message) && trim($message) !== '') {
+                self::fail(trim($message));
+            }
+            $status = strtolower((string) $handle->describe()->status);
+            if (in_array($status, ['completed', 'failed', 'cancelled', 'terminated', 'timed_out'], true)) {
+                break;
+            }
+            usleep(100_000);
+        } while (microtime(true) < $deadline);
+        self::assertSame('cancelled', $status, 'Workflow did not finish its bounded cooperative cleanup.');
         try {
-            $handle->result(30, 0.1);
+            $handle->result(1, 0.1);
             self::fail('A cooperatively cancelled run must retain its cancelled result.');
         } catch (WorkflowCancelled) {
         }

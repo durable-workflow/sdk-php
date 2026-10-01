@@ -48,6 +48,9 @@
           "glob": "src/Worker/ReplayResult.php"
         },
         {
+          "glob": "src/Worker/StickyWorkflowCache.php"
+        },
+        {
           "glob": "src/Worker.php",
           "content_patterns": [
             "function\\s+register\\s*\\("
