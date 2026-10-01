@@ -8,6 +8,7 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Exception\WorkflowCancelled;
+use DurableWorkflow\Exception\WorkflowTerminated;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker;
@@ -402,6 +403,53 @@ final class CooperativeCancellationTest extends TestCase
         }
     }
 
+    #[DataProvider('cleanupCutoffProvider')]
+    public function testDeadlineOrTerminationStopsBlockedCleanup(bool $terminate): void
+    {
+        $queue = $this->queue('cleanup-cutoff');
+        $client = $this->client();
+        $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['timer']);
+        $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: $terminate ? 60 : 5);
+        [$pid, $messages] = $this->spawnWorker($queue, blockCleanup: true);
+        try {
+            $this->awaitMessage($messages, 'registered');
+            $this->awaitMessage($messages, 'cleanup-entered');
+            $processes = json_decode((string) file_get_contents($this->directory.'/cleanup-processes'), true, flags: JSON_THROW_ON_ERROR);
+            if ($terminate) { $handle->terminateSelectedRun('qualification termination during cleanup'); }
+            try {
+                $handle->result(15, 0.1);
+                self::fail('Blocked cleanup produced a successful workflow result.');
+            } catch (WorkflowCancelled $error) {
+                self::assertFalse($terminate, $error->getMessage());
+            } catch (WorkflowTerminated $error) {
+                self::assertTrue($terminate, $error->getMessage());
+            }
+            foreach ($processes as $activityPid) { $this->assertProcessStops($activityPid); }
+            self::assertFileDoesNotExist($this->directory.'/cleanup-returned');
+            $history = $this->history($client, $handle);
+            $kinds = array_column($history, 'event_type');
+            foreach (['CooperativeCancellationRequested', 'CooperativeCancellationDelivered'] as $kind) {
+                self::assertSame(1, count(array_filter($kinds, static fn (string $value): bool => $value === $kind)));
+                $event = array_values(array_filter($history, static fn (array $event): bool => $event['event_type'] === $kind))[0];
+                self::assertSame($accepted['cancellation_request']['request_id'], $event['payload']['workflow_command_id']);
+            }
+            self::assertSame($terminate ? 0 : 1, count(array_filter($kinds, static fn (string $value): bool => $value === 'WorkflowCancelled')));
+            self::assertSame($terminate ? 1 : 0, count(array_filter($kinds, static fn (string $value): bool => $value === 'WorkflowTerminated')));
+            foreach (['ActivityCompleted', 'ActivityFailed', 'ActivityTimedOut', 'WorkflowCompleted', 'WorkflowFailed'] as $kind) {
+                self::assertNotContains($kind, $kinds);
+            }
+            fwrite(STDOUT, 'Blocked cleanup cutoff: '.json_encode(['terminate' => $terminate, 'history' => $history], JSON_THROW_ON_ERROR)."\n");
+        } finally {
+            fclose($messages);
+            $this->stopWorker($pid);
+        }
+    }
+
+    public static function cleanupCutoffProvider(): array
+    {
+        return [[false], [true]];
+    }
+
     private function client(?Transport $transport = null, string $namespace = 'default'): Client
     {
         return new Client($this->runtimeUrl, namespace: $namespace, token: $this->token,
@@ -414,7 +462,7 @@ final class CooperativeCancellationTest extends TestCase
     }
 
     /** @return array{int, resource} */
-    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false, int $remoteBlockSeconds = 60): array
+    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false, int $remoteBlockSeconds = 60, bool $blockCleanup = false): array
     {
         $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
         if ($sockets === false) {
@@ -441,13 +489,19 @@ final class CooperativeCancellationTest extends TestCase
                 $failureReported = false;
                 $worker = new Worker($this->client($transport, $namespace), $queue,
                     workerId: $queue.'-'.getmypid(), enableCooperativeCancellation: true,
-                    diagnosticListener: function (string $event, array $context) use ($notify, &$failureReported): void {
+                    diagnosticListener: function (string $event, array $context) use ($notify, &$failureReported, $blockCleanup): void {
                         if ($event === 'worker.registered') {
                             $notify('registered');
                         }
                         if ($event === 'worker.activity_process_started'
                             && in_array($context['activity_type'] ?? null, ['tests.php-cooperative-work', 'tests.php-cooperative-remote'], true)) {
                             file_put_contents($this->directory.'/processes', json_encode([
+                                $context['relay_pid'], $context['callback_pid'],
+                            ], JSON_THROW_ON_ERROR));
+                        }
+                        if ($blockCleanup && $event === 'worker.activity_process_started'
+                            && ($context['activity_type'] ?? null) === 'tests.php-cooperative-cleanup') {
+                            file_put_contents($this->directory.'/cleanup-processes', json_encode([
                                 $context['relay_pid'], $context['callback_pid'],
                             ], JSON_THROW_ON_ERROR));
                         }
@@ -511,7 +565,12 @@ final class CooperativeCancellationTest extends TestCase
                     // Encoding this value would fail. Cancellation must discard it first.
                     return new \stdClass();
                 });
-                $worker->registerActivity('tests.php-cooperative-cleanup', static function (ActivityContext $context, string $requestId): string {
+                $worker->registerActivity('tests.php-cooperative-cleanup', function (ActivityContext $context, string $requestId) use ($notify, $blockCleanup): string {
+                    if ($blockCleanup) {
+                        $notify('cleanup-entered');
+                        sleep(60);
+                        file_put_contents($this->directory.'/cleanup-returned', 'late cleanup returned');
+                    }
                     $context->heartbeat(['request_id' => $requestId]);
                     return $requestId;
                 });
