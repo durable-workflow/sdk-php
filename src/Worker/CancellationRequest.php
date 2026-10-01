@@ -14,7 +14,7 @@ final class CancellationRequest
         public readonly string $requestId,
         public readonly string $requestedAt,
         public readonly string $cleanupDeadlineAt,
-        public readonly string $historyRefreshPageToken,
+        public readonly ?string $historyRefreshPageToken,
     ) {
     }
 
@@ -25,6 +25,25 @@ final class CancellationRequest
         $requestedAt = self::text($value, 'requested_at');
         $cleanupDeadlineAt = self::text($value, 'cleanup_deadline_at');
         $historyRefreshPageToken = self::text($value, 'history_refresh_page_token');
+
+        return self::validated($requestId, $requestedAt, $cleanupDeadlineAt, $historyRefreshPageToken);
+    }
+
+    /** @param array<string, mixed> $payload */
+    public static function fromHistoryPayload(array $payload, string $recordedAt): self
+    {
+        return self::validated(
+            self::text($payload, 'workflow_command_id'), $recordedAt,
+            self::text($payload, 'cleanup_deadline_at'), null,
+        );
+    }
+
+    private static function validated(
+        string $requestId,
+        string $requestedAt,
+        string $cleanupDeadlineAt,
+        ?string $historyRefreshPageToken,
+    ): self {
         $requested = self::timestamp($requestedAt);
         $deadline = self::timestamp($cleanupDeadlineAt);
         if ($deadline <= $requested) {
