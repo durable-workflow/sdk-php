@@ -69,7 +69,13 @@
           "glob": "src/Worker.php",
           "content_patterns": [
             "function\\s+completeHistory\\s*\\(",
-            "function\\s+executeWorkflowTask\\s*\\("
+            "function\\s+executeWorkflowTask\\s*\\(",
+            "function\\s+replayWorkflowClaim\\s*\\(",
+            "function\\s+refreshCancellationHistory\\s*\\(",
+            "function\\s+observeClaimCancellation\\s*\\(",
+            "function\\s+assertLocalWorkflowClaimActive\\s*\\(",
+            "function\\s+renewWorkflowTaskLease\\s*\\(",
+            "function\\s+executeLocalActivity\\s*\\("
           ]
         },
         {

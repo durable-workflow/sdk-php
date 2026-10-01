@@ -2504,7 +2504,6 @@ print(json.dumps({
                 "                        $handler,",
                 "                        $history,",
                 "                        $input,",
-                "                        $this->taskQueue,",
                 "                        $task,",
             )
         )
@@ -2741,7 +2740,6 @@ print(json.dumps({
                 "                        $handler,",
                 "                        $history,",
                 "                        $input,",
-                "                        $this->taskQueue,",
                 "                        $task,",
             )
         )
