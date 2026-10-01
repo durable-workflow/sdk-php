@@ -439,9 +439,9 @@ final class CooperativeCancellationTest extends TestCase
             ], JSON_THROW_ON_ERROR)."\n");
             try {
                 // A callback stops at its deadline. Durable closure may then
-                // require the real ten-second workflow lease, five-second
-                // repair throttle and one bounded poll/recovery grace period.
-                $handle->result(20, 0.1);
+                // require the real ten-second workflow lease, ten-second
+                // unscoped repair cadence and one bounded poll/recovery grace period.
+                $handle->result(25, 0.1);
                 self::fail('Blocked cleanup produced a successful workflow result.');
             } catch (WorkflowCancelled $error) {
                 self::assertFalse($terminate, $error->getMessage());
