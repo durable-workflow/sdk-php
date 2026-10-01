@@ -5,6 +5,15 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      cooperative_qualification:
+        description: Run connected cooperative cancellation source qualification
+        type: boolean
+        default: false
+      server_commit:
+        description: Exact public Server candidate SHA for cooperative qualification
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -402,6 +411,69 @@ jobs:
           RELEASE_TAG: 9.8.7
         run: composer check-release-identity
 
+  cooperative-integration:
+    name: Connected cooperative cancellation
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.cooperative_qualification }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      COMPOSE_PROJECT_NAME: php-cooperative-${{ github.run_id }}-${{ github.run_attempt }}
+      DURABLE_WORKFLOW_COOPERATIVE_QUALIFICATION: '1'
+      DURABLE_WORKFLOW_AUTH_TOKEN: test-token
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          path: sdk-php
+          persist-credentials: false
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: '8.3'
+          extensions: pcntl, posix
+          tools: composer:v2
+          coverage: none
+      - name: Check out the exact public Server source
+        env:
+          SERVER_COMMIT: ${{ inputs.server_commit }}
+        run: |
+          [[ "$SERVER_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          export GIT_TERMINAL_PROMPT=0
+          git -c credential.helper= clone --depth=1 --no-tags https://github.com/durable-workflow/server.git server
+          git -c credential.helper= -C server fetch --depth=1 origin "$SERVER_COMMIT"
+          git -C server checkout --detach FETCH_HEAD
+          test "$(git -C server rev-parse HEAD)" = "$SERVER_COMMIT"
+      - run: composer install --no-interaction --prefer-dist --no-progress
+        working-directory: sdk-php
+      - name: Start the isolated MySQL Server stack
+        working-directory: sdk-php
+        run: docker compose -f docker-compose.test.yml up -d --build --wait --wait-timeout 300
+      - name: Select and probe the runtime endpoint
+        working-directory: sdk-php
+        run: |
+          port="$(docker compose -f docker-compose.test.yml port server 8080 | sed 's/.*://')"
+          [[ "$port" =~ ^[0-9]+$ ]]
+          endpoint="http://127.0.0.1:$port"
+          curl --fail --silent --show-error "$endpoint/api/health" > /dev/null
+          printf 'DURABLE_WORKFLOW_RUNTIME_URL=%s\n' "$endpoint" >> "$GITHUB_ENV"
+      - name: Qualify cooperative worker behavior against the Server
+        working-directory: sdk-php
+        run: vendor/bin/phpunit tests/Integration/CooperativeCancellationTest.php --log-junit cooperative-results.xml
+      - name: Retain connected scenario results
+        if: ${{ always() && github.server_url == 'https://github.com' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: php-connected-cooperative-${{ github.sha }}
+          path: sdk-php/cooperative-results.xml
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Emit bounded Server diagnostics
+        if: failure()
+        working-directory: sdk-php
+        run: docker compose -f docker-compose.test.yml logs --no-color --tail 100 bootstrap server worker
+      - name: Remove the task stack and images
+        if: always()
+        working-directory: sdk-php
+        run: docker compose -f docker-compose.test.yml down -v --rmi local
+
   target-branch-qualification:
     name: Target branch qualification
     if: ${{ always() && github.server_url == 'https://github.com' }}
@@ -414,6 +486,7 @@ jobs:
       - analyse
       - docs
       - package-smoke
+      - cooperative-integration
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -439,3 +512,8 @@ jobs:
           test "$ANALYSIS_RESULT" = success
           test "$DOCS_RESULT" = success
           test "$PACKAGE_RESULT" = success
+      - name: Require requested connected qualification
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.cooperative_qualification }}
+        env:
+          CONNECTED_RESULT: ${{ needs.cooperative-integration.result }}
+        run: test "$CONNECTED_RESULT" = success

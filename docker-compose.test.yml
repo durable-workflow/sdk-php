@@ -1,0 +1,72 @@
+# Isolated connected SDK qualification. The Server checkout is an exact public SHA.
+services:
+  bootstrap:
+    build:
+      context: ../server
+    command: ["server-bootstrap"]
+    environment: &server-env
+      APP_ENV: testing
+      APP_KEY: "base64:dGVzdGluZy1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMg=="
+      APP_DEBUG: "false"
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_DATABASE: durable_workflow
+      DB_USERNAME: workflow
+      DB_PASSWORD: workflow
+      REDIS_HOST: redis
+      QUEUE_CONNECTION: redis
+      CACHE_STORE: redis
+      WORKFLOW_SERVER_AUTH_DRIVER: token
+      WORKFLOW_SERVER_AUTH_TOKEN: test-token
+      DW_WORKFLOW_TASK_TIMEOUT: 10
+      DW_WORKER_PROTOCOL_VERSION: "1.20"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  server:
+    build:
+      context: ../server
+    ports: ["8080"]
+    environment: *server-env
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build:
+      context: ../server
+    command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
+    environment: *server-env
+    depends_on:
+      server:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: durable_workflow
+      MYSQL_USER: workflow
+      MYSQL_PASSWORD: workflow
+      MYSQL_ROOT_PASSWORD: root
+    tmpfs: [/var/lib/mysql]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 5

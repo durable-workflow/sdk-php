@@ -66,3 +66,15 @@ Avro, Guzzle and MySQL versions, outcome and any failed attempts on the owning
 PR. Remove the disposable runtime, its volumes, and the proof directory when
 finished. `RUNTIME_SDK_AUTOLOAD` can select a clean installed consumer's Composer
 autoloader for post-release validation.
+## Cooperative cancellation source qualification
+
+The CI workflow accepts `cooperative_qualification=true` with an exact public
+`server_commit` SHA. It builds that source in an isolated MySQL/Redis stack,
+runs `CooperativeCancellationTest`, retains the JUnit result for seven days and
+removes the stack and images. The ordinary worker default remains protocol 1.19.
+
+The connected cases cover waiting timers, cold worker replacement, duplicate
+request identity/deadline, a discarded successful delivery reply, shielded local
+cleanup, local user heartbeats and the result check after a bounded callback.
+The last case waits for the callback to return. It does not qualify interruption
+of a blocking callback without user heartbeats.
