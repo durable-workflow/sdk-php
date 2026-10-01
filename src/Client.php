@@ -42,6 +42,7 @@ use DurableWorkflow\Transport\RuntimePayloads;
 use DurableWorkflow\Transport\RuntimePayloadUploads;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\CapabilityManifest;
+use DurableWorkflow\Worker\CancellationRequest;
 use DurableWorkflow\Worker\WorkerSessionOptions;
 use InvalidArgumentException;
 
@@ -550,6 +551,60 @@ final class Client implements WorkflowClientInterface
             $this->workflowOperationPath($workflowId, $runId, 'cancel'),
             $this->withoutNulls(['reason' => $reason]),
         );
+    }
+
+    /**
+     * Request bounded workflow-authored cleanup on a capable runtime.
+     * Repeated requests retain the Server's original identity and deadline.
+     *
+     * @return array<string, mixed>
+     */
+    public function requestWorkflowCancellation(
+        string $workflowId,
+        ?string $reason = null,
+        ?int $cleanupTimeoutSeconds = null,
+        ?string $runId = null,
+    ): array {
+        if (trim($workflowId) === '' || ($runId !== null && trim($runId) === '')) {
+            throw new InvalidArgumentException('Workflow ID and any selected run ID must be non-empty.');
+        }
+        if ($cleanupTimeoutSeconds !== null && ($cleanupTimeoutSeconds < 1 || $cleanupTimeoutSeconds > 3600)) {
+            throw new InvalidArgumentException('Cleanup timeout must be between 1 and 3600 seconds.');
+        }
+
+        $protocol = $this->clusterInfo()->raw['worker_protocol'] ?? null;
+        if (!is_array($protocol)
+            || !is_string($protocol['version'] ?? null)
+            || !Version::supportsCooperativeCancellation($protocol['version'])
+            || !is_array($protocol['server_capabilities'] ?? null)
+            || ($protocol['server_capabilities']['cooperative_cancellation'] ?? null) !== true) {
+            throw new \LogicException(
+                'Runtime must explicitly discover cooperative cancellation with compatible worker protocol 1.20.',
+            );
+        }
+
+        $result = $this->control('POST', $this->workflowOperationPath($workflowId, $runId, 'request-cancellation'),
+            $this->withoutNulls(['reason' => $reason, 'cleanup_timeout_seconds' => $cleanupTimeoutSeconds]),
+        );
+        try {
+            if (($result['accepted'] ?? null) !== true
+                || !is_bool($result['duplicate'] ?? null)
+                || ($result['workflow_id'] ?? null) !== $workflowId
+                || !is_string($result['run_id'] ?? null) || trim($result['run_id']) === ''
+                || ($runId !== null && $result['run_id'] !== $runId)
+                || !is_array($result['cancellation_request'] ?? null)
+                || array_is_list($result['cancellation_request'])) {
+                throw new InvalidArgumentException('Cancellation request response is not bound to the selected workflow/run.');
+            }
+            CancellationRequest::fromObservation($result['cancellation_request']);
+        } catch (InvalidArgumentException $error) {
+            throw new ServerException(
+                'Invalid cooperative cancellation acknowledgment.', 200,
+                'invalid_cooperative_cancellation_response', previous: $error,
+            );
+        }
+
+        return $result;
     }
 
     /** @return array<string, mixed> */

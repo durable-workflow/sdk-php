@@ -115,6 +115,20 @@ final class WorkflowHandle implements WorkflowHandleInterface
         $this->client->cancelWorkflow($this->workflowId, $reason, $this->requireSelectedRun());
     }
 
+    /** @return array<string, mixed> */
+    public function requestCancellation(?string $reason = null, ?int $cleanupTimeoutSeconds = null): array
+    {
+        return $this->client->requestWorkflowCancellation($this->workflowId, $reason, $cleanupTimeoutSeconds);
+    }
+
+    /** @return array<string, mixed> */
+    public function requestSelectedRunCancellation(?string $reason = null, ?int $cleanupTimeoutSeconds = null): array
+    {
+        return $this->client->requestWorkflowCancellation(
+            $this->workflowId, $reason, $cleanupTimeoutSeconds, $this->requireSelectedRun(),
+        );
+    }
+
     public function terminate(?string $reason = null): void
     {
         $this->client->terminateWorkflow($this->workflowId, $reason);
