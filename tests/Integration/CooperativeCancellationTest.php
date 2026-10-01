@@ -183,15 +183,43 @@ final class CooperativeCancellationTest extends TestCase
             }
             $started = microtime(true);
             $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 60);
+            $workflowLeaseWait = $remainingWorkflowLease;
+            $nextLeaseObservation = 0.0;
+            $lastLeaseState = null;
+            $observeLease = $coldWorkflow ? function () use (
+                $client, $handle, $deadWorkerId, $started, &$workflowLeaseWait,
+                &$nextLeaseObservation, &$lastLeaseState,
+            ): void {
+                if (microtime(true) < $nextLeaseObservation) { return; }
+                $nextLeaseObservation = microtime(true) + 1;
+                $diagnostics = $client->workflowDiagnostics($handle->workflowId, $handle->runId);
+                $observedAt = (float) (new \DateTimeImmutable($diagnostics['generated_at']))->format('U.u');
+                $state = $diagnostics['pending_workflow_tasks'];
+                foreach ($state as $pending) {
+                    if (($pending['status'] ?? null) === 'leased' && ($pending['lease_owner'] ?? null) === $deadWorkerId) {
+                        $expiresAt = (float) (new \DateTimeImmutable($pending['lease_expires_at']))->format('U.u');
+                        $remaining = max(0, $expiresAt - $observedAt);
+                        self::assertLessThanOrEqual(10, $remaining, 'Unexpected qualification workflow lease.');
+                        $workflowLeaseWait = max($workflowLeaseWait, microtime(true) - $started + $remaining);
+                    }
+                }
+                if ($state !== $lastLeaseState) {
+                    fwrite(STDOUT, 'Cold workflow tasks: '.json_encode($state, JSON_THROW_ON_ERROR)."\n");
+                    $lastLeaseState = $state;
+                }
+            } : null;
             if ($coldWorkflow) {
                 [$workflowPid, $workflowMessages] = $this->spawnWorker($queue);
                 $this->awaitMessage($workflowMessages, 'registered');
             }
-            $events = $this->assertCancelledCleanup($client, $handle, $accepted['cancellation_request']['request_id'], $workflowMessages);
+            $events = $this->assertCancelledCleanup($client, $handle, $accepted['cancellation_request']['request_id'], $workflowMessages, $observeLease);
             $elapsed = microtime(true) - $started;
-            fwrite(STDOUT, sprintf("Connected remote recovery: cold=%s lease_remaining=%.3fs elapsed=%.3fs\n",
-                $coldWorkflow ? 'yes' : 'no', $remainingWorkflowLease, $elapsed));
-            self::assertLessThan(10 + $remainingWorkflowLease, $elapsed,
+            fwrite(STDOUT, sprintf("Connected remote recovery: cold=%s observed_lease_wait=%.3fs elapsed=%.3fs\n",
+                $coldWorkflow ? 'yes' : 'no', $workflowLeaseWait, $elapsed));
+            $phases = array_map(static fn (array $event): array => array_intersect_key($event,
+                ['event_type' => true, 'recorded_at' => true, 'timestamp' => true]), $events);
+            fwrite(STDOUT, 'Remote cancellation phases: '.json_encode($phases, JSON_THROW_ON_ERROR)."\n");
+            self::assertLessThan(10 + $workflowLeaseWait, $elapsed,
                 'Recover within the observed workflow lease plus ten seconds, before the 60-second callback returns.');
             foreach ($pids as $pid) { $this->assertProcessStops($pid); }
             self::assertFileDoesNotExist($this->directory.'/late');
@@ -464,11 +492,12 @@ final class CooperativeCancellationTest extends TestCase
     /** @param resource $messages
      *  @return list<array<string, mixed>>
      */
-    private function assertCancelledCleanup(Client $client, WorkflowHandle $handle, string $requestId, $messages): array
+    private function assertCancelledCleanup(Client $client, WorkflowHandle $handle, string $requestId, $messages, ?\Closure $observe = null): array
     {
         stream_set_blocking($messages, false);
         $deadline = microtime(true) + 30;
         do {
+            if ($observe !== null) { $observe(); }
             $message = fgets($messages);
             if (is_string($message) && trim($message) !== '') {
                 self::fail(trim($message));
