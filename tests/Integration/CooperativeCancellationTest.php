@@ -366,6 +366,9 @@ final class CooperativeCancellationTest extends TestCase
             self::assertGreaterThanOrEqual($expiresAt, microtime(true), 'Reclaim must follow actual lease expiry.');
             fwrite(STDOUT, 'SIGKILL replacement activity: '.json_encode($replacement, JSON_THROW_ON_ERROR)."\n");
 
+            $closed = $client->activityTaskStatus($original['task_id'], $original['activity_attempt_id'], $original['lease_owner']);
+            self::assertSame('expired', $closed['attempt_status']);
+            self::assertFalse($closed['can_continue']);
             $before = $this->history($client, $handle);
             foreach (['complete', 'fail'] as $operation) {
                 try {
@@ -384,8 +387,9 @@ final class CooperativeCancellationTest extends TestCase
             self::assertFalse($heartbeat['heartbeat_recorded']);
             self::assertFalse($heartbeat['cancel_requested']);
             self::assertSame('attempt_closed', $heartbeat['reason']);
-            self::assertSame($leased['lease_expires_at'], $heartbeat['lease_expires_at']);
-            self::assertNull($heartbeat['last_heartbeat_at']);
+            self::assertSame($closed['lease_expires_at'], $heartbeat['lease_expires_at']);
+            self::assertSame($closed['last_heartbeat_at'], $heartbeat['last_heartbeat_at']);
+            self::assertSame($closed, $client->activityTaskStatus($original['task_id'], $original['activity_attempt_id'], $original['lease_owner']));
             self::assertSame($before, $this->history($client, $handle), 'Dead attempt changed canonical history.');
 
             $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 60);
@@ -414,6 +418,11 @@ final class CooperativeCancellationTest extends TestCase
         try {
             $this->awaitMessage($messages, 'registered');
             $this->awaitMessage($messages, 'cleanup-entered');
+            $observed = microtime(true) + 2;
+            while (!is_file($this->directory.'/cleanup-processes') && microtime(true) < $observed) {
+                usleep(10_000);
+            }
+            self::assertFileExists($this->directory.'/cleanup-processes');
             $processes = json_decode((string) file_get_contents($this->directory.'/cleanup-processes'), true, flags: JSON_THROW_ON_ERROR);
             if ($terminate) { $handle->terminateSelectedRun('qualification termination during cleanup'); }
             try {
