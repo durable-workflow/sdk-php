@@ -56,6 +56,46 @@ final class CooperativeCancellationDeliveryTest extends TestCase
         }
     }
 
+    public function testExplicitChildPendingReplyDoesNotClaimCanonicalDelivery(): void
+    {
+        $pending = ['delivered' => false, 'task_id' => 'task/1', 'request_id' => null,
+            'sequence' => null, 'call_kind' => null, 'sequence_span' => null,
+            'operation_sequence' => null, 'operation_sequence_span' => null,
+            'reason' => 'cancellation_waiting_for_child'];
+        $transport = new FakeTransport([$pending]);
+        $client = new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.20');
+        self::assertSame($pending, $client->deliverWorkflowCancellation('task/1', 'worker-a', 3,
+            self::boundary(['call_kind' => 'child'])));
+    }
+
+    public function testPendingChildReplyCannotBeReturnedForAnUnrelatedTimerCall(): void
+    {
+        $transport = new FakeTransport([['delivered' => false, 'task_id' => 'task/1',
+            'reason' => 'cancellation_waiting_for_child']]);
+        $client = new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.20');
+        $this->expectException(ServerException::class);
+        $client->deliverWorkflowCancellation('task/1', 'worker-a', 3, self::boundary());
+    }
+
+    #[DataProvider('invalidPendingProvider')]
+    public function testPendingReplyCannotCarryAChangedTaskOrPretendDeliveryOccurred(array $change): void
+    {
+        $transport = new FakeTransport([[...['delivered' => false, 'task_id' => 'task/1',
+            'reason' => 'cancellation_waiting_for_child'], ...$change]]);
+        $client = new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.20');
+        $this->expectException(ServerException::class);
+        $client->deliverWorkflowCancellation('task/1', 'worker-a', 3, self::boundary(['call_kind' => 'child']));
+    }
+
+    public static function invalidPendingProvider(): array
+    {
+        return array_map(static fn (array $change): array => [$change], [
+            ['task_id' => 'other'], ['delivered' => 'false'], ['reason' => 'unknown_pending'],
+            ['request_id' => 'other'], ['sequence' => 4], ['call_kind' => 'child'],
+            ['sequence_span' => 1], ['operation_sequence' => 1], ['operation_sequence_span' => 1],
+        ]);
+    }
+
     #[DataProvider('invalidLeaseProvider')]
     public function testInvalidLeaseIsRejectedBeforeMutation(string $task, string $owner, int $attempt): void
     {

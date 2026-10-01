@@ -71,6 +71,90 @@ final class CooperativeCancellationWorkerTest extends TestCase
         return [['accepted'], ['lost acknowledgment'], ['malformed acknowledgment']];
     }
 
+    public function testPendingChildKeepsTheClaimAndDoesNotEnterCleanupBeforeCanonicalDelivery(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->pendingDeliveries = 4;
+        $now = 1790812800.0;
+        $seen = null;
+        $worker = new Worker(new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.20'),
+            'queue', workerId: 'worker-1', enableCooperativeCancellation: true,
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $microseconds) use (&$now, &$seen, $transport): void {
+                self::assertNull($seen);
+                self::assertSame([], $transport->completions);
+                self::assertSame([], $transport->failures);
+                $now += $microseconds / 1_000_000;
+            });
+        $worker->registerWorkflow('cancel', static function (WorkflowContext $context) use (&$seen): string {
+            try { $context->childWorkflow('child'); }
+            catch (\DurableWorkflow\Exception\WorkflowCancelled $error) { $seen = $error->requestId; }
+            return 'cleanup complete';
+        });
+        $worker->tick(0);
+
+        self::assertSame('request-1', $seen);
+        self::assertCount(5, $transport->deliveries);
+        self::assertGreaterThanOrEqual(4, $transport->heartbeatCount);
+        self::assertSame([], $transport->failures);
+        self::assertCount(1, $transport->completions);
+        self::assertSame(['opaque-start', 'opaque-start'], array_column($transport->historyRequests, 'next_history_page_token'));
+        foreach ($transport->deliveries as $body) {
+            self::assertSame('request-1', $body['request_id']);
+            self::assertSame(3, $body['workflow_task_attempt']);
+            self::assertSame('child', $body['call_kind']);
+        }
+        self::assertSame('2026-10-01T00:01:00Z', $transport->observation['cleanup_deadline_at']);
+    }
+
+    public function testPendingChildStopsAtOriginalDeadlineWithoutPublishingCleanupOrFailure(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->pendingDeliveries = 100;
+        $now = 1790812800.0;
+        $seen = false;
+        $worker = new Worker(new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.20'),
+            'queue', workerId: 'worker-1', enableCooperativeCancellation: true,
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $microseconds) use (&$now): void { $now = 1790812861.0; });
+        $worker->registerWorkflow('cancel', static function (WorkflowContext $context) use (&$seen): void {
+            try { $context->childWorkflow('child'); }
+            catch (\DurableWorkflow\Exception\WorkflowCancelled) { $seen = true; }
+        });
+        $worker->tick(0);
+        self::assertFalse($seen);
+        self::assertCount(1, $transport->deliveries);
+        self::assertSame([], $transport->completions);
+        self::assertSame([], $transport->failures);
+        self::assertSame('2026-10-01T00:01:00Z', $transport->observation['cleanup_deadline_at']);
+    }
+
+    #[DataProvider('cleanupTerminalFenceProvider')]
+    public function testPendingChildHonorsTerminalClaimFenceWithoutSuppressingMismatchedDiagnostics(bool $matchingTask): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->pendingDeliveries = 100;
+        $transport->onHeartbeat = static function () use ($transport, $matchingTask): void {
+            if ($transport->deliveries !== []) {
+                throw new \DurableWorkflow\Exception\ServerException('Workflow run is already closed.', 409, 'run_closed', [
+                    'task_id' => $matchingTask ? 'task-1' : 'different-task',
+                    'can_continue' => false, 'task_status' => 'cancelled',
+                ]);
+            }
+        };
+        $worker = $this->worker($transport);
+        $seen = false;
+        $worker->registerWorkflow('cancel', static function (WorkflowContext $context) use (&$seen): void {
+            try { $context->childWorkflow('child'); }
+            catch (\DurableWorkflow\Exception\WorkflowCancelled) { $seen = true; }
+        });
+        $worker->tick(0);
+        self::assertFalse($seen);
+        self::assertCount(1, $transport->deliveries);
+        self::assertSame([], $transport->completions);
+        self::assertCount($matchingTask ? 0 : 1, $transport->failures);
+    }
+
     public function testCanonicalRefreshPreservesAcceptedStartBeforeWorkflowStarted(): void
     {
         $transport = new CooperativeWorkerTransport();
@@ -666,6 +750,7 @@ final class CooperativeWorkerTransport implements \DurableWorkflow\Transport\Bou
     public bool $requestVisible = true;
     public bool $paginate = false;
     public string $deliveryReply = 'accepted';
+    public int $pendingDeliveries = 0;
     public ?string $refreshFault = null;
     public ?\Closure $onHeartbeat = null;
 
@@ -739,6 +824,10 @@ final class CooperativeWorkerTransport implements \DurableWorkflow\Transport\Bou
         }
         if (str_ends_with($uri, '/deliver-cancellation')) {
             $this->deliveries[] = $body;
+            if ($this->pendingDeliveries > 0) {
+                --$this->pendingDeliveries;
+                return ['delivered' => false, 'task_id' => 'task-1', 'reason' => 'cancellation_waiting_for_child'];
+            }
             if (!in_array($this->deliveryReply, ['not committed', 'lost uncommitted acknowledgment'], true)) {
                 $this->history[] = ['event_type' => 'CooperativeCancellationDelivered', 'payload' => [
                     'workflow_run_id' => 'run-1', 'workflow_command_id' => $body['request_id'], 'sequence' => $body['sequence'],

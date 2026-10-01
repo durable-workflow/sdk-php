@@ -1330,6 +1330,18 @@ final class Client implements WorkflowClientInterface
         }
         $response = $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/deliver-cancellation', $body);
         try {
+            if (($response['delivered'] ?? null) === false
+                && in_array($delivery->callKind, ['child', 'parallel', 'selection_handle'], true)
+                && ($response['reason'] ?? null) === 'cancellation_waiting_for_child'
+                && ($response['task_id'] ?? null) === $taskId
+                && ($response['request_id'] ?? null) === null
+                && ($response['sequence'] ?? null) === null
+                && ($response['call_kind'] ?? null) === null
+                && ($response['sequence_span'] ?? null) === null
+                && ($response['operation_sequence'] ?? null) === null
+                && ($response['operation_sequence_span'] ?? null) === null) {
+                return $response;
+            }
             if (($response['delivered'] ?? null) !== true || ($response['task_id'] ?? null) !== $taskId) {
                 throw new InvalidArgumentException('Delivery acknowledgment does not match the workflow task.');
             }
