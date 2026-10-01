@@ -62,6 +62,14 @@
     },
     "config": {
         "allow-plugins": {},
+        "audit": {
+            "ignore": {
+                "PKSA-w9tt-7782-78jx": {
+                    "apply": "block",
+                    "reason": "phpDocumentor requires Flysystem 1 for development-only API docs generated from repository source and template paths. No runtime dependency uses it. Keep reporting this advisory in audits until phpDocumentor supports patched Flysystem."
+                }
+            }
+        },
         "sort-packages": true
     },
     "extra": {
