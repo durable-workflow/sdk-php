@@ -1333,6 +1333,7 @@ final class Client implements WorkflowClientInterface
             if (($response['delivered'] ?? null) === false
                 && in_array($delivery->callKind, ['child', 'parallel', 'selection_handle'], true)
                 && ($response['reason'] ?? null) === 'cancellation_waiting_for_child'
+                && ($response['claim_released'] ?? null) === true
                 && ($response['task_id'] ?? null) === $taskId
                 && ($response['request_id'] ?? null) === null
                 && ($response['sequence'] ?? null) === null

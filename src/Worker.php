@@ -30,6 +30,7 @@ use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\ReplayResult;
 use DurableWorkflow\Worker\WorkflowClaimAborted;
+use DurableWorkflow\Worker\WorkflowClaimDeferred;
 use DurableWorkflow\Worker\WorkflowClaimRevoked;
 use DurableWorkflow\Worker\WorkflowContext;
 use DurableWorkflow\Worker\StickyWorkflowCache;
@@ -1062,6 +1063,14 @@ final class Worker
                 'attempt' => $attempt,
             ]);
         } catch (Throwable $exception) {
+            if ($exception instanceof WorkflowClaimDeferred) {
+                $this->diagnostic('worker.claim_deferred', [
+                    'task_id' => $taskId, 'task_kind' => 'workflow',
+                    'reason' => 'cancellation_waiting_for_child',
+                ], 'info');
+
+                return;
+            }
             if ($exception instanceof WorkflowClaimRevoked) {
                 $this->diagnostic('worker.claim_aborted', [
                     'task_id' => $taskId, 'task_kind' => 'workflow',
@@ -1281,8 +1290,8 @@ final class Worker
             $this->claimCancellationObservation();
             $deliveryError = null;
             try {
-                $this->deliverCancellationWhenChildrenReady($task, $intent);
-            } catch (WorkflowClaimRevoked $error) {
+                $this->deliverCancellationOrDeferClaim($task, $intent);
+            } catch (WorkflowClaimRevoked|WorkflowClaimDeferred $error) {
                 throw $error;
             } catch (Throwable $error) {
                 $deliveryError = $error;
@@ -1299,23 +1308,28 @@ final class Worker
     }
 
     /** @param array<string, mixed> $task */
-    private function deliverCancellationWhenChildrenReady(array $task, CancellationDelivery $intent): void
+    private function deliverCancellationOrDeferClaim(array $task, CancellationDelivery $intent): void
     {
         $taskId = (string) $task['task_id'];
         $owner = (string) ($task['lease_owner'] ?? $this->workerId);
         $attempt = (int) ($task['workflow_task_attempt'] ?? 1);
-        while (!$this->shutdownRequested) {
-            $this->assertCancellationDeadline();
-            $response = $this->client->deliverWorkflowCancellation($taskId, $owner, $attempt, $intent);
-            if (($response['delivered'] ?? null) === true) {
-                return;
-            }
-            // Client validation permits only the explicit pending child acknowledgement.
-            $this->assertCooperativeWorkflowClaimActive($task);
-            $this->waitForTransientRetry(0.5);
+        if ($this->shutdownRequested) {
+            throw new WorkflowClaimRevoked('worker_shutdown', 'Worker stopped before cancellation delivery.');
         }
-
-        throw new WorkflowClaimRevoked('worker_shutdown', 'Worker stopped while awaiting child cancellation.');
+        $this->assertCancellationDeadline();
+        try {
+            $response = $this->client->deliverWorkflowCancellation($taskId, $owner, $attempt, $intent);
+        } catch (Throwable $error) {
+            if ($this->isTerminalTaskConflict('workflow', $taskId, $error)) {
+                throw new WorkflowClaimRevoked('terminal_task_fence', 'Workflow claim has closed.', previous: $error);
+            }
+            throw $error;
+        }
+        $this->assertCancellationDeadline();
+        if (($response['delivered'] ?? null) === false) {
+            // Client validation requires an explicit acknowledgement of claim release.
+            throw new WorkflowClaimDeferred('Server parked the parent until child cancellation completes.');
+        }
     }
 
     /** @param array<string, mixed> $poll */
@@ -2146,7 +2160,7 @@ final class Worker
     }
 
     /** @param array<string, mixed> $task */
-    private function assertCooperativeWorkflowClaimActive(array $task, bool $renew = true): void
+    private function assertLocalWorkflowClaimActive(array $task, bool $renew = true): void
     {
         if ($this->shutdownRequested) {
             throw new WorkflowClaimRevoked('worker_shutdown', 'Worker shutdown abandoned its local workflow claim.');
@@ -2168,12 +2182,6 @@ final class Worker
             }
         }
         $this->assertCancellationDeadline();
-    }
-
-    /** @param array<string, mixed> $task */
-    private function assertLocalWorkflowClaimActive(array $task, bool $renew = true): void
-    {
-        $this->assertCooperativeWorkflowClaimActive($task, $renew);
         if ($this->claimCancellation !== null
             && $this->claimDeliveredCancellationId !== $this->claimCancellation->requestId) {
             throw new CooperativeCancellationObserved('Cooperative request observed on the actual task heartbeat.');
