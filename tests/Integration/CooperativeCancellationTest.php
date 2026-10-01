@@ -159,6 +159,7 @@ final class CooperativeCancellationTest extends TestCase
             $this->awaitMessage($workflowMessages, 'registered');
             $this->awaitMessage($ownerMessages, 'registered');
             $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['remote']);
+            self::assertNotNull($handle->selectedRunId);
             $this->awaitMessage($ownerMessages, 'remote-entered');
             $this->awaitMessage($ownerMessages, 'owner-heartbeat');
             $pids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
@@ -179,7 +180,7 @@ final class CooperativeCancellationTest extends TestCase
                 $this->stopWorker($workflowPid, true);
                 $workflowPid = 0;
                 fclose($workflowMessages);
-                $diagnostics = $client->workflowDiagnostics($handle->workflowId, $handle->runId);
+                $diagnostics = $client->workflowDiagnostics($handle->workflowId, $handle->selectedRunId);
                 $observedAt = (float) (new \DateTimeImmutable($diagnostics['generated_at']))->format('U.u');
                 foreach ($diagnostics['pending_workflow_tasks'] as $pending) {
                     if (($pending['status'] ?? null) === 'leased' && ($pending['lease_owner'] ?? null) === $deadWorkerId) {
@@ -201,7 +202,7 @@ final class CooperativeCancellationTest extends TestCase
             ): void {
                 if (microtime(true) < $nextLeaseObservation) { return; }
                 $nextLeaseObservation = microtime(true) + 1;
-                $diagnostics = $client->workflowDiagnostics($handle->workflowId, $handle->runId);
+                $diagnostics = $client->workflowDiagnostics($handle->workflowId, $handle->selectedRunId);
                 $observedAt = (float) (new \DateTimeImmutable($diagnostics['generated_at']))->format('U.u');
                 $state = $diagnostics['pending_workflow_tasks'];
                 foreach ($state as $pending) {

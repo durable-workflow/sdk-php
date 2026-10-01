@@ -457,7 +457,7 @@ jobs:
       - name: Qualify cooperative worker behavior against the Server
         working-directory: sdk-php
         run: |
-          vendor/bin/phpunit tests/Integration/CooperativeCancellationTest.php --display-warnings --log-junit cooperative-results.xml
+          vendor/bin/phpunit tests/Integration/CooperativeCancellationTest.php --display-warnings --fail-on-warning --log-junit cooperative-results.xml
           vendor/bin/phpunit tests/Integration/PortableMemoRestartTest.php --log-junit memo-restart-results.xml
       - name: Retain connected scenario results
         if: ${{ always() && github.server_url == 'https://github.com' }}
