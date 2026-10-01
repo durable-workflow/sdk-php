@@ -77,6 +77,27 @@ commands before completion with `child_cancellation_policy_not_supported`, its
 worker identity and the required protocol. Server also checks the immutable
 claim capability and installed backend before accepting these policies.
 
+## Connected child-policy qualification
+
+The connected integration suite includes one workflow worker serving a parent
+and its child on the same queue. With `WaitCancellationCompleted`, the parent
+releases its task claim, the child receives a genuine cooperative request and
+finishes shielded cleanup, and the parent resumes on a successor claim at the
+same authored boundary. The second case kills the only workflow worker after
+the released reply and starts a fresh replacement. Both cases assert one root
+identity, distinct local request IDs, original metadata and deadline, duplicate
+request identity, completed cleanup and terminal cancellation before the
+original 30-second deadline. This replacement point is before child cleanup.
+The published mixed-language gate still requires SIGKILL during cleanup.
+
+Run CI's connected source qualification with `cooperative_qualification=true`,
+an exact `server_commit` and an exact `native_commit`. The optional Native input
+enables `DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION=1` and a readonly runtime
+source overlay. It does not change the image's published Composer authority or
+qualify a published Native artifact. Without the input, the existing connected
+lane uses the Server's pinned backend and skips only these candidate child cases.
+Actions retains source provenance, scenario histories and JUnit results.
+
 ## Remaining qualification
 
 Portable activity operation policies, nested scopes and deterministic

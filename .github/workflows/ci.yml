@@ -14,6 +14,10 @@ on:
         description: Exact public Server candidate SHA for cooperative qualification
         type: string
         default: ''
+      native_commit:
+        description: Optional exact Native candidate SHA for source-bound child policy qualification
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -420,6 +424,7 @@ jobs:
       COMPOSE_PROJECT_NAME: php-cooperative-${{ github.run_id }}-${{ github.run_attempt }}
       DURABLE_WORKFLOW_COOPERATIVE_QUALIFICATION: '1'
       DURABLE_WORKFLOW_AUTH_TOKEN: test-token
+      COMPOSE_FILE: docker-compose.test.yml
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
@@ -441,15 +446,36 @@ jobs:
           git -c credential.helper= -C server fetch --depth=1 origin "$SERVER_COMMIT"
           git -C server checkout --detach FETCH_HEAD
           test "$(git -C server rev-parse HEAD)" = "$SERVER_COMMIT"
+      - name: Bind the optional exact Native candidate source
+        if: ${{ inputs.native_commit != '' }}
+        env:
+          NATIVE_COMMIT: ${{ inputs.native_commit }}
+        run: |
+          [[ "$NATIVE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          export GIT_TERMINAL_PROMPT=0
+          git -c credential.helper= clone --depth=1 --no-tags https://github.com/durable-workflow/workflow.git workflow-package
+          git -c credential.helper= -C workflow-package fetch --depth=1 origin "$NATIVE_COMMIT"
+          git -C workflow-package checkout --detach FETCH_HEAD
+          test "$(git -C workflow-package rev-parse HEAD)" = "$NATIVE_COMMIT"
+          printf 'COMPOSE_FILE=docker-compose.test.yml:docker-compose.child-policy.yml\n' >> "$GITHUB_ENV"
+          printf 'DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION=1\n' >> "$GITHUB_ENV"
+      - name: Record candidate source provenance
+        env:
+          SERVER_COMMIT: ${{ inputs.server_commit }}
+          NATIVE_COMMIT: ${{ inputs.native_commit }}
+        run: |
+          jq --null-input --arg sdk "$GITHUB_SHA" --arg server "$SERVER_COMMIT" --arg native "$NATIVE_COMMIT" \
+            '{qualification:"source",sdk_commit:$sdk,server_commit:$server,native_source_overlay:($native | if length > 0 then . else null end)}' \
+            > sdk-php/cooperative-source-provenance.json
       - run: composer install --no-interaction --prefer-dist --no-progress
         working-directory: sdk-php
       - name: Start the isolated MySQL Server stack
         working-directory: sdk-php
-        run: docker compose -f docker-compose.test.yml up -d --build --wait --wait-timeout 300
+        run: docker compose up -d --build --wait --wait-timeout 300
       - name: Select and probe the runtime endpoint
         working-directory: sdk-php
         run: |
-          port="$(docker compose -f docker-compose.test.yml port server 8080 | sed 's/.*://')"
+          port="$(docker compose port server 8080 | sed 's/.*://')"
           [[ "$port" =~ ^[0-9]+$ ]]
           endpoint="http://127.0.0.1:$port"
           curl --fail --silent --show-error "$endpoint/api/health" > /dev/null
@@ -457,24 +483,28 @@ jobs:
       - name: Qualify cooperative worker behavior against the Server
         working-directory: sdk-php
         run: |
-          vendor/bin/phpunit tests/Integration/CooperativeCancellationTest.php --display-warnings --fail-on-warning --log-junit cooperative-results.xml
+          set -o pipefail
+          vendor/bin/phpunit tests/Integration/CooperativeCancellationTest.php --display-warnings --fail-on-warning --log-junit cooperative-results.xml | tee cooperative-scenarios.log
           vendor/bin/phpunit tests/Integration/PortableMemoRestartTest.php --log-junit memo-restart-results.xml
       - name: Retain connected scenario results
         if: ${{ always() && github.server_url == 'https://github.com' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: php-connected-cooperative-${{ github.sha }}
-          path: sdk-php/*-results.xml
+          path: |
+            sdk-php/*-results.xml
+            sdk-php/cooperative-scenarios.log
+            sdk-php/cooperative-source-provenance.json
           if-no-files-found: warn
           retention-days: 7
       - name: Emit bounded Server diagnostics
         if: failure()
         working-directory: sdk-php
-        run: docker compose -f docker-compose.test.yml logs --no-color --tail 100 bootstrap server worker repair
+        run: docker compose logs --no-color --tail 100 bootstrap server worker repair
       - name: Remove the task stack and images
         if: always()
         working-directory: sdk-php
-        run: docker compose -f docker-compose.test.yml down -v --rmi local
+        run: docker compose down -v --rmi local
 
   target-branch-qualification:
     name: Target branch qualification

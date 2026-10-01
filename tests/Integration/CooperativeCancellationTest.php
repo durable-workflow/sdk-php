@@ -13,6 +13,8 @@ use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\CancellationPolicy;
+use DurableWorkflow\Worker\ParentClosePolicy;
 use DurableWorkflow\Worker\WorkflowContext;
 use DurableWorkflow\WorkflowHandle;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -142,6 +144,111 @@ final class CooperativeCancellationTest extends TestCase
     public static function booleanProvider(): array
     {
         return [[false], [true]];
+    }
+
+    #[DataProvider('booleanProvider')]
+    public function testOneWorkflowWorkerFinishesChildCleanupBeforeParentDelivery(bool $coldReplacement): void
+    {
+        if (getenv('DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION') !== '1') {
+            self::markTestSkipped('Child policy qualification requires the candidate Native backend.');
+        }
+        $queue = $this->queue('child-wait');
+        $client = $this->client();
+        [$pid, $messages] = $this->spawnWorker($queue, observeChildWait: true);
+        try {
+            $this->awaitMessage($messages, 'registered');
+            $parent = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['child-wait']);
+            $this->awaitEvent($client, $parent, 'ChildRunStarted');
+            $scheduled = array_values(array_filter($this->history($client, $parent),
+                static fn (array $event): bool => $event['event_type'] === 'ChildWorkflowScheduled'))[0];
+            $child = new WorkflowHandle($client, $scheduled['payload']['child_workflow_instance_id'],
+                $scheduled['payload']['child_workflow_run_id']);
+            $this->awaitEvent($client, $child, 'TimerScheduled');
+
+            $accepted = $parent->requestSelectedRunCancellation('connected child cleanup', 30);
+            $request = $accepted['cancellation_request'];
+            $this->awaitMessage($messages, 'child-wait-released');
+            $parentWaiting = $this->history($client, $parent);
+            self::assertNotContains('CooperativeCancellationDelivered', array_column($parentWaiting, 'event_type'));
+            $propagation = array_values(array_filter($parentWaiting,
+                static fn (array $event): bool => $event['event_type'] === 'ChildCancellationRequested'))[0];
+            self::assertSame('accepted', $propagation['payload']['request_outcome']);
+            self::assertSame($request['request_id'], $propagation['payload']['root_request_id']);
+            self::assertNotSame($request['request_id'], $propagation['payload']['child_request_id']);
+            $diagnostics = $client->workflowDiagnostics($parent->workflowId, (string) $parent->selectedRunId);
+            self::assertSame([], $diagnostics['pending_workflow_tasks'], 'The parent must surrender its waiting claim.');
+            $duplicate = $parent->requestSelectedRunCancellation('a later request cannot extend the budget', 300);
+            self::assertTrue($duplicate['duplicate']);
+            self::assertSame($request, $duplicate['cancellation_request']);
+
+            if ($coldReplacement) {
+                $this->stopWorker($pid, true);
+                $pid = 0;
+                fclose($messages);
+            }
+            file_put_contents($this->directory.'/continue-child-wait', 'resume');
+            if ($coldReplacement) {
+                [$pid, $messages] = $this->spawnWorker($queue, observeChildWait: true);
+                $this->awaitMessage($messages, 'registered');
+            }
+            $parentHistory = $this->assertCancelledCleanup($client, $parent, $request['request_id'], $messages);
+            self::assertSame('cancelled', strtolower($child->describeSelectedRun()->status));
+            $childHistory = $this->history($client, $child);
+            $childKinds = array_column($childHistory, 'event_type');
+            foreach (['CooperativeCancellationRequested', 'CooperativeCancellationDelivered', 'ActivityCompleted', 'WorkflowCancelled'] as $kind) {
+                self::assertSame(1, count(array_filter($childKinds, static fn (string $value): bool => $value === $kind)), $kind);
+            }
+            self::assertNotContains('WorkflowTerminated', $childKinds);
+            self::assertNotContains('WorkflowFailed', $childKinds);
+            $resolved = array_values(array_filter($parentHistory,
+                static fn (array $event): bool => $event['event_type'] === 'ChildCancellationResolved'))[0];
+            self::assertSame('cancelled', $resolved['payload']['child_status']);
+
+            $parentContext = json_decode((string) file_get_contents($this->directory.'/context-'.$request['request_id']), true, flags: JSON_THROW_ON_ERROR);
+            $childContext = json_decode((string) file_get_contents($this->directory.'/context-'.$propagation['payload']['child_request_id']), true, flags: JSON_THROW_ON_ERROR);
+            foreach (['root_request_id', 'root_workflow_instance_id', 'root_workflow_run_id', 'requested_at', 'cleanup_deadline_at', 'reason', 'requester'] as $field) {
+                self::assertSame($parentContext[$field], $childContext[$field], $field);
+            }
+            self::assertSame($request['request_id'], $childContext['parent_request_id']);
+            self::assertCount(2, $childContext['lineage']);
+            $deadline = new \DateTimeImmutable($request['cleanup_deadline_at']);
+            foreach ([$parentHistory, $childHistory] as $events) {
+                $terminal = array_values(array_filter($events,
+                    static fn (array $event): bool => $event['event_type'] === 'WorkflowCancelled'))[0];
+                self::assertSame('Cooperative cancellation completed.', $terminal['payload']['reason']);
+                self::assertLessThan($deadline, new \DateTimeImmutable($terminal['recorded_at'] ?? $terminal['timestamp']));
+            }
+            $observations = array_map(static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR),
+                file($this->directory.'/child-wait-deliveries', FILE_IGNORE_NEW_LINES) ?: []);
+            $parentDeliveries = array_values(array_filter($observations,
+                static fn (array $entry): bool => ($entry['body']['request_id'] ?? null) === $request['request_id']));
+            self::assertCount(2, $parentDeliveries);
+            self::assertTrue($parentDeliveries[0]['reply']['claim_released']);
+            self::assertFalse($parentDeliveries[0]['reply']['delivered']);
+            self::assertTrue($parentDeliveries[1]['reply']['delivered']);
+            self::assertNotSame($parentDeliveries[0]['reply']['task_id'], $parentDeliveries[1]['reply']['task_id']);
+            self::assertSame(!$coldReplacement, $parentDeliveries[0]['worker_pid'] === $parentDeliveries[1]['worker_pid']);
+            $childDeliveries = array_values(array_filter($observations,
+                static fn (array $entry): bool => ($entry['body']['request_id'] ?? null) === $childContext['request_id']));
+            self::assertCount(1, $childDeliveries);
+            self::assertSame($parentDeliveries[1]['worker_pid'], $childDeliveries[0]['worker_pid']);
+            $parentDelivery = array_values(array_filter($parentHistory,
+                static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'))[0];
+            $childTerminal = array_values(array_filter($childHistory,
+                static fn (array $event): bool => $event['event_type'] === 'WorkflowCancelled'))[0];
+            self::assertGreaterThan(new \DateTimeImmutable($childTerminal['timestamp']), new \DateTimeImmutable($parentDelivery['timestamp']));
+            foreach (['request_id', 'sequence', 'call_kind', 'sequence_span', 'operation_sequence', 'operation_sequence_span'] as $field) {
+                self::assertSame($parentDeliveries[0]['body'][$field] ?? null, $parentDeliveries[1]['body'][$field] ?? null, $field);
+            }
+            fwrite(STDOUT, 'Connected single-worker child wait: '.json_encode([
+                'cold_replacement' => $coldReplacement, 'parent_context' => $parentContext,
+                'child_context' => $childContext, 'deliveries' => $observations,
+                'parent_history' => $parentHistory, 'child_history' => $childHistory,
+            ], JSON_THROW_ON_ERROR)."\n");
+        } finally {
+            if (is_resource($messages)) { fclose($messages); }
+            $this->stopWorker($pid);
+        }
     }
 
     public static function remoteProvider(): array
@@ -485,7 +592,7 @@ final class CooperativeCancellationTest extends TestCase
     }
 
     /** @return array{int, resource} */
-    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false, int $remoteBlockSeconds = 60, bool $blockCleanup = false): array
+    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false, int $remoteBlockSeconds = 60, bool $blockCleanup = false, bool $observeChildWait = false): array
     {
         $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
         if ($sockets === false) {
@@ -506,9 +613,10 @@ final class CooperativeCancellationTest extends TestCase
             };
             try {
                 // Construct transport and worker after fork. No inherited HTTP connection is used.
-                $transport = $remoteRole ? new RemoteOwnerObservationTransport($notify)
+                $transport = $observeChildWait ? new ChildWaitObservationTransport($this->directory, $notify)
+                    : ($remoteRole ? new RemoteOwnerObservationTransport($notify)
                     : ($pauseWorkflowClaim ? new PauseWorkflowClaimTransport($this->directory, $notify)
-                        : ($loseReply ? new DiscardFirstDeliveryReplyTransport($notify) : null));
+                        : ($loseReply ? new DiscardFirstDeliveryReplyTransport($notify) : null)));
                 $failureReported = false;
                 $worker = new Worker($this->client($transport, $namespace), $queue,
                     workerId: $queue.'-'.getmypid(), enableCooperativeCancellation: true,
@@ -556,9 +664,15 @@ final class CooperativeCancellationTest extends TestCase
                         }
                     });
                 if (!$remoteRole) {
-                    $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind): string {
+                    $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind) use ($queue): string {
                         try {
-                            if ($kind === 'local') {
+                            if ($kind === 'child-wait') {
+                                $context->childWorkflow('tests.php-cooperative', ['timer'], [
+                                    'task_queue' => $queue,
+                                    'cancellation_policy' => CancellationPolicy::WaitCancellationCompleted,
+                                    'parent_close_policy' => ParentClosePolicy::RequestCancellation,
+                                ]);
+                            } elseif ($kind === 'local') {
                                 $context->localActivity('tests.php-cooperative-work');
                             } elseif ($kind === 'remote') {
                                 $context->activity('tests.php-cooperative-remote');
@@ -566,7 +680,7 @@ final class CooperativeCancellationTest extends TestCase
                                 $context->sleep(300);
                             }
                         } catch (WorkflowCancelled $error) {
-                            $context->cancellationShield(static fn () => $context->localActivity('tests.php-cooperative-cleanup', [$error->requestId]));
+                            $context->cancellationShield(static fn () => $context->localActivity('tests.php-cooperative-cleanup', [$error->requestId, $context->cancellationContext()?->toArray()]));
                             return (string) $error->requestId;
                         }
                         return 'not-cancelled';
@@ -603,7 +717,10 @@ final class CooperativeCancellationTest extends TestCase
                     // Encoding this value would fail. Cancellation must discard it first.
                     return new \stdClass();
                 });
-                $worker->registerActivity('tests.php-cooperative-cleanup', function (ActivityContext $context, string $requestId) use ($notify, $blockCleanup): string {
+                $worker->registerActivity('tests.php-cooperative-cleanup', function (ActivityContext $context, string $requestId, ?array $cancellationContext = null) use ($notify, $blockCleanup): string {
+                    if ($cancellationContext !== null) {
+                        file_put_contents($this->directory.'/context-'.$requestId, json_encode($cancellationContext, JSON_THROW_ON_ERROR));
+                    }
                     if ($blockCleanup) {
                         $notify('cleanup-entered');
                         sleep(60);
@@ -771,6 +888,49 @@ final class CooperativeCancellationTest extends TestCase
             }
         }
         return $events;
+    }
+}
+
+/** Records real delivery replies and pauses only after Server releases a child-wait claim. */
+final class ChildWaitObservationTransport implements \DurableWorkflow\Transport\BoundedTransport
+{
+    private readonly Psr18Transport $inner;
+
+    public function __construct(private readonly string $directory, private readonly \Closure $notify)
+    {
+        $this->inner = new Psr18Transport();
+    }
+
+    public function supportsBoundedRequests(): bool { return $this->inner->supportsBoundedRequests(); }
+
+    public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
+    {
+        return $this->observe($uri, $body, $this->inner->send($method, $uri, $headers, $body));
+    }
+
+    public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
+    {
+        return $this->observe($uri, $body, $this->inner->sendBounded($method, $uri, $headers, $body, $timeoutSeconds));
+    }
+
+    private function observe(string $uri, ?array $body, ?array $reply): ?array
+    {
+        if (!str_ends_with($uri, '/deliver-cancellation')) { return $reply; }
+        file_put_contents($this->directory.'/child-wait-deliveries', json_encode([
+            'worker_pid' => getmypid(), 'body' => $body, 'reply' => array_intersect_key($reply ?? [], array_flip([
+                'delivered', 'task_id', 'workflow_run_id', 'request_id', 'sequence', 'call_kind',
+                'sequence_span', 'operation_sequence', 'operation_sequence_span', 'reason', 'claim_released',
+            ])),
+        ], JSON_THROW_ON_ERROR)."\n", FILE_APPEND | LOCK_EX);
+        if (($reply['claim_released'] ?? false) === true) {
+            ($this->notify)('child-wait-released');
+            $deadline = microtime(true) + 10;
+            while (!is_file($this->directory.'/continue-child-wait') && microtime(true) < $deadline) { usleep(10_000); }
+            if (!is_file($this->directory.'/continue-child-wait')) {
+                throw new RuntimeException('The connected child-wait observation was not released.');
+            }
+        }
+        return $reply;
     }
 }
 
