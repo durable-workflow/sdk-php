@@ -424,16 +424,31 @@ final class CooperativeCancellationTest extends TestCase
             self::assertFileExists($this->directory.'/cleanup-processes');
             $processes = json_decode((string) file_get_contents($this->directory.'/cleanup-processes'), true, flags: JSON_THROW_ON_ERROR);
             if ($terminate) { $handle->terminateSelectedRun('qualification termination during cleanup'); }
+            if (!$terminate) {
+                $deadline = (float) (new \DateTimeImmutable($accepted['cancellation_request']['cleanup_deadline_at']))->format('U.u');
+                while (microtime(true) < $deadline) { usleep(10_000); }
+            }
+            foreach ($processes as $activityPid) { $this->assertProcessStops($activityPid); }
+            self::assertFileDoesNotExist($this->directory.'/cleanup-returned');
+            $stoppedAt = microtime(true);
+            $diagnostics = $client->workflowDiagnostics($handle->workflowId, (string) $handle->selectedRunId);
+            fwrite(STDOUT, 'Blocked cleanup stopped: '.json_encode([
+                'terminate' => $terminate, 'stopped_at' => $stoppedAt,
+                'cleanup_deadline_at' => $accepted['cancellation_request']['cleanup_deadline_at'],
+                'pending_workflow_tasks' => $diagnostics['pending_workflow_tasks'],
+            ], JSON_THROW_ON_ERROR)."\n");
             try {
-                $handle->result(15, 0.1);
+                // A callback stops at its deadline. Durable closure may then
+                // require the real ten-second workflow lease, five-second
+                // repair throttle and one bounded poll/recovery grace period.
+                $handle->result(20, 0.1);
                 self::fail('Blocked cleanup produced a successful workflow result.');
             } catch (WorkflowCancelled $error) {
                 self::assertFalse($terminate, $error->getMessage());
             } catch (WorkflowTerminated $error) {
                 self::assertTrue($terminate, $error->getMessage());
             }
-            foreach ($processes as $activityPid) { $this->assertProcessStops($activityPid); }
-            self::assertFileDoesNotExist($this->directory.'/cleanup-returned');
+            fwrite(STDOUT, sprintf("Blocked cleanup durable closure after callback stop: %.3fs\n", microtime(true) - $stoppedAt));
             $history = $this->history($client, $handle);
             $kinds = array_column($history, 'event_type');
             foreach (['CooperativeCancellationRequested', 'CooperativeCancellationDelivered'] as $kind) {
