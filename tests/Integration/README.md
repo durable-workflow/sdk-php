@@ -76,6 +76,22 @@ removes the stack and images. The ordinary worker default remains protocol 1.19.
 
 The connected cases cover waiting timers, cold worker replacement, duplicate
 request identity/deadline, a discarded successful delivery reply, shielded local
-cleanup, local user heartbeats and the result check after a bounded callback.
-The last case waits for the callback to return. It does not qualify interruption
-of a blocking callback without user heartbeats.
+cleanup, local user heartbeats and cancellation during a blocked callback.
+The local cases use a 60-second callback, request cancellation while it is active
+and require canonical cleanup in less than ten seconds. They verify that both
+callback and relay processes stop and that no late return marker appears.
+
+Explicit cooperative workers require Unix CLI, `pcntl`, `posix` and a transport
+that supports bounded requests. Worker control requests have a five-second
+timeout, and polls allow their requested wait plus five seconds. The owning
+worker alone renews the real task lease, observes its original request and
+deadline, records user heartbeats and permits result encoding. Local callbacks
+run in a child process. Open handler-owned database or network connections in
+that process. Changes to captured memory do not update the owning worker.
+Parent connections and inherited shutdown hooks must not be used for callback
+cleanup. Normal workers keep their existing execution model.
+
+Stopping a callback does not roll back an external effect. Activities remain
+subject to at-least-once execution and must make retries safe. Remote activity
+lifetime, graceful shutdown and active-task cold replacement still need their
+connected qualification before this capability is released.

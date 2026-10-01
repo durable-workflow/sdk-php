@@ -16,6 +16,25 @@ use PHPUnit\Framework\TestCase;
 
 final class CooperativeCancellationWorkerTest extends TestCase
 {
+    private string $directory;
+
+    protected function setUp(): void
+    {
+        if (!\DurableWorkflow\Worker\CooperativeActivityExecutor::available()) {
+            self::markTestSkipped('Cooperative worker execution requires Unix process control.');
+        }
+        $this->directory = sys_get_temp_dir().'/dw-cooperative-worker-'.bin2hex(random_bytes(8));
+        self::assertTrue(mkdir($this->directory, 0700));
+    }
+
+    protected function tearDown(): void
+    {
+        if (isset($this->directory)) {
+            foreach (glob($this->directory.'/*') ?: [] as $file) { unlink($file); }
+            rmdir($this->directory);
+        }
+    }
+
     #[DataProvider('deliveryReplyProvider')]
     public function testDeliveryRequiresCanonicalHistoryBeforeCleanup(string $reply): void
     {
@@ -189,13 +208,24 @@ final class CooperativeCancellationWorkerTest extends TestCase
         $transport = new CooperativeWorkerTransport();
         $transport->requestVisible = false;
         $transport->history = [$transport->history[0]];
-        $transport->onHeartbeat = static function (CooperativeWorkerTransport $transport): void {
-            if ($transport->heartbeatCount === 3) { $transport->renewed = false; }
+        $entered = $this->directory.'/entered';
+        $late = $this->directory.'/late';
+        $transport->onHeartbeat = static function (CooperativeWorkerTransport $transport) use ($entered): void {
+            if (is_file($entered)) { $transport->renewed = false; }
         };
         $worker = $this->worker($transport);
         $worker->registerWorkflow('cancel', static fn (WorkflowContext $context) => $context->localActivity('effect'));
-        $worker->registerActivity('effect', static fn (ActivityContext $context) => 'too late');
+        $worker->registerActivity('effect', static function (ActivityContext $context) use ($entered, $late): string {
+            file_put_contents($entered, 'entered');
+            sleep(60);
+            file_put_contents($late, 'late');
+            return 'too late';
+        });
+        $started = microtime(true);
         $worker->tick(0);
+        self::assertLessThan(3, microtime(true) - $started);
+        self::assertFileExists($entered);
+        self::assertFileDoesNotExist($late);
         self::assertSame([], $transport->completions);
         self::assertSame([], $transport->deliveries);
         self::assertSame(WorkflowClaimAborted::class, $transport->failures[0]['failure']['type']);
@@ -207,20 +237,22 @@ final class CooperativeCancellationWorkerTest extends TestCase
         $transport = new CooperativeWorkerTransport();
         $transport->requestVisible = false;
         $transport->history = [$transport->history[0]];
-        $calls = 0;
+        $entered = $this->directory.'/entered';
+        $transport->onHeartbeat = static function (CooperativeWorkerTransport $transport) use ($entered): void {
+            if (is_file($entered) && !$transport->requestVisible) { $transport->makeRequestVisible(); }
+        };
         $worker = $this->worker($transport);
         $worker->registerWorkflow('cancel', static function (WorkflowContext $context): void {
             try { $context->localActivity('effect'); }
             catch (\DurableWorkflow\Exception\WorkflowCancelled) { $context->activity('cleanup'); }
         });
-        $worker->registerActivity('effect', static function (ActivityContext $context) use ($transport, &$calls, $heartbeat): \stdClass {
-            ++$calls;
-            $transport->makeRequestVisible();
+        $worker->registerActivity('effect', static function (ActivityContext $context) use ($entered, $heartbeat): \stdClass {
+            file_put_contents($entered, 'entered', FILE_APPEND);
             if ($heartbeat) { $context->heartbeat(); }
             return new \stdClass();
         });
         $worker->tick(0);
-        self::assertSame(1, $calls);
+        self::assertSame('entered', file_get_contents($entered));
         self::assertSame('local_activity', $transport->deliveries[0]['call_kind']);
         self::assertSame(1, $transport->deliveries[0]['sequence']);
         self::assertSame(['schedule_activity'], array_column($transport->completions[0]['commands'], 'type'));
@@ -238,14 +270,18 @@ final class CooperativeCancellationWorkerTest extends TestCase
         $transport = new CooperativeWorkerTransport();
         $transport->requestVisible = false;
         $transport->history = [$transport->history[0]];
+        $entered = $this->directory.'/second-entered';
+        $transport->onHeartbeat = static function (CooperativeWorkerTransport $transport) use ($entered): void {
+            if (is_file($entered) && !$transport->requestVisible) { $transport->makeRequestVisible(); }
+        };
         $worker = $this->worker($transport);
         $worker->registerWorkflow('cancel', static function (WorkflowContext $context): void {
             $context->localActivity('first');
             $context->localActivity('second');
         });
         $worker->registerActivity('first', static fn (ActivityContext $context) => 'committed first');
-        $worker->registerActivity('second', static function (ActivityContext $context) use ($transport): void {
-            $transport->makeRequestVisible();
+        $worker->registerActivity('second', static function (ActivityContext $context) use ($entered): void {
+            file_put_contents($entered, 'entered');
             $context->heartbeat();
         });
         $worker->tick(0);
@@ -259,7 +295,7 @@ final class CooperativeCancellationWorkerTest extends TestCase
     {
         $transport = new CooperativeWorkerTransport();
         $worker = $this->worker($transport);
-        $calls = 0;
+        $entered = $this->directory.'/cleanup-entered';
         $worker->registerWorkflow('cancel', static function (WorkflowContext $context): string {
             try { $context->sleep(10); }
             catch (\DurableWorkflow\Exception\WorkflowCancelled $error) {
@@ -271,13 +307,13 @@ final class CooperativeCancellationWorkerTest extends TestCase
             }
             return 'done';
         });
-        $worker->registerActivity('cleanup', static function (ActivityContext $context) use (&$calls): string {
-            ++$calls;
+        $worker->registerActivity('cleanup', static function (ActivityContext $context) use ($entered): string {
+            file_put_contents($entered, 'entered', FILE_APPEND);
             $context->heartbeat();
             return 'cleaned';
         });
         $worker->tick(0);
-        self::assertSame(1, $calls);
+        self::assertSame('entered', file_get_contents($entered));
         self::assertSame(['record_local_activity', 'complete_workflow'], array_column($transport->completions[0]['commands'], 'type'));
         self::assertSame([], $transport->failures);
     }
@@ -288,22 +324,266 @@ final class CooperativeCancellationWorkerTest extends TestCase
         $transport->requestVisible = false;
         $transport->history = [$transport->history[0]];
         $worker = $this->worker($transport);
+        $entered = $this->directory.'/entered';
+        $late = $this->directory.'/late';
+        $transport->onHeartbeat = static function () use ($entered, $worker): void {
+            if (is_file($entered)) { $worker->requestShutdown(); }
+        };
         $worker->registerWorkflow('cancel', static fn (WorkflowContext $context) => $context->localActivity('effect'));
-        $worker->registerActivity('effect', static function (ActivityContext $context) use ($worker): \stdClass {
-            $worker->requestShutdown();
+        $worker->registerActivity('effect', static function (ActivityContext $context) use ($entered, $late): \stdClass {
+            file_put_contents($entered, 'entered');
+            sleep(60);
+            file_put_contents($late, 'late');
             return new \stdClass();
         });
         $worker->tick(0);
+        self::assertFileExists($entered);
+        self::assertFileDoesNotExist($late);
         self::assertSame([], $transport->completions);
         self::assertSame([], $transport->deliveries);
     }
 
-    private function worker(CooperativeWorkerTransport $transport): Worker
+    public function testBlockingLocalCallbackObservesRequestWithoutUserHeartbeat(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->requestVisible = false;
+        $transport->history = [$transport->history[0]];
+        $entered = $this->directory.'/entered';
+        $late = $this->directory.'/late';
+        $transport->onHeartbeat = static function (CooperativeWorkerTransport $transport) use ($entered): void {
+            if (is_file($entered) && !$transport->requestVisible) { $transport->makeRequestVisible(); }
+        };
+        $worker = $this->worker($transport);
+        $worker->registerWorkflow('cancel', static function (WorkflowContext $context): string {
+            try { $context->localActivity('effect'); }
+            catch (\DurableWorkflow\Exception\WorkflowCancelled $error) { return (string) $error->requestId; }
+            return 'not cancelled';
+        });
+        $worker->registerActivity('effect', static function (ActivityContext $context) use ($entered, $late): \stdClass {
+            file_put_contents($entered, 'entered');
+            sleep(60);
+            file_put_contents($late, 'late');
+            return new \stdClass();
+        });
+        $started = microtime(true);
+        $worker->tick(0);
+        self::assertLessThan(3, microtime(true) - $started);
+        self::assertFileExists($entered);
+        self::assertFileDoesNotExist($late);
+        self::assertSame(['complete_workflow'], array_column($transport->completions[0]['commands'], 'type'));
+        self::assertSame('request-1', (new \DurableWorkflow\Codec\AvroPayloadCodec())->decodeEnvelope(
+            $transport->completions[0]['commands'][0]['result']));
+        self::assertCount(1, $transport->deliveries);
+        self::assertSame('local_activity', $transport->deliveries[0]['call_kind']);
+        self::assertSame([], $transport->failures);
+    }
+
+    public function testOriginalCleanupDeadlineStopsShieldedBlockedCallback(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $entered = $this->directory.'/cleanup-entered';
+        $late = $this->directory.'/late';
+        $now = 1790812800.0;
+        $transport->onHeartbeat = static function () use ($entered, &$now): void {
+            if (is_file($entered)) { $now = 1790812861.0; }
+        };
+        $worker = $this->worker($transport, static function () use (&$now): float { return $now; });
+        $worker->registerWorkflow('cancel', static function (WorkflowContext $context): void {
+            try { $context->sleep(10); }
+            catch (\DurableWorkflow\Exception\WorkflowCancelled) {
+                $context->cancellationShield(static fn () => $context->localActivity('cleanup'));
+            }
+        });
+        $worker->registerActivity('cleanup', static function (ActivityContext $context) use ($entered, $late): string {
+            file_put_contents($entered, 'entered');
+            sleep(60);
+            file_put_contents($late, 'late');
+            return 'too late';
+        });
+        $worker->tick(0);
+        self::assertFileExists($entered);
+        self::assertFileDoesNotExist($late);
+        self::assertCount(1, $transport->deliveries);
+        self::assertSame([], $transport->completions);
+        self::assertSame(WorkflowClaimAborted::class, $transport->failures[0]['failure']['type']);
+    }
+
+    #[DataProvider('isolatedFailureProvider')]
+    public function testIsolatedLocalFailureKeepsItsPublishedClassification(string $kind, string $type,
+        string $outcome, bool $nonRetryable): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->requestVisible = false;
+        $transport->history = [$transport->history[0]];
+        $worker = $this->worker($transport);
+        $entered = $this->directory.'/entered';
+        $worker->registerWorkflow('cancel', static fn (WorkflowContext $context) => $context->localActivity('effect', [], [
+            'retry_policy' => ['max_attempts' => 3, 'non_retryable_error_types' => ['CooperativeBusinessFailure']],
+        ]));
+        $worker->registerActivity('effect', static function (ActivityContext $context) use ($kind, $entered): mixed {
+            file_put_contents($entered, 'call', FILE_APPEND);
+            return match ($kind) {
+                'business' => throw new CooperativeBusinessFailure('business failure'),
+                'cancelled' => throw new \DurableWorkflow\Exception\ActivityCancelled('cancelled'),
+                'timeout' => throw new \DurableWorkflow\Exception\LocalActivityTimedOut('heartbeat', 'timed out'),
+                'invalid utf8' => throw new \RuntimeException("invalid\xFF"),
+                'unencodable' => new \stdClass(),
+            };
+        });
+        $worker->tick(0);
+        $report = $transport->completions[0]['commands'][0];
+        self::assertSame('record_local_activity', $report['type']);
+        self::assertSame($type, $report['exception_type']);
+        self::assertSame($outcome, $report['outcome']);
+        self::assertSame($nonRetryable, $report['non_retryable']);
+        self::assertCount($nonRetryable ? 1 : 3, $report['attempts']);
+        self::assertSame(str_repeat('call', $nonRetryable ? 1 : 3), file_get_contents($entered));
+        if ($kind === 'timeout') { self::assertSame('heartbeat', $report['timeout_kind']); }
+        self::assertSame([], $transport->failures);
+    }
+
+    public static function isolatedFailureProvider(): array
+    {
+        return [
+            ['business', CooperativeBusinessFailure::class, 'failed', true],
+            ['cancelled', \DurableWorkflow\Exception\ActivityCancelled::class, 'cancelled', true],
+            ['timeout', \DurableWorkflow\Exception\LocalActivityTimedOut::class, 'timed_out', false],
+            ['invalid utf8', \DurableWorkflow\Exception\InvalidLocalActivityReport::class, 'failed', true],
+            ['unencodable', \DurableWorkflow\Exception\InvalidLocalActivityReport::class, 'failed', true],
+        ];
+    }
+
+    public function testLeaseRenewalsDoNotCountAsUserProgressForHeartbeatTimeout(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->requestVisible = false;
+        $transport->history = [$transport->history[0]];
+        $worker = $this->worker($transport, static fn (): float => microtime(true));
+        $entered = $this->directory.'/entered';
+        $late = $this->directory.'/late';
+        $worker->registerWorkflow('cancel', static fn (WorkflowContext $context) => $context->localActivity('effect', [], [
+            'heartbeat_timeout' => 1,
+        ]));
+        $worker->registerActivity('effect', static function (ActivityContext $context) use ($entered, $late): string {
+            file_put_contents($entered, 'entered');
+            sleep(60);
+            file_put_contents($late, 'late');
+            return 'late';
+        });
+        $worker->tick(0);
+        $report = $transport->completions[0]['commands'][0];
+        self::assertSame('timed_out', $report['outcome']);
+        self::assertSame('heartbeat', $report['timeout_kind']);
+        self::assertSame([], $report['attempts'][0]['heartbeats']);
+        self::assertFileExists($entered);
+        self::assertFileDoesNotExist($late);
+        self::assertGreaterThan(1, $transport->heartbeatCount);
+    }
+
+    #[DataProvider('executionTimeoutProvider')]
+    public function testExecutionTimeoutStopsTheActiveProcess(string $option, string $kind): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->requestVisible = false;
+        $transport->history = [$transport->history[0]];
+        $entered = $this->directory.'/entered';
+        $late = $this->directory.'/late';
+        $now = 1790812800.0;
+        $transport->onHeartbeat = static function () use ($entered, &$now): void {
+            if (is_file($entered)) { $now = 1790812802.0; }
+        };
+        $worker = $this->worker($transport, static function () use (&$now): float { return $now; });
+        $worker->registerWorkflow('cancel', static fn (WorkflowContext $context) => $context->localActivity('effect', [], [$option => 1]));
+        $worker->registerActivity('effect', static function (ActivityContext $context) use ($entered, $late): string {
+            file_put_contents($entered, 'entered');
+            sleep(60);
+            file_put_contents($late, 'late');
+            return 'late';
+        });
+        $worker->tick(0);
+        $report = $transport->completions[0]['commands'][0];
+        self::assertSame('timed_out', $report['outcome']);
+        self::assertSame($kind, $report['timeout_kind']);
+        self::assertFileExists($entered);
+        self::assertFileDoesNotExist($late);
+    }
+
+    public static function executionTimeoutProvider(): array
+    {
+        return [['start_to_close_timeout', 'start_to_close'], ['schedule_to_close_timeout', 'schedule_to_close']];
+    }
+
+    public function testCallbackStorageRefusalAbandonsClaimWithoutApplicationFailure(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->requestVisible = false;
+        $transport->history = [$transport->history[0]];
+        $worker = $this->worker($transport);
+        $worker->registerWorkflow('cancel', static fn (WorkflowContext $context) => $context->localActivity('effect'));
+        $worker->registerActivity('effect', static function (ActivityContext $context): never {
+            throw new \DurableWorkflow\Exception\ServerException('storage fenced', 503, 'storage_pressure', [
+                'reason' => 'storage_pressure', 'retryable' => true, 'retry_after_seconds' => 1,
+                'storage_state' => 'fenced', 'request_admitted' => false,
+            ]);
+        });
+        $worker->tick(0);
+        self::assertSame([], $transport->completions);
+        self::assertSame(WorkflowClaimAborted::class, $transport->failures[0]['failure']['type']);
+    }
+
+    public function testCancellationDuringRetryBackoffStopsFurtherAttempts(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->requestVisible = false;
+        $transport->history = [$transport->history[0]];
+        $entered = $this->directory.'/entered';
+        $requested = $this->directory.'/requested';
+        $transport->onHeartbeat = static function (CooperativeWorkerTransport $transport) use ($requested): void {
+            if (is_file($requested) && !$transport->requestVisible) { $transport->makeRequestVisible(); }
+        };
+        $producer = pcntl_fork();
+        self::assertNotSame(-1, $producer);
+        if ($producer === 0) {
+            $deadline = microtime(true) + 5;
+            while (!is_file($entered) && microtime(true) < $deadline) { usleep(10_000); }
+            usleep(200_000);
+            file_put_contents($requested, 'requested');
+            exit(0);
+        }
+        try {
+            $worker = $this->worker($transport);
+            $worker->registerWorkflow('cancel', static function (WorkflowContext $context): string {
+                try { $context->localActivity('effect', [], ['retry_policy' => ['max_attempts' => 2, 'backoff_seconds' => [5]]]); }
+                catch (\DurableWorkflow\Exception\WorkflowCancelled $error) { return (string) $error->requestId; }
+                return 'not cancelled';
+            });
+            $worker->registerActivity('effect', static function (ActivityContext $context) use ($entered): never {
+                file_put_contents($entered, 'call', FILE_APPEND);
+                throw new \RuntimeException('retry me');
+            });
+            $started = microtime(true);
+            $worker->tick(0);
+            self::assertLessThan(3, microtime(true) - $started);
+            self::assertSame('call', file_get_contents($entered));
+            self::assertCount(1, $transport->deliveries);
+            self::assertSame(['complete_workflow'], array_column($transport->completions[0]['commands'], 'type'));
+        } finally {
+            if (pcntl_waitpid($producer, $status, WNOHANG) === 0) {
+                posix_kill($producer, SIGKILL);
+                pcntl_waitpid($producer, $status);
+            }
+        }
+    }
+
+    private function worker(CooperativeWorkerTransport $transport, ?\Closure $clock = null): Worker
     {
         return new Worker(new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.20'),
-            'queue', workerId: 'worker-1', enableCooperativeCancellation: true);
+            'queue', workerId: 'worker-1', enableCooperativeCancellation: true,
+            clock: $clock ?? static fn (): float => 1790812800.0);
     }
 }
+
+final class CooperativeBusinessFailure extends \RuntimeException {}
 
 final class CooperativeWorkerTransport implements \DurableWorkflow\Transport\BoundedTransport
 {

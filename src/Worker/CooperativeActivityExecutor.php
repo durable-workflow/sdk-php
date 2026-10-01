@@ -6,6 +6,10 @@ namespace DurableWorkflow\Worker;
 
 use Closure;
 use DurableWorkflow\Codec\PayloadCodec;
+use DurableWorkflow\Exception\ActivityCancelled;
+use DurableWorkflow\Exception\InvalidLocalActivityReport;
+use DurableWorkflow\Exception\LocalActivityTimedOut;
+use DurableWorkflow\Exception\ServerException;
 use InvalidArgumentException;
 use Throwable;
 
@@ -127,10 +131,18 @@ final class CooperativeActivityExecutor
                     case 'failure':
                         $check(true);
                         if (!is_string($message['message'] ?? null) || !is_string($message['type'] ?? null)
-                            || !is_bool($message['encoding'] ?? null)) {
+                            || !is_bool($message['encoding'] ?? null)
+                            || !is_bool($message['cancelled'] ?? null)
+                            || !is_bool($message['invalid_report'] ?? null)
+                            || !is_bool($message['storage_admission_failure'] ?? null)
+                            || !array_key_exists('timeout_kind', $message)
+                            || ($message['timeout_kind'] !== null && !in_array($message['timeout_kind'],
+                                ['heartbeat', 'start_to_close', 'schedule_to_close'], true))) {
                             throw new WorkflowClaimAborted('Activity IPC returned malformed failure metadata.');
                         }
-                        throw new ActivityExecutionFailure($message['message'], $message['type'], $message['encoding']);
+                        throw new ActivityExecutionFailure($message['message'], $message['type'], $message['encoding'],
+                            $message['cancelled'], $message['invalid_report'], $message['timeout_kind'],
+                            $message['storage_admission_failure']);
                     default:
                         throw new WorkflowClaimAborted('Activity IPC returned an unexpected message.');
                 }
@@ -245,7 +257,12 @@ final class CooperativeActivityExecutor
         try {
             $this->requireMessage($socket, 'begin');
             $result = $callback(function (array $details) use ($socket): mixed {
-                $this->writeFrame($socket, ['kind' => 'heartbeat', 'value' => $this->codec->envelope($details)]);
+                try {
+                    $value = $this->codec->envelope($details);
+                } catch (Throwable $error) {
+                    throw new InvalidLocalActivityReport('Activity heartbeat details could not be encoded.', previous: $error);
+                }
+                $this->writeFrame($socket, ['kind' => 'heartbeat', 'value' => $value]);
 
                 return $this->decode($this->requireMessage($socket, 'heartbeat_reply'));
             });
@@ -255,8 +272,25 @@ final class CooperativeActivityExecutor
             $this->writeFrame($socket, ['kind' => 'result', 'value' => $this->codec->envelope($result)]);
         } catch (Throwable $error) {
             try {
-                $this->writeFrame($socket, ['kind' => 'failure', 'message' => $error->getMessage(),
-                    'type' => $error::class, 'encoding' => $encoding]);
+                $message = $error->getMessage();
+                $type = $error::class;
+                $invalid = $error instanceof InvalidLocalActivityReport;
+                try {
+                    json_encode(['message' => $message, 'type' => $type], JSON_THROW_ON_ERROR);
+                } catch (Throwable) {
+                    $invalid = true;
+                    $message = 'Activity failure metadata could not be encoded for the HTTP JSON wire boundary.';
+                }
+                if (strlen($type) > 255) {
+                    $invalid = true;
+                    $message = 'Activity failure metadata exceeded the published exception type limit.';
+                }
+                $this->writeFrame($socket, ['kind' => 'failure', 'message' => $message,
+                    'type' => $invalid ? InvalidLocalActivityReport::class : $type, 'encoding' => $encoding,
+                    'cancelled' => !$invalid && $error instanceof ActivityCancelled,
+                    'invalid_report' => $invalid,
+                    'timeout_kind' => !$invalid && $error instanceof LocalActivityTimedOut ? $error->timeoutKind : null,
+                    'storage_admission_failure' => $error instanceof ServerException && $error->isStorageAdmissionFailure()]);
             } catch (Throwable) {
                 // The owning worker has abandoned this claim or the frame is invalid.
             }

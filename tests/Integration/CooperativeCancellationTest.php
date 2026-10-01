@@ -24,6 +24,7 @@ final class CooperativeCancellationTest extends TestCase
 {
     private string $runtimeUrl;
     private string $token;
+    private string $directory;
 
     protected function setUp(): void
     {
@@ -37,12 +38,22 @@ final class CooperativeCancellationTest extends TestCase
         if (!function_exists('pcntl_fork') || !function_exists('posix_kill')) {
             self::fail('The connected worker proof requires pcntl and posix.');
         }
+        $this->directory = sys_get_temp_dir().'/dw-connected-cooperative-'.bin2hex(random_bytes(8));
+        self::assertTrue(mkdir($this->directory, 0700));
         $this->runtimeUrl = $url;
         $token = getenv('DURABLE_WORKFLOW_AUTH_TOKEN');
         $this->token = is_string($token) && $token !== '' ? $token : 'test-token';
         $protocol = $this->client()->clusterInfo()->raw['worker_protocol'];
         self::assertSame('1.20', $protocol['version']);
         self::assertTrue($protocol['server_capabilities']['cooperative_cancellation']);
+    }
+
+    protected function tearDown(): void
+    {
+        if (isset($this->directory)) {
+            foreach (glob($this->directory.'/*') ?: [] as $file) { unlink($file); }
+            rmdir($this->directory);
+        }
     }
 
     #[DataProvider('booleanProvider')]
@@ -102,7 +113,7 @@ final class CooperativeCancellationTest extends TestCase
     }
 
     #[DataProvider('booleanProvider')]
-    public function testLocalObservationDiscardsWorkAtHeartbeatOrAfterBoundedCallback(bool $userHeartbeat): void
+    public function testLocalRequestStopsBlockedCallbackBeforeReturn(bool $userHeartbeat): void
     {
         $queue = $this->queue('local');
         $client = $this->client();
@@ -111,8 +122,13 @@ final class CooperativeCancellationTest extends TestCase
             $this->awaitMessage($messages, 'registered');
             $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['local']);
             $this->awaitMessage($messages, 'local-entered');
+            $pids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
+            $started = microtime(true);
             $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 60);
             $events = $this->assertCancelledCleanup($client, $handle, $accepted['cancellation_request']['request_id'], $messages);
+            self::assertLessThan(10, microtime(true) - $started, 'Do not wait for the 60-second callback to return.');
+            self::assertFileDoesNotExist($this->directory.'/late');
+            foreach ($pids as $pid) { $this->assertProcessStops($pid); }
             $delivery = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'))[0];
             self::assertSame('local_activity', $delivery['payload']['call_kind']);
             self::assertSame(1, $delivery['payload']['sequence']);
@@ -164,9 +180,15 @@ final class CooperativeCancellationTest extends TestCase
                 $failureReported = false;
                 $worker = new Worker($this->client($transport), $queue,
                     workerId: $queue.'-'.getmypid(), enableCooperativeCancellation: true,
-                    diagnosticListener: static function (string $event, array $context) use ($notify, &$failureReported): void {
+                    diagnosticListener: function (string $event, array $context) use ($notify, &$failureReported): void {
                         if ($event === 'worker.registered') {
                             $notify('registered');
+                        }
+                        if ($event === 'worker.activity_process_started'
+                            && ($context['activity_type'] ?? null) === 'tests.php-cooperative-work') {
+                            file_put_contents($this->directory.'/processes', json_encode([
+                                $context['relay_pid'], $context['callback_pid'],
+                            ], JSON_THROW_ON_ERROR));
                         }
                         if (!$failureReported && ($context['exception'] ?? null) instanceof Throwable) {
                             $failureReported = true;
@@ -193,15 +215,16 @@ final class CooperativeCancellationTest extends TestCase
                     }
                     return 'not-cancelled';
                 });
-                $worker->registerActivity('tests.php-cooperative-work', static function (ActivityContext $context) use ($notify, $userHeartbeat): \stdClass {
+                $worker->registerActivity('tests.php-cooperative-work', function (ActivityContext $context) use ($notify, $userHeartbeat): \stdClass {
                     $notify('local-entered');
-                    $deadline = microtime(true) + ($userHeartbeat ? 20 : 2);
+                    $deadline = microtime(true) + 60;
                     while (microtime(true) < $deadline) {
                         usleep(100_000);
                         if ($userHeartbeat) {
                             $context->heartbeat(['qualification' => 'local-in-flight']);
                         }
                     }
+                    file_put_contents($this->directory.'/late', 'late callback returned');
                     // Encoding this value would fail. Cancellation must discard it first.
                     return new \stdClass();
                 });
@@ -253,6 +276,16 @@ final class CooperativeCancellationTest extends TestCase
         posix_kill($pid, SIGKILL);
         pcntl_waitpid($pid, $status);
         self::fail('Cooperative worker did not stop after its shutdown request.');
+    }
+
+    private function assertProcessStops(int $pid): void
+    {
+        $deadline = microtime(true) + 3;
+        do {
+            if (!posix_kill($pid, 0)) { self::assertFalse(posix_kill($pid, 0)); return; }
+            usleep(10_000);
+        } while (microtime(true) < $deadline);
+        self::fail('Activity process survived cancellation: '.$pid);
     }
 
     /** @return list<array<string, mixed>> */

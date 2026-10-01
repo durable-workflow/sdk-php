@@ -13,10 +13,12 @@ use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\SagaCompensationFailed;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\ActivityExecutionFailure;
 use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\CancellationHistory;
 use DurableWorkflow\Worker\CancellationRequest;
 use DurableWorkflow\Worker\CooperativeCancellationObserved;
+use DurableWorkflow\Worker\CooperativeActivityExecutor;
 use DurableWorkflow\Worker\DiscoveredHandlers;
 use DurableWorkflow\Worker\HandlerDiscovery;
 use DurableWorkflow\Worker\HandlerDefinition;
@@ -102,10 +104,17 @@ final class Worker
         ?callable $diagnosticListener = null,
         int $stickyCacheCapacity = 100,
         int $stickyCacheTtlSeconds = 300,
+        /**
+         * Source opt-in. Local callbacks run in a Unix child process. Open handler-owned
+         * connections there. Captured memory changes do not update the owning worker.
+         */
         private readonly bool $enableCooperativeCancellation = false,
     ) {
         if ($enableCooperativeCancellation && !Version::supportsCooperativeCancellation($client->workerProtocolVersion)) {
             throw new \InvalidArgumentException('Cooperative cancellation requires explicit worker protocol 1.20.');
+        }
+        if ($enableCooperativeCancellation && !CooperativeActivityExecutor::available()) {
+            throw new \InvalidArgumentException('Cooperative workers require Unix CLI with pcntl and posix.');
         }
         $this->client = $enableCooperativeCancellation ? $client->withBoundedWorkerRequests() : $client;
         $this->workerId = $workerId ?? 'php-worker-'.bin2hex(random_bytes(8));
@@ -728,6 +737,9 @@ final class Worker
         $attempt = 0;
         $uncertainActivityCompletion = false;
         while (true) {
+            if ($operation !== 'workflow_fail') {
+                $this->assertCancellationDeadline();
+            }
             try {
                 return $request();
             } catch (ServerException $exception) {
@@ -848,6 +860,7 @@ final class Worker
     {
         $deadline = $this->now() + $delaySeconds;
         while (!$this->shutdownRequested) {
+            $this->assertCancellationDeadline();
             $this->heartbeatIfDue();
             $remainingSeconds = $deadline - $this->now();
             if ($remainingSeconds <= 0) {
@@ -1063,6 +1076,9 @@ final class Worker
                     );
                 },
             );
+        } finally {
+            $this->claimCancellation = null;
+            $this->claimDeliveredCancellationId = null;
         }
     }
 
@@ -1720,99 +1736,138 @@ final class Worker
                 if ($this->shutdownRequested || ($this->claimCancellation === null && (bool) ($task['cancel_requested'] ?? false))) {
                     throw new ActivityCancelled('The workflow requested local activity cancellation.');
                 }
-                $context = new ActivityContext(
-                    $this->client,
-                    (string) ($task['task_id'] ?? ''),
-                    $attemptId,
-                    (string) ($task['lease_owner'] ?? $this->workerId),
-                    $activityType,
-                    $attemptNumber,
-                    function (array $details) use (
-                        $task,
-                        $attemptStartedAt,
-                        $executionStartedAt,
-                        $startToClose,
-                        $scheduleToClose,
-                        $heartbeatTimeout,
-                        &$lastHeartbeatAt,
-                        &$heartbeats,
-                        &$heartbeatCount,
-                        &$totalHeartbeatCount,
-                    ): void {
-                        $now = $this->now();
-                        if ($this->shutdownRequested) {
-                            throw new ActivityCancelled('Worker shutdown cancelled the local activity.');
+                $localHeartbeat = function (array $details) use (
+                    $task,
+                    $attemptStartedAt,
+                    $executionStartedAt,
+                    $startToClose,
+                    $scheduleToClose,
+                    $heartbeatTimeout,
+                    &$lastHeartbeatAt,
+                    &$heartbeats,
+                    &$heartbeatCount,
+                    &$totalHeartbeatCount,
+                ): void {
+                    $now = $this->now();
+                    if ($this->shutdownRequested) {
+                        throw new ActivityCancelled('Worker shutdown cancelled the local activity.');
+                    }
+                    if ($heartbeatTimeout !== null && $now - $lastHeartbeatAt > $heartbeatTimeout) {
+                        throw new LocalActivityTimedOut(
+                            'heartbeat',
+                            'Local activity heartbeat timeout elapsed.',
+                        );
+                    }
+                    if ($startToClose !== null && $now - $attemptStartedAt > $startToClose) {
+                        throw new LocalActivityTimedOut(
+                            'start_to_close',
+                            'Local activity start-to-close timeout elapsed.',
+                        );
+                    }
+                    if ($scheduleToClose !== null && $now - $executionStartedAt > $scheduleToClose) {
+                        throw new LocalActivityTimedOut(
+                            'schedule_to_close',
+                            'Local activity schedule-to-close timeout elapsed.',
+                        );
+                    }
+                    if ($heartbeatCount >= self::MAX_LOCAL_ACTIVITY_HEARTBEATS_PER_ATTEMPT) {
+                        throw new InvalidLocalActivityReport(sprintf(
+                            'Local activity attempts may contain at most %d heartbeats.',
+                            self::MAX_LOCAL_ACTIVITY_HEARTBEATS_PER_ATTEMPT,
+                        ));
+                    }
+                    if ($totalHeartbeatCount >= self::MAX_LOCAL_ACTIVITY_HEARTBEATS) {
+                        throw new InvalidLocalActivityReport(sprintf(
+                            'Local activity reports may contain at most %d heartbeats.',
+                            self::MAX_LOCAL_ACTIVITY_HEARTBEATS,
+                        ));
+                    }
+                    try {
+                        $this->client->payloadCodec()->encode($details);
+                    } catch (Throwable $exception) {
+                        throw new InvalidLocalActivityReport(sprintf(
+                            'Local activity heartbeat details could not be encoded with the %s payload codec.',
+                            $this->client->payloadCodec()->name(),
+                        ), previous: $exception);
+                    }
+                    try {
+                        json_encode($details, JSON_THROW_ON_ERROR);
+                    } catch (Throwable $exception) {
+                        throw new InvalidLocalActivityReport(
+                            'Local activity heartbeat details could not be encoded for the HTTP JSON wire boundary.',
+                            previous: $exception,
+                        );
+                    }
+                    $this->renewWorkflowTaskLease(
+                        (string) ($task['task_id'] ?? ''),
+                        (string) ($task['lease_owner'] ?? $this->workerId),
+                        (int) ($task['workflow_task_attempt'] ?? 1),
+                    );
+                    if ($this->enableCooperativeCancellation) {
+                        $this->assertLocalWorkflowClaimActive($task, renew: false);
+                    }
+                    $lastHeartbeatAt = $now;
+                    ++$heartbeatCount;
+                    ++$totalHeartbeatCount;
+                    $previousElapsed = $heartbeats === []
+                        ? 0
+                        : (int) $heartbeats[array_key_last($heartbeats)]['elapsed_ms'];
+                    $heartbeats[] = [
+                        'details' => $details,
+                        'elapsed_ms' => max(
+                            $previousElapsed,
+                            max(0, (int) round(($now - $attemptStartedAt) * 1000)),
+                        ),
+                    ];
+                };
+                $callback = fn (\Closure $heartbeat): mixed => $handler(new ActivityContext(
+                    $this->client, (string) ($task['task_id'] ?? ''), $attemptId,
+                    (string) ($task['lease_owner'] ?? $this->workerId), $activityType, $attemptNumber,
+                    localHeartbeat: $heartbeat,
+                ), ...$arguments);
+                if ($this->enableCooperativeCancellation) {
+                    $nextRenewal = 0.0;
+                    $check = function (bool $force) use ($task, &$nextRenewal, $attemptStartedAt,
+                        $executionStartedAt, $startToClose, $scheduleToClose, $heartbeatTimeout, &$lastHeartbeatAt): void {
+                        $renew = $force || hrtime(true) / 1e9 >= $nextRenewal;
+                        $this->assertLocalWorkflowClaimActive($task, renew: $renew);
+                        if ($renew) {
+                            $nextRenewal = hrtime(true) / 1e9 + 1;
                         }
+                        $now = $this->now();
                         if ($heartbeatTimeout !== null && $now - $lastHeartbeatAt > $heartbeatTimeout) {
-                            throw new LocalActivityTimedOut(
-                                'heartbeat',
-                                'Local activity heartbeat timeout elapsed.',
-                            );
+                            throw new LocalActivityTimedOut('heartbeat', 'Local activity heartbeat timeout elapsed.');
                         }
                         if ($startToClose !== null && $now - $attemptStartedAt > $startToClose) {
-                            throw new LocalActivityTimedOut(
-                                'start_to_close',
-                                'Local activity start-to-close timeout elapsed.',
-                            );
+                            throw new LocalActivityTimedOut('start_to_close', 'Local activity start-to-close timeout elapsed.');
                         }
                         if ($scheduleToClose !== null && $now - $executionStartedAt > $scheduleToClose) {
-                            throw new LocalActivityTimedOut(
-                                'schedule_to_close',
-                                'Local activity schedule-to-close timeout elapsed.',
-                            );
-                        }
-                        if ($heartbeatCount >= self::MAX_LOCAL_ACTIVITY_HEARTBEATS_PER_ATTEMPT) {
-                            throw new InvalidLocalActivityReport(sprintf(
-                                'Local activity attempts may contain at most %d heartbeats.',
-                                self::MAX_LOCAL_ACTIVITY_HEARTBEATS_PER_ATTEMPT,
-                            ));
-                        }
-                        if ($totalHeartbeatCount >= self::MAX_LOCAL_ACTIVITY_HEARTBEATS) {
-                            throw new InvalidLocalActivityReport(sprintf(
-                                'Local activity reports may contain at most %d heartbeats.',
-                                self::MAX_LOCAL_ACTIVITY_HEARTBEATS,
-                            ));
+                            throw new LocalActivityTimedOut('schedule_to_close', 'Local activity schedule-to-close timeout elapsed.');
                         }
                         try {
-                            $this->client->payloadCodec()->encode($details);
-                        } catch (Throwable $exception) {
-                            throw new InvalidLocalActivityReport(sprintf(
-                                'Local activity heartbeat details could not be encoded with the %s payload codec.',
-                                $this->client->payloadCodec()->name(),
-                            ), previous: $exception);
+                            $this->heartbeatIfDue();
+                        } catch (Throwable $error) {
+                            throw new WorkflowClaimAborted('Worker registration heartbeat failed during local execution.', previous: $error);
                         }
-                        try {
-                            json_encode($details, JSON_THROW_ON_ERROR);
-                        } catch (Throwable $exception) {
-                            throw new InvalidLocalActivityReport(
-                                'Local activity heartbeat details could not be encoded for the HTTP JSON wire boundary.',
-                                previous: $exception,
-                            );
-                        }
-                        $this->renewWorkflowTaskLease(
-                            (string) ($task['task_id'] ?? ''),
-                            (string) ($task['lease_owner'] ?? $this->workerId),
-                            (int) ($task['workflow_task_attempt'] ?? 1),
-                        );
-                        if ($this->enableCooperativeCancellation) {
-                            $this->assertLocalWorkflowClaimActive($task, renew: false);
-                        }
-                        $lastHeartbeatAt = $now;
-                        ++$heartbeatCount;
-                        ++$totalHeartbeatCount;
-                        $previousElapsed = $heartbeats === []
-                            ? 0
-                            : (int) $heartbeats[array_key_last($heartbeats)]['elapsed_ms'];
-                        $heartbeats[] = [
-                            'details' => $details,
-                            'elapsed_ms' => max(
-                                $previousElapsed,
-                                max(0, (int) round(($now - $attemptStartedAt) * 1000)),
-                            ),
-                        ];
-                    },
-                );
-                $result = $handler($context, ...$arguments);
+                    };
+                    $result = (new CooperativeActivityExecutor($this->client->payloadCodec()))->execute(
+                        $callback,
+                        static function (array $details) use ($localHeartbeat): mixed {
+                            $localHeartbeat($details);
+                            return null;
+                        },
+                        $check,
+                        function (int $relay, int $callback) use ($task, $attemptId, $activityType): void {
+                            $this->diagnostic('worker.activity_process_started', [
+                                'task_id' => $task['task_id'] ?? '', 'activity_attempt_id' => $attemptId,
+                                'activity_type' => $activityType,
+                                'relay_pid' => $relay, 'callback_pid' => $callback, 'local' => true,
+                            ]);
+                        },
+                    );
+                } else {
+                    $result = $callback($localHeartbeat);
+                }
                 if ($this->enableCooperativeCancellation) {
                     // Check the lease and request before the result can be encoded or reported.
                     $this->assertLocalWorkflowClaimActive($task);
@@ -1849,10 +1904,18 @@ final class Worker
                 if ($exception instanceof ServerException && $exception->isStorageAdmissionFailure()) {
                     throw $exception;
                 }
-                $timedOut = $exception instanceof LocalActivityTimedOut;
-                $cancelled = $exception instanceof ActivityCancelled;
-                $timeoutKind = $timedOut ? $exception->timeoutKind : null;
-                $type = $exception::class;
+                if ($exception instanceof ActivityExecutionFailure && $exception->storageAdmissionFailure) {
+                    throw new WorkflowClaimAborted('Activity callback received a storage admission refusal.', previous: $exception);
+                }
+                $timeoutKind = $exception instanceof LocalActivityTimedOut ? $exception->timeoutKind
+                    : ($exception instanceof ActivityExecutionFailure ? $exception->timeoutKind : null);
+                $timedOut = $timeoutKind !== null;
+                $cancelled = $exception instanceof ActivityCancelled
+                    || ($exception instanceof ActivityExecutionFailure && $exception->cancelled);
+                $invalidExecutionReport = $exception instanceof ActivityExecutionFailure
+                    && ($exception->invalidReport || $exception->duringEncoding);
+                $type = $invalidExecutionReport ? InvalidLocalActivityReport::class
+                    : ($exception instanceof ActivityExecutionFailure ? $exception->originalType : $exception::class);
                 $message = trim($exception->getMessage());
                 $invalidFailureMetadata = false;
                 try {
@@ -1876,9 +1939,9 @@ final class Worker
                     $cancelled = false;
                     $timeoutKind = null;
                 }
-                $invalidReport = $exception instanceof InvalidLocalActivityReport || $invalidFailureMetadata;
+                $invalidReport = $exception instanceof InvalidLocalActivityReport || $invalidFailureMetadata || $invalidExecutionReport;
                 $isNonRetryable = $cancelled || $invalidReport || in_array($type, $nonRetryable, true)
-                    || in_array((new \ReflectionClass($exception))->getShortName(), $nonRetryable, true);
+                    || in_array(substr($type, (int) strrpos('\\'.$type, '\\')), $nonRetryable, true);
                 $retry = ! $cancelled && ! $isNonRetryable && $attemptNumber < $maxAttempts;
                 $backoffSeconds = $retry ? max(0, (int) ($backoff[$attemptNumber - 1] ?? 0)) : 0;
                 if ($retry
@@ -1911,7 +1974,15 @@ final class Worker
                 $attempts[] = $attempt;
                 if ($retry) {
                     if ($backoffSeconds > 0) {
-                        ($this->sleeper)($backoffSeconds * 1_000_000);
+                        if ($this->enableCooperativeCancellation) {
+                            $until = hrtime(true) / 1e9 + $backoffSeconds;
+                            while (hrtime(true) / 1e9 < $until) {
+                                $this->assertLocalWorkflowClaimActive($task);
+                                usleep((int) min(1_000_000, max(1, ($until - hrtime(true) / 1e9) * 1_000_000)));
+                            }
+                        } else {
+                            ($this->sleeper)($backoffSeconds * 1_000_000);
+                        }
                     }
                     continue;
                 }
@@ -1936,6 +2007,7 @@ final class Worker
         if ($this->shutdownRequested) {
             throw new WorkflowClaimAborted('Worker shutdown abandoned its local workflow claim.');
         }
+        $this->assertCancellationDeadline();
         if ($renew) {
             try {
                 if (!$this->renewWorkflowTaskLease((string) $task['task_id'],
@@ -1948,9 +2020,18 @@ final class Worker
                 throw new WorkflowClaimAborted('Local workflow claim renewal failed.', previous: $error);
             }
         }
+        $this->assertCancellationDeadline();
         if ($this->claimCancellation !== null
             && $this->claimDeliveredCancellationId !== $this->claimCancellation->requestId) {
             throw new CooperativeCancellationObserved('Cooperative request observed on the actual task heartbeat.');
+        }
+    }
+
+    private function assertCancellationDeadline(): void
+    {
+        if ($this->claimCancellation !== null
+            && $this->now() >= (float) (new \DateTimeImmutable($this->claimCancellation->cleanupDeadlineAt))->format('U.u')) {
+            throw new WorkflowClaimAborted('The original cooperative cleanup deadline elapsed.');
         }
     }
 

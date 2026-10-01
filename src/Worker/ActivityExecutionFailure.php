@@ -13,6 +13,10 @@ final class ActivityExecutionFailure extends RuntimeException
         string $message,
         public readonly string $originalType,
         public readonly bool $duringEncoding = false,
+        public readonly bool $cancelled = false,
+        public readonly bool $invalidReport = false,
+        public readonly ?string $timeoutKind = null,
+        public readonly bool $storageAdmissionFailure = false,
     ) {
         parent::__construct($message);
     }
