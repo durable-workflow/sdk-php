@@ -197,7 +197,9 @@ final class PortableMemoRestartTest extends TestCase
         $codec = new AvroPayloadCodec();
         foreach (['entries', 'merged'] as $field) {
             $envelope = $event['payload'][$field] ?? null;
-            self::assertSame(['codec' => 'avro', 'blob' => self::MEMO_BLOB], $envelope);
+            self::assertIsArray($envelope);
+            ksort($envelope, SORT_STRING);
+            self::assertSame(['blob' => self::MEMO_BLOB, 'codec' => 'avro'], $envelope);
             $decoded = $codec->decodeEnvelope($envelope);
             self::assertIsInt($decoded['long']);
             self::assertSame(7, $decoded['long']);
