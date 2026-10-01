@@ -14,6 +14,9 @@ use DurableWorkflow\Exception\SagaCompensationFailed;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\CapabilityManifest;
+use DurableWorkflow\Worker\CancellationHistory;
+use DurableWorkflow\Worker\CancellationRequest;
+use DurableWorkflow\Worker\CooperativeCancellationObserved;
 use DurableWorkflow\Worker\DiscoveredHandlers;
 use DurableWorkflow\Worker\HandlerDiscovery;
 use DurableWorkflow\Worker\HandlerDefinition;
@@ -22,6 +25,8 @@ use DurableWorkflow\Worker\HandlerResolver;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\Replayer;
+use DurableWorkflow\Worker\ReplayResult;
+use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkflowContext;
 use DurableWorkflow\Worker\StickyWorkflowCache;
 use DurableWorkflow\Worker\WorkerSession;
@@ -75,6 +80,8 @@ final class Worker
     private array $activeWorkerSessions = [];
     /** @var array<string, mixed>|null */
     private ?array $workflowMemoCapability = null;
+    private ?CancellationRequest $claimCancellation = null;
+    private ?string $claimDeliveredCancellationId = null;
     /** @var (\Closure(string, array<string, mixed>): void)|null */
     private readonly ?\Closure $diagnosticListener;
 
@@ -94,7 +101,11 @@ final class Worker
         ?callable $diagnosticListener = null,
         int $stickyCacheCapacity = 100,
         int $stickyCacheTtlSeconds = 300,
+        private readonly bool $enableCooperativeCancellation = false,
     ) {
+        if ($enableCooperativeCancellation && !Version::supportsCooperativeCancellation($client->workerProtocolVersion)) {
+            throw new \InvalidArgumentException('Cooperative cancellation requires explicit worker protocol 1.20.');
+        }
         $this->workerId = $workerId ?? 'php-worker-'.bin2hex(random_bytes(8));
         $this->heartbeatIntervalSeconds = $this->validHeartbeatInterval($heartbeatIntervalSeconds)
             ?? self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS;
@@ -426,6 +437,14 @@ final class Worker
     /** @return array<string, mixed>|null */
     private function registerWithRetry(): ?array
     {
+        if ($this->enableCooperativeCancellation) {
+            $protocol = $this->client->clusterInfo()->raw['worker_protocol'] ?? null;
+            if (!is_array($protocol) || !is_string($protocol['version'] ?? null)
+                || !Version::supportsCooperativeCancellation($protocol['version'])
+                || ($protocol['server_capabilities']['cooperative_cancellation'] ?? null) !== true) {
+                throw new WorkflowClaimAborted('Cooperative cancellation requires explicit compatible runtime discovery.');
+            }
+        }
         $attempt = 0;
         while (!$this->shutdownRequested) {
             try {
@@ -447,10 +466,20 @@ final class Worker
                         'worker_sessions',
                         'sticky_execution',
                         'cross_kind_poll_wake',
+                        ...($this->enableCooperativeCancellation ? ['cooperative_cancellation'] : []),
                     ],
                     buildId: $this->buildId,
                     workflowCommandContracts: $this->workflowCommandContracts(),
-                    capabilityManifest: CapabilityManifest::portableWorkerAffinity(),
+                    capabilityManifest: [
+                        ...CapabilityManifest::portableWorkerAffinity(),
+                        ...($this->enableCooperativeCancellation ? [
+                            'cooperative_cancellation' => [
+                                'supported' => true,
+                                'minimum_protocol_version' => Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL,
+                                'implementation' => 'authored_call_canonical_delivery',
+                            ],
+                        ] : []),
+                    ],
                     workflowDefinitionFingerprints: $this->workflowDefinitionFingerprints(),
                 );
             } catch (ServerException $exception) {
@@ -941,12 +970,17 @@ final class Worker
     /** @param array<string, mixed> $task */
     private function executeWorkflowTask(array $task): void
     {
+        $this->claimCancellation = null;
+        $this->claimDeliveredCancellationId = null;
         $taskId = (string) ($task['task_id'] ?? '');
         $attempt = (int) ($task['workflow_task_attempt'] ?? 1);
         $leaseOwner = (string) ($task['lease_owner'] ?? $this->workerId);
         $messageStreamCursors = [];
         $messageStreamWaits = [];
         try {
+            if (array_key_exists('cancellation_request', $task) && $task['cancellation_request'] !== null) {
+                $this->observeClaimCancellation($task['cancellation_request']);
+            }
             $history = $this->completeHistory($task, $leaseOwner, $attempt);
             if (!$this->renewWorkflowTaskLease($taskId, $leaseOwner, $attempt)) {
                 return;
@@ -962,18 +996,11 @@ final class Worker
                 }
                 $input = $this->decodeArguments($task['arguments'] ?? $task['input'] ?? null);
                 try {
-                    $replay = $this->replayer->replay(
+                    $replay = $this->replayWorkflowClaim(
                         $handler,
                         $history,
                         $input,
-                        $this->taskQueue,
                         $task,
-                        fn (string $activityType, array $arguments, array $options): array => $this->executeLocalActivity(
-                            $task,
-                            $activityType,
-                            $arguments,
-                            $options,
-                        ),
                     );
                     $commands = $replay->commands;
                     $messageStreamCursors = $replay->messageStreamCursors;
@@ -992,7 +1019,7 @@ final class Worker
                     } else {
                         $this->diagnoseWorkflowWait($task, $commands);
                     }
-                } catch (NonDeterministicWorkflow $exception) {
+                } catch (NonDeterministicWorkflow|WorkflowClaimAborted $exception) {
                     throw $exception;
                 } catch (Throwable $exception) {
                     if ($exception instanceof ServerException && $exception->isStorageAdmissionFailure()) {
@@ -1072,6 +1099,9 @@ final class Worker
             }
 
             if (($response['renewed'] ?? null) === true) {
+                if (array_key_exists('cancellation_request', $response) && $response['cancellation_request'] !== null) {
+                    $this->observeClaimCancellation($response['cancellation_request']);
+                }
                 return true;
             }
 
@@ -1090,6 +1120,154 @@ final class Worker
         }
 
         return false;
+    }
+
+    private function observeClaimCancellation(mixed $observation): CancellationRequest
+    {
+        if (!$this->enableCooperativeCancellation || !is_array($observation) || array_is_list($observation)) {
+            throw new WorkflowClaimAborted('Workflow cancellation observation was not negotiated or is malformed.');
+        }
+        try {
+            $current = CancellationRequest::fromObservation($observation);
+        } catch (\InvalidArgumentException $error) {
+            throw new WorkflowClaimAborted('Workflow cancellation observation is malformed.', previous: $error);
+        }
+        $original = $this->claimCancellation;
+        if ($original !== null && ($original->requestId !== $current->requestId
+            || $original->requestedAt !== $current->requestedAt
+            || $original->cleanupDeadlineAt !== $current->cleanupDeadlineAt)) {
+            throw new WorkflowClaimAborted('Workflow cancellation observation changed its original identity or deadline.');
+        }
+        $this->claimCancellation = $current;
+
+        return $current;
+    }
+
+    /** @return array<string, string> */
+    private function claimCancellationObservation(): array
+    {
+        $request = $this->claimCancellation;
+        if ($request === null || $request->historyRefreshPageToken === null) {
+            throw new WorkflowClaimAborted('Cancellation needs the Server-issued history refresh token on this claim.');
+        }
+
+        return ['request_id' => $request->requestId, 'requested_at' => $request->requestedAt,
+            'cleanup_deadline_at' => $request->cleanupDeadlineAt,
+            'history_refresh_page_token' => $request->historyRefreshPageToken];
+    }
+
+    /** @param array<string, mixed> $task
+     *  @return list<array<string, mixed>>
+     */
+    private function refreshCancellationHistory(array $task): array
+    {
+        $token = $this->claimCancellationObservation()['history_refresh_page_token'];
+        $seen = [];
+        $history = [];
+        $hasCanonicalRequest = false;
+        do {
+            if (isset($seen[$token])) {
+                throw new WorkflowClaimAborted('Cancellation history paging repeated its opaque token.');
+            }
+            $seen[$token] = true;
+            try {
+                $page = $this->client->workflowTaskHistory((string) $task['task_id'],
+                    (string) ($task['lease_owner'] ?? $this->workerId), (int) ($task['workflow_task_attempt'] ?? 1), $token);
+            } catch (Throwable $error) {
+                throw new WorkflowClaimAborted('Canonical cancellation history could not be loaded on this claim.', previous: $error);
+            }
+            $events = $page['history_events'] ?? null;
+            if (!is_array($events) || !array_is_list($events)) {
+                throw new WorkflowClaimAborted('Cancellation history page is not a list of canonical events.');
+            }
+            foreach ($events as $event) {
+                if (!is_array($event) || array_is_list($event)) {
+                    throw new WorkflowClaimAborted('Cancellation history page contains a malformed event.');
+                }
+                $history[] = $event;
+                $hasCanonicalRequest = $hasCanonicalRequest
+                    || ($event['event_type'] ?? $event['type'] ?? null) === CancellationHistory::REQUEST_EVENT;
+            }
+            $next = $page['next_history_page_token'] ?? null;
+            if ($next !== null && !is_string($next)) {
+                throw new WorkflowClaimAborted('Cancellation history page has a malformed next token.');
+            }
+            $token = $next ?? '';
+        } while ($token !== '');
+        if (($history[0]['event_type'] ?? $history[0]['type'] ?? null) !== 'WorkflowStarted'
+            || !$hasCanonicalRequest) {
+            throw new WorkflowClaimAborted('Cancellation refresh must contain the original start and canonical request.');
+        }
+        $workflowId = (string) ($task['workflow_id'] ?? '');
+        $runId = (string) ($task['run_id'] ?? '');
+        if ($workflowId !== '' && $runId !== '') {
+            $this->stickyCache->remember($workflowId, $runId, $this->effectiveBuildId(), $history);
+        }
+
+        return $history;
+    }
+
+    /** @param callable(WorkflowContext, mixed ...$input): mixed $handler
+     *  @param list<array<string, mixed>> $history
+     *  @param list<mixed> $input
+     *  @param array<string, mixed> $task
+     */
+    private function replayWorkflowClaim(callable $handler, array $history, array $input, array $task): ReplayResult
+    {
+        if ($this->claimCancellation !== null) {
+            $history = $this->refreshCancellationHistory($task);
+        }
+        for ($pass = 0; $pass < 3; ++$pass) {
+            $observation = $this->claimCancellation === null ? null : $this->claimCancellationObservation();
+            $state = CancellationHistory::fromEvents($history, (string) ($task['run_id'] ?? ''),
+                $observation === null ? null : CancellationRequest::fromObservation($observation));
+            if ($state->request !== null && $state->delivery === null && !$this->enableCooperativeCancellation) {
+                throw new WorkflowClaimAborted('Pending cancellation requires a negotiated capable worker.');
+            }
+            $this->claimDeliveredCancellationId = $state->delivery?->requestId;
+            $task['cancellation_request'] = $observation;
+            $replay = null;
+            try {
+                $replay = $this->replayer->replay($handler, $history, $input, $this->taskQueue, $task,
+                    fn (string $activityType, array $arguments, array $options): array => $this->executeLocalActivity(
+                        $task, $activityType, $arguments, $options,
+                    ));
+            } catch (CooperativeCancellationObserved) {
+                $history = $this->refreshCancellationHistory($task);
+                continue;
+            }
+            if ($replay->terminalFailure instanceof CooperativeCancellationObserved) {
+                if ($replay->commands !== []) {
+                    // Earlier local reports must commit before this claim is released.
+                    return new ReplayResult($replay->commands, $replay->messageStreamCursors, $replay->messageStreamWaits);
+                }
+                $history = $this->refreshCancellationHistory($task);
+                continue;
+            }
+            if ($replay->terminalFailure instanceof WorkflowClaimAborted) {
+                throw $replay->terminalFailure;
+            }
+            $intent = $replay->cancellationDelivery;
+            if ($intent === null || $replay->commands !== []) {
+                return $replay;
+            }
+            $this->claimCancellationObservation();
+            $deliveryError = null;
+            try {
+                $this->client->deliverWorkflowCancellation((string) $task['task_id'],
+                    (string) ($task['lease_owner'] ?? $this->workerId), (int) ($task['workflow_task_attempt'] ?? 1), $intent);
+            } catch (Throwable $error) {
+                $deliveryError = $error;
+            }
+            $history = $this->refreshCancellationHistory($task);
+            $committed = CancellationHistory::fromEvents($history, (string) ($task['run_id'] ?? ''),
+                CancellationRequest::fromObservation($this->claimCancellationObservation()));
+            if ($committed->delivery != $intent) {
+                throw new WorkflowClaimAborted('Cancellation delivery was not proved by matching canonical history.', previous: $deliveryError);
+            }
+        }
+
+        throw new WorkflowClaimAborted('Cancellation replay did not converge on its canonical delivery.');
     }
 
     /** @param array<string, mixed> $poll */
@@ -1537,7 +1715,10 @@ final class Worker
             $heartbeats = [];
             $heartbeatCount = 0;
             try {
-                if ($this->shutdownRequested || (bool) ($task['cancel_requested'] ?? false)) {
+                if ($this->enableCooperativeCancellation) {
+                    $this->assertLocalWorkflowClaimActive($task);
+                }
+                if ($this->shutdownRequested || ($this->claimCancellation === null && (bool) ($task['cancel_requested'] ?? false))) {
                     throw new ActivityCancelled('The workflow requested local activity cancellation.');
                 }
                 $context = new ActivityContext(
@@ -1614,6 +1795,9 @@ final class Worker
                             (string) ($task['lease_owner'] ?? $this->workerId),
                             (int) ($task['workflow_task_attempt'] ?? 1),
                         );
+                        if ($this->enableCooperativeCancellation) {
+                            $this->assertLocalWorkflowClaimActive($task, renew: false);
+                        }
                         $lastHeartbeatAt = $now;
                         ++$heartbeatCount;
                         ++$totalHeartbeatCount;
@@ -1630,6 +1814,10 @@ final class Worker
                     },
                 );
                 $result = $handler($context, ...$arguments);
+                if ($this->enableCooperativeCancellation) {
+                    // Check the lease and request before the result can be encoded or reported.
+                    $this->assertLocalWorkflowClaimActive($task);
+                }
                 $elapsed = $this->now() - $attemptStartedAt;
                 if ($heartbeatTimeout !== null && $this->now() - $lastHeartbeatAt > $heartbeatTimeout) {
                     throw new LocalActivityTimedOut('heartbeat', 'Local activity heartbeat timeout elapsed.');
@@ -1656,6 +1844,9 @@ final class Worker
 
                 return ['outcome' => 'completed', 'result' => $result, 'attempts' => $attempts];
             } catch (Throwable $exception) {
+                if ($exception instanceof WorkflowClaimAborted) {
+                    throw $exception;
+                }
                 if ($exception instanceof ServerException && $exception->isStorageAdmissionFailure()) {
                     throw $exception;
                 }
@@ -1738,6 +1929,30 @@ final class Worker
         }
 
         throw new \LogicException('Local activity retry loop exhausted without a terminal outcome.');
+    }
+
+    /** @param array<string, mixed> $task */
+    private function assertLocalWorkflowClaimActive(array $task, bool $renew = true): void
+    {
+        if ($this->shutdownRequested) {
+            throw new WorkflowClaimAborted('Worker shutdown abandoned its local workflow claim.');
+        }
+        if ($renew) {
+            try {
+                if (!$this->renewWorkflowTaskLease((string) $task['task_id'],
+                    (string) ($task['lease_owner'] ?? $this->workerId), (int) ($task['workflow_task_attempt'] ?? 1))) {
+                    throw new WorkflowClaimAborted('Local workflow claim was not renewed.');
+                }
+            } catch (WorkflowClaimAborted $error) {
+                throw $error;
+            } catch (Throwable $error) {
+                throw new WorkflowClaimAborted('Local workflow claim renewal failed.', previous: $error);
+            }
+        }
+        if ($this->claimCancellation !== null
+            && $this->claimDeliveredCancellationId !== $this->claimCancellation->requestId) {
+            throw new CooperativeCancellationObserved('Cooperative request observed on the actual task heartbeat.');
+        }
     }
 
     /**

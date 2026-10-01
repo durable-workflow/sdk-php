@@ -302,6 +302,9 @@ final class WorkflowCommand
         try {
             $outcome = ($this->localActivity)($activityType, $arguments, $options);
         } catch (Throwable $exception) {
+            if ($exception instanceof WorkflowClaimAborted) {
+                throw $exception;
+            }
             if ($exception instanceof ServerException && $exception->isStorageAdmissionFailure()) {
                 throw $exception;
             }
