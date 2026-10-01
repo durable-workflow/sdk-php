@@ -105,7 +105,7 @@ final class Worker
         int $stickyCacheCapacity = 100,
         int $stickyCacheTtlSeconds = 300,
         /**
-         * Source opt-in. Local callbacks run in a Unix child process. Open handler-owned
+         * Source opt-in. Activity callbacks run in a Unix child process. Open handler-owned
          * connections there. Captured memory changes do not update the owning worker.
          */
         private readonly bool $enableCooperativeCancellation = false,
@@ -1397,7 +1397,53 @@ final class Worker
                     fn (): array => $this->client->heartbeatActivityTask($taskId, $attemptId, $leaseOwner, $details),
                 ),
             );
-            $result = $handler($context, ...$this->decodeArguments($task['arguments'] ?? null));
+            $arguments = $this->decodeArguments($task['arguments'] ?? null);
+            if ($this->enableCooperativeCancellation) {
+                $nextObservation = 0.0;
+                $check = function (bool $force) use ($task, &$nextObservation): void {
+                    if ($this->shutdownRequested) {
+                        throw new WorkflowClaimAborted('Worker shutdown abandoned its remote activity claim.');
+                    }
+                    if ($force || hrtime(true) / 1e9 >= $nextObservation) {
+                        $this->assertRemoteActivityClaimActive($task);
+                        $nextObservation = hrtime(true) / 1e9 + 1;
+                    }
+                };
+                $result = (new CooperativeActivityExecutor($this->client->payloadCodec()))->execute(
+                    function (\Closure $heartbeat) use ($handler, $taskId, $attemptId, $leaseOwner, $activityType, $task, $arguments): mixed {
+                        $callbackContext = new ActivityContext($this->client, $taskId, $attemptId, $leaseOwner,
+                            $activityType, (int) ($task['attempt_number'] ?? 1), localHeartbeat: $heartbeat);
+
+                        return $handler($callbackContext, ...$arguments);
+                    },
+                    function (array $details) use ($taskId, $attemptId, $leaseOwner): array {
+                        try {
+                            $reply = $this->client->heartbeatActivityTask($taskId, $attemptId, $leaseOwner, $details);
+                            if (($reply['task_id'] ?? null) !== $taskId
+                                || ($reply['activity_attempt_id'] ?? null) !== $attemptId
+                                || ($reply['lease_owner'] ?? null) !== $leaseOwner
+                                || ($reply['can_continue'] ?? null) !== true
+                                || ($reply['cancel_requested'] ?? null) !== false) {
+                                throw new WorkflowClaimAborted('Remote activity heartbeat lost its ownership fence.');
+                            }
+
+                            return $reply;
+                        } catch (Throwable $error) {
+                            throw new WorkflowClaimAborted('Remote activity user heartbeat failed.', previous: $error);
+                        }
+                    },
+                    $check,
+                    function (int $relay, int $callback) use ($taskId, $attemptId, $activityType): void {
+                        $this->diagnostic('worker.activity_process_started', [
+                            'task_id' => $taskId, 'activity_attempt_id' => $attemptId, 'activity_type' => $activityType,
+                            'relay_pid' => $relay, 'callback_pid' => $callback, 'local' => false,
+                        ]);
+                    },
+                );
+                $check(true);
+            } else {
+                $result = $handler($context, ...$arguments);
+            }
             $this->retryStorageAdmission(
                 'activity_complete',
                 fn (): array => $this->client->completeActivityTask($taskId, $attemptId, $leaseOwner, $result),
@@ -1408,6 +1454,14 @@ final class Worker
                 ],
             );
         } catch (Throwable $exception) {
+            if ($this->enableCooperativeCancellation && $exception instanceof WorkflowClaimAborted) {
+                $this->diagnostic('worker.claim_aborted', [
+                    'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
+                    'task_kind' => 'activity', 'message' => $exception->getMessage(),
+                ], 'warning');
+
+                return;
+            }
             $this->acknowledgeTaskFailure(
                 'activity',
                 $taskId,
@@ -1418,11 +1472,70 @@ final class Worker
                         $attemptId,
                         $leaseOwner,
                         $failure->getMessage(),
-                        $failure::class,
-                        $failure instanceof ActivityCancelled,
+                        $failure instanceof ActivityExecutionFailure ? $failure->originalType : $failure::class,
+                        $failure instanceof ActivityCancelled || ($failure instanceof ActivityExecutionFailure && $failure->cancelled),
                     );
                 },
             );
+        }
+    }
+
+    /** @param array<string, mixed> $task */
+    private function assertRemoteActivityClaimActive(array $task): void
+    {
+        try {
+            $reply = $this->client->activityTaskStatus((string) $task['task_id'],
+                (string) ($task['activity_attempt_id'] ?? $task['attempt_id'] ?? ''),
+                (string) ($task['lease_owner'] ?? $this->workerId));
+            if (($reply['task_id'] ?? null) !== $task['task_id']
+                || ($reply['activity_attempt_id'] ?? null) !== ($task['activity_attempt_id'] ?? $task['attempt_id'] ?? '')
+                || ($reply['lease_owner'] ?? null) !== ($task['lease_owner'] ?? $this->workerId)
+                || ($reply['can_continue'] ?? null) !== true
+                || ($reply['cancel_requested'] ?? null) !== false
+                || ($reply['heartbeat_recorded'] ?? null) !== false
+                || ($reply['reason'] ?? null) !== null
+                || !is_string($reply['lease_expires_at'] ?? null)) {
+                throw new WorkflowClaimAborted('Remote activity observation refused its ownership fence.');
+            }
+            $bounds = [$reply['lease_expires_at']];
+            if ((isset($reply['deadlines']) && !is_array($reply['deadlines']))
+                || (isset($reply['worker_session']) && !is_array($reply['worker_session']))) {
+                throw new WorkflowClaimAborted('Remote activity observation returned malformed ownership metadata.');
+            }
+            foreach (['heartbeat', 'start_to_close', 'schedule_to_close'] as $kind) {
+                if (isset($reply['deadlines'][$kind])) {
+                    $bounds[] = $reply['deadlines'][$kind];
+                }
+            }
+            if (isset($reply['worker_session']) && is_array($reply['worker_session'])) {
+                if (($reply['worker_session']['status'] ?? null) !== 'active'
+                    || ($reply['worker_session']['lease_owner'] ?? null) !== ($task['lease_owner'] ?? $this->workerId)) {
+                    throw new WorkflowClaimAborted('Remote activity observation lost its required worker session.');
+                }
+                $bounds[] = $reply['worker_session']['lease_expires_at'] ?? null;
+                $bounds[] = $reply['worker_session']['ttl_expires_at'] ?? null;
+            }
+            $timestamps = [];
+            foreach ($bounds as $bound) {
+                if (!is_string($bound) || preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/D', $bound) !== 1) {
+                    throw new WorkflowClaimAborted('Remote activity observation returned an invalid deadline.');
+                }
+                $timestamps[] = (float) (new \DateTimeImmutable($bound))->format('U.u');
+            }
+            if ($this->now() >= min($timestamps)) {
+                throw new WorkflowClaimAborted('Remote activity ownership or execution deadline elapsed.');
+            }
+            $this->heartbeatIfDue();
+            if ($this->shutdownRequested) {
+                throw new WorkflowClaimAborted('Worker shutdown abandoned its remote activity claim.');
+            }
+            if ($this->now() >= min($timestamps)) {
+                throw new WorkflowClaimAborted('Remote activity ownership or execution deadline elapsed.');
+            }
+        } catch (WorkflowClaimAborted $error) {
+            throw $error;
+        } catch (Throwable $error) {
+            throw new WorkflowClaimAborted('Remote activity ownership observation failed.', previous: $error);
         }
     }
 

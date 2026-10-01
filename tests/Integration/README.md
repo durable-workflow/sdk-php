@@ -94,7 +94,7 @@ give task hydration one five-second budget shared by all references. Complete
 transfers use finite temporary sinks, so a trickling body cannot restart a
 per-read timeout or grow without a byte bound. The owning
 worker alone renews the real task lease, observes its original request and
-deadline, records user heartbeats and permits result encoding. Local callbacks
+deadline, records user heartbeats and permits result encoding. Activity callbacks
 run in a child process. Open handler-owned database or network connections in
 that process. Changes to captured memory do not update the owning worker.
 Parent connections and inherited shutdown hooks must not be used for callback
@@ -102,5 +102,12 @@ cleanup. Normal workers keep their existing execution model.
 
 Stopping a callback does not roll back an external effect. Activities remain
 subject to at-least-once execution and must make retries safe. Remote activity
-lifetime, graceful shutdown and active-task cold replacement still need their
-connected qualification before this capability is released.
+lifetime is observed through the candidate1.20 activity status endpoint, with
+no automatic user progress or activity lease renewal. The existing five-minute
+lease requires authored heartbeats for longer attempts. Failed observations
+abandon the attempt without writing an application failure. Connected remote
+cases use separate workflow and activity workers, so workflow capacity remains
+available to record canonical cancellation while a callback blocks. They cover
+user/no-user heartbeats, cold workflow replacement, SIGTERM/SIGKILL and late
+publication fencing. Active remote-attempt reclaim and exact published-tuple
+qualification remain required before release.

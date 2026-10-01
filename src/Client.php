@@ -1499,6 +1499,21 @@ final class Client implements WorkflowClientInterface
         ]);
     }
 
+    /** Observe ownership without renewing a lease or recording user progress.
+     * @return array<string, mixed>
+     */
+    public function activityTaskStatus(string $taskId, string $activityAttemptId, string $leaseOwner): array
+    {
+        if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion)) {
+            throw new InvalidArgumentException('Activity attempt observation requires worker protocol 1.20.');
+        }
+
+        return $this->worker('POST', '/worker/activity-tasks/'.$this->segment($taskId).'/status', [
+            'activity_attempt_id' => $activityAttemptId,
+            'lease_owner' => $leaseOwner,
+        ]);
+    }
+
     /**
      * Return the complete query-task poll response, including typed refusal and protocol metadata.
      *
