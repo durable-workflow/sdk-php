@@ -32,6 +32,10 @@ final class WorkflowContext
 
     private int $workflowStreamCommandOrdinal = 0;
 
+    private int $cancellationShieldDepth = 0;
+
+    private ?string $deliveredCancellationRequestId = null;
+
     /** @var list<list<DeferredWorkflowOperation|ParallelWorkflowCommand>> */
     private array $captureFrames = [];
 
@@ -485,14 +489,47 @@ final class WorkflowContext
 
     public function isCancellationRequested(): bool
     {
-        return $this->cancellationRequested;
+        return $this->cancellationRequested || $this->deliveredCancellationRequestId !== null;
     }
 
     public function throwIfCancellationRequested(): void
     {
-        if ($this->cancellationRequested) {
-            throw new WorkflowCancelled('Workflow cancellation was requested.');
+        if ($this->isCancellationRequested() && !$this->isCancellationShielded()) {
+            throw new WorkflowCancelled('Workflow cancellation was requested.', requestId: $this->deliveredCancellationRequestId);
         }
+    }
+
+    /**
+     * Permit deterministic cleanup without delivering the same request again.
+     * Server still owns the original cleanup deadline and task lease.
+     *
+     * @template TResult
+     * @param callable(): TResult $cleanup
+     * @return TResult
+     */
+    public function cancellationShield(callable $cleanup): mixed
+    {
+        $this->assertActiveFiber();
+        ++$this->cancellationShieldDepth;
+        try {
+            return $cleanup();
+        } finally {
+            --$this->cancellationShieldDepth;
+        }
+    }
+
+    /** @internal Replay checks shielding at the authored cancellation boundary. */
+    public function isCancellationShielded(): bool
+    {
+        return $this->cancellationShieldDepth > 0;
+    }
+
+    /** @internal Only a committed delivery marker authorizes this state change. */
+    public function deliveredCancellation(string $requestId): WorkflowCancelled
+    {
+        $this->deliveredCancellationRequestId = $requestId;
+
+        return new WorkflowCancelled('Workflow cancellation was requested.', requestId: $requestId);
     }
 
     /** @return list<list<mixed>> */

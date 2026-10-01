@@ -248,6 +248,12 @@ final class ReplayRegressionFixture
                     }
                     $commands[] = $failureCommand;
                 }
+            } catch (WorkflowCancelled $exception) {
+                $commands = [[
+                    'type' => 'fail_workflow',
+                    'message' => $exception->getMessage(),
+                    'exception_type' => $exception::class,
+                ]];
             } catch (NonDeterministicWorkflow $exception) {
                 $commands = [[
                     'type' => 'replay_error',

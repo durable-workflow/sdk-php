@@ -20,6 +20,7 @@ final class ReplayResult
         public readonly ?Throwable $terminalFailure = null,
         public readonly ?int $failedActivitySequence = null,
         public readonly ?string $failedActivityExecutionId = null,
+        public readonly ?CancellationDelivery $cancellationDelivery = null,
     ) {
     }
 }

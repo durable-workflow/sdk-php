@@ -42,7 +42,19 @@ final class Replayer
         array $task = [],
         ?callable $localActivityExecutor = null,
     ): ReplayResult {
-        $steps = $this->recordedSteps($history);
+        $observation = $task['cancellation_request'] ?? null;
+        if ($observation !== null && (!is_array($observation) || array_is_list($observation))) {
+            throw new NonDeterministicWorkflow('Workflow cancellation observation must be an object.');
+        }
+        try {
+            $cancellation = CancellationHistory::fromEvents(
+                $history, (string) ($task['run_id'] ?? ''),
+                $observation === null ? null : CancellationRequest::fromObservation($observation),
+            );
+        } catch (\InvalidArgumentException $error) {
+            throw new NonDeterministicWorkflow($error->getMessage(), reason: 'invalid_cooperative_cancellation_history');
+        }
+        $steps = $this->recordedSteps($history, $cancellation->request !== null);
         $stepsBySequence = [];
         foreach ($steps as $step) {
             $stepsBySequence[$step['sequence']] = $step;
@@ -52,7 +64,7 @@ final class Replayer
         $selectionOperationIdentities = $this->selectionOperationIdentities($history);
         $completedHistory = $this->hasCompletedHistory($history);
         $context = null;
-        $execution = new Fiber(function () use ($handler, $history, $input, $task, $localActivityExecutor, &$context): mixed {
+        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $localActivityExecutor, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -62,7 +74,7 @@ final class Replayer
                 (string) ($task['run_id'] ?? ''),
                 $history,
                 $this->codec,
-                (bool) ($task['cancel_requested'] ?? false),
+                $cancellation->request === null && (bool) ($task['cancel_requested'] ?? false),
                 $current,
                 isset($task['workflow_command_id']) && (string) $task['workflow_command_id'] !== ''
                     ? (string) $task['workflow_command_id']
@@ -84,11 +96,53 @@ final class Replayer
         $versionDecisions = [];
         $suspended = $execution->start();
         $nextSequence = 1;
+        $cancellationConsumed = false;
 
         while (!$execution->isTerminated()) {
+            if ($cancellation->request !== null && !$cancellationConsumed) {
+                $boundary = $this->cancellationBoundary($suspended, $nextSequence, $stepsBySequence, $cancellation);
+                $delivery = $cancellation->delivery;
+                if ($delivery !== null && $delivery->sequence < $nextSequence) {
+                    throw new NonDeterministicWorkflow(
+                        'Workflow passed its committed cancellation boundary.', $delivery->sequence,
+                        reason: 'cooperative_cancellation_boundary_mismatch',
+                    );
+                }
+                if ($delivery !== null && $delivery->sequence === $nextSequence) {
+                    if ($boundary != $delivery || $context->isCancellationShielded()) {
+                        throw new NonDeterministicWorkflow(
+                            'Committed cancellation call kind, operation range or shielding changed.', $delivery->sequence,
+                            reason: 'cooperative_cancellation_boundary_mismatch',
+                        );
+                    }
+                    $this->assertCancellationCallMatches($suspended, $delivery, $stepsBySequence, $context);
+                    while (isset($steps[$stepCursor]) && $steps[$stepCursor]['sequence'] < $delivery->sequence + $delivery->sequenceSpan) {
+                        if ($steps[$stepCursor]['sequence'] < $delivery->sequence) {
+                            throw new NonDeterministicWorkflow('Cancellation skipped an earlier authored operation.', $steps[$stepCursor]['sequence']);
+                        }
+                        ++$stepCursor;
+                    }
+                    $nextSequence = $delivery->sequence + $delivery->sequenceSpan;
+                    $cancellationConsumed = true;
+                    $suspended = $execution->throw($context->deliveredCancellation($delivery->requestId));
+                    continue;
+                }
+                if ($delivery === null && $boundary !== null && !$context->isCancellationShielded()
+                    && $cancellation->eligible(
+                        $boundary->operationSequence ?? $boundary->sequence,
+                        $boundary->operationSequence === null ? $boundary->sequenceSpan : $boundary->operationSequenceSpan,
+                    )) {
+                    $this->assertCancellationCallMatches($suspended, $boundary, $stepsBySequence, $context);
+
+                    return new ReplayResult(
+                        $commands, $context->messageStreamCursorAcknowledgements(), $context->messageStreamPendingWaits(),
+                        cancellationDelivery: $boundary,
+                    );
+                }
+            }
             if ($suspended instanceof ParallelWorkflowCommand) {
                 $commandsBeforeGroup = count($commands);
-                $baseSequence = isset($steps[$stepCursor])
+                $baseSequence = $cancellation->request === null && isset($steps[$stepCursor])
                     ? $steps[$stepCursor]['sequence']
                     : $nextSequence;
                 $descriptors = $suspended->leafDescriptors($baseSequence);
@@ -122,6 +176,9 @@ final class Replayer
                     }
 
                     ++$matched;
+                    if ($cancellation->request !== null && $step['sequence'] !== $baseSequence + $offset) {
+                        throw new NonDeterministicWorkflow('Recorded parallel member belongs to a different authored call.', $baseSequence + $offset);
+                    }
                     $this->assertCommandMatchesStep($command, $step);
                     $this->assertParallelPathMatches($step, $path);
                     if ($command->type === 'open_condition_wait') {
@@ -255,6 +312,7 @@ final class Replayer
                 throw new NonDeterministicWorkflow('Workflow suspended with an unsupported value instead of WorkflowCommand.');
             }
             if ($suspended->type === 'continue_as_new') {
+                $this->assertCancellationConsumed($cancellation, $cancellationConsumed);
                 $this->assertNoRemainingSteps($steps, $stepCursor, 'continue_as_new');
                 if (($encodingFailure = $this->appendWorkflowCommand(
                     $commands,
@@ -363,6 +421,9 @@ final class Replayer
 
             $step = $steps[$stepCursor] ?? null;
             if ($step !== null) {
+                if ($cancellation->request !== null && $step['sequence'] !== $nextSequence) {
+                    throw new NonDeterministicWorkflow('Recorded result belongs to a different authored call.', $nextSequence);
+                }
                 $this->assertCommandMatchesStep($suspended, $step);
                 if ($step['parallel_path'] !== []) {
                     throw new NonDeterministicWorkflow(
@@ -377,6 +438,11 @@ final class Replayer
                 $nextSequence = max($nextSequence, $step['sequence'] + 1);
                 if ($suspended->type === 'open_condition_wait') {
                     $this->assertConditionWaitCompatible($step, $suspended);
+                    $nextStep = $steps[$stepCursor] ?? null;
+                    if ($cancellation->request !== null && $nextStep !== null
+                        && $this->isConditionReopen($step, $nextStep)) {
+                        continue;
+                    }
                     if ($step['resolved']) {
                         $suspended = $execution->resume($step['value']);
                         continue;
@@ -480,6 +546,7 @@ final class Replayer
             return $this->result($commands, $context);
         }
 
+        $this->assertCancellationConsumed($cancellation, $cancellationConsumed);
         $this->assertNoRemainingSteps($steps, $stepCursor, 'complete_workflow');
         $result = $execution->getReturn();
         if ($result instanceof \Generator) {
@@ -570,6 +637,117 @@ final class Replayer
         );
     }
 
+    /** @param array<int, array<string, mixed>> $stepsBySequence */
+    private function cancellationBoundary(
+        mixed $command,
+        int $sequence,
+        array $stepsBySequence,
+        CancellationHistory $cancellation,
+    ): ?CancellationDelivery {
+        if ($cancellation->request === null) {
+            return null;
+        }
+        $span = 1;
+        $operationSequence = null;
+        $operationSpan = 1;
+        if ($command instanceof ParallelWorkflowCommand) {
+            $kind = 'parallel';
+            $span = count($command->leafDescriptors($sequence));
+        } elseif ($command instanceof DurableOperationHandle) {
+            $kind = 'selection_handle';
+            $operationSequence = $command->baseSequence;
+            $operationSpan = $command->size;
+        } elseif ($command instanceof WorkflowCommand) {
+            $kind = match ($command->type) {
+                'schedule_activity' => 'activity',
+                'record_local_activity' => 'local_activity',
+                'start_timer' => 'timer',
+                'start_child_workflow' => 'child',
+                'open_condition_wait' => isset($stepsBySequence[$sequence])
+                    || $cancellation->delivery?->sequence === $sequence
+                    || (!$command->conditionSatisfied() && ($command->attributes['timeout_seconds'] ?? null) !== 0)
+                        ? 'condition' : null,
+                default => null,
+            };
+        } else {
+            $kind = null;
+        }
+        if ($kind === null) {
+            return null;
+        }
+
+        try {
+            return CancellationDelivery::fromPayload([
+                'workflow_command_id' => $cancellation->request->requestId,
+                'sequence' => $sequence,
+                'call_kind' => $kind,
+                'sequence_span' => $span,
+                'operation_sequence' => $operationSequence,
+                'operation_sequence_span' => $operationSpan,
+            ]);
+        } catch (\InvalidArgumentException $error) {
+            throw new NonDeterministicWorkflow($error->getMessage(), $sequence, reason: 'cooperative_cancellation_boundary_mismatch');
+        }
+    }
+
+    /** @param array<int, array<string, mixed>> $stepsBySequence */
+    private function assertCancellationCallMatches(
+        mixed $command,
+        CancellationDelivery $boundary,
+        array $stepsBySequence,
+        ?WorkflowContext $context,
+    ): void {
+        if ($command instanceof DurableOperationHandle) {
+            $this->assertDurableHandleExecutionIdentity($command, $context);
+            return;
+        }
+        if ($command instanceof ParallelWorkflowCommand) {
+            $descriptors = $command->leafDescriptors($boundary->sequence);
+        } elseif ($command instanceof WorkflowCommand) {
+            $descriptors = [['operation' => new DeferredWorkflowOperation($command), 'group_path' => []]];
+        } else {
+            throw new NonDeterministicWorkflow('Cancellation requires an authored durable operation.', $boundary->sequence);
+        }
+        foreach ($descriptors as $offset => $descriptor) {
+            $step = $stepsBySequence[$boundary->sequence + $offset] ?? null;
+            if ($step === null) {
+                continue;
+            }
+            $leaf = $descriptor['operation']->command;
+            $this->assertCommandMatchesStep($leaf, $step);
+            if ($command instanceof ParallelWorkflowCommand) {
+                $this->assertParallelPathMatches($step, $descriptor['group_path']);
+            } elseif ($step['parallel_path'] !== []) {
+                throw new NonDeterministicWorkflow('Cancellation replaced a recorded parallel group with a sequential call.', $step['sequence']);
+            }
+            if ($leaf->type === 'open_condition_wait') {
+                $this->assertConditionWaitCompatible($step, $leaf);
+            }
+        }
+    }
+
+    private function assertCancellationConsumed(CancellationHistory $cancellation, bool $consumed): void
+    {
+        if ($cancellation->delivery !== null && !$consumed) {
+            throw new NonDeterministicWorkflow(
+                'Workflow terminated without replaying its committed cancellation boundary.',
+                $cancellation->delivery->sequence,
+                reason: 'cooperative_cancellation_boundary_mismatch',
+            );
+        }
+    }
+
+    /** @param array<string, mixed> $previous
+     *  @param array<string, mixed> $next
+     */
+    private function isConditionReopen(array $previous, array $next): bool
+    {
+        return $previous['shape'] === 'condition_wait' && $next['shape'] === 'condition_wait'
+            && $previous['condition_key'] === $next['condition_key']
+            && $previous['condition_definition_fingerprint'] === $next['condition_definition_fingerprint']
+            && $previous['timeout_seconds'] === $next['timeout_seconds'];
+    }
+
     /**
      * @param list<array<string, mixed>> $history
      * @return list<array{
@@ -586,7 +764,7 @@ final class Replayer
      *     resolution_order: int
      * }>
      */
-    private function recordedSteps(array $history): array
+    private function recordedSteps(array $history, bool $preserveConditionReopens = false): array
     {
         $steps = [];
         $conditionStepsByWaitId = [];
@@ -899,7 +1077,7 @@ final class Replayer
         }
         ksort($steps, SORT_NUMERIC);
 
-        return $this->collapseConditionReopens(array_values($steps));
+        return $preserveConditionReopens ? array_values($steps) : $this->collapseConditionReopens(array_values($steps));
     }
 
     /** @param list<array<string, mixed>> $history
