@@ -43,6 +43,7 @@ use DurableWorkflow\Transport\RuntimePayloadUploads;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\CancellationRequest;
+use DurableWorkflow\Worker\CancellationDelivery;
 use DurableWorkflow\Worker\WorkerSessionOptions;
 use InvalidArgumentException;
 
@@ -69,12 +70,16 @@ final class Client implements WorkflowClientInterface
         ?string $controlToken = null,
         ?string $workerToken = null,
         public readonly int $maxExternalPayloadBytes = 67108864,
+        public readonly string $workerProtocolVersion = Version::WORKER_PROTOCOL,
     ) {
         if (trim($baseUri) === '') {
             throw new InvalidArgumentException('The Durable Workflow server URI cannot be empty.');
         }
         if ($maxExternalPayloadBytes < 1) {
             throw new InvalidArgumentException('External payload response limit must be positive.');
+        }
+        if (!in_array($workerProtocolVersion, [Version::WORKER_PROTOCOL, Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL], true)) {
+            throw new InvalidArgumentException('Worker protocol must be the SDK default or the cooperative qualification protocol.');
         }
         $normalizedBaseUri = rtrim($baseUri, '/');
         $basePath = parse_url($normalizedBaseUri, PHP_URL_PATH);
@@ -1258,6 +1263,63 @@ final class Client implements WorkflowClientInterface
     }
 
     /**
+     * Commit delivery on the current claim without releasing or renewing its lease.
+     * Reload canonical history before throwing cancellation into workflow code,
+     * including when the delivery acknowledgment is lost or malformed.
+     *
+     * @return array<string, mixed>
+     */
+    public function deliverWorkflowCancellation(
+        string $taskId,
+        string $leaseOwner,
+        int $attempt,
+        CancellationDelivery $delivery,
+    ): array {
+        if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion)) {
+            throw new \LogicException('Cooperative cancellation delivery requires worker protocol 1.20.');
+        }
+        if (trim($taskId) === '' || trim($leaseOwner) === '' || $attempt < 1) {
+            throw new InvalidArgumentException('Cancellation delivery requires a task ID, lease owner and positive attempt.');
+        }
+        $body = [
+            'lease_owner' => $leaseOwner,
+            'workflow_task_attempt' => $attempt,
+            'request_id' => $delivery->requestId,
+            'sequence' => $delivery->sequence,
+            'call_kind' => $delivery->callKind,
+            'sequence_span' => $delivery->sequenceSpan,
+        ];
+        if ($delivery->operationSequence !== null) {
+            $body['operation_sequence'] = $delivery->operationSequence;
+            $body['operation_sequence_span'] = $delivery->operationSequenceSpan;
+        }
+        $response = $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/deliver-cancellation', $body);
+        try {
+            if (($response['delivered'] ?? null) !== true || ($response['task_id'] ?? null) !== $taskId) {
+                throw new InvalidArgumentException('Delivery acknowledgment does not match the workflow task.');
+            }
+            $recorded = CancellationDelivery::fromPayload([
+                'workflow_command_id' => $response['request_id'] ?? null,
+                'sequence' => $response['sequence'] ?? null,
+                'call_kind' => $response['call_kind'] ?? null,
+                'sequence_span' => $response['sequence_span'] ?? null,
+                'operation_sequence' => $response['operation_sequence'] ?? null,
+                'operation_sequence_span' => $response['operation_sequence_span'] ?? null,
+            ]);
+            if ($recorded != $delivery) {
+                throw new InvalidArgumentException('Delivery acknowledgment changes the committed authored call.');
+            }
+        } catch (InvalidArgumentException $error) {
+            throw new ServerException(
+                'Invalid cooperative cancellation delivery acknowledgment.', 200,
+                'invalid_cooperative_cancellation_delivery', previous: $error,
+            );
+        }
+
+        return $response;
+    }
+
+    /**
      * @param list<array<string, mixed>> $commands
      * @param list<array{stream_name: string, through_position: int}> $messageStreamCursors
      * @param list<array{stream_name: string, after_position: int}> $messageStreamWaits
@@ -1648,7 +1710,7 @@ final class Client implements WorkflowClientInterface
             'Content-Type' => 'application/json',
             'X-Namespace' => $this->namespace,
             $worker ? 'X-Durable-Workflow-Protocol-Version' : 'X-Durable-Workflow-Control-Plane-Version'
-                => $worker ? Version::WORKER_PROTOCOL : Version::CONTROL_PLANE_PROTOCOL,
+                => $worker ? $this->workerProtocolVersion : Version::CONTROL_PLANE_PROTOCOL,
         ];
         if ($this->authentication !== null) {
             $headers = array_merge($headers, $this->authentication->headers($worker));

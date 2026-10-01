@@ -99,6 +99,10 @@ final class CancellationHistory
             }
         }
 
+        if ($request === null) {
+            return new self(null, null, $requestIndex, null, [], [], []);
+        }
+
         $resolved = [];
         $failed = [];
         $selected = [];
