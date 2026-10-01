@@ -36,6 +36,8 @@ final class WorkflowContext
 
     private ?string $deliveredCancellationRequestId = null;
 
+    private ?CancellationContext $deliveredCancellationContext = null;
+
     /** @var list<list<DeferredWorkflowOperation|ParallelWorkflowCommand>> */
     private array $captureFrames = [];
 
@@ -495,8 +497,17 @@ final class WorkflowContext
     public function throwIfCancellationRequested(): void
     {
         if ($this->isCancellationRequested() && !$this->isCancellationShielded()) {
-            throw new WorkflowCancelled('Workflow cancellation was requested.', requestId: $this->deliveredCancellationRequestId);
+            throw new WorkflowCancelled(
+                'Workflow cancellation was requested.', requestId: $this->deliveredCancellationRequestId,
+                context: $this->deliveredCancellationContext,
+            );
         }
+    }
+
+    /** The original context becomes visible at its committed authored boundary. */
+    public function cancellationContext(): ?CancellationContext
+    {
+        return $this->deliveredCancellationContext;
     }
 
     /**
@@ -525,11 +536,12 @@ final class WorkflowContext
     }
 
     /** @internal Only a committed delivery marker authorizes this state change. */
-    public function deliveredCancellation(string $requestId): WorkflowCancelled
+    public function deliveredCancellation(string $requestId, ?CancellationContext $context = null): WorkflowCancelled
     {
         $this->deliveredCancellationRequestId = $requestId;
+        $this->deliveredCancellationContext = $context;
 
-        return new WorkflowCancelled('Workflow cancellation was requested.', requestId: $requestId);
+        return new WorkflowCancelled('Workflow cancellation was requested.', requestId: $requestId, context: $context);
     }
 
     /** @return list<list<mixed>> */

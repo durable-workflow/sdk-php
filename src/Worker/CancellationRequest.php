@@ -15,6 +15,7 @@ final class CancellationRequest
         public readonly string $requestedAt,
         public readonly string $cleanupDeadlineAt,
         public readonly ?string $historyRefreshPageToken,
+        public readonly ?CancellationContext $context = null,
     ) {
     }
 
@@ -32,10 +33,36 @@ final class CancellationRequest
     /** @param array<string, mixed> $payload */
     public static function fromHistoryPayload(array $payload, string $recordedAt): self
     {
+        $context = null;
+        if (array_key_exists('cancellation', $payload)) {
+            $snapshot = $payload['cancellation'];
+            if (!is_array($snapshot) || array_is_list($snapshot)) {
+                throw new InvalidArgumentException('Canonical cancellation context must be an object.');
+            }
+            $context = CancellationContext::fromArray($snapshot);
+            $last = $context->lineage[count($context->lineage) - 1];
+            if ($context->requestId !== self::text($payload, 'workflow_command_id')
+                || $last['workflow_run_id'] !== self::text($payload, 'workflow_run_id')
+                || (array_key_exists('workflow_instance_id', $payload)
+                    && $last['workflow_instance_id'] !== $payload['workflow_instance_id'])
+                || $context->deadline() != self::timestamp(self::text($payload, 'cleanup_deadline_at'))
+                || $context->requestedAt() > self::timestamp($recordedAt)
+                || (array_key_exists('reason', $payload) && $context->reason !== $payload['reason'])) {
+                throw new InvalidArgumentException('Canonical cancellation context does not match its request event.');
+            }
+        }
+
         return self::validated(
-            self::text($payload, 'workflow_command_id'), $recordedAt,
-            self::text($payload, 'cleanup_deadline_at'), null,
+            self::text($payload, 'workflow_command_id'),
+            $context?->requestedAt()->format('Y-m-d\TH:i:s.u\Z') ?? $recordedAt,
+            self::text($payload, 'cleanup_deadline_at'), null, $context,
         );
+    }
+
+    /** Preserve the canonical snapshot while retaining the observed refresh route. */
+    public function withHistoryRefreshPageToken(?string $pageToken): self
+    {
+        return new self($this->requestId, $this->requestedAt, $this->cleanupDeadlineAt, $pageToken, $this->context);
     }
 
     private static function validated(
@@ -43,6 +70,7 @@ final class CancellationRequest
         string $requestedAt,
         string $cleanupDeadlineAt,
         ?string $historyRefreshPageToken,
+        ?CancellationContext $context = null,
     ): self {
         $requested = self::timestamp($requestedAt);
         $deadline = self::timestamp($cleanupDeadlineAt);
@@ -51,7 +79,7 @@ final class CancellationRequest
         }
 
         return new self(
-            $requestId, $requestedAt, $cleanupDeadlineAt, $historyRefreshPageToken,
+            $requestId, $requestedAt, $cleanupDeadlineAt, $historyRefreshPageToken, $context,
         );
     }
 

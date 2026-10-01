@@ -81,7 +81,9 @@ final class CancellationHistory
                         || new DateTimeImmutable($canonical->cleanupDeadlineAt) != new DateTimeImmutable($observation->cleanupDeadlineAt))) {
                         throw self::invalid('Observation changes the original request or cleanup deadline.');
                     }
-                    $request = $observation ?? $canonical;
+                    $request = $canonical->context !== null
+                        ? $canonical->withHistoryRefreshPageToken($observation?->historyRefreshPageToken)
+                        : ($observation ?? $canonical);
                     $requestIndex = $index;
                     $sawRequest = true;
                 } else {
@@ -91,6 +93,13 @@ final class CancellationHistory
                     $delivery = CancellationDelivery::fromPayload($payload);
                     if ($delivery->requestId !== $request->requestId) {
                         throw self::invalid('Delivery names a different cancellation request.', $delivery->sequence);
+                    }
+                    if (array_key_exists('cancellation', $payload)) {
+                        $snapshot = $payload['cancellation'];
+                        if (!is_array($snapshot) || array_is_list($snapshot) || $request->context === null
+                            || CancellationContext::fromArray($snapshot)->toArray() !== $request->context->toArray()) {
+                            throw self::invalid('Delivery changes the canonical cancellation context.', $delivery->sequence);
+                        }
                     }
                     $deliveryIndex = $index;
                 }

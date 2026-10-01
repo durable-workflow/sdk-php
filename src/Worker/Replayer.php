@@ -124,7 +124,7 @@ final class Replayer
                     }
                     $nextSequence = $delivery->sequence + $delivery->sequenceSpan;
                     $cancellationConsumed = true;
-                    $suspended = $execution->throw($context->deliveredCancellation($delivery->requestId));
+                    $suspended = $execution->throw($context->deliveredCancellation($delivery->requestId, $cancellation->request->context));
                     continue;
                 }
                 if ($delivery === null && $boundary !== null && !$context->isCancellationShielded()
