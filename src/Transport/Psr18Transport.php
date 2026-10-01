@@ -7,7 +7,9 @@ namespace DurableWorkflow\Transport;
 use DurableWorkflow\Exception\ExternalPayloadException;
 use DurableWorkflow\Exception\TransportException;
 use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Psr7\FnStream;
 use GuzzleHttp\Psr7\HttpFactory;
+use GuzzleHttp\Psr7\Utils;
 use GuzzleHttp\TransferStats;
 use JsonException;
 use Psr\Http\Client\ClientInterface;
@@ -16,10 +18,11 @@ use Psr\Http\Message\RequestFactoryInterface;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\StreamFactoryInterface;
+use Psr\Http\Message\StreamInterface;
 use Throwable;
 
 /** Default PSR-18 JSON and bounded runtime-payload transport. */
-final class Psr18Transport implements PayloadTransport, PayloadUploadTransport, BoundedTransport
+final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUploadTransport, BoundedTransport
 {
     private readonly ClientInterface $client;
     private readonly RequestFactoryInterface $requestFactory;
@@ -48,13 +51,13 @@ final class Psr18Transport implements PayloadTransport, PayloadUploadTransport, 
 
     public function supportsBoundedRequests(): bool
     {
-        return $this->client instanceof GuzzleClient;
+        return $this->client instanceof GuzzleClient && extension_loaded('curl');
     }
 
     public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
     {
         if (!$this->supportsBoundedRequests() || $timeoutSeconds < 1 || $timeoutSeconds > 65) {
-            throw new \InvalidArgumentException('Bounded requests require Guzzle and a timeout from 1 through 65 seconds.');
+            throw new \InvalidArgumentException('Bounded requests require Guzzle with cURL and a timeout from 1 through 65 seconds.');
         }
 
         return $this->sendJson($method, $uri, $headers, $body, $timeoutSeconds);
@@ -102,6 +105,17 @@ final class Psr18Transport implements PayloadTransport, PayloadUploadTransport, 
 
     public function fetchPayload(string $uri, array $headers, int $maxBytes): string
     {
+        return $this->fetch($uri, $headers, $maxBytes);
+    }
+
+    public function fetchPayloadBounded(string $uri, array $headers, int $maxBytes, int $timeoutSeconds): string
+    {
+        return $this->fetch($uri, $headers, $maxBytes, $timeoutSeconds);
+    }
+
+    /** @param array<string, string> $headers */
+    private function fetch(string $uri, array $headers, int $maxBytes, ?int $timeoutSeconds = null): string
+    {
         if ($maxBytes < 0) {
             throw new \InvalidArgumentException('Payload read bound cannot be negative.');
         }
@@ -109,7 +123,9 @@ final class Psr18Transport implements PayloadTransport, PayloadUploadTransport, 
         foreach ($headers as $name => $value) {
             $request = $request->withHeader($name, $value);
         }
-        $response = $this->sendRequest($request, true);
+        $response = $timeoutSeconds === null
+            ? $this->sendRequest($request, true)
+            : $this->sendPayloadBounded($request, max($maxBytes, 65536), $timeoutSeconds);
         $stream = $response->getBody();
         try {
             $status = $response->getStatusCode();
@@ -161,12 +177,27 @@ final class Psr18Transport implements PayloadTransport, PayloadUploadTransport, 
 
     public function uploadPayload(string $uri, array $headers, string $blob, int $timeoutSeconds): array
     {
+        return $this->upload($uri, $headers, $blob, $timeoutSeconds, false);
+    }
+
+    public function uploadPayloadBounded(string $uri, array $headers, string $blob, int $timeoutSeconds): array
+    {
+        return $this->upload($uri, $headers, $blob, $timeoutSeconds, true);
+    }
+
+    /** @param array<string, string> $headers
+     * @return array<string, mixed>
+     */
+    private function upload(string $uri, array $headers, string $blob, int $timeoutSeconds, bool $bounded): array
+    {
         $request = $this->requestFactory->createRequest('POST', $uri);
         foreach ($headers as $name => $value) {
             $request = $request->withHeader($name, $value);
         }
         $request = $request->withBody($this->streamFactory->createStream($blob));
-        $response = $this->sendRequest($request, true, $timeoutSeconds);
+        $response = $bounded
+            ? $this->sendPayloadBounded($request, 65536, $timeoutSeconds)
+            : $this->sendRequest($request, true, $timeoutSeconds);
         $stream = $response->getBody();
         try {
             $raw = '';
@@ -198,7 +229,41 @@ final class Psr18Transport implements PayloadTransport, PayloadUploadTransport, 
         }
     }
 
-    private function sendRequest(RequestInterface $request, bool $stream = false, int $timeoutSeconds = 30, bool $bounded = false): ResponseInterface
+    private function sendPayloadBounded(RequestInterface $request, int $maxBytes, int $timeoutSeconds): ResponseInterface
+    {
+        if (!$this->supportsBoundedRequests() || $timeoutSeconds < 1 || $timeoutSeconds > 65) {
+            throw new \InvalidArgumentException('Bounded payload requests require Guzzle with cURL and a timeout from 1 through 65 seconds.');
+        }
+        // A streaming response only bounds each read. Let cURL finish the entire
+        // transfer within its deadline, using a finite sink that spills to disk.
+        $target = Utils::streamFor(Utils::tryFopen('php://temp', 'w+'));
+        $written = 0;
+        $overflow = false;
+        $sink = FnStream::decorate($target, [
+            'write' => static function (string $bytes) use ($target, $maxBytes, &$written, &$overflow): int {
+                if (strlen($bytes) > $maxBytes - $written) {
+                    $overflow = true;
+                    throw new ExternalPayloadException('Runtime payload response exceeds its read bound.', 422, 'external_payload_integrity_mismatch');
+                }
+                $count = $target->write($bytes);
+                $written += $count;
+
+                return $count;
+            },
+        ]);
+        try {
+            return $this->sendRequest($request, timeoutSeconds: $timeoutSeconds, bounded: true, sink: $sink);
+        } catch (Throwable $exception) {
+            $sink->close();
+            if ($overflow) {
+                throw new ExternalPayloadException('Runtime payload response exceeds its read bound.', 422, 'external_payload_integrity_mismatch', previous: $exception);
+            }
+
+            throw $exception;
+        }
+    }
+
+    private function sendRequest(RequestInterface $request, bool $stream = false, int $timeoutSeconds = 30, bool $bounded = false, ?StreamInterface $sink = null): ResponseInterface
     {
         $connectionFailure = false;
         try {
@@ -209,7 +274,8 @@ final class Psr18Transport implements PayloadTransport, PayloadUploadTransport, 
                     'synchronous' => true,
                     'http_errors' => false,
                     'allow_redirects' => false,
-                    ...($stream ? ['stream' => true] : []),
+                    ...($bounded ? ['stream' => false] : ($stream ? ['stream' => true] : [])),
+                    ...($sink !== null ? ['stream' => false, 'sink' => $sink] : []),
                     ...($stream || $bounded ? ['timeout' => $timeoutSeconds, 'read_timeout' => $timeoutSeconds,
                         'connect_timeout' => $timeoutSeconds] : []),
                     'on_stats' => static function (TransferStats $stats) use (&$connectionFailure, $onStats): void {

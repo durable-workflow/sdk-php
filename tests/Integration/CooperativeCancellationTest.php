@@ -143,9 +143,38 @@ final class CooperativeCancellationTest extends TestCase
         return [[false], [true]];
     }
 
-    private function client(?Transport $transport = null): Client
+    public function testCooperativeWorkerHydratesAndPublishesAboveInlinePayloads(): void
     {
-        return new Client($this->runtimeUrl, namespace: 'default', token: $this->token,
+        $namespace = $this->queue('payloads');
+        $admin = $this->client();
+        $admin->createNamespace($namespace);
+        $admin->setNamespaceExternalStorage($namespace, 'local', thresholdBytes: 64,
+            config: ['uri' => 'file:///app/storage/app/cooperative-payloads/'.$namespace]);
+        $client = $this->client(namespace: $namespace);
+        $value = str_repeat('bounded-payload-', 131072);
+        self::assertGreaterThan(2097152, strlen($client->payloadCodec()->encode($value)));
+        [$pid, $messages] = $this->spawnWorker($namespace, namespace: $namespace);
+        try {
+            $this->awaitMessage($messages, 'registered');
+            $handle = $client->startWorkflow('tests.php-cooperative-payload', $namespace, $namespace, [$value]);
+            self::assertSame($value, $handle->result(timeoutSeconds: 30));
+            $raw = (new Psr18Transport())->send('GET', $this->runtimeUrl.'/api/workflows/'.$handle->workflowId,
+                ['Authorization' => 'Bearer '.$this->token, 'X-Namespace' => $namespace,
+                    'X-Durable-Workflow-Control-Plane-Version' => '2']);
+            self::assertArrayHasKey('external_payload', $raw['output_envelope']);
+            $reference = $raw['output_envelope']['external_payload'];
+            $blob = $client->payloadCodec()->encode($value);
+            self::assertSame(strlen($blob), $reference['size_bytes']);
+            self::assertSame(hash('sha256', $blob), $reference['sha256']);
+        } finally {
+            fclose($messages);
+            $this->stopWorker($pid);
+        }
+    }
+
+    private function client(?Transport $transport = null, string $namespace = 'default'): Client
+    {
+        return new Client($this->runtimeUrl, namespace: $namespace, token: $this->token,
             transport: $transport, workerProtocolVersion: '1.20');
     }
 
@@ -155,7 +184,7 @@ final class CooperativeCancellationTest extends TestCase
     }
 
     /** @return array{int, resource} */
-    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true): array
+    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default'): array
     {
         $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
         if ($sockets === false) {
@@ -178,7 +207,7 @@ final class CooperativeCancellationTest extends TestCase
                 // Construct transport and worker after fork. No inherited HTTP connection is used.
                 $transport = $loseReply ? new DiscardFirstDeliveryReplyTransport($notify) : null;
                 $failureReported = false;
-                $worker = new Worker($this->client($transport), $queue,
+                $worker = new Worker($this->client($transport, $namespace), $queue,
                     workerId: $queue.'-'.getmypid(), enableCooperativeCancellation: true,
                     diagnosticListener: function (string $event, array $context) use ($notify, &$failureReported): void {
                         if ($event === 'worker.registered') {
@@ -215,6 +244,7 @@ final class CooperativeCancellationTest extends TestCase
                     }
                     return 'not-cancelled';
                 });
+                $worker->registerWorkflow('tests.php-cooperative-payload', static fn (WorkflowContext $context, string $value): string => $value);
                 $worker->registerActivity('tests.php-cooperative-work', function (ActivityContext $context) use ($notify, $userHeartbeat): \stdClass {
                     $notify('local-entered');
                     $deadline = microtime(true) + 60;

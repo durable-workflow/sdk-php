@@ -21,6 +21,7 @@ final class RuntimePayloads
         private readonly string $baseUri,
         private readonly array $headers,
         private readonly int $limit,
+        private readonly ?RequestBudget $budget = null,
     ) {
     }
 
@@ -139,7 +140,16 @@ final class RuntimePayloads
                 'X-Durable-Workflow-Payload-SHA256' => $reference['sha256'],
             ]);
             // IDs cannot contain a URL or path. Use only the already authenticated runtime.
-            $blob = $this->transport->fetchPayload($this->baseUri.'/api/external-payloads/v1/'.$reference['reference_id'], $headers, $reference['size_bytes']);
+            $uri = $this->baseUri.'/api/external-payloads/v1/'.$reference['reference_id'];
+            if ($this->budget === null) {
+                $blob = $this->transport->fetchPayload($uri, $headers, $reference['size_bytes']);
+            } else {
+                if (!$this->transport instanceof BoundedPayloadTransport) {
+                    throw new ExternalPayloadException('The cooperative transport must bound payload downloads.', 415, 'external_payload_unsupported');
+                }
+                $blob = $this->transport->fetchPayloadBounded($uri, $headers, $reference['size_bytes'], $this->budget->remainingSeconds());
+                $this->budget->remainingSeconds();
+            }
             if (strlen($blob) !== $reference['size_bytes'] || !hash_equals($reference['sha256'], hash('sha256', $blob))) {
                 throw new ExternalPayloadException('Runtime payload bytes differ from the authenticated reference.', 422, 'external_payload_integrity_mismatch');
             }

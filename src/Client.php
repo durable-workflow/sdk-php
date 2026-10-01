@@ -38,9 +38,14 @@ use DurableWorkflow\Model\WorkflowStreamItem;
 use DurableWorkflow\Model\WorkflowStreamPage;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Transport\BoundedTransport;
+use DurableWorkflow\Transport\BoundedPayloadTransport;
+use DurableWorkflow\Transport\BoundedPayloadUploadTransport;
+use DurableWorkflow\Transport\PayloadTransport;
+use DurableWorkflow\Transport\PayloadUploadTransport;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Transport\RuntimePayloads;
 use DurableWorkflow\Transport\RuntimePayloadUploads;
+use DurableWorkflow\Transport\RequestBudget;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\CancellationRequest;
@@ -122,6 +127,10 @@ final class Client implements WorkflowClientInterface
     {
         if (!$this->transport instanceof BoundedTransport || !$this->transport->supportsBoundedRequests()) {
             throw new InvalidArgumentException('Cooperative workers require a transport that honors bounded requests.');
+        }
+        if (($this->transport instanceof PayloadTransport && !$this->transport instanceof BoundedPayloadTransport)
+            || ($this->transport instanceof PayloadUploadTransport && !$this->transport instanceof BoundedPayloadUploadTransport)) {
+            throw new InvalidArgumentException('Cooperative workers require bounded payload transfer capabilities.');
         }
         $copy = clone $this;
         $copy->boundedWorkerRequests = true;
@@ -1731,23 +1740,31 @@ final class Client implements WorkflowClientInterface
         }
 
         try {
+            $poll = str_ends_with($path, '/poll') && is_int($body['timeout_seconds'] ?? null);
+            $pollSeconds = $poll ? max(0, min(60, $body['timeout_seconds'])) : 0;
+            $budget = $worker && $this->boundedWorkerRequests ? new RequestBudget($pollSeconds + 5) : null;
             if ($body !== null) {
-                $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers);
+                $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers, $budget);
             }
             if ($worker && $this->boundedWorkerRequests) {
                 if (!$this->transport instanceof BoundedTransport || !$this->transport->supportsBoundedRequests()) {
                     throw new InvalidArgumentException('The cooperative worker transport no longer supports bounded requests.');
                 }
-                $pollSeconds = str_ends_with($path, '/poll') && is_int($body['timeout_seconds'] ?? null)
-                    ? max(0, min(60, $body['timeout_seconds'])) : 0;
-                $response = $this->transport->sendBounded($method, $this->baseUri.'/api'.$path, $headers, $body, $pollSeconds + 5);
+                $response = $this->transport->sendBounded($method, $this->baseUri.'/api'.$path, $headers, $body, $budget->remainingSeconds());
             } else {
                 $response = $this->transport->send($method, $this->baseUri.'/api'.$path, $headers, $body);
             }
 
-            return is_array($response) && !array_is_list($response)
-                ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes))->response($response, $path, $worker)
+            $budget?->remainingSeconds();
+            // The long poll happens before ownership. Hydration of its claimed
+            // task gets one short budget shared by all referenced payloads.
+            $responseBudget = $budget !== null && $poll ? new RequestBudget(5) : $budget;
+            $result = is_array($response) && !array_is_list($response)
+                ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes, $responseBudget))->response($response, $path, $worker)
                 : [];
+            $responseBudget?->remainingSeconds();
+
+            return $result;
         } catch (TransportException $exception) {
             $details = $exception->response;
             $reason = is_array($details) && isset($details['reason']) ? (string) $details['reason'] : null;

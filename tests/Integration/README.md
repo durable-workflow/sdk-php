@@ -77,13 +77,22 @@ removes the stack and images. The ordinary worker default remains protocol 1.19.
 The connected cases cover waiting timers, cold worker replacement, duplicate
 request identity/deadline, a discarded successful delivery reply, shielded local
 cleanup, local user heartbeats and cancellation during a blocked callback.
+The payload case enables local storage in a unique namespace on a task-owned
+shared volume. A cooperative worker hydrates and completes a value above the
+ordinary 2 MiB request limit, and the proof checks the runtime's stored result
+reference, byte count, digest and decoded value. Teardown removes the volume.
 The local cases use a 60-second callback, request cancellation while it is active
 and require canonical cleanup in less than ten seconds. They verify that both
 callback and relay processes stop and that no late return marker appears.
 
 Explicit cooperative workers require Unix CLI, `pcntl`, `posix` and a transport
-that supports bounded requests. Worker control requests have a five-second
-timeout, and polls allow their requested wait plus five seconds. The owning
+that supports bounded requests, downloads and uploads. The default transport
+requires Guzzle with cURL for this opt-in mode. A worker control request shares
+one five-second monotonic budget across discovery, payload uploads, the API
+reply and downloads. Polls allow their requested wait plus five seconds, then
+give task hydration one five-second budget shared by all references. Complete
+transfers use finite temporary sinks, so a trickling body cannot restart a
+per-read timeout or grow without a byte bound. The owning
 worker alone renews the real task lease, observes its original request and
 deadline, records user heartbeats and permits result encoding. Local callbacks
 run in a child process. Open handler-owned database or network connections in

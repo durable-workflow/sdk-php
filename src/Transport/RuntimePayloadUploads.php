@@ -38,7 +38,7 @@ final class RuntimePayloadUploads
      * @param array<string, string> $headers
      * @return array<string, mixed>
      */
-    public function request(array $body, string $method, string $path, bool $worker, array $headers): array
+    public function request(array $body, string $method, string $path, bool $worker, array $headers, ?RequestBudget $budget = null): array
     {
         if (!$this->transport instanceof PayloadUploadTransport || !in_array(strtoupper($method), ['POST', 'PUT', 'PATCH'], true)) {
             return $body;
@@ -64,7 +64,7 @@ final class RuntimePayloadUploads
         }
 
         try {
-            $policy = $this->policy($headers, $worker);
+            $policy = $this->policy($headers, $worker, $budget);
         } catch (TransportException $exception) {
             $discovery = $exception->response;
             if ($worker
@@ -129,6 +129,19 @@ final class RuntimePayloadUploads
         }
 
         $uploaded = [];
+        $upload = function (array $uploadHeaders, string $blob) use ($policy, $budget): array {
+            $uri = $this->baseUri.'/api/external-payloads/v1';
+            if ($budget === null) {
+                return $this->transport->uploadPayload($uri, $uploadHeaders, $blob, $policy['timeout_seconds']);
+            }
+            if (!$this->transport instanceof BoundedPayloadUploadTransport) {
+                throw new ExternalPayloadException('The cooperative transport must bound payload uploads.', 415, 'external_payload_unsupported');
+            }
+            $response = $this->transport->uploadPayloadBounded($uri, $uploadHeaders, $blob, min($budget->remainingSeconds(), $policy['timeout_seconds']));
+            $budget->remainingSeconds();
+
+            return $response;
+        };
         foreach ($selected as $index => $expected) {
             $blob = $payloads[$index]['blob'];
             $key = $expected['sha256'].':'.$expected['size_bytes'];
@@ -142,7 +155,7 @@ final class RuntimePayloadUploads
                         'X-Durable-Workflow-Payload-SHA256' => $expected['sha256'],
                     ]);
                     try {
-                        $response = $this->transport->uploadPayload($this->baseUri.'/api/external-payloads/v1', $uploadHeaders, $blob, $policy['timeout_seconds']);
+                        $response = $upload($uploadHeaders, $blob);
                     } catch (TransportException $refusal) {
                         $context = $worker && ($policy['completion_context'] ?? false)
                             ? $this->completionContext($body, $path, $payloads[$index]['path']) : null;
@@ -154,7 +167,7 @@ final class RuntimePayloadUploads
                         // One capability-negotiated retry; never turn other pressure
                         // errors into retries or repeat application activity code.
                         $uploadHeaders[self::COMPLETION_HEADER] = $context;
-                        $response = $this->transport->uploadPayload($this->baseUri.'/api/external-payloads/v1', $uploadHeaders, $blob, $policy['timeout_seconds']);
+                        $response = $upload($uploadHeaders, $blob);
                     }
                 } catch (TransportException $exception) {
                     $reason = $exception->response['reason'] ?? null;
@@ -186,7 +199,7 @@ final class RuntimePayloadUploads
     /** @param array<string, string> $headers
      * @return array{threshold_bytes: int, max_bytes: int, request_bytes: int, timeout_seconds: int, status: string, completion_context?: bool}
      */
-    private function policy(array $headers, bool $worker): array
+    private function policy(array $headers, bool $worker, ?RequestBudget $budget = null): array
     {
         $key = (int) $worker;
         if (isset($this->policies[$key]) && $this->policies[$key]['expires'] > time()) {
@@ -195,7 +208,15 @@ final class RuntimePayloadUploads
         // Discovery accepts either runtime role. Never require a client key in a worker.
         unset($headers['X-Durable-Workflow-Protocol-Version']);
         $headers['X-Durable-Workflow-Control-Plane-Version'] = Version::CONTROL_PLANE_PROTOCOL;
-        $info = $this->transport->send('GET', $this->baseUri.'/api/cluster/info', $headers);
+        if ($budget === null) {
+            $info = $this->transport->send('GET', $this->baseUri.'/api/cluster/info', $headers);
+        } else {
+            if (!$this->transport instanceof BoundedTransport || !$this->transport->supportsBoundedRequests()) {
+                throw new ExternalPayloadException('The cooperative transport must bound payload discovery.', 415, 'external_payload_unsupported');
+            }
+            $info = $this->transport->sendBounded('GET', $this->baseUri.'/api/cluster/info', $headers, null, $budget->remainingSeconds());
+            $budget->remainingSeconds();
+        }
         $storage = $info['namespace']['external_payload_storage'] ?? [];
         $manifest = $storage['transport'] ?? null;
         $requestLimit = $info['limits']['max_payload_bytes'] ?? 2097152;
