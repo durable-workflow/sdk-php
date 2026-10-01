@@ -495,9 +495,31 @@ final class CooperativeCancellationTest extends TestCase
     /** @return list<array<string, mixed>> */
     private function history(Client $client, WorkflowHandle $handle): array
     {
-        $history = $client->workflowHistory($handle->workflowId, (string) $handle->selectedRunId);
-        self::assertNull($history['next_page_token'] ?? null);
-        return $history['events'] ?? $history['history_events'] ?? [];
+        $events = [];
+        $token = null;
+        $seen = [];
+        for ($page = 0; $page < 50; $page++) {
+            $history = $client->workflowHistory(
+                $handle->workflowId,
+                (string) $handle->selectedRunId,
+                pageSize: 100,
+                nextPageToken: $token,
+            );
+            $batch = $history['events'] ?? $history['history_events'] ?? [];
+            self::assertIsArray($batch);
+            $events = array_merge($events, $batch);
+            $next = $history['next_page_token'] ?? null;
+            if ($next === null) {
+                return $events;
+            }
+            self::assertIsString($next);
+            self::assertNotSame('', $next);
+            self::assertNotContains($next, $seen, 'History repeated a page token.');
+            self::assertNotEmpty($batch, 'A continuation must advance history.');
+            $seen[] = $next;
+            $token = $next;
+        }
+        self::fail('Connected scenario history exceeded its 50-page bound.');
     }
 
     private function awaitEvent(Client $client, WorkflowHandle $handle, string $kind): void

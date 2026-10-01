@@ -283,12 +283,24 @@ final class Client implements WorkflowClientInterface
         return $runs;
     }
 
-    /** @return array<string, mixed> */
-    public function workflowHistory(string $workflowId, string $runId): array
+    /**
+     * Read one bounded history page. Pass its next_page_token to continue.
+     *
+     * @return array<string, mixed>
+     */
+    public function workflowHistory(
+        string $workflowId,
+        string $runId,
+        ?int $pageSize = null,
+        ?string $nextPageToken = null,
+    ): array
     {
         return $this->control(
             'GET',
-            '/workflows/'.$this->segment($workflowId).'/runs/'.$this->segment($runId).'/history',
+            $this->pathWithQuery(
+                '/workflows/'.$this->segment($workflowId).'/runs/'.$this->segment($runId).'/history',
+                ['page_size' => $pageSize, 'next_page_token' => $nextPageToken],
+            ),
         );
     }
 
