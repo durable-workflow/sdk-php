@@ -153,7 +153,7 @@ final class CooperativeCancellationTest extends TestCase
     {
         $queue = $this->queue('remote');
         $client = $this->client();
-        [$workflowPid, $workflowMessages] = $this->spawnWorker($queue);
+        [$workflowPid, $workflowMessages] = $this->spawnWorker($queue, pauseWorkflowClaim: $coldWorkflow);
         [$ownerPid, $ownerMessages] = $this->spawnWorker($queue, userHeartbeat: $userHeartbeat, remoteRole: true);
         try {
             $this->awaitMessage($workflowMessages, 'registered');
@@ -164,8 +164,18 @@ final class CooperativeCancellationTest extends TestCase
             $pids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
             foreach ($pids as $pid) { self::assertTrue(posix_kill($pid, 0), 'The remote callback must still be active.'); }
             $remainingWorkflowLease = 0.0;
+            $heldWorkflowClaim = null;
+            $deadWorkerId = $queue.'-'.$workflowPid;
             if ($coldWorkflow) {
-                $deadWorkerId = $queue.'-'.$workflowPid;
+                file_put_contents($this->directory.'/pause-workflow-claim', 'armed');
+            }
+            $started = microtime(true);
+            $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 60);
+            if ($coldWorkflow) {
+                $this->awaitMessage($workflowMessages, 'workflow-claim-held');
+                $heldWorkflowClaim = json_decode((string) file_get_contents($this->directory.'/held-workflow-claim'), true, flags: JSON_THROW_ON_ERROR);
+                self::assertSame($deadWorkerId, $heldWorkflowClaim['lease_owner']);
+                self::assertGreaterThan(0, $heldWorkflowClaim['workflow_task_attempt']);
                 $this->stopWorker($workflowPid, true);
                 $workflowPid = 0;
                 fclose($workflowMessages);
@@ -179,10 +189,9 @@ final class CooperativeCancellationTest extends TestCase
                 }
                 // The isolated stack grants ten-second workflow leases. A dead
                 // process cannot surrender a still-current claim immediately.
+                self::assertGreaterThan(0, $remainingWorkflowLease, 'Kill after a real still-current task claim.');
                 self::assertLessThanOrEqual(10, $remainingWorkflowLease, 'Unexpected qualification workflow lease.');
             }
-            $started = microtime(true);
-            $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 60);
             $workflowLeaseWait = $remainingWorkflowLease;
             $nextLeaseObservation = 0.0;
             $lastLeaseState = null;
@@ -225,6 +234,17 @@ final class CooperativeCancellationTest extends TestCase
             self::assertFileDoesNotExist($this->directory.'/late');
             $delivery = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'))[0];
             self::assertSame('activity', $delivery['payload']['call_kind']);
+            if ($heldWorkflowClaim !== null) {
+                self::assertGreaterThanOrEqual(
+                    (float) (new \DateTimeImmutable($heldWorkflowClaim['lease_expires_at']))->format('U.u'),
+                    (float) (new \DateTimeImmutable($delivery['timestamp']))->format('U.u'),
+                    'Replacement must respect the killed owner\'s current lease.');
+                try {
+                    $client->completeWorkflowTask($heldWorkflowClaim['task_id'], $heldWorkflowClaim['lease_owner'],
+                        $heldWorkflowClaim['workflow_task_attempt'], [['type' => 'complete_workflow']]);
+                    self::fail('The killed workflow owner published a late completion.');
+                } catch (\DurableWorkflow\Exception\ServerException $error) { self::assertSame(409, $error->status); }
+            }
             self::assertSame(1, count(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityCancelled')));
             $heartbeats = array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityHeartbeatRecorded'
                 && ($event['payload']['activity_type'] ?? null) === 'tests.php-cooperative-remote');
@@ -239,6 +259,7 @@ final class CooperativeCancellationTest extends TestCase
             }
             self::assertSame($events, $this->history($client, $handle));
         } finally {
+            if (is_file($this->directory.'/pause-workflow-claim')) { unlink($this->directory.'/pause-workflow-claim'); }
             if (is_resource($workflowMessages)) { fclose($workflowMessages); }
             fclose($ownerMessages);
             $this->stopWorker($workflowPid);
@@ -314,7 +335,7 @@ final class CooperativeCancellationTest extends TestCase
     }
 
     /** @return array{int, resource} */
-    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false): array
+    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false): array
     {
         $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
         if ($sockets === false) {
@@ -336,7 +357,8 @@ final class CooperativeCancellationTest extends TestCase
             try {
                 // Construct transport and worker after fork. No inherited HTTP connection is used.
                 $transport = $remoteRole ? new RemoteOwnerObservationTransport($notify)
-                    : ($loseReply ? new DiscardFirstDeliveryReplyTransport($notify) : null);
+                    : ($pauseWorkflowClaim ? new PauseWorkflowClaimTransport($this->directory, $notify)
+                        : ($loseReply ? new DiscardFirstDeliveryReplyTransport($notify) : null));
                 $failureReported = false;
                 $worker = new Worker($this->client($transport, $namespace), $queue,
                     workerId: $queue.'-'.getmypid(), enableCooperativeCancellation: true,
@@ -590,5 +612,49 @@ final class RemoteOwnerObservationTransport implements \DurableWorkflow\Transpor
             ($this->notify)('owner-heartbeat');
         }
         return $reply;
+    }
+}
+
+/** Holds a real accepted poll reply before SDK replay so its owner can be killed. */
+final class PauseWorkflowClaimTransport implements \DurableWorkflow\Transport\BoundedTransport
+{
+    private readonly Psr18Transport $inner;
+    private bool $paused = false;
+
+    public function __construct(private readonly string $directory, private readonly \Closure $notify)
+    {
+        $this->inner = new Psr18Transport();
+    }
+
+    public function supportsBoundedRequests(): bool { return $this->inner->supportsBoundedRequests(); }
+
+    public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
+    {
+        return $this->pause($uri, $this->inner->send($method, $uri, $headers, $body));
+    }
+
+    public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
+    {
+        return $this->pause($uri, $this->inner->sendBounded($method, $uri, $headers, $body, $timeoutSeconds));
+    }
+
+    private function pause(string $uri, ?array $response): ?array
+    {
+        clearstatcache();
+        $gate = $this->directory.'/pause-workflow-claim';
+        if (!$this->paused && str_ends_with($uri, '/workflow-tasks/poll')
+            && is_array($response['task'] ?? null) && is_file($gate)) {
+            $this->paused = true;
+            file_put_contents($this->directory.'/held-workflow-claim', json_encode(array_intersect_key($response['task'],
+                ['task_id' => true, 'lease_owner' => true, 'workflow_task_attempt' => true, 'lease_expires_at' => true]), JSON_THROW_ON_ERROR));
+            ($this->notify)('workflow-claim-held');
+            $deadline = microtime(true) + 15;
+            while (is_file($gate)) {
+                if (microtime(true) >= $deadline) { throw new RuntimeException('Workflow claim fixture was not stopped.'); }
+                usleep(50_000);
+                clearstatcache();
+            }
+        }
+        return $response;
     }
 }
