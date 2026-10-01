@@ -19,7 +19,7 @@ use Psr\Http\Message\StreamFactoryInterface;
 use Throwable;
 
 /** Default PSR-18 JSON and bounded runtime-payload transport. */
-final class Psr18Transport implements PayloadTransport, PayloadUploadTransport
+final class Psr18Transport implements PayloadTransport, PayloadUploadTransport, BoundedTransport
 {
     private readonly ClientInterface $client;
     private readonly RequestFactoryInterface $requestFactory;
@@ -43,6 +43,30 @@ final class Psr18Transport implements PayloadTransport, PayloadUploadTransport
      */
     public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
     {
+        return $this->sendJson($method, $uri, $headers, $body);
+    }
+
+    public function supportsBoundedRequests(): bool
+    {
+        return $this->client instanceof GuzzleClient;
+    }
+
+    public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
+    {
+        if (!$this->supportsBoundedRequests() || $timeoutSeconds < 1 || $timeoutSeconds > 65) {
+            throw new \InvalidArgumentException('Bounded requests require Guzzle and a timeout from 1 through 65 seconds.');
+        }
+
+        return $this->sendJson($method, $uri, $headers, $body, $timeoutSeconds);
+    }
+
+    /**
+     * @param array<string, string> $headers
+     * @param array<string, mixed>|null $body
+     * @return array<string, mixed>|list<mixed>|null
+     */
+    private function sendJson(string $method, string $uri, array $headers, ?array $body, ?int $timeoutSeconds = null): ?array
+    {
         try {
             $request = $this->requestFactory->createRequest(strtoupper($method), $uri);
             foreach ($headers as $name => $value) {
@@ -52,7 +76,7 @@ final class Psr18Transport implements PayloadTransport, PayloadUploadTransport
                 $json = json_encode($body, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
                 $request = $request->withBody($this->streamFactory->createStream($json));
             }
-            $response = $this->sendRequest($request);
+            $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? 30, bounded: $timeoutSeconds !== null);
             $rawBody = (string) $response->getBody();
             if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
                 // An upstream proxy can return HTML or an empty body. Preserve
@@ -174,7 +198,7 @@ final class Psr18Transport implements PayloadTransport, PayloadUploadTransport
         }
     }
 
-    private function sendRequest(RequestInterface $request, bool $stream = false, int $timeoutSeconds = 30): ResponseInterface
+    private function sendRequest(RequestInterface $request, bool $stream = false, int $timeoutSeconds = 30, bool $bounded = false): ResponseInterface
     {
         $connectionFailure = false;
         try {
@@ -185,7 +209,9 @@ final class Psr18Transport implements PayloadTransport, PayloadUploadTransport
                     'synchronous' => true,
                     'http_errors' => false,
                     'allow_redirects' => false,
-                    ...($stream ? ['stream' => true, 'timeout' => $timeoutSeconds, 'read_timeout' => $timeoutSeconds] : []),
+                    ...($stream ? ['stream' => true] : []),
+                    ...($stream || $bounded ? ['timeout' => $timeoutSeconds, 'read_timeout' => $timeoutSeconds,
+                        'connect_timeout' => $timeoutSeconds] : []),
                     'on_stats' => static function (TransferStats $stats) use (&$connectionFailure, $onStats): void {
                         // Guzzle 8 no longer attaches cURL errno to exceptions.
                         // Accept only DNS/connect/timeout/closed-connection errors,

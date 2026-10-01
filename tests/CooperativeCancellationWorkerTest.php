@@ -305,7 +305,7 @@ final class CooperativeCancellationWorkerTest extends TestCase
     }
 }
 
-final class CooperativeWorkerTransport implements Transport
+final class CooperativeWorkerTransport implements \DurableWorkflow\Transport\BoundedTransport
 {
     public array $history;
     public array $observation;
@@ -323,6 +323,16 @@ final class CooperativeWorkerTransport implements Transport
     public string $deliveryReply = 'accepted';
     public ?string $refreshFault = null;
     public ?\Closure $onHeartbeat = null;
+
+    public function supportsBoundedRequests(): bool
+    {
+        return true;
+    }
+
+    public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
+    {
+        return $this->send($method, $uri, $headers, $body);
+    }
 
     public function __construct()
     {

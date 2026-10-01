@@ -72,6 +72,7 @@ final class Worker
     /** @var \Closure(int): void */
     private readonly \Closure $sleeper;
     private readonly string $workerId;
+    private readonly Client $client;
     private readonly Replayer $replayer;
     private readonly HandlerDiscovery $handlerDiscovery;
     private readonly LoggerInterface $logger;
@@ -86,7 +87,7 @@ final class Worker
     private readonly ?\Closure $diagnosticListener;
 
     public function __construct(
-        private readonly Client $client,
+        Client $client,
         public readonly string $taskQueue,
         ?string $workerId = null,
         int $heartbeatIntervalSeconds = self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
@@ -106,6 +107,7 @@ final class Worker
         if ($enableCooperativeCancellation && !Version::supportsCooperativeCancellation($client->workerProtocolVersion)) {
             throw new \InvalidArgumentException('Cooperative cancellation requires explicit worker protocol 1.20.');
         }
+        $this->client = $enableCooperativeCancellation ? $client->withBoundedWorkerRequests() : $client;
         $this->workerId = $workerId ?? 'php-worker-'.bin2hex(random_bytes(8));
         $this->heartbeatIntervalSeconds = $this->validHeartbeatInterval($heartbeatIntervalSeconds)
             ?? self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS;

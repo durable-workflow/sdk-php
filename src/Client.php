@@ -37,6 +37,7 @@ use DurableWorkflow\Model\WorkflowStreamDescription;
 use DurableWorkflow\Model\WorkflowStreamItem;
 use DurableWorkflow\Model\WorkflowStreamPage;
 use DurableWorkflow\Transport\Psr18Transport;
+use DurableWorkflow\Transport\BoundedTransport;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Transport\RuntimePayloads;
 use DurableWorkflow\Transport\RuntimePayloadUploads;
@@ -59,6 +60,7 @@ final class Client implements WorkflowClientInterface
     private readonly Transport $transport;
     private readonly PayloadCodec $codec;
     private readonly RuntimePayloadUploads $payloadUploads;
+    private bool $boundedWorkerRequests = false;
 
     public function __construct(
         string $baseUri,
@@ -113,6 +115,18 @@ final class Client implements WorkflowClientInterface
     public function payloadCodec(): PayloadCodec
     {
         return $this->codec;
+    }
+
+    /** @internal Isolate the cooperative worker's I/O policy from its caller's Client. */
+    public function withBoundedWorkerRequests(): self
+    {
+        if (!$this->transport instanceof BoundedTransport || !$this->transport->supportsBoundedRequests()) {
+            throw new InvalidArgumentException('Cooperative workers require a transport that honors bounded requests.');
+        }
+        $copy = clone $this;
+        $copy->boundedWorkerRequests = true;
+
+        return $copy;
     }
 
     /** Return a new client with the same transport, authentication, and codec for another namespace. */
@@ -1720,7 +1734,16 @@ final class Client implements WorkflowClientInterface
             if ($body !== null) {
                 $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers);
             }
-            $response = $this->transport->send($method, $this->baseUri.'/api'.$path, $headers, $body);
+            if ($worker && $this->boundedWorkerRequests) {
+                if (!$this->transport instanceof BoundedTransport || !$this->transport->supportsBoundedRequests()) {
+                    throw new InvalidArgumentException('The cooperative worker transport no longer supports bounded requests.');
+                }
+                $pollSeconds = str_ends_with($path, '/poll') && is_int($body['timeout_seconds'] ?? null)
+                    ? max(0, min(60, $body['timeout_seconds'])) : 0;
+                $response = $this->transport->sendBounded($method, $this->baseUri.'/api'.$path, $headers, $body, $pollSeconds + 5);
+            } else {
+                $response = $this->transport->send($method, $this->baseUri.'/api'.$path, $headers, $body);
+            }
 
             return is_array($response) && !array_is_list($response)
                 ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes))->response($response, $path, $worker)

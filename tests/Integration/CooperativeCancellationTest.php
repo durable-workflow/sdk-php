@@ -320,7 +320,7 @@ final class CooperativeCancellationTest extends TestCase
 }
 
 /** Discards one successful Server response after its real durable commit. */
-final class DiscardFirstDeliveryReplyTransport implements Transport
+final class DiscardFirstDeliveryReplyTransport implements \DurableWorkflow\Transport\BoundedTransport
 {
     private Psr18Transport $inner;
     private bool $discarded = false;
@@ -332,7 +332,21 @@ final class DiscardFirstDeliveryReplyTransport implements Transport
 
     public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
     {
-        $response = $this->inner->send($method, $uri, $headers, $body);
+        return $this->maybeDiscard($uri, $this->inner->send($method, $uri, $headers, $body));
+    }
+
+    public function supportsBoundedRequests(): bool
+    {
+        return $this->inner->supportsBoundedRequests();
+    }
+
+    public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
+    {
+        return $this->maybeDiscard($uri, $this->inner->sendBounded($method, $uri, $headers, $body, $timeoutSeconds));
+    }
+
+    private function maybeDiscard(string $uri, ?array $response): ?array
+    {
         if (!$this->discarded && str_ends_with($uri, '/deliver-cancellation')) {
             $this->discarded = true;
             ($this->notify)('delivery-reply-discarded');
