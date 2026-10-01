@@ -356,8 +356,7 @@ final class CooperativeCancellationTest extends TestCase
             $this->awaitMessage($ownerMessages, 'registered');
             // Wait for Native's real five-minute lease and the normal repair
             // pass. No clock, database row or production lease is changed.
-            $this->awaitMessage($ownerMessages, 'remote-entered', timeoutSeconds: 330);
-            $this->awaitMessage($ownerMessages, 'owner-heartbeat');
+            $this->awaitReclaimedActivity($ownerMessages);
             $replacement = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
             self::assertSame($original['task_id'], $replacement['task_id']);
             self::assertNotSame($original['activity_attempt_id'], $replacement['activity_attempt_id']);
@@ -514,6 +513,21 @@ final class CooperativeCancellationTest extends TestCase
                                 $context['relay_pid'], $context['callback_pid'],
                             ], JSON_THROW_ON_ERROR));
                         }
+                        $exception = $context['exception'] ?? null;
+                        if ($event === 'worker.retrying'
+                            && $exception instanceof \DurableWorkflow\Exception\ServerException
+                            && $exception->status === 429 && $exception->reason === 'long_poll_capacity_exhausted'
+                            && ($exception->details['poll_status'] ?? null) === 'long_poll_capacity_exhausted'
+                            && array_key_exists('task', $exception->details ?? []) && $exception->details['task'] === null
+                            && ($exception->details['retryable'] ?? null) === true
+                            && is_int($exception->details['retry_after_seconds'] ?? null)
+                            && $exception->details['retry_after_seconds'] > 0) {
+                            fwrite(STDOUT, 'Connected admitted poll retry: '.json_encode([
+                                'operation' => $context['operation'], 'reason' => $exception->reason,
+                                'delay_seconds' => $context['delay_seconds'],
+                            ], JSON_THROW_ON_ERROR)."\n");
+                            return;
+                        }
                         if (!$failureReported && ($context['exception'] ?? null) instanceof Throwable) {
                             $failureReported = true;
                             $error = $context['exception'];
@@ -601,6 +615,25 @@ final class CooperativeCancellationTest extends TestCase
     {
         stream_set_timeout($messages, $timeoutSeconds);
         self::assertSame($expected, trim((string) fgets($messages)), 'Unexpected worker observation.');
+    }
+
+    /** @param resource $messages */
+    private function awaitReclaimedActivity($messages): void
+    {
+        $deadline = microtime(true) + 330;
+        $registeredHeartbeat = false;
+        while (microtime(true) < $deadline) {
+            stream_set_timeout($messages, max(1, (int) ceil($deadline - microtime(true))));
+            $message = trim((string) fgets($messages));
+            if ($message === 'owner-heartbeat') {
+                $registeredHeartbeat = true;
+                continue;
+            }
+            self::assertSame('remote-entered', $message, 'Unexpected reclaim observation.');
+            self::assertTrue($registeredHeartbeat, 'Replacement registration must remain alive while awaiting lease expiry.');
+            return;
+        }
+        self::fail('Actual activity lease and repair did not produce a replacement within 330 seconds.');
     }
 
     private function stopWorker(int $pid, bool $kill = false): void
