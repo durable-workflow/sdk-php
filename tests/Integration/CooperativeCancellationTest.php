@@ -128,7 +128,7 @@ final class CooperativeCancellationTest extends TestCase
             $events = $this->assertCancelledCleanup($client, $handle, $accepted['cancellation_request']['request_id'], $messages);
             self::assertLessThan(10, microtime(true) - $started, 'Do not wait for the 60-second callback to return.');
             self::assertFileDoesNotExist($this->directory.'/late');
-            foreach ($pids as $pid) { $this->assertProcessStops($pid); }
+            foreach ($pids as $activityPid) { $this->assertProcessStops($activityPid); }
             $delivery = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'))[0];
             self::assertSame('local_activity', $delivery['payload']['call_kind']);
             self::assertSame(1, $delivery['payload']['sequence']);
