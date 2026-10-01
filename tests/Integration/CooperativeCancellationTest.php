@@ -324,6 +324,84 @@ final class CooperativeCancellationTest extends TestCase
         }
     }
 
+    public function testKilledActivityOwnerIsReclaimedBeforeCooperativeCleanup(): void
+    {
+        $queue = $this->queue('activity-reclaim');
+        $client = $this->client();
+        [$workflowPid, $workflowMessages] = $this->spawnWorker($queue);
+        [$ownerPid, $ownerMessages] = $this->spawnWorker($queue, userHeartbeat: false,
+            remoteRole: true, remoteBlockSeconds: 360);
+        try {
+            $this->awaitMessage($workflowMessages, 'registered');
+            $this->awaitMessage($ownerMessages, 'registered');
+            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['remote']);
+            $this->awaitMessage($ownerMessages, 'remote-entered');
+            $original = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
+            $processes = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
+            self::assertSame(1, $original['attempt_number']);
+            $leased = $client->activityTaskStatus($original['task_id'], $original['activity_attempt_id'], $original['lease_owner']);
+            self::assertTrue($leased['can_continue']);
+            self::assertSame('running', $leased['attempt_status']);
+            $expiresAt = (float) (new \DateTimeImmutable($leased['lease_expires_at']))->format('U.u');
+            self::assertGreaterThan(microtime(true), $expiresAt, 'Kill a genuinely current activity lease.');
+            fwrite(STDOUT, 'SIGKILL original activity: '.json_encode([$original, $leased], JSON_THROW_ON_ERROR)."\n");
+            $this->stopWorker($ownerPid, true);
+            $ownerPid = 0;
+            fclose($ownerMessages);
+            foreach ($processes as $pid) { $this->assertProcessStops($pid); }
+            self::assertFileDoesNotExist($this->directory.'/late');
+
+            [$ownerPid, $ownerMessages] = $this->spawnWorker($queue, userHeartbeat: false, remoteRole: true);
+            $this->awaitMessage($ownerMessages, 'registered');
+            // Wait for Native's real five-minute lease and the normal repair
+            // pass. No clock, database row or production lease is changed.
+            $this->awaitMessage($ownerMessages, 'remote-entered', timeoutSeconds: 330);
+            $this->awaitMessage($ownerMessages, 'owner-heartbeat');
+            $replacement = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
+            self::assertSame($original['task_id'], $replacement['task_id']);
+            self::assertNotSame($original['activity_attempt_id'], $replacement['activity_attempt_id']);
+            self::assertNotSame($original['lease_owner'], $replacement['lease_owner']);
+            self::assertSame(2, $replacement['attempt_number']);
+            self::assertGreaterThanOrEqual($expiresAt, microtime(true), 'Reclaim must follow actual lease expiry.');
+            fwrite(STDOUT, 'SIGKILL replacement activity: '.json_encode($replacement, JSON_THROW_ON_ERROR)."\n");
+
+            $before = $this->history($client, $handle);
+            foreach (['complete', 'fail'] as $operation) {
+                try {
+                    if ($operation === 'complete') {
+                        $client->completeActivityTask($original['task_id'], $original['activity_attempt_id'], $original['lease_owner'], 'late');
+                    } else {
+                        $client->failActivityTask($original['task_id'], $original['activity_attempt_id'], $original['lease_owner'], 'late', 'LateQualification');
+                    }
+                    self::fail('The killed attempt accepted a late '.$operation.'.');
+                } catch (\DurableWorkflow\Exception\ServerException $error) {
+                    self::assertSame(409, $error->status);
+                }
+            }
+            $heartbeat = $client->heartbeatActivityTask($original['task_id'], $original['activity_attempt_id'], $original['lease_owner'], ['late' => true]);
+            self::assertFalse($heartbeat['can_continue']);
+            self::assertFalse($heartbeat['heartbeat_recorded']);
+            self::assertFalse($heartbeat['cancel_requested']);
+            self::assertSame('attempt_closed', $heartbeat['reason']);
+            self::assertSame($leased['lease_expires_at'], $heartbeat['lease_expires_at']);
+            self::assertNull($heartbeat['last_heartbeat_at']);
+            self::assertSame($before, $this->history($client, $handle), 'Dead attempt changed canonical history.');
+
+            $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 60);
+            $events = $this->assertCancelledCleanup($client, $handle, $accepted['cancellation_request']['request_id'], $workflowMessages);
+            self::assertSame(1, count(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityCancelled')));
+            self::assertFileDoesNotExist($this->directory.'/late');
+            $processes = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
+            foreach ($processes as $pid) { $this->assertProcessStops($pid); }
+            fwrite(STDOUT, 'SIGKILL reclaimed cancellation history: '.json_encode($events, JSON_THROW_ON_ERROR)."\n");
+        } finally {
+            if (is_resource($workflowMessages)) { fclose($workflowMessages); }
+            if (is_resource($ownerMessages)) { fclose($ownerMessages); }
+            $this->stopWorker($workflowPid);
+            $this->stopWorker($ownerPid);
+        }
+    }
+
     private function client(?Transport $transport = null, string $namespace = 'default'): Client
     {
         return new Client($this->runtimeUrl, namespace: $namespace, token: $this->token,
@@ -336,7 +414,7 @@ final class CooperativeCancellationTest extends TestCase
     }
 
     /** @return array{int, resource} */
-    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false): array
+    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false, int $remoteBlockSeconds = 60): array
     {
         $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
         if ($sockets === false) {
@@ -404,13 +482,14 @@ final class CooperativeCancellationTest extends TestCase
                     $worker->registerWorkflow('tests.php-cooperative-payload', static fn (WorkflowContext $context, string $value): string => $value);
                 }
                 if ($remoteRole) {
-                    $worker->registerActivity('tests.php-cooperative-remote', function (ActivityContext $context) use ($notify, $userHeartbeat): \stdClass {
+                    $worker->registerActivity('tests.php-cooperative-remote', function (ActivityContext $context) use ($notify, $userHeartbeat, $remoteBlockSeconds): \stdClass {
                         file_put_contents($this->directory.'/remote-fence', json_encode([
                             'task_id' => $context->taskId, 'activity_attempt_id' => $context->activityAttemptId,
                             'lease_owner' => $context->leaseOwner,
+                            'attempt_number' => $context->attemptNumber,
                         ], JSON_THROW_ON_ERROR));
                         $notify('remote-entered');
-                        $deadline = microtime(true) + 60;
+                        $deadline = microtime(true) + $remoteBlockSeconds;
                         while (microtime(true) < $deadline) {
                             usleep(100_000);
                             if ($userHeartbeat) { $context->heartbeat(['qualification' => 'remote-in-flight']); }
@@ -450,9 +529,9 @@ final class CooperativeCancellationTest extends TestCase
     }
 
     /** @param resource $messages */
-    private function awaitMessage($messages, string $expected): void
+    private function awaitMessage($messages, string $expected, int $timeoutSeconds = 15): void
     {
-        stream_set_timeout($messages, 15);
+        stream_set_timeout($messages, $timeoutSeconds);
         self::assertSame($expected, trim((string) fgets($messages)), 'Unexpected worker observation.');
     }
 

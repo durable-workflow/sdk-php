@@ -470,7 +470,7 @@ jobs:
       - name: Emit bounded Server diagnostics
         if: failure()
         working-directory: sdk-php
-        run: docker compose -f docker-compose.test.yml logs --no-color --tail 100 bootstrap server worker
+        run: docker compose -f docker-compose.test.yml logs --no-color --tail 100 bootstrap server worker repair
       - name: Remove the task stack and images
         if: always()
         working-directory: sdk-php

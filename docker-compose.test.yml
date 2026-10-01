@@ -52,6 +52,16 @@ services:
       server:
         condition: service_healthy
 
+  repair:
+    build:
+      context: ../server
+    command: php artisan workflow:v2:repair-pass --loop --sleep-seconds=1 --json
+    environment: *server-env
+    volumes: ["payloads:/app/storage/app"]
+    depends_on:
+      server:
+        condition: service_healthy
+
   mysql:
     image: mysql:8.0
     environment:
