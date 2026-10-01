@@ -163,10 +163,23 @@ final class CooperativeCancellationTest extends TestCase
             $this->awaitMessage($ownerMessages, 'owner-heartbeat');
             $pids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
             foreach ($pids as $pid) { self::assertTrue(posix_kill($pid, 0), 'The remote callback must still be active.'); }
+            $remainingWorkflowLease = 0.0;
             if ($coldWorkflow) {
+                $deadWorkerId = $queue.'-'.$workflowPid;
                 $this->stopWorker($workflowPid, true);
                 $workflowPid = 0;
                 fclose($workflowMessages);
+                $diagnostics = $client->workflowDiagnostics($handle->workflowId, $handle->runId);
+                $observedAt = (float) (new \DateTimeImmutable($diagnostics['generated_at']))->format('U.u');
+                foreach ($diagnostics['pending_workflow_tasks'] as $pending) {
+                    if (($pending['status'] ?? null) === 'leased' && ($pending['lease_owner'] ?? null) === $deadWorkerId) {
+                        $expiresAt = (float) (new \DateTimeImmutable($pending['lease_expires_at']))->format('U.u');
+                        $remainingWorkflowLease = max($remainingWorkflowLease, $expiresAt - $observedAt);
+                    }
+                }
+                // The isolated stack grants ten-second workflow leases. A dead
+                // process cannot surrender a still-current claim immediately.
+                self::assertLessThanOrEqual(10, $remainingWorkflowLease, 'Unexpected qualification workflow lease.');
             }
             $started = microtime(true);
             $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 60);
@@ -175,7 +188,11 @@ final class CooperativeCancellationTest extends TestCase
                 $this->awaitMessage($workflowMessages, 'registered');
             }
             $events = $this->assertCancelledCleanup($client, $handle, $accepted['cancellation_request']['request_id'], $workflowMessages);
-            self::assertLessThan(10, microtime(true) - $started, 'The blocked remote callback must not finish before cancellation.');
+            $elapsed = microtime(true) - $started;
+            fwrite(STDOUT, sprintf("Connected remote recovery: cold=%s lease_remaining=%.3fs elapsed=%.3fs\n",
+                $coldWorkflow ? 'yes' : 'no', $remainingWorkflowLease, $elapsed));
+            self::assertLessThan(10 + $remainingWorkflowLease, $elapsed,
+                'Recover within the observed workflow lease plus ten seconds, before the 60-second callback returns.');
             foreach ($pids as $pid) { $this->assertProcessStops($pid); }
             self::assertFileDoesNotExist($this->directory.'/late');
             $delivery = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'))[0];
