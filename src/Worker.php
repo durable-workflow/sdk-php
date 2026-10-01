@@ -29,6 +29,7 @@ use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\ReplayResult;
 use DurableWorkflow\Worker\WorkflowClaimAborted;
+use DurableWorkflow\Worker\WorkflowClaimRevoked;
 use DurableWorkflow\Worker\WorkflowContext;
 use DurableWorkflow\Worker\StickyWorkflowCache;
 use DurableWorkflow\Worker\WorkerSession;
@@ -1060,6 +1061,14 @@ final class Worker
                 'attempt' => $attempt,
             ]);
         } catch (Throwable $exception) {
+            if ($exception instanceof WorkflowClaimRevoked) {
+                $this->diagnostic('worker.claim_aborted', [
+                    'task_id' => $taskId, 'task_kind' => 'workflow',
+                    'reason' => $exception->reason, 'message' => $exception->getMessage(),
+                ], 'warning');
+
+                return;
+            }
             $this->acknowledgeTaskFailure(
                 'workflow',
                 $taskId,
@@ -2118,18 +2127,21 @@ final class Worker
     private function assertLocalWorkflowClaimActive(array $task, bool $renew = true): void
     {
         if ($this->shutdownRequested) {
-            throw new WorkflowClaimAborted('Worker shutdown abandoned its local workflow claim.');
+            throw new WorkflowClaimRevoked('worker_shutdown', 'Worker shutdown abandoned its local workflow claim.');
         }
         $this->assertCancellationDeadline();
         if ($renew) {
             try {
                 if (!$this->renewWorkflowTaskLease((string) $task['task_id'],
                     (string) ($task['lease_owner'] ?? $this->workerId), (int) ($task['workflow_task_attempt'] ?? 1))) {
-                    throw new WorkflowClaimAborted('Local workflow claim was not renewed.');
+                    throw new WorkflowClaimRevoked('worker_shutdown', 'Local workflow claim was not renewed.');
                 }
             } catch (WorkflowClaimAborted $error) {
                 throw $error;
             } catch (Throwable $error) {
+                if ($this->isTerminalTaskConflict('workflow', (string) $task['task_id'], $error)) {
+                    throw new WorkflowClaimRevoked('terminal_task_fence', 'Local workflow claim has closed.', previous: $error);
+                }
                 throw new WorkflowClaimAborted('Local workflow claim renewal failed.', previous: $error);
             }
         }
@@ -2144,7 +2156,7 @@ final class Worker
     {
         if ($this->claimCancellation !== null
             && $this->now() >= (float) (new \DateTimeImmutable($this->claimCancellation->cleanupDeadlineAt))->format('U.u')) {
-            throw new WorkflowClaimAborted('The original cooperative cleanup deadline elapsed.');
+            throw new WorkflowClaimRevoked('cleanup_deadline_expired', 'The original cooperative cleanup deadline elapsed.');
         }
     }
 

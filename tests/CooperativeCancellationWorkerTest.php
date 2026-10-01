@@ -381,6 +381,7 @@ final class CooperativeCancellationWorkerTest extends TestCase
     public function testOriginalCleanupDeadlineStopsShieldedBlockedCallback(): void
     {
         $transport = new CooperativeWorkerTransport();
+        $transport->stopAuxiliaryPolls = false;
         $entered = $this->directory.'/cleanup-entered';
         $late = $this->directory.'/late';
         $now = 1790812800.0;
@@ -405,7 +406,69 @@ final class CooperativeCancellationWorkerTest extends TestCase
         self::assertFileDoesNotExist($late);
         self::assertCount(1, $transport->deliveries);
         self::assertSame([], $transport->completions);
-        self::assertSame(WorkflowClaimAborted::class, $transport->failures[0]['failure']['type']);
+        self::assertSame([], $transport->failures);
+
+        // A revoked claim must leave the worker available for unrelated work.
+        $transport->onHeartbeat = null;
+        $transport->requestVisible = false;
+        $transport->history = [$transport->history[0]];
+        $worker->registerWorkflow('next', static fn (WorkflowContext $context): string => 'next workflow');
+        $transport->workflowType = 'next';
+        self::assertTrue($worker->tick(0));
+        self::assertSame(['complete_workflow'], array_column($transport->completions[0]['commands'], 'type'));
+        self::assertSame([], $transport->failures);
+    }
+
+    #[DataProvider('cleanupTerminalFenceProvider')]
+    public function testTerminalFenceStopsCleanupWithoutPublishingFailureAndKeepsWorkerUsable(bool $matchingTask): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->stopAuxiliaryPolls = false;
+        $entered = $this->directory.'/cleanup-entered';
+        $late = $this->directory.'/late';
+        $transport->onHeartbeat = static function () use ($entered, $matchingTask): void {
+            if (is_file($entered)) {
+                throw new \DurableWorkflow\Exception\ServerException('Workflow run is already closed.', 409, 'run_closed', [
+                    'task_id' => $matchingTask ? 'task-1' : 'different-task',
+                    'can_continue' => false, 'task_status' => 'cancelled',
+                ]);
+            }
+        };
+        $worker = $this->worker($transport);
+        $worker->registerWorkflow('cancel', static function (WorkflowContext $context): void {
+            try { $context->sleep(10); }
+            catch (\DurableWorkflow\Exception\WorkflowCancelled) {
+                $context->cancellationShield(static fn () => $context->localActivity('cleanup'));
+            }
+        });
+        $worker->registerActivity('cleanup', static function (ActivityContext $context) use ($entered, $late): string {
+            file_put_contents($entered, 'entered');
+            sleep(60);
+            file_put_contents($late, 'late');
+            return 'too late';
+        });
+        $worker->tick(0);
+        self::assertFileExists($entered);
+        self::assertFileDoesNotExist($late);
+        self::assertSame([], $transport->completions);
+        if ($matchingTask) {
+            self::assertSame([], $transport->failures);
+        } else {
+            self::assertSame(WorkflowClaimAborted::class, $transport->failures[0]['failure']['type']);
+        }
+
+        $transport->onHeartbeat = null;
+        $transport->requestVisible = false;
+        $transport->history = [$transport->history[0]];
+        $transport->workflowType = 'next';
+        $worker->registerWorkflow('next', static fn (WorkflowContext $context): string => 'next workflow');
+        self::assertTrue($worker->tick(0));
+        self::assertSame(['complete_workflow'], array_column($transport->completions[0]['commands'], 'type'));
+    }
+
+    public static function cleanupTerminalFenceProvider(): array
+    {
+        return [[true], [false]];
     }
 
     #[DataProvider('isolatedFailureProvider')]
@@ -587,6 +650,8 @@ final class CooperativeBusinessFailure extends \RuntimeException {}
 
 final class CooperativeWorkerTransport implements \DurableWorkflow\Transport\BoundedTransport
 {
+    public string $workflowType = 'cancel';
+    public bool $stopAuxiliaryPolls = true;
     public array $history;
     public array $observation;
     public array $completions = [];
@@ -641,11 +706,15 @@ final class CooperativeWorkerTransport implements \DurableWorkflow\Transport\Bou
         }
         if (str_ends_with($uri, '/workflow-tasks/poll')) {
             return ['task' => ['task_id' => 'task-1', 'workflow_task_attempt' => 3, 'lease_owner' => 'worker-1',
-                'workflow_id' => 'workflow-1', 'run_id' => 'run-1', 'workflow_type' => 'cancel', 'payload_codec' => 'avro',
+                'workflow_id' => 'workflow-1', 'run_id' => 'run-1', 'workflow_type' => $this->workflowType, 'payload_codec' => 'avro',
                 'history_events' => [$this->history[0]],
                 ...($this->requestVisible ? ['cancellation_request' => $this->observation] : [])], 'poll_status' => 'leased'];
         }
-        if (str_ends_with($uri, '/poll')) { return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped']; }
+        if (str_ends_with($uri, '/poll')) {
+            return $this->stopAuxiliaryPolls
+                ? ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped']
+                : ['task' => null, 'poll_status' => 'empty'];
+        }
         if (str_ends_with($uri, '/heartbeat')) {
             ++$this->heartbeatCount;
             if ($this->onHeartbeat !== null) { ($this->onHeartbeat)($this); }
