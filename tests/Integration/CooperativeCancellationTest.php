@@ -161,11 +161,22 @@ final class CooperativeCancellationTest extends TestCase
             try {
                 // Construct transport and worker after fork. No inherited HTTP connection is used.
                 $transport = $loseReply ? new DiscardFirstDeliveryReplyTransport($notify) : null;
+                $failureReported = false;
                 $worker = new Worker($this->client($transport), $queue,
                     workerId: $queue.'-'.getmypid(), enableCooperativeCancellation: true,
-                    diagnosticListener: static function (string $event) use ($notify): void {
+                    diagnosticListener: static function (string $event, array $context) use ($notify, &$failureReported): void {
                         if ($event === 'worker.registered') {
                             $notify('registered');
+                        }
+                        if (!$failureReported && ($context['exception'] ?? null) instanceof Throwable) {
+                            $failureReported = true;
+                            $error = $context['exception'];
+                            $causes = [];
+                            do {
+                                $causes[] = $error::class.': '.$error->getMessage();
+                                $error = $error->getPrevious();
+                            } while ($error !== null && count($causes) < 4);
+                            fwrite(STDERR, 'Connected worker failure: '.implode(' | ', $causes)."\n");
                         }
                     });
                 $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind): string {
