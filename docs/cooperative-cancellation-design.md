@@ -142,6 +142,14 @@ the SDK's heartbeat deadline. Start, total and original cleanup deadlines remain
 fixed. A heartbeat cannot revive an elapsed attempt or exceed the original root
 budget. Rejected replies leave the previous acknowledged deadline intact.
 
+Prepared argument, recovery, checkpoint and result uploads can use a single
+draining fallback after an explicitly unadmitted response. The fallback requires
+the Server's advertised prepared completion schema and explicit protocol 1.20.
+It preserves the original workflow claim, operation identity and payload bytes.
+Every prepared operation shares the same claim allowance with ordinary workflow
+completion. The Server checks live authority and fixed deadlines without
+renewing leases, recording application heartbeats or extending cleanup time.
+
 These source primitives are not yet activated in the worker's local callback
 execution path. The next integration binds durable admission to the physical
 callback supervisor, same-claim history refresh and canonical outcome receipt.

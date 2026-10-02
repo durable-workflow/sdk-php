@@ -12,6 +12,7 @@ use DurableWorkflow\Version;
 final class RuntimePayloadUploads
 {
     private const COMPLETION_SCHEMA = 'durable-workflow.v2.payload-completion-context.v1';
+    private const PREPARED_COMPLETION_SCHEMA = 'durable-workflow.v2.payload-completion-context.v2';
     private const COMPLETION_HEADER = 'X-Durable-Workflow-Payload-Completion';
     /** @var array<string, list<string>> */
     public const COMMAND_FIELDS = [
@@ -158,10 +159,13 @@ final class RuntimePayloadUploads
                         $response = $upload($uploadHeaders, $blob);
                     } catch (TransportException $refusal) {
                         $context = $worker && ($policy['completion_context'] ?? false)
-                            ? $this->completionContext($body, $path, $payloads[$index]['path']) : null;
+                            ? $this->completionContext($body, $path, $payloads[$index]['path'],
+                                ($policy['prepared_completion_context'] ?? false)
+                                && ($headers['X-Durable-Workflow-Protocol-Version'] ?? null) === Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL) : null;
                         if ($context === null || $refusal->status !== 503
                             || ($refusal->response['reason'] ?? null) !== 'storage_pressure'
-                            || ($refusal->response['storage_state'] ?? null) !== 'draining') {
+                            || ($refusal->response['storage_state'] ?? null) !== 'draining'
+                            || ($refusal->response['request_admitted'] ?? null) !== false) {
                             throw $refusal;
                         }
                         // One capability-negotiated retry; never turn other pressure
@@ -197,7 +201,7 @@ final class RuntimePayloadUploads
     }
 
     /** @param array<string, string> $headers
-     * @return array{threshold_bytes: int, max_bytes: int, request_bytes: int, timeout_seconds: int, status: string, completion_context?: bool}
+     * @return array{threshold_bytes: int, max_bytes: int, request_bytes: int, timeout_seconds: int, status: string, completion_context?: bool, prepared_completion_context?: bool}
      */
     private function policy(array $headers, bool $worker, ?RequestBudget $budget = null): array
     {
@@ -242,7 +246,8 @@ final class RuntimePayloadUploads
             $policy = ['threshold_bytes' => $threshold, 'max_bytes' => $max, 'request_bytes' => $requestLimit,
                 'timeout_seconds' => $timeout, 'status' => is_string($storage['status'] ?? null) ? $storage['status'] : 'unavailable',
                 'completion_context' => ($manifest['upload']['completion_context']['schema'] ?? null) === self::COMPLETION_SCHEMA
-                    && ($manifest['upload']['completion_context']['header'] ?? null) === self::COMPLETION_HEADER];
+                    && ($manifest['upload']['completion_context']['header'] ?? null) === self::COMPLETION_HEADER,
+                'prepared_completion_context' => ($manifest['upload']['completion_context']['prepared_schema'] ?? null) === self::PREPARED_COMPLETION_SCHEMA];
         }
         $this->policies[$key] = ['expires' => time() + 60, 'policy' => $policy];
 
@@ -302,8 +307,32 @@ final class RuntimePayloadUploads
     /** @param array<string, mixed> $body
      * @param list<int|string> $slot
      */
-    private function completionContext(array $body, string $path, array $slot): ?string
+    private function completionContext(array $body, string $path, array $slot, bool $prepared): ?string
     {
+        $path = explode('?', $path)[0];
+        if ($prepared && preg_match('~\A/worker/workflow-tasks/([^/]+)/local-activities/(?:(checkpoint|prepare|recover)|([^/]+)/outcome)\z~', $path, $match)) {
+            $attempt = $body['workflow_task_attempt'] ?? null;
+            $owner = $body['lease_owner'] ?? null;
+            $task = rawurldecode($match[1]);
+            $operation = ($match[2] ?? '') !== '' ? $match[2] : 'outcome';
+            $identity = match ($operation) {
+                'checkpoint' => ['checkpoint_id' => $body['checkpoint_id'] ?? null],
+                'outcome' => ['activity_attempt_id' => rawurldecode($match[3])],
+                default => ['sequence' => $body['sequence'] ?? null],
+            };
+            $value = reset($identity);
+            if (!self::contextIdentifier($owner) || !self::contextIdentifier($task)
+                || !is_int($attempt) || $attempt < 1
+                || ($operation === 'prepare' || $operation === 'recover'
+                    ? !is_int($value) || $value < 1 : !self::contextIdentifier($value))) {
+                return null;
+            }
+            $context = json_encode(['schema' => self::PREPARED_COMPLETION_SCHEMA, 'kind' => 'workflow',
+                'task_id' => $task, 'attempt' => $attempt, 'lease_owner' => $owner,
+                'operation' => 'local_activity_'.$operation, 'slot' => $slot, ...$identity], JSON_THROW_ON_ERROR);
+
+            return strlen($context) <= 4096 ? $context : null;
+        }
         if (!preg_match('~\A/worker/(activity|workflow|query)-tasks/([^/]+)/(complete|fail)\z~', explode('?', $path)[0], $match)) {
             return null;
         }
@@ -319,6 +348,12 @@ final class RuntimePayloadUploads
             'operation' => $match[3], 'slot' => $slot], JSON_THROW_ON_ERROR);
 
         return strlen($context) <= 4096 ? $context : null;
+    }
+
+    private static function contextIdentifier(mixed $value): bool
+    {
+        return is_string($value) && $value !== '' && strlen($value) <= 255
+            && preg_match('/[\x00-\x1f\x7f]/', $value) === 0;
     }
 
     /** @param array<string, mixed> $body
