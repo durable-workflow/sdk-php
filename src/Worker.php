@@ -26,6 +26,8 @@ use DurableWorkflow\Worker\HandlerDefinition;
 use DurableWorkflow\Worker\WorkflowDefinitionFingerprint;
 use DurableWorkflow\Worker\HandlerResolver;
 use DurableWorkflow\Worker\PollResponse;
+use DurableWorkflow\Worker\PreparedLocalActivityAttempt;
+use DurableWorkflow\Worker\PreparedLocalActivityRunner;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\ReplayResult;
@@ -37,6 +39,7 @@ use DurableWorkflow\Worker\StickyWorkflowCache;
 use DurableWorkflow\Worker\WorkerSession;
 use DurableWorkflow\Worker\WorkerSessionOptions;
 use DurableWorkflow\Worker\WorkflowCommand;
+use DurableWorkflow\Transport\RequestBudget;
 use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
@@ -112,7 +115,12 @@ final class Worker
          * connections there. Captured memory changes do not update the owning worker.
          */
         private readonly bool $enableCooperativeCancellation = false,
+        /** Source opt-in for durably admitted sequential local callbacks. */
+        private readonly bool $enablePreparedLocalActivities = false,
     ) {
+        if ($enablePreparedLocalActivities && !$enableCooperativeCancellation) {
+            throw new \InvalidArgumentException('Prepared local activities require the cooperative worker opt-in.');
+        }
         if ($enableCooperativeCancellation && !Version::supportsCooperativeCancellation($client->workerProtocolVersion)) {
             throw new \InvalidArgumentException('Cooperative cancellation requires explicit worker protocol 1.20.');
         }
@@ -458,6 +466,10 @@ final class Worker
                 || ($protocol['server_capabilities']['cooperative_cancellation'] ?? null) !== true) {
                 throw new WorkflowClaimAborted('Cooperative cancellation requires explicit compatible runtime discovery.');
             }
+            if ($this->enablePreparedLocalActivities
+                && ($protocol['server_capabilities']['prepared_local_activities'] ?? null) !== true) {
+                throw new WorkflowClaimAborted('prepared_local_activity_not_supported: the Server must advertise the installed prepared-local bridge.');
+            }
         }
         $attempt = 0;
         while (!$this->shutdownRequested) {
@@ -481,11 +493,19 @@ final class Worker
                         'sticky_execution',
                         'cross_kind_poll_wake',
                         ...($this->enableCooperativeCancellation ? ['cooperative_cancellation'] : []),
+                        ...($this->enablePreparedLocalActivities ? ['prepared_local_activities'] : []),
                     ],
                     buildId: $this->buildId,
                     workflowCommandContracts: $this->workflowCommandContracts(),
                     capabilityManifest: [
                         ...CapabilityManifest::portableWorkerAffinity(),
+                        ...($this->enablePreparedLocalActivities ? [
+                            'prepared_local_activities' => [
+                                'supported' => true,
+                                'minimum_protocol_version' => Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL,
+                                'implementation' => 'durable_sequential_admission',
+                            ],
+                        ] : []),
                         ...($this->enableCooperativeCancellation ? [
                             'cooperative_cancellation' => [
                                 'supported' => true,
@@ -1067,7 +1087,7 @@ final class Worker
             if ($exception instanceof WorkflowClaimDeferred) {
                 $this->diagnostic('worker.claim_deferred', [
                     'task_id' => $taskId, 'task_kind' => 'workflow',
-                    'reason' => 'cancellation_waiting_for_child',
+                    'reason' => 'claim_released', 'message' => $exception->getMessage(),
                 ], 'info');
 
                 return;
@@ -1199,7 +1219,17 @@ final class Worker
      */
     private function refreshCancellationHistory(array $task): array
     {
-        $token = $this->claimCancellationObservation()['history_refresh_page_token'];
+        return $this->refreshWorkflowClaimHistory($task, $this->claimCancellationObservation()['history_refresh_page_token'], true);
+    }
+
+    /** @param array<string, mixed> $task
+     * @return list<array<string, mixed>>
+     */
+    private function refreshWorkflowClaimHistory(array $task, string $token, bool $requireCancellation = false): array
+    {
+        if (trim($token) === '') {
+            throw new WorkflowClaimAborted('Claim history refresh needs a nonempty Server-issued cursor.');
+        }
         $seen = [];
         $history = [];
         $hasCanonicalRequest = false;
@@ -1232,8 +1262,8 @@ final class Worker
             }
             $token = $next ?? '';
         } while ($token !== '');
-        if (!StickyWorkflowCache::startsWithWorkflowStart($history) || !$hasCanonicalRequest) {
-            throw new WorkflowClaimAborted('Cancellation refresh must contain the original start and canonical request.');
+        if (!StickyWorkflowCache::startsWithWorkflowStart($history) || ($requireCancellation && !$hasCanonicalRequest)) {
+            throw new WorkflowClaimAborted('Claim refresh must contain the original start and any required canonical cancellation.');
         }
         $workflowId = (string) ($task['workflow_id'] ?? '');
         $runId = (string) ($task['run_id'] ?? '');
@@ -1254,7 +1284,8 @@ final class Worker
         if ($this->claimCancellation !== null) {
             $history = $this->refreshCancellationHistory($task);
         }
-        for ($pass = 0; $pass < 3; ++$pass) {
+        $cancellationPasses = 0;
+        while (true) {
             $observation = $this->claimCancellation === null ? null : $this->claimCancellationObservation();
             $state = CancellationHistory::fromEvents($history, (string) ($task['run_id'] ?? ''),
                 $observation === null ? null : CancellationRequest::fromObservation($observation));
@@ -1268,8 +1299,11 @@ final class Worker
                 $replay = $this->replayer->replay($handler, $history, $input, $this->taskQueue, $task,
                     fn (string $activityType, array $arguments, array $options): array => $this->executeLocalActivity(
                         $task, $activityType, $arguments, $options,
-                    ));
+                    ), $this->enablePreparedLocalActivities);
             } catch (CooperativeCancellationObserved) {
+                if (++$cancellationPasses > 3) {
+                    throw new WorkflowClaimAborted('Cancellation replay did not converge on its canonical delivery.');
+                }
                 $history = $this->refreshCancellationHistory($task);
                 continue;
             }
@@ -1284,11 +1318,23 @@ final class Worker
             if ($replay->terminalFailure instanceof WorkflowClaimAborted) {
                 throw $replay->terminalFailure;
             }
+            if ($replay->preparedLocalActivity !== null) {
+                try {
+                    $history = $this->executePreparedLocalActivity($task, $history, $replay);
+                } catch (CooperativeCancellationObserved) {
+                    $history = $this->refreshCancellationHistory($task);
+                }
+                $cancellationPasses = 0;
+                continue;
+            }
             $intent = $replay->cancellationDelivery;
             if ($intent === null || $replay->commands !== []) {
                 return $replay;
             }
             $this->claimCancellationObservation();
+            if (++$cancellationPasses > 3) {
+                throw new WorkflowClaimAborted('Cancellation replay did not converge on its canonical delivery.');
+            }
             $deliveryError = null;
             try {
                 $this->deliverCancellationOrDeferClaim($task, $intent);
@@ -1305,7 +1351,166 @@ final class Worker
             }
         }
 
-        throw new WorkflowClaimAborted('Cancellation replay did not converge on its canonical delivery.');
+    }
+
+    /** @param array<string, mixed> $task
+     * @param list<array<string, mixed>> $history
+     * @return list<array<string, mixed>>
+     */
+    private function executePreparedLocalActivity(array $task, array $history, ReplayResult $replay): array
+    {
+        $call = $replay->preparedLocalActivity ?? throw new \LogicException('Missing prepared local call.');
+        $taskId = (string) $task['task_id'];
+        $runId = (string) $task['run_id'];
+        $owner = (string) ($task['lease_owner'] ?? $this->workerId);
+        $epoch = (int) ($task['workflow_task_attempt'] ?? 1);
+        try {
+            if ($replay->commands !== []) {
+                $this->assertWorkflowMemoUpdatesAvailable($replay->commands);
+                // These sequential commands each reserve one authored sequence.
+                foreach ($replay->commands as $command) {
+                    if (!in_array($command['type'] ?? null, ['record_side_effect', 'record_version_marker',
+                        'upsert_memo', 'upsert_search_attributes'], true)) {
+                        throw new WorkflowClaimAborted('Prepared local prefix contains an unsupported retained-claim command.');
+                    }
+                }
+                $start = $call->sequence - count($replay->commands);
+                $checkpointId = hash('sha256', json_encode([$taskId, $owner, $epoch, $start, $replay->commands], JSON_THROW_ON_ERROR));
+                $receipt = $this->client->preparedLocalActivityOperation($taskId, $owner, $epoch, 'checkpoint', [
+                    'checkpoint_id' => $checkpointId, 'start_sequence' => $start, 'commands' => $replay->commands,
+                ]);
+                if (($receipt['checkpointed'] ?? null) !== true || !is_bool($receipt['duplicate'] ?? null)
+                    || ($receipt['checkpoint_id'] ?? null) !== $checkpointId
+                    || ($receipt['task_id'] ?? null) !== $taskId || ($receipt['workflow_run_id'] ?? null) !== $runId
+                    || ($receipt['workflow_task_attempt'] ?? null) !== $epoch || ($receipt['lease_owner'] ?? null) !== $owner
+                    || ($receipt['start_sequence'] ?? null) !== $start || ($receipt['next_sequence'] ?? null) !== $call->sequence
+                    || !array_key_exists('reason', $receipt) || $receipt['reason'] !== null) {
+                    throw new WorkflowClaimAborted('Prepared local prefix lacks its original retained-claim receipt.');
+                }
+                // Replay the committed prefix before admitting any application callback.
+                return $this->refreshPreparedLocalHistory($task, $receipt);
+            }
+            $descriptor = $call->descriptor($this->client->payloadCodec());
+            if ($call->recover) {
+                $original = null;
+                foreach ($history as $event) {
+                    if (($event['event_type'] ?? $event['type'] ?? null) === 'ActivityStarted'
+                        && ($event['payload']['sequence'] ?? null) === $call->sequence) {
+                        $original = $event['payload'];
+                    }
+                }
+                $receipt = $this->client->preparedLocalActivityOperation($taskId, $owner, $epoch, 'recover', [
+                    'sequence' => $call->sequence, 'descriptor' => $descriptor,
+                ]);
+                $kind = $receipt['event_type'] ?? null;
+                if (($receipt['recovered'] ?? null) !== true || !is_bool($receipt['duplicate'] ?? null)
+                    || !array_key_exists('reason', $receipt) || $receipt['reason'] !== null
+                    || ($receipt['workflow_task_id'] ?? null) !== $taskId
+                    || $original === null
+                    || !is_string($receipt['activity_execution_id'] ?? null) || trim($receipt['activity_execution_id']) === ''
+                    || !is_string($receipt['activity_attempt_id'] ?? null) || trim($receipt['activity_attempt_id']) === ''
+                    || $receipt['activity_execution_id'] !== ($original['activity_execution_id'] ?? null)
+                    || $receipt['activity_attempt_id'] !== ($original['activity_attempt_id'] ?? null)
+                    || ($receipt['callback_stop_state'] ?? null) !== 'unknown'
+                    || !in_array($kind, ['ActivityRetryScheduled', 'ActivityFailed', 'ActivityTimedOut'], true)
+                    || ($receipt['claim_released'] ?? null) !== ($kind === 'ActivityRetryScheduled')
+                    || !is_array($receipt['created_task_ids'] ?? null) || !array_is_list($receipt['created_task_ids'])
+                    || count($receipt['created_task_ids']) !== ($kind === 'ActivityRetryScheduled' ? 1 : 0)
+                    || !is_string($receipt['event_id'] ?? null) || trim($receipt['event_id']) === '') {
+                    throw new WorkflowClaimAborted('Prepared local recovery lacks a canonical unknown-stop receipt.');
+                }
+                foreach ($receipt['created_task_ids'] as $createdTask) {
+                    if (!is_string($createdTask) || trim($createdTask) === '') {
+                        throw new WorkflowClaimAborted('Prepared local recovery has an invalid durable retry task identity.');
+                    }
+                }
+                if ($receipt['claim_released']) {
+                    throw new WorkflowClaimDeferred('Native scheduled the prepared local retry and released this workflow claim.');
+                }
+                $refreshed = $this->refreshPreparedLocalHistory($task, $receipt);
+                $event = null;
+                foreach ($refreshed as $candidate) {
+                    if (($candidate['id'] ?? null) === $receipt['event_id']) {
+                        $event = $candidate;
+                        break;
+                    }
+                }
+                if ($event === null || ($event['event_type'] ?? $event['type'] ?? null) !== $kind
+                    || ($event['payload']['sequence'] ?? null) !== $call->sequence
+                    || ($event['payload']['activity_execution_id'] ?? null) !== $receipt['activity_execution_id']
+                    || ($event['payload']['activity_attempt_id'] ?? null) !== $receipt['activity_attempt_id']
+                    || ($event['payload']['local_recovery']['workflow_task_id'] ?? null) !== $taskId
+                    || ($event['payload']['local_recovery']['workflow_task_attempt'] ?? null) !== $epoch
+                    || ($event['payload']['local_recovery']['lease_owner'] ?? null) !== $owner
+                    || ($event['payload']['local_recovery']['callback_stop_state'] ?? null) !== 'unknown') {
+                    throw new WorkflowClaimAborted('Prepared recovery is absent from this claim\'s canonical history.');
+                }
+
+                return $refreshed;
+            }
+            $nonce = hash('sha256', json_encode([$taskId, $runId, $owner, $epoch, $call->sequence], JSON_THROW_ON_ERROR));
+            $started = hrtime(true) / 1e9;
+            $receipt = $this->client->preparedLocalActivityOperation($taskId, $owner, $epoch, 'prepare', [
+                'sequence' => $call->sequence, 'worker_attempt_id' => $nonce, 'descriptor' => $descriptor,
+            ]);
+            $attempt = PreparedLocalActivityAttempt::fromPreparation($receipt, $taskId, $runId, $owner, $epoch, $nonce,
+                $call->command->attributes['heartbeat_timeout'] ?? null, $call->cleanupSnapshot());
+            $activityType = (string) $call->command->attributes['activity_type'];
+            $handler = $this->activities[$activityType] ?? null;
+            $arguments = $call->command->attributes['arguments_value'];
+            $runner = new PreparedLocalActivityRunner($this->client, $attempt, $receipt, $started,
+                fn (): bool => $this->shutdownRequested,
+                function (array $observation): void { $this->observeClaimCancellation($observation); },
+                function (int $relay, int $callback) use ($taskId, $attempt, $activityType): void {
+                    $this->diagnostic('worker.activity_process_started', [
+                        'task_id' => $taskId, 'activity_execution_id' => $attempt->executionId,
+                        'activity_attempt_id' => $attempt->attemptId, 'activity_type' => $activityType,
+                        'relay_pid' => $relay, 'callback_pid' => $callback, 'local' => true, 'prepared' => true,
+                    ]);
+                },
+                function (RequestBudget $budget): void { $this->heartbeatIfDue($budget); },
+            );
+            $outcome = $runner->execute(function (\Closure $heartbeat) use ($handler, $attempt, $activityType, $arguments): mixed {
+                if ($handler === null) {
+                    throw new InvalidLocalActivityReport('No local activity handler is registered for '.$activityType.'.');
+                }
+                return $handler(new ActivityContext($this->client, $attempt->taskId, $attempt->attemptId,
+                    $attempt->leaseOwner, $activityType, $attempt->attemptNumber, localHeartbeat: $heartbeat), ...$arguments);
+            });
+            if ($outcome['claim_released']) {
+                throw new WorkflowClaimDeferred('Native scheduled the prepared local retry and released this workflow claim.');
+            }
+
+            return $this->refreshPreparedLocalHistory($task, $outcome);
+        } catch (\DurableWorkflow\Exception\ServerException $error) {
+            if ($error->reason === 'cancellation_requested') {
+                if (!$this->renewWorkflowTaskLease($taskId, $owner, $epoch) || $this->claimCancellation === null) {
+                    throw new WorkflowClaimRevoked('local_admission_cancelled', 'Local admission was cancelled without a current workflow observation.');
+                }
+                throw new CooperativeCancellationObserved('Cancellation was accepted before the local callback was admitted.');
+            }
+            throw new WorkflowClaimRevoked($error->reason ?? 'prepared_local_outcome_unknown',
+                'Prepared local operation has an unknown or refused outcome. Leave its original claim for durable recovery.', previous: $error);
+        } catch (WorkflowClaimAborted $error) {
+            throw $error;
+        } catch (Throwable $error) {
+            throw new WorkflowClaimRevoked('invalid_prepared_local_receipt',
+                'Prepared local authority could not be validated. Leave its original claim for durable recovery.', previous: $error);
+        }
+    }
+
+    /** @param array<string, mixed> $task
+     * @param array<string, mixed> $receipt
+     * @return list<array<string, mixed>>
+     */
+    private function refreshPreparedLocalHistory(array $task, array $receipt): array
+    {
+        $token = $receipt['history_refresh_page_token'] ?? null;
+        if (!is_string($token) || trim($token) === '') {
+            throw new WorkflowClaimAborted('Prepared local operation lacks a Server-issued canonical history cursor.');
+        }
+
+        return $this->refreshWorkflowClaimHistory($task, $token);
     }
 
     /** @param array<string, mixed> $task */
@@ -2434,7 +2639,7 @@ final class Worker
         return min($timeoutSeconds, max(1, $this->heartbeatIntervalSeconds - 1));
     }
 
-    private function heartbeatIfDue(): void
+    private function heartbeatIfDue(?RequestBudget $budget = null): void
     {
         if (!$this->registered || $this->shutdownRequested) {
             return;
@@ -2444,10 +2649,10 @@ final class Worker
             return;
         }
 
-        $this->heartbeat();
+        $this->heartbeat($budget);
     }
 
-    private function heartbeat(): void
+    private function heartbeat(?RequestBudget $budget = null): void
     {
         if ($this->shutdownRequested || $this->now() < $this->heartbeatRetryAt) {
             return;
@@ -2457,7 +2662,7 @@ final class Worker
             $acknowledgement = $this->client->heartbeatWorker($this->workerId, [
                 'workflow_available' => 1,
                 'activity_available' => 1,
-            ]);
+            ], $budget);
         } catch (ServerException $exception) {
             if (!$exception->isTransientConnectionFailure()
                 && !$exception->isTransientUpstreamFailure()

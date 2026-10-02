@@ -63,6 +63,7 @@ final class WorkflowContext
         ?Fiber $execution = null,
         private readonly ?string $workflowCommandId = null,
         private readonly ?Closure $localActivityExecutor = null,
+        private readonly bool $prepareLocalActivities = false,
     ) {
         $this->execution = $execution;
         $this->loadMessageStreamMessages();
@@ -210,6 +211,11 @@ final class WorkflowContext
     public function localActivity(string $activityType, array $arguments = [], array $options = []): mixed
     {
         $this->assertActiveFiber();
+        if ($this->prepareLocalActivities && $this->isCapturing()) {
+            throw new WorkflowClaimAborted(
+                'prepared_local_parallel_admission_unavailable: the installed prepared-local contract cannot atomically admit this group.',
+            );
+        }
         if ($this->localActivityExecutor === null) {
             throw new LogicException('This worker explicitly refuses local activity execution.');
         }

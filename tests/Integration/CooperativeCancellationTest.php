@@ -161,6 +161,101 @@ final class CooperativeCancellationTest extends TestCase
         }
     }
 
+    #[DataProvider('booleanProvider')]
+    public function testPreparedLocalStopReceiptAndCleanupUseBackendAttempts(bool $userHeartbeat): void
+    {
+        $this->requirePreparedLocalSource();
+        $queue = $this->queue('prepared-local');
+        $client = $this->client();
+        [$pid, $messages] = $this->spawnWorker($queue, userHeartbeat: $userHeartbeat, preparedLocal: true);
+        try {
+            $this->awaitMessage($messages, 'registered');
+            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['local']);
+            $this->awaitMessage($messages, 'local-entered');
+            $pids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
+            $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 30);
+            $request = $accepted['cancellation_request'];
+            $repeated = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 300);
+            self::assertTrue($repeated['duplicate']);
+            self::assertSame($request, $repeated['cancellation_request']);
+            $events = $this->assertCancelledCleanup($client, $handle, $request['request_id'], $messages);
+            self::assertLessThan((float) (new \DateTimeImmutable($request['cleanup_deadline_at']))->format('U.u'), microtime(true));
+            foreach ($pids as $activityPid) { $this->assertProcessStops($activityPid); }
+            self::assertFileDoesNotExist($this->directory.'/late');
+            self::assertSame(1, count(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityCancellationAcknowledged')));
+            $started = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityStarted'));
+            self::assertCount(2, $started);
+            foreach ($started as $event) { self::assertSame(1, $event['payload']['local_preparation']['version']); }
+            $cleanup = $started[1]['payload']['local_preparation']['cancellation_cleanup'];
+            self::assertSame($request['request_id'], $cleanup['request_id']);
+            self::assertSame($request['request_id'], $cleanup['root_request_id']);
+            self::assertEquals(new \DateTimeImmutable($request['cleanup_deadline_at']), new \DateTimeImmutable($cleanup['cleanup_deadline_at']));
+            $completed = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityCompleted'))[0];
+            self::assertSame($started[1]['payload']['activity_attempt_id'], $completed['payload']['activity_attempt_id']);
+            self::assertSame(1, $completed['payload']['local_outcome']['version']);
+            fwrite(STDOUT, 'Prepared local source stop and cleanup: '.json_encode([
+                'application_heartbeats' => $userHeartbeat, 'request_id' => $request['request_id'],
+                'original_deadline' => $request['cleanup_deadline_at'], 'callback_pids' => $pids,
+                'backend_attempt_ids' => array_column(array_column($started, 'payload'), 'activity_attempt_id'),
+                'history' => $events,
+            ], JSON_THROW_ON_ERROR)."\n");
+        } finally {
+            fclose($messages);
+            $this->stopWorker($pid);
+        }
+    }
+
+    public function testPreparedCleanupResumesAfterWorkerSigkillWithinOriginalThirtySeconds(): void
+    {
+        $this->requirePreparedLocalSource();
+        $queue = $this->queue('prepared-cleanup-kill');
+        $client = $this->client();
+        [$pid, $messages] = $this->spawnWorker($queue, blockCleanup: true, preparedLocal: true);
+        try {
+            $this->awaitMessage($messages, 'registered');
+            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['timer']);
+            $this->awaitEvent($client, $handle, 'TimerScheduled');
+            $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 30);
+            $request = $accepted['cancellation_request'];
+            $this->awaitMessage($messages, 'cleanup-entered');
+            $before = $this->history($client, $handle);
+            $delivery = array_values(array_filter($before, static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'))[0];
+            $pids = json_decode((string) file_get_contents($this->directory.'/cleanup-processes'), true, flags: JSON_THROW_ON_ERROR);
+            $this->stopWorker($pid, true);
+            $pid = 0;
+            foreach ($pids as $activityPid) { $this->assertProcessStops($activityPid); }
+            fclose($messages);
+            [$pid, $messages] = $this->spawnWorker($queue, preparedLocal: true);
+            $this->awaitMessage($messages, 'registered');
+            $events = $this->assertCancelledCleanup($client, $handle, $request['request_id'], $messages);
+            self::assertLessThan((float) (new \DateTimeImmutable($request['cleanup_deadline_at']))->format('U.u'), microtime(true));
+            self::assertFileDoesNotExist($this->directory.'/cleanup-returned');
+            $afterDelivery = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'));
+            self::assertSame([$delivery], $afterDelivery, 'Replacement changed the original canonical delivery boundary.');
+            $recovery = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityRetryScheduled'));
+            self::assertCount(1, $recovery);
+            self::assertSame('unknown', $recovery[0]['payload']['local_recovery']['callback_stop_state']);
+            $repeated = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 300);
+            self::assertTrue($repeated['duplicate']);
+            self::assertSame($request, $repeated['cancellation_request']);
+            fwrite(STDOUT, 'Prepared cleanup source SIGKILL recovery: '.json_encode([
+                'request_id' => $request['request_id'], 'original_deadline' => $request['cleanup_deadline_at'],
+                'killed_callback_pids' => $pids, 'original_delivery' => $delivery, 'history' => $events,
+            ], JSON_THROW_ON_ERROR)."\n");
+        } finally {
+            if (is_resource($messages)) { fclose($messages); }
+            $this->stopWorker($pid);
+        }
+    }
+
+    private function requirePreparedLocalSource(): void
+    {
+        if (getenv('DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION') !== '1') {
+            self::markTestSkipped('Prepared local qualification requires the exact Native source overlay.');
+        }
+        self::assertTrue($this->client()->clusterInfo()->raw['worker_protocol']['server_capabilities']['prepared_local_activities'] ?? false);
+    }
+
     public static function booleanProvider(): array
     {
         return [[false], [true]];
@@ -649,7 +744,7 @@ final class CooperativeCancellationTest extends TestCase
     }
 
     /** @return array{int, resource} */
-    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false, int $remoteBlockSeconds = 60, bool $blockCleanup = false, bool $observeChildWait = false): array
+    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false, int $remoteBlockSeconds = 60, bool $blockCleanup = false, bool $observeChildWait = false, bool $preparedLocal = false): array
     {
         $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
         if ($sockets === false) {
@@ -676,7 +771,7 @@ final class CooperativeCancellationTest extends TestCase
                         : ($loseReply ? new DiscardFirstDeliveryReplyTransport($notify) : null)));
                 $failureReported = false;
                 $worker = new Worker($this->client($transport, $namespace), $queue,
-                    workerId: $queue.'-'.getmypid(), enableCooperativeCancellation: true,
+                    workerId: $queue.'-'.getmypid(), enableCooperativeCancellation: true, enablePreparedLocalActivities: $preparedLocal,
                     diagnosticListener: function (string $event, array $context) use ($notify, &$failureReported, $blockCleanup): void {
                         if ($event === 'worker.registered') {
                             $notify('registered');
@@ -721,7 +816,7 @@ final class CooperativeCancellationTest extends TestCase
                         }
                     });
                 if (!$remoteRole) {
-                    $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind) use ($queue): string {
+                    $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind) use ($queue, $preparedLocal): string {
                         try {
                             if ($kind === 'child-wait') {
                                 $context->childWorkflow('tests.php-cooperative', ['timer'], [
@@ -737,7 +832,9 @@ final class CooperativeCancellationTest extends TestCase
                                 $context->sleep(300);
                             }
                         } catch (WorkflowCancelled $error) {
-                            $context->cancellationShield(static fn () => $context->localActivity('tests.php-cooperative-cleanup', [$error->requestId, $context->cancellationContext()?->toArray()]));
+                            $context->cancellationShield(static fn () => $context->localActivity('tests.php-cooperative-cleanup',
+                                [$error->requestId, $context->cancellationContext()?->toArray()],
+                                $preparedLocal ? ['retry_policy' => ['max_attempts' => 3]] : []));
                             return (string) $error->requestId;
                         }
                         return 'not-cancelled';

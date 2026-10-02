@@ -14,6 +14,18 @@ use PHPUnit\Framework\TestCase;
 
 final class PreparedLocalActivityReplayTest extends TestCase
 {
+    public function test_parallel_local_calls_refuse_before_application_code_until_atomic_admission_exists(): void
+    {
+        $this->expectException(\DurableWorkflow\Worker\WorkflowClaimAborted::class);
+        $this->expectExceptionMessage('prepared_local_parallel_admission_unavailable');
+        (new Replayer(new AvroPayloadCodec()))->replay(static fn (WorkflowContext $context) => $context->parallel([
+            static fn () => $context->childWorkflow('python.child'),
+            static fn () => $context->localActivity('php.local'),
+        ]), [], [], 'prepared', localActivityExecutor: static function (): never {
+            self::fail('Parallel callbacks must not fall through to legacy inline execution.');
+        }, prepareLocalActivities: true);
+    }
+
     public function test_admission_preserves_prefix_without_starting_application_code(): void
     {
         $codec = new AvroPayloadCodec();

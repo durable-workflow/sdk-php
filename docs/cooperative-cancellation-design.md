@@ -121,7 +121,7 @@ duplicate acknowledgment and stale completion/failure refusal. Local callback
 receipts and durable activity waiting policies still need their separate
 workflow claim authority and qualification.
 
-## Prepared local cleanup foundation
+## Prepared local callback execution
 
 The explicit source candidate suspends prepared local calls before invoking
 application code. A shielded call after canonical cancellation delivery carries
@@ -150,11 +150,33 @@ Every prepared operation shares the same claim allowance with ordinary workflow
 completion. The Server checks live authority and fixed deadlines without
 renewing leases, recording application heartbeats or extending cleanup time.
 
-These source primitives are not yet activated in the worker's local callback
-execution path. The next integration binds durable admission to the physical
-callback supervisor, same-claim history refresh and canonical outcome receipt.
-The default protocol remains 1.19, and connected physical-stop and cleanup
-SIGKILL qualification remain required.
+The managed worker exposes an additional source opt-in,
+`enablePreparedLocalActivities: true`, which requires
+`enableCooperativeCancellation: true` and explicit protocol 1.20. Registration
+requires the Server's installed prepared-local capability. The worker checkpoints
+sequential prefix commands, reloads canonical history on the original claim,
+then admits the callback before forking it. It publishes only the backend
+attempt's canonical outcome. A recorded retry releases the claim to Native's
+durable scheduler instead of sleeping or retrying application code inline.
+
+An unresolved started callback goes through recovery with an unknown stop
+state. A lost outcome acknowledgment never reruns the callback in that claim.
+Lease control and application heartbeats retain the original backend attempt,
+owner and workflow claim epoch. The callback supervisor reports cancellation
+stop only after joining the physical process, before replaying cleanup.
+
+Server timestamps establish a conservative monotonic authority budget shared
+by control, worker keepalive, payload transfers and result publication. Fixed
+execution and cleanup deadlines cannot move when leases renew. With whole-second
+transport timeouts, the worker stops admitting I/O in the final fraction of a
+second instead of rounding past its authority deadline.
+
+Parallel groups containing local activities currently return
+`prepared_local_parallel_admission_unavailable` before callbacks start. The
+installed sequential contract cannot atomically admit that group. Completing
+parallel admission and connected physical-stop and cleanup SIGKILL qualification
+is required for the full PHP-parent, Python-child and Rust-activity scenario.
+The default protocol remains 1.19.
 
 ## Remaining qualification
 

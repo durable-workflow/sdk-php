@@ -1219,16 +1219,19 @@ final class Client implements WorkflowClientInterface
      * @param array<string, int> $taskSlots
      * @return array<string, mixed>
      */
-    public function heartbeatWorker(string $workerId, array $taskSlots = []): array
+    public function heartbeatWorker(string $workerId, array $taskSlots = [], ?RequestBudget $budget = null): array
     {
-        return $this->worker('POST', '/worker/heartbeat', $this->withoutNulls([
+        if ($budget !== null && !$this->boundedWorkerRequests) {
+            throw new \LogicException('A worker authority budget requires bounded worker requests.');
+        }
+        return $this->request('POST', '/worker/heartbeat', true, $this->withoutNulls([
             'worker_id' => $workerId,
             'task_slots' => $taskSlots ?: null,
             'process_metrics' => [
                 'process_id' => getmypid(),
                 'process_uptime_seconds' => 0,
             ],
-        ]));
+        ]), budget: $budget);
     }
 
     public function deregisterWorker(string $workerId): void
@@ -1310,9 +1313,13 @@ final class Client implements WorkflowClientInterface
         string $operation,
         array $body = [],
         ?string $activityAttemptId = null,
+        ?RequestBudget $budget = null,
     ): array {
         if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion)) {
             throw new \LogicException('Prepared local activity operations require worker protocol 1.20.');
+        }
+        if ($budget !== null && !$this->boundedWorkerRequests) {
+            throw new \LogicException('A prepared activity authority budget requires bounded worker requests.');
         }
         $admission = in_array($operation, ['checkpoint', 'prepare', 'recover'], true);
         $existing = in_array($operation, ['control', 'heartbeat', 'outcome', 'acknowledge-cancellation'], true);
@@ -1325,9 +1332,9 @@ final class Client implements WorkflowClientInterface
         $path = '/worker/workflow-tasks/'.$this->segment($taskId).'/local-activities/'
             .($activityAttemptId === null ? '' : $this->segment($activityAttemptId).'/').$operation;
 
-        return $this->worker('POST', $path, [
+        return $this->request('POST', $path, true, [
             'lease_owner' => $leaseOwner, 'workflow_task_attempt' => $attempt, ...$body,
-        ]);
+        ], budget: $budget);
     }
 
     /**
@@ -1825,6 +1832,7 @@ final class Client implements WorkflowClientInterface
         bool $worker,
         ?array $body = null,
         ?string $operation = null,
+        ?RequestBudget $budget = null,
     ): array {
         $headers = [
             'Accept' => 'application/json',
@@ -1840,7 +1848,7 @@ final class Client implements WorkflowClientInterface
         try {
             $poll = str_ends_with($path, '/poll') && is_int($body['timeout_seconds'] ?? null);
             $pollSeconds = $poll ? max(0, min(60, $body['timeout_seconds'])) : 0;
-            $budget = $worker && $this->boundedWorkerRequests ? new RequestBudget($pollSeconds + 5) : null;
+            $budget ??= $worker && $this->boundedWorkerRequests ? new RequestBudget($pollSeconds + 5) : null;
             if ($body !== null) {
                 $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers, $budget);
             }

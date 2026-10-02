@@ -65,7 +65,7 @@ final class Replayer
         $selectionOperationIdentities = $this->selectionOperationIdentities($history);
         $completedHistory = $this->hasCompletedHistory($history);
         $context = null;
-        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $localActivityExecutor, &$context): mixed {
+        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $localActivityExecutor, $prepareLocalActivities, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -81,6 +81,7 @@ final class Replayer
                     ? (string) $task['workflow_command_id']
                     : (isset($task['task_id']) ? (string) $task['task_id'] : null),
                 $localActivityExecutor === null ? null : Closure::fromCallable($localActivityExecutor),
+                $prepareLocalActivities,
             );
 
             try {
@@ -147,6 +148,15 @@ final class Replayer
                     ? $steps[$stepCursor]['sequence']
                     : $nextSequence;
                 $descriptors = $suspended->leafDescriptors($baseSequence);
+                if ($prepareLocalActivities) {
+                    foreach ($descriptors as $descriptor) {
+                        if ($descriptor['operation']->command->type === 'record_local_activity') {
+                            throw new WorkflowClaimAborted(
+                                'prepared_local_parallel_admission_unavailable: the installed prepared-local contract cannot atomically admit this group.',
+                            );
+                        }
+                    }
+                }
                 $results = [];
                 $pending = false;
                 $matched = 0;
