@@ -96,6 +96,23 @@ deadline. Raw histories include the request, attempts, joined stops and recovery
 events. This source qualification does not replace the published mixed-language
 cancellation cascade gate.
 
+The optional `python_commit` and `rust_commit` inputs must both be exact public
+Source SHAs and require the Native overlay. They build an actual Python child
+worker and Rust activity consumer alongside the PHP worker. The mixed case
+starts the child and a prepared PHP local activity together, waits for both
+callbacks to enter, then requests cancellation with a 30-second budget. It
+checks root lineage, genuine child cooperation, callback stops without app
+heartbeats, stop receipts and stale Rust publication. It sends SIGKILL to the
+PHP worker during shielded cleanup and starts a fresh worker, which must retain
+the committed group boundary and finish both runs as Cancelled before the
+original deadline. Duplicate cancellation cannot change that identity or budget.
+
+The Rust consumer's published dependency is replaced by the exact Source
+checkout in this qualification. Provenance retains all five commits, the actual
+consumer lockfile, Python package versions, histories and worker observations.
+Source results support the model's development. The final published-artifact
+cascade and a coherent API/CLI/UI inspection view remain separate required gates.
+
 Explicit cooperative workers require Unix CLI, `pcntl`, `posix` and a transport
 that supports bounded requests, downloads and uploads. The default transport
 requires Guzzle with cURL for this opt-in mode. A worker control request shares

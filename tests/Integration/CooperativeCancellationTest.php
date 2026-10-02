@@ -32,6 +32,9 @@ final class CooperativeCancellationTest extends TestCase
     /** @var array<int, true> */
     private array $workerProcesses = [];
 
+    /** @var array<int, resource> */
+    private array $externalProcesses = [];
+
     protected function setUp(): void
     {
         if (getenv('DURABLE_WORKFLOW_COOPERATIVE_QUALIFICATION') !== '1') {
@@ -70,7 +73,17 @@ final class CooperativeCancellationTest extends TestCase
                 $cleanupFailure ??= $error;
             }
         }
+        foreach ($this->externalProcesses as $process) {
+            try { $this->stopExternalWorker($process); }
+            catch (Throwable $error) { $cleanupFailure ??= $error; }
+        }
         if (isset($this->directory)) {
+            $artifactDirectory = getenv('DURABLE_WORKFLOW_POLYGLOT_ARTIFACT_DIRECTORY');
+            if (is_string($artifactDirectory) && $artifactDirectory !== '' && $this->externalProcesses === []) {
+                $target = $artifactDirectory.'/'.basename($this->directory);
+                if (!is_dir($target)) { mkdir($target, 0700, true); }
+                foreach (glob($this->directory.'/*') ?: [] as $file) { copy($file, $target.'/'.basename($file)); }
+            }
             foreach (glob($this->directory.'/*') ?: [] as $file) { unlink($file); }
             rmdir($this->directory);
         }
@@ -258,6 +271,140 @@ final class CooperativeCancellationTest extends TestCase
             self::markTestSkipped('Prepared local qualification requires the exact Native source overlay.');
         }
         self::assertTrue($this->client()->clusterInfo()->raw['worker_protocol']['server_capabilities']['prepared_local_activities'] ?? false);
+    }
+
+    public function testPolyglotCascadeRecoversPhpCleanupWithinOriginalThirtySeconds(): void
+    {
+        if (getenv('DURABLE_WORKFLOW_POLYGLOT_QUALIFICATION') !== '1') {
+            self::markTestSkipped('The mixed cascade requires exact Python and Rust Source candidates.');
+        }
+        $this->requirePreparedLocalSource();
+        $queue = $this->queue('polyglot');
+        $client = $this->client();
+        $this->spawnExternalWorker('python', $queue.'-python');
+        $this->spawnExternalWorker('rust', $queue.'-rust');
+        [$pid, $messages] = $this->spawnWorker($queue, userHeartbeat: false, blockCleanup: true, preparedLocal: true);
+        try {
+            $this->awaitMessage($messages, 'registered');
+            $parent = $client->startWorkflow('tests.php-cooperative', $queue, $queue,
+                ['polyglot', $queue.'-python', $queue.'-rust']);
+            $this->awaitMessage($messages, 'local-entered');
+            $this->awaitObservationFile('rust-entered.json');
+            $grant = json_decode((string) file_get_contents($this->directory.'/rust-entered.json'), true, flags: JSON_THROW_ON_ERROR);
+            $localGrant = json_decode((string) file_get_contents($this->directory.'/local-fence'), true, flags: JSON_THROW_ON_ERROR);
+            $localPids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
+            $scheduled = array_values(array_filter($this->history($client, $parent),
+                static fn (array $event): bool => $event['event_type'] === 'ChildWorkflowScheduled'))[0];
+            $child = new WorkflowHandle($client, $scheduled['payload']['child_workflow_instance_id'],
+                $scheduled['payload']['child_workflow_run_id']);
+            $accepted = $parent->requestSelectedRunCancellation('mixed-language recovery qualification', 30);
+            $request = $accepted['cancellation_request'];
+            self::assertEquals((new \DateTimeImmutable($request['requested_at']))->modify('+30 seconds'),
+                new \DateTimeImmutable($request['cleanup_deadline_at']));
+            $this->awaitMessage($messages, 'cleanup-entered');
+            $before = $this->history($client, $parent);
+            $delivery = array_values(array_filter($before,
+                static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'))[0];
+            self::assertSame(2, $delivery['payload']['sequence_span']);
+            foreach ($localPids as $activityPid) { $this->assertProcessStops($activityPid); }
+            $this->awaitObservationFile('rust-stopped.json');
+            self::assertSame($grant, json_decode((string) file_get_contents($this->directory.'/rust-stopped.json'), true, flags: JSON_THROW_ON_ERROR));
+            $cleanupPids = json_decode((string) file_get_contents($this->directory.'/cleanup-processes'), true, flags: JSON_THROW_ON_ERROR);
+            $this->stopWorker($pid, true);
+            $pid = 0;
+            foreach ($cleanupPids as $activityPid) { $this->assertProcessStops($activityPid); }
+            fclose($messages);
+            [$pid, $messages] = $this->spawnWorker($queue, userHeartbeat: false, preparedLocal: true);
+            $this->awaitMessage($messages, 'registered');
+            $events = $this->assertCancelledCleanup($client, $parent, $request['request_id'], $messages);
+            self::assertSame('cancelled', strtolower((string) $child->describe()->status));
+            self::assertLessThan((float) (new \DateTimeImmutable($request['cleanup_deadline_at']))->format('U.u'), microtime(true));
+            $childEvents = $this->history($client, $child);
+            $this->awaitObservationFile('python-cleanup.json');
+            $childContext = json_decode((string) file_get_contents($this->directory.'/python-cleanup.json'), true, flags: JSON_THROW_ON_ERROR);
+            $rootContext = $delivery['payload']['cancellation'];
+            self::assertSame($request['request_id'], $rootContext['root_request_id']);
+            self::assertSame($request['request_id'], $childContext['root_request_id']);
+            self::assertSame($request['request_id'], $childContext['parent_request_id']);
+            self::assertNotSame($request['request_id'], $childContext['request_id']);
+            foreach (['root_workflow_instance_id', 'root_workflow_run_id', 'reason', 'requester', 'source'] as $field) {
+                self::assertSame($rootContext[$field], $childContext[$field], $field);
+            }
+            foreach (['requested_at', 'cleanup_deadline_at'] as $field) {
+                self::assertEquals(new \DateTimeImmutable($rootContext[$field]), new \DateTimeImmutable($childContext[$field]));
+            }
+            self::assertCount(2, $childContext['lineage']);
+            $childDelivery = array_values(array_filter($childEvents,
+                static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'));
+            self::assertCount(1, $childDelivery);
+            self::assertEquals($childContext, $childDelivery[0]['payload']['cancellation']);
+            $remoteReceipt = array_values(array_filter($childEvents,
+                static fn (array $event): bool => $event['event_type'] === 'ActivityCancellationAcknowledged'));
+            self::assertCount(1, $remoteReceipt);
+            foreach (['activity_attempt_id', 'lease_owner'] as $field) {
+                self::assertSame($grant[$field], $remoteReceipt[0]['payload'][$field], $field);
+            }
+            $remoteStatus = $client->activityTaskStatus($grant['task_id'], $grant['activity_attempt_id'], $grant['lease_owner']);
+            self::assertSame($grant['task_id'], $remoteStatus['task_id']);
+            self::assertFalse($remoteStatus['can_continue']);
+            self::assertSame($childContext['request_id'], $remoteReceipt[0]['payload']['request_id']);
+            self::assertSame($request['request_id'], $remoteReceipt[0]['payload']['root_request_id']);
+            self::assertEquals(new \DateTimeImmutable($request['cleanup_deadline_at']),
+                new \DateTimeImmutable($remoteReceipt[0]['payload']['cleanup_deadline_at']));
+            self::assertSame('activity_worker', $remoteReceipt[0]['payload']['evidence_source']);
+            self::assertSame('stopped', $remoteReceipt[0]['payload']['callback_state']);
+            self::assertFalse($remoteReceipt[0]['payload']['received_after_deadline']);
+            self::assertLessThan($childDelivery[0]['sequence'], $remoteReceipt[0]['sequence'], 'Wait must prove the stop before delivery.');
+            $localReceipt = array_values(array_filter($events,
+                static fn (array $event): bool => $event['event_type'] === 'ActivityCancellationAcknowledged'));
+            self::assertCount(1, $localReceipt);
+            self::assertSame($localGrant['activity_attempt_id'], $localReceipt[0]['payload']['activity_attempt_id']);
+            self::assertSame($request['request_id'], $localReceipt[0]['payload']['root_request_id']);
+            self::assertSame([$delivery], array_values(array_filter($events,
+                static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered')));
+            $recoveries = array_values(array_filter($events,
+                static fn (array $event): bool => $event['event_type'] === 'ActivityRetryScheduled'));
+            self::assertCount(1, $recoveries);
+            self::assertSame('unknown', $recoveries[0]['payload']['local_recovery']['callback_stop_state']);
+            foreach ([$events, $childEvents] as $history) {
+                self::assertSame(1, count(array_filter($history,
+                    static fn (array $event): bool => $event['event_type'] === 'WorkflowCancelled')));
+                foreach (['WorkflowCompleted', 'WorkflowFailed', 'WorkflowTerminated'] as $kind) {
+                    self::assertNotContains($kind, array_column($history, 'event_type'));
+                }
+            }
+            foreach ([[$events, $localGrant], [$childEvents, $grant]] as [$history, $initialGrant]) {
+                foreach ($history as $event) {
+                    if ($event['event_type'] === 'ActivityHeartbeatRecorded') {
+                        self::assertNotSame($initialGrant['activity_attempt_id'], $event['payload']['activity_attempt_id']);
+                    }
+                }
+            }
+            $duplicate = $parent->requestSelectedRunCancellation('must retain the original request', 300);
+            self::assertTrue($duplicate['duplicate']);
+            self::assertSame($request, $duplicate['cancellation_request']);
+            foreach (['complete', 'fail'] as $outcome) {
+                try {
+                    if ($outcome === 'complete') { $client->completeActivityTask($grant['task_id'], $grant['activity_attempt_id'], $grant['lease_owner'], 'stale'); }
+                    else { $client->failActivityTask($grant['task_id'], $grant['activity_attempt_id'], $grant['lease_owner'], 'stale', 'LateQualification'); }
+                    self::fail('The stopped Rust attempt cannot publish '.$outcome.'.');
+                } catch (\DurableWorkflow\Exception\ServerException $error) { self::assertSame(409, $error->status); }
+            }
+            self::assertSame($events, $this->history($client, $parent));
+            self::assertSame($childEvents, $this->history($client, $child));
+            self::assertFileDoesNotExist($this->directory.'/late');
+            self::assertFileDoesNotExist($this->directory.'/cleanup-returned');
+            fwrite(STDOUT, 'Mixed-language Source cascade: '.json_encode([
+                'root_request' => $request, 'child_context' => $childContext,
+                'application_heartbeats' => false, 'worker_sigkill_during_cleanup' => true,
+                'rust_callback_grant' => $grant, 'php_local_grant' => $localGrant,
+                'joined_local_pids' => $localPids, 'killed_cleanup_pids' => $cleanupPids,
+                'parent_history' => $events, 'child_history' => $childEvents,
+            ], JSON_THROW_ON_ERROR)."\n");
+        } finally {
+            if (is_resource($messages)) { fclose($messages); }
+            $this->stopWorker($pid);
+        }
     }
 
     #[DataProvider('booleanProvider')]
@@ -987,13 +1134,23 @@ final class CooperativeCancellationTest extends TestCase
                         }
                     });
                 if (!$remoteRole) {
-                    $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind) use ($queue, $preparedLocal, $remotePolicy): string {
+                    $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind, ?string $childQueue = null, ?string $remoteQueue = null) use ($queue, $preparedLocal, $remotePolicy): string {
                         try {
                             if ($kind === 'child-wait') {
                                 $context->childWorkflow('tests.php-cooperative', ['timer'], [
                                     'task_queue' => $queue,
                                     'cancellation_policy' => CancellationPolicy::WaitCancellationCompleted,
                                     'parent_close_policy' => ParentClosePolicy::RequestCancellation,
+                                ]);
+                            } elseif ($kind === 'polyglot') {
+                                if (!$preparedLocal || $childQueue === null || $remoteQueue === null) { throw new RuntimeException('Mixed Source queues and preparation are required.'); }
+                                $context->all([
+                                    static fn () => $context->childWorkflow('tests.polyglot-cancellation-child', [$remoteQueue], [
+                                        'task_queue' => $childQueue,
+                                        'cancellation_policy' => CancellationPolicy::WaitCancellationCompleted,
+                                        'parent_close_policy' => ParentClosePolicy::RequestCancellation,
+                                    ]),
+                                    static fn () => $context->localActivity('tests.php-cooperative-work'),
                                 ]);
                             } elseif ($kind === 'local') {
                                 $context->localActivity('tests.php-cooperative-work');
@@ -1047,6 +1204,10 @@ final class CooperativeCancellationTest extends TestCase
                     });
                 }
                 $worker->registerActivity('tests.php-cooperative-work', function (ActivityContext $context) use ($notify, $userHeartbeat): \stdClass {
+                    file_put_contents($this->directory.'/local-fence', json_encode([
+                        'task_id' => $context->taskId, 'activity_attempt_id' => $context->activityAttemptId,
+                        'lease_owner' => $context->leaseOwner, 'attempt_number' => $context->attemptNumber,
+                    ], JSON_THROW_ON_ERROR));
                     $notify('local-entered');
                     $deadline = microtime(true) + 60;
                     while (microtime(true) < $deadline) {
@@ -1141,6 +1302,59 @@ final class CooperativeCancellationTest extends TestCase
             return;
         }
         self::fail('Actual activity lease and repair did not produce a replacement within 330 seconds.');
+    }
+
+    private function spawnExternalWorker(string $language, string $queue): void
+    {
+        $binary = getenv('DURABLE_WORKFLOW_POLYGLOT_'.strtoupper($language).'_BINARY');
+        self::assertIsString($binary);
+        self::assertNotSame('', $binary);
+        $command = $language === 'python' ? [$binary, __DIR__.'/polyglot-python.py', $queue] : [$binary, $queue];
+        $environment = getenv();
+        $environment['DURABLE_WORKFLOW_SERVER_URL'] = $this->runtimeUrl;
+        $environment['DURABLE_WORKFLOW_AUTH_TOKEN'] = $this->token;
+        $environment['DW_CASCADE_DIRECTORY'] = $this->directory;
+        $process = proc_open($command, [
+            0 => ['file', '/dev/null', 'r'],
+            1 => ['file', $this->directory.'/'.$language.'-worker.log', 'a'],
+            2 => ['file', $this->directory.'/'.$language.'-worker.log', 'a'],
+        ], $pipes, __DIR__, $environment);
+        self::assertIsResource($process);
+        $this->externalProcesses[(int) $process] = $process;
+    }
+
+    /** @param resource $process */
+    private function stopExternalWorker($process): void
+    {
+        $id = (int) $process;
+        if (!isset($this->externalProcesses[$id])) { return; }
+        $status = proc_get_status($process);
+        if ($status['running']) { proc_terminate($process, SIGTERM); }
+        $deadline = microtime(true) + 10;
+        do {
+            $status = proc_get_status($process);
+            if (!$status['running']) {
+                $exit = proc_close($process);
+                unset($this->externalProcesses[$id]);
+                self::assertSame(0, $status['exitcode'] >= 0 ? $status['exitcode'] : $exit, 'Mixed-language worker failed.');
+                return;
+            }
+            usleep(50_000);
+        } while (microtime(true) < $deadline);
+        proc_terminate($process, SIGKILL);
+        proc_close($process);
+        unset($this->externalProcesses[$id]);
+        self::fail('Mixed-language worker did not stop and join.');
+    }
+
+    private function awaitObservationFile(string $name): void
+    {
+        $deadline = microtime(true) + 20;
+        do {
+            if (is_file($this->directory.'/'.$name)) { return; }
+            usleep(50_000);
+        } while (microtime(true) < $deadline);
+        self::fail('Mixed-language worker did not retain '.$name.'.');
     }
 
     private function stopWorker(int $pid, bool $kill = false): void

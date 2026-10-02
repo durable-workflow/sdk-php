@@ -18,6 +18,14 @@ on:
         description: Optional exact Native candidate SHA for source-bound child policy qualification
         type: string
         default: ''
+      python_commit:
+        description: Optional exact Python Source SHA for the mixed cancellation cascade
+        type: string
+        default: ''
+      rust_commit:
+        description: Optional exact Rust Source SHA for the mixed cancellation cascade
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -473,10 +481,58 @@ jobs:
         env:
           SERVER_COMMIT: ${{ inputs.server_commit }}
           NATIVE_COMMIT: ${{ inputs.native_commit }}
+          PYTHON_COMMIT: ${{ inputs.python_commit }}
+          RUST_COMMIT: ${{ inputs.rust_commit }}
         run: |
           jq --null-input --arg sdk "$GITHUB_SHA" --arg server "$SERVER_COMMIT" --arg native "$NATIVE_COMMIT" \
-            '{qualification:"source",sdk_commit:$sdk,server_commit:$server,native_source_overlay:($native | if length > 0 then . else null end)}' \
+            --arg python "$PYTHON_COMMIT" --arg rust "$RUST_COMMIT" \
+            '{qualification:"source",sdk_commit:$sdk,server_commit:$server,native_source_overlay:($native | if length > 0 then . else null end),python_sdk_commit:($python | if length > 0 then . else null end),rust_sdk_commit:($rust | if length > 0 then . else null end)}' \
             > sdk-php/cooperative-source-provenance.json
+      - name: Bind both exact mixed-language Source candidates
+        if: ${{ inputs.python_commit != '' || inputs.rust_commit != '' }}
+        env:
+          PYTHON_COMMIT: ${{ inputs.python_commit }}
+          RUST_COMMIT: ${{ inputs.rust_commit }}
+          NATIVE_COMMIT: ${{ inputs.native_commit }}
+        run: |
+          [[ "$PYTHON_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RUST_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$NATIVE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          export GIT_TERMINAL_PROMPT=0
+          git -c credential.helper= clone --depth=1 --no-tags https://github.com/durable-workflow/sdk-python.git sdk-python
+          git -c credential.helper= -C sdk-python fetch --depth=1 origin "$PYTHON_COMMIT"
+          git -C sdk-python checkout --detach FETCH_HEAD
+          test "$(git -C sdk-python rev-parse HEAD)" = "$PYTHON_COMMIT"
+          git -c credential.helper= clone --depth=1 --no-tags https://github.com/durable-workflow/sdk-rust.git sdk-rust
+          git -c credential.helper= -C sdk-rust fetch --depth=1 origin "$RUST_COMMIT"
+          git -C sdk-rust checkout --detach FETCH_HEAD
+          test "$(git -C sdk-rust rev-parse HEAD)" = "$RUST_COMMIT"
+      - name: Install Python for the mixed Source child
+        if: ${{ inputs.python_commit != '' }}
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Install Rust for the mixed Source activity
+        if: ${{ inputs.rust_commit != '' }}
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
+        with:
+          toolchain: 1.86.0
+      - name: Build the actual mixed-language workers
+        if: ${{ inputs.python_commit != '' }}
+        run: |
+          set -o pipefail
+          python -m pip install ./sdk-python
+          python -m pip freeze > sdk-php/polyglot-package-provenance.txt
+          printf '\n[patch.crates-io]\ndurable-workflow = { path = "../../../../sdk-rust" }\n' \
+            >> sdk-php/tests/Integration/polyglot-rust/Cargo.toml
+          cargo build --manifest-path sdk-php/tests/Integration/polyglot-rust/Cargo.toml --message-format=json \
+            > sdk-php/polyglot-build.json
+          binary="$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "dw-polyglot-cancellation-activity") | .executable // empty' sdk-php/polyglot-build.json)"
+          test -x "$binary"
+          printf 'DURABLE_WORKFLOW_POLYGLOT_QUALIFICATION=1\n' >> "$GITHUB_ENV"
+          printf 'DURABLE_WORKFLOW_POLYGLOT_PYTHON_BINARY=%s\n' "$(command -v python)" >> "$GITHUB_ENV"
+          printf 'DURABLE_WORKFLOW_POLYGLOT_RUST_BINARY=%s\n' "$binary" >> "$GITHUB_ENV"
+          printf 'DURABLE_WORKFLOW_POLYGLOT_ARTIFACT_DIRECTORY=%s/sdk-php/polyglot-evidence\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
       - run: composer install --no-interaction --prefer-dist --no-progress
         working-directory: sdk-php
       - name: Start the isolated MySQL Server stack
@@ -505,6 +561,10 @@ jobs:
             sdk-php/*-results.xml
             sdk-php/cooperative-scenarios.log
             sdk-php/cooperative-source-provenance.json
+            sdk-php/polyglot-build.json
+            sdk-php/polyglot-package-provenance.txt
+            sdk-php/polyglot-evidence/
+            sdk-php/tests/Integration/polyglot-rust/Cargo.lock
           if-no-files-found: warn
           retention-days: 90
       - name: Emit bounded Server diagnostics
