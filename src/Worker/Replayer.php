@@ -466,8 +466,9 @@ final class Replayer
                 }
                 if ($step['resolved'] === false) {
                     if ($prepareLocalActivities && $suspended->type === 'record_local_activity') {
-                        return $this->result($commands, $context, preparedLocalActivity: new PreparedLocalActivityCall(
+                        return $this->result($commands, $context, preparedLocalActivity: $this->preparedLocalCall(
                             $suspended, $step['sequence'], PreparedLocalActivityCall::needsRecovery($history, $step['sequence']),
+                            $history, $cancellation, $context, $cancellationConsumed,
                         ));
                     }
                     return $this->result($commands, $context);
@@ -501,8 +502,8 @@ final class Replayer
             }
             if ($suspended->type === 'record_local_activity') {
                 if ($prepareLocalActivities) {
-                    return $this->result($commands, $context, preparedLocalActivity: new PreparedLocalActivityCall(
-                        $suspended, $nextSequence, false,
+                    return $this->result($commands, $context, preparedLocalActivity: $this->preparedLocalCall(
+                        $suspended, $nextSequence, false, $history, $cancellation, $context, $cancellationConsumed,
                     ));
                 }
                 try {
@@ -570,6 +571,36 @@ final class Replayer
         }
 
         return $this->result($commands, $context);
+    }
+
+    /** @param list<array<string, mixed>> $history */
+    private function preparedLocalCall(
+        WorkflowCommand $command,
+        int $sequence,
+        bool $recover,
+        array $history,
+        CancellationHistory $cancellation,
+        WorkflowContext $context,
+        bool $cancellationConsumed,
+    ): PreparedLocalActivityCall {
+        if ($cancellation->request === null) {
+            return new PreparedLocalActivityCall($command, $sequence, $recover);
+        }
+        $delivery = $cancellation->delivery;
+        $eventId = $cancellation->deliveryIndex === null ? null : ($history[$cancellation->deliveryIndex]['id'] ?? null);
+        if (!$cancellationConsumed || !$context->isCancellationShielded()
+            || $delivery === null || $cancellation->request->context === null
+            || $sequence < $delivery->sequence + $delivery->sequenceSpan
+            || !is_string($eventId) || trim($eventId) === '') {
+            throw new NonDeterministicWorkflow(
+                'Prepared local cleanup requires a shield after canonical cancellation delivery.', $sequence,
+                reason: 'local_activity_cleanup_authority_missing',
+            );
+        }
+
+        return new PreparedLocalActivityCall(
+            $command, $sequence, $recover, $cancellation->request->context, $eventId,
+        );
     }
 
     /**

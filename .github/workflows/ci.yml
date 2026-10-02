@@ -103,7 +103,17 @@ jobs:
       - run: composer install --no-interaction --prefer-dist
       - name: Lint PHP
         run: find src tests examples -name '*.php' -print0 | xargs -0 -n1 php -l
-      - run: composer test
+      - run: |
+          mkdir -p build
+          composer test -- --log-junit build/phpunit.xml
+      - name: Retain PHP 8.3 source test evidence
+        if: always() && matrix.php == '8.3'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: php-8.3-source-tests
+          path: build/phpunit.xml
+          if-no-files-found: error
+          retention-days: 90
       - name: Enforce Avro Value regression budget
         if: matrix.php == '8.3'
         run: composer benchmark-avro-value

@@ -121,6 +121,33 @@ duplicate acknowledgment and stale completion/failure refusal. Local callback
 receipts and durable activity waiting policies still need their separate
 workflow claim authority and qualification.
 
+## Prepared local cleanup foundation
+
+The explicit source candidate suspends prepared local calls before invoking
+application code. A shielded call after canonical cancellation delivery carries
+only the accepted local request ID and delivery history event ID in its
+preparation descriptor. The SDK compares the returned cleanup snapshot with the
+canonical root ID and original deadline. Poll observations, missing delivery
+identity, legacy context and unshielded calls cannot grant cleanup authority.
+
+Cold replay returns the same proof and authored sequence. It requests recovery
+for an unresolved started attempt and preparation after a recorded retry.
+Committed prefix results replay before admission, including cleanup side effects.
+Runtime admission, retry and recovery remain responsible for fencing attempts.
+
+Supervisor control renews the activity and hosting workflow leases without
+recording an application heartbeat. An actual application heartbeat has its own
+endpoint and canonical receipt. Only a fully validated acknowledgment advances
+the SDK's heartbeat deadline. Start, total and original cleanup deadlines remain
+fixed. A heartbeat cannot revive an elapsed attempt or exceed the original root
+budget. Rejected replies leave the previous acknowledged deadline intact.
+
+These source primitives are not yet activated in the worker's local callback
+execution path. The next integration binds durable admission to the physical
+callback supervisor, same-claim history refresh and canonical outcome receipt.
+The default protocol remains 1.19, and connected physical-stop and cleanup
+SIGKILL qualification remain required.
+
 ## Remaining qualification
 
 Portable activity operation policies, nested scopes and deterministic

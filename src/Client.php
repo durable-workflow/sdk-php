@@ -1315,7 +1315,7 @@ final class Client implements WorkflowClientInterface
             throw new \LogicException('Prepared local activity operations require worker protocol 1.20.');
         }
         $admission = in_array($operation, ['checkpoint', 'prepare', 'recover'], true);
-        $existing = in_array($operation, ['control', 'outcome', 'acknowledge-cancellation'], true);
+        $existing = in_array($operation, ['control', 'heartbeat', 'outcome', 'acknowledge-cancellation'], true);
         if ((!$admission && !$existing) || trim($taskId) === '' || trim($leaseOwner) === '' || $attempt < 1
             || ($admission && $activityAttemptId !== null)
             || ($existing && ($activityAttemptId === null || trim($activityAttemptId) === ''))

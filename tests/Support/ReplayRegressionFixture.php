@@ -96,7 +96,7 @@ final class ReplayRegressionFixture
         $codec = new AvroPayloadCodec();
         $localActivityInvocations = 0;
         $localActivityExecutor = in_array($workflowType, [
-            'golden.local-activity-terminal-failure', 'golden.local-activity-recovered',
+            'golden.local-activity-terminal-failure', 'golden.local-activity-recovered', 'golden.prepared-local-cleanup',
         ], true)
             ? static function () use (&$localActivityInvocations): array {
                 ++$localActivityInvocations;
@@ -116,12 +116,22 @@ final class ReplayRegressionFixture
                 'regression-corpus',
                 self::taskAttributes($workflowType),
                 $localActivityExecutor,
+                prepareLocalActivities: $workflowType === 'golden.prepared-local-cleanup',
             );
             gc_collect_cycles();
             $commands = array_map(
                 static fn (array $command): array => self::decodeEnvelopes($command, $codec),
                 $result->commands,
             );
+            if ($workflowType === 'golden.prepared-local-cleanup') {
+                $call = $result->preparedLocalActivity;
+                if ($call === null) {
+                    throw new RuntimeException('Canonical cleanup did not suspend at prepared admission.');
+                }
+                $commands[] = ['type' => 'prepare_local_activity', 'sequence' => $call->sequence,
+                    'recover' => $call->recover, 'local_activity' => self::decodeEnvelopes($call->descriptor($codec), $codec),
+                    'cancellation_cleanup' => $call->cleanupSnapshot()];
+            }
             if ($workflowType === 'golden.worker-update'
                 && count($commands) === 1
                 && ($commands[0]['type'] ?? null) === 'complete_workflow') {
@@ -308,6 +318,14 @@ final class ReplayRegressionFixture
                 $context->sleep((float) $seconds);
 
                 return 'timer-fired';
+            },
+            'golden.prepared-local-cleanup' => static function (WorkflowContext $context): void {
+                try {
+                    $context->sleep(10);
+                } catch (WorkflowCancelled $cancelled) {
+                    $context->cancellationShield(static fn () => $context->localActivity('golden.cleanup'));
+                    throw $cancelled;
+                }
             },
             'golden.child-workflow' => static function (
                 WorkflowContext $context,

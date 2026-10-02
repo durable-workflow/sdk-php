@@ -40,6 +40,16 @@ final class PreparedLocalActivityClientTest extends TestCase
         self::assertSame([], $transport->requests);
     }
 
+    public function test_application_heartbeat_uses_the_original_attempt_and_separate_endpoint(): void
+    {
+        $transport = new FakeTransport([['heartbeat_recorded' => true]]);
+        $client = new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.20');
+        $client->preparedLocalActivityOperation('task', 'original', 4, 'heartbeat', ['progress' => ['step' => 'cleanup']], 'attempt');
+        self::assertStringEndsWith('/task/local-activities/attempt/heartbeat', $transport->requests[0]['uri']);
+        self::assertSame(['lease_owner' => 'original', 'workflow_task_attempt' => 4,
+            'progress' => ['step' => 'cleanup']], $transport->requests[0]['body']);
+    }
+
     public function test_operation_bodies_cannot_replace_issued_claim_authority(): void
     {
         $transport = new FakeTransport([]);
