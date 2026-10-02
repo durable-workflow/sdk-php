@@ -26,6 +26,10 @@ on:
         description: Optional exact Rust Source SHA for the mixed cancellation cascade
         type: string
         default: ''
+      cli_commit:
+        description: Optional exact CLI Source SHA to inspect the mixed cancellation cascade
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -483,11 +487,31 @@ jobs:
           NATIVE_COMMIT: ${{ inputs.native_commit }}
           PYTHON_COMMIT: ${{ inputs.python_commit }}
           RUST_COMMIT: ${{ inputs.rust_commit }}
+          CLI_COMMIT: ${{ inputs.cli_commit }}
         run: |
           jq --null-input --arg sdk "$GITHUB_SHA" --arg server "$SERVER_COMMIT" --arg native "$NATIVE_COMMIT" \
-            --arg python "$PYTHON_COMMIT" --arg rust "$RUST_COMMIT" \
-            '{qualification:"source",sdk_commit:$sdk,server_commit:$server,native_source_overlay:($native | if length > 0 then . else null end),python_sdk_commit:($python | if length > 0 then . else null end),rust_sdk_commit:($rust | if length > 0 then . else null end)}' \
+            --arg python "$PYTHON_COMMIT" --arg rust "$RUST_COMMIT" --arg cli "$CLI_COMMIT" \
+            '{qualification:"source",sdk_commit:$sdk,server_commit:$server,native_source_overlay:($native | if length > 0 then . else null end),python_sdk_commit:($python | if length > 0 then . else null end),rust_sdk_commit:($rust | if length > 0 then . else null end),cli_source_commit:($cli | if length > 0 then . else null end)}' \
             > sdk-php/cooperative-source-provenance.json
+      - name: Bind exact CLI inspection source
+        if: ${{ inputs.cli_commit != '' }}
+        env:
+          CLI_COMMIT: ${{ inputs.cli_commit }}
+          NATIVE_COMMIT: ${{ inputs.native_commit }}
+          PYTHON_COMMIT: ${{ inputs.python_commit }}
+          RUST_COMMIT: ${{ inputs.rust_commit }}
+        run: |
+          set -euo pipefail
+          for commit in "$CLI_COMMIT" "$NATIVE_COMMIT" "$PYTHON_COMMIT" "$RUST_COMMIT"; do
+            [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          done
+          export GIT_TERMINAL_PROMPT=0
+          git -c credential.helper= clone --depth=1 --no-tags https://github.com/durable-workflow/cli.git cli-source
+          git -c credential.helper= -C cli-source fetch --depth=1 origin "$CLI_COMMIT"
+          git -C cli-source checkout --detach FETCH_HEAD
+          test "$(git -C cli-source rev-parse HEAD)" = "$CLI_COMMIT"
+          composer install --working-dir=cli-source --no-dev --no-interaction --prefer-dist --no-progress
+          printf 'DURABLE_WORKFLOW_CANCELLATION_CLI_BINARY=%s/cli-source/bin/dw\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
       - name: Bind both exact mixed-language Source candidates
         if: ${{ inputs.python_commit != '' || inputs.rust_commit != '' }}
         env:

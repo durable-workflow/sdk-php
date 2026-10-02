@@ -106,12 +106,21 @@ heartbeats, stop receipts and stale Rust publication. It sends SIGKILL to the
 PHP worker during shielded cleanup and starts a fresh worker, which must retain
 the committed group boundary and finish both runs as Cancelled before the
 original deadline. Duplicate cancellation cannot change that identity or budget.
+The case also checks Server's shared cascade during cleanup and after recovery,
+from both selected runs. The view must retain the original budget, both stop
+receipts, the same delivery boundary, and the original-to-replacement cleanup
+grant with its recorded unknown callback state.
+
+The optional `cli_commit` input requires both language candidates and the Native
+overlay. It runs the exact CLI against the final real cascade in JSON and human
+formats. JSON must preserve Server's view, and the human output must show the
+root, both runs, stop receipts, cleanup outcome and worker recovery.
 
 The Rust consumer's published dependency is replaced by the exact Source
-checkout in this qualification. Provenance retains all five commits, the actual
+checkout in this qualification. Provenance retains each selected source commit, the actual
 consumer lockfile, Python package versions, histories and worker observations.
 Source results support the model's development. The final published-artifact
-cascade and a coherent API/CLI/UI inspection view remain separate required gates.
+cascade and the Waterline inspection view remain separate required gates.
 
 Explicit cooperative workers require Unix CLI, `pcntl`, `posix` and a transport
 that supports bounded requests, downloads and uploads. The default transport

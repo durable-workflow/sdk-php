@@ -315,6 +315,12 @@ final class CooperativeCancellationTest extends TestCase
             foreach ($localPids as $activityPid) { $this->assertProcessStops($activityPid); }
             $this->awaitObservationFile('rust-stopped.json');
             self::assertSame($grant, json_decode((string) file_get_contents($this->directory.'/rust-stopped.json'), true, flags: JSON_THROW_ON_ERROR));
+            $cleaning = $this->cascade($client, $parent, $parent, $child, $request, 'cascade-during-cleanup');
+            $cleaningRuns = array_column($cleaning['runs'], null, 'run_id');
+            self::assertSame('cleaning_up', $cleaningRuns[$parent->selectedRunId]['lifecycle']);
+            self::assertSame($delivery['payload']['sequence'], $cleaningRuns[$parent->selectedRunId]['delivery']['sequence']);
+            self::assertSame($delivery['payload']['sequence_span'], $cleaningRuns[$parent->selectedRunId]['delivery']['sequence_span']);
+            self::assertSame('cancelled', $cleaningRuns[$child->selectedRunId]['lifecycle']);
             $cleanupPids = json_decode((string) file_get_contents($this->directory.'/cleanup-processes'), true, flags: JSON_THROW_ON_ERROR);
             $this->stopWorker($pid, true);
             $pid = 0;
@@ -372,6 +378,9 @@ final class CooperativeCancellationTest extends TestCase
                 static fn (array $event): bool => $event['event_type'] === 'ActivityRetryScheduled'));
             self::assertCount(1, $recoveries);
             self::assertSame('unknown', $recoveries[0]['payload']['local_recovery']['callback_stop_state']);
+            self::assertSame(1, count(array_filter($events,
+                static fn (array $event): bool => $event['event_type'] === 'ActivityHeartbeatRecorded')),
+                'Only the replacement cleanup callback emits an application heartbeat.');
             foreach ([$events, $childEvents] as $history) {
                 self::assertSame(1, count(array_filter($history,
                     static fn (array $event): bool => $event['event_type'] === 'WorkflowCancelled')));
@@ -402,12 +411,48 @@ final class CooperativeCancellationTest extends TestCase
             self::assertSame($childEvents, $this->history($client, $child));
             self::assertFileDoesNotExist($this->directory.'/late');
             self::assertFileDoesNotExist($this->directory.'/cleanup-returned');
+            $finished = $this->cascade($client, $parent, $parent, $child, $request, 'cascade-final');
+            $fromChild = $this->cascade($client, $child, $parent, $child, $request, 'cascade-child-final');
+            $finishedFromChild = $finished;
+            $finishedFromChild['selected_run_id'] = $child->selectedRunId;
+            self::assertSame($finishedFromChild, $fromChild, 'Both selected runs must explain the same cascade.');
+            $finishedRuns = array_column($finished['runs'], null, 'run_id');
+            foreach ([$parent, $child] as $handle) {
+                $node = $finishedRuns[$handle->selectedRunId];
+                self::assertSame('cancelled', $node['lifecycle']);
+                self::assertSame('cancelled', $node['projected_status']);
+                self::assertSame('WorkflowCancelled', $node['terminal_event_type']);
+                self::assertSame('completed', $node['cleanup']['outcome']);
+                self::assertSame($request['cleanup_deadline_at'], $node['cleanup']['cleanup_deadline_at']);
+                self::assertLessThan(new \DateTimeImmutable($request['cleanup_deadline_at']),
+                    new \DateTimeImmutable($node['cleanup']['finished_at']));
+                self::assertCount(1, $node['activity_stops']);
+                self::assertSame('reported_stopped', $node['activity_stops'][0]['callback_state']);
+                self::assertFalse($node['activity_stops'][0]['received_after_deadline']);
+            }
+            $parentNode = $finishedRuns[$parent->selectedRunId];
+            self::assertSame($cleaningRuns[$parent->selectedRunId]['delivery'], $parentNode['delivery']);
+            self::assertSame($localGrant['activity_attempt_id'], $parentNode['activity_stops'][0]['activity_attempt_id']);
+            self::assertSame('local', $parentNode['activity_stops'][0]['execution_mode']);
+            self::assertSame($grant['activity_attempt_id'], $finishedRuns[$child->selectedRunId]['activity_stops'][0]['activity_attempt_id']);
+            self::assertSame('remote', $finishedRuns[$child->selectedRunId]['activity_stops'][0]['execution_mode']);
+            self::assertCount(1, $parentNode['cleanup_recovery']);
+            foreach ($parentNode['cleanup_recovery'][0]['attempt'] as $field => $value) {
+                self::assertSame($recoveries[0]['payload']['local_recovery'][$field], $value, $field);
+            }
+            self::assertSame('unknown', $parentNode['cleanup_recovery'][0]['attempt']['callback_stop_state']);
+            self::assertNotSame($parentNode['cleanup_recovery'][0]['attempt']['original_lease_owner'],
+                $parentNode['cleanup_recovery'][0]['attempt']['lease_owner']);
+            self::assertSame('wait_cancellation_completed', $parentNode['child_propagation'][0]['policy']);
+            $this->assertCascadeCli($parent, $finished);
             fwrite(STDOUT, 'Mixed-language Source cascade: '.json_encode([
                 'root_request' => $request, 'child_context' => $childContext,
-                'application_heartbeats' => false, 'worker_sigkill_during_cleanup' => true,
+                'initial_work_application_heartbeats' => false, 'cleanup_application_heartbeats' => 1,
+                'worker_sigkill_during_cleanup' => true,
                 'rust_callback_grant' => $grant, 'php_local_grant' => $localGrant,
                 'joined_local_pids' => $localPids, 'killed_cleanup_pids' => $cleanupPids,
                 'parent_history' => $events, 'child_history' => $childEvents,
+                'cancellation_cascade' => $finished,
             ], JSON_THROW_ON_ERROR)."\n");
         } finally {
             foreach (['parent' => $parent, 'child' => $child] as $role => $handle) {
@@ -415,6 +460,83 @@ final class CooperativeCancellationTest extends TestCase
             }
             if (is_resource($messages)) { fclose($messages); }
             $this->stopWorker($pid);
+        }
+    }
+
+    /** @param array<string, mixed> $request @return array<string, mixed> */
+    private function cascade(Client $client, WorkflowHandle $selected, WorkflowHandle $parent, WorkflowHandle $child, array $request, string $artifact): array
+    {
+        $diagnostics = $client->workflowDiagnostics($selected->workflowId, (string) $selected->selectedRunId);
+        file_put_contents($this->directory.'/'.$artifact.'.json', json_encode($diagnostics, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
+        self::assertTrue($diagnostics['cancellation_cascade_supported'] ?? false);
+        $view = $diagnostics['cancellation_cascade'];
+        self::assertSame('durable-workflow.cancellation-cascade/v1', $view['schema']);
+        self::assertSame($selected->selectedRunId, $view['selected_run_id']);
+        self::assertTrue($view['inspection_complete'], json_encode($view['findings'], JSON_THROW_ON_ERROR));
+        self::assertFalse($view['truncated']);
+        self::assertSame($request['request_id'], $view['root']['root_request_id']);
+        self::assertSame($request['requested_at'], $view['root']['requested_at']);
+        self::assertSame($request['cleanup_deadline_at'], $view['root']['cleanup_deadline_at']);
+        self::assertCount(2, $view['runs']);
+        self::assertCount(1, $view['edges']);
+        self::assertSame($parent->selectedRunId, $view['edges'][0]['parent_run_id']);
+        self::assertSame($child->selectedRunId, $view['edges'][0]['child_run_id']);
+        foreach ($view['runs'] as $node) {
+            self::assertTrue($node['same_root_budget']);
+            self::assertSame($request['request_id'], $node['request']['root_request_id']);
+            self::assertSame($request['requested_at'], $node['request']['requested_at']);
+            self::assertSame($request['cleanup_deadline_at'], $node['request']['cleanup_deadline_at']);
+        }
+
+        return $view;
+    }
+
+    /** @param array<string, mixed> $view */
+    private function assertCascadeCli(WorkflowHandle $parent, array $view): void
+    {
+        $binary = getenv('DURABLE_WORKFLOW_CANCELLATION_CLI_BINARY');
+        if (!is_string($binary) || $binary === '') {
+            fwrite(STDOUT, "CLI inspection was not selected for this Source qualification.\n");
+            return;
+        }
+        self::assertFileExists($binary);
+        foreach (['json', 'table'] as $format) {
+            $path = $this->directory.'/cascade-cli-'.$format;
+            $environment = getenv();
+            $environment['DURABLE_WORKFLOW_AUTH_TOKEN'] = $this->token;
+            $process = proc_open([PHP_BINARY, $binary, 'debug', 'workflow', $parent->workflowId,
+                '--run-id='.(string) $parent->selectedRunId, '--server='.$this->runtimeUrl,
+                '--namespace=default', '--output='.$format, '--no-ansi'], [
+                0 => ['file', '/dev/null', 'r'], 1 => ['file', $path, 'w'], 2 => ['file', $path.'.stderr', 'w'],
+            ], $pipes, __DIR__, $environment);
+            self::assertIsResource($process);
+            try {
+                $deadline = microtime(true) + 15;
+                do {
+                    $status = proc_get_status($process);
+                    if (!$status['running']) { break; }
+                    usleep(50_000);
+                } while (microtime(true) < $deadline);
+                self::assertFalse($status['running'], 'CLI diagnostics exceeded the bounded qualification timeout.');
+                self::assertSame(0, $status['exitcode'], (string) file_get_contents($path.'.stderr'));
+            } finally {
+                if (proc_get_status($process)['running']) { proc_terminate($process, SIGKILL); }
+                proc_close($process);
+            }
+            $text = (string) file_get_contents($path);
+            if ($format === 'json') {
+                self::assertSame($view, json_decode($text, true, flags: JSON_THROW_ON_ERROR)['cancellation_cascade']);
+            } else {
+                foreach ([$view['root']['root_request_id'], $view['root']['cleanup_deadline_at'],
+                    'Cancellation Cascade:', 'phase=cancelled', 'Cleanup: completed',
+                    'callback=reported_stopped', 'callback=unknown', 'policy=wait_cancellation_completed'] as $expected) {
+                    self::assertStringContainsString($expected, $text);
+                }
+                foreach ($view['runs'] as $node) {
+                    self::assertStringContainsString($node['run_id'], $text);
+                    self::assertStringContainsString($node['activity_stops'][0]['activity_attempt_id'], $text);
+                }
+            }
         }
     }
 
