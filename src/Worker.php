@@ -1665,7 +1665,7 @@ final class Worker
         $this->assertCancellationDeadline();
         if (($response['delivered'] ?? null) === false) {
             // Client validation requires an explicit acknowledgement of claim release.
-            throw new WorkflowClaimDeferred('Server parked the parent until child cancellation completes.');
+            throw new WorkflowClaimDeferred('Server released this claim until cancellation acknowledgments resolve.');
         }
     }
 

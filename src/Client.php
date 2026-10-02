@@ -1371,8 +1371,11 @@ final class Client implements WorkflowClientInterface
         $response = $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/deliver-cancellation', $body);
         try {
             if (($response['delivered'] ?? null) === false
-                && in_array($delivery->callKind, ['child', 'parallel', 'selection_handle'], true)
-                && ($response['reason'] ?? null) === 'cancellation_waiting_for_child'
+                && match ($response['reason'] ?? null) {
+                    'cancellation_waiting_for_child' => in_array($delivery->callKind, ['child', 'parallel', 'selection_handle'], true),
+                    'cancellation_waiting_for_activity' => in_array($delivery->callKind, ['activity', 'local_activity', 'parallel', 'selection_handle'], true),
+                    default => false,
+                }
                 && ($response['claim_released'] ?? null) === true
                 && ($response['task_id'] ?? null) === $taskId
                 && ($response['request_id'] ?? null) === null

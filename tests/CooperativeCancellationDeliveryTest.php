@@ -56,16 +56,29 @@ final class CooperativeCancellationDeliveryTest extends TestCase
         }
     }
 
-    public function testExplicitChildPendingReplyDoesNotClaimCanonicalDelivery(): void
+    #[DataProvider('pendingDeliveryKinds')]
+    public function testExplicitPendingReplyDoesNotClaimCanonicalDelivery(string $kind, string $reason): void
     {
         $pending = ['delivered' => false, 'task_id' => 'task/1', 'request_id' => null,
             'sequence' => null, 'call_kind' => null, 'sequence_span' => null,
             'operation_sequence' => null, 'operation_sequence_span' => null,
-            'reason' => 'cancellation_waiting_for_child', 'claim_released' => true];
+            'reason' => $reason, 'claim_released' => true];
         $transport = new FakeTransport([$pending]);
         $client = new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.20');
         self::assertSame($pending, $client->deliverWorkflowCancellation('task/1', 'worker-a', 3,
-            self::boundary(['call_kind' => 'child'])));
+            self::boundary(['call_kind' => $kind, ...($kind === 'selection_handle' ? ['operation_sequence' => 1] : [])])));
+    }
+
+    public static function pendingDeliveryKinds(): array
+    {
+        $cases = [];
+        foreach (['child', 'parallel', 'selection_handle'] as $kind) {
+            $cases['child '.$kind] = [$kind, 'cancellation_waiting_for_child'];
+        }
+        foreach (['activity', 'local_activity', 'parallel', 'selection_handle'] as $kind) {
+            $cases['activity '.$kind] = [$kind, 'cancellation_waiting_for_activity'];
+        }
+        return $cases;
     }
 
     public function testPendingChildReplyCannotBeReturnedForAnUnrelatedTimerCall(): void
@@ -78,23 +91,32 @@ final class CooperativeCancellationDeliveryTest extends TestCase
     }
 
     #[DataProvider('invalidPendingProvider')]
-    public function testPendingReplyCannotCarryAChangedTaskOrPretendDeliveryOccurred(array $change): void
+    public function testPendingReplyCannotCarryAChangedTaskOrPretendDeliveryOccurred(array $change, string $reason, string $kind): void
     {
         $transport = new FakeTransport([[...['delivered' => false, 'task_id' => 'task/1',
-            'reason' => 'cancellation_waiting_for_child', 'claim_released' => true], ...$change]]);
+            'reason' => $reason, 'claim_released' => true], ...$change]]);
         $client = new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.20');
         $this->expectException(ServerException::class);
-        $client->deliverWorkflowCancellation('task/1', 'worker-a', 3, self::boundary(['call_kind' => 'child']));
+        $client->deliverWorkflowCancellation('task/1', 'worker-a', 3, self::boundary(['call_kind' => $kind]));
     }
 
     public static function invalidPendingProvider(): array
     {
-        return array_map(static fn (array $change): array => [$change], [
+        $changes = [
             ['task_id' => 'other'], ['delivered' => 'false'], ['reason' => 'unknown_pending'],
             ['request_id' => 'other'], ['sequence' => 4], ['call_kind' => 'child'],
             ['sequence_span' => 1], ['operation_sequence' => 1], ['operation_sequence_span' => 1],
             ['claim_released' => false], ['claim_released' => 'true'], ['claim_released' => null],
-        ]);
+        ];
+        $cases = [];
+        foreach (['child', 'activity'] as $kind) {
+            foreach ($changes as $change) {
+                $cases[] = [$change, 'cancellation_waiting_for_'.$kind, $kind];
+            }
+            $cases[] = [['reason' => 'cancellation_waiting_for_'.($kind === 'child' ? 'activity' : 'child')],
+                'cancellation_waiting_for_'.$kind, $kind];
+        }
+        return $cases;
     }
 
     #[DataProvider('invalidLeaseProvider')]
