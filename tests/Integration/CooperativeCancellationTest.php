@@ -29,6 +29,9 @@ final class CooperativeCancellationTest extends TestCase
     private string $token;
     private string $directory;
 
+    /** @var array<int, true> */
+    private array $workerProcesses = [];
+
     protected function setUp(): void
     {
         if (getenv('DURABLE_WORKFLOW_COOPERATIVE_QUALIFICATION') !== '1') {
@@ -57,9 +60,22 @@ final class CooperativeCancellationTest extends TestCase
 
     protected function tearDown(): void
     {
+        $cleanupFailure = null;
+        // A failed assertion in a scenario's first stop must not leave its
+        // other worker holding the CI output pipe open after PHPUnit exits.
+        foreach (array_keys($this->workerProcesses) as $pid) {
+            try {
+                $this->stopWorker($pid);
+            } catch (Throwable $error) {
+                $cleanupFailure ??= $error;
+            }
+        }
         if (isset($this->directory)) {
             foreach (glob($this->directory.'/*') ?: [] as $file) { unlink($file); }
             rmdir($this->directory);
+        }
+        if ($cleanupFailure !== null) {
+            throw $cleanupFailure;
         }
     }
 
@@ -780,6 +796,7 @@ final class CooperativeCancellationTest extends TestCase
             }
         }
         fclose($child);
+        $this->workerProcesses[$pid] = true;
         return [$pid, $parent];
     }
 
@@ -811,7 +828,7 @@ final class CooperativeCancellationTest extends TestCase
 
     private function stopWorker(int $pid, bool $kill = false): void
     {
-        if ($pid <= 0) {
+        if ($pid <= 0 || !isset($this->workerProcesses[$pid])) {
             return;
         }
         posix_kill($pid, $kill ? SIGKILL : SIGTERM);
@@ -819,6 +836,7 @@ final class CooperativeCancellationTest extends TestCase
         do {
             $result = pcntl_waitpid($pid, $status, WNOHANG);
             if ($result === $pid) {
+                unset($this->workerProcesses[$pid]);
                 if ($kill) {
                     self::assertTrue(pcntl_wifsignaled($status));
                     self::assertSame(SIGKILL, pcntl_wtermsig($status));
@@ -832,6 +850,7 @@ final class CooperativeCancellationTest extends TestCase
         } while (microtime(true) < $deadline);
         posix_kill($pid, SIGKILL);
         pcntl_waitpid($pid, $status);
+        unset($this->workerProcesses[$pid]);
         self::fail('Cooperative worker did not stop after its shutdown request.');
     }
 
