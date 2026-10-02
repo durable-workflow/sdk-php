@@ -87,6 +87,131 @@ final class CooperativeActivityExecutorTest extends TestCase
         $this->assertProcessStops($pids[1]);
     }
 
+    public function test_concurrent_callbacks_overlap_and_settle_after_their_own_process_join(): void
+    {
+        $entered = $this->directory.'/second-entered';
+        $committed = $this->directory.'/first-committed';
+        $owner = getmypid();
+        $pids = $stopped = $results = [];
+        $operations = [];
+        foreach ([0, 1] as $index) {
+            $operations[] = [
+                'callback' => static function (Closure $heartbeat) use ($index, $entered, $committed): string {
+                    if ($index === 1) { file_put_contents($entered, 'entered'); }
+                    $wait = $index === 0 ? $entered : $committed;
+                    $deadline = hrtime(true) / 1e9 + 3;
+                    while (!is_file($wait) && hrtime(true) / 1e9 < $deadline) { usleep(10000); }
+                    if (!is_file($wait)) { throw new RuntimeException('Group callback was serialized or its result was not settled.'); }
+                    return 'member-'.$index;
+                },
+                'heartbeat' => static function (): never { self::fail('Application heartbeat was not requested.'); },
+                'check' => static function () use ($owner): void { self::assertSame($owner, getmypid()); },
+                'started' => static function (int $relay, int $callback) use ($index, &$pids): void { $pids[$index] = [$relay, $callback]; },
+                'stopped' => static function () use ($index, &$pids, &$stopped): void {
+                    foreach ($pids[$index] as $pid) { self::assertFalse(posix_kill($pid, 0)); }
+                    $stopped[$index] = true;
+                },
+            ];
+        }
+        $this->executor()->executeConcurrent($operations,
+            static function (int $index, mixed $value, ?ActivityExecutionFailure $failure) use (&$results, &$stopped, $committed): void {
+                self::assertNull($failure);
+                self::assertTrue($stopped[$index]);
+                $results[$index] = $value;
+                if ($index === 0) { file_put_contents($committed, 'canonical outcome committed'); }
+            });
+        self::assertSame([0 => 'member-0', 1 => 'member-1'], $results);
+        self::assertCount(2, $stopped);
+    }
+
+    public function test_concurrent_blocked_callbacks_all_join_before_cancellation_returns_without_application_heartbeats(): void
+    {
+        $pids = $stopped = $observed = [];
+        $operations = [];
+        foreach ([0, 1] as $index) {
+            $entered = $this->directory.'/entered-'.$index;
+            $late = $this->directory.'/late-'.$index;
+            $first = $this->directory.'/entered-0';
+            $second = $this->directory.'/entered-1';
+            $operations[] = [
+                'callback' => static function () use ($entered, $late): string {
+                    file_put_contents($entered, (string) getmypid());
+                    sleep(60);
+                    file_put_contents($late, 'unsafe');
+                    return 'unsafe';
+                },
+                'heartbeat' => static function (): never { self::fail('Cancellation must not require an application heartbeat.'); },
+                'check' => static function () use ($index, $first, $second, &$observed): void {
+                    if (is_file($first) && is_file($second)) {
+                        $observed[$index] = true;
+                        throw new CooperativeCancellationObserved('one root request');
+                    }
+                },
+                'started' => static function (int $relay, int $callback) use ($index, &$pids): void { $pids[$index] = [$relay, $callback]; },
+                'stopped' => static function () use ($index, &$pids, &$observed, &$stopped): void {
+                    self::assertTrue($observed[$index]);
+                    foreach ($pids[$index] as $pid) { self::assertFalse(posix_kill($pid, 0)); }
+                    $stopped[$index] = true;
+                },
+            ];
+        }
+        $start = hrtime(true) / 1e9;
+        try {
+            $this->executor()->executeConcurrent($operations, static function (): never { self::fail('Cancelled callback published a result.'); });
+            self::fail('Expected group cancellation.');
+        } catch (CooperativeCancellationObserved) {
+            self::assertLessThan(3, hrtime(true) / 1e9 - $start);
+            self::assertCount(2, $observed);
+            self::assertCount(2, $stopped);
+            self::assertFileDoesNotExist($this->directory.'/late-0');
+            self::assertFileDoesNotExist($this->directory.'/late-1');
+        }
+    }
+
+    public function test_sigkill_of_the_group_owner_stops_every_blocked_callback(): void
+    {
+        $directory = $this->directory;
+        $owner = pcntl_fork();
+        self::assertNotSame(-1, $owner);
+        if ($owner === 0) {
+            $operations = [];
+            foreach ([0, 1] as $index) {
+                $operations[] = [
+                    'callback' => static function () use ($directory, $index): never {
+                        file_put_contents($directory.'/running-'.$index, (string) getmypid());
+                        sleep(60);
+                        file_put_contents($directory.'/late-'.$index, 'unsafe');
+                        throw new RuntimeException('A dead owner left its callback running.');
+                    },
+                    'heartbeat' => static fn (): array => [], 'check' => static function (): void {},
+                    'started' => static function (int $relay, int $callback) use ($directory, $index): void {
+                        file_put_contents($directory.'/pids-'.$index, json_encode([$relay, $callback], JSON_THROW_ON_ERROR));
+                    },
+                    'stopped' => static function (): void {},
+                ];
+            }
+            $this->executor()->executeConcurrent($operations, static function (): never { throw new RuntimeException('Unexpected result.'); });
+            posix_kill(getmypid(), SIGKILL);
+        }
+        try {
+            $deadline = hrtime(true) / 1e9 + 3;
+            while ((!is_file($directory.'/running-0') || !is_file($directory.'/running-1')) && hrtime(true) / 1e9 < $deadline) { usleep(10000); }
+            self::assertFileExists($directory.'/running-0');
+            self::assertFileExists($directory.'/running-1');
+            self::assertTrue(posix_kill($owner, SIGKILL));
+            pcntl_waitpid($owner, $status);
+            foreach ([0, 1] as $index) {
+                foreach (json_decode((string) file_get_contents($directory.'/pids-'.$index), true, flags: JSON_THROW_ON_ERROR) as $pid) {
+                    $this->assertProcessStops($pid);
+                }
+                self::assertFileDoesNotExist($directory.'/late-'.$index);
+            }
+        } finally {
+            @posix_kill($owner, SIGKILL);
+            pcntl_waitpid($owner, $status, WNOHANG);
+        }
+    }
+
     public function testCancellationStopsARealBlockingCallbackWithoutUserHeartbeats(): void
     {
         $entered = $this->directory.'/entered';

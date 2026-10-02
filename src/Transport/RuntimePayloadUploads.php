@@ -23,6 +23,7 @@ final class RuntimePayloadUploads
         'complete_update' => ['result'],
         'record_side_effect' => ['result'],
         'record_local_activity' => ['arguments', 'result'],
+        'prepare_local_activity' => ['arguments'],
         'start_service_operation' => ['request_payload'],
         'upsert_memo' => ['entries'],
     ];
@@ -261,7 +262,7 @@ final class RuntimePayloadUploads
     {
         $paths = [];
         if ($worker) {
-            if (preg_match('~\A/worker/workflow-tasks/[^/]+/(?:complete|local-activities/checkpoint)\z~', $path)) {
+            if (preg_match('~\A/worker/workflow-tasks/[^/]+/(?:complete|local-activities/checkpoint(?:-group)?)\z~', $path)) {
                 foreach ($body['commands'] ?? [] as $index => $command) {
                     if (!is_array($command)) {
                         continue;
@@ -310,13 +311,13 @@ final class RuntimePayloadUploads
     private function completionContext(array $body, string $path, array $slot, bool $prepared): ?string
     {
         $path = explode('?', $path)[0];
-        if ($prepared && preg_match('~\A/worker/workflow-tasks/([^/]+)/local-activities/(?:(checkpoint|prepare|recover)|([^/]+)/outcome)\z~', $path, $match)) {
+        if ($prepared && preg_match('~\A/worker/workflow-tasks/([^/]+)/local-activities/(?:(checkpoint(?:-group)?|prepare|recover)|([^/]+)/outcome)\z~', $path, $match)) {
             $attempt = $body['workflow_task_attempt'] ?? null;
             $owner = $body['lease_owner'] ?? null;
             $task = rawurldecode($match[1]);
             $operation = ($match[2] ?? '') !== '' ? $match[2] : 'outcome';
             $identity = match ($operation) {
-                'checkpoint' => ['checkpoint_id' => $body['checkpoint_id'] ?? null],
+                'checkpoint', 'checkpoint-group' => ['checkpoint_id' => $body['checkpoint_id'] ?? null],
                 'outcome' => ['activity_attempt_id' => rawurldecode($match[3])],
                 default => ['sequence' => $body['sequence'] ?? null],
             };
@@ -329,7 +330,8 @@ final class RuntimePayloadUploads
             }
             $context = json_encode(['schema' => self::PREPARED_COMPLETION_SCHEMA, 'kind' => 'workflow',
                 'task_id' => $task, 'attempt' => $attempt, 'lease_owner' => $owner,
-                'operation' => 'local_activity_'.$operation, 'slot' => $slot, ...$identity], JSON_THROW_ON_ERROR);
+                'operation' => $operation === 'checkpoint-group' ? 'local_activity_group_checkpoint' : 'local_activity_'.$operation,
+                'slot' => $slot, ...$identity], JSON_THROW_ON_ERROR);
 
             return strlen($context) <= 4096 ? $context : null;
         }

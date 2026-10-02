@@ -1321,7 +1321,7 @@ final class Client implements WorkflowClientInterface
         if ($budget !== null && !$this->boundedWorkerRequests) {
             throw new \LogicException('A prepared activity authority budget requires bounded worker requests.');
         }
-        $admission = in_array($operation, ['checkpoint', 'prepare', 'recover'], true);
+        $admission = in_array($operation, ['checkpoint', 'checkpoint-group', 'prepare', 'recover'], true);
         $existing = in_array($operation, ['control', 'heartbeat', 'outcome', 'acknowledge-cancellation'], true);
         if ((!$admission && !$existing) || trim($taskId) === '' || trim($leaseOwner) === '' || $attempt < 1
             || ($admission && $activityAttemptId !== null)

@@ -384,6 +384,16 @@ final class RuntimePayloadUploadTest extends TestCase
             $claim + ['checkpoint_id' => 'prefix-7', 'start_sequence' => 5,
                 'commands' => [['type' => 'record_side_effect', 'result' => $envelope]]],
             'checkpoint', ['commands', 0, 'result'], ['checkpoint_id' => 'prefix-7']];
+        foreach ([0, 1] as $largeMember) {
+            $small = (new AvroPayloadCodec())->envelope([]);
+            yield 'whole group member '.$largeMember => ['/worker/workflow-tasks/task/local-activities/checkpoint-group',
+                $claim + ['checkpoint_id' => 'whole-group-7', 'start_sequence' => 5,
+                    'commands' => [
+                        ['type' => 'start_child_workflow', 'arguments' => $largeMember === 0 ? $envelope : $small],
+                        ['type' => 'prepare_local_activity', 'arguments' => $largeMember === 1 ? $envelope : $small],
+                    ]],
+                'group_checkpoint', ['commands', $largeMember, 'arguments'], ['checkpoint_id' => 'whole-group-7']];
+        }
     }
 
     #[DataProvider('unsupportedPreparedCompletionProvider')]

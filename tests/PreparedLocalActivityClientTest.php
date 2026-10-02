@@ -12,6 +12,18 @@ use PHPUnit\Framework\TestCase;
 
 final class PreparedLocalActivityClientTest extends TestCase
 {
+    public function test_group_checkpoint_uses_original_claim_without_an_activity_attempt(): void
+    {
+        $transport = new FakeTransport([['checkpointed' => true]]);
+        $client = new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.20');
+        $client->preparedLocalActivityOperation('task', 'original', 4, 'checkpoint-group', [
+            'checkpoint_id' => 'whole-group', 'start_sequence' => 1, 'commands' => [],
+        ]);
+        self::assertStringEndsWith('/task/local-activities/checkpoint-group', $transport->requests[0]['uri']);
+        self::assertSame('original', $transport->requests[0]['body']['lease_owner']);
+        self::assertSame(4, $transport->requests[0]['body']['workflow_task_attempt']);
+    }
+
     public function test_operations_use_original_worker_authority_and_encode_identifiers(): void
     {
         $transport = new FakeTransport([['active' => false]]);

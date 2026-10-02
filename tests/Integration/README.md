@@ -71,7 +71,7 @@ autoloader for post-release validation.
 The CI workflow accepts `cooperative_qualification=true` with an exact public
 `server_commit` SHA. It builds that source in an isolated MySQL/Redis stack,
 runs `CooperativeCancellationTest` plus the persisted memo restart case, retains
-the JUnit results for seven days and
+the JUnit results and raw scenario histories for 90 days and
 removes the stack and images. The ordinary worker default remains protocol 1.19.
 
 The connected cases cover waiting timers, cold worker replacement, duplicate
@@ -84,6 +84,17 @@ reference, byte count, digest and decoded value. Teardown removes the volume.
 The local cases use a 60-second callback, request cancellation while it is active
 and require canonical cleanup in less than ten seconds. They verify that both
 callback and relay processes stop and that no late return marker appears.
+
+With an exact `native_commit` overlay, the prepared group cases require explicit
+`prepared_local_activity_groups` discovery. They admit two local members before
+either callback starts, cancel both blocked callbacks without application
+heartbeats and run a two-member shielded cleanup group. The cold case sends
+SIGKILL to the owning worker during cleanup and verifies every callback and
+relay stops. A replacement must retain the original canonical delivery, recover
+both unresolved attempts and finish as Cancelled before the original 30-second
+deadline. Raw histories include the request, attempts, joined stops and recovery
+events. This source qualification does not replace the published mixed-language
+cancellation cascade gate.
 
 Explicit cooperative workers require Unix CLI, `pcntl`, `posix` and a transport
 that supports bounded requests, downloads and uploads. The default transport

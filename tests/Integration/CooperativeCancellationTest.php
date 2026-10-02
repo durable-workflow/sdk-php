@@ -260,6 +260,77 @@ final class CooperativeCancellationTest extends TestCase
         self::assertTrue($this->client()->clusterInfo()->raw['worker_protocol']['server_capabilities']['prepared_local_activities'] ?? false);
     }
 
+    #[DataProvider('booleanProvider')]
+    public function testPreparedGroupStopsBothMembersAndReplaysCleanupWithinOriginalDeadline(bool $killDuringCleanup): void
+    {
+        $this->requirePreparedLocalSource();
+        self::assertTrue($this->client()->clusterInfo()->raw['worker_protocol']['server_capabilities']['prepared_local_activity_groups'] ?? false);
+        $queue = $this->queue('prepared-group');
+        $client = $this->client();
+        [$pid, $messages] = $this->spawnWorker($queue, userHeartbeat: false, blockCleanup: $killDuringCleanup, preparedLocal: true);
+        $killedPids = [];
+        try {
+            $this->awaitMessage($messages, 'registered');
+            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['local-group']);
+            $this->awaitMessages($messages, ['group-entered-0', 'group-entered-1']);
+            $callbackPids = [];
+            foreach ([0, 1] as $index) {
+                $callbackPids = [...$callbackPids, ...json_decode((string) file_get_contents($this->directory.'/group-processes-'.$index), true, flags: JSON_THROW_ON_ERROR)];
+            }
+            $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 30);
+            $request = $accepted['cancellation_request'];
+            $originalDelivery = null;
+            if ($killDuringCleanup) {
+                $this->awaitMessages($messages, ['group-cleanup-entered-0', 'group-cleanup-entered-1']);
+                foreach ([0, 1] as $index) {
+                    $killedPids = [...$killedPids, ...json_decode((string) file_get_contents($this->directory.'/group-cleanup-processes-'.$index), true, flags: JSON_THROW_ON_ERROR)];
+                }
+                $before = $this->history($client, $handle);
+                $originalDelivery = array_values(array_filter($before, static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'))[0];
+                $this->stopWorker($pid, true);
+                $pid = 0;
+                foreach ($killedPids as $activityPid) { $this->assertProcessStops($activityPid); }
+                fclose($messages);
+                [$pid, $messages] = $this->spawnWorker($queue, userHeartbeat: false, preparedLocal: true);
+                $this->awaitMessage($messages, 'registered');
+            }
+            $events = $this->assertCancelledCleanup($client, $handle, $request['request_id'], $messages, expectedCleanupCount: 2);
+            self::assertLessThan((float) (new \DateTimeImmutable($request['cleanup_deadline_at']))->format('U.u'), microtime(true));
+            foreach ($callbackPids as $activityPid) { $this->assertProcessStops($activityPid); }
+            foreach ([0, 1] as $index) {
+                self::assertFileDoesNotExist($this->directory.'/group-late-'.$index);
+                self::assertFileDoesNotExist($this->directory.'/group-cleanup-late-'.$index);
+            }
+            $delivery = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'));
+            if ($originalDelivery !== null) { self::assertSame([$originalDelivery], $delivery, 'Replacement changed the complete group delivery boundary.'); }
+            self::assertSame(2, $delivery[0]['payload']['sequence_span']);
+            self::assertCount(2, array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityCancellationAcknowledged'));
+            $started = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityStarted'));
+            self::assertCount($killDuringCleanup ? 6 : 4, $started);
+            self::assertCount(count($started), array_unique(array_column(array_column($started, 'payload'), 'activity_attempt_id')));
+            foreach (array_slice($started, 2) as $event) {
+                $cleanup = $event['payload']['local_preparation']['cancellation_cleanup'];
+                self::assertSame($request['request_id'], $cleanup['root_request_id']);
+                self::assertSame($delivery[0]['id'], $cleanup['delivery_history_event_id']);
+                self::assertEquals(new \DateTimeImmutable($request['cleanup_deadline_at']), new \DateTimeImmutable($cleanup['cleanup_deadline_at']));
+            }
+            $recoveries = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityRetryScheduled'));
+            self::assertCount($killDuringCleanup ? 2 : 0, $recoveries);
+            foreach ($recoveries as $event) { self::assertSame('unknown', $event['payload']['local_recovery']['callback_stop_state']); }
+            $repeated = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 300);
+            self::assertTrue($repeated['duplicate']);
+            foreach (['request_id', 'requested_at', 'cleanup_deadline_at'] as $field) { self::assertSame($request[$field], $repeated['cancellation_request'][$field]); }
+            fwrite(STDOUT, 'Prepared group source cancellation: '.json_encode([
+                'worker_sigkill_during_cleanup' => $killDuringCleanup, 'application_heartbeats' => false,
+                'request_id' => $request['request_id'], 'original_deadline' => $request['cleanup_deadline_at'],
+                'joined_work_pids' => $callbackPids, 'killed_cleanup_pids' => $killedPids, 'history' => $events,
+            ], JSON_THROW_ON_ERROR)."\n");
+        } finally {
+            if (is_resource($messages)) { fclose($messages); }
+            $this->stopWorker($pid);
+        }
+    }
+
     public static function booleanProvider(): array
     {
         return [[false], [true]];
@@ -792,6 +863,13 @@ final class CooperativeCancellationTest extends TestCase
                                 $context['relay_pid'], $context['callback_pid'],
                             ], JSON_THROW_ON_ERROR));
                         }
+                        if ($event === 'worker.activity_process_started'
+                            && preg_match('/^tests\.php-cooperative-group-(work|cleanup)-([01])$/', (string) ($context['activity_type'] ?? ''), $member)) {
+                            $file = $member[1] === 'work' ? 'group-processes-' : 'group-cleanup-processes-';
+                            file_put_contents($this->directory.'/'.$file.$member[2], json_encode([
+                                $context['relay_pid'], $context['callback_pid'],
+                            ], JSON_THROW_ON_ERROR));
+                        }
                         $exception = $context['exception'] ?? null;
                         if ($event === 'worker.retrying'
                             && $exception instanceof \DurableWorkflow\Exception\ServerException
@@ -830,12 +908,26 @@ final class CooperativeCancellationTest extends TestCase
                                 ]);
                             } elseif ($kind === 'local') {
                                 $context->localActivity('tests.php-cooperative-work');
+                            } elseif ($kind === 'local-group') {
+                                $context->all([
+                                    static fn () => $context->localActivity('tests.php-cooperative-group-work-0'),
+                                    static fn () => $context->localActivity('tests.php-cooperative-group-work-1'),
+                                ]);
                             } elseif ($kind === 'remote') {
                                 $context->activity('tests.php-cooperative-remote');
                             } else {
                                 $context->sleep(300);
                             }
                         } catch (WorkflowCancelled $error) {
+                            if ($kind === 'local-group') {
+                                $context->cancellationShield(static fn () => $context->all([
+                                    static fn () => $context->localActivity('tests.php-cooperative-group-cleanup-0',
+                                        [$error->requestId, $context->cancellationContext()?->toArray()], ['retry_policy' => ['max_attempts' => 3]]),
+                                    static fn () => $context->localActivity('tests.php-cooperative-group-cleanup-1',
+                                        [$error->requestId, $context->cancellationContext()?->toArray()], ['retry_policy' => ['max_attempts' => 3]]),
+                                ]));
+                                return (string) $error->requestId;
+                            }
                             $context->cancellationShield(static fn () => $context->localActivity('tests.php-cooperative-cleanup',
                                 [$error->requestId, $context->cancellationContext()?->toArray()],
                                 $preparedLocal ? ['retry_policy' => ['max_attempts' => 3]] : []));
@@ -887,6 +979,24 @@ final class CooperativeCancellationTest extends TestCase
                     $context->heartbeat(['request_id' => $requestId]);
                     return $requestId;
                 });
+                foreach ([0, 1] as $index) {
+                    $worker->registerActivity('tests.php-cooperative-group-work-'.$index, function (ActivityContext $context) use ($notify, $index): string {
+                        $notify('group-entered-'.$index);
+                        sleep(60);
+                        file_put_contents($this->directory.'/group-late-'.$index, 'stale callback returned');
+                        return 'stale';
+                    });
+                    $worker->registerActivity('tests.php-cooperative-group-cleanup-'.$index,
+                        function (ActivityContext $context, string $requestId, ?array $cancellationContext) use ($notify, $blockCleanup, $index): string {
+                            file_put_contents($this->directory.'/context-'.$requestId.'-'.$index, json_encode($cancellationContext, JSON_THROW_ON_ERROR));
+                            if ($blockCleanup) {
+                                $notify('group-cleanup-entered-'.$index);
+                                sleep(60);
+                                file_put_contents($this->directory.'/group-cleanup-late-'.$index, 'stale cleanup returned');
+                            }
+                            return $requestId;
+                        });
+                }
                 $worker->run(1);
                 fclose($child);
                 exit(0);
@@ -906,6 +1016,20 @@ final class CooperativeCancellationTest extends TestCase
     {
         stream_set_timeout($messages, $timeoutSeconds);
         self::assertSame($expected, trim((string) fgets($messages)), 'Unexpected worker observation.');
+    }
+
+    /** @param resource $messages
+     * @param list<string> $expected
+     */
+    private function awaitMessages($messages, array $expected): void
+    {
+        foreach ($expected as $_) {
+            stream_set_timeout($messages, 15);
+            $message = trim((string) fgets($messages));
+            self::assertContains($message, $expected, 'Unexpected group worker observation.');
+            $expected = array_values(array_diff($expected, [$message]));
+        }
+        self::assertSame([], $expected);
     }
 
     /** @param resource $messages */
@@ -1010,7 +1134,7 @@ final class CooperativeCancellationTest extends TestCase
     /** @param resource $messages
      *  @return list<array<string, mixed>>
      */
-    private function assertCancelledCleanup(Client $client, WorkflowHandle $handle, string $requestId, $messages, ?\Closure $observe = null): array
+    private function assertCancelledCleanup(Client $client, WorkflowHandle $handle, string $requestId, $messages, ?\Closure $observe = null, int $expectedCleanupCount = 1): array
     {
         stream_set_blocking($messages, false);
         $deadline = microtime(true) + 30;
@@ -1034,9 +1158,10 @@ final class CooperativeCancellationTest extends TestCase
         }
         $events = $this->history($client, $handle);
         $kinds = array_column($events, 'event_type');
-        foreach (['CooperativeCancellationRequested', 'CooperativeCancellationDelivered', 'WorkflowCancelled', 'ActivityCompleted'] as $kind) {
+        foreach (['CooperativeCancellationRequested', 'CooperativeCancellationDelivered', 'WorkflowCancelled'] as $kind) {
             self::assertSame(1, count(array_filter($kinds, static fn (string $value): bool => $value === $kind)), $kind);
         }
+        self::assertSame($expectedCleanupCount, count(array_filter($kinds, static fn (string $value): bool => $value === 'ActivityCompleted')));
         foreach (['WorkflowCompleted', 'WorkflowFailed', 'ActivityFailed', 'ActivityTimedOut'] as $kind) {
             self::assertNotContains($kind, $kinds);
         }

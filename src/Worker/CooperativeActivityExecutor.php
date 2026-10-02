@@ -154,13 +154,190 @@ final class CooperativeActivityExecutor
             // Closing this socket also works when the owner is killed with SIGKILL.
             fclose($owner);
             $joined = $this->reap($relayPid);
+            if (!$joined) {
+                throw new WorkflowClaimAborted('Activity relay stop could not be confirmed.');
+            }
             if ($callbackPid !== null) {
-                if (!$joined || posix_kill($callbackPid, 0)) {
+                if (posix_kill($callbackPid, 0)) {
                     throw new WorkflowClaimAborted('Activity callback stop could not be confirmed.');
                 }
                 $stopped?->__invoke();
             }
         }
+    }
+
+    /**
+     * All callbacks are admitted before this method. Only this owning worker
+     * handles Server I/O. Settle each result after its physical process join so
+     * completed work can become durable while other members are still running.
+     *
+     * @param list<array{
+     *     callback: Closure, heartbeat: Closure, check: Closure,
+     *     started: Closure, stopped: Closure
+     * }> $operations
+     * @param Closure(int, mixed, ?ActivityExecutionFailure): void $settled
+     */
+    public function executeConcurrent(array $operations, Closure $settled): void
+    {
+        if (!self::available() || $operations === [] || count($operations) > 100) {
+            throw new InvalidArgumentException('Concurrent cooperative execution requires Unix CLI and 1 to 100 admitted callbacks.');
+        }
+        /** @var array<int, CooperativeActivityProcess> $processes */
+        $processes = [];
+        $failure = null;
+        try {
+            foreach ($operations as $index => $operation) {
+                $operation['check'](true);
+                [$owner, $relay] = $this->socketPair();
+                $relayPid = pcntl_fork();
+                if ($relayPid === -1) {
+                    fclose($owner);
+                    fclose($relay);
+                    throw new WorkflowClaimAborted('Could not start a group activity relay.');
+                }
+                if ($relayPid === 0) {
+                    // Another relay must never keep a sibling's owner socket
+                    // alive after the real owning worker receives SIGKILL.
+                    foreach ($processes as $sibling) {
+                        fclose($sibling->socket);
+                    }
+                    fclose($owner);
+                    $this->relay($relay, $operation['callback']);
+                }
+                fclose($relay);
+                stream_set_blocking($owner, false);
+                $processes[$index] = new CooperativeActivityProcess($owner, $relayPid);
+            }
+            while ($processes !== []) {
+                $read = [];
+                foreach ($processes as $index => $process) {
+                    if (hrtime(true) / 1e9 >= $process->nextCheck) {
+                        $operations[$index]['check'](false);
+                        $process->nextCheck = hrtime(true) / 1e9 + self::CHECK_INTERVAL_SECONDS;
+                    }
+                    $read[] = $process->socket;
+                }
+                $write = $except = [];
+                $ready = @stream_select($read, $write, $except, 0, 50000);
+                if ($ready === false) {
+                    continue;
+                }
+                foreach ($processes as $index => $process) {
+                    if (in_array($process->socket, $read, true)) {
+                        $chunk = fread($process->socket, 8192);
+                        if ($chunk === false || ($chunk === '' && feof($process->socket))) {
+                            throw new WorkflowClaimAborted('Group activity IPC closed before a fenced result.');
+                        }
+                        $process->buffer .= $chunk;
+                        if (strlen($process->buffer) > $this->maxFrameBytes + 4) {
+                            throw new WorkflowClaimAborted('Group activity IPC exceeded its finite frame bound.');
+                        }
+                    }
+                    while (($message = $this->takeFrame($process->buffer)) !== null) {
+                        $operation = $operations[$index];
+                        $kind = $message['kind'];
+                        if ($kind === 'started') {
+                            if ($process->callbackPid !== null || !is_int($message['callback_pid'] ?? null) || $message['callback_pid'] < 1) {
+                                throw new WorkflowClaimAborted('Group activity IPC returned an invalid callback PID.');
+                            }
+                            $process->callbackPid = $message['callback_pid'];
+                            $operation['started']($process->relayPid, $process->callbackPid);
+                            $operation['check'](true);
+                            $this->writeFrame($process->socket, ['kind' => 'begin']);
+                            continue;
+                        }
+                        if ($process->callbackPid === null) {
+                            throw new WorkflowClaimAborted('Group activity IPC returned data before its start handshake.');
+                        }
+                        $operation['check'](true);
+                        if ($kind === 'heartbeat') {
+                            $details = $this->decode($message);
+                            if (!is_array($details)) {
+                                throw new WorkflowClaimAborted('Group activity IPC heartbeat details are not an array.');
+                            }
+                            $reply = $operation['heartbeat']($details);
+                            $operation['check'](true);
+                            $this->writeFrame($process->socket, ['kind' => 'heartbeat_reply', 'value' => $this->codec->envelope($reply)]);
+                        } elseif ($kind === 'ready') {
+                            $this->writeFrame($process->socket, ['kind' => 'encode']);
+                        } elseif (in_array($kind, ['result', 'failure'], true)) {
+                            $result = null;
+                            $applicationFailure = null;
+                            if ($kind === 'result') {
+                                $result = $this->decode($message);
+                            } else {
+                                $applicationFailure = $this->failure($message);
+                            }
+                            $this->joinProcess($process);
+                            unset($processes[$index]);
+                            $operation['stopped']();
+                            $settled($index, $result, $applicationFailure);
+                            break;
+                        } else {
+                            throw new WorkflowClaimAborted('Group activity IPC returned an unexpected message.');
+                        }
+                    }
+                }
+            }
+        } catch (Throwable $error) {
+            $failure = $error;
+            throw $error;
+        } finally {
+            // Close every owner socket before waiting on any relay. Each relay
+            // then stops its own callback even when another member lost authority.
+            foreach ($processes as $process) {
+                if (is_resource($process->socket)) {
+                    fclose($process->socket);
+                }
+            }
+            $cleanupError = null;
+            foreach ($processes as $process) {
+                try { $this->joinProcess($process); } catch (Throwable $error) { $cleanupError ??= $error; }
+            }
+            if ($cleanupError !== null) {
+                throw $cleanupError;
+            }
+            foreach ($processes as $index => $process) {
+                if ($failure instanceof CooperativeCancellationObserved) {
+                    // Every joined original attempt needs its own canonical
+                    // cancellation observation before reporting physical stop.
+                    try { $operations[$index]['check'](true); }
+                    catch (CooperativeCancellationObserved) {}
+                    catch (Throwable $error) { $cleanupError ??= $error; }
+                }
+                try { $operations[$index]['stopped'](); } catch (Throwable $error) { $cleanupError ??= $error; }
+            }
+            if ($cleanupError !== null) {
+                throw $cleanupError;
+            }
+        }
+    }
+
+    private function joinProcess(CooperativeActivityProcess $process): void
+    {
+        if (is_resource($process->socket)) {
+            fclose($process->socket);
+        }
+        if (!$this->reap($process->relayPid)
+            || ($process->callbackPid !== null && posix_kill($process->callbackPid, 0))) {
+            throw new WorkflowClaimAborted('Group activity callback stop could not be confirmed.');
+        }
+    }
+
+    /** @param array<string, mixed> $message */
+    private function failure(array $message): ActivityExecutionFailure
+    {
+        if (!is_string($message['message'] ?? null) || !is_string($message['type'] ?? null)
+            || !is_bool($message['encoding'] ?? null) || !is_bool($message['cancelled'] ?? null)
+            || !is_bool($message['invalid_report'] ?? null) || !is_bool($message['storage_admission_failure'] ?? null)
+            || !array_key_exists('timeout_kind', $message)
+            || ($message['timeout_kind'] !== null && !in_array($message['timeout_kind'],
+                ['heartbeat', 'start_to_close', 'schedule_to_close'], true))) {
+            throw new WorkflowClaimAborted('Group activity IPC returned malformed failure metadata.');
+        }
+
+        return new ActivityExecutionFailure($message['message'], $message['type'], $message['encoding'],
+            $message['cancelled'], $message['invalid_report'], $message['timeout_kind'], $message['storage_admission_failure']);
     }
 
     /** @param resource $owner

@@ -22,6 +22,7 @@ final class ReplayResult
         public readonly ?string $failedActivityExecutionId = null,
         public readonly ?CancellationDelivery $cancellationDelivery = null,
         public readonly ?PreparedLocalActivityCall $preparedLocalActivity = null,
+        public readonly ?PreparedLocalActivityGroup $preparedLocalActivityGroup = null,
     ) {
     }
 }

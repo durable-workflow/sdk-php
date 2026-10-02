@@ -64,6 +64,7 @@ final class WorkflowContext
         private readonly ?string $workflowCommandId = null,
         private readonly ?Closure $localActivityExecutor = null,
         private readonly bool $prepareLocalActivities = false,
+        private readonly bool $prepareLocalActivityGroups = false,
     ) {
         $this->execution = $execution;
         $this->loadMessageStreamMessages();
@@ -211,7 +212,7 @@ final class WorkflowContext
     public function localActivity(string $activityType, array $arguments = [], array $options = []): mixed
     {
         $this->assertActiveFiber();
-        if ($this->prepareLocalActivities && $this->isCapturing()) {
+        if ($this->prepareLocalActivities && $this->isCapturing() && !$this->prepareLocalActivityGroups) {
             throw new WorkflowClaimAborted(
                 'prepared_local_parallel_admission_unavailable: the installed prepared-local contract cannot atomically admit this group.',
             );
@@ -225,12 +226,20 @@ final class WorkflowContext
             }
         }
 
-        return $this->suspend(WorkflowCommand::localActivity(
+        $command = WorkflowCommand::localActivity(
             $activityType,
             $arguments,
             $options,
             $this->localActivityExecutor,
-        ));
+        );
+        if ($this->prepareLocalActivities && $this->isCapturing()) {
+            $operation = new DeferredWorkflowOperation($command);
+            $this->capture($operation);
+
+            return $operation;
+        }
+
+        return $this->suspend($command);
     }
 
     /** Create an isolated deterministic saga for activity compensation. */

@@ -19,6 +19,7 @@ final class PreparedLocalActivityRunner
     private readonly float $clockOrigin;
     private float $nextControl = 0.0;
     private ?CancellationContext $stopRequest = null;
+    private bool $stopAcknowledged = false;
 
     /**
      * @param array<string, mixed> $admission
@@ -50,23 +51,112 @@ final class PreparedLocalActivityRunner
         try {
             $result = (new CooperativeActivityExecutor($this->client->payloadCodec()))->execute(
                 $callback,
-                function (array $progress): array {
-                    $started = hrtime(true) / 1e9;
-                    // ActivityContext::heartbeat authors details, matching remote activities.
-                    // Native's progress object reserves its own message/counter fields.
-                    $reply = $this->operation('heartbeat', ['progress' => $progress === [] ? [] : ['details' => $progress]]);
-                    $this->attempt->validateHeartbeat($reply);
-                    $this->acceptControl($reply, $started);
-
-                    return $reply;
-                },
+                $this->heartbeat(...),
                 $this->check(...), $this->started, $this->acknowledgeJoinedStop(...),
             );
-            $report = ['outcome' => 'completed', 'result' => $this->client->payloadCodec()->envelope($result),
-                'payload_codec' => $this->client->payloadCodec()->name()];
+        } catch (CooperativeCancellationObserved $error) {
+            // A cancellation check may fence an admitted attempt before any
+            // fork. No application code ran, or the executor already joined it.
+            $this->acknowledgeJoinedStop();
+            throw $error;
         } catch (WorkflowClaimAborted $error) {
             throw $error;
         } catch (ActivityExecutionFailure $error) {
+            return $this->publishResult(null, $error);
+        } catch (Throwable $error) {
+            // Supervisor/transport failures cannot become application failures.
+            throw new WorkflowClaimAborted('Prepared local execution lost trustworthy callback authority.', previous: $error);
+        }
+
+        return $this->publishResult($result, null);
+    }
+
+    /**
+     * @param list<array{runner: self, callback: Closure}> $members
+     * @return non-empty-array<int, array<string, mixed>> Receipts in settlement order.
+     */
+    public static function executeGroup(array $members): array
+    {
+        if ($members === [] || count($members) > 100) {
+            throw new \InvalidArgumentException('Prepared local execution requires 1 to 100 admitted group members.');
+        }
+        $operations = [];
+        foreach ($members as $member) {
+            $runner = $member['runner'];
+            $operations[] = [
+                'callback' => $member['callback'], 'heartbeat' => $runner->heartbeat(...),
+                'check' => $runner->check(...), 'started' => $runner->started,
+                'stopped' => $runner->acknowledgeJoinedStop(...),
+            ];
+        }
+        $receipts = [];
+        try {
+            (new CooperativeActivityExecutor($members[0]['runner']->client->payloadCodec()))->executeConcurrent($operations,
+                static function (int $index, mixed $value, ?ActivityExecutionFailure $failure) use ($members, &$receipts): void {
+                    $receipt = $members[$index]['runner']->publishResult($value, $failure);
+                    if ($receipt['claim_released']) {
+                        throw new WorkflowClaimDeferred('Native scheduled a group member retry and released this workflow claim.');
+                    }
+                    $receipts[$index] = $receipt;
+                });
+        } catch (CooperativeCancellationObserved $error) {
+            // The executor joined every process before returning this error.
+            // Members not yet forked also have admitted Native attempts.
+            $acknowledgmentError = null;
+            foreach ($members as $member) {
+                $runner = $member['runner'];
+                if ($runner->stopAcknowledged) {
+                    continue;
+                }
+                try {
+                    try { $runner->check(true); } catch (CooperativeCancellationObserved) {}
+                    $runner->acknowledgeJoinedStop();
+                } catch (Throwable $failure) { $acknowledgmentError ??= $failure; }
+            }
+            if ($acknowledgmentError !== null) {
+                throw $acknowledgmentError;
+            }
+            throw $error;
+        }
+        if ($receipts === []) {
+            throw new WorkflowClaimAborted('Prepared local group returned no canonical outcome receipts.');
+        }
+
+        return $receipts;
+    }
+
+    /** @param array<array-key, mixed> $progress
+     * @return array<string, mixed>
+     */
+    private function heartbeat(array $progress): array
+    {
+        $started = hrtime(true) / 1e9;
+        $reply = $this->operation('heartbeat', ['progress' => $progress === [] ? [] : ['details' => $progress]]);
+        $this->attempt->validateHeartbeat($reply);
+        $this->acceptControl($reply, $started);
+
+        return $reply;
+    }
+
+    /** @internal Only before execute/executeGroup has started any process. */
+    public function acknowledgeUnstartedCancellation(): void
+    {
+        try {
+            $this->check(true);
+        } catch (CooperativeCancellationObserved) {
+            $this->acknowledgeJoinedStop();
+            return;
+        }
+        throw new WorkflowClaimAborted('An unstarted admitted group member lacks its canonical cancellation fence.');
+    }
+
+    /** @return array<string, mixed> */
+    private function publishResult(mixed $result, ?ActivityExecutionFailure $error): array
+    {
+        if ($error === null) {
+            $report = ['outcome' => 'completed', 'result' => $this->client->payloadCodec()->envelope($result),
+                'payload_codec' => $this->client->payloadCodec()->name()];
+        } else {
             if ($error->storageAdmissionFailure) {
                 throw new WorkflowClaimAborted('The prepared callback received a storage admission refusal.', previous: $error);
             }
@@ -74,9 +164,6 @@ final class PreparedLocalActivityRunner
             $report = ['outcome' => 'failed', 'message' => $error->getMessage(),
                 'exception_type' => $invalid ? InvalidLocalActivityReport::class : $error->originalType,
                 'non_retryable' => $invalid];
-        } catch (Throwable $error) {
-            // Supervisor/transport failures cannot become application failures.
-            throw new WorkflowClaimAborted('Prepared local execution lost trustworthy callback authority.', previous: $error);
         }
         try {
             $this->check(true);
@@ -85,6 +172,9 @@ final class PreparedLocalActivityRunner
             $this->attempt->validateOutcome($reply);
 
             return $reply;
+        } catch (CooperativeCancellationObserved $error) {
+            $this->acknowledgeJoinedStop();
+            throw $error;
         } catch (WorkflowClaimAborted $error) {
             throw $error;
         } catch (Throwable $error) {
@@ -142,7 +232,7 @@ final class PreparedLocalActivityRunner
 
     private function acknowledgeJoinedStop(): void
     {
-        if ($this->stopRequest === null) {
+        if ($this->stopRequest === null || $this->stopAcknowledged) {
             return;
         }
         // Stopping is already proved locally. This report grants no callback or claim authority.
@@ -156,6 +246,7 @@ final class PreparedLocalActivityRunner
                 || !is_string($reply['history_event_id'] ?? null) || trim($reply['history_event_id']) === '') {
                 throw new \UnexpectedValueException('Malformed joined-stop receipt.');
             }
+            $this->stopAcknowledged = true;
         } catch (Throwable $error) {
             throw new WorkflowClaimAborted('Joined prepared callback stop was not acknowledged.', previous: $error);
         }

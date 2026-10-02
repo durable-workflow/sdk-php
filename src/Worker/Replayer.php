@@ -42,7 +42,11 @@ final class Replayer
         array $task = [],
         ?callable $localActivityExecutor = null,
         bool $prepareLocalActivities = false,
+        bool $prepareLocalActivityGroups = false,
     ): ReplayResult {
+        if ($prepareLocalActivityGroups && !$prepareLocalActivities) {
+            throw new LogicException('Prepared local groups require prepared local activity admission.');
+        }
         $observation = $task['cancellation_request'] ?? null;
         if ($observation !== null && (!is_array($observation) || array_is_list($observation))) {
             throw new NonDeterministicWorkflow('Workflow cancellation observation must be an object.');
@@ -65,7 +69,7 @@ final class Replayer
         $selectionOperationIdentities = $this->selectionOperationIdentities($history);
         $completedHistory = $this->hasCompletedHistory($history);
         $context = null;
-        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $localActivityExecutor, $prepareLocalActivities, &$context): mixed {
+        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -82,6 +86,7 @@ final class Replayer
                     : (isset($task['task_id']) ? (string) $task['task_id'] : null),
                 $localActivityExecutor === null ? null : Closure::fromCallable($localActivityExecutor),
                 $prepareLocalActivities,
+                $prepareLocalActivityGroups,
             );
 
             try {
@@ -148,15 +153,30 @@ final class Replayer
                     ? $steps[$stepCursor]['sequence']
                     : $nextSequence;
                 $descriptors = $suspended->leafDescriptors($baseSequence);
+                $preparedGroup = false;
                 if ($prepareLocalActivities) {
                     foreach ($descriptors as $descriptor) {
                         if ($descriptor['operation']->command->type === 'record_local_activity') {
-                            throw new WorkflowClaimAborted(
-                                'prepared_local_parallel_admission_unavailable: the installed prepared-local contract cannot atomically admit this group.',
-                            );
+                            if (!$prepareLocalActivityGroups || $suspended->mode !== 'all') {
+                                throw new WorkflowClaimAborted(
+                                    'prepared_local_parallel_admission_unavailable: a complete all group requires the negotiated atomic admission capability.',
+                                );
+                            }
+                            $preparedGroup = true;
                         }
                     }
                 }
+                if ($preparedGroup && count($descriptors) > 100) {
+                    throw new WorkflowClaimAborted('prepared_local_group_limit_exceeded: atomic admission supports at most 100 members.');
+                }
+                if ($preparedGroup) {
+                    foreach ($descriptors as $descriptor) {
+                        if (in_array($descriptor['operation']->command->type, ['open_condition_wait', 'open_signal_wait'], true)) {
+                            throw new WorkflowClaimAborted('prepared_local_group_wait_admission_unavailable: this atomic group cannot include turn-closing waits.');
+                        }
+                    }
+                }
+                $preparedCalls = [];
                 $results = [];
                 $pending = false;
                 $matched = 0;
@@ -170,6 +190,9 @@ final class Replayer
                     $step = $steps[$stepCursor + $offset] ?? null;
                     if ($step === null) {
                         $missingMember = true;
+                        if ($preparedGroup) {
+                            continue;
+                        }
                         $metadata = $path[array_key_last($path)] ?? [];
                         $command = $command->withAttributes([
                             ...$metadata,
@@ -198,6 +221,13 @@ final class Replayer
                     $nextSequence = max($nextSequence, $step['sequence'] + 1);
 
                     if (!$step['resolved']) {
+                        if ($preparedGroup && $command->type === 'record_local_activity') {
+                            $metadata = $path[array_key_last($path)] ?? [];
+                            $preparedCalls[] = $this->preparedLocalCall($command->withAttributes([
+                                ...$metadata, 'parallel_group_path' => $path,
+                            ]), $step['sequence'], PreparedLocalActivityCall::needsRecovery($history, $step['sequence']),
+                                $history, $cancellation, $context, $cancellationConsumed);
+                        }
                         if ($command->type === 'open_condition_wait') {
                             if ($command->conditionSatisfied()) {
                                 $results[$offset] = true;
@@ -240,6 +270,36 @@ final class Replayer
 
                 $stepCursor += $matched;
                 $nextSequence = max($nextSequence, $baseSequence + count($descriptors));
+                if ($preparedGroup && $missingMember) {
+                    if ($matched !== 0) {
+                        throw new NonDeterministicWorkflow(
+                            'Prepared local group history is missing a declared member.', $baseSequence,
+                            'all parallel members scheduled', 'partial prepared local group',
+                            'parallel_group_partially_scheduled',
+                        );
+                    }
+                    $groupCommands = [];
+                    foreach ($descriptors as $offset => $descriptor) {
+                        $path = $descriptor['group_path'];
+                        $metadata = $path[array_key_last($path)] ?? [];
+                        $command = $descriptor['operation']->command->withAttributes([
+                            ...$metadata, 'parallel_group_path' => $path,
+                        ]);
+                        if ($command->type === 'record_local_activity') {
+                            $call = $this->preparedLocalCall($command, $baseSequence + $offset, false,
+                                $history, $cancellation, $context, $cancellationConsumed);
+                            $preparedCalls[] = $call;
+                            $groupCommands[] = [...$call->descriptor($this->codec), 'type' => 'prepare_local_activity'];
+                        } else {
+                            $groupCommands[] = $command->toWire($this->codec, $taskQueue);
+                        }
+                    }
+                    json_encode($groupCommands, JSON_THROW_ON_ERROR);
+
+                    return $this->result($commands, $context, preparedLocalActivityGroup: new PreparedLocalActivityGroup(
+                        $baseSequence, count($descriptors), $groupCommands, $preparedCalls, false,
+                    ));
+                }
                 if ($missingMember && $failure !== null) {
                     throw new NonDeterministicWorkflow(
                         'Parallel history contains a failure before every declared member was durably scheduled.',
@@ -284,6 +344,11 @@ final class Replayer
                 if ($failure !== null) {
                     $suspended = $execution->throw($failure['exception']);
                     continue;
+                }
+                if ($preparedCalls !== []) {
+                    return $this->result($commands, $context, preparedLocalActivityGroup: new PreparedLocalActivityGroup(
+                        $baseSequence, count($descriptors), [], $preparedCalls, true,
+                    ));
                 }
                 if ($pending || count($commands) > $commandsBeforeGroup) {
                     return $this->result($commands, $context);
@@ -679,6 +744,7 @@ final class Replayer
         ?int $failedActivitySequence = null,
         ?string $failedActivityExecutionId = null,
         ?PreparedLocalActivityCall $preparedLocalActivity = null,
+        ?PreparedLocalActivityGroup $preparedLocalActivityGroup = null,
     ): ReplayResult {
         return new ReplayResult(
             $commands,
@@ -688,6 +754,7 @@ final class Replayer
             $failedActivitySequence,
             $failedActivityExecutionId,
             preparedLocalActivity: $preparedLocalActivity,
+            preparedLocalActivityGroup: $preparedLocalActivityGroup,
         );
     }
 

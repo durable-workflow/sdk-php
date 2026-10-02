@@ -95,6 +95,177 @@ final class PreparedLocalActivityWorkerTest extends TestCase
         }
     }
 
+    public function test_managed_group_prepares_every_member_then_runs_callbacks_concurrently(): void
+    {
+        $transport = new PreparedWorkerTransport();
+        $transport->serverGroupCapability = true;
+        $transport->stopAuxiliaryPolls = true;
+        $transport->outcomeFile = $this->directory.'/settled';
+        $worker = $this->worker($transport);
+        $prefixCalls = 0;
+        $worker->registerWorkflow('prepared', static function (WorkflowContext $context) use (&$prefixCalls): array {
+            $context->sideEffect(static function () use (&$prefixCalls): string { ++$prefixCalls; return 'prefix'; });
+            return $context->all([
+                static fn () => $context->localActivity('effect', [0]),
+                static fn () => $context->localActivity('effect', [1]),
+            ]);
+        });
+        $directory = $this->directory;
+        $worker->registerActivity('effect', static function (ActivityContext $context, int $index) use ($directory, $transport): string {
+            if (count($transport->operations('prepare')) !== 2) { throw new \RuntimeException('A sibling was not admitted before callback start.'); }
+            file_put_contents($directory.'/entered-'.$index, (string) getmypid());
+            $deadline = microtime(true) + 2;
+            $waitFor = $index === 0 ? $directory.'/entered-1' : $transport->outcomeFile;
+            while (!is_file($waitFor) && microtime(true) < $deadline) { usleep(10_000); }
+            if (!is_file($waitFor)) { throw new \RuntimeException('Callbacks did not overlap or first settlement waited for all callbacks.'); }
+            return 'result-'.$index;
+        });
+        $worker->run(0);
+        self::assertSame([], $transport->failures);
+        self::assertSame(1, $prefixCalls);
+        self::assertCount(1, $transport->operations('checkpoint'));
+        self::assertCount(1, $transport->operations('checkpoint-group'));
+        self::assertCount(2, $transport->operations('prepare'));
+        self::assertCount(2, $transport->operations('outcome'));
+        self::assertContains('prepared_local_activity_groups', $transport->registration['capabilities']);
+        self::assertSame(['result-0', 'result-1'], (new AvroPayloadCodec())->decodeEnvelope($transport->completions[0]['commands'][0]['result']));
+        self::assertSame([2, 3], array_column(array_column($transport->operations('prepare'), 'body'), 'sequence'));
+        foreach ([0, 1] as $index) { self::assertFalse(posix_kill((int) file_get_contents($directory.'/entered-'.$index), 0)); }
+    }
+
+    public function test_group_cancellation_joins_both_callbacks_then_runs_one_shielded_cleanup_group(): void
+    {
+        $transport = new PreparedWorkerTransport();
+        $transport->serverGroupCapability = true;
+        $transport->stopAuxiliaryPolls = true;
+        $transport->cancelAfterFiles = [$this->directory.'/entered-0', $this->directory.'/entered-1'];
+        $worker = $this->worker($transport);
+        $worker->registerWorkflow('prepared', static function (WorkflowContext $context): void {
+            try { $context->all([
+                static fn () => $context->localActivity('effect', [0]),
+                static fn () => $context->localActivity('effect', [1]),
+            ]); } catch (WorkflowCancelled $cancelled) {
+                $context->cancellationShield(static fn () => $context->all([
+                    static fn () => $context->localActivity('cleanup', [0]),
+                    static fn () => $context->localActivity('cleanup', [1]),
+                ]));
+                throw $cancelled;
+            }
+        });
+        $directory = $this->directory;
+        $worker->registerActivity('effect', static function (ActivityContext $context, int $index) use ($directory): string {
+            file_put_contents($directory.'/entered-'.$index, (string) getmypid());
+            sleep(60);
+            file_put_contents($directory.'/late-'.$index, 'stale');
+            return 'stale';
+        });
+        $worker->registerActivity('cleanup', static function (ActivityContext $context, int $index) use ($directory): string {
+            file_put_contents($directory.'/cleaned-'.$index, $context->activityAttemptId);
+            return 'cleaned';
+        });
+        $started = hrtime(true) / 1e9;
+        $worker->run(0);
+        self::assertLessThan(3, hrtime(true) / 1e9 - $started);
+        self::assertSame([], $transport->failures);
+        self::assertCount(2, $transport->operations('checkpoint-group'));
+        self::assertCount(4, $transport->operations('prepare'));
+        self::assertCount(2, $transport->operations('acknowledge-cancellation'));
+        self::assertCount(0, $transport->operations('heartbeat'));
+        self::assertCount(2, $transport->operations('outcome'));
+        self::assertSame([false, false], $transport->callbacksAliveAtStopAcknowledgment);
+        self::assertCount(1, array_filter($transport->history, static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'));
+        foreach ([0, 1] as $index) {
+            self::assertFileDoesNotExist($directory.'/late-'.$index);
+            self::assertFileExists($directory.'/cleaned-'.$index);
+        }
+        foreach (array_slice($transport->operations('prepare'), 2) as $request) {
+            self::assertSame(['request_id' => 'root-request', 'delivery_history_event_id' => 'delivery'], $request['body']['descriptor']['cancellation_cleanup']);
+        }
+        foreach (array_slice($transport->attempts, 2) as $attempt) {
+            self::assertSame('2026-10-02T00:00:30.000000Z', $attempt['cancellation_cleanup']['cleanup_deadline_at']);
+        }
+        self::assertSame(WorkflowCancelled::class, $transport->completions[0]['commands'][0]['exception_type']);
+    }
+
+    public function test_group_without_discovered_capability_or_with_incomplete_receipt_starts_no_callbacks(): void
+    {
+        foreach ([false, true] as $capability) {
+            $transport = new PreparedWorkerTransport();
+            $transport->serverGroupCapability = $capability;
+            $transport->stopAuxiliaryPolls = true;
+            $transport->malformedGroupReceipt = $capability;
+            $worker = $this->worker($transport);
+            $entered = $this->directory.'/unsafe';
+            $worker->registerWorkflow('prepared', static fn (WorkflowContext $context) => $context->all([
+                static fn () => $context->localActivity('effect'),
+                static fn () => $context->localActivity('effect'),
+            ]));
+            $worker->registerActivity('effect', static function (ActivityContext $context) use ($entered): void { file_put_contents($entered, 'unsafe'); });
+            $worker->run(0);
+            self::assertFileDoesNotExist($entered);
+            self::assertCount($capability ? 1 : 0, $transport->operations('checkpoint-group'));
+            self::assertCount(0, $transport->operations('prepare'));
+            self::assertSame([], $transport->completions);
+            self::assertSame($capability, in_array('prepared_local_activity_groups', $transport->registration['capabilities'], true));
+        }
+    }
+
+    public function test_cancellation_during_group_preparation_acknowledges_unstarted_attempt_before_cleanup(): void
+    {
+        $transport = new PreparedWorkerTransport();
+        $transport->serverGroupCapability = true;
+        $transport->stopAuxiliaryPolls = true;
+        $transport->cancelOnSecondPreparation = true;
+        $worker = $this->worker($transport);
+        $worker->registerWorkflow('prepared', static function (WorkflowContext $context): void {
+            try { $context->all([
+                static fn () => $context->localActivity('effect'),
+                static fn () => $context->localActivity('effect'),
+            ]); } catch (WorkflowCancelled $cancelled) {
+                $context->cancellationShield(static fn () => $context->localActivity('cleanup'));
+                throw $cancelled;
+            }
+        });
+        $directory = $this->directory;
+        $worker->registerActivity('effect', static function (ActivityContext $context) use ($directory): void { file_put_contents($directory.'/unsafe', 'unadmitted group'); });
+        $worker->registerActivity('cleanup', static function (ActivityContext $context) use ($directory): string {
+            file_put_contents($directory.'/cleaned', 'done');
+            return 'cleaned';
+        });
+        $worker->run(0);
+        self::assertSame([], $transport->failures);
+        self::assertFileDoesNotExist($directory.'/unsafe');
+        self::assertFileExists($directory.'/cleaned');
+        self::assertCount(1, $transport->operations('acknowledge-cancellation'));
+        self::assertCount(1, $transport->operations('outcome'));
+        self::assertSame([false], $transport->callbacksAliveAtStopAcknowledgment);
+        self::assertSame(WorkflowCancelled::class, $transport->completions[0]['commands'][0]['exception_type']);
+    }
+
+    public function test_partial_canonical_group_never_admits_or_executes_a_missing_sibling(): void
+    {
+        $transport = new PreparedWorkerTransport();
+        $transport->serverGroupCapability = true;
+        $transport->stopAuxiliaryPolls = true;
+        $path = [['parallel_group_id' => 'parallel-activities:1:2', 'parallel_group_kind' => 'activity',
+            'parallel_group_base_sequence' => 1, 'parallel_group_size' => 2, 'parallel_group_index' => 0]];
+        $transport->event('ActivityScheduled', ['sequence' => 1, 'activity_type' => 'effect', 'execution_mode' => 'local',
+            ...$path[0], 'parallel_group_path' => $path]);
+        $worker = $this->worker($transport);
+        $worker->registerWorkflow('prepared', static fn (WorkflowContext $context) => $context->all([
+            static fn () => $context->localActivity('effect'),
+            static fn () => $context->localActivity('effect'),
+        ]));
+        $entered = $this->directory.'/unsafe';
+        $worker->registerActivity('effect', static function (ActivityContext $context) use ($entered): void { file_put_contents($entered, 'unsafe'); });
+        $worker->run(0);
+        self::assertFileDoesNotExist($entered);
+        self::assertSame([], $transport->localRequests);
+        self::assertSame([], $transport->completions);
+        self::assertCount(1, $transport->failures);
+        self::assertStringContainsString('missing a declared member', $transport->failures[0]['failure']['message']);
+    }
+
     public function test_blocked_callback_stops_without_heartbeats_then_shielded_cleanup_keeps_root_budget(): void
     {
         $transport = new PreparedWorkerTransport();
@@ -296,11 +467,20 @@ final class PreparedWorkerTransport implements BoundedTransport
     public bool $loseOutcomeAck = false;
     public bool $stopAuxiliaryPolls = false;
     public bool $serverPreparedCapability = true;
+    public bool $serverGroupCapability = false;
+    public bool $malformedGroupReceipt = false;
+    public bool $cancelOnSecondPreparation = false;
+    public array $attempts = [];
+    public array $cancelAfterFiles = [];
+    public array $callbacksAliveAtStopAcknowledgment = [];
+    public ?string $outcomeFile = null;
     public ?string $cancelAfterFile = null;
     public ?bool $callbackAliveAtStopAcknowledgment = null;
     private ?array $cancellation = null;
     private int $sequence = 0;
     private int $attemptCount = 0;
+    private array $scheduledMembers = [];
+    private array $attemptSequences = [];
 
     public function supportsBoundedRequests(): bool { return true; }
 
@@ -325,7 +505,8 @@ final class PreparedWorkerTransport implements BoundedTransport
     {
         if (str_ends_with($uri, '/cluster/info')) {
             return ['worker_protocol' => ['version' => '1.20', 'server_capabilities' => [
-                'cooperative_cancellation' => true, 'prepared_local_activities' => $this->serverPreparedCapability]]];
+                'cooperative_cancellation' => true, 'prepared_local_activities' => $this->serverPreparedCapability,
+                'prepared_local_activity_groups' => $this->serverGroupCapability]]];
         }
         if (str_ends_with($uri, '/worker/register')) { $this->registration = $body; return ['registered' => true]; }
         if ($method === 'DELETE' && str_ends_with($uri, '/worker/registrations/original')) {
@@ -355,6 +536,23 @@ final class PreparedWorkerTransport implements BoundedTransport
         if (str_contains($uri, '/local-activities/')) {
             $this->localRequests[] = compact('uri', 'body');
             $cursor = ['history_refresh_page_token' => 'opaque-origin'];
+            if (str_ends_with($uri, '/checkpoint-group')) {
+                $locals = [];
+                foreach ($body['commands'] as $offset => $command) {
+                    $sequence = $body['start_sequence'] + $offset;
+                    if ($command['type'] !== 'prepare_local_activity') { throw new \RuntimeException('This worker fixture only accepts complete local groups.'); }
+                    $this->scheduledMembers[$sequence] = ['sequence' => $sequence, 'activity_type' => $command['activity_type'],
+                        'execution_mode' => 'local', 'parallel_group_path' => $command['parallel_group_path'],
+                        ...$command['parallel_group_path'][0], 'activity_execution_id' => 'group-execution-'.$sequence];
+                    $this->event('ActivityScheduled', $this->scheduledMembers[$sequence]);
+                    $locals[] = ['sequence' => $sequence, 'activity_execution_id' => 'group-execution-'.$sequence];
+                }
+                return ['checkpointed' => true, 'duplicate' => false, 'reason' => null, 'task_id' => 'task',
+                    'workflow_run_id' => 'run', 'lease_owner' => 'original', 'workflow_task_attempt' => $this->epoch,
+                    'checkpoint_id' => $body['checkpoint_id'], 'start_sequence' => $body['start_sequence'],
+                    'next_sequence' => $body['start_sequence'] + count($body['commands']),
+                    'local_activities' => $this->malformedGroupReceipt ? array_slice($locals, 0, 1) : $locals, ...$cursor];
+            }
             if (str_ends_with($uri, '/checkpoint')) {
                 foreach ($body['commands'] as $offset => $command) {
                     $this->event('SideEffectRecorded', ['sequence' => $body['start_sequence'] + $offset, 'result' => $command['result']]);
@@ -372,6 +570,10 @@ final class PreparedWorkerTransport implements BoundedTransport
             }
             if (str_ends_with($uri, '/prepare')) {
                 $descriptor = $body['descriptor'];
+                if ($this->cancelOnSecondPreparation && count($this->attempts) === 1 && !isset($descriptor['cancellation_cleanup'])) {
+                    $this->requestCancellation();
+                    throw new \DurableWorkflow\Exception\ServerException('Cancellation fenced group admission.', 409, 'cancellation_requested');
+                }
                 $this->sequence = $body['sequence'];
                 ++$this->attemptCount;
                 $cleanup = isset($descriptor['cancellation_cleanup']) ? [
@@ -381,7 +583,7 @@ final class PreparedWorkerTransport implements BoundedTransport
                 $this->attempt = ['prepared' => true, 'duplicate' => false, 'reason' => null,
                     'workflow_task_id' => 'task', 'workflow_task_attempt' => $this->epoch, 'lease_owner' => 'original',
                     'worker_attempt_id' => $body['worker_attempt_id'], 'attempt_number' => 1,
-                    'activity_execution_id' => 'backend-execution-'.$this->attemptCount,
+                    'activity_execution_id' => $this->scheduledMembers[$this->sequence]['activity_execution_id'] ?? 'backend-execution-'.$this->attemptCount,
                     'activity_attempt_id' => 'backend-attempt-'.$this->attemptCount,
                     'server_time' => '2026-10-02T00:00:00.000000Z', 'lease_expires_at' => '2026-10-02T00:00:10.000000Z',
                     'start_to_close_deadline_at' => isset($descriptor['start_to_close_timeout'])
@@ -389,40 +591,45 @@ final class PreparedWorkerTransport implements BoundedTransport
                     'schedule_to_close_deadline_at' => $cleanup['cleanup_deadline_at'] ?? null,
                     'heartbeat_deadline_at' => isset($descriptor['heartbeat_timeout']) ? '2026-10-02T00:00:08.000000Z' : ($cleanup['cleanup_deadline_at'] ?? null),
                     'cancellation_cleanup' => $cleanup];
-                $this->event('ActivityScheduled', ['sequence' => $this->sequence, 'activity_type' => $descriptor['activity_type'], 'execution_mode' => 'local']);
-                $this->event('ActivityStarted', ['sequence' => $this->sequence, 'activity_execution_id' => $this->attempt['activity_execution_id'],
+                $this->attempts[$this->attempt['activity_attempt_id']] = $this->attempt;
+                $this->attemptSequences[$this->attempt['activity_attempt_id']] = $this->sequence;
+                if (!isset($this->scheduledMembers[$this->sequence])) {
+                    $this->scheduledMembers[$this->sequence] = ['sequence' => $this->sequence, 'activity_type' => $descriptor['activity_type'], 'execution_mode' => 'local'];
+                    $this->event('ActivityScheduled', $this->scheduledMembers[$this->sequence]);
+                }
+                $this->event('ActivityStarted', [...$this->scheduledMembers[$this->sequence], 'activity_execution_id' => $this->attempt['activity_execution_id'],
                     'activity_attempt_id' => $this->attempt['activity_attempt_id']]);
                 return [...$this->attempt, ...$cursor, ...($this->malformedAdmission ? ['workflow_task_attempt' => 99] : [])];
             }
+            preg_match('#/local-activities/([^/]+)/#', $uri, $match);
+            $attempt = $this->attempts[$match[1] ?? ''] ?? $this->attempt;
+            if ($attempt === []) { return ['active' => true]; }
+            $attemptNumber = (int) substr($attempt['activity_attempt_id'], strlen('backend-attempt-'));
+            $sequence = $this->attemptSequences[$attempt['activity_attempt_id']];
+            $member = $this->scheduledMembers[$sequence];
             if (str_ends_with($uri, '/acknowledge-cancellation')) {
-                $this->callbackAliveAtStopAcknowledgment = posix_kill((int) file_get_contents($this->cancelAfterFile), 0);
+                $file = $this->cancelAfterFiles[$sequence - 1] ?? $this->cancelAfterFile;
+                $this->callbackAliveAtStopAcknowledgment = $file !== null && is_file($file) && posix_kill((int) file_get_contents($file), 0);
+                $this->callbacksAliveAtStopAcknowledgment[] = $this->callbackAliveAtStopAcknowledgment;
                 return ['acknowledged' => true, 'duplicate' => false, 'reason' => null, 'history_event_id' => 'joined-stop', ...$cursor];
             }
             if (str_ends_with($uri, '/outcome')) {
                 $kind = $this->retryOutcome ? 'ActivityRetryScheduled' : 'ActivityCompleted';
-                $this->event($kind, ['sequence' => $this->sequence, 'result' => $body['report']['result'] ?? null], 'outcome-'.$this->attemptCount);
+                $this->event($kind, [...$member, 'result' => $body['report']['result'] ?? null], 'outcome-'.$attemptNumber);
+                if ($this->outcomeFile !== null) { file_put_contents($this->outcomeFile, $attempt['activity_attempt_id']); }
                 if ($this->loseOutcomeAck) { $this->loseOutcomeAck = false; throw new TransportException('Lost committed outcome acknowledgment.'); }
-                return [...$this->attempt, 'recorded' => true, 'workflow_run_id' => 'run', 'event_id' => 'outcome-'.$this->attemptCount,
+                return [...$attempt, 'recorded' => true, 'workflow_run_id' => 'run', 'event_id' => 'outcome-'.$attemptNumber,
                     'event_type' => $kind, 'recorded_at' => '2026-10-02T00:00:00.000000Z',
                     'claim_released' => $this->retryOutcome, 'created_task_ids' => $this->retryOutcome ? ['retry'] : [], ...$cursor];
             }
-            $reply = [...$this->attempt, 'active' => true, 'renewed' => $body['renew_lease'] ?? false, 'stop_required' => false,
+            $reply = [...$attempt, 'active' => true, 'renewed' => $body['renew_lease'] ?? false, 'stop_required' => false,
                 'workflow_lease_expires_at' => '2026-10-02T00:00:10.000000Z',
                 'heartbeat_recorded' => str_ends_with($uri, '/heartbeat'),
                 'heartbeat_history_event_id' => str_ends_with($uri, '/heartbeat') ? 'heartbeat-event' : null, ...$cursor];
-            if ($this->cancelAfterFile !== null && is_file($this->cancelAfterFile) && $this->attempt['cancellation_cleanup'] === null) {
-                $this->cancellation ??= ['schema' => 'durable-workflow.cancellation-context/v1',
-                    'request_id' => 'root-request', 'root_request_id' => 'root-request',
-                    'root_workflow_instance_id' => 'workflow', 'root_workflow_run_id' => 'run', 'parent_request_id' => null,
-                    'reason' => 'operator request', 'requester' => ['type' => 'test'], 'source' => 'control_plane',
-                    'requested_at' => '2026-10-02T00:00:00.000000Z', 'cleanup_deadline_at' => '2026-10-02T00:00:30.000000Z',
-                    'lineage' => [['request_id' => 'root-request', 'workflow_instance_id' => 'workflow', 'workflow_run_id' => 'run']]];
-                if (!in_array('CooperativeCancellationRequested', array_column($this->history, 'event_type'), true)) {
-                    $this->event('CooperativeCancellationRequested', ['workflow_run_id' => 'run', 'workflow_command_id' => 'root-request',
-                        'cleanup_deadline_at' => $this->cancellation['cleanup_deadline_at'], 'reason' => 'operator request',
-                        'cancellation' => $this->cancellation]);
-                    $this->event('ActivityCancelled', ['sequence' => $this->sequence]);
-                }
+            $cancelFiles = $this->cancelAfterFiles !== [] ? $this->cancelAfterFiles : ($this->cancelAfterFile === null ? [] : [$this->cancelAfterFile]);
+            $cancel = $cancelFiles !== [] && count(array_filter($cancelFiles, 'is_file')) === count($cancelFiles);
+            if (($cancel || $this->cancellation !== null) && $attempt['cancellation_cleanup'] === null) {
+                $this->requestCancellation();
                 return [...$reply, 'active' => false, 'renewed' => false, 'stop_required' => true,
                     'heartbeat_recorded' => false, 'heartbeat_history_event_id' => null,
                     'reason' => 'cancellation_requested', 'cancellation_request' => $this->cancellation,
@@ -433,8 +640,24 @@ final class PreparedWorkerTransport implements BoundedTransport
         if (str_ends_with($uri, '/complete')) { $this->completions[] = $body; return ['completed' => true]; }
         if (str_ends_with($uri, '/fail')) { $this->failures[] = $body; return ['failed' => true]; }
         if (str_ends_with($uri, '/heartbeat')) {
-            return ['task_id' => 'task', 'lease_owner' => 'original', 'workflow_task_attempt' => $this->epoch, 'renewed' => true];
+            return ['task_id' => 'task', 'lease_owner' => 'original', 'workflow_task_attempt' => $this->epoch, 'renewed' => true,
+                'cancellation_request' => $this->cancellation === null ? null : [...$this->cancellation, 'history_refresh_page_token' => 'opaque-origin']];
         }
         throw new \RuntimeException('Unexpected prepared worker fixture request '.$uri);
+    }
+
+    private function requestCancellation(): void
+    {
+        if ($this->cancellation !== null) { return; }
+        $this->cancellation = ['schema' => 'durable-workflow.cancellation-context/v1',
+            'request_id' => 'root-request', 'root_request_id' => 'root-request',
+            'root_workflow_instance_id' => 'workflow', 'root_workflow_run_id' => 'run', 'parent_request_id' => null,
+            'reason' => 'operator request', 'requester' => ['type' => 'test'], 'source' => 'control_plane',
+            'requested_at' => '2026-10-02T00:00:00.000000Z', 'cleanup_deadline_at' => '2026-10-02T00:00:30.000000Z',
+            'lineage' => [['request_id' => 'root-request', 'workflow_instance_id' => 'workflow', 'workflow_run_id' => 'run']]];
+        $this->event('CooperativeCancellationRequested', ['workflow_run_id' => 'run', 'workflow_command_id' => 'root-request',
+            'cleanup_deadline_at' => $this->cancellation['cleanup_deadline_at'], 'reason' => 'operator request',
+            'cancellation' => $this->cancellation]);
+        foreach ($this->scheduledMembers as $scheduled) { $this->event('ActivityCancelled', $scheduled); }
     }
 }
