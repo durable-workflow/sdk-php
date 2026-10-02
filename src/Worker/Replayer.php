@@ -64,8 +64,10 @@ final class Replayer
         foreach ($steps as $step) {
             $stepsBySequence[$step['sequence']] = $step;
         }
-        $selectionResolutions = $this->selectionResolutions($history);
-        $selectionCancellations = $this->selectionCancellations($history);
+        $selectionResolutionOrders = [];
+        $selectionResolutions = $this->selectionResolutions($history, $selectionResolutionOrders);
+        $selectionCancellationOrders = [];
+        $selectionCancellations = $this->selectionCancellations($history, $selectionCancellationOrders);
         $selectionOperationIdentities = $this->selectionOperationIdentities($history);
         $completedHistory = $this->hasCompletedHistory($history);
         $context = null;
@@ -131,6 +133,8 @@ final class Replayer
                     }
                     $nextSequence = $delivery->sequence + $delivery->sequenceSpan;
                     $cancellationConsumed = true;
+                    $context->observeCancellationReplayTime($cancellation->deliveryIndex === null
+                        ? null : ($history[$cancellation->deliveryIndex] ?? null));
                     $suspended = $execution->throw($context->deliveredCancellation($delivery->requestId, $cancellation->request->context));
                     continue;
                 }
@@ -182,6 +186,7 @@ final class Replayer
                 $matched = 0;
                 $failure = null;
                 $failures = [];
+                $resolvedOrders = [];
                 $missingMember = false;
 
                 foreach ($descriptors as $offset => $descriptor) {
@@ -250,6 +255,9 @@ final class Replayer
                         }
                         $pending = true;
                         continue;
+                    }
+                    foreach ($this->blockingResolutionOrders($step) as $order) {
+                        $resolvedOrders[] = $order;
                     }
                     if ($step['failure'] instanceof Throwable) {
                         $failures[$offset] = $step['failure'];
@@ -336,12 +344,15 @@ final class Replayer
                             $selection->handles,
                             $selectionCancellations,
                         );
+                        $this->advanceCancellationClock($context, $history, [$selectionResolutionOrders[(string) $groupId]]);
                         $suspended = $execution->resume($selection);
                         continue;
                     }
                     return $this->result($commands, $context);
                 }
                 if ($failure !== null) {
+                    $this->advanceCancellationClock($context, $history, array_values(array_filter($resolvedOrders,
+                        static fn (int $order): bool => $order <= $failure['resolution_order'])));
                     $suspended = $execution->throw($failure['exception']);
                     continue;
                 }
@@ -355,6 +366,7 @@ final class Replayer
                 }
 
                 ksort($results);
+                $this->advanceCancellationClock($context, $history, $resolvedOrders);
                 $suspended = $execution->resume($suspended->nestedResults(array_values($results)));
                 continue;
             }
@@ -365,10 +377,12 @@ final class Replayer
                     $suspended,
                     $stepsBySequence,
                     $selectionCancellations,
+                    $selectionCancellationOrders,
                 );
                 if (!$resolution['resolved']) {
                     return $this->result($commands, $context);
                 }
+                $this->advanceCancellationClock($context, $history, $resolution['resolution_orders']);
                 $suspended = $resolution['failure'] instanceof Throwable
                     ? $execution->throw($resolution['failure'])
                     : $execution->resume($resolution['value']);
@@ -520,6 +534,7 @@ final class Replayer
                         continue;
                     }
                     if ($step['resolved']) {
+                        $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($step));
                         $suspended = $execution->resume($step['value']);
                         continue;
                     }
@@ -547,6 +562,9 @@ final class Replayer
                         ));
                     }
                     return $this->result($commands, $context);
+                }
+                if ($prepareLocalActivities || $suspended->type !== 'record_local_activity') {
+                    $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($step));
                 }
                 if ($step['failure'] instanceof Throwable) {
                     try {
@@ -1270,12 +1288,13 @@ final class Replayer
     }
 
     /** @param list<array<string, mixed>> $history
+     *  @param array<string, int> $resolutionOrders
      *  @return array<string, array<string, mixed>>
      */
-    private function selectionResolutions(array $history): array
+    private function selectionResolutions(array $history, array &$resolutionOrders): array
     {
         $resolutions = [];
-        foreach ($history as $event) {
+        foreach ($history as $order => $event) {
             if (($event['event_type'] ?? $event['type'] ?? null) !== 'SelectionResolved') {
                 continue;
             }
@@ -1306,18 +1325,20 @@ final class Replayer
                 );
             }
             $resolutions[$groupId] = $payload;
+            $resolutionOrders[$groupId] = $order;
         }
 
         return $resolutions;
     }
 
     /** @param list<array<string, mixed>> $history
+     *  @param array<string, int> $cancellationOrders
      *  @return array<string, array<string, mixed>>
      */
-    private function selectionCancellations(array $history): array
+    private function selectionCancellations(array $history, array &$cancellationOrders): array
     {
         $cancellations = [];
-        foreach ($history as $event) {
+        foreach ($history as $order => $event) {
             if (($event['event_type'] ?? $event['type'] ?? null) !== 'SelectionOperationCancelled') {
                 continue;
             }
@@ -1346,6 +1367,7 @@ final class Replayer
                 );
             }
             $cancellations[$key] = $payload;
+            $cancellationOrders[$key] ??= $order;
         }
 
         return $cancellations;
@@ -1621,17 +1643,20 @@ final class Replayer
     /**
      * @param array<int, array<string, mixed>> $stepsBySequence
      * @param array<string, array<string, mixed>> $selectionCancellations
-     * @return array{resolved: bool, value: mixed, failure: ?Throwable}
+     * @param array<string, int> $selectionCancellationOrders
+     * @return array{resolved: bool, value: mixed, failure: ?Throwable, resolution_orders: list<int>}
      */
     private function durableHandleResolution(
         DurableOperationHandle $handle,
         array $stepsBySequence,
         array $selectionCancellations,
+        array $selectionCancellationOrders,
     ): array {
         if ($this->selectionCancellationForHandle($handle, $selectionCancellations) !== null) {
             return [
                 'resolved' => true,
                 'value' => null,
+                'resolution_orders' => [$selectionCancellationOrders[$handle->selectionGroupId.':'.$handle->baseSequence]],
                 'failure' => new DurableOperationCancelled(
                     $handle->selectionGroupId,
                     $handle->key,
@@ -1646,13 +1671,15 @@ final class Replayer
             $step = $stepsBySequence[$handle->baseSequence] ?? null;
 
             return is_array($step) && $step['resolved'] === true
-                ? ['resolved' => true, 'value' => $step['value'], 'failure' => $step['failure']]
-                : ['resolved' => false, 'value' => null, 'failure' => null];
+                ? ['resolved' => true, 'value' => $step['value'], 'failure' => $step['failure'],
+                    'resolution_orders' => $this->blockingResolutionOrders($step)]
+                : ['resolved' => false, 'value' => null, 'failure' => null, 'resolution_orders' => []];
         }
 
         $results = [];
         $pending = false;
         $failures = [];
+        $resolvedOrders = [];
         foreach ($handle->operation->leafDescriptors($handle->baseSequence) as $descriptor) {
             $step = $stepsBySequence[$handle->baseSequence + $descriptor['offset']] ?? null;
             if (!is_array($step) || $step['resolved'] !== true) {
@@ -1663,16 +1690,22 @@ final class Replayer
                 $failures[] = $step;
                 continue;
             }
+            foreach ($this->blockingResolutionOrders($step) as $order) {
+                $resolvedOrders[] = $order;
+            }
             $results[$descriptor['offset']] = $step['value'];
         }
         if ($failures !== []) {
             usort($failures, static fn (array $left, array $right): int =>
                 $left['resolution_order'] <=> $right['resolution_order']);
 
-            return ['resolved' => true, 'value' => null, 'failure' => $failures[0]['failure']];
+            return ['resolved' => true, 'value' => null, 'failure' => $failures[0]['failure'],
+                'resolution_orders' => [...array_values(array_filter($resolvedOrders,
+                    static fn (int $order): bool => $order <= $failures[0]['resolution_order'])),
+                    ...$this->blockingResolutionOrders($failures[0])]];
         }
         if ($pending) {
-            return ['resolved' => false, 'value' => null, 'failure' => null];
+            return ['resolved' => false, 'value' => null, 'failure' => null, 'resolution_orders' => []];
         }
         ksort($results);
 
@@ -1680,7 +1713,36 @@ final class Replayer
             'resolved' => true,
             'value' => $handle->operation->nestedResults(array_values($results)),
             'failure' => null,
+            'resolution_orders' => $resolvedOrders,
         ];
+    }
+
+    /**
+     * @param array{shape: string, resolution_order: int} $step
+     * @return list<int>
+     */
+    private function blockingResolutionOrders(array $step): array
+    {
+        if (in_array($step['shape'], ['side_effect', 'version_marker', 'memo', 'search_attributes'], true)) {
+            return [];
+        }
+
+        return [$step['resolution_order']];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $history
+     * @param list<int> $orders
+     */
+    private function advanceCancellationClock(WorkflowContext $context, array $history, array $orders): void
+    {
+        if ($context->cancellationContext() === null) {
+            return;
+        }
+        sort($orders, SORT_NUMERIC);
+        foreach ($orders as $order) {
+            $context->observeCancellationReplayTime($history[$order] ?? null);
+        }
     }
 
     /**

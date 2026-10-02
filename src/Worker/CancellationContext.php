@@ -4,13 +4,18 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Worker;
 
+use Closure;
 use DateTimeImmutable;
 use DateTimeZone;
 use InvalidArgumentException;
+use LogicException;
 
 /** Immutable root request and cleanup budget read from canonical history. */
 final class CancellationContext
 {
+    /** @var (Closure(): DateTimeImmutable)|null */
+    private ?Closure $replayClock = null;
+
     /**
      * @param array<string, string> $requester
      * @param list<array{request_id: string, workflow_instance_id: string, workflow_run_id: string}> $lineage
@@ -105,6 +110,31 @@ final class CancellationContext
     public function deadline(): DateTimeImmutable
     {
         return $this->cleanupDeadline;
+    }
+
+    /** Remaining seconds at the consumed replay boundary, never the host clock. */
+    public function remaining(): float
+    {
+        if ($this->replayClock === null) {
+            throw new LogicException('Cancellation remaining() requires deterministic workflow time.');
+        }
+        $time = ($this->replayClock)();
+        $seconds = (int) $this->cleanupDeadline->format('U') - (int) $time->format('U');
+        $microseconds = (int) $this->cleanupDeadline->format('u') - (int) $time->format('u');
+
+        return max(0.0, $seconds + $microseconds / 1_000_000);
+    }
+
+    /**
+     * @internal
+     * @param Closure(): DateTimeImmutable $clock
+     */
+    public function withReplayClock(Closure $clock): self
+    {
+        $context = clone $this;
+        $context->replayClock = $clock;
+
+        return $context;
     }
 
     /** @return array<string, mixed> */

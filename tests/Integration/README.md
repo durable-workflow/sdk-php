@@ -110,6 +110,11 @@ The case also checks Server's shared cascade during cleanup and after recovery,
 from both selected runs. The view must retain the original budget, both stop
 receipts, the same delivery boundary, and the original-to-replacement cleanup
 grant with its recorded unknown callback state.
+It also records `remaining()` inside both the original and replacement PHP
+workflow Fibers. Delivery must yield the identical value after replacement.
+After prepared cleanup completes, the value must match that committed outcome's
+timestamp and the original deadline, with positive remaining time. The retained
+observations separate deterministic workflow time from runtime authority time.
 
 The optional `cli_commit` input requires both language candidates and the Native
 overlay. It runs the exact CLI against the final real cascade in JSON and human

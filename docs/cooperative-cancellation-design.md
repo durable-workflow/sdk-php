@@ -13,6 +13,22 @@ exception carries the same immutable object in `context`. Before that boundary,
 the workflow context returns `null`. Observing a request through polling or a
 heartbeat does not expose future cancellation metadata to earlier workflow code.
 
+The PHP Source context provides `deadline()` and `remaining()`. The deadline is
+the original root deadline. Remaining seconds use the committed cancellation
+delivery time, then advance when cleanup resumes from a resolved blocking
+operation. A synchronous side effect, version marker, metadata update or legacy
+inline local callback does not move that clock when its result is later
+persisted. Selection uses its committed winner marker, then the particular
+handle being awaited. Later sibling outcomes and unrelated history do not
+change an earlier authored decision.
+
+The clock preserves fractional seconds, does not move backward with recorded
+clock skew, and clamps an expired budget to zero. Calling `remaining()` outside
+the active workflow Fiber, on a detached snapshot, or at a boundary without a
+valid recorded timestamp raises `LogicException`. It never substitutes the host
+clock. Runtime supervisors independently enforce the original real deadline
+while callbacks or transport calls are running.
+
 ```php
 try {
     $context->sleep(60);
@@ -212,20 +228,22 @@ execution and cleanup deadlines cannot move when leases renew. With whole-second
 transport timeouts, the worker stops admitting I/O in the final fraction of a
 second instead of rounding past its authority deadline.
 
-Parallel groups containing local activities currently return
-`prepared_local_parallel_admission_unavailable` before callbacks start. The
-installed sequential contract cannot atomically admit that group. Completing
-parallel admission and connected physical-stop and cleanup SIGKILL qualification
-is required for the full PHP-parent, Python-child and Rust-activity scenario.
-The default protocol remains 1.19.
+The Source candidate also admits complete `all()` groups containing local
+activities through `prepared_local_activity_groups`. Atomic admission records
+every member before callbacks start, with a maximum of 100 members. Concurrent
+supervision checkpoints each result only after joining its callback, while
+maintaining the original shared claim and deadline. Selection groups and groups
+containing turn-closing waits still refuse before callbacks start. Connected
+Source qualification covers physical stop and cleanup SIGKILL recovery for the
+PHP-parent, Python-child, Rust-activity and PHP-local-activity cascade. The default
+protocol remains 1.19.
 
 ## Remaining qualification
 
-Portable activity operation policies, nested scopes and deterministic
-remaining-time helpers still need completion. Remaining time must use the
-replayed workflow clock. Do not subtract the host clock from the deadline in
-workflow code. The runtime continues enforcing the original deadline and fences
-task and activity ownership.
+Portable local activity operation policies, nested scopes and corresponding
+Python/Rust remaining-time helpers still need completion. PHP's helper requires
+connected qualification at its current Source head. The runtime continues
+enforcing the original deadline and fencing task and activity ownership.
 
 Connected qualification must cover a PHP parent, Python child, Rust remote
 activity and PHP local activity, including callback stop without application

@@ -9,8 +9,10 @@ use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use Closure;
+use DateTimeImmutable;
 use Fiber;
 use LogicException;
+use WeakReference;
 
 /** Straight-line deterministic operations available while a workflow Fiber is replayed. */
 final class WorkflowContext
@@ -37,6 +39,8 @@ final class WorkflowContext
     private ?string $deliveredCancellationRequestId = null;
 
     private ?CancellationContext $deliveredCancellationContext = null;
+
+    private ?CancellationReplayClock $cancellationReplayClock = null;
 
     /** @var list<list<DeferredWorkflowOperation|ParallelWorkflowCommand>> */
     private array $captureFrames = [];
@@ -553,10 +557,31 @@ final class WorkflowContext
     /** @internal Only a committed delivery marker authorizes this state change. */
     public function deliveredCancellation(string $requestId, ?CancellationContext $context = null): WorkflowCancelled
     {
+        if ($context !== null) {
+            $reference = WeakReference::create($this);
+            $context = $context->withReplayClock(static function () use ($reference): DateTimeImmutable {
+                $workflow = $reference->get();
+                if (!$workflow instanceof self) {
+                    throw new LogicException('Cancellation remaining() requires an active workflow.');
+                }
+                $workflow->assertActiveFiber();
+
+                return ($workflow->cancellationReplayClock ??= new CancellationReplayClock())->time();
+            });
+        }
         $this->deliveredCancellationRequestId = $requestId;
         $this->deliveredCancellationContext = $context;
 
         return new WorkflowCancelled('Workflow cancellation was requested.', requestId: $requestId, context: $context);
+    }
+
+    /**
+     * @internal
+     * @param array<string, mixed>|null $event
+     */
+    public function observeCancellationReplayTime(?array $event): void
+    {
+        ($this->cancellationReplayClock ??= new CancellationReplayClock())->observe($event);
     }
 
     /** @return list<list<mixed>> */

@@ -322,6 +322,7 @@ final class CooperativeCancellationTest extends TestCase
             self::assertSame($delivery['payload']['sequence_span'], $cleaningRuns[$parent->selectedRunId]['delivery']['sequence_span']);
             self::assertSame('cancelled', $cleaningRuns[$child->selectedRunId]['lifecycle']);
             $cleanupPids = json_decode((string) file_get_contents($this->directory.'/cleanup-processes'), true, flags: JSON_THROW_ON_ERROR);
+            $firstBudget = json_decode((string) file_get_contents($this->directory.'/remaining-delivery-'.$pid.'.json'), true, flags: JSON_THROW_ON_ERROR);
             $this->stopWorker($pid, true);
             $pid = 0;
             foreach ($cleanupPids as $activityPid) { $this->assertProcessStops($activityPid); }
@@ -444,6 +445,18 @@ final class CooperativeCancellationTest extends TestCase
             self::assertNotSame($parentNode['cleanup_recovery'][0]['attempt']['original_lease_owner'],
                 $parentNode['cleanup_recovery'][0]['attempt']['lease_owner']);
             self::assertSame('wait_cancellation_completed', $parentNode['child_propagation'][0]['policy']);
+            $budget = json_decode((string) file_get_contents($this->directory.'/remaining-cleanup-final.json'), true, flags: JSON_THROW_ON_ERROR);
+            self::assertNotSame($firstBudget['worker_pid'], $budget['worker_pid']);
+            self::assertSame($firstBudget['at_delivery'], $budget['at_delivery'], 'Replacement replay keeps the original remaining-time decision.');
+            self::assertGreaterThan(0, $budget['after_cleanup']);
+            self::assertLessThan($budget['at_delivery'], $budget['after_cleanup']);
+            $deadline = (float) (new \DateTimeImmutable($request['cleanup_deadline_at']))->format('U.u');
+            self::assertEqualsWithDelta($deadline - (float) (new \DateTimeImmutable($delivery['timestamp']))->format('U.u'),
+                $budget['at_delivery'], 0.000001);
+            $cleanupEvent = array_values(array_filter($events, static fn (array $event): bool =>
+                $event['event_type'] === 'ActivityCompleted' && ($event['payload']['activity_type'] ?? null) === 'tests.php-cooperative-cleanup'))[0];
+            self::assertEqualsWithDelta($deadline - (float) (new \DateTimeImmutable($cleanupEvent['timestamp']))->format('U.u'),
+                $budget['after_cleanup'], 0.000001);
             $this->assertCascadeCli($parent, $finished);
             fwrite(STDOUT, 'Mixed-language Source cascade: '.json_encode([
                 'root_request' => $request, 'child_context' => $childContext,
@@ -453,6 +466,7 @@ final class CooperativeCancellationTest extends TestCase
                 'joined_local_pids' => $localPids, 'killed_cleanup_pids' => $cleanupPids,
                 'parent_history' => $events, 'child_history' => $childEvents,
                 'cancellation_cascade' => $finished,
+                'remaining_time' => ['original_worker' => $firstBudget, 'replacement_worker' => $budget],
             ], JSON_THROW_ON_ERROR)."\n");
         } finally {
             foreach (['parent' => $parent, 'child' => $child] as $role => $handle) {
@@ -1271,7 +1285,8 @@ final class CooperativeCancellationTest extends TestCase
                         }
                     });
                 if (!$remoteRole) {
-                    $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind, ?string $childQueue = null, ?string $remoteQueue = null) use ($queue, $preparedLocal, $remotePolicy): string {
+                    $directory = $this->directory;
+                    $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind, ?string $childQueue = null, ?string $remoteQueue = null) use ($queue, $preparedLocal, $remotePolicy, $directory): string {
                         try {
                             if ($kind === 'child-wait') {
                                 $context->childWorkflow('tests.php-cooperative', ['timer'], [
@@ -1305,6 +1320,14 @@ final class CooperativeCancellationTest extends TestCase
                                 $context->sleep(300);
                             }
                         } catch (WorkflowCancelled $error) {
+                            $remainingAtDelivery = null;
+                            if ($kind === 'polyglot') {
+                                $remainingAtDelivery = $error->context?->remaining();
+                                if ($remainingAtDelivery === null) { throw new RuntimeException('Mixed cleanup requires its recorded cancellation context.'); }
+                                file_put_contents($directory.'/remaining-delivery-'.getmypid().'.json', json_encode([
+                                    'worker_pid' => getmypid(), 'at_delivery' => $remainingAtDelivery,
+                                ], JSON_THROW_ON_ERROR));
+                            }
                             if ($kind === 'local-group') {
                                 $context->cancellationShield(static fn () => $context->all([
                                     static fn () => $context->localActivity('tests.php-cooperative-group-cleanup-0',
@@ -1317,6 +1340,12 @@ final class CooperativeCancellationTest extends TestCase
                             $context->cancellationShield(static fn () => $context->localActivity('tests.php-cooperative-cleanup',
                                 [$error->requestId, $context->cancellationContext()?->toArray()],
                                 $preparedLocal ? ['retry_policy' => ['max_attempts' => 3]] : []));
+                            if ($kind === 'polyglot') {
+                                file_put_contents($directory.'/remaining-cleanup-final.json', json_encode([
+                                    'worker_pid' => getmypid(), 'at_delivery' => $remainingAtDelivery,
+                                    'after_cleanup' => $error->context?->remaining(),
+                                ], JSON_THROW_ON_ERROR));
+                            }
                             return (string) $error->requestId;
                         }
                         return 'not-cancelled';
