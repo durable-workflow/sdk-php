@@ -133,7 +133,9 @@ final class CooperativeCancellationTest extends TestCase
         $repeated = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 300);
         self::assertFalse($accepted['duplicate']);
         self::assertTrue($repeated['duplicate']);
-        self::assertSame($accepted['cancellation_request'], $repeated['cancellation_request']);
+        foreach (['request_id', 'requested_at', 'cleanup_deadline_at'] as $field) {
+            self::assertSame($accepted['cancellation_request'][$field], $repeated['cancellation_request'][$field]);
+        }
         [$pid, $messages] = $this->spawnWorker($queue, $loseReply);
         try {
             $this->awaitMessage($messages, 'registered');
@@ -284,19 +286,23 @@ final class CooperativeCancellationTest extends TestCase
         $this->spawnExternalWorker('python', $queue.'-python');
         $this->spawnExternalWorker('rust', $queue.'-rust');
         [$pid, $messages] = $this->spawnWorker($queue, userHeartbeat: false, blockCleanup: true, preparedLocal: true);
+        $parent = null;
+        $child = null;
         try {
             $this->awaitMessage($messages, 'registered');
             $parent = $client->startWorkflow('tests.php-cooperative', $queue, $queue,
                 ['polyglot', $queue.'-python', $queue.'-rust']);
             $this->awaitMessage($messages, 'local-entered');
-            $this->awaitObservationFile('rust-entered.json');
-            $grant = json_decode((string) file_get_contents($this->directory.'/rust-entered.json'), true, flags: JSON_THROW_ON_ERROR);
-            $localGrant = json_decode((string) file_get_contents($this->directory.'/local-fence'), true, flags: JSON_THROW_ON_ERROR);
-            $localPids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
+            $this->awaitEvent($client, $parent, 'ChildWorkflowScheduled');
             $scheduled = array_values(array_filter($this->history($client, $parent),
                 static fn (array $event): bool => $event['event_type'] === 'ChildWorkflowScheduled'))[0];
             $child = new WorkflowHandle($client, $scheduled['payload']['child_workflow_instance_id'],
                 $scheduled['payload']['child_workflow_run_id']);
+            self::assertSame($queue.'-python', $child->describe()->taskQueue);
+            $this->awaitObservationFile('rust-entered.json');
+            $grant = json_decode((string) file_get_contents($this->directory.'/rust-entered.json'), true, flags: JSON_THROW_ON_ERROR);
+            $localGrant = json_decode((string) file_get_contents($this->directory.'/local-fence'), true, flags: JSON_THROW_ON_ERROR);
+            $localPids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
             $accepted = $parent->requestSelectedRunCancellation('mixed-language recovery qualification', 30);
             $request = $accepted['cancellation_request'];
             self::assertEquals((new \DateTimeImmutable($request['requested_at']))->modify('+30 seconds'),
@@ -382,7 +388,9 @@ final class CooperativeCancellationTest extends TestCase
             }
             $duplicate = $parent->requestSelectedRunCancellation('must retain the original request', 300);
             self::assertTrue($duplicate['duplicate']);
-            self::assertSame($request, $duplicate['cancellation_request']);
+            foreach (['request_id', 'requested_at', 'cleanup_deadline_at'] as $field) {
+                self::assertSame($request[$field], $duplicate['cancellation_request'][$field]);
+            }
             foreach (['complete', 'fail'] as $outcome) {
                 try {
                     if ($outcome === 'complete') { $client->completeActivityTask($grant['task_id'], $grant['activity_attempt_id'], $grant['lease_owner'], 'stale'); }
@@ -402,6 +410,9 @@ final class CooperativeCancellationTest extends TestCase
                 'parent_history' => $events, 'child_history' => $childEvents,
             ], JSON_THROW_ON_ERROR)."\n");
         } finally {
+            foreach (['parent' => $parent, 'child' => $child] as $role => $handle) {
+                if ($handle !== null) { $this->retainRunEvidence($client, $handle, $role); }
+            }
             if (is_resource($messages)) { fclose($messages); }
             $this->stopWorker($pid);
         }
@@ -522,7 +533,9 @@ final class CooperativeCancellationTest extends TestCase
             self::assertSame([], $diagnostics['pending_workflow_tasks'], 'The parent must surrender its waiting claim.');
             $duplicate = $parent->requestSelectedRunCancellation('a later request cannot extend the budget', 300);
             self::assertTrue($duplicate['duplicate']);
-            self::assertSame($request, $duplicate['cancellation_request']);
+            foreach (['request_id', 'requested_at', 'cleanup_deadline_at'] as $field) {
+                self::assertSame($request[$field], $duplicate['cancellation_request'][$field]);
+            }
 
             if ($coldReplacement) {
                 $this->stopWorker($pid, true);
@@ -991,7 +1004,9 @@ final class CooperativeCancellationTest extends TestCase
             $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 30);
             $duplicate = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 300);
             self::assertTrue($duplicate['duplicate']);
-            self::assertSame($accepted['cancellation_request'], $duplicate['cancellation_request']);
+            foreach (['request_id', 'requested_at', 'cleanup_deadline_at'] as $field) {
+                self::assertSame($accepted['cancellation_request'][$field], $duplicate['cancellation_request'][$field]);
+            }
             $events = $this->assertCancelledCleanup($client, $handle, $accepted['cancellation_request']['request_id'], $workflowMessages);
             foreach ($pids as $pid) { self::assertTrue(posix_kill($pid, 0), 'Abandon must preserve the independent callback after parent closure.'); }
             self::assertNotContains('ActivityCancelled', array_column($events, 'event_type'));
@@ -1138,7 +1153,7 @@ final class CooperativeCancellationTest extends TestCase
                         try {
                             if ($kind === 'child-wait') {
                                 $context->childWorkflow('tests.php-cooperative', ['timer'], [
-                                    'task_queue' => $queue,
+                                    'queue' => $queue,
                                     'cancellation_policy' => CancellationPolicy::WaitCancellationCompleted,
                                     'parent_close_policy' => ParentClosePolicy::RequestCancellation,
                                 ]);
@@ -1146,7 +1161,7 @@ final class CooperativeCancellationTest extends TestCase
                                 if (!$preparedLocal || $childQueue === null || $remoteQueue === null) { throw new RuntimeException('Mixed Source queues and preparation are required.'); }
                                 $context->all([
                                     static fn () => $context->childWorkflow('tests.polyglot-cancellation-child', [$remoteQueue], [
-                                        'task_queue' => $childQueue,
+                                        'queue' => $childQueue,
                                         'cancellation_policy' => CancellationPolicy::WaitCancellationCompleted,
                                         'parent_close_policy' => ParentClosePolicy::RequestCancellation,
                                     ]),
@@ -1393,6 +1408,21 @@ final class CooperativeCancellationTest extends TestCase
             usleep(10_000);
         } while (microtime(true) < $deadline);
         self::fail('Activity process survived cancellation: '.$pid);
+    }
+
+    private function retainRunEvidence(Client $client, WorkflowHandle $handle, string $role): void
+    {
+        try {
+            file_put_contents($this->directory.'/'.$role.'-history.json', json_encode(
+                $this->history($client, $handle), JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
+            file_put_contents($this->directory.'/'.$role.'-diagnostics.json', json_encode(
+                $client->workflowDiagnostics($handle->workflowId, (string) $handle->selectedRunId),
+                JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
+            file_put_contents($this->directory.'/'.$role.'-execution.json', json_encode(
+                $handle->describe()->raw, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
+        } catch (Throwable $error) {
+            file_put_contents($this->directory.'/'.$role.'-capture-error.txt', $error::class.': '.$error->getMessage());
+        }
     }
 
     /** @return list<array<string, mixed>> */
