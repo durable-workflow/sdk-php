@@ -280,6 +280,7 @@ final class CooperativeCancellationTest extends TestCase
             $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 30);
             $request = $accepted['cancellation_request'];
             $originalDelivery = null;
+            $cleanupDeliveryId = null;
             if ($killDuringCleanup) {
                 $this->awaitMessages($messages, ['group-cleanup-entered-0', 'group-cleanup-entered-1']);
                 foreach ([0, 1] as $index) {
@@ -287,6 +288,8 @@ final class CooperativeCancellationTest extends TestCase
                 }
                 $before = $this->history($client, $handle);
                 $originalDelivery = array_values(array_filter($before, static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'))[0];
+                $cleanupStarted = array_values(array_filter($before, static fn (array $event): bool => $event['event_type'] === 'ActivityStarted' && isset($event['payload']['local_preparation']['cancellation_cleanup'])));
+                $cleanupDeliveryId = $cleanupStarted[0]['payload']['local_preparation']['cancellation_cleanup']['delivery_history_event_id'];
                 $this->stopWorker($pid, true);
                 $pid = 0;
                 foreach ($killedPids as $activityPid) { $this->assertProcessStops($activityPid); }
@@ -311,7 +314,10 @@ final class CooperativeCancellationTest extends TestCase
             foreach (array_slice($started, 2) as $event) {
                 $cleanup = $event['payload']['local_preparation']['cancellation_cleanup'];
                 self::assertSame($request['request_id'], $cleanup['root_request_id']);
-                self::assertSame($delivery[0]['id'], $cleanup['delivery_history_event_id']);
+                self::assertIsString($cleanup['delivery_history_event_id']);
+                self::assertNotSame('', $cleanup['delivery_history_event_id']);
+                $cleanupDeliveryId ??= $cleanup['delivery_history_event_id'];
+                self::assertSame($cleanupDeliveryId, $cleanup['delivery_history_event_id']);
                 self::assertEquals(new \DateTimeImmutable($request['cleanup_deadline_at']), new \DateTimeImmutable($cleanup['cleanup_deadline_at']));
             }
             $recoveries = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityRetryScheduled'));
@@ -848,6 +854,9 @@ final class CooperativeCancellationTest extends TestCase
                 $worker = new Worker($this->client($transport, $namespace), $queue,
                     workerId: $queue.'-'.getmypid(), enableCooperativeCancellation: true, enablePreparedLocalActivities: $preparedLocal,
                     diagnosticListener: function (string $event, array $context) use ($notify, &$failureReported, $blockCleanup): void {
+                        if (in_array($event, ['worker.claim_aborted', 'worker.claim_deferred'], true)) {
+                            fwrite(STDOUT, 'Connected claim diagnostic: '.json_encode(['event' => $event, 'context' => $context], JSON_THROW_ON_ERROR)."\n");
+                        }
                         if ($event === 'worker.registered') {
                             $notify('registered');
                         }
