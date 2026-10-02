@@ -98,6 +98,35 @@ final class CooperativeCancellationWorkerTest extends TestCase
         }
     }
 
+    #[DataProvider('unsupportedActivityPolicyProvider')]
+    public function testExplicitActivityPoliciesRequireTheWorkerOptIn(string $protocol, \DurableWorkflow\Worker\CancellationPolicy $policy): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->requestVisible = false;
+        $transport->history = [$transport->history[0]];
+        $worker = new Worker(new Client('https://server.example', transport: $transport, workerProtocolVersion: $protocol),
+            'queue', workerId: 'worker-1');
+        $worker->registerWorkflow('cancel', static fn (WorkflowContext $context) => $context->activity('work', [], [
+            'cancellation_policy' => $policy, 'schedule_to_close_timeout' => 60,
+        ]));
+
+        self::assertTrue($worker->tick(0));
+        self::assertSame([], $transport->completions);
+        self::assertSame(WorkflowClaimAborted::class, $transport->failures[0]['failure']['type']);
+        self::assertStringContainsString('activity_cancellation_policy_not_supported', $transport->failures[0]['failure']['message']);
+        self::assertStringContainsString('worker-1', $transport->failures[0]['failure']['message']);
+        self::assertStringContainsString('1.20', $transport->failures[0]['failure']['message']);
+    }
+
+    public static function unsupportedActivityPolicyProvider(): iterable
+    {
+        foreach (['1.19', '1.20'] as $protocol) {
+            foreach (\DurableWorkflow\Worker\CancellationPolicy::cases() as $policy) {
+                yield [$protocol, $policy];
+            }
+        }
+    }
+
     public function testCapableWorkerTransmitsBothTypedChildPolicies(): void
     {
         $transport = new CooperativeWorkerTransport();

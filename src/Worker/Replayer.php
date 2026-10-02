@@ -883,13 +883,15 @@ final class Replayer
      *     timeout_seconds: ?int,
      *     parallel_path: list<array<string, mixed>>,
      *     resolution_order: int,
-     *     child_policies?: array<string, string>
+     *     child_policies?: array<string, string>,
+     *     activity_cancellation_policy?: string
      * }>
      */
     private function recordedSteps(array $history, bool $preserveConditionReopens = false): array
     {
         $steps = [];
         $childPolicies = [];
+        $activityPolicies = [];
         $conditionStepsByWaitId = [];
         $versionMarkerSequences = [];
         $versionMarkerChangeIds = [];
@@ -904,6 +906,35 @@ final class Replayer
                 default => $this->sequence($payload) ?? $fallbackSequence++,
             };
             $key = (string) $sequence;
+
+            if (in_array($type, ['ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'ActivityFailed', 'ActivityTimedOut', 'ActivityCancelled'], true)) {
+                $policy = $activityPolicies[$key] ?? null;
+                $snapshot = is_array($payload['activity'] ?? null) ? $payload['activity'] : [];
+                foreach ([$payload, $snapshot] as $source) {
+                    if (!array_key_exists('cancellation_policy', $source)) {
+                        continue;
+                    }
+                    $incoming = $source['cancellation_policy'];
+                    if (!is_string($incoming) || CancellationPolicy::tryFrom($incoming) === null) {
+                        throw new NonDeterministicWorkflow(
+                            'Recorded Activity cancellation_policy must be a supported policy.',
+                            $sequence,
+                            reason: 'invalid_activity_cancellation_policy_history',
+                        );
+                    }
+                    if ($policy !== null && $policy !== $incoming) {
+                        throw new NonDeterministicWorkflow(
+                            'Recorded Activity cancellation_policy changed between history events.',
+                            $sequence,
+                            $policy,
+                            $incoming,
+                            'activity_cancellation_policy_history_conflict',
+                        );
+                    }
+                    $policy = $incoming;
+                }
+                $activityPolicies[$key] = $policy ?? CancellationPolicy::TryCancel->value;
+            }
 
             if (in_array($type, ['ChildWorkflowScheduled', 'ChildRunStarted', 'ChildRunCompleted', 'ChildRunFailed', 'ChildRunCancelled', 'ChildRunTerminated'], true)) {
                 try {
@@ -1226,6 +1257,11 @@ final class Replayer
         foreach ($childPolicies as $key => $policies) {
             if (($steps[$key]['shape'] ?? null) === 'child_workflow') {
                 $steps[$key]['child_policies'] = $policies;
+            }
+        }
+        foreach ($activityPolicies as $key => $policy) {
+            if (($steps[$key]['shape'] ?? null) === 'activity') {
+                $steps[$key]['activity_cancellation_policy'] = $policy;
             }
         }
         ksort($steps, SORT_NUMERIC);
@@ -1931,6 +1967,19 @@ final class Replayer
                 $step['detail'],
                 $actualDetail,
             );
+        }
+        if ($command->historyShape === 'activity') {
+            $actualPolicy = $command->attributes['cancellation_policy'] ?? CancellationPolicy::TryCancel->value;
+            $recordedPolicy = $step['activity_cancellation_policy'] ?? CancellationPolicy::TryCancel->value;
+            if ($actualPolicy !== $recordedPolicy) {
+                throw new NonDeterministicWorkflow(
+                    'Activity cancellation_policy changed during replay.',
+                    $step['sequence'],
+                    $recordedPolicy,
+                    $actualPolicy,
+                    'activity_cancellation_policy_changed',
+                );
+            }
         }
         if ($command->historyShape === 'child_workflow') {
             $actualPolicies = array_merge(

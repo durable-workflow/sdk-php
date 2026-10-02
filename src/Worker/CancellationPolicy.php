@@ -4,15 +4,15 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Worker;
 
-/** What an awaiting workflow does when cancellation reaches its child call. */
+/** What an awaiting workflow does when cancellation reaches its operation. */
 enum CancellationPolicy: string
 {
-    /** Request child cleanup and deliver cancellation without waiting for it. */
+    /** Request cancellation and continue without waiting. This is the historical Activity default. */
     case TryCancel = 'try_cancel';
 
-    /** Deliver cancellation after the child reaches a recorded terminal outcome. */
+    /** Wait for recorded child termination or the original Activity attempt's stop acknowledgment. */
     case WaitCancellationCompleted = 'wait_cancellation_completed';
 
-    /** Leave the child running independently. This preserves the historical default. */
+    /** Leave work independent. This is the historical child default. Remote Activities require a finite total timeout. */
     case Abandon = 'abandon';
 }

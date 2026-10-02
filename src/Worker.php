@@ -1080,7 +1080,7 @@ final class Worker
                 }
             }
             $this->assertWorkflowMemoUpdatesAvailable($commands);
-            $this->assertChildCancellationPoliciesAvailable($commands);
+            $this->assertCancellationPoliciesAvailable($commands);
             $stickyClaim = $this->stickyCacheClaim($task);
             $this->retryStorageAdmission('workflow_complete', fn (): array => $this->client->completeWorkflowTask(
                 $taskId,
@@ -1705,12 +1705,18 @@ final class Worker
     }
 
     /** @param list<array<string, mixed>> $commands */
-    private function assertChildCancellationPoliciesAvailable(array $commands): void
+    private function assertCancellationPoliciesAvailable(array $commands): void
     {
         if ($this->enableCooperativeCancellation) {
             return;
         }
         foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'schedule_activity' && array_key_exists('cancellation_policy', $command)) {
+                throw new WorkflowClaimAborted(
+                    "activity_cancellation_policy_not_supported: PHP worker {$this->workerId} must enable cooperative cancellation with worker protocol "
+                    .Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL.' and a compatible Server/Native backend.',
+                );
+            }
             if (($command['type'] ?? null) === 'start_child_workflow'
                 && (($command['parent_close_policy'] ?? null) === 'request_cancellation'
                     || in_array($command['cancellation_policy'] ?? null, ['try_cancel', 'wait_cancellation_completed'], true))) {

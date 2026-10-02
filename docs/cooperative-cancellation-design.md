@@ -77,6 +77,45 @@ commands before completion with `child_cancellation_policy_not_supported`, its
 worker identity and the required protocol. Server also checks the immutable
 claim capability and installed backend before accepting these policies.
 
+## Remote Activity policies
+
+Ordinary and deferred remote Activities accept the same `CancellationPolicy`
+enum or its portable string value. Omitted policy retains the historical
+`TryCancel` behavior and does not add a field to the command.
+
+```php
+$context->activity('rust.remote-work', [], [
+    'cancellation_policy' => CancellationPolicy::WaitCancellationCompleted,
+]);
+```
+
+`TryCancel` requests cancellation and continues without waiting for the stop
+receipt. `WaitCancellationCompleted` delays delivery to workflow code until the
+original remote attempt's physical stop acknowledgment is recorded. `Abandon`
+keeps the Activity independent after parent cancellation. It requires a finite
+positive integer `schedule_to_close_timeout`, whose original deadline bounds
+the independent work. It does not extend or reuse the parent's cleanup budget.
+
+Every explicit remote policy requires cooperative worker opt-in, protocol 1.20
+and a compatible installed backend. Unsupported workers identify the operation,
+worker identity and required protocol before submitting the command. Server
+checks the original immutable claim as well. Local Activity policy authoring
+remains unavailable while its lifetime and admission contract are unfinished.
+
+Replay compares the authored policy with the original canonical Activity
+history, including cancellation delivery, parallel and selection matching.
+Later events that omit the policy retain the original snapshot. Unknown,
+conflicting or changed policies fail replay explicitly. Historical histories
+without a policy retain `TryCancel`.
+
+The connected Source suite exercises explicit Try and Wait without application
+heartbeats, physical callback stop and stale-result refusal. Wait also checks
+that the durable stop receipt precedes cancellation delivery. The bounded
+Abandon case checks a callback still running after parent closure, its durable
+completion under the original total timeout, unchanged parent cancellation and
+rejection of another outcome from the completed attempt. These cases qualify
+the Source tuple rather than the published mixed-language release gate.
+
 ## Connected child-policy qualification
 
 The connected integration suite includes one workflow worker serving a parent

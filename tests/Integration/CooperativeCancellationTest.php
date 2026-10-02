@@ -449,15 +449,17 @@ final class CooperativeCancellationTest extends TestCase
 
     public static function remoteProvider(): array
     {
-        return [[false, false], [true, false], [false, true], [true, true]];
+        return [[false, false], [true, false], [false, true], [true, true],
+            [false, false, CancellationPolicy::TryCancel],
+            [false, false, CancellationPolicy::WaitCancellationCompleted]];
     }
 
     #[DataProvider('remoteProvider')]
-    public function testRemoteRequestStopsBlockedOwnerAfterLiveOrColdWorkflowDelivery(bool $userHeartbeat, bool $coldWorkflow): void
+    public function testRemoteRequestStopsBlockedOwnerAfterLiveOrColdWorkflowDelivery(bool $userHeartbeat, bool $coldWorkflow, ?CancellationPolicy $policy = null): void
     {
         $queue = $this->queue('remote');
         $client = $this->client();
-        [$workflowPid, $workflowMessages] = $this->spawnWorker($queue, pauseWorkflowClaim: $coldWorkflow);
+        [$workflowPid, $workflowMessages] = $this->spawnWorker($queue, pauseWorkflowClaim: $coldWorkflow, remotePolicy: $policy);
         [$ownerPid, $ownerMessages] = $this->spawnWorker($queue, userHeartbeat: $userHeartbeat, remoteRole: true);
         try {
             $this->awaitMessage($workflowMessages, 'registered');
@@ -523,7 +525,7 @@ final class CooperativeCancellationTest extends TestCase
                 }
             } : null;
             if ($coldWorkflow) {
-                [$workflowPid, $workflowMessages] = $this->spawnWorker($queue);
+                [$workflowPid, $workflowMessages] = $this->spawnWorker($queue, remotePolicy: $policy);
                 $this->awaitMessage($workflowMessages, 'registered');
             }
             $events = $this->assertCancelledCleanup($client, $handle, $accepted['cancellation_request']['request_id'], $workflowMessages, $observeLease);
@@ -539,6 +541,10 @@ final class CooperativeCancellationTest extends TestCase
             self::assertFileDoesNotExist($this->directory.'/late');
             $delivery = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'))[0];
             self::assertSame('activity', $delivery['payload']['call_kind']);
+            if ($policy !== null) {
+                $scheduled = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityScheduled'))[0];
+                self::assertSame($policy->value, $scheduled['payload']['activity']['cancellation_policy']);
+            }
             if ($heldWorkflowClaim !== null) {
                 self::assertGreaterThanOrEqual(
                     (float) (new \DateTimeImmutable($heldWorkflowClaim['lease_expires_at']))->format('U.u'),
@@ -586,6 +592,13 @@ final class CooperativeCancellationTest extends TestCase
                 self::assertSame($receipt['root_request_id'], $acks[0]['payload']['root_request_id']);
                 self::assertSame($receipt['cleanup_deadline_at'], $acks[0]['payload']['cleanup_deadline_at']);
                 self::assertSame($receipt['cancellation_history_event_id'], $acks[0]['payload']['cancellation_history_event_id']);
+                if ($policy === CancellationPolicy::WaitCancellationCompleted) {
+                    self::assertLessThan(
+                        array_search('CooperativeCancellationDelivered', array_column($events, 'event_type'), true),
+                        array_search('ActivityCancellationAcknowledged', array_column($events, 'event_type'), true),
+                        'Wait must record physical stop before delivering cancellation to workflow code.',
+                    );
+                }
                 fwrite(STDOUT, 'Remote stop receipt: '.json_encode([
                     'user_heartbeat' => $userHeartbeat, 'cold_workflow' => $coldWorkflow,
                     'processes_stopped' => $pids, 'claim' => $fence, 'status' => $status,
@@ -813,6 +826,73 @@ final class CooperativeCancellationTest extends TestCase
         return [[false], [true]];
     }
 
+    public function testBoundedAbandonKeepsRemoteCallbackIndependentAfterParentCancellation(): void
+    {
+        $queue = $this->queue('remote-abandon');
+        $client = $this->client();
+        [$workflowPid, $workflowMessages] = $this->spawnWorker($queue, remotePolicy: CancellationPolicy::Abandon);
+        [$ownerPid, $ownerMessages] = $this->spawnWorker($queue, userHeartbeat: false, remoteRole: true,
+            remoteBlockSeconds: 25, remotePolicy: CancellationPolicy::Abandon);
+        try {
+            $this->awaitMessage($workflowMessages, 'registered');
+            $this->awaitMessage($ownerMessages, 'registered');
+            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['remote']);
+            $this->awaitMessage($ownerMessages, 'remote-entered');
+            $this->awaitMessage($ownerMessages, 'owner-heartbeat');
+            $pids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
+            $fence = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
+            $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 30);
+            $duplicate = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 300);
+            self::assertTrue($duplicate['duplicate']);
+            self::assertSame($accepted['cancellation_request'], $duplicate['cancellation_request']);
+            $events = $this->assertCancelledCleanup($client, $handle, $accepted['cancellation_request']['request_id'], $workflowMessages);
+            foreach ($pids as $pid) { self::assertTrue(posix_kill($pid, 0), 'Abandon must preserve the independent callback after parent closure.'); }
+            self::assertNotContains('ActivityCancelled', array_column($events, 'event_type'));
+            self::assertNotContains('ActivityCancellationAcknowledged', array_column($events, 'event_type'));
+            $scheduled = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityScheduled'))[0];
+            self::assertSame('abandon', $scheduled['payload']['activity']['cancellation_policy']);
+            $totalDeadline = $scheduled['payload']['activity']['schedule_to_close_deadline_at'];
+            self::assertIsString($totalDeadline);
+            $status = $client->activityTaskStatus($fence['task_id'], $fence['activity_attempt_id'], $fence['lease_owner']);
+            self::assertTrue($status['can_continue']);
+            $until = microtime(true) + 35;
+            do {
+                $events = $this->history($client, $handle);
+                $completed = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityCompleted'
+                    && ($event['payload']['activity_type'] ?? null) === 'tests.php-cooperative-remote'));
+                if ($completed !== []) { break; }
+                usleep(100_000);
+            } while (microtime(true) < $until);
+            self::assertCount(1, $completed, 'The independent callback must durably complete within its original finite lifetime.');
+            self::assertSame('independent-completion', (new AvroPayloadCodec())->decodeEnvelope($completed[0]['payload']['result']));
+            self::assertSame($totalDeadline, $completed[0]['payload']['activity']['schedule_to_close_deadline_at']);
+            self::assertSame($fence['activity_attempt_id'], $completed[0]['payload']['activity_attempt_id']);
+            self::assertSame('cancelled', strtolower((string) $handle->describe()->status));
+            self::assertNotContains('WorkflowCompleted', array_column($events, 'event_type'));
+            self::assertNotContains('ActivityCancellationAcknowledged', array_column($events, 'event_type'));
+            foreach (['complete', 'fail'] as $outcome) {
+                try {
+                    if ($outcome === 'complete') { $client->completeActivityTask($fence['task_id'], $fence['activity_attempt_id'], $fence['lease_owner'], 'stale'); }
+                    else { $client->failActivityTask($fence['task_id'], $fence['activity_attempt_id'], $fence['lease_owner'], 'stale', 'LateQualification'); }
+                    self::fail('The completed independent attempt accepted another '.$outcome.'.');
+                } catch (\DurableWorkflow\Exception\ServerException $error) { self::assertSame(409, $error->status); }
+            }
+            self::assertSame($events, $this->history($client, $handle));
+            fwrite(STDOUT, 'Bounded remote Abandon: '.json_encode([
+                'root_request_id' => $accepted['cancellation_request']['request_id'],
+                'cleanup_deadline_at' => $accepted['cancellation_request']['cleanup_deadline_at'],
+                'original_activity_deadline_at' => $totalDeadline,
+                'callback_pids_preserved_after_parent_close' => $pids,
+                'completion' => $completed[0],
+            ], JSON_THROW_ON_ERROR)."\n");
+        } finally {
+            fclose($workflowMessages);
+            fclose($ownerMessages);
+            $this->stopWorker($workflowPid);
+            $this->stopWorker($ownerPid);
+        }
+    }
+
     private function client(?Transport $transport = null, string $namespace = 'default'): Client
     {
         return new Client($this->runtimeUrl, namespace: $namespace, token: $this->token,
@@ -825,7 +905,7 @@ final class CooperativeCancellationTest extends TestCase
     }
 
     /** @return array{int, resource} */
-    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false, int $remoteBlockSeconds = 60, bool $blockCleanup = false, bool $observeChildWait = false, bool $preparedLocal = false): array
+    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false, int $remoteBlockSeconds = 60, bool $blockCleanup = false, bool $observeChildWait = false, bool $preparedLocal = false, ?CancellationPolicy $remotePolicy = null): array
     {
         $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
         if ($sockets === false) {
@@ -907,7 +987,7 @@ final class CooperativeCancellationTest extends TestCase
                         }
                     });
                 if (!$remoteRole) {
-                    $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind) use ($queue, $preparedLocal): string {
+                    $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind) use ($queue, $preparedLocal, $remotePolicy): string {
                         try {
                             if ($kind === 'child-wait') {
                                 $context->childWorkflow('tests.php-cooperative', ['timer'], [
@@ -923,7 +1003,10 @@ final class CooperativeCancellationTest extends TestCase
                                     static fn () => $context->localActivity('tests.php-cooperative-group-work-1'),
                                 ]);
                             } elseif ($kind === 'remote') {
-                                $context->activity('tests.php-cooperative-remote');
+                                $context->activity('tests.php-cooperative-remote', [], $remotePolicy === null ? [] : [
+                                    'cancellation_policy' => $remotePolicy,
+                                    'schedule_to_close_timeout' => 60,
+                                ]);
                             } else {
                                 $context->sleep(300);
                             }
@@ -947,7 +1030,7 @@ final class CooperativeCancellationTest extends TestCase
                     $worker->registerWorkflow('tests.php-cooperative-payload', static fn (WorkflowContext $context, string $value): string => $value);
                 }
                 if ($remoteRole) {
-                    $worker->registerActivity('tests.php-cooperative-remote', function (ActivityContext $context) use ($notify, $userHeartbeat, $remoteBlockSeconds): \stdClass {
+                    $worker->registerActivity('tests.php-cooperative-remote', function (ActivityContext $context) use ($notify, $userHeartbeat, $remoteBlockSeconds, $remotePolicy): mixed {
                         file_put_contents($this->directory.'/remote-fence', json_encode([
                             'task_id' => $context->taskId, 'activity_attempt_id' => $context->activityAttemptId,
                             'lease_owner' => $context->leaseOwner,
@@ -960,7 +1043,7 @@ final class CooperativeCancellationTest extends TestCase
                             if ($userHeartbeat) { $context->heartbeat(['qualification' => 'remote-in-flight']); }
                         }
                         file_put_contents($this->directory.'/late', 'remote callback returned');
-                        return new \stdClass();
+                        return $remotePolicy === CancellationPolicy::Abandon ? 'independent-completion' : new \stdClass();
                     });
                 }
                 $worker->registerActivity('tests.php-cooperative-work', function (ActivityContext $context) use ($notify, $userHeartbeat): \stdClass {

@@ -160,6 +160,7 @@ final class CooperativeCancellationReplayTest extends TestCase
             'shielded committed call' => [static fn (WorkflowContext $context) => $context->cancellationShield(static fn () => $context->sleep(10)), [self::request(), self::delivery()]],
             'changed timer duration' => [static fn (WorkflowContext $context) => $context->sleep(20), [self::event('TimerScheduled', ['sequence' => 1, 'delay_seconds' => 10]), self::request(), self::delivery()]],
             'changed activity name' => [static fn (WorkflowContext $context) => $context->activity('different'), [self::event('ActivityScheduled', ['sequence' => 1, 'activity_type' => 'original']), self::request(), self::delivery(1, 'activity')]],
+            'changed activity policy' => [static fn (WorkflowContext $context) => $context->activity('original'), [self::event('ActivityScheduled', ['sequence' => 1, 'activity' => ['type' => 'original', 'cancellation_policy' => 'wait_cancellation_completed']]), self::request(), self::delivery(1, 'activity')]],
             'changed parallel span' => [static fn (WorkflowContext $context) => $context->all([$context->deferTimer(10)]), [self::request(), self::delivery(1, 'parallel', 2)]],
             'removed earlier call' => [static fn (WorkflowContext $context) => $context->sleep(10), [self::event('ActivityCompleted', ['sequence' => 1, 'activity_type' => 'original', 'result' => (new AvroPayloadCodec())->envelope('done')]), self::request(), self::delivery(2)]],
         ];

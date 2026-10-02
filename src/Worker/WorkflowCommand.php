@@ -63,10 +63,35 @@ final class WorkflowCommand
      */
     public static function activity(string $activityType, array $arguments, array $options = []): self
     {
-        return new self('schedule_activity', 'activity', array_merge($options, [
+        return new self('schedule_activity', 'activity', array_merge(self::canonicalRemoteActivityOptions($options), [
             'activity_type' => $activityType,
             'arguments_value' => $arguments,
         ]));
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    public static function canonicalRemoteActivityOptions(array $options): array
+    {
+        if (!array_key_exists('cancellation_policy', $options)) {
+            return $options;
+        }
+        $policy = $options['cancellation_policy'];
+        if ($policy instanceof CancellationPolicy) {
+            $policy = $policy->value;
+        }
+        if (!is_string($policy) || CancellationPolicy::tryFrom($policy) === null) {
+            throw new InvalidArgumentException('Remote activity cancellation_policy must be a supported policy.');
+        }
+        if ($policy === CancellationPolicy::Abandon->value
+            && (!is_int($options['schedule_to_close_timeout'] ?? null) || $options['schedule_to_close_timeout'] < 1)) {
+            throw new InvalidArgumentException('Remote activity Abandon requires a finite positive schedule_to_close_timeout.');
+        }
+        $options['cancellation_policy'] = $policy;
+
+        return $options;
     }
 
     public static function timer(int $seconds): self
