@@ -8,6 +8,7 @@ use Closure;
 use DateTimeImmutable;
 use DurableWorkflow\Client;
 use DurableWorkflow\Exception\InvalidLocalActivityReport;
+use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Transport\RequestBudget;
 use Throwable;
 
@@ -51,7 +52,9 @@ final class PreparedLocalActivityRunner
                 $callback,
                 function (array $progress): array {
                     $started = hrtime(true) / 1e9;
-                    $reply = $this->operation('heartbeat', ['progress' => $progress]);
+                    // ActivityContext::heartbeat authors details, matching remote activities.
+                    // Native's progress object reserves its own message/counter fields.
+                    $reply = $this->operation('heartbeat', ['progress' => $progress === [] ? [] : ['details' => $progress]]);
                     $this->attempt->validateHeartbeat($reply);
                     $this->acceptControl($reply, $started);
 
@@ -167,7 +170,9 @@ final class PreparedLocalActivityRunner
             return $this->client->preparedLocalActivityOperation($this->attempt->taskId, $this->attempt->leaseOwner,
                 $this->attempt->workflowTaskAttempt, $operation, $body, $this->attempt->attemptId, $this->budget());
         } catch (Throwable $error) {
-            throw new WorkflowClaimAborted('Prepared local '.$operation.' could not prove its original authority.', previous: $error);
+            $reason = $error instanceof ServerException ? $error->reason : null;
+            throw new WorkflowClaimAborted('Prepared local '.$operation.' could not prove its original authority'
+                .($reason === null ? '.' : ': '.$reason.'.'), previous: $error);
         }
     }
 

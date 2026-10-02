@@ -87,7 +87,7 @@ final class PreparedLocalActivityWorkerTest extends TestCase
         $worker->tick(0);
         self::assertSame([], $transport->failures);
         self::assertCount(1, $transport->operations('heartbeat'));
-        self::assertSame(['phase' => 'real application progress'], $transport->operations('heartbeat')[0]['body']['progress']);
+        self::assertSame(['details' => ['phase' => 'real application progress']], $transport->operations('heartbeat')[0]['body']['progress']);
         self::assertGreaterThan(1, count($transport->operations('control')));
         foreach ($transport->operations('control') as $request) {
             self::assertSame(true, $request['body']['renew_lease']);

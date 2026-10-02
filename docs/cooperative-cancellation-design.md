@@ -141,6 +141,8 @@ endpoint and canonical receipt. Only a fully validated acknowledgment advances
 the SDK's heartbeat deadline. Start, total and original cleanup deadlines remain
 fixed. A heartbeat cannot revive an elapsed attempt or exceed the original root
 budget. Rejected replies leave the previous acknowledged deadline intact.
+`ActivityContext::heartbeat()` carries application details in Native's bounded
+progress-details object, using the same shape as remote activity heartbeats.
 
 Prepared argument, recovery, checkpoint and result uploads can use a single
 draining fallback after an explicitly unadmitted response. The fallback requires

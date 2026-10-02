@@ -506,7 +506,7 @@ jobs:
             sdk-php/cooperative-scenarios.log
             sdk-php/cooperative-source-provenance.json
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 90
       - name: Emit bounded Server diagnostics
         if: failure()
         working-directory: sdk-php

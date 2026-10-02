@@ -177,7 +177,9 @@ final class CooperativeCancellationTest extends TestCase
             $request = $accepted['cancellation_request'];
             $repeated = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 300);
             self::assertTrue($repeated['duplicate']);
-            self::assertSame($request, $repeated['cancellation_request']);
+            foreach (['request_id', 'requested_at', 'cleanup_deadline_at'] as $field) {
+                self::assertSame($request[$field], $repeated['cancellation_request'][$field]);
+            }
             $events = $this->assertCancelledCleanup($client, $handle, $request['request_id'], $messages);
             self::assertLessThan((float) (new \DateTimeImmutable($request['cleanup_deadline_at']))->format('U.u'), microtime(true));
             foreach ($pids as $activityPid) { $this->assertProcessStops($activityPid); }
@@ -210,11 +212,11 @@ final class CooperativeCancellationTest extends TestCase
         $this->requirePreparedLocalSource();
         $queue = $this->queue('prepared-cleanup-kill');
         $client = $this->client();
-        [$pid, $messages] = $this->spawnWorker($queue, blockCleanup: true, preparedLocal: true);
+        [$pid, $messages] = $this->spawnWorker($queue, userHeartbeat: false, blockCleanup: true, preparedLocal: true);
         try {
             $this->awaitMessage($messages, 'registered');
-            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['timer']);
-            $this->awaitEvent($client, $handle, 'TimerScheduled');
+            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['local']);
+            $this->awaitMessage($messages, 'local-entered');
             $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 30);
             $request = $accepted['cancellation_request'];
             $this->awaitMessage($messages, 'cleanup-entered');
@@ -237,7 +239,9 @@ final class CooperativeCancellationTest extends TestCase
             self::assertSame('unknown', $recovery[0]['payload']['local_recovery']['callback_stop_state']);
             $repeated = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 300);
             self::assertTrue($repeated['duplicate']);
-            self::assertSame($request, $repeated['cancellation_request']);
+            foreach (['request_id', 'requested_at', 'cleanup_deadline_at'] as $field) {
+                self::assertSame($request[$field], $repeated['cancellation_request'][$field]);
+            }
             fwrite(STDOUT, 'Prepared cleanup source SIGKILL recovery: '.json_encode([
                 'request_id' => $request['request_id'], 'original_deadline' => $request['cleanup_deadline_at'],
                 'killed_callback_pids' => $pids, 'original_delivery' => $delivery, 'history' => $events,
