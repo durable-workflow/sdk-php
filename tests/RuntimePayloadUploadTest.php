@@ -223,6 +223,14 @@ final class RuntimePayloadUploadTest extends TestCase
         yield 'activity result' => ['POST', '/worker/activity-tasks/task/complete', ['result' => $value], true];
         yield 'activity failure' => ['POST', '/worker/activity-tasks/task/fail', ['failure' => ['details' => $value]], true];
         yield 'workflow failure' => ['POST', '/worker/workflow-tasks/task/complete', ['commands' => [['type' => 'fail_workflow', 'exception' => ['details' => $value]]]], true];
+        foreach (['prepare', 'recover'] as $operation) {
+            yield 'prepared local '.$operation => ['POST', '/worker/workflow-tasks/task/local-activities/'.$operation,
+                ['descriptor' => ['arguments' => $value]], true];
+        }
+        yield 'prepared local outcome' => ['POST', '/worker/workflow-tasks/task/local-activities/attempt/outcome',
+            ['report' => ['result' => $value]], true];
+        yield 'prepared local prefix' => ['POST', '/worker/workflow-tasks/task/local-activities/checkpoint',
+            ['commands' => [['type' => 'record_side_effect', 'result' => $value]]], true];
     }
 
     public function testExternalQueryResultDoesNotSendDuplicateRawProjection(): void

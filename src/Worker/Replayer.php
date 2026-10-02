@@ -41,6 +41,7 @@ final class Replayer
         string $taskQueue,
         array $task = [],
         ?callable $localActivityExecutor = null,
+        bool $prepareLocalActivities = false,
     ): ReplayResult {
         $observation = $task['cancellation_request'] ?? null;
         if ($observation !== null && (!is_array($observation) || array_is_list($observation))) {
@@ -464,6 +465,11 @@ final class Replayer
                     return $this->result($commands, $context);
                 }
                 if ($step['resolved'] === false) {
+                    if ($prepareLocalActivities && $suspended->type === 'record_local_activity') {
+                        return $this->result($commands, $context, preparedLocalActivity: new PreparedLocalActivityCall(
+                            $suspended, $step['sequence'], PreparedLocalActivityCall::needsRecovery($history, $step['sequence']),
+                        ));
+                    }
                     return $this->result($commands, $context);
                 }
                 if ($step['failure'] instanceof Throwable) {
@@ -494,6 +500,11 @@ final class Replayer
                 $suspended = $suspended->resolveSideEffect();
             }
             if ($suspended->type === 'record_local_activity') {
+                if ($prepareLocalActivities) {
+                    return $this->result($commands, $context, preparedLocalActivity: new PreparedLocalActivityCall(
+                        $suspended, $nextSequence, false,
+                    ));
+                }
                 try {
                     $suspended = $suspended->resolveLocalActivity($this->codec);
                 } catch (Throwable $failure) {
@@ -626,6 +637,7 @@ final class Replayer
         ?Throwable $terminalFailure = null,
         ?int $failedActivitySequence = null,
         ?string $failedActivityExecutionId = null,
+        ?PreparedLocalActivityCall $preparedLocalActivity = null,
     ): ReplayResult {
         return new ReplayResult(
             $commands,
@@ -634,6 +646,7 @@ final class Replayer
             $terminalFailure,
             $failedActivitySequence,
             $failedActivityExecutionId,
+            preparedLocalActivity: $preparedLocalActivity,
         );
     }
 

@@ -256,7 +256,7 @@ final class RuntimePayloadUploads
     {
         $paths = [];
         if ($worker) {
-            if (preg_match('~\A/worker/workflow-tasks/[^/]+/complete\z~', $path)) {
+            if (preg_match('~\A/worker/workflow-tasks/[^/]+/(?:complete|local-activities/checkpoint)\z~', $path)) {
                 foreach ($body['commands'] ?? [] as $index => $command) {
                     if (!is_array($command)) {
                         continue;
@@ -271,6 +271,10 @@ final class RuntimePayloadUploads
                         $paths[] = ['commands', $index, 'workflow_stream', 'items', $item, 'payload'];
                     }
                 }
+            } elseif (preg_match('~\A/worker/workflow-tasks/[^/]+/local-activities/(?:prepare|recover)\z~', $path)) {
+                $paths[] = ['descriptor', 'arguments'];
+            } elseif (preg_match('~\A/worker/workflow-tasks/[^/]+/local-activities/[^/]+/outcome\z~', $path)) {
+                $paths[] = ['report', 'result'];
             } elseif (preg_match('~\A/worker/activity-tasks/[^/]+/(complete|fail)\z~', $path, $match)) {
                 $paths[] = $match[1] === 'complete' ? ['result'] : ['failure', 'details'];
             } elseif (preg_match('~\A/worker/query-tasks/[^/]+/complete\z~', $path)) {

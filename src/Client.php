@@ -1298,6 +1298,39 @@ final class Client implements WorkflowClientInterface
     }
 
     /**
+     * @internal Candidate protocol 1.20 prepared-local operations. Callers must
+     * validate the operation's receipt before executing or resuming application code.
+     * @param array<string, mixed> $body
+     * @return array<string, mixed>
+     */
+    public function preparedLocalActivityOperation(
+        string $taskId,
+        string $leaseOwner,
+        int $attempt,
+        string $operation,
+        array $body = [],
+        ?string $activityAttemptId = null,
+    ): array {
+        if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion)) {
+            throw new \LogicException('Prepared local activity operations require worker protocol 1.20.');
+        }
+        $admission = in_array($operation, ['checkpoint', 'prepare', 'recover'], true);
+        $existing = in_array($operation, ['control', 'outcome', 'acknowledge-cancellation'], true);
+        if ((!$admission && !$existing) || trim($taskId) === '' || trim($leaseOwner) === '' || $attempt < 1
+            || ($admission && $activityAttemptId !== null)
+            || ($existing && ($activityAttemptId === null || trim($activityAttemptId) === ''))
+            || array_key_exists('lease_owner', $body) || array_key_exists('workflow_task_attempt', $body)) {
+            throw new InvalidArgumentException('Invalid prepared local operation or claim authority.');
+        }
+        $path = '/worker/workflow-tasks/'.$this->segment($taskId).'/local-activities/'
+            .($activityAttemptId === null ? '' : $this->segment($activityAttemptId).'/').$operation;
+
+        return $this->worker('POST', $path, [
+            'lease_owner' => $leaseOwner, 'workflow_task_attempt' => $attempt, ...$body,
+        ]);
+    }
+
+    /**
      * Commit delivery on the current claim without releasing or renewing its lease.
      * Reload canonical history before throwing cancellation into workflow code,
      * including when the delivery acknowledgment is lost or malformed.
