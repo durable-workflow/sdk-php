@@ -153,11 +153,6 @@ final class CooperativeActivityExecutor
         } finally {
             // Closing this socket also works when the owner is killed with SIGKILL.
             fclose($owner);
-            if ($callbackPid !== null) {
-                // Also fence the callback group if its relay cannot make progress.
-                @posix_kill(-$callbackPid, SIGKILL);
-                @posix_kill($callbackPid, SIGKILL);
-            }
             $joined = $this->reap($relayPid);
             if ($callbackPid !== null) {
                 if (!$joined || posix_kill($callbackPid, 0)) {
@@ -336,6 +331,9 @@ final class CooperativeActivityExecutor
                 $result = pcntl_waitpid($pid, $status, WNOHANG);
                 if ($result === $pid || ($result === -1 && !posix_kill($pid, 0))) {
                     return true;
+                }
+                if ($result === -1 && pcntl_get_last_error() !== PCNTL_EINTR) {
+                    return false;
                 }
                 usleep(10000);
             } while (hrtime(true) / 1e9 < $deadline);

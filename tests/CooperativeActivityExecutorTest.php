@@ -150,6 +150,41 @@ final class CooperativeActivityExecutorTest extends TestCase
         self::assertFalse($stopped);
     }
 
+    public function testRelayDeathAloneCannotConfirmAStillRunningCallback(): void
+    {
+        $entered = $this->directory.'/entered';
+        $pids = [];
+        $stopped = false;
+        try {
+            $this->executor()->execute(
+                static function () use ($entered): never {
+                    file_put_contents($entered, 'entered');
+                    sleep(60);
+                    throw new RuntimeException('Test callback escaped its stop fixture.');
+                },
+                static fn (): mixed => null,
+                static function () use ($entered, &$pids): void {
+                    if (is_file($entered)) {
+                        self::assertTrue(posix_kill($pids[0], SIGKILL));
+                        throw new CooperativeCancellationObserved('Stop after relay death.');
+                    }
+                },
+                static function (int $relay, int $callback) use (&$pids): void { $pids = [$relay, $callback]; },
+                static function () use (&$stopped): void { $stopped = true; },
+            );
+            self::fail('A live callback was reported as stopped.');
+        } catch (WorkflowClaimAborted $error) {
+            self::assertSame('Activity callback stop could not be confirmed.', $error->getMessage());
+            self::assertFalse($stopped);
+            self::assertTrue(posix_kill($pids[1], 0));
+        } finally {
+            // This injected relay failure leaves the known fixture callback alive.
+            if (isset($pids[1])) { posix_kill(-$pids[1], SIGKILL); }
+        }
+        $this->assertProcessStops($pids[0]);
+        $this->assertProcessStops($pids[1]);
+    }
+
     public function testReturnedUnencodableValueNeedsOwnerPermissionBeforeEncoding(): void
     {
         $returned = $this->directory.'/returned';
