@@ -50,8 +50,9 @@ final class CooperativeActivityExecutor
      * @param Closure(array<array-key, mixed>): mixed $heartbeat
      * @param Closure(bool): void $check Force an actual lease check at publication boundaries.
      * @param (Closure(int, int): void)|null $started Receives relay and callback PIDs.
+     * @param (Closure(): void)|null $stopped Called only after the callback is gone and the relay is joined.
      */
-    public function execute(Closure $callback, Closure $heartbeat, Closure $check, ?Closure $started = null): mixed
+    public function execute(Closure $callback, Closure $heartbeat, Closure $check, ?Closure $started = null, ?Closure $stopped = null): mixed
     {
         if (!self::available()) {
             throw new InvalidArgumentException('Cooperative activity execution requires Unix CLI with pcntl and posix.');
@@ -71,6 +72,7 @@ final class CooperativeActivityExecutor
         fclose($relay);
         stream_set_blocking($owner, false);
         $buffer = '';
+        $callbackPid = null;
         $nextCheck = hrtime(true) / 1e9;
         try {
             while (true) {
@@ -105,7 +107,8 @@ final class CooperativeActivityExecutor
                         if (!is_int($message['callback_pid'] ?? null) || $message['callback_pid'] < 1) {
                             throw new WorkflowClaimAborted('Activity IPC returned an invalid callback PID.');
                         }
-                        $started?->__invoke($relayPid, $message['callback_pid']);
+                        $callbackPid = $message['callback_pid'];
+                        $started?->__invoke($relayPid, $callbackPid);
                         $check(true);
                         $this->writeFrame($owner, ['kind' => 'begin']);
                         break;
@@ -150,7 +153,18 @@ final class CooperativeActivityExecutor
         } finally {
             // Closing this socket also works when the owner is killed with SIGKILL.
             fclose($owner);
-            $this->reap($relayPid);
+            if ($callbackPid !== null) {
+                // Also fence the callback group if its relay cannot make progress.
+                @posix_kill(-$callbackPid, SIGKILL);
+                @posix_kill($callbackPid, SIGKILL);
+            }
+            $joined = $this->reap($relayPid);
+            if ($callbackPid !== null) {
+                if (!$joined || posix_kill($callbackPid, 0)) {
+                    throw new WorkflowClaimAborted('Activity callback stop could not be confirmed.');
+                }
+                $stopped?->__invoke();
+            }
         }
     }
 
@@ -314,18 +328,21 @@ final class CooperativeActivityExecutor
         throw new \LogicException('Could not stop the forked activity process.');
     }
 
-    private function reap(int $pid): void
+    private function reap(int $pid): bool
     {
-        $deadline = hrtime(true) / 1e9 + 2;
-        do {
-            $result = pcntl_waitpid($pid, $status, WNOHANG);
-            if ($result === $pid || $result === -1) {
-                return;
-            }
-            usleep(10000);
-        } while (hrtime(true) / 1e9 < $deadline);
-        @posix_kill($pid, SIGKILL);
-        pcntl_waitpid($pid, $status, WNOHANG);
+        for ($phase = 0; $phase < 2; ++$phase) {
+            $deadline = hrtime(true) / 1e9 + 2;
+            do {
+                $result = pcntl_waitpid($pid, $status, WNOHANG);
+                if ($result === $pid || ($result === -1 && !posix_kill($pid, 0))) {
+                    return true;
+                }
+                usleep(10000);
+            } while (hrtime(true) / 1e9 < $deadline);
+            @posix_kill($pid, SIGKILL);
+        }
+
+        return false;
     }
 
     /** @return array{resource, resource} */

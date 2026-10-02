@@ -49,6 +49,10 @@ final class CooperativeCancellationTest extends TestCase
         $protocol = $this->client()->clusterInfo()->raw['worker_protocol'];
         self::assertSame('1.20', $protocol['version']);
         self::assertTrue($protocol['server_capabilities']['cooperative_cancellation']);
+        if (getenv('DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION') === '1') {
+            self::assertTrue($protocol['server_capabilities']['activity_cancellation_acknowledgement'] ?? false,
+                'The exact Native source overlay must support remote stop receipts.');
+        }
     }
 
     protected function tearDown(): void
@@ -359,6 +363,43 @@ final class CooperativeCancellationTest extends TestCase
                 && ($event['payload']['activity_type'] ?? null) === 'tests.php-cooperative-remote');
             self::assertSame($userHeartbeat, count($heartbeats) > 0, 'Owner checks must not manufacture user progress.');
             $fence = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
+            if (getenv('DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION') === '1') {
+                $until = microtime(true) + 5;
+                do {
+                    $status = $client->activityTaskStatus($fence['task_id'], $fence['activity_attempt_id'], $fence['lease_owner']);
+                    if (($status['cancellation_acknowledgement']['callback_state'] ?? null) === 'stopped') { break; }
+                    usleep(50_000);
+                } while (microtime(true) < $until);
+                $receipt = $status['cancellation_acknowledgement'];
+                self::assertSame('stopped', $receipt['callback_state'], 'A stopped callback must leave its durable receipt.');
+                self::assertSame($accepted['cancellation_request']['request_id'], $receipt['request_id']);
+                self::assertSame($receipt['request_id'], $receipt['root_request_id']);
+                self::assertSame($accepted['cancellation_request']['cleanup_deadline_at'], $receipt['cleanup_deadline_at']);
+                self::assertFalse($receipt['received_after_deadline']);
+                self::assertFalse($status['heartbeat_recorded']);
+                self::assertFalse($status['can_continue']);
+                $duplicate = $client->acknowledgeActivityCancellation($fence['task_id'], $fence['activity_attempt_id'],
+                    $fence['lease_owner'], $receipt['request_id']);
+                self::assertTrue($duplicate['acknowledged']);
+                self::assertTrue($duplicate['duplicate']);
+                self::assertSame($receipt['history_event_id'], $duplicate['history_event_id']);
+                self::assertFalse($duplicate['heartbeat_recorded']);
+                $events = $this->history($client, $handle);
+                $acks = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityCancellationAcknowledged'));
+                self::assertCount(1, $acks);
+                self::assertSame('stopped', $acks[0]['payload']['callback_state']);
+                self::assertSame('activity_worker', $acks[0]['payload']['evidence_source']);
+                self::assertSame($fence['activity_attempt_id'], $acks[0]['payload']['activity_attempt_id']);
+                self::assertSame($receipt['request_id'], $acks[0]['payload']['request_id']);
+                self::assertSame($receipt['root_request_id'], $acks[0]['payload']['root_request_id']);
+                self::assertSame($receipt['cleanup_deadline_at'], $acks[0]['payload']['cleanup_deadline_at']);
+                self::assertSame($receipt['cancellation_history_event_id'], $acks[0]['payload']['cancellation_history_event_id']);
+                fwrite(STDOUT, 'Remote stop receipt: '.json_encode([
+                    'user_heartbeat' => $userHeartbeat, 'cold_workflow' => $coldWorkflow,
+                    'processes_stopped' => $pids, 'claim' => $fence, 'status' => $status,
+                    'duplicate' => $duplicate, 'history' => $acks,
+                ], JSON_THROW_ON_ERROR)."\n");
+            }
             foreach (['complete', 'fail'] as $outcome) {
                 try {
                     if ($outcome === 'complete') { $client->completeActivityTask($fence['task_id'], $fence['activity_attempt_id'], $fence['lease_owner'], 'late'); }

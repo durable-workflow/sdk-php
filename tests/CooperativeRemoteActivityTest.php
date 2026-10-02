@@ -49,6 +49,10 @@ final class CooperativeRemoteActivityTest extends TestCase
         $late = $this->directory.'/late';
         $pids = [];
         $worker = $this->worker($transport, $pids);
+        $transport->onAcknowledgment = static function () use (&$pids): void {
+            self::assertCount(2, $pids);
+            foreach ($pids as $pid) { self::assertFalse(posix_kill($pid, 0), 'Receipt cannot precede actual process stop.'); }
+        };
         $transport->observe = static function (RemoteOwnerTransport $transport) use ($entered, $reason, $worker): void {
             if (!is_file($entered)) { return; }
             if ($reason === 'backend') { throw new TransportException('status unavailable'); }
@@ -57,6 +61,7 @@ final class CooperativeRemoteActivityTest extends TestCase
             $transport->status['can_continue'] = false;
             $transport->status['cancel_requested'] = $reason === 'cancel';
             $transport->status['reason'] = $reason === 'cancel' ? 'activity_cancelled' : 'lease_expired';
+            if ($reason === 'cancel') { $transport->status['cancellation_acknowledgement'] = RemoteOwnerTransport::receipt(); }
         };
         $worker->registerActivity('remote', static function (ActivityContext $context) use ($entered, $late): string {
             file_put_contents($entered, 'entered');
@@ -72,6 +77,8 @@ final class CooperativeRemoteActivityTest extends TestCase
         self::assertSame([], $transport->completions);
         self::assertSame([], $transport->failures);
         self::assertSame([], $transport->userHeartbeats);
+        self::assertSame($reason === 'cancel' ? [['activity_attempt_id' => 'attempt', 'lease_owner' => 'owner', 'request_id' => 'local-request']] : [],
+            $transport->acknowledgments);
         self::assertCount(2, $pids);
         foreach ($pids as $pid) { self::assertFalse(posix_kill($pid, 0)); }
         foreach ($transport->requests as $request) {
@@ -79,6 +86,77 @@ final class CooperativeRemoteActivityTest extends TestCase
             self::assertGreaterThanOrEqual(1, $request['timeout']);
             self::assertLessThanOrEqual(5, $request['timeout']);
         }
+    }
+
+    public static function invalidReceiptProvider(): array
+    {
+        return [
+            ['absent', null], ['request_id', ''], ['root_request_id', []],
+            ['cleanup_deadline_at', null], ['cancellation_history_event_id', false],
+            ['callback_state', 'fenced'], ['cancel_requested', false], ['heartbeat_recorded', true],
+        ];
+    }
+
+    #[DataProvider('invalidReceiptProvider')]
+    public function testStopWithoutCanonicalCancellationCannotProduceReceipt(string $field, mixed $value): void
+    {
+        $transport = new RemoteOwnerTransport();
+        $entered = $this->directory.'/entered';
+        $pids = [];
+        $worker = $this->worker($transport, $pids);
+        $transport->observe = static function (RemoteOwnerTransport $transport) use ($entered, $field, $value): void {
+            if (!is_file($entered)) { return; }
+            $transport->status['can_continue'] = false;
+            $transport->status['cancel_requested'] = true;
+            $receipt = RemoteOwnerTransport::receipt();
+            if (in_array($field, ['cancel_requested', 'heartbeat_recorded'], true)) { $transport->status[$field] = $value; }
+            else { $receipt[$field] = $value; }
+            $transport->status['cancellation_acknowledgement'] = $field === 'absent' ? null : $receipt;
+        };
+        $worker->registerActivity('remote', static function (ActivityContext $context) use ($entered): never {
+            file_put_contents($entered, 'entered');
+            sleep(60);
+            throw new RuntimeException('Late callback must not run.');
+        });
+        $worker->tick(0);
+        self::assertSame([], $transport->acknowledgments);
+        self::assertSame([], $transport->completions);
+        self::assertSame([], $transport->failures);
+        foreach ($pids as $pid) { self::assertFalse(posix_kill($pid, 0)); }
+    }
+
+    public static function failedAcknowledgmentProvider(): array
+    {
+        return [['transport'], ['refused'], ['mismatched'], ['unproved']];
+    }
+
+    #[DataProvider('failedAcknowledgmentProvider')]
+    public function testUnprovedReceiptCannotBeReportedAsAcceptedOrPublishAResult(string $failure): void
+    {
+        $transport = new RemoteOwnerTransport();
+        $transport->acknowledgmentFailure = $failure;
+        $entered = $this->directory.'/entered';
+        $pids = [];
+        $worker = $this->worker($transport, $pids);
+        $transport->observe = static function (RemoteOwnerTransport $transport) use ($entered): void {
+            if (!is_file($entered)) { return; }
+            $transport->status['can_continue'] = false;
+            $transport->status['cancel_requested'] = true;
+            $transport->status['cancellation_acknowledgement'] = RemoteOwnerTransport::receipt();
+        };
+        $worker->registerActivity('remote', static function (ActivityContext $context) use ($entered): never {
+            file_put_contents($entered, 'entered');
+            sleep(60);
+            throw new RuntimeException('Late callback must not run.');
+        });
+        $worker->tick(0);
+        self::assertCount(1, $transport->acknowledgments);
+        self::assertNotContains('worker.activity_cancellation_acknowledged', $transport->events);
+        self::assertContains('worker.activity_cancellation_acknowledgement_failed', $transport->events);
+        self::assertSame([], $transport->completions);
+        self::assertSame([], $transport->failures);
+        self::assertSame([], $transport->userHeartbeats);
+        foreach ($pids as $pid) { self::assertFalse(posix_kill($pid, 0)); }
     }
 
     public function testUserProgressIsProxiedAndResultTypesSurvive(): void
@@ -175,6 +253,7 @@ final class CooperativeRemoteActivityTest extends TestCase
         return new Worker(new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.20'),
             'queue', workerId: 'owner', enableCooperativeCancellation: true,
             diagnosticListener: static function (string $event, array $context) use (&$pids, $transport): void {
+                $transport->events[] = $event;
                 if ($event === 'worker.activity_process_started') { $pids = [$context['relay_pid'], $context['callback_pid']]; }
                 if ($event === 'worker.claim_aborted') { $transport->aborts[] = $context['message']; }
             });
@@ -193,10 +272,22 @@ final class RemoteOwnerTransport implements BoundedTransport
     public array $userHeartbeats = [];
     public array $requests = [];
     public array $aborts = [];
+    public array $acknowledgments = [];
+    public array $events = [];
+    public ?string $acknowledgmentFailure = null;
+    public ?\Closure $onAcknowledgment = null;
     public ?\Closure $observe = null;
     private bool $polled = false;
 
     public function supportsBoundedRequests(): bool { return true; }
+
+    public static function receipt(): array
+    {
+        return ['request_id' => 'local-request', 'root_request_id' => 'root-request',
+            'cleanup_deadline_at' => '2100-01-01T00:00:00Z', 'cancellation_history_event_id' => 'cancel-history',
+            'callback_state' => 'unknown', 'history_event_id' => null, 'acknowledged_at' => null,
+            'received_after_deadline' => null];
+    }
 
     public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
     {
@@ -226,6 +317,16 @@ final class RemoteOwnerTransport implements BoundedTransport
             return array_replace($this->status, ['heartbeat_recorded' => true]);
         }
         if (str_ends_with($uri, '/worker/heartbeat')) { return ['heartbeat_recorded' => true]; }
+        if (str_ends_with($uri, '/acknowledge-cancellation')) {
+            $this->onAcknowledgment?->__invoke();
+            $this->acknowledgments[] = $body;
+            if ($this->acknowledgmentFailure === 'transport') { throw new TransportException('Receipt transport unavailable.'); }
+            return ['task_id' => 'task', 'activity_attempt_id' => 'attempt', 'lease_owner' => 'owner',
+                'request_id' => $this->acknowledgmentFailure === 'mismatched' ? 'other' : $body['request_id'],
+                'acknowledged' => $this->acknowledgmentFailure !== 'refused', 'duplicate' => false,
+                'reason' => $this->acknowledgmentFailure === 'refused' ? 'stale' : null,
+                'history_event_id' => $this->acknowledgmentFailure === 'unproved' ? null : 'stop-history', 'heartbeat_recorded' => false];
+        }
         if (str_ends_with($uri, '/complete')) { $this->completions[] = $body; return ['recorded' => true]; }
         if (str_ends_with($uri, '/fail')) { $this->failures[] = $body; return ['recorded' => true]; }
         throw new RuntimeException('Unexpected remote worker request: '.$uri);

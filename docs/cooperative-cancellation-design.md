@@ -98,6 +98,29 @@ qualify a published Native artifact. Without the input, the existing connected
 lane uses the Server's pinned backend and skips only these candidate child cases.
 Actions retains source provenance, scenario histories and JUnit results.
 
+## Remote callback-stop receipts
+
+The PHP process supervisor reports a remote callback stop only after its callback
+process is gone and its relay has been joined. A failed stop confirmation refuses
+publication. Cancellation observation remains independent of application
+heartbeats. After joining, the worker reads the original claim's canonical
+cancellation receipt and calls `Client::acknowledgeActivityCancellation()` with
+that attempt, owner and local request ID. The Server retains the root identity
+and original deadline. A duplicate returns the original receipt.
+
+An expired lease, lost connection, worker shutdown, terminal legacy cancellation
+or malformed observation cannot supply a cooperative stop receipt. A callback
+that never started is not reported as joined. A refused or lost receipt produces
+a diagnostic and does not regain result authority. Stop acknowledgment describes
+the supervised callback, not reversal of external side effects. Other processes
+and downstream systems need their own cooperating cancellation and fencing.
+
+The source-bound connected lane checks the receipt for blocked callbacks with
+and without application heartbeats, live and replacement workflow workers,
+duplicate acknowledgment and stale completion/failure refusal. Local callback
+receipts and durable activity waiting policies still need their separate
+workflow claim authority and qualification.
+
 ## Remaining qualification
 
 Portable activity operation policies, nested scopes and deterministic

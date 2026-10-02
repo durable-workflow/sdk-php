@@ -148,6 +148,42 @@ final class CooperativeCancellationClientTest extends TestCase
         self::assertSame('https://server.example/api/workflows/order%2F1/runs/run%2F1/terminate', $transport->requests[1]['uri']);
     }
 
+    public function testStoppedActivityReceiptUsesWorkerCredentialsAndOriginalIdentity(): void
+    {
+        $ack = ['acknowledged' => true, 'history_event_id' => 'original-receipt'];
+        $transport = new FakeTransport([$ack, [...$ack, 'duplicate' => true]]);
+        $client = new Client('https://server.example', transport: $transport, namespace: 'tenant-a',
+            controlToken: 'control', workerToken: 'worker', workerProtocolVersion: '1.20');
+        self::assertSame($ack, $client->acknowledgeActivityCancellation('task/1', 'attempt/1', 'owner', 'original-request'));
+        $duplicate = $client->acknowledgeActivityCancellation('task/1', 'attempt/1', 'owner', 'original-request');
+        self::assertSame($ack['history_event_id'], $duplicate['history_event_id']);
+        foreach ($transport->requests as $request) {
+            self::assertSame('https://server.example/api/worker/activity-tasks/task%2F1/acknowledge-cancellation', $request['uri']);
+            self::assertSame('Bearer worker', $request['headers']['Authorization']);
+            self::assertSame('tenant-a', $request['headers']['X-Namespace']);
+            self::assertSame('1.20', $request['headers']['X-Durable-Workflow-Protocol-Version']);
+            self::assertSame(['activity_attempt_id' => 'attempt/1', 'lease_owner' => 'owner', 'request_id' => 'original-request'], $request['body']);
+        }
+    }
+
+    public static function invalidActivityReceiptRequestProvider(): array
+    {
+        return [['1.19', 'task', 'attempt', 'owner', 'request'], ['1.20', '', 'attempt', 'owner', 'request'],
+            ['1.20', 'task', '', 'owner', 'request'], ['1.20', 'task', 'attempt', ' ', 'request'],
+            ['1.20', 'task', 'attempt', 'owner', ''], ['1.20', 'task', 'attempt', 'owner', str_repeat('x', 256)]];
+    }
+
+    #[DataProvider('invalidActivityReceiptRequestProvider')]
+    public function testActivityReceiptRejectsLegacyProtocolOrMissingIdentityBeforeSending(string $protocol, string $task, string $attempt, string $owner, string $request): void
+    {
+        $transport = new FakeTransport();
+        $client = new Client('https://server.example', transport: $transport, workerProtocolVersion: $protocol);
+        try {
+            $client->acknowledgeActivityCancellation($task, $attempt, $owner, $request);
+            self::fail('Expected acknowledgment refusal.');
+        } catch (InvalidArgumentException) { self::assertSame([], $transport->requests); }
+    }
+
     private static function discovery(mixed $version = '1.20', mixed $capability = true): array
     {
         return ['worker_protocol' => ['version' => $version, 'server_capabilities' => ['cooperative_cancellation' => $capability]]];

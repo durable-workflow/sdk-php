@@ -1443,6 +1443,7 @@ final class Worker
         $attemptId = (string) ($task['activity_attempt_id'] ?? $task['attempt_id'] ?? '');
         $leaseOwner = (string) ($task['lease_owner'] ?? $this->workerId);
         $activityType = (string) ($task['activity_type'] ?? '');
+        $callbackStopped = false;
         try {
             $this->trackWorkerSessionFromTask($task);
             $handler = $this->activities[$activityType] ?? null;
@@ -1503,6 +1504,7 @@ final class Worker
                             'relay_pid' => $relay, 'callback_pid' => $callback, 'local' => false,
                         ]);
                     },
+                    static function () use (&$callbackStopped): void { $callbackStopped = true; },
                 );
                 $check(true);
             } else {
@@ -1519,6 +1521,9 @@ final class Worker
             );
         } catch (Throwable $exception) {
             if ($this->enableCooperativeCancellation && $exception instanceof WorkflowClaimAborted) {
+                if ($callbackStopped) {
+                    $this->acknowledgeStoppedRemoteActivity($taskId, $attemptId, $leaseOwner);
+                }
                 $this->diagnostic('worker.claim_aborted', [
                     'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
                     'task_kind' => 'activity', 'message' => $exception->getMessage(),
@@ -1541,6 +1546,55 @@ final class Worker
                     );
                 },
             );
+        }
+    }
+
+    /** This is reached only after the isolated callback stopped and its relay joined. */
+    private function acknowledgeStoppedRemoteActivity(string $taskId, string $attemptId, string $leaseOwner): void
+    {
+        try {
+            $status = $this->client->activityTaskStatus($taskId, $attemptId, $leaseOwner);
+            $receipt = $status['cancellation_acknowledgement'] ?? null;
+            if (($status['task_id'] ?? null) !== $taskId
+                || ($status['activity_attempt_id'] ?? null) !== $attemptId
+                || ($status['lease_owner'] ?? null) !== $leaseOwner
+                || ($status['can_continue'] ?? null) !== false
+                || ($status['cancel_requested'] ?? null) !== true
+                || ($status['heartbeat_recorded'] ?? null) !== false
+                || !is_array($receipt)
+                || !in_array($receipt['callback_state'] ?? null, ['unknown', 'stopped'], true)) {
+                return;
+            }
+            foreach (['request_id', 'root_request_id', 'cleanup_deadline_at', 'cancellation_history_event_id'] as $field) {
+                if (!is_string($receipt[$field] ?? null) || trim($receipt[$field]) === '') {
+                    return;
+                }
+            }
+            $reply = $this->client->acknowledgeActivityCancellation($taskId, $attemptId, $leaseOwner, $receipt['request_id']);
+            if (($reply['task_id'] ?? null) !== $taskId
+                || ($reply['activity_attempt_id'] ?? null) !== $attemptId
+                || ($reply['lease_owner'] ?? null) !== $leaseOwner
+                || ($reply['request_id'] ?? null) !== $receipt['request_id']
+                || ($reply['acknowledged'] ?? null) !== true
+                || !is_bool($reply['duplicate'] ?? null)
+                || ($reply['reason'] ?? null) !== null
+                || ($reply['heartbeat_recorded'] ?? null) !== false
+                || !is_string($reply['history_event_id'] ?? null) || $reply['history_event_id'] === '') {
+                throw new WorkflowClaimAborted('Remote callback-stop acknowledgment was not proved by the Server.');
+            }
+            $this->diagnostic('worker.activity_cancellation_acknowledged', [
+                'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
+                'request_id' => $receipt['request_id'], 'root_request_id' => $receipt['root_request_id'],
+                'cleanup_deadline_at' => $receipt['cleanup_deadline_at'],
+                'history_event_id' => $reply['history_event_id'], 'duplicate' => $reply['duplicate'],
+            ]);
+        } catch (Throwable $error) {
+            // Stop is complete even if storage or transport cannot retain its report.
+            // Never turn a receipt refusal into publication or a fresh cleanup budget.
+            $this->diagnostic('worker.activity_cancellation_acknowledgement_failed', [
+                'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
+                'message' => $error->getMessage(),
+            ], 'warning');
         }
     }
 

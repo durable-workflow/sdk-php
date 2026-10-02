@@ -1539,6 +1539,31 @@ final class Client implements WorkflowClientInterface
         ]);
     }
 
+    /** Report an original owner's stopped and joined remote callback. Never renews task authority.
+     * @return array<string, mixed>
+     */
+    public function acknowledgeActivityCancellation(
+        string $taskId,
+        string $activityAttemptId,
+        string $leaseOwner,
+        string $requestId,
+    ): array {
+        if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion)) {
+            throw new InvalidArgumentException('Activity cancellation acknowledgment requires worker protocol 1.20.');
+        }
+        foreach ([$taskId, $activityAttemptId, $leaseOwner, $requestId] as $identity) {
+            if (trim($identity) === '' || strlen($identity) > 255) {
+                throw new InvalidArgumentException('Activity cancellation acknowledgment requires bounded, nonempty claim and request identities.');
+            }
+        }
+
+        return $this->worker('POST', '/worker/activity-tasks/'.$this->segment($taskId).'/acknowledge-cancellation', [
+            'activity_attempt_id' => $activityAttemptId,
+            'lease_owner' => $leaseOwner,
+            'request_id' => $requestId,
+        ]);
+    }
+
     /**
      * Return the complete query-task poll response, including typed refusal and protocol metadata.
      *

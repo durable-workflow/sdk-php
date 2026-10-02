@@ -10,6 +10,7 @@ use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Worker\ActivityExecutionFailure;
 use DurableWorkflow\Worker\CooperativeActivityExecutor;
 use DurableWorkflow\Worker\CooperativeCancellationObserved;
+use DurableWorkflow\Worker\WorkflowClaimAborted;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Throwable;
@@ -44,6 +45,7 @@ final class CooperativeActivityExecutorTest extends TestCase
         $checks = 0;
         $pids = [];
         $heartbeats = [];
+        $stopped = false;
         $result = $this->executor()->execute(
             static function (Closure $heartbeat): array {
                 $reply = $heartbeat(['bytes' => AvroBinaryValue::fromBytes("\xFF\x00"), 'progress' => 1]);
@@ -63,7 +65,12 @@ final class CooperativeActivityExecutorTest extends TestCase
             static function (int $relay, int $callback) use (&$pids): void {
                 $pids = [$relay, $callback];
             },
+            static function () use (&$pids, &$stopped): void {
+                foreach ($pids as $pid) { self::assertFalse(posix_kill($pid, 0)); }
+                $stopped = true;
+            },
         );
+        self::assertTrue($stopped);
         self::assertIsArray($result);
         self::assertNotSame($ownerPid, $result['pid']);
         self::assertSame($pids[1], $result['pid']);
@@ -85,6 +92,7 @@ final class CooperativeActivityExecutorTest extends TestCase
         $entered = $this->directory.'/entered';
         $late = $this->directory.'/late';
         $pids = [];
+        $stopped = false;
         $startedAt = microtime(true);
         try {
             $this->executor()->execute(
@@ -106,12 +114,17 @@ final class CooperativeActivityExecutorTest extends TestCase
                 static function (int $relay, int $callback) use (&$pids): void {
                     $pids = [$relay, $callback];
                 },
+                static function () use (&$pids, &$stopped): void {
+                    foreach ($pids as $pid) { self::assertFalse(posix_kill($pid, 0)); }
+                    $stopped = true;
+                },
             );
             self::fail('The blocked callback produced an accepted result.');
         } catch (CooperativeCancellationObserved $error) {
             self::assertSame('original request observed', $error->getMessage());
         }
         self::assertLessThan(2, microtime(true) - $startedAt);
+        self::assertTrue($stopped);
         self::assertFileDoesNotExist($late);
         $this->assertProcessStops($pids[0]);
         $this->assertProcessStops($pids[1]);
@@ -120,6 +133,21 @@ final class CooperativeActivityExecutorTest extends TestCase
             static fn (array $details): mixed => null,
             static function (): void {},
         ));
+    }
+
+    public function testRefusalBeforeCallbackStartCannotReportAJoinedCallback(): void
+    {
+        $stopped = false;
+        try {
+            $this->executor()->execute(
+                static fn (): string => 'unsafe',
+                static fn (): mixed => null,
+                static function (): never { throw new WorkflowClaimAborted('Already fenced.'); },
+                stopped: static function () use (&$stopped): void { $stopped = true; },
+            );
+            self::fail('Expected refused callback.');
+        } catch (WorkflowClaimAborted $error) { self::assertSame('Already fenced.', $error->getMessage()); }
+        self::assertFalse($stopped);
     }
 
     public function testReturnedUnencodableValueNeedsOwnerPermissionBeforeEncoding(): void
