@@ -2,6 +2,8 @@
 name = "dw-polyglot-cancellation-activity"
 version = "0.0.0"
 edition = "2021"
+rust-version = "1.86"
+resolver = "3"
 publish = false
 
 [dependencies]

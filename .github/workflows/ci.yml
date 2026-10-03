@@ -549,7 +549,7 @@ jobs:
           python -m pip freeze > sdk-php/polyglot-package-provenance.txt
           printf '\n[patch.crates-io]\ndurable-workflow = { path = "../../../../sdk-rust" }\n' \
             >> sdk-php/tests/Integration/polyglot-rust/Cargo.toml
-          cargo build --manifest-path sdk-php/tests/Integration/polyglot-rust/Cargo.toml --message-format=json \
+          cargo build --locked --manifest-path sdk-php/tests/Integration/polyglot-rust/Cargo.toml --message-format=json \
             > sdk-php/polyglot-build.json
           binary="$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "dw-polyglot-cancellation-activity") | .executable // empty' sdk-php/polyglot-build.json)"
           test -x "$binary"
