@@ -77,7 +77,9 @@ final class CancellationScopeReplayAdmissionTest extends TestCase
         $value = ['cancellation_scope_id' => 'application-value', 'activity' => ['cancellation_scope_id' => 'application-value']];
         $history = [['event_type' => 'SideEffectRecorded', 'payload' => ['sequence' => 1, 'result' => $codec->envelope($value)]]];
         $result = (new Replayer($codec))->replay(static fn (WorkflowContext $context): mixed =>
-            $context->sideEffect(static fn (): never => throw new \LogicException('Recorded application value must replay.')),
+            $context->sideEffect(static function (): never {
+                throw new \LogicException('Recorded application value must replay.');
+            }),
             $history, [], 'php-workers');
         self::assertSame($value, $codec->decodeEnvelope($result->commands[0]['result']));
     }
