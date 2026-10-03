@@ -1,0 +1,80 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "prepared-local-group-cold-replay",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.prepared-local-group", "input": []},
+  "history": [
+    {
+      "id": "first-scheduled",
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1, "activity_type": "golden.first", "execution_mode": "local",
+        "parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0,
+        "parallel_group_path": [{
+          "parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity",
+          "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0
+        }]
+      }
+    },
+    {
+      "id": "second-scheduled",
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 2, "activity_type": "golden.second", "execution_mode": "local",
+        "parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1,
+        "parallel_group_path": [{
+          "parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity",
+          "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1
+        }]
+      }
+    },
+    {
+      "id": "first-completed",
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1, "activity_type": "golden.first", "execution_mode": "local",
+        "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwoUaGVsbG8sIEFkYQ=="},
+        "parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0,
+        "parallel_group_path": [{
+          "parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity",
+          "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0
+        }]
+      }
+    },
+    {
+      "id": "second-started",
+      "event_type": "ActivityStarted",
+      "payload": {
+        "sequence": 2, "activity_type": "golden.second", "execution_mode": "local",
+        "activity_execution_id": "second-execution", "activity_attempt_id": "second-attempt",
+        "parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1,
+        "parallel_group_path": [{
+          "parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity",
+          "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1
+        }]
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [{
+      "type": "prepare_local_activity_group", "base_sequence": 1, "size": 2, "committed": true,
+      "local_activities": [{
+        "sequence": 2, "recover": true,
+        "local_activity": {
+          "type": "record_local_activity", "activity_type": "golden.second", "execution_mode": "local",
+          "arguments": [], "payload_codec": "avro",
+          "parallel_group_path": [{
+            "parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 1
+          }]
+        }
+      }]
+    }]
+  }
+}

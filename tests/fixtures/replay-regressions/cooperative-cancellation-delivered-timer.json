@@ -1,0 +1,25 @@
+{
+    "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+    "fixture_schema": "durable-workflow.replay-regression/v1",
+    "id": "cooperative-cancellation-delivered-timer",
+    "protocol_version": "1.20",
+    "bindings": ["php"],
+    "workflow": {"type": "golden.timer", "input": [1]},
+    "history": [
+        {"event_type": "StartAccepted", "payload": {}},
+        {"event_type": "WorkflowStarted", "payload": {}},
+        {
+            "event_type": "CooperativeCancellationRequested",
+            "recorded_at": "2026-10-01T00:00:00Z",
+            "payload": {"workflow_run_id": "regression-inline", "workflow_command_id": "request-1", "cleanup_deadline_at": "2026-10-01T00:01:00Z"}
+        },
+        {
+            "event_type": "CooperativeCancellationDelivered",
+            "payload": {"workflow_run_id": "regression-inline", "workflow_command_id": "request-1", "sequence": 1, "call_kind": "timer", "sequence_span": 1}
+        }
+    ],
+    "workflow_tasks": [{"workflow_id": "regression-workflow", "run_id": "regression-inline"}],
+    "expected": {
+        "workflow_tasks": [{"command_sequence": [{"type": "fail_workflow", "message": "Workflow cancellation was requested.", "exception_type": "DurableWorkflow\\Exception\\WorkflowCancelled"}]}]
+    }
+}

@@ -5,3 +5,6 @@
 /.phpunit.result.cache
 /coverage.xml
 /composer.lock
+/polyglot-evidence/
+/polyglot-build.json
+/polyglot-package-provenance.txt

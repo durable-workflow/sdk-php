@@ -9,8 +9,10 @@ use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use Closure;
+use DateTimeImmutable;
 use Fiber;
 use LogicException;
+use WeakReference;
 
 /** Straight-line deterministic operations available while a workflow Fiber is replayed. */
 final class WorkflowContext
@@ -32,6 +34,14 @@ final class WorkflowContext
 
     private int $workflowStreamCommandOrdinal = 0;
 
+    private int $cancellationShieldDepth = 0;
+
+    private ?string $deliveredCancellationRequestId = null;
+
+    private ?CancellationContext $deliveredCancellationContext = null;
+
+    private ?CancellationReplayClock $cancellationReplayClock = null;
+
     /** @var list<list<DeferredWorkflowOperation|ParallelWorkflowCommand>> */
     private array $captureFrames = [];
 
@@ -47,6 +57,7 @@ final class WorkflowContext
     /**
      * @param list<array<string, mixed>> $history
      * @param Fiber<mixed, mixed, mixed, mixed>|null $execution
+     * @param list<string> $localActivityCancellationPolicies
      */
     public function __construct(
         public readonly string $workflowId,
@@ -57,6 +68,9 @@ final class WorkflowContext
         ?Fiber $execution = null,
         private readonly ?string $workflowCommandId = null,
         private readonly ?Closure $localActivityExecutor = null,
+        private readonly bool $prepareLocalActivities = false,
+        private readonly bool $prepareLocalActivityGroups = false,
+        private readonly array $localActivityCancellationPolicies = [],
     ) {
         $this->execution = $execution;
         $this->loadMessageStreamMessages();
@@ -204,6 +218,11 @@ final class WorkflowContext
     public function localActivity(string $activityType, array $arguments = [], array $options = []): mixed
     {
         $this->assertActiveFiber();
+        if ($this->prepareLocalActivities && $this->isCapturing() && !$this->prepareLocalActivityGroups) {
+            throw new WorkflowClaimAborted(
+                'prepared_local_parallel_admission_unavailable: the installed prepared-local contract cannot atomically admit this group.',
+            );
+        }
         if ($this->localActivityExecutor === null) {
             throw new LogicException('This worker explicitly refuses local activity execution.');
         }
@@ -213,12 +232,27 @@ final class WorkflowContext
             }
         }
 
-        return $this->suspend(WorkflowCommand::localActivity(
+        $command = WorkflowCommand::localActivity(
             $activityType,
             $arguments,
             $options,
             $this->localActivityExecutor,
-        ));
+            prepared: $this->prepareLocalActivities,
+        );
+        if (array_key_exists('cancellation_policy', $command->attributes)
+            && !in_array($command->attributes['cancellation_policy'], $this->localActivityCancellationPolicies, true)) {
+            throw new WorkflowClaimAborted('prepared_local_activity_cancellation_policy_not_supported: requested '.$command->attributes['cancellation_policy']
+                .', installed policies '.($this->localActivityCancellationPolicies === [] ? 'none' : implode(', ', $this->localActivityCancellationPolicies))
+                .'. A negotiated original claim requires prepared_local_activity_cancellation_policies.');
+        }
+        if ($this->prepareLocalActivities && $this->isCapturing()) {
+            $operation = new DeferredWorkflowOperation($command);
+            $this->capture($operation);
+
+            return $operation;
+        }
+
+        return $this->suspend($command);
     }
 
     /** Create an isolated deterministic saga for activity compensation. */
@@ -485,14 +519,78 @@ final class WorkflowContext
 
     public function isCancellationRequested(): bool
     {
-        return $this->cancellationRequested;
+        return $this->cancellationRequested || $this->deliveredCancellationRequestId !== null;
     }
 
     public function throwIfCancellationRequested(): void
     {
-        if ($this->cancellationRequested) {
-            throw new WorkflowCancelled('Workflow cancellation was requested.');
+        if ($this->isCancellationRequested() && !$this->isCancellationShielded()) {
+            throw new WorkflowCancelled(
+                'Workflow cancellation was requested.', requestId: $this->deliveredCancellationRequestId,
+                context: $this->deliveredCancellationContext,
+            );
         }
+    }
+
+    /** The original context becomes visible at its committed authored boundary. */
+    public function cancellationContext(): ?CancellationContext
+    {
+        return $this->deliveredCancellationContext;
+    }
+
+    /**
+     * Permit deterministic cleanup without delivering the same request again.
+     * Server still owns the original cleanup deadline and task lease.
+     *
+     * @template TResult
+     * @param callable(): TResult $cleanup
+     * @return TResult
+     */
+    public function cancellationShield(callable $cleanup): mixed
+    {
+        $this->assertActiveFiber();
+        ++$this->cancellationShieldDepth;
+        try {
+            return $cleanup();
+        } finally {
+            --$this->cancellationShieldDepth;
+        }
+    }
+
+    /** @internal Replay checks shielding at the authored cancellation boundary. */
+    public function isCancellationShielded(): bool
+    {
+        return $this->cancellationShieldDepth > 0;
+    }
+
+    /** @internal Only a committed delivery marker authorizes this state change. */
+    public function deliveredCancellation(string $requestId, ?CancellationContext $context = null): WorkflowCancelled
+    {
+        if ($context !== null) {
+            $reference = WeakReference::create($this);
+            $context = $context->withReplayClock(static function () use ($reference): DateTimeImmutable {
+                $workflow = $reference->get();
+                if (!$workflow instanceof self) {
+                    throw new LogicException('Cancellation remaining() requires an active workflow.');
+                }
+                $workflow->assertActiveFiber();
+
+                return ($workflow->cancellationReplayClock ??= new CancellationReplayClock())->time();
+            });
+        }
+        $this->deliveredCancellationRequestId = $requestId;
+        $this->deliveredCancellationContext = $context;
+
+        return new WorkflowCancelled('Workflow cancellation was requested.', requestId: $requestId, context: $context);
+    }
+
+    /**
+     * @internal
+     * @param array<string, mixed>|null $event
+     */
+    public function observeCancellationReplayTime(?array $event): void
+    {
+        ($this->cancellationReplayClock ??= new CancellationReplayClock())->observe($event);
     }
 
     /** @return list<list<mixed>> */

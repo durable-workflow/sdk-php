@@ -1,0 +1,15 @@
+# Source qualification only. The image retains its published Composer authority.
+# The exact candidate checkout replaces Native at runtime through a readonly mount.
+services:
+  bootstrap:
+    volumes:
+      - ../workflow-package:/app/vendor/durable-workflow/workflow:ro
+  server:
+    volumes:
+      - ../workflow-package:/app/vendor/durable-workflow/workflow:ro
+  worker:
+    volumes:
+      - ../workflow-package:/app/vendor/durable-workflow/workflow:ro
+  repair:
+    volumes:
+      - ../workflow-package:/app/vendor/durable-workflow/workflow:ro

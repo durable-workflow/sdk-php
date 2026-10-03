@@ -12,6 +12,15 @@ final class Version
     public const MESSAGE_STREAMS_MINIMUM_WORKER_PROTOCOL = '1.15';
     public const DURABLE_SELECTION_MINIMUM_WORKER_PROTOCOL = '1.19';
     public const PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL = '1.18';
+    public const COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL = '1.20';
+
+    public static function supportsCooperativeCancellation(string $workerProtocol = self::WORKER_PROTOCOL): bool
+    {
+        [$major, $minor] = explode('.', self::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL);
+
+        return preg_match('/\A(\d+)\.(\d+)\z/', $workerProtocol, $parts) === 1
+            && (int) $parts[1] === (int) $major && (int) $parts[2] >= (int) $minor;
+    }
 
     public static function supportsMessageStreams(string $workerProtocol = self::WORKER_PROTOCOL): bool
     {

@@ -20,6 +20,25 @@ use Psr\Http\Message\ResponseInterface;
 
 final class ControlPlaneParityTest extends TestCase
 {
+    public function testWorkflowHistoryCanReadTheNextPageWithoutChangingDefaultRequests(): void
+    {
+        $transport = new FakeTransport([
+            ['events' => [['sequence' => 100]], 'next_page_token' => 'cursor/+'],
+            ['events' => [['sequence' => 101]], 'next_page_token' => null],
+        ]);
+        $client = new Client('https://server.example', transport: $transport, namespace: 'orders');
+        $first = $client->workflowHistory('order/a', 'run/b');
+        $next = $client->workflowHistory('order/a', 'run/b', pageSize: 100, nextPageToken: $first['next_page_token']);
+
+        self::assertSame(100, $first['events'][0]['sequence']);
+        self::assertSame(101, $next['events'][0]['sequence']);
+        self::assertNull($next['next_page_token']);
+        self::assertSame('https://server.example/api/workflows/order%2Fa/runs/run%2Fb/history', $transport->requests[0]['uri']);
+        self::assertSame('https://server.example/api/workflows/order%2Fa/runs/run%2Fb/history?page_size=100&next_page_token=cursor%2F%2B', $transport->requests[1]['uri']);
+        self::assertSame('orders', $transport->requests[1]['headers']['X-Namespace']);
+        self::assertSame('2', $transport->requests[1]['headers']['X-Durable-Workflow-Control-Plane-Version']);
+    }
+
     public function testNamespaceSelectionAndWorkflowVisibilityAreImmutableAndTyped(): void
     {
         $transport = new FakeTransport([[
