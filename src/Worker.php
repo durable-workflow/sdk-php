@@ -93,6 +93,8 @@ final class Worker
     private ?CancellationRequest $claimCancellation = null;
     private ?string $claimDeliveredCancellationId = null;
     private bool $preparedLocalActivityGroupsSupported = false;
+    /** @var list<string> */
+    private array $preparedLocalActivityCancellationPolicies = [];
     /** @var (\Closure(string, array<string, mixed>): void)|null */
     private readonly ?\Closure $diagnosticListener;
 
@@ -474,6 +476,10 @@ final class Worker
             }
             $this->preparedLocalActivityGroupsSupported = $this->enablePreparedLocalActivities
                 && ($protocol['server_capabilities']['prepared_local_activity_groups'] ?? null) === true;
+            $policies = $protocol['server_capabilities']['prepared_local_activity_cancellation_policies'] ?? null;
+            $this->preparedLocalActivityCancellationPolicies = $this->enablePreparedLocalActivities && is_array($policies)
+                ? array_values(array_filter(['try_cancel', 'wait_cancellation_completed'], static fn (string $policy): bool => in_array($policy, $policies, true)))
+                : [];
         }
         $attempt = 0;
         while (!$this->shutdownRequested) {
@@ -499,11 +505,19 @@ final class Worker
                         ...($this->enableCooperativeCancellation ? ['cooperative_cancellation'] : []),
                         ...($this->enablePreparedLocalActivities ? ['prepared_local_activities'] : []),
                         ...($this->preparedLocalActivityGroupsSupported ? ['prepared_local_activity_groups'] : []),
+                        ...($this->preparedLocalActivityCancellationPolicies !== [] ? ['prepared_local_activity_cancellation_policies'] : []),
                     ],
                     buildId: $this->buildId,
                     workflowCommandContracts: $this->workflowCommandContracts(),
                     capabilityManifest: [
                         ...CapabilityManifest::portableWorkerAffinity(),
+                        ...($this->preparedLocalActivityCancellationPolicies !== [] ? [
+                            'prepared_local_activity_cancellation_policies' => [
+                                'supported' => true,
+                                'minimum_protocol_version' => Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL,
+                                'implementation' => 'prepared_local_policy_admission_and_replay',
+                            ],
+                        ] : []),
                         ...($this->enablePreparedLocalActivities ? [
                             'prepared_local_activities' => [
                                 'supported' => true,
@@ -1311,7 +1325,8 @@ final class Worker
                 $replay = $this->replayer->replay($handler, $history, $input, $this->taskQueue, $task,
                     fn (string $activityType, array $arguments, array $options): array => $this->executeLocalActivity(
                         $task, $activityType, $arguments, $options,
-                    ), $this->enablePreparedLocalActivities, $this->preparedLocalActivityGroupsSupported);
+                    ), $this->enablePreparedLocalActivities, $this->preparedLocalActivityGroupsSupported,
+                    $this->preparedLocalActivityCancellationPolicies);
             } catch (CooperativeCancellationObserved) {
                 if (++$cancellationPasses > 3) {
                     throw new WorkflowClaimAborted('Cancellation replay did not converge on its canonical delivery.');

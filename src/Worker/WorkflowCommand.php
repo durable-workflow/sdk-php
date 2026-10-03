@@ -184,6 +184,7 @@ final class WorkflowCommand
         array $arguments,
         array $options,
         callable $executor,
+        bool $prepared = false,
     ): self {
         $activityType = trim($activityType);
         if ($activityType === '') {
@@ -197,7 +198,7 @@ final class WorkflowCommand
                 'activity_type' => $activityType,
                 'arguments_value' => $arguments,
                 'execution_mode' => 'local',
-                ...self::canonicalLocalActivityOptions($options),
+                ...self::canonicalLocalActivityOptions($options, $prepared),
             ],
             localActivity: Closure::fromCallable($executor),
         );
@@ -209,18 +210,27 @@ final class WorkflowCommand
      * @param array<string, mixed> $options
      * @return array<string, mixed>
      */
-    public static function canonicalLocalActivityOptions(array $options): array
+    public static function canonicalLocalActivityOptions(array $options, bool $prepared = false): array
     {
         foreach ($options as $field => $_value) {
             if (in_array($field, self::LOCAL_ACTIVITY_IDENTITY_FIELDS, true)) {
                 throw new InvalidArgumentException("Local activity option {$field} is fixed by the SDK and cannot be overridden.");
             }
-            if (!in_array($field, self::LOCAL_ACTIVITY_OPTION_FIELDS, true)) {
+            if (!in_array($field, self::LOCAL_ACTIVITY_OPTION_FIELDS, true)
+                && !($prepared && $field === 'cancellation_policy')) {
                 throw new InvalidArgumentException("Local activities do not accept the {$field} option.");
             }
         }
 
         $canonical = [];
+        if (array_key_exists('cancellation_policy', $options)) {
+            $policy = $options['cancellation_policy'];
+            $policy = $policy instanceof CancellationPolicy ? $policy->value : $policy;
+            if (!in_array($policy, [CancellationPolicy::TryCancel->value, CancellationPolicy::WaitCancellationCompleted->value], true)) {
+                throw new InvalidArgumentException('Prepared local cancellation_policy must be TryCancel or WaitCancellationCompleted. Local Abandon and null are not supported.');
+            }
+            $canonical['cancellation_policy'] = $policy;
+        }
         if (array_key_exists('retry_policy', $options) && $options['retry_policy'] !== null) {
             $canonicalRetryPolicy = self::canonicalLocalActivityRetryPolicy($options['retry_policy']);
             if ($canonicalRetryPolicy !== []) {

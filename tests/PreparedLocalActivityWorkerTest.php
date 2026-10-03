@@ -12,8 +12,10 @@ use DurableWorkflow\Transport\BoundedTransport;
 use DurableWorkflow\Transport\RequestBudget;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\CancellationPolicy;
 use DurableWorkflow\Worker\CooperativeActivityExecutor;
 use DurableWorkflow\Worker\WorkflowContext;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class PreparedLocalActivityWorkerTest extends TestCase
@@ -93,6 +95,44 @@ final class PreparedLocalActivityWorkerTest extends TestCase
             self::assertSame(true, $request['body']['renew_lease']);
             self::assertArrayNotHasKey('progress', $request['body']);
         }
+    }
+
+    public function test_discovered_policy_is_advertised_and_prepared_before_the_real_callback(): void
+    {
+        $transport = new PreparedWorkerTransport();
+        $transport->stopAuxiliaryPolls = true;
+        $transport->serverCancellationPolicies = ['try_cancel', 'wait_cancellation_completed'];
+        $worker = $this->worker($transport);
+        $worker->registerWorkflow('prepared', static fn (WorkflowContext $context) =>
+            $context->localActivity('effect', [], ['cancellation_policy' => CancellationPolicy::WaitCancellationCompleted]));
+        $called = $this->directory.'/called';
+        $worker->registerActivity('effect', static function (ActivityContext $context) use ($called): string { file_put_contents($called, 'admitted'); return 'done'; });
+        $worker->run(0);
+        self::assertSame([], $transport->failures);
+        self::assertSame('admitted', file_get_contents($called));
+        self::assertContains('prepared_local_activity_cancellation_policies', $transport->registration['capabilities']);
+        self::assertSame('wait_cancellation_completed', $transport->operations('prepare')[0]['body']['descriptor']['cancellation_policy']);
+        self::assertSame(['complete_workflow'], array_column($transport->completions[0]['commands'], 'type'));
+    }
+
+    public function test_undiscovered_policy_refuses_a_group_without_checkpoint_writes_or_callbacks(): void
+    {
+        $transport = new PreparedWorkerTransport();
+        $transport->stopAuxiliaryPolls = true;
+        $transport->serverGroupCapability = true;
+        $worker = $this->worker($transport);
+        $worker->registerWorkflow('prepared', static fn (WorkflowContext $context) => $context->parallel([
+            static fn () => $context->localActivity('effect'),
+            static fn () => $context->localActivity('effect', [], ['cancellation_policy' => 'wait_cancellation_completed']),
+        ]));
+        $called = $this->directory.'/unsafe';
+        $worker->registerActivity('effect', static function (ActivityContext $context) use ($called): string { file_put_contents($called, 'unsafe'); return 'unsafe'; });
+        $worker->run(0);
+        self::assertFileDoesNotExist($called);
+        self::assertSame([], $transport->localRequests);
+        self::assertNotContains('prepared_local_activity_cancellation_policies', $transport->registration['capabilities']);
+        self::assertCount(1, $transport->failures);
+        self::assertStringContainsString('prepared_local_activity_cancellation_policy_not_supported', $transport->failures[0]['failure']['message']);
     }
 
     public function test_managed_group_prepares_every_member_then_runs_callbacks_concurrently(): void
@@ -266,15 +306,23 @@ final class PreparedLocalActivityWorkerTest extends TestCase
         self::assertStringContainsString('missing a declared member', $transport->failures[0]['failure']['message']);
     }
 
-    public function test_blocked_callback_stops_without_heartbeats_then_shielded_cleanup_keeps_root_budget(): void
+    public static function cancellationPolicies(): array
+    {
+        return [[null], [CancellationPolicy::TryCancel], [CancellationPolicy::WaitCancellationCompleted]];
+    }
+
+    #[DataProvider('cancellationPolicies')]
+    public function test_blocked_callback_stops_without_heartbeats_then_shielded_cleanup_keeps_root_budget(?CancellationPolicy $policy): void
     {
         $transport = new PreparedWorkerTransport();
+        $transport->stopAuxiliaryPolls = true;
+        $transport->serverCancellationPolicies = $policy === null ? [] : ['try_cancel', 'wait_cancellation_completed'];
         $transport->cancelAfterFile = $this->directory.'/entered';
         $worker = $this->worker($transport);
         $late = $this->directory.'/late';
         $cleaned = $this->directory.'/cleaned';
-        $worker->registerWorkflow('prepared', static function (WorkflowContext $context): void {
-            try { $context->localActivity('effect'); }
+        $worker->registerWorkflow('prepared', static function (WorkflowContext $context) use ($policy): void {
+            try { $context->localActivity('effect', [], $policy === null ? [] : ['cancellation_policy' => $policy]); }
             catch (WorkflowCancelled $cancelled) {
                 $context->cancellationShield(static fn () => $context->localActivity('cleanup'));
                 throw $cancelled;
@@ -291,7 +339,7 @@ final class PreparedLocalActivityWorkerTest extends TestCase
             return 'cleaned';
         });
         $started = hrtime(true) / 1e9;
-        $worker->tick(0);
+        $worker->run(0);
         self::assertLessThan(3, hrtime(true) / 1e9 - $started);
         self::assertSame([], $transport->failures);
         self::assertFileDoesNotExist($late);
@@ -467,6 +515,7 @@ final class PreparedWorkerTransport implements BoundedTransport
     public bool $loseOutcomeAck = false;
     public bool $stopAuxiliaryPolls = false;
     public bool $serverPreparedCapability = true;
+    public array $serverCancellationPolicies = [];
     public bool $serverGroupCapability = false;
     public bool $malformedGroupReceipt = false;
     public bool $cancelOnSecondPreparation = false;
@@ -506,7 +555,8 @@ final class PreparedWorkerTransport implements BoundedTransport
         if (str_ends_with($uri, '/cluster/info')) {
             return ['worker_protocol' => ['version' => '1.20', 'server_capabilities' => [
                 'cooperative_cancellation' => true, 'prepared_local_activities' => $this->serverPreparedCapability,
-                'prepared_local_activity_groups' => $this->serverGroupCapability]]];
+                'prepared_local_activity_groups' => $this->serverGroupCapability,
+                'prepared_local_activity_cancellation_policies' => $this->serverCancellationPolicies]]];
         }
         if (str_ends_with($uri, '/worker/register')) { $this->registration = $body; return ['registered' => true]; }
         if ($method === 'DELETE' && str_ends_with($uri, '/worker/registrations/original')) {
@@ -542,6 +592,7 @@ final class PreparedWorkerTransport implements BoundedTransport
                     $sequence = $body['start_sequence'] + $offset;
                     if ($command['type'] !== 'prepare_local_activity') { throw new \RuntimeException('This worker fixture only accepts complete local groups.'); }
                     $this->scheduledMembers[$sequence] = ['sequence' => $sequence, 'activity_type' => $command['activity_type'],
+                        ...(isset($command['cancellation_policy']) ? ['cancellation_policy' => $command['cancellation_policy']] : []),
                         'execution_mode' => 'local', 'parallel_group_path' => $command['parallel_group_path'],
                         ...$command['parallel_group_path'][0], 'activity_execution_id' => 'group-execution-'.$sequence];
                     $this->event('ActivityScheduled', $this->scheduledMembers[$sequence]);
@@ -594,7 +645,8 @@ final class PreparedWorkerTransport implements BoundedTransport
                 $this->attempts[$this->attempt['activity_attempt_id']] = $this->attempt;
                 $this->attemptSequences[$this->attempt['activity_attempt_id']] = $this->sequence;
                 if (!isset($this->scheduledMembers[$this->sequence])) {
-                    $this->scheduledMembers[$this->sequence] = ['sequence' => $this->sequence, 'activity_type' => $descriptor['activity_type'], 'execution_mode' => 'local'];
+                    $this->scheduledMembers[$this->sequence] = ['sequence' => $this->sequence, 'activity_type' => $descriptor['activity_type'], 'execution_mode' => 'local',
+                        ...(isset($descriptor['cancellation_policy']) ? ['cancellation_policy' => $descriptor['cancellation_policy']] : [])];
                     $this->event('ActivityScheduled', $this->scheduledMembers[$this->sequence]);
                 }
                 $this->event('ActivityStarted', [...$this->scheduledMembers[$this->sequence], 'activity_execution_id' => $this->attempt['activity_execution_id'],

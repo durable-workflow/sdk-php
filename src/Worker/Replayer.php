@@ -33,6 +33,7 @@ final class Replayer
      * @param list<array<string, mixed>> $history
      * @param list<mixed> $input
      * @param array<string, mixed> $task
+     * @param list<string> $localActivityCancellationPolicies
      */
     public function replay(
         callable $handler,
@@ -43,9 +44,13 @@ final class Replayer
         ?callable $localActivityExecutor = null,
         bool $prepareLocalActivities = false,
         bool $prepareLocalActivityGroups = false,
+        array $localActivityCancellationPolicies = [],
     ): ReplayResult {
         if ($prepareLocalActivityGroups && !$prepareLocalActivities) {
             throw new LogicException('Prepared local groups require prepared local activity admission.');
+        }
+        if ($localActivityCancellationPolicies !== [] && !$prepareLocalActivities) {
+            throw new LogicException('Local cancellation policies require prepared local activity admission.');
         }
         $observation = $task['cancellation_request'] ?? null;
         if ($observation !== null && (!is_array($observation) || array_is_list($observation))) {
@@ -71,7 +76,7 @@ final class Replayer
         $selectionOperationIdentities = $this->selectionOperationIdentities($history);
         $completedHistory = $this->hasCompletedHistory($history);
         $context = null;
-        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, &$context): mixed {
+        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -89,6 +94,7 @@ final class Replayer
                 $localActivityExecutor === null ? null : Closure::fromCallable($localActivityExecutor),
                 $prepareLocalActivities,
                 $prepareLocalActivityGroups,
+                $localActivityCancellationPolicies,
             );
 
             try {

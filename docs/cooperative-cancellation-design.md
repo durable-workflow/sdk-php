@@ -240,10 +240,29 @@ protocol remains 1.19.
 
 ## Remaining qualification
 
-Portable local activity operation policies, nested scopes and corresponding
-Python/Rust remaining-time helpers still need completion. PHP's helper requires
-connected qualification at its current Source head. The runtime continues
-enforcing the original deadline and fencing task and activity ownership.
+Prepared local Activities can author `CancellationPolicy::TryCancel` or
+`CancellationPolicy::WaitCancellationCompleted` in `cancellation_policy` when
+the negotiated protocol 1.20 worker enables prepared local execution and runtime
+discovery lists that policy. Registration advertises
+`prepared_local_activity_cancellation_policies` for the negotiated policy path.
+The original issued claim and installed backend must support the policy.
+Descriptors preserve it through preparation, recovery and atomic groups.
+Cold replay refuses a changed policy. Omission preserves historical TryCancel.
+Legacy inline execution, local Abandon, explicit null and an undiscovered
+policy are refused before callback execution. An unsupported group starts no
+callbacks and sends no checkpoint writes.
+
+TryCancel fences publication and releases the durable await without claiming
+physical stop. WaitCancellationCompleted requires the original owner's joined
+stop receipt or canonical callback outcome before delivery can proceed. Both
+retain the original root identity and immutable deadline. Supervisors observe
+cancellation independently of application heartbeats.
+
+Connected qualification of this new local-policy consumer is pending. The
+preceding mixed Source tuple already qualifies PHP/Python/Rust remaining-time
+helpers and the mixed cleanup crash case. Nested scopes, the Python/Rust local
+policy consumers and exact published artifacts remain required. The runtime
+continues enforcing the original deadline and fencing task and activity ownership.
 
 Connected qualification must cover a PHP parent, Python child, Rust remote
 activity and PHP local activity, including callback stop without application

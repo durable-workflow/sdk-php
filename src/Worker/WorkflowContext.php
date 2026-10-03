@@ -57,6 +57,7 @@ final class WorkflowContext
     /**
      * @param list<array<string, mixed>> $history
      * @param Fiber<mixed, mixed, mixed, mixed>|null $execution
+     * @param list<string> $localActivityCancellationPolicies
      */
     public function __construct(
         public readonly string $workflowId,
@@ -69,6 +70,7 @@ final class WorkflowContext
         private readonly ?Closure $localActivityExecutor = null,
         private readonly bool $prepareLocalActivities = false,
         private readonly bool $prepareLocalActivityGroups = false,
+        private readonly array $localActivityCancellationPolicies = [],
     ) {
         $this->execution = $execution;
         $this->loadMessageStreamMessages();
@@ -235,7 +237,14 @@ final class WorkflowContext
             $arguments,
             $options,
             $this->localActivityExecutor,
+            prepared: $this->prepareLocalActivities,
         );
+        if (array_key_exists('cancellation_policy', $command->attributes)
+            && !in_array($command->attributes['cancellation_policy'], $this->localActivityCancellationPolicies, true)) {
+            throw new WorkflowClaimAborted('prepared_local_activity_cancellation_policy_not_supported: requested '.$command->attributes['cancellation_policy']
+                .', installed policies '.($this->localActivityCancellationPolicies === [] ? 'none' : implode(', ', $this->localActivityCancellationPolicies))
+                .'. A negotiated original claim requires prepared_local_activity_cancellation_policies.');
+        }
         if ($this->prepareLocalActivities && $this->isCapturing()) {
             $operation = new DeferredWorkflowOperation($command);
             $this->capture($operation);

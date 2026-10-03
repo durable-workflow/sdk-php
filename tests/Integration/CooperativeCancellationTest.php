@@ -222,12 +222,23 @@ final class CooperativeCancellationTest extends TestCase
         }
     }
 
-    public function testPreparedCleanupResumesAfterWorkerSigkillWithinOriginalThirtySeconds(): void
+    /** @return array<string, array{?CancellationPolicy}> */
+    public static function localCancellationPolicies(): array
+    {
+        return [
+            'historical_omission' => [null],
+            'try_cancel' => [CancellationPolicy::TryCancel],
+            'wait_cancellation_completed' => [CancellationPolicy::WaitCancellationCompleted],
+        ];
+    }
+
+    #[DataProvider('localCancellationPolicies')]
+    public function testPreparedCleanupResumesAfterWorkerSigkillWithinOriginalThirtySeconds(?CancellationPolicy $localPolicy): void
     {
         $this->requirePreparedLocalSource();
         $queue = $this->queue('prepared-cleanup-kill');
         $client = $this->client();
-        [$pid, $messages] = $this->spawnWorker($queue, userHeartbeat: false, blockCleanup: true, preparedLocal: true);
+        [$pid, $messages] = $this->spawnWorker($queue, userHeartbeat: false, blockCleanup: true, preparedLocal: true, localPolicy: $localPolicy);
         try {
             $this->awaitMessage($messages, 'registered');
             $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['local']);
@@ -242,13 +253,21 @@ final class CooperativeCancellationTest extends TestCase
             $pid = 0;
             foreach ($pids as $activityPid) { $this->assertProcessStops($activityPid); }
             fclose($messages);
-            [$pid, $messages] = $this->spawnWorker($queue, preparedLocal: true);
+            [$pid, $messages] = $this->spawnWorker($queue, preparedLocal: true, localPolicy: $localPolicy);
             $this->awaitMessage($messages, 'registered');
             $events = $this->assertCancelledCleanup($client, $handle, $request['request_id'], $messages);
             self::assertLessThan((float) (new \DateTimeImmutable($request['cleanup_deadline_at']))->format('U.u'), microtime(true));
             self::assertFileDoesNotExist($this->directory.'/cleanup-returned');
             $afterDelivery = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered'));
             self::assertSame([$delivery], $afterDelivery, 'Replacement changed the original canonical delivery boundary.');
+            if ($localPolicy !== null) {
+                $scheduled = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityScheduled'))[0];
+                self::assertSame($localPolicy->value, $scheduled['payload']['activity']['cancellation_policy']);
+                if ($localPolicy === CancellationPolicy::WaitCancellationCompleted) {
+                    $receipt = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityCancellationAcknowledged'))[0];
+                    self::assertLessThan($delivery['sequence'], $receipt['sequence'], 'Local Wait must prove the stop before delivery.');
+                }
+            }
             $recovery = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityRetryScheduled'));
             self::assertCount(1, $recovery);
             self::assertSame('unknown', $recovery[0]['payload']['local_recovery']['callback_stop_state']);
@@ -258,6 +277,7 @@ final class CooperativeCancellationTest extends TestCase
                 self::assertSame($request[$field], $repeated['cancellation_request'][$field]);
             }
             fwrite(STDOUT, 'Prepared cleanup source SIGKILL recovery: '.json_encode([
+                'local_cancellation_policy' => $localPolicy?->value,
                 'request_id' => $request['request_id'], 'original_deadline' => $request['cleanup_deadline_at'],
                 'killed_callback_pids' => $pids, 'original_delivery' => $delivery, 'history' => $events,
             ], JSON_THROW_ON_ERROR)."\n");
@@ -285,7 +305,7 @@ final class CooperativeCancellationTest extends TestCase
         $client = $this->client();
         $this->spawnExternalWorker('python', $queue.'-python');
         $this->spawnExternalWorker('rust', $queue.'-rust');
-        [$pid, $messages] = $this->spawnWorker($queue, userHeartbeat: false, blockCleanup: true, preparedLocal: true);
+        [$pid, $messages] = $this->spawnWorker($queue, userHeartbeat: false, blockCleanup: true, preparedLocal: true, localPolicy: CancellationPolicy::WaitCancellationCompleted);
         $parent = null;
         $child = null;
         try {
@@ -327,7 +347,7 @@ final class CooperativeCancellationTest extends TestCase
             $pid = 0;
             foreach ($cleanupPids as $activityPid) { $this->assertProcessStops($activityPid); }
             fclose($messages);
-            [$pid, $messages] = $this->spawnWorker($queue, userHeartbeat: false, preparedLocal: true);
+            [$pid, $messages] = $this->spawnWorker($queue, userHeartbeat: false, preparedLocal: true, localPolicy: CancellationPolicy::WaitCancellationCompleted);
             $this->awaitMessage($messages, 'registered');
             $events = $this->assertCancelledCleanup($client, $parent, $request['request_id'], $messages);
             self::assertSame('cancelled', strtolower((string) $child->describe()->status));
@@ -373,6 +393,10 @@ final class CooperativeCancellationTest extends TestCase
             self::assertCount(1, $localReceipt);
             self::assertSame($localGrant['activity_attempt_id'], $localReceipt[0]['payload']['activity_attempt_id']);
             self::assertSame($request['request_id'], $localReceipt[0]['payload']['root_request_id']);
+            self::assertLessThan($delivery['sequence'], $localReceipt[0]['sequence'], 'Local Wait must prove the stop before delivery.');
+            $localScheduled = array_values(array_filter($events, static fn (array $event): bool =>
+                $event['event_type'] === 'ActivityScheduled' && ($event['payload']['activity_type'] ?? null) === 'tests.php-cooperative-work'))[0];
+            self::assertSame(CancellationPolicy::WaitCancellationCompleted->value, $localScheduled['payload']['activity']['cancellation_policy']);
             self::assertSame([$delivery], array_values(array_filter($events,
                 static fn (array $event): bool => $event['event_type'] === 'CooperativeCancellationDelivered')));
             $recoveries = array_values(array_filter($events,
@@ -462,6 +486,7 @@ final class CooperativeCancellationTest extends TestCase
                 'root_request' => $request, 'child_context' => $childContext,
                 'initial_work_application_heartbeats' => false, 'cleanup_application_heartbeats' => 1,
                 'worker_sigkill_during_cleanup' => true,
+                'local_cancellation_policy' => CancellationPolicy::WaitCancellationCompleted->value,
                 'rust_callback_grant' => $grant, 'php_local_grant' => $localGrant,
                 'joined_local_pids' => $localPids, 'killed_cleanup_pids' => $cleanupPids,
                 'parent_history' => $events, 'child_history' => $childEvents,
@@ -1203,7 +1228,7 @@ final class CooperativeCancellationTest extends TestCase
     }
 
     /** @return array{int, resource} */
-    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false, int $remoteBlockSeconds = 60, bool $blockCleanup = false, bool $observeChildWait = false, bool $preparedLocal = false, ?CancellationPolicy $remotePolicy = null): array
+    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false, int $remoteBlockSeconds = 60, bool $blockCleanup = false, bool $observeChildWait = false, bool $preparedLocal = false, ?CancellationPolicy $remotePolicy = null, ?CancellationPolicy $localPolicy = null): array
     {
         $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
         if ($sockets === false) {
@@ -1286,7 +1311,7 @@ final class CooperativeCancellationTest extends TestCase
                     });
                 if (!$remoteRole) {
                     $directory = $this->directory;
-                    $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind, ?string $childQueue = null, ?string $remoteQueue = null) use ($queue, $preparedLocal, $remotePolicy, $directory): string {
+                    $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind, ?string $childQueue = null, ?string $remoteQueue = null) use ($queue, $preparedLocal, $remotePolicy, $localPolicy, $directory): string {
                         try {
                             if ($kind === 'child-wait') {
                                 $context->childWorkflow('tests.php-cooperative', ['timer'], [
@@ -1302,10 +1327,10 @@ final class CooperativeCancellationTest extends TestCase
                                         'cancellation_policy' => CancellationPolicy::WaitCancellationCompleted,
                                         'parent_close_policy' => ParentClosePolicy::RequestCancellation,
                                     ]),
-                                    static fn () => $context->localActivity('tests.php-cooperative-work'),
+                                    static fn () => $context->localActivity('tests.php-cooperative-work', [], $localPolicy === null ? [] : ['cancellation_policy' => $localPolicy]),
                                 ]);
                             } elseif ($kind === 'local') {
-                                $context->localActivity('tests.php-cooperative-work');
+                                $context->localActivity('tests.php-cooperative-work', [], $localPolicy === null ? [] : ['cancellation_policy' => $localPolicy]);
                             } elseif ($kind === 'local-group') {
                                 $context->all([
                                     static fn () => $context->localActivity('tests.php-cooperative-group-work-0'),
