@@ -343,6 +343,19 @@ final class CooperativeCancellationTest extends TestCase
             self::assertSame('cancelled', $cleaningRuns[$child->selectedRunId]['lifecycle']);
             $cleanupPids = json_decode((string) file_get_contents($this->directory.'/cleanup-processes'), true, flags: JSON_THROW_ON_ERROR);
             $firstBudget = json_decode((string) file_get_contents($this->directory.'/remaining-delivery-'.$pid.'.json'), true, flags: JSON_THROW_ON_ERROR);
+            $cleanupDiagnostics = $client->workflowDiagnostics($parent->workflowId, (string) $parent->selectedRunId);
+            $cleanupClaims = array_values(array_filter($cleanupDiagnostics['pending_workflow_tasks'],
+                static fn (array $task): bool => $task['status'] === 'leased'));
+            self::assertCount(1, $cleanupClaims, 'SIGKILL must interrupt an active cleanup claim.');
+            $cleanupClaim = $cleanupClaims[0];
+            self::assertSame($queue.'-'.$pid, $cleanupClaim['lease_owner']);
+            self::assertFalse($cleanupClaim['lease_expired']);
+            self::assertGreaterThan(microtime(true),
+                (float) (new \DateTimeImmutable($cleanupClaim['lease_expires_at']))->format('U.u'));
+            file_put_contents($this->directory.'/cleanup-claim-before-sigkill.json', json_encode([
+                'observed_at' => microtime(true), 'worker_pid' => $pid,
+                'claim' => $cleanupClaim, 'cancellation_request' => $request,
+            ], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
             $this->stopWorker($pid, true);
             $pid = 0;
             foreach ($cleanupPids as $activityPid) { $this->assertProcessStops($activityPid); }
