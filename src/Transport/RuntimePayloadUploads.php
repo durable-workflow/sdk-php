@@ -162,6 +162,8 @@ final class RuntimePayloadUploads
                         $context = $worker && ($policy['completion_context'] ?? false)
                             ? $this->completionContext($body, $path, $payloads[$index]['path'],
                                 ($policy['prepared_completion_context'] ?? false)
+                                && ($headers['X-Durable-Workflow-Protocol-Version'] ?? null) === Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL,
+                                ($policy['scope_completion_context'] ?? false)
                                 && ($headers['X-Durable-Workflow-Protocol-Version'] ?? null) === Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL) : null;
                         if ($context === null || $refusal->status !== 503
                             || ($refusal->response['reason'] ?? null) !== 'storage_pressure'
@@ -202,7 +204,7 @@ final class RuntimePayloadUploads
     }
 
     /** @param array<string, string> $headers
-     * @return array{threshold_bytes: int, max_bytes: int, request_bytes: int, timeout_seconds: int, status: string, completion_context?: bool, prepared_completion_context?: bool}
+     * @return array{threshold_bytes: int, max_bytes: int, request_bytes: int, timeout_seconds: int, status: string, completion_context?: bool, prepared_completion_context?: bool, scope_completion_context?: bool}
      */
     private function policy(array $headers, bool $worker, ?RequestBudget $budget = null): array
     {
@@ -248,7 +250,8 @@ final class RuntimePayloadUploads
                 'timeout_seconds' => $timeout, 'status' => is_string($storage['status'] ?? null) ? $storage['status'] : 'unavailable',
                 'completion_context' => ($manifest['upload']['completion_context']['schema'] ?? null) === self::COMPLETION_SCHEMA
                     && ($manifest['upload']['completion_context']['header'] ?? null) === self::COMPLETION_HEADER,
-                'prepared_completion_context' => ($manifest['upload']['completion_context']['prepared_schema'] ?? null) === self::PREPARED_COMPLETION_SCHEMA];
+                'prepared_completion_context' => ($manifest['upload']['completion_context']['prepared_schema'] ?? null) === self::PREPARED_COMPLETION_SCHEMA,
+                'scope_completion_context' => ($manifest['upload']['completion_context']['scope_schema'] ?? null) === self::PREPARED_COMPLETION_SCHEMA];
         }
         $this->policies[$key] = ['expires' => time() + 60, 'policy' => $policy];
 
@@ -262,7 +265,7 @@ final class RuntimePayloadUploads
     {
         $paths = [];
         if ($worker) {
-            if (preg_match('~\A/worker/workflow-tasks/[^/]+/(?:complete|local-activities/checkpoint(?:-group)?)\z~', $path)) {
+            if (preg_match('~\A/worker/workflow-tasks/[^/]+/(?:complete|local-activities/checkpoint(?:-group)?|cancellation-scopes/checkpoint)\z~', $path)) {
                 foreach ($body['commands'] ?? [] as $index => $command) {
                     if (!is_array($command)) {
                         continue;
@@ -308,9 +311,24 @@ final class RuntimePayloadUploads
     /** @param array<string, mixed> $body
      * @param list<int|string> $slot
      */
-    private function completionContext(array $body, string $path, array $slot, bool $prepared): ?string
+    private function completionContext(array $body, string $path, array $slot, bool $prepared, bool $scope): ?string
     {
         $path = explode('?', $path)[0];
+        if ($scope && preg_match('~\A/worker/workflow-tasks/([^/]+)/cancellation-scopes/checkpoint\z~', $path, $match)) {
+            $attempt = $body['workflow_task_attempt'] ?? null;
+            $owner = $body['lease_owner'] ?? null;
+            $task = rawurldecode($match[1]);
+            $checkpoint = $body['checkpoint_id'] ?? null;
+            if (!self::contextIdentifier($owner) || !self::contextIdentifier($task) || !self::contextIdentifier($checkpoint)
+                || !is_int($attempt) || $attempt < 1) {
+                return null;
+            }
+            $context = json_encode(['schema' => self::PREPARED_COMPLETION_SCHEMA, 'kind' => 'workflow',
+                'task_id' => $task, 'attempt' => $attempt, 'lease_owner' => $owner,
+                'operation' => 'cancellation_scope_checkpoint', 'slot' => $slot, 'checkpoint_id' => $checkpoint], JSON_THROW_ON_ERROR);
+
+            return strlen($context) <= 4096 ? $context : null;
+        }
         if ($prepared && preg_match('~\A/worker/workflow-tasks/([^/]+)/local-activities/(?:(checkpoint(?:-group)?|prepare|recover)|([^/]+)/outcome)\z~', $path, $match)) {
             $attempt = $body['workflow_task_attempt'] ?? null;
             $owner = $body['lease_owner'] ?? null;

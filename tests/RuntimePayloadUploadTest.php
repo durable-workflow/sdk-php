@@ -396,6 +396,61 @@ final class RuntimePayloadUploadTest extends TestCase
         }
     }
 
+    public function testScopePrefixDrainingRetryUsesScopeDiscoveryWithoutLocalActivityCapability(): void
+    {
+        $discovery = self::completionDiscovery();
+        $discovery['namespace']['external_payload_storage']['transport']['upload']['completion_context']['scope_schema']
+            = 'durable-workflow.v2.payload-completion-context.v2';
+        [, $http, $transport] = $this->client($discovery, workerOnly: true, drainUnbound: true);
+        $blob = (new AvroPayloadCodec())->envelope(str_repeat('before-scope', 100));
+        $body = ['lease_owner' => 'worker', 'workflow_task_attempt' => 2, 'checkpoint_id' => 'prefix-seven',
+            'start_sequence' => 7, 'commands' => [['type' => 'record_side_effect', 'result' => $blob]]];
+        $result = (new RuntimePayloadUploads($transport, 'https://runtime.test'))->request($body, 'POST',
+            '/worker/workflow-tasks/task/cancellation-scopes/checkpoint', true,
+            ['Authorization' => 'Bearer fixture-worker', 'X-Namespace' => 'tenant-one', 'X-Durable-Workflow-Protocol-Version' => '1.20']);
+        self::assertCount(3, $http->requests);
+        self::assertSame('', $http->requests[1]->getHeaderLine('X-Durable-Workflow-Payload-Completion'));
+        self::assertSame(['schema' => 'durable-workflow.v2.payload-completion-context.v2', 'kind' => 'workflow',
+            'task_id' => 'task', 'attempt' => 2, 'lease_owner' => 'worker', 'operation' => 'cancellation_scope_checkpoint',
+            'slot' => ['commands', 0, 'result'], 'checkpoint_id' => 'prefix-seven'],
+            json_decode($http->requests[2]->getHeaderLine('X-Durable-Workflow-Payload-Completion'), true, flags: JSON_THROW_ON_ERROR));
+        self::assertSame((string) $http->requests[1]->getBody(), (string) $http->requests[2]->getBody());
+        self::assertSame('Bearer fixture-worker', $http->requests[2]->getHeaderLine('Authorization'));
+        self::assertStringContainsString(RuntimePayloads::SCHEMA, json_encode($result));
+    }
+
+    #[DataProvider('unsupportedScopeCompletionProvider')]
+    public function testScopeUploadCannotInventDrainingAuthority(?string $schema, string $protocol, array $changes): void
+    {
+        $discovery = self::completionDiscovery();
+        $discovery['namespace']['external_payload_storage']['transport']['upload']['completion_context']['scope_schema'] = $schema;
+        [, $http, $transport] = $this->client($discovery, drainUnbound: true);
+        $body = array_replace(['lease_owner' => 'worker', 'workflow_task_attempt' => 2, 'checkpoint_id' => 'prefix-one',
+            'start_sequence' => 1, 'commands' => [['type' => 'record_side_effect',
+                'result' => (new AvroPayloadCodec())->envelope(str_repeat('x', 300))]]], $changes);
+        try {
+            (new RuntimePayloadUploads($transport, 'https://runtime.test'))->request($body, 'POST',
+                '/worker/workflow-tasks/task/cancellation-scopes/checkpoint', true, ['X-Durable-Workflow-Protocol-Version' => $protocol]);
+            self::fail('Unqualified scope upload must preserve the draining refusal.');
+        } catch (ExternalPayloadException $exception) {
+            self::assertSame('storage_pressure', $exception->reason);
+        }
+        self::assertCount(2, $http->requests);
+        foreach ($http->requests as $request) {
+            self::assertSame('', $request->getHeaderLine('X-Durable-Workflow-Payload-Completion'));
+        }
+    }
+
+    public static function unsupportedScopeCompletionProvider(): array
+    {
+        $schema = 'durable-workflow.v2.payload-completion-context.v2';
+        return [
+            [null, '1.20', []], ['unknown', '1.20', []], [$schema, '1.19', []],
+            [$schema, '1.20', ['checkpoint_id' => null]], [$schema, '1.20', ['workflow_task_attempt' => '2']],
+            [$schema, '1.20', ['lease_owner' => '']],
+        ];
+    }
+
     #[DataProvider('unsupportedPreparedCompletionProvider')]
     public function testPreparedUploadCannotInventDrainingAuthority(?string $schema, string $protocol, bool $worker, array $changes): void
     {
