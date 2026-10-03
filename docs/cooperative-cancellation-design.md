@@ -258,9 +258,10 @@ stop receipt or canonical callback outcome before delivery can proceed. Both
 retain the original root identity and immutable deadline. Supervisors observe
 cancellation independently of application heartbeats.
 
-Connected qualification of this new local-policy consumer is pending. The
-preceding mixed Source tuple already qualifies PHP/Python/Rust remaining-time
-helpers and the mixed cleanup crash case. Nested scopes, the Python/Rust local
+Connected Source qualification covers these local policies through cleanup
+SIGKILL, worker replacement, the same delivery boundary and the original
+30-second deadline. The mixed cascade authors local Wait and qualifies
+PHP/Python/Rust remaining-time helpers. Nested scopes, the Python/Rust local
 policy consumers and exact published artifacts remain required. The runtime
 continues enforcing the original deadline and fencing task and activity ownership.
 
