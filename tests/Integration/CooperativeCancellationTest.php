@@ -10,11 +10,15 @@ use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Exception\WorkflowTerminated;
 use DurableWorkflow\Transport\Psr18Transport;
+use DurableWorkflow\Transport\BoundedTransport;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\CancellationPolicy;
+use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\ParentClosePolicy;
+use DurableWorkflow\Worker\Replayer;
+use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkflowContext;
 use DurableWorkflow\WorkflowHandle;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -89,6 +93,96 @@ final class CooperativeCancellationTest extends TestCase
         }
         if ($cleanupFailure !== null) {
             throw $cleanupFailure;
+        }
+    }
+
+    #[DataProvider('booleanProvider')]
+    public function testCanonicalScopeOpeningReadsEveryOriginalClaimPageBeforeReturning(bool $loseOpeningReply): void
+    {
+        $queue = $this->queue('scope-opening');
+        $workerId = $queue.'-owner';
+        $transport = new class($loseOpeningReply) implements BoundedTransport {
+            private Psr18Transport $inner;
+            public array $openings = [];
+            public int $historyPages = 0;
+            private bool $lost = false;
+            public function __construct(private readonly bool $loseOpeningReply) { $this->inner = new Psr18Transport(); }
+            public function supportsBoundedRequests(): bool { return true; }
+            public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
+            {
+                return $this->inner->send($method, $uri, $headers, $body);
+            }
+            public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
+            {
+                if (str_ends_with($uri, '/history')) {
+                    $body['history_page_size'] = 1;
+                    ++$this->historyPages;
+                }
+                $response = $this->inner->sendBounded($method, $uri, $headers, $body, $timeoutSeconds);
+                if (str_ends_with($uri, '/cancellation-scopes/open')) {
+                    $this->openings[] = ['request' => $body, 'response' => $response];
+                    if ($this->loseOpeningReply && !$this->lost) {
+                        $this->lost = true;
+                        throw new TransportException('Accepted scope opening reply intentionally lost.', transientConnectionFailure: true);
+                    }
+                }
+
+                return $response;
+            }
+        };
+        $client = $this->client($transport)->withBoundedWorkerRequests();
+        $definition = new Worker($client, $queue, workerId: $workerId, enableCooperativeCancellation: true);
+        $definition->registerWorkflow('tests.php-cooperative', static fn (WorkflowContext $context): string => 'scope fixture');
+        $client->registerWorker($workerId, $queue, ['tests.php-cooperative'], [],
+            capabilities: ['durable_history_replay', 'cooperative_cancellation', 'worker_sessions', 'sticky_execution'],
+            workflowCommandContracts: $definition->contracts()['workflow_commands'], capabilityManifest: [
+                ...CapabilityManifest::portableWorkerAffinity(),
+                'cooperative_cancellation' => ['supported' => true, 'minimum_protocol_version' => '1.20',
+                    'implementation' => 'authored_call_canonical_delivery'],
+            ]);
+        $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, []);
+        try {
+            $task = $client->pollWorkflowTask($workerId, $queue, 1);
+            self::assertIsArray($task);
+            self::assertSame($handle->selectedRunId, $task['run_id']);
+            $scope = $client->openCancellationScopeOnClaim($task['task_id'], $task['run_id'], $task['lease_owner'],
+                $task['workflow_task_attempt'], 1);
+            self::assertSame(['StartAccepted', 'WorkflowStarted', 'CancellationScopeOpened'], array_column($scope->history, 'event_type'));
+            self::assertGreaterThanOrEqual(3, $transport->historyPages);
+            self::assertSame($loseOpeningReply, $scope->duplicate);
+            if ($loseOpeningReply) {
+                self::assertSame($transport->openings[0]['request'], $transport->openings[1]['request']);
+                self::assertSame($transport->openings[0]['response']['scope_id'], $scope->scopeId);
+                self::assertSame($transport->openings[0]['response']['history_event_id'], $scope->historyEventId);
+            }
+            $duplicate = $client->openCancellationScopeOnClaim($task['task_id'], $task['run_id'], $task['lease_owner'],
+                $task['workflow_task_attempt'], 1);
+            self::assertTrue($duplicate->duplicate);
+            self::assertSame($scope->scopeId, $duplicate->scopeId);
+            self::assertSame($scope->historyEventId, $duplicate->historyEventId);
+            self::assertSame($scope->history, $duplicate->history);
+            $nested = $client->openCancellationScopeOnClaim($task['task_id'], $task['run_id'], $task['lease_owner'],
+                $task['workflow_task_attempt'], 2, $scope->scopeId, true);
+            self::assertSame($scope->scopeId, $nested->parentScopeId);
+            self::assertTrue($nested->shieldParent);
+            self::assertSame(2, count(array_filter($nested->history,
+                static fn (array $event): bool => $event['event_type'] === 'CancellationScopeOpened')));
+            $entered = false;
+            try {
+                (new Replayer(new AvroPayloadCodec()))->replay(static function () use (&$entered): void { $entered = true; },
+                    $nested->history, [], $queue, $task);
+                self::fail('Canonical opening admission alone must not authorize scope execution.');
+            } catch (WorkflowClaimAborted $error) {
+                self::assertStringContainsString('cancellation_scope_execution_not_supported', $error->getMessage());
+                self::assertFalse($entered);
+            }
+            file_put_contents($this->directory.'/scope-opening-proof.json', json_encode([
+                'original_claim' => $task, 'lost_reply' => $loseOpeningReply, 'openings' => $transport->openings,
+                'canonical_history' => $nested->history, 'history_page_requests' => $transport->historyPages,
+                'scope_body_entered' => $entered,
+            ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
+        } finally {
+            $handle->terminateSelectedRun('scope opening fixture complete');
         }
     }
 

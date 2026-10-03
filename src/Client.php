@@ -50,6 +50,8 @@ use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\CancellationRequest;
 use DurableWorkflow\Worker\CancellationDelivery;
+use DurableWorkflow\Worker\CancellationScopeOpenReceipt;
+use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkerSessionOptions;
 use InvalidArgumentException;
 
@@ -1366,6 +1368,80 @@ final class Client implements WorkflowClientInterface
         return $this->request('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/cancellation-scopes/'.$operation, true, [
             'lease_owner' => $leaseOwner, 'workflow_task_attempt' => $attempt, ...$body,
         ], budget: $budget);
+    }
+
+    /**
+     * @internal Unfrozen canonical opening admission. This does not enable scope
+     * execution. Return an identity only after all original-claim history pages
+     * prove the authored opening. A transport reconciliation reuses the same
+     * boundary, claim and monotonic budget, without releasing or renewing it.
+     */
+    public function openCancellationScopeOnClaim(
+        string $taskId,
+        string $runId,
+        string $leaseOwner,
+        int $attempt,
+        int $sequence,
+        string $parentScopeId = 'root',
+        bool $shieldParent = false,
+        ?RequestBudget $budget = null,
+    ): CancellationScopeOpenReceipt {
+        if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion) || !$this->boundedWorkerRequests) {
+            throw new \LogicException('Canonical scope opening requires protocol 1.20 and bounded worker requests.');
+        }
+        foreach ([$taskId, $runId, $leaseOwner, $parentScopeId] as $identity) {
+            if (trim($identity) === '' || strlen($identity) > 255 || preg_match('//u', $identity) !== 1) {
+                throw new InvalidArgumentException('Scope opening needs bounded original claim, run and parent identities.');
+            }
+        }
+        if ($attempt < 1 || $sequence < 1) {
+            throw new InvalidArgumentException('Scope opening needs positive original attempt and authored sequence.');
+        }
+        $expected = ['task_id' => $taskId, 'workflow_run_id' => $runId, 'lease_owner' => $leaseOwner,
+            'workflow_task_attempt' => $attempt, 'sequence' => $sequence, 'parent_scope_id' => $parentScopeId,
+            'shield_parent' => $shieldParent, 'namespace' => $this->namespace];
+        $body = ['sequence' => $sequence, 'parent_scope_id' => $parentScopeId, 'shield_parent' => $shieldParent];
+        $budget ??= new RequestBudget(5);
+        try {
+            try {
+                $receipt = $this->cancellationScopeOperation($taskId, $leaseOwner, $attempt, 'open', $body, $budget);
+            } catch (ServerException $error) {
+                if (!$error->isTransientConnectionFailure() && !$error->isTransientUpstreamFailure()) {
+                    throw $error;
+                }
+                $budget->remainingSeconds();
+                $receipt = $this->cancellationScopeOperation($taskId, $leaseOwner, $attempt, 'open', $body, $budget);
+            }
+            $token = CancellationScopeOpenReceipt::assertAcknowledgement($receipt, $expected);
+            $seen = [];
+            $history = [];
+            do {
+                if (isset($seen[$token])) {
+                    throw new WorkflowClaimAborted('Scope opening history repeated its opaque cursor.');
+                }
+                $seen[$token] = true;
+                $page = $this->request('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/history', true, [
+                    'lease_owner' => $leaseOwner, 'workflow_task_attempt' => $attempt, 'next_history_page_token' => $token,
+                ], budget: $budget);
+                if (($page['task_id'] ?? null) !== $taskId || ($page['workflow_task_attempt'] ?? null) !== $attempt
+                    || !is_array($page['history_events'] ?? null) || !array_is_list($page['history_events'])
+                    || !array_key_exists('next_history_page_token', $page)
+                    || ($page['next_history_page_token'] !== null && (!is_string($page['next_history_page_token'])
+                        || trim($page['next_history_page_token']) === ''))) {
+                    throw new WorkflowClaimAborted('Scope opening history lacks its original claim or complete page shape.');
+                }
+                array_push($history, ...$page['history_events']);
+                $token = $page['next_history_page_token'];
+            } while ($token !== null);
+            $scope = CancellationScopeOpenReceipt::fromCanonicalHistory($receipt, $history, $expected);
+            $budget->remainingSeconds();
+
+            return $scope;
+        } catch (WorkflowClaimAborted $error) {
+            throw $error;
+        } catch (\Throwable $error) {
+            throw new WorkflowClaimAborted('Scope opening authority could not be proved on the original claim.', previous: $error);
+        }
     }
 
     /**
