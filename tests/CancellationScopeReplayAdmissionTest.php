@@ -34,7 +34,7 @@ final class CancellationScopeReplayAdmissionTest extends TestCase
     public static function unsupportedScopeHistory(): array
     {
         $cases = [];
-        foreach (['CancellationScopeOpened', 'CancellationScopeRequested', 'CancellationScopeRequestConflicted'] as $kind) {
+        foreach (['CancellationScopeOpened', 'CancellationScopeRequested', 'CancellationScopeDelivered', 'CancellationScopeRequestConflicted'] as $kind) {
             $cases[$kind] = [['event_type' => $kind, 'payload' => ['scope_id' => 'canonical-scope']]];
         }
         foreach (['ActivityScheduled', 'TimerScheduled', 'ChildWorkflowScheduled', 'ActivityStarted'] as $kind) {

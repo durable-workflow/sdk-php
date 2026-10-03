@@ -899,7 +899,7 @@ final class Replayer
     {
         foreach ($history as $event) {
             if (in_array($event['event_type'] ?? $event['type'] ?? null, [
-                'CancellationScopeOpened', 'CancellationScopeRequested', 'CancellationScopeRequestConflicted',
+                'CancellationScopeOpened', 'CancellationScopeRequested', 'CancellationScopeDelivered', 'CancellationScopeRequestConflicted',
             ], true)) {
                 throw new WorkflowClaimAborted(
                     'cancellation_scope_execution_not_supported: this PHP worker has not qualified canonical scope replay and delivery.',
