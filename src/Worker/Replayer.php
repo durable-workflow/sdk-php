@@ -52,6 +52,7 @@ final class Replayer
         if ($localActivityCancellationPolicies !== [] && !$prepareLocalActivities) {
             throw new LogicException('Local cancellation policies require prepared local activity admission.');
         }
+        $this->assertCancellationScopeReplaySupported($history);
         $observation = $task['cancellation_request'] ?? null;
         if ($observation !== null && (!is_array($observation) || array_is_list($observation))) {
             throw new NonDeterministicWorkflow('Workflow cancellation observation must be an object.');
@@ -891,6 +892,29 @@ final class Replayer
             && $previous['condition_key'] === $next['condition_key']
             && $previous['condition_definition_fingerprint'] === $next['condition_definition_fingerprint']
             && $previous['timeout_seconds'] === $next['timeout_seconds'];
+    }
+
+    /** @param list<array<string, mixed>> $history */
+    private function assertCancellationScopeReplaySupported(array $history): void
+    {
+        foreach ($history as $event) {
+            if (in_array($event['event_type'] ?? $event['type'] ?? null, [
+                'CancellationScopeOpened', 'CancellationScopeRequested', 'CancellationScopeRequestConflicted',
+            ], true)) {
+                throw new WorkflowClaimAborted(
+                    'cancellation_scope_execution_not_supported: this PHP worker has not qualified canonical scope replay and delivery.',
+                );
+            }
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            foreach ([$payload, $payload['activity'] ?? [], $payload['timer'] ?? [], $payload['child_workflow'] ?? []] as $snapshot) {
+                if (is_array($snapshot) && array_key_exists('cancellation_scope_id', $snapshot)
+                    && $snapshot['cancellation_scope_id'] !== 'root') {
+                    throw new WorkflowClaimAborted(
+                        'cancellation_scope_execution_not_supported: this PHP worker cannot execute scoped operations without qualified scope replay and delivery.',
+                    );
+                }
+            }
+        }
     }
 
     /**
