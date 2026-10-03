@@ -134,7 +134,9 @@ final class CooperativeCancellationTest extends TestCase
         $definition = new Worker($client, $queue, workerId: $workerId, enableCooperativeCancellation: true);
         $definition->registerWorkflow('tests.php-cooperative', static fn (WorkflowContext $context): string => 'scope fixture');
         $client->registerWorker($workerId, $queue, ['tests.php-cooperative'], [],
-            capabilities: ['durable_history_replay', 'cooperative_cancellation', 'worker_sessions', 'sticky_execution'],
+            capabilities: ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown',
+                'message_streams', 'memo_upserts', 'typed_search_attributes', 'durable_selection', 'local_activities',
+                'worker_sessions', 'sticky_execution', 'cross_kind_poll_wake', 'cooperative_cancellation'],
             workflowCommandContracts: $definition->contracts()['workflow_commands'], capabilityManifest: [
                 ...CapabilityManifest::portableWorkerAffinity(),
                 'cooperative_cancellation' => ['supported' => true, 'minimum_protocol_version' => '1.20',
@@ -145,7 +147,7 @@ final class CooperativeCancellationTest extends TestCase
             $task = $client->pollWorkflowTask($workerId, $queue, 1);
             self::assertIsArray($task);
             self::assertSame($handle->selectedRunId, $task['run_id']);
-            $scope = $client->openCancellationScopeOnClaim($task['task_id'], $task['run_id'], $task['lease_owner'],
+            $scope = $client->openCancellationScopeOnClaim($task['task_id'], $task['run_id'], $workerId,
                 $task['workflow_task_attempt'], 1);
             self::assertSame(['StartAccepted', 'WorkflowStarted', 'CancellationScopeOpened'], array_column($scope->history, 'event_type'));
             self::assertGreaterThanOrEqual(3, $transport->historyPages);
@@ -155,13 +157,13 @@ final class CooperativeCancellationTest extends TestCase
                 self::assertSame($transport->openings[0]['response']['scope_id'], $scope->scopeId);
                 self::assertSame($transport->openings[0]['response']['history_event_id'], $scope->historyEventId);
             }
-            $duplicate = $client->openCancellationScopeOnClaim($task['task_id'], $task['run_id'], $task['lease_owner'],
+            $duplicate = $client->openCancellationScopeOnClaim($task['task_id'], $task['run_id'], $workerId,
                 $task['workflow_task_attempt'], 1);
             self::assertTrue($duplicate->duplicate);
             self::assertSame($scope->scopeId, $duplicate->scopeId);
             self::assertSame($scope->historyEventId, $duplicate->historyEventId);
             self::assertSame($scope->history, $duplicate->history);
-            $nested = $client->openCancellationScopeOnClaim($task['task_id'], $task['run_id'], $task['lease_owner'],
+            $nested = $client->openCancellationScopeOnClaim($task['task_id'], $task['run_id'], $workerId,
                 $task['workflow_task_attempt'], 2, $scope->scopeId, true);
             self::assertSame($scope->scopeId, $nested->parentScopeId);
             self::assertTrue($nested->shieldParent);
@@ -177,7 +179,7 @@ final class CooperativeCancellationTest extends TestCase
                 self::assertFalse($entered);
             }
             file_put_contents($this->directory.'/scope-opening-proof.json', json_encode([
-                'original_claim' => $task, 'lost_reply' => $loseOpeningReply, 'openings' => $transport->openings,
+                'original_claim' => $task, 'original_owner' => $workerId, 'lost_reply' => $loseOpeningReply, 'openings' => $transport->openings,
                 'canonical_history' => $nested->history, 'history_page_requests' => $transport->historyPages,
                 'scope_body_entered' => $entered,
             ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
