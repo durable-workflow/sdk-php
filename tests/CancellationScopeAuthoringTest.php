@@ -5,7 +5,12 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Client;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Exception\TransportException;
+use DurableWorkflow\Tests\Support\FakeTransport;
+use DurableWorkflow\Transport\BoundedTransport;
+use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkflowContext;
@@ -182,12 +187,21 @@ final class CancellationScopeAuthoringTest extends TestCase
         $this->replay($handler, $history);
     }
 
-    public function test_opening_and_ordinary_command_cannot_share_an_authored_sequence(): void
+    #[DataProvider('collidingOperationKinds')]
+    public function test_opening_and_ordinary_command_cannot_share_an_authored_sequence(string $kind): void
     {
         $this->expectException(NonDeterministicWorkflow::class);
-        $this->replay(static fn (): string => 'must not enter', [self::opening(1), self::event(3, 'SideEffectRecorded', [
-            'sequence' => 1, 'result' => (new AvroPayloadCodec())->encode('collision'),
+        $this->replay(static fn (): string => 'must not enter', [self::opening(1), self::event(3, $kind, [
+            'sequence' => 1, 'result' => (new AvroPayloadCodec())->envelope('collision'),
         ])]);
+    }
+
+    public static function collidingOperationKinds(): array
+    {
+        return array_map(static fn (string $kind): array => [$kind], [
+            'SideEffectRecorded', 'ActivityScheduled', 'ActivityCompleted', 'TimerScheduled', 'TimerFired',
+            'ChildWorkflowScheduled', 'ChildRunCompleted', 'ConditionWaitOpened',
+        ]);
     }
 
     #[DataProvider('unsupportedCancellationHistories')]
@@ -313,6 +327,47 @@ final class CancellationScopeAuthoringTest extends TestCase
             'future operation owner' => [[self::event(1, 'ActivityScheduled', ['sequence' => 2, 'cancellation_scope_id' => 'scope-one']), self::opening(1)]],
             'repeated authored sequence' => [[self::opening(1), array_replace(self::opening(1, 'other'), ['id' => 'other-event', 'sequence' => 3])]],
         ];
+    }
+
+    public function test_exhausted_prefix_reconciliation_does_not_publish_workflow_failure_or_enter_scope_body(): void
+    {
+        $fake = new FakeTransport([
+            ['task' => ['task_id' => 'task', 'workflow_id' => 'workflow', 'run_id' => 'run-one',
+                'workflow_type' => 'scope-workflow', 'lease_owner' => 'owner', 'workflow_task_attempt' => 4,
+                'payload_codec' => 'avro', 'history_events' => [self::event(1, 'WorkflowStarted', [])]], 'poll_status' => 'leased'],
+            ['task_id' => 'task', 'lease_owner' => 'owner', 'workflow_task_attempt' => 4, 'renewed' => true],
+            new TransportException('First reply lost.', transientConnectionFailure: true),
+            new TransportException('Second reply lost.', transientConnectionFailure: true),
+            ['failed' => true], ['task' => null, 'poll_status' => 'empty'],
+        ]);
+        $transport = new class($fake) implements BoundedTransport {
+            public function __construct(private readonly FakeTransport $fake) {}
+            public function supportsBoundedRequests(): bool { return true; }
+            public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
+            {
+                return $this->fake->send($method, $uri, $headers, $body);
+            }
+            public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
+            {
+                return $this->send($method, $uri, $headers, $body);
+            }
+        };
+        $worker = new Worker(new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.20'),
+            'queue', workerId: 'owner', enableCooperativeCancellation: true);
+        $entered = false;
+        $effects = 0;
+        $worker->registerWorkflow('scope-workflow', static function (WorkflowContext $context) use (&$entered, &$effects): void {
+            $context->sideEffect(static function () use (&$effects): string { ++$effects; return 'original'; });
+            $context->cancellationScope(static function () use (&$entered): void { $entered = true; });
+        });
+        self::assertTrue($worker->tick(0));
+        self::assertFalse($entered);
+        self::assertSame(1, $effects);
+        $operations = array_map(static fn (array $request): string => basename($request['uri']), $fake->requests);
+        self::assertSame(['checkpoint', 'checkpoint', 'fail'], array_values(array_filter($operations,
+            static fn (string $operation): bool => in_array($operation, ['checkpoint', 'open', 'fail', 'complete'], true))));
+        self::assertSame($fake->requests[2]['body'], $fake->requests[3]['body']);
+        self::assertSame(WorkflowClaimAborted::class, $fake->requests[4]['body']['failure']['type']);
     }
 
     /** @param callable(WorkflowContext): mixed $handler

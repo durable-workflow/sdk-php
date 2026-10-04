@@ -1351,16 +1351,22 @@ final class Worker
                 if ($opening->sequence <= $lastScopeOpening) {
                     throw new WorkflowClaimAborted('Scope authoring did not advance past its original canonical opening.');
                 }
-                if ($replay->commands !== []) {
-                    $history = $this->checkpointPreparedLocalPrefix($task, $replay->commands, $opening->sequence, scopePrefix: true);
-                } else {
-                    $receipt = $this->client->openCancellationScopeOnClaim(
-                        (string) $task['task_id'], (string) $task['run_id'],
-                        (string) ($task['lease_owner'] ?? $this->workerId), (int) ($task['workflow_task_attempt'] ?? 1),
-                        $opening->sequence, $opening->parentScopeId, $opening->shieldParent,
-                    );
-                    $history = $receipt->history;
-                    $lastScopeOpening = $opening->sequence;
+                try {
+                    if ($replay->commands !== []) {
+                        $history = $this->checkpointPreparedLocalPrefix($task, $replay->commands, $opening->sequence, scopePrefix: true);
+                    } else {
+                        $receipt = $this->client->openCancellationScopeOnClaim(
+                            (string) $task['task_id'], (string) $task['run_id'],
+                            (string) ($task['lease_owner'] ?? $this->workerId), (int) ($task['workflow_task_attempt'] ?? 1),
+                            $opening->sequence, $opening->parentScopeId, $opening->shieldParent,
+                        );
+                        $history = $receipt->history;
+                        $lastScopeOpening = $opening->sequence;
+                    }
+                } catch (WorkflowClaimAborted|NonDeterministicWorkflow $error) {
+                    throw $error;
+                } catch (Throwable $error) {
+                    throw new WorkflowClaimAborted('Scope authoring authority could not be proved on the original claim.', previous: $error);
                 }
                 continue;
             }

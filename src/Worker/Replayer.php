@@ -53,8 +53,8 @@ final class Replayer
         if ($localActivityCancellationPolicies !== [] && !$prepareLocalActivities) {
             throw new LogicException('Local cancellation policies require prepared local activity admission.');
         }
-        $this->assertCancellationScopeReplaySupported($history, $allowCancellationScopeAuthoring, $task);
-        $scopes = new CancellationScopeHistory($history, (string) ($task['run_id'] ?? ''));
+        $hasScopes = $this->assertCancellationScopeReplaySupported($history, $allowCancellationScopeAuthoring, $task);
+        $scopes = new CancellationScopeHistory($hasScopes ? $history : [], (string) ($task['run_id'] ?? ''));
         $observation = $task['cancellation_request'] ?? null;
         if ($observation !== null && (!is_array($observation) || array_is_list($observation))) {
             throw new NonDeterministicWorkflow('Workflow cancellation observation must be an object.');
@@ -927,7 +927,7 @@ final class Replayer
     /** @param list<array<string, mixed>> $history
      * @param array<string, mixed> $task
      */
-    private function assertCancellationScopeReplaySupported(array $history, bool $allowAuthoring, array $task): void
+    private function assertCancellationScopeReplaySupported(array $history, bool $allowAuthoring, array $task): bool
     {
         $hasScopes = false;
         $hasCancellation = ($task['cancellation_request'] ?? null) !== null || ($task['cancel_requested'] ?? false) === true;
@@ -957,6 +957,8 @@ final class Replayer
         if ($hasScopes && $hasCancellation) {
             throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker has not qualified cancellation delivery into authored scopes.');
         }
+
+        return $hasScopes;
     }
 
     /**
@@ -999,6 +1001,12 @@ final class Replayer
                 default => $this->sequence($payload) ?? $fallbackSequence++,
             };
             $key = (string) $sequence;
+
+            if ($type !== 'CancellationScopeOpened' && isset($scopes->openings[$sequence])
+                && $this->historyEventShape($type, $payload) !== null) {
+                throw new NonDeterministicWorkflow('Scope opening collides with another durable command.', $sequence,
+                    reason: 'durable_command_sequence_collision');
+            }
 
             if (in_array($type, ['ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'ActivityFailed', 'ActivityTimedOut', 'ActivityCancelled'], true)) {
                 $policy = $activityPolicies[$key] ?? null;
