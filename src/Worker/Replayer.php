@@ -80,7 +80,7 @@ final class Replayer
         $selectionOperationIdentities = $this->selectionOperationIdentities($history);
         $completedHistory = $this->hasCompletedHistory($history);
         $context = null;
-        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowCancellationScopeAuthoring, &$context): mixed {
+        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowCancellationScopeAuthoring, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -100,6 +100,7 @@ final class Replayer
                 $prepareLocalActivityGroups,
                 $localActivityCancellationPolicies,
                 $allowCancellationScopeAuthoring && $cancellation->request === null,
+                $scopes->openings !== [],
             );
 
             try {

@@ -219,12 +219,15 @@ final class CancellationScopeAuthoringTest extends TestCase
         ];
     }
 
-    public function test_scoped_local_callback_is_refused_before_execution(): void
+    #[DataProvider('booleanValues')]
+    public function test_local_callback_in_a_run_with_scopes_is_refused_before_execution(bool $insideScope): void
     {
         $executed = false;
         try {
-            (new Replayer(new AvroPayloadCodec()))->replay(static fn (WorkflowContext $context) =>
-                $context->cancellationScope(static fn () => $context->localActivity('local')), [self::opening(1)], [], 'php-workers',
+            (new Replayer(new AvroPayloadCodec()))->replay(static function (WorkflowContext $context) use ($insideScope): mixed {
+                $context->cancellationScope(static fn () => $insideScope ? $context->localActivity('local') : null);
+                return $context->localActivity('local');
+            }, [self::opening(1)], [], 'php-workers',
                 ['run_id' => 'run-one'], localActivityExecutor: static function () use (&$executed): array { $executed = true; return []; },
                 allowCancellationScopeAuthoring: true);
             self::fail('Scoped local work needs selective supervision.');
@@ -232,6 +235,11 @@ final class CancellationScopeAuthoringTest extends TestCase
             self::assertStringContainsString('cancellation_scope_local_activity_not_supported', $error->getMessage());
             self::assertFalse($executed);
         }
+    }
+
+    public static function booleanValues(): array
+    {
+        return [[true], [false]];
     }
 
     public function test_scope_cannot_open_inside_atomic_operation_capture(): void
