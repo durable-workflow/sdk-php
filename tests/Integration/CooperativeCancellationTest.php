@@ -221,7 +221,8 @@ final class CooperativeCancellationTest extends TestCase
         };
         $client = $this->client($transport)->withBoundedWorkerRequests();
         $sideEffectCalls = 0;
-        $makeWorker = function (string $owner) use ($queue, $client, &$sideEffectCalls): Worker {
+        $registeredOwners = [];
+        $makeWorker = function (string $owner) use ($queue, $client, &$sideEffectCalls, &$registeredOwners): Worker {
             $worker = new Worker($client, $queue, workerId: $owner, enableCooperativeCancellation: true);
             $worker->registerWorkflow('tests.php-scope-authoring', static function (WorkflowContext $context) use (&$sideEffectCalls): array {
                 $context->sideEffect(static function () use (&$sideEffectCalls): string { ++$sideEffectCalls; return 'once'; });
@@ -236,10 +237,11 @@ final class CooperativeCancellationTest extends TestCase
                 $results[] = $context->activity('tests.php-scope-leaf', ['root']);
                 return $results;
             });
-            $worker->registerWorkflow('tests.php-scope-child', static fn (): string => 'child');
+            $worker->registerWorkflow('tests.php-scope-child', static fn (WorkflowContext $_context): string => 'child');
             $worker->registerActivity('tests.php-scope-leaf', static fn (ActivityContext $_context, string $value): string => $value);
             $client->registerWorker($owner, $queue, ['tests.php-scope-authoring', 'tests.php-scope-child'], ['tests.php-scope-leaf'],
                 ['workflow_tasks', 'activity_tasks', 'cooperative_cancellation'], capabilityManifest: $worker->capabilityManifest()->toArray());
+            $registeredOwners[$owner] = true;
             return $worker;
         };
         $owners = [$queue.'-original', $queue.'-replacement'];
@@ -256,6 +258,7 @@ final class CooperativeCancellationTest extends TestCase
             self::assertSame($openings[0]['payload']['scope_id'], $openings[1]['payload']['parent_scope_id']);
             self::assertTrue($openings[1]['payload']['shield_parent']);
             $client->deregisterWorkerRegistration($owners[0]);
+            unset($registeredOwners[$owners[0]]);
             $worker = $makeWorker($owners[1]);
             $deadline = microtime(true) + 20;
             do {
@@ -289,7 +292,7 @@ final class CooperativeCancellationTest extends TestCase
             ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
         } finally {
             if ($handle !== null) { $this->retainRunEvidence($client, $handle, 'scope-authoring'); $handle->terminateSelectedRun('scope authoring fixture complete'); }
-            foreach ($owners as $owner) { $client->deregisterWorkerRegistration($owner); }
+            foreach (array_keys($registeredOwners) as $owner) { $client->deregisterWorkerRegistration($owner); }
         }
     }
 
