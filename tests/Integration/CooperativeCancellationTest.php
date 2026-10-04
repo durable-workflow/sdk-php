@@ -240,7 +240,14 @@ final class CooperativeCancellationTest extends TestCase
             $worker->registerWorkflow('tests.php-scope-child', static fn (WorkflowContext $_context): string => 'child');
             $worker->registerActivity('tests.php-scope-leaf', static fn (ActivityContext $_context, string $value): string => $value);
             $client->registerWorker($owner, $queue, ['tests.php-scope-authoring', 'tests.php-scope-child'], ['tests.php-scope-leaf'],
-                ['workflow_tasks', 'activity_tasks', 'cooperative_cancellation'], capabilityManifest: $worker->capabilityManifest()->toArray());
+                capabilities: ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown',
+                    'message_streams', 'memo_upserts', 'typed_search_attributes', 'durable_selection', 'local_activities',
+                    'worker_sessions', 'sticky_execution', 'cross_kind_poll_wake', 'cooperative_cancellation'],
+                workflowCommandContracts: $worker->contracts()['workflow_commands'], capabilityManifest: [
+                    ...CapabilityManifest::portableWorkerAffinity(),
+                    'cooperative_cancellation' => ['supported' => true, 'minimum_protocol_version' => '1.20',
+                        'implementation' => 'authored_call_canonical_delivery'],
+                ]);
             $registeredOwners[$owner] = true;
             return $worker;
         };
@@ -250,7 +257,7 @@ final class CooperativeCancellationTest extends TestCase
             $worker = $makeWorker($owners[0]);
             $handle = $client->startWorkflow('tests.php-scope-authoring', $queue, $queue);
             self::assertTrue($worker->tick(0));
-            $initial = iterator_to_array($handle->history());
+            $initial = $this->history($client, $handle);
             $openings = array_values(array_filter($initial, static fn (array $event): bool => $event['event_type'] === 'CancellationScopeOpened'));
             self::assertCount(2, $openings);
             self::assertSame('root', $openings[0]['payload']['parent_scope_id']);
@@ -263,12 +270,12 @@ final class CooperativeCancellationTest extends TestCase
             $deadline = microtime(true) + 20;
             do {
                 $worker->tick(0);
-                if (($handle->describe()->raw['status'] ?? null) === 'Succeeded') { break; }
+                if ($handle->describeSelectedRun()->isTerminal === true) { break; }
                 usleep(50000);
             } while (microtime(true) < $deadline);
             self::assertSame(['inside', null, 'child', 'root'], $handle->result(5));
             self::assertSame(1, $sideEffectCalls);
-            $final = iterator_to_array($handle->history());
+            $final = $this->history($client, $handle);
             self::assertSame($openings, array_values(array_filter($final,
                 static fn (array $event): bool => $event['event_type'] === 'CancellationScopeOpened')));
             foreach (['checkpoint', 'open'] as $operation) {
@@ -291,7 +298,12 @@ final class CooperativeCancellationTest extends TestCase
                 'scoped_cancellation_delivery_qualified' => false,
             ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
         } finally {
-            if ($handle !== null) { $this->retainRunEvidence($client, $handle, 'scope-authoring'); $handle->terminateSelectedRun('scope authoring fixture complete'); }
+            if ($handle !== null) {
+                $this->retainRunEvidence($client, $handle, 'scope-authoring');
+                if ($handle->describeSelectedRun()->isTerminal !== true) {
+                    $handle->terminateSelectedRun('scope authoring fixture complete');
+                }
+            }
             foreach (array_keys($registeredOwners) as $owner) { $client->deregisterWorkerRegistration($owner); }
         }
     }
