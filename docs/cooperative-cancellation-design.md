@@ -64,6 +64,34 @@ from that complete tree and rejects changed metadata, repeated addresses,
 reentry into an earlier run or a larger budget. Reading this metadata does
 not enable scope execution. Both v1 and v2 contexts remain readable.
 
+### Committed operation-scope replay
+
+The internal Replayer candidate can replay a committed scope delivery at an
+unscheduled single activity, timer, condition or child call. Source tests opt in
+with `replayCommittedCancellationScopes`; the Worker does not enable this path.
+The parser requires the original authored tree, accepted request, v5 preparation
+and matching delivery event before entering workflow code. It preserves the
+original request identity, scope lineage, deadline and recorded clock. A narrower
+authority ceiling never replaces that immutable context or grants new authority.
+
+At delivery, `WorkflowCancelled::context` is a `ScopedCancellationContext`.
+Its root identity, reason, requester and source are directly available alongside
+`scopeId`, `rootScopeId`, `deadline()`, `rootDeadline()` and deterministic
+`remaining()`. The same object is visible while that scope's body unwinds.
+After leaving the scope, the parent retains its own cancellation state. A
+retained context's clock advances only at consumed blocking history, including
+an unaffected operation awaited by the parent.
+
+This profile supports workflow-local cleanup and an empty frozen member
+projection. Pending deliveries, populated projections, mixed groups, scope
+conflicts and simultaneous root cancellation are refused. A shield suppresses
+explicit cancellation checks but does not permit new durable commands in a
+delivered scope. Activities, timers, children, continuations, metadata writes,
+side effects and new scopes require a separate cleanup authority contract.
+Selective projection replay, canonical preparation/delivery on the live claim,
+bounded durable cleanup and connected replacement qualification remain the next
+steps before enabling Worker scope execution.
+
 The parser rejects mismatched local runs, request identities, budgets, invalid
 lineage and a delivery snapshot that changes the accepted context. Heartbeat
 observations retain the opaque history refresh route while canonical history

@@ -46,6 +46,7 @@ final class Replayer
         bool $prepareLocalActivityGroups = false,
         array $localActivityCancellationPolicies = [],
         bool $allowCancellationScopeAuthoring = false,
+        bool $replayCommittedCancellationScopes = false,
     ): ReplayResult {
         if ($prepareLocalActivityGroups && !$prepareLocalActivities) {
             throw new LogicException('Prepared local groups require prepared local activity admission.');
@@ -53,8 +54,15 @@ final class Replayer
         if ($localActivityCancellationPolicies !== [] && !$prepareLocalActivities) {
             throw new LogicException('Local cancellation policies require prepared local activity admission.');
         }
-        $hasScopes = $this->assertCancellationScopeReplaySupported($history, $allowCancellationScopeAuthoring, $task);
+        if ($replayCommittedCancellationScopes && !$allowCancellationScopeAuthoring) {
+            throw new LogicException('Committed scope replay requires candidate scope authoring.');
+        }
+        $hasScopes = $this->assertCancellationScopeReplaySupported($history, $allowCancellationScopeAuthoring, $task, $replayCommittedCancellationScopes);
         $scopes = new CancellationScopeHistory($hasScopes ? $history : [], (string) ($task['run_id'] ?? ''));
+        // Source qualification only. The Worker does not enable this replay path.
+        $scopeDeliveries = $replayCommittedCancellationScopes
+            ? (new CommittedCancellationScopeHistory($history, (string) ($task['run_id'] ?? ''), (string) ($task['workflow_id'] ?? ''), $scopes))->deliveries
+            : [];
         $observation = $task['cancellation_request'] ?? null;
         if ($observation !== null && (!is_array($observation) || array_is_list($observation))) {
             throw new NonDeterministicWorkflow('Workflow cancellation observation must be an object.');
@@ -118,10 +126,35 @@ final class Replayer
         $suspended = $execution->start();
         $nextSequence = 1;
         $cancellationConsumed = false;
+        $consumedScopeDeliveries = [];
 
         while (!$execution->isTerminated()) {
+            foreach ($scopeDeliveries as $scopeSequence => $scopeDelivery) {
+                if (isset($consumedScopeDeliveries[$scopeSequence])) {
+                    continue;
+                }
+                $delivery = $scopeDelivery['boundary'];
+                if ($scopeSequence < $nextSequence) {
+                    throw new NonDeterministicWorkflow('Workflow passed its committed scope cancellation boundary.', $scopeSequence,
+                        reason: 'cancellation_scope_boundary_mismatch');
+                }
+                if ($scopeSequence !== $nextSequence) {
+                    break;
+                }
+                $boundary = $this->cancellationBoundary($suspended, $nextSequence, $stepsBySequence, $delivery->requestId, $delivery);
+                if ($boundary != $delivery || $context->currentCancellationScopeId() !== $scopeDelivery['context']->scopeId
+                    || $context->isCancellationShielded() || isset($stepsBySequence[$scopeSequence])) {
+                    throw new NonDeterministicWorkflow('Committed scope cancellation changed its authored call, membership or shielding.', $scopeSequence,
+                        reason: 'cancellation_scope_boundary_mismatch');
+                }
+                $nextSequence = $scopeSequence + $delivery->sequenceSpan;
+                $consumedScopeDeliveries[$scopeSequence] = true;
+                $context->observeCancellationReplayTime($scopeDelivery['event']);
+                $suspended = $execution->throw($context->deliveredCancellation($delivery->requestId, $scopeDelivery['context']));
+                continue 2;
+            }
             if ($cancellation->request !== null && !$cancellationConsumed) {
-                $boundary = $this->cancellationBoundary($suspended, $nextSequence, $stepsBySequence, $cancellation);
+                $boundary = $this->cancellationBoundary($suspended, $nextSequence, $stepsBySequence, $cancellation->request->requestId, $cancellation->delivery);
                 $delivery = $cancellation->delivery;
                 if ($delivery !== null && $delivery->sequence < $nextSequence) {
                     throw new NonDeterministicWorkflow(
@@ -687,6 +720,12 @@ final class Replayer
         }
 
         $this->assertCancellationConsumed($cancellation, $cancellationConsumed);
+        foreach ($scopeDeliveries as $sequence => $_delivery) {
+            if (!isset($consumedScopeDeliveries[$sequence])) {
+                throw new NonDeterministicWorkflow('Workflow terminated without replaying its committed scope cancellation boundary.', $sequence,
+                    reason: 'cancellation_scope_boundary_mismatch');
+            }
+        }
         $this->assertNoRemainingSteps($steps, $stepCursor, 'complete_workflow');
         $result = $execution->getReturn();
         if ($result instanceof \Generator) {
@@ -818,11 +857,9 @@ final class Replayer
         mixed $command,
         int $sequence,
         array $stepsBySequence,
-        CancellationHistory $cancellation,
+        string $requestId,
+        ?CancellationDelivery $delivery = null,
     ): ?CancellationDelivery {
-        if ($cancellation->request === null) {
-            return null;
-        }
         $span = 1;
         $operationSequence = null;
         $operationSpan = 1;
@@ -840,7 +877,7 @@ final class Replayer
                 'start_timer' => 'timer',
                 'start_child_workflow' => 'child',
                 'open_condition_wait' => isset($stepsBySequence[$sequence])
-                    || $cancellation->delivery?->sequence === $sequence
+                    || $delivery?->sequence === $sequence
                     || (!$command->conditionSatisfied() && ($command->attributes['timeout_seconds'] ?? null) !== 0)
                         ? 'condition' : null,
                 default => null,
@@ -854,7 +891,7 @@ final class Replayer
 
         try {
             return CancellationDelivery::fromPayload([
-                'workflow_command_id' => $cancellation->request->requestId,
+                'workflow_command_id' => $requestId,
                 'sequence' => $sequence,
                 'call_kind' => $kind,
                 'sequence_span' => $span,
@@ -927,14 +964,15 @@ final class Replayer
     /** @param list<array<string, mixed>> $history
      * @param array<string, mixed> $task
      */
-    private function assertCancellationScopeReplaySupported(array $history, bool $allowAuthoring, array $task): bool
+    private function assertCancellationScopeReplaySupported(array $history, bool $allowAuthoring, array $task, bool $replayCommittedScopes): bool
     {
         $hasScopes = false;
         $hasCancellation = ($task['cancellation_request'] ?? null) !== null || ($task['cancel_requested'] ?? false) === true;
         foreach ($history as $event) {
             $kind = $event['event_type'] ?? $event['type'] ?? null;
             $hasCancellation = $hasCancellation || in_array($kind, [CancellationHistory::REQUEST_EVENT, CancellationHistory::DELIVERY_EVENT], true);
-            if (in_array($kind, ['CancellationScopeRequested', 'CancellationScopeDelivered', 'CancellationScopeRequestConflicted'], true)
+            if ($kind === 'CancellationScopeRequestConflicted'
+                || (!$replayCommittedScopes && in_array($kind, ['CancellationScopeRequested', 'CancellationScopeDeliveryPrepared', 'CancellationScopeDelivered'], true))
                 || (!$allowAuthoring && $kind === 'CancellationScopeOpened')) {
                 throw new WorkflowClaimAborted(
                     'cancellation_scope_execution_not_supported: this PHP worker has not qualified canonical scope replay and delivery.',
@@ -1838,7 +1876,7 @@ final class Replayer
      */
     private function advanceCancellationClock(WorkflowContext $context, array $history, array $orders): void
     {
-        if ($context->cancellationContext() === null) {
+        if (!$context->hasDeliveredCancellation()) {
             return;
         }
         sort($orders, SORT_NUMERIC);

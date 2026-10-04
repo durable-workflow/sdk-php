@@ -42,6 +42,9 @@ final class WorkflowContext
 
     private ?CancellationContext $deliveredCancellationContext = null;
 
+    /** @var array<string, ScopedCancellationContext> */
+    private array $deliveredScopeCancellations = [];
+
     private ?CancellationReplayClock $cancellationReplayClock = null;
 
     /** @var list<list<DeferredWorkflowOperation|ParallelWorkflowCommand>> */
@@ -92,6 +95,9 @@ final class WorkflowContext
         $this->assertActiveFiber();
         if (!$this->allowCancellationScopeAuthoring) {
             throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker has not enabled candidate scope authoring.');
+        }
+        if (isset($this->deliveredScopeCancellations[$this->cancellationScopeId])) {
+            throw new WorkflowClaimAborted('cancellation_scope_cleanup_authority_missing: a delivered scope cannot admit a new scope.');
         }
         if ($this->isCapturing()) {
             throw new WorkflowClaimAborted('cancellation_scope_opening_inside_group_not_supported: open the scope before capturing its operations.');
@@ -558,23 +564,37 @@ final class WorkflowContext
 
     public function isCancellationRequested(): bool
     {
-        return $this->cancellationRequested || $this->deliveredCancellationRequestId !== null;
+        return $this->cancellationRequested || $this->deliveredCancellationRequestId !== null
+            || isset($this->deliveredScopeCancellations[$this->cancellationScopeId]);
     }
 
     public function throwIfCancellationRequested(): void
     {
         if ($this->isCancellationRequested() && !$this->isCancellationShielded()) {
+            $context = $this->cancellationContext();
             throw new WorkflowCancelled(
-                'Workflow cancellation was requested.', requestId: $this->deliveredCancellationRequestId,
-                context: $this->deliveredCancellationContext,
+                'Workflow cancellation was requested.', requestId: $context->requestId ?? $this->deliveredCancellationRequestId,
+                context: $context,
             );
         }
     }
 
     /** The original context becomes visible at its committed authored boundary. */
-    public function cancellationContext(): ?CancellationContext
+    public function cancellationContext(): CancellationContext|ScopedCancellationContext|null
     {
-        return $this->deliveredCancellationContext;
+        return $this->deliveredCancellationContext ?? $this->deliveredScopeCancellations[$this->cancellationScopeId] ?? null;
+    }
+
+    /** @internal Immediate authored address, retained while its body unwinds. */
+    public function currentCancellationScopeId(): string
+    {
+        return $this->cancellationScopeId;
+    }
+
+    /** @internal Retained contexts share the clock of consumed blocking history. */
+    public function hasDeliveredCancellation(): bool
+    {
+        return $this->deliveredCancellationRequestId !== null || $this->deliveredScopeCancellations !== [];
     }
 
     /**
@@ -603,8 +623,13 @@ final class WorkflowContext
     }
 
     /** @internal Only a committed delivery marker authorizes this state change. */
-    public function deliveredCancellation(string $requestId, ?CancellationContext $context = null): WorkflowCancelled
+    public function deliveredCancellation(string $requestId, CancellationContext|ScopedCancellationContext|null $context = null): WorkflowCancelled
     {
+        if ($context instanceof ScopedCancellationContext && ($context->requestId !== $requestId
+            || $context->workflowRunId !== $this->runId || $context->workflowInstanceId !== $this->workflowId
+            || $context->scopeId !== $this->cancellationScopeId)) {
+            throw new LogicException('Committed scope delivery must match its original request and active authored address.');
+        }
         if ($context !== null) {
             $reference = WeakReference::create($this);
             $context = $context->withReplayClock(static function () use ($reference): DateTimeImmutable {
@@ -617,8 +642,12 @@ final class WorkflowContext
                 return ($workflow->cancellationReplayClock ??= new CancellationReplayClock())->time();
             });
         }
-        $this->deliveredCancellationRequestId = $requestId;
-        $this->deliveredCancellationContext = $context;
+        if ($context instanceof ScopedCancellationContext) {
+            $this->deliveredScopeCancellations[$context->scopeId] = $context;
+        } else {
+            $this->deliveredCancellationRequestId = $requestId;
+            $this->deliveredCancellationContext = $context;
+        }
 
         return new WorkflowCancelled('Workflow cancellation was requested.', requestId: $requestId, context: $context);
     }
@@ -751,12 +780,18 @@ final class WorkflowContext
     private function suspend(WorkflowCommand|ParallelWorkflowCommand $command): mixed
     {
         $this->assertActiveFiber();
+        if (isset($this->deliveredScopeCancellations[$this->cancellationScopeId])) {
+            throw new WorkflowClaimAborted('cancellation_scope_cleanup_authority_missing: a delivered scope cannot admit a new command.');
+        }
 
         return WorkflowFiberSuspension::suspend($command);
     }
 
     private function withCancellationScope(WorkflowCommand $command): WorkflowCommand
     {
+        if (isset($this->deliveredScopeCancellations[$this->cancellationScopeId])) {
+            throw new WorkflowClaimAborted('cancellation_scope_cleanup_authority_missing: a delivered scope cannot admit a new operation.');
+        }
         if (array_key_exists('cancellation_scope_id', $command->attributes)) {
             throw new \InvalidArgumentException('Operation scope membership is assigned by the workflow authoring boundary.');
         }
