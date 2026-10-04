@@ -18,7 +18,7 @@ final class PreparedLocalActivityRunner
     private float $authorityDeadline;
     private readonly float $clockOrigin;
     private float $nextControl = 0.0;
-    private ?CancellationContext $stopRequest = null;
+    private CancellationContext|ScopedCancellationContext|null $stopRequest = null;
     private bool $stopAcknowledged = false;
 
     /**
@@ -54,7 +54,7 @@ final class PreparedLocalActivityRunner
                 $this->heartbeat(...),
                 $this->check(...), $this->started, $this->acknowledgeJoinedStop(...),
             );
-        } catch (CooperativeCancellationObserved $error) {
+        } catch (CooperativeCancellationObserved|ScopedActivityCancellationObserved $error) {
             // A cancellation check may fence an admitted attempt before any
             // fork. No application code ran, or the executor already joined it.
             $this->acknowledgeJoinedStop();
@@ -143,7 +143,7 @@ final class PreparedLocalActivityRunner
     {
         try {
             $this->check(true);
-        } catch (CooperativeCancellationObserved) {
+        } catch (CooperativeCancellationObserved|ScopedActivityCancellationObserved) {
             $this->acknowledgeJoinedStop();
             return;
         }
@@ -172,7 +172,7 @@ final class PreparedLocalActivityRunner
             $this->attempt->validateOutcome($reply);
 
             return $reply;
-        } catch (CooperativeCancellationObserved $error) {
+        } catch (CooperativeCancellationObserved|ScopedActivityCancellationObserved $error) {
             $this->acknowledgeJoinedStop();
             throw $error;
         } catch (WorkflowClaimAborted $error) {
@@ -205,6 +205,21 @@ final class PreparedLocalActivityRunner
     private function acceptControl(array $reply, float $started): void
     {
         if (!$reply['active']) {
+            if (in_array($reply['reason'], ['cancellation_scope_requested', 'cancellation_scope_deadline_expired'], true)) {
+                try {
+                    $request = $this->attempt->scopedCancellation($reply);
+                } catch (Throwable $error) {
+                    throw new WorkflowClaimAborted('Prepared stop lacks a trustworthy original scope fence.', previous: $error);
+                }
+                if ($this->stopRequest !== null && (!$this->stopRequest instanceof ScopedCancellationContext
+                    || $this->stopRequest->toArray() !== $request->toArray())) {
+                    throw new WorkflowClaimAborted('Prepared scope stop replaced its accepted cancellation request.');
+                }
+                $this->stopRequest = $request;
+                // A scope observation must not install a whole-run cancellation
+                // context or withdraw surviving siblings' original authority.
+                throw new ScopedActivityCancellationObserved($request, $reply['history_refresh_page_token']);
+            }
             if (in_array($reply['reason'], ['cancellation_requested', 'cancellation_deadline_expired'], true)) {
                 $snapshot = $reply['cancellation_request'] ?? null;
                 if (!is_array($snapshot)) {

@@ -1693,7 +1693,8 @@ final class Worker
             'sequence' => $call->sequence, 'worker_attempt_id' => $nonce, 'descriptor' => $descriptor,
         ]);
         $attempt = PreparedLocalActivityAttempt::fromPreparation($receipt, $taskId, $runId, $owner, $epoch, $nonce,
-            $call->command->attributes['heartbeat_timeout'] ?? null, $call->cleanupSnapshot());
+            $call->command->attributes['heartbeat_timeout'] ?? null, $call->cleanupSnapshot(),
+            $call->command->attributes['cancellation_scope_id'] ?? 'root');
         $activityType = (string) $call->command->attributes['activity_type'];
         $handler = $this->activities[$activityType] ?? null;
         $arguments = $call->command->attributes['arguments_value'];

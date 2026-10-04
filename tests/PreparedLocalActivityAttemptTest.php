@@ -85,6 +85,94 @@ final class PreparedLocalActivityAttemptTest extends TestCase
         self::expectNotToPerformAssertions();
     }
 
+    public function test_scope_stop_preserves_original_membership_identity_and_narrower_budget(): void
+    {
+        $attempt = self::scopeAttempt();
+        $stop = self::scopeStop();
+        $attempt->validateControl($stop, true);
+        $context = $attempt->scopedCancellation($stop);
+        self::assertSame('inner', $attempt->cancellationScopeId);
+        self::assertSame('inner-request', $context->requestId);
+        self::assertSame('root-request', $context->rootContext->rootRequestId);
+        self::assertSame('2026-10-04T00:00:20.123456Z', $context->deadline()->format('Y-m-d\TH:i:s.u\Z'));
+        self::assertSame($context->toArray(), $attempt->scopedCancellation([
+            ...$stop, 'reason' => 'cancellation_scope_deadline_expired', 'history_refresh_page_token' => 'later-cursor',
+        ])->toArray());
+        $this->expectException(InvalidArgumentException::class);
+        $attempt->scopedCancellation([...$stop, 'cancellation_scope' => [
+            ...$stop['cancellation_scope'], 'authority_deadline_at' => '2026-10-04T00:00:16.123456Z',
+        ]]);
+    }
+
+    #[DataProvider('invalidScopeStopProvider')]
+    public function test_scope_stop_requires_the_original_fence_and_authored_membership(array $changes, array $scopeChanges): void
+    {
+        $stop = self::scopeStop();
+        $this->expectException(InvalidArgumentException::class);
+        self::scopeAttempt()->scopedCancellation([
+            ...$stop, 'cancellation_scope' => [...$stop['cancellation_scope'], ...$scopeChanges], ...$changes,
+        ]);
+    }
+
+    public static function invalidScopeStopProvider(): array
+    {
+        $cases = [];
+        foreach (['active' => true, 'renewed' => true, 'stop_required' => false, 'fenced' => false,
+            'activity_attempt_id' => 'replacement', 'workflow_task_attempt' => 5, 'lease_owner' => 'replacement',
+            'reason' => 'cancellation_requested', 'cancellation_request' => ['request_id' => 'root-request'],
+            'cancellation_scope' => null, 'cancellation_history_event_id' => '', 'history_refresh_page_token' => null] as $field => $value) {
+            $cases[$field] = [[$field => $value], []];
+        }
+        foreach (['schema' => 'unknown', 'workflow_run_id' => 'other-run', 'scope_id' => 'sibling',
+            'request_id' => 'other-request', 'request_history_event_id' => '', 'cancellation' => [],
+            'authority_deadline_at' => '2026-10-04T00:00:21.123456Z', 'extra_authority' => true] as $field => $value) {
+            $cases['scope '.$field] = [[], [$field => $value]];
+        }
+        $cases['authority before request'] = [[], ['authority_deadline_at' => '2026-10-04T00:00:00.123456Z']];
+        $cases['invalid authority timestamp'] = [[], ['authority_deadline_at' => 'tomorrow']];
+        return $cases;
+    }
+
+    public function test_scope_stop_cannot_reassign_an_unscoped_admitted_callback(): void
+    {
+        $attempt = PreparedLocalActivityAttempt::fromPreparation(self::preparation(), 'task', 'root-run', 'original', 4, 'sdk-nonce');
+        self::assertSame('root', $attempt->cancellationScopeId);
+        $this->expectException(InvalidArgumentException::class);
+        $attempt->scopedCancellation(self::scopeStop());
+    }
+
+    public function test_repeat_stop_cannot_replace_numeric_history_identities(): void
+    {
+        $stop = [...self::scopeStop(), 'cancellation_history_event_id' => '1'];
+        $attempt = self::scopeAttempt();
+        $attempt->scopedCancellation($stop);
+        $this->expectException(InvalidArgumentException::class);
+        $attempt->scopedCancellation([...$stop, 'cancellation_history_event_id' => '01']);
+    }
+
+    public function test_admission_refuses_an_empty_authored_scope(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        PreparedLocalActivityAttempt::fromPreparation(self::preparation(), 'task', 'run', 'original', 4, 'sdk-nonce', cancellationScopeId: ' ');
+    }
+
+    private static function scopeAttempt(): PreparedLocalActivityAttempt
+    {
+        return PreparedLocalActivityAttempt::fromPreparation(self::preparation(), 'task', 'root-run', 'original', 4, 'sdk-nonce', cancellationScopeId: 'inner');
+    }
+
+    private static function scopeStop(): array
+    {
+        $fixture = json_decode((string) file_get_contents(__DIR__.'/fixtures/scoped-run-cancellation-context.json'), true, flags: JSON_THROW_ON_ERROR);
+        return [...self::control(), 'active' => false, 'renewed' => false, 'stop_required' => true,
+            'reason' => 'cancellation_scope_requested', 'fenced' => true,
+            'history_refresh_page_token' => 'canonical-cursor', 'cancellation_history_event_id' => 'original-fence',
+            'cancellation_scope' => ['schema' => 'durable-workflow.activity-scope-cancellation/v1',
+                'workflow_run_id' => 'root-run', 'scope_id' => 'inner', 'request_id' => 'inner-request',
+                'request_history_event_id' => 'original-scope-request', 'cancellation' => $fixture['child']['scope_origin'],
+                'authority_deadline_at' => '2026-10-04T00:00:15.123456Z']];
+    }
+
     public function test_durable_retry_receipt_releases_exactly_one_hosting_claim(): void
     {
         self::attempt()->validateOutcome([...self::outcome(), 'event_type' => 'ActivityRetryScheduled',

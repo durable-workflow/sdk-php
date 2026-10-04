@@ -12,6 +12,9 @@ final class PreparedLocalActivityAttempt
 {
     private const DEADLINES = ['start_to_close_deadline_at', 'schedule_to_close_deadline_at'];
 
+    /** @var array<string, mixed>|null Original scope fence, never renewed callback authority. */
+    private ?array $scopeFence = null;
+
     /**
      * @param array<string, string|null> $deadlines
      * @param array{request_id: string, root_request_id: string, delivery_history_event_id: string, cleanup_deadline_at: string}|null $cleanup
@@ -29,6 +32,7 @@ final class PreparedLocalActivityAttempt
         private ?string $heartbeatDeadline,
         private readonly ?int $heartbeatTimeout,
         private readonly ?array $cleanup,
+        public readonly string $cancellationScopeId,
     ) {
     }
 
@@ -39,9 +43,11 @@ final class PreparedLocalActivityAttempt
     public static function fromPreparation(
         array $response, string $taskId, string $runId, string $owner, int $epoch, string $nonce,
         ?int $heartbeatTimeout = null, ?array $expectedCleanup = null,
+        string $cancellationScopeId = 'root',
     ): self
     {
         if ($epoch < 1 || trim($taskId) === '' || trim($runId) === '' || trim($owner) === '' || trim($nonce) === ''
+            || trim($cancellationScopeId) === ''
             || ($response['prepared'] ?? null) !== true || !is_bool($response['duplicate'] ?? null)
             || !array_key_exists('reason', $response) || $response['reason'] !== null
             || ($response['workflow_task_id'] ?? null) !== $taskId
@@ -89,7 +95,50 @@ final class PreparedLocalActivityAttempt
 
         return new self($taskId, $runId, $owner, $epoch, self::text($response, 'activity_execution_id'),
             self::text($response, 'activity_attempt_id'), $nonce, $response['attempt_number'], $deadlines,
-            $heartbeatDeadline, $heartbeatTimeout, $expectedCleanup);
+            $heartbeatDeadline, $heartbeatTimeout, $expectedCleanup, $cancellationScopeId);
+    }
+
+    /**
+     * Validate the accepted scope membership and immutable stop fact. This
+     * observation cannot renew a lease or authorize workflow cleanup.
+     * @param array<string, mixed> $response
+     */
+    public function scopedCancellation(array $response): ScopedCancellationContext
+    {
+        $this->validateIdentity($response);
+        $snapshot = $response['cancellation_scope'] ?? null;
+        $fields = ['schema', 'workflow_run_id', 'scope_id', 'request_id',
+            'request_history_event_id', 'cancellation', 'authority_deadline_at'];
+        if (($response['active'] ?? null) !== false || ($response['stop_required'] ?? null) !== true
+            || ($response['renewed'] ?? null) !== false || ($response['fenced'] ?? null) !== true
+            || !in_array($response['reason'] ?? null, ['cancellation_scope_requested', 'cancellation_scope_deadline_expired'], true)
+            || ($response['cancellation_request'] ?? null) !== null
+            || !is_array($snapshot) || count($snapshot) !== count($fields)
+            || array_diff($fields, array_keys($snapshot)) !== []
+            || $snapshot['schema'] !== 'durable-workflow.activity-scope-cancellation/v1'
+            || $snapshot['workflow_run_id'] !== $this->runId
+            || $snapshot['scope_id'] !== $this->cancellationScopeId || !is_array($snapshot['cancellation'])) {
+            throw new InvalidArgumentException('Prepared scope stop does not fence its authored membership.');
+        }
+        self::text($response, 'history_refresh_page_token');
+        $eventId = self::text($response, 'cancellation_history_event_id');
+        self::text($snapshot, 'request_history_event_id');
+        $context = ScopedCancellationContext::fromArray($snapshot['cancellation']);
+        $deadline = self::timestamp($snapshot['authority_deadline_at']);
+        if ($context->workflowRunId !== $this->runId || $context->scopeId !== $this->cancellationScopeId
+            || $snapshot['request_id'] !== $context->requestId
+            || $deadline > $context->deadline() || $deadline <= $context->requestedAt()) {
+            throw new InvalidArgumentException('Prepared scope stop changed its original request or deadline.');
+        }
+        $fact = [...$snapshot, 'cancellation' => $context->toArray(),
+            'authority_deadline_at' => $deadline->format('U.u'), 'cancellation_history_event_id' => $eventId];
+        ksort($fact);
+        if ($this->scopeFence !== null && $fact !== $this->scopeFence) {
+            throw new InvalidArgumentException('Prepared scope stop replaced its accepted cancellation fact.');
+        }
+        $this->scopeFence = $fact;
+
+        return $context;
     }
 
     /** @param array<string, mixed> $response */
