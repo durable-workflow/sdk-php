@@ -10,7 +10,10 @@ use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Worker\ActivityExecutionFailure;
 use DurableWorkflow\Worker\CooperativeActivityExecutor;
 use DurableWorkflow\Worker\CooperativeCancellationObserved;
+use DurableWorkflow\Worker\ScopedActivityCancellationObserved;
+use DurableWorkflow\Worker\ScopedCancellationContext;
 use DurableWorkflow\Worker\WorkflowClaimAborted;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Throwable;
@@ -210,6 +213,224 @@ final class CooperativeActivityExecutorTest extends TestCase
             @posix_kill($owner, SIGKILL);
             pcntl_waitpid($owner, $status, WNOHANG);
         }
+    }
+
+    #[DataProvider('scopedStopBoundaries')]
+    public function test_scoped_stop_preserves_the_live_sibling_and_its_result(string $boundary): void
+    {
+        $pids = $stopped = $results = [];
+        $request = $this->scopeRequest();
+        $operations = $this->selectiveOperations($boundary, $request, $pids, $stopped);
+        $started = hrtime(true) / 1e9;
+        try {
+            $this->executor()->executeConcurrent($operations,
+                static function (int $index, mixed $value, ?ActivityExecutionFailure $failure) use (&$results, &$stopped): void {
+                    self::assertSame(1, $index, 'The cancelled attempt published an outcome.');
+                    self::assertNull($failure);
+                    self::assertTrue($stopped[0]);
+                    self::assertTrue($stopped[1]);
+                    $results[$index] = $value;
+                });
+            self::fail('Expected the original scoped observation after sibling settlement.');
+        } catch (ScopedActivityCancellationObserved $error) {
+            self::assertSame($request, $error->request);
+            self::assertSame('inner-request', $error->request->requestId);
+            self::assertSame('2026-10-04T00:00:20.123456Z', $error->request->deadline()->format('Y-m-d\TH:i:s.u\Z'));
+            self::assertSame([1 => 'surviving-result'], $results);
+            self::assertCount(2, $stopped);
+            self::assertFileExists($this->directory.'/sibling-entered');
+            if (in_array($boundary, ['before_fork', 'before_begin'], true)) {
+                self::assertFileDoesNotExist($this->directory.'/target-entered');
+            }
+            self::assertLessThan(3, hrtime(true) / 1e9 - $started);
+        }
+    }
+
+    public static function scopedStopBoundaries(): iterable
+    {
+        foreach (['before_fork', 'before_begin', 'running', 'publication'] as $boundary) {
+            yield $boundary => [$boundary];
+        }
+    }
+
+    public function test_failed_scoped_stop_receipt_joins_the_remaining_sibling_without_publication(): void
+    {
+        $pids = $stopped = [];
+        $operations = $this->selectiveOperations('running', $this->scopeRequest(), $pids, $stopped);
+        $targetStopped = $operations[0]['stopped'];
+        $operations[0]['stopped'] = static function () use ($targetStopped): void {
+            $targetStopped();
+            throw new WorkflowClaimAborted('Stop receipt could not be recorded.');
+        };
+        try {
+            $this->executor()->executeConcurrent($operations, static function (): never {
+                self::fail('Unknown scoped stop authority allowed a sibling publication.');
+            });
+            self::fail('Expected stop receipt failure.');
+        } catch (WorkflowClaimAborted $error) {
+            self::assertSame('Stop receipt could not be recorded.', $error->getMessage());
+            foreach ($pids as $pair) {
+                foreach ($pair as $pid) { self::assertFalse(posix_kill($pid, 0)); }
+            }
+        }
+    }
+
+    public function test_scoped_stops_can_join_every_running_member_without_a_survivor(): void
+    {
+        $pids = $stopped = [];
+        $request = $this->scopeRequest();
+        $directory = $this->directory;
+        $operations = $this->selectiveOperations('running', $request, $pids, $stopped);
+        $operations[0]['stopped'] = static function () use (&$pids, &$stopped): void {
+            foreach ($pids[0] as $pid) { self::assertFalse(posix_kill($pid, 0)); }
+            $stopped[0] = true;
+        };
+        $operations[1]['callback'] = static function () use ($directory): never {
+            file_put_contents($directory.'/sibling-entered', (string) getmypid());
+            sleep(60);
+            throw new RuntimeException('Cancelled sibling escaped its callback fence.');
+        };
+        $operations[1]['check'] = static function () use ($directory, $request): void {
+            if (is_file($directory.'/target-entered') && is_file($directory.'/sibling-entered')) {
+                throw new ScopedActivityCancellationObserved($request);
+            }
+        };
+        try {
+            $this->executor()->executeConcurrent($operations, static function (): never { self::fail('A scoped member published after its fence.'); });
+            self::fail('Expected scoped cancellation.');
+        } catch (ScopedActivityCancellationObserved $error) {
+            self::assertSame($request, $error->request);
+            self::assertCount(2, $stopped);
+            foreach ($pids as $pair) {
+                foreach ($pair as $pid) { self::assertFalse(posix_kill($pid, 0)); }
+            }
+        }
+    }
+
+    public function test_sigkill_after_partial_scope_stop_stops_the_survivor_without_inventing_a_stop_receipt(): void
+    {
+        $directory = $this->directory;
+        $owner = pcntl_fork();
+        self::assertNotSame(-1, $owner);
+        if ($owner === 0) {
+            $pids = $stopped = [];
+            $operations = $this->selectiveOperations('running', $this->scopeRequest(), $pids, $stopped);
+            $operations[1]['callback'] = static function () use ($directory): never {
+                file_put_contents($directory.'/sibling-entered', (string) getmypid());
+                sleep(60);
+                file_put_contents($directory.'/late-sibling', 'unsafe');
+                throw new RuntimeException('Owner loss left a scoped survivor running.');
+            };
+            foreach ([0, 1] as $index) {
+                $started = $operations[$index]['started'];
+                $operations[$index]['started'] = static function (int $relay, int $callback) use ($index, $directory, $started): void {
+                    $started($relay, $callback);
+                    file_put_contents($directory.'/partial-pids-'.$index, json_encode([$relay, $callback], JSON_THROW_ON_ERROR));
+                };
+            }
+            $survivorStopped = $operations[1]['stopped'];
+            $operations[1]['stopped'] = static function () use ($directory, $survivorStopped): void {
+                $survivorStopped();
+                file_put_contents($directory.'/survivor-stop-receipt', 'owner joined survivor');
+            };
+            $this->executor()->executeConcurrent($operations, static function (): never { throw new RuntimeException('Killed owner published a result.'); });
+            posix_kill(getmypid(), SIGKILL);
+        }
+        try {
+            $deadline = hrtime(true) / 1e9 + 3;
+            while (!is_file($directory.'/target-stopped') && hrtime(true) / 1e9 < $deadline) { usleep(10000); }
+            self::assertFileExists($directory.'/target-stopped');
+            $survivor = json_decode((string) file_get_contents($directory.'/partial-pids-1'), true, flags: JSON_THROW_ON_ERROR);
+            self::assertTrue(posix_kill($survivor[1], 0));
+            self::assertTrue(posix_kill($owner, SIGKILL));
+            pcntl_waitpid($owner, $status);
+            self::assertSame(SIGKILL, pcntl_wtermsig($status));
+            foreach ([0, 1] as $index) {
+                foreach (json_decode((string) file_get_contents($directory.'/partial-pids-'.$index), true, flags: JSON_THROW_ON_ERROR) as $pid) {
+                    $this->assertProcessStops($pid);
+                }
+            }
+            self::assertFileDoesNotExist($directory.'/late-sibling');
+            self::assertFileDoesNotExist($directory.'/survivor-stop-receipt');
+        } finally {
+            @posix_kill($owner, SIGKILL);
+            pcntl_waitpid($owner, $status, WNOHANG);
+        }
+    }
+
+    public function test_run_cancellation_stops_a_survivor_after_a_partial_scoped_stop(): void
+    {
+        $pids = $stopped = [];
+        $operations = $this->selectiveOperations('running', $this->scopeRequest(), $pids, $stopped);
+        $acknowledged = $this->directory.'/target-stopped';
+        $operations[1]['check'] = static function () use ($acknowledged): void {
+            if (is_file($acknowledged)) { throw new CooperativeCancellationObserved('enclosing run request'); }
+        };
+        try {
+            $this->executor()->executeConcurrent($operations, static function (): never {
+                self::fail('Run cancellation allowed a sibling publication.');
+            });
+            self::fail('Expected run cancellation to supersede the partial wait.');
+        } catch (CooperativeCancellationObserved $error) {
+            self::assertSame('enclosing run request', $error->getMessage());
+            self::assertCount(2, $stopped);
+            foreach ($pids as $pair) {
+                foreach ($pair as $pid) { self::assertFalse(posix_kill($pid, 0)); }
+            }
+        }
+    }
+
+    private function scopeRequest(): ScopedCancellationContext
+    {
+        $fixture = json_decode((string) file_get_contents(__DIR__.'/fixtures/scoped-run-cancellation-context.json'), true, flags: JSON_THROW_ON_ERROR);
+        return ScopedCancellationContext::fromArray($fixture['child']['scope_origin']);
+    }
+
+    /** @param array<int, array{int, int}> $pids
+     * @param array<int, bool> $stopped
+     * @return list<array{callback: Closure, heartbeat: Closure, check: Closure, started: Closure, stopped: Closure}>
+     */
+    private function selectiveOperations(string $boundary, ScopedCancellationContext $request, array &$pids, array &$stopped): array
+    {
+        $directory = $this->directory;
+        $owner = getmypid();
+        $operations = [];
+        foreach ([0, 1] as $index) {
+            $operations[] = [
+                'callback' => static function () use ($directory, $index, $boundary): string {
+                    file_put_contents($directory.($index === 0 ? '/target-entered' : '/sibling-entered'), (string) getmypid());
+                    if ($index === 0 && $boundary === 'running') { sleep(60); return 'unsafe'; }
+                    $wait = $directory.($index === 0 ? '/sibling-entered' : '/target-stopped');
+                    $deadline = hrtime(true) / 1e9 + 3;
+                    while (!is_file($wait) && hrtime(true) / 1e9 < $deadline) { usleep(10000); }
+                    if (!is_file($wait)) { throw new RuntimeException('Surviving callback lost concurrent supervision or the target was never stopped.'); }
+                    return $index === 0 ? 'unsafe' : 'surviving-result';
+                },
+                'heartbeat' => static function (): never { self::fail('Scoped stopping must not require application heartbeats.'); },
+                'check' => static function (bool $force) use ($index, $directory, $boundary, $request, $owner, &$pids): void {
+                    self::assertSame($owner, getmypid());
+                    if ($index !== 0) { return; }
+                    if ($boundary === 'before_fork'
+                        || ($boundary === 'before_begin' && isset($pids[0]))
+                        || ($boundary === 'running' && !$force && is_file($directory.'/target-entered') && is_file($directory.'/sibling-entered'))
+                        || ($boundary === 'publication' && $force && is_file($directory.'/target-entered') && is_file($directory.'/sibling-entered'))) {
+                        throw new ScopedActivityCancellationObserved($request);
+                    }
+                },
+                'started' => static function (int $relay, int $callback) use ($index, &$pids): void { $pids[$index] = [$relay, $callback]; },
+                'stopped' => static function () use ($index, $directory, $boundary, &$pids, &$stopped): void {
+                    foreach ($pids[$index] ?? [] as $pid) { self::assertFalse(posix_kill($pid, 0)); }
+                    if ($index === 0) {
+                        if (in_array($boundary, ['running', 'publication'], true)) {
+                            self::assertTrue(posix_kill($pids[1][1], 0), 'Partial cancellation killed the unrelated callback.');
+                        }
+                        file_put_contents($directory.'/target-stopped', 'original owner joined target');
+                    }
+                    $stopped[$index] = true;
+                },
+            ];
+        }
+        return $operations;
     }
 
     public function testCancellationStopsARealBlockingCallbackWithoutUserHeartbeats(): void
