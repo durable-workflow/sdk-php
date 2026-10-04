@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import signal
 import sys
@@ -40,6 +41,9 @@ def child_cleanup(request_id: str, context: dict[str, Any]) -> str:
 
 
 async def main() -> None:
+    # Retain SDK poll/admission observations without enabling HTTP wire logging.
+    logging.basicConfig(level=logging.WARNING)
+    logging.getLogger("durable_workflow.worker").setLevel(logging.DEBUG)
     queue = sys.argv[1]
     os.environ["DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION"] = "1.20"
     shutdown = asyncio.Event()
