@@ -14,8 +14,9 @@ the workflow context returns `null`. Observing a request through polling or a
 heartbeat does not expose future cancellation metadata to earlier workflow code.
 
 The PHP Source context provides `deadline()` and `remaining()`. The deadline is
-the original root deadline. Remaining seconds use the committed cancellation
-delivery time, then advance when cleanup resumes from a resolved blocking
+the accepted cleanup deadline, bounded by the original root deadline. A scoped
+child may have an earlier authority ceiling. Remaining seconds use the committed
+cancellation delivery time, then advance when cleanup resumes from a resolved blocking
 operation. A synchronous side effect, version marker, metadata update or legacy
 inline local callback does not move that clock when its result is later
 persisted. Selection uses its committed winner marker, then the particular
@@ -51,6 +52,17 @@ metadata is limited to caller type, ID and label. The timestamp helpers return
 immutable dates. A child keeps the root time and budget even if its local request
 is accepted later. Cold replay restores the same snapshot from canonical request
 history. Explicit cancellation checks and shielded cleanup retain it.
+
+Candidate context v2 carries `scopeOrigin`, an immutable
+`ScopedCancellationContext` containing the original root context and every
+scope address in order. Its `deadline()` is the originating scope's budget,
+while `rootDeadline()` preserves the original global deadline. The child
+context's own `deadline()` may be earlier when parent authority is narrower.
+The immediate parent request identifies the last scope hop, including multiple
+scopes within the same run. The parser verifies that the run lineage derives
+from that complete tree and rejects changed metadata, repeated addresses,
+reentry into an earlier run or a larger budget. Reading this metadata does
+not enable scope execution. Both v1 and v2 contexts remain readable.
 
 The parser rejects mismatched local runs, request identities, budgets, invalid
 lineage and a delivery snapshot that changes the accepted context. Heartbeat

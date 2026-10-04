@@ -1,0 +1,164 @@
+{
+    "native_commit": "a51395da59ef70945f91f00581ecb6bad8765bdd",
+    "child": {
+        "schema": "durable-workflow.cancellation-context/v2",
+        "request_id": "child-request",
+        "root_request_id": "root-request",
+        "root_workflow_instance_id": "root-instance",
+        "root_workflow_run_id": "root-run",
+        "parent_request_id": "inner-request",
+        "reason": "maintenance",
+        "requester": {
+            "type": "operator",
+            "id": "operator-1"
+        },
+        "source": "api",
+        "requested_at": "2026-10-04T00:00:00.123456Z",
+        "cleanup_deadline_at": "2026-10-04T00:00:15.123456Z",
+        "lineage": [
+            {
+                "request_id": "root-request",
+                "workflow_instance_id": "root-instance",
+                "workflow_run_id": "root-run"
+            },
+            {
+                "request_id": "child-request",
+                "workflow_instance_id": "child-instance",
+                "workflow_run_id": "child-run"
+            }
+        ],
+        "scope_origin": {
+            "schema": "durable-workflow.scoped-cancellation-context/v1",
+            "root_context": {
+                "schema": "durable-workflow.cancellation-context/v1",
+                "request_id": "root-request",
+                "root_request_id": "root-request",
+                "root_workflow_instance_id": "root-instance",
+                "root_workflow_run_id": "root-run",
+                "parent_request_id": null,
+                "reason": "maintenance",
+                "requester": {
+                    "type": "operator",
+                    "id": "operator-1"
+                },
+                "source": "api",
+                "requested_at": "2026-10-04T00:00:00.123456Z",
+                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                "lineage": [
+                    {
+                        "request_id": "root-request",
+                        "workflow_instance_id": "root-instance",
+                        "workflow_run_id": "root-run"
+                    }
+                ]
+            },
+            "lineage": [
+                {
+                    "request_id": "root-request",
+                    "workflow_instance_id": "root-instance",
+                    "workflow_run_id": "root-run",
+                    "scope_id": "outer",
+                    "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                },
+                {
+                    "request_id": "inner-request",
+                    "workflow_instance_id": "root-instance",
+                    "workflow_run_id": "root-run",
+                    "scope_id": "inner",
+                    "cleanup_deadline_at": "2026-10-04T00:00:20.123456Z"
+                }
+            ]
+        },
+        "scope_authority_deadline_at": "2026-10-04T00:00:15.123456Z"
+    },
+    "grandchild": {
+        "schema": "durable-workflow.cancellation-context/v2",
+        "request_id": "grandchild-request",
+        "root_request_id": "root-request",
+        "root_workflow_instance_id": "root-instance",
+        "root_workflow_run_id": "root-run",
+        "parent_request_id": "child-scope-request",
+        "reason": "maintenance",
+        "requester": {
+            "type": "operator",
+            "id": "operator-1"
+        },
+        "source": "api",
+        "requested_at": "2026-10-04T00:00:00.123456Z",
+        "cleanup_deadline_at": "2026-10-04T00:00:12.123456Z",
+        "lineage": [
+            {
+                "request_id": "root-request",
+                "workflow_instance_id": "root-instance",
+                "workflow_run_id": "root-run"
+            },
+            {
+                "request_id": "child-scope-request",
+                "workflow_instance_id": "child-instance",
+                "workflow_run_id": "child-run"
+            },
+            {
+                "request_id": "grandchild-request",
+                "workflow_instance_id": "grandchild-instance",
+                "workflow_run_id": "grandchild-run"
+            }
+        ],
+        "scope_origin": {
+            "schema": "durable-workflow.scoped-cancellation-context/v1",
+            "root_context": {
+                "schema": "durable-workflow.cancellation-context/v1",
+                "request_id": "root-request",
+                "root_request_id": "root-request",
+                "root_workflow_instance_id": "root-instance",
+                "root_workflow_run_id": "root-run",
+                "parent_request_id": null,
+                "reason": "maintenance",
+                "requester": {
+                    "type": "operator",
+                    "id": "operator-1"
+                },
+                "source": "api",
+                "requested_at": "2026-10-04T00:00:00.123456Z",
+                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                "lineage": [
+                    {
+                        "request_id": "root-request",
+                        "workflow_instance_id": "root-instance",
+                        "workflow_run_id": "root-run"
+                    }
+                ]
+            },
+            "lineage": [
+                {
+                    "request_id": "root-request",
+                    "workflow_instance_id": "root-instance",
+                    "workflow_run_id": "root-run",
+                    "scope_id": "outer",
+                    "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                },
+                {
+                    "request_id": "inner-request",
+                    "workflow_instance_id": "root-instance",
+                    "workflow_run_id": "root-run",
+                    "scope_id": "inner",
+                    "cleanup_deadline_at": "2026-10-04T00:00:20.123456Z"
+                },
+                {
+                    "request_id": "child-request",
+                    "workflow_instance_id": "child-instance",
+                    "workflow_run_id": "child-run",
+                    "scope_id": "root",
+                    "cleanup_deadline_at": "2026-10-04T00:00:15.123456Z"
+                },
+                {
+                    "request_id": "child-scope-request",
+                    "workflow_instance_id": "child-instance",
+                    "workflow_run_id": "child-run",
+                    "scope_id": "child-scope",
+                    "cleanup_deadline_at": "2026-10-04T00:00:12.123456Z"
+                }
+            ]
+        },
+        "scope_authority_deadline_at": "2026-10-04T00:00:12.123456Z"
+    }
+}
