@@ -188,6 +188,111 @@ final class CooperativeCancellationTest extends TestCase
         }
     }
 
+    public function test_scope_authoring_survives_lost_replies_and_cold_replacement_without_reparenting(): void
+    {
+        if (getenv('DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION') !== '1') {
+            self::markTestSkipped('Scope authoring requires the exact Native source overlay.');
+        }
+        $queue = $this->queue('scope-authoring');
+        $transport = new class(new Psr18Transport()) implements BoundedTransport {
+            public array $controls = [];
+            public array $lost = [];
+            public int $historyPages = 0;
+            public function __construct(private readonly BoundedTransport $inner) {}
+            public function supportsBoundedRequests(): bool { return true; }
+            public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
+            {
+                return $this->sendBounded($method, $uri, $headers, $body, 5);
+            }
+            public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
+            {
+                if (str_ends_with($uri, '/history')) { $body['history_page_size'] = 1; ++$this->historyPages; }
+                $response = $this->inner->sendBounded($method, $uri, $headers, $body, $timeoutSeconds);
+                foreach (['checkpoint', 'open'] as $operation) {
+                    if (!str_ends_with($uri, '/cancellation-scopes/'.$operation)) { continue; }
+                    $this->controls[$operation][] = ['request' => $body, 'response' => $response];
+                    if (!isset($this->lost[$operation])) {
+                        $this->lost[$operation] = true;
+                        throw new TransportException('Accepted '.$operation.' response intentionally lost.', transientConnectionFailure: true);
+                    }
+                }
+                return $response;
+            }
+        };
+        $client = $this->client($transport)->withBoundedWorkerRequests();
+        $sideEffectCalls = 0;
+        $makeWorker = function (string $owner) use ($queue, $client, &$sideEffectCalls): Worker {
+            $worker = new Worker($client, $queue, workerId: $owner, enableCooperativeCancellation: true);
+            $worker->registerWorkflow('tests.php-scope-authoring', static function (WorkflowContext $context) use (&$sideEffectCalls): array {
+                $context->sideEffect(static function () use (&$sideEffectCalls): string { ++$sideEffectCalls; return 'once'; });
+                $leaves = $context->cancellationScope(static function () use ($context): array {
+                    return [
+                        $context->deferActivity('tests.php-scope-leaf', ['inside']),
+                        $context->cancellationScope(static fn () => $context->deferTimer(0), shieldParent: true),
+                        $context->deferChildWorkflow('tests.php-scope-child'),
+                    ];
+                });
+                $results = $context->all($leaves);
+                $results[] = $context->activity('tests.php-scope-leaf', ['root']);
+                return $results;
+            });
+            $worker->registerWorkflow('tests.php-scope-child', static fn (): string => 'child');
+            $worker->registerActivity('tests.php-scope-leaf', static fn (ActivityContext $_context, string $value): string => $value);
+            $client->registerWorker($owner, $queue, ['tests.php-scope-authoring', 'tests.php-scope-child'], ['tests.php-scope-leaf'],
+                ['workflow_tasks', 'activity_tasks', 'cooperative_cancellation'], capabilityManifest: $worker->capabilityManifest()->toArray());
+            return $worker;
+        };
+        $owners = [$queue.'-original', $queue.'-replacement'];
+        $handle = null;
+        try {
+            $worker = $makeWorker($owners[0]);
+            $handle = $client->startWorkflow('tests.php-scope-authoring', $queue, $queue);
+            self::assertTrue($worker->tick(0));
+            $initial = iterator_to_array($handle->history());
+            $openings = array_values(array_filter($initial, static fn (array $event): bool => $event['event_type'] === 'CancellationScopeOpened'));
+            self::assertCount(2, $openings);
+            self::assertSame('root', $openings[0]['payload']['parent_scope_id']);
+            self::assertFalse($openings[0]['payload']['shield_parent']);
+            self::assertSame($openings[0]['payload']['scope_id'], $openings[1]['payload']['parent_scope_id']);
+            self::assertTrue($openings[1]['payload']['shield_parent']);
+            $client->deregisterWorkerRegistration($owners[0]);
+            $worker = $makeWorker($owners[1]);
+            $deadline = microtime(true) + 20;
+            do {
+                $worker->tick(0);
+                if (($handle->describe()->raw['status'] ?? null) === 'Succeeded') { break; }
+                usleep(50000);
+            } while (microtime(true) < $deadline);
+            self::assertSame(['inside', null, 'child', 'root'], $handle->result(5));
+            self::assertSame(1, $sideEffectCalls);
+            $final = iterator_to_array($handle->history());
+            self::assertSame($openings, array_values(array_filter($final,
+                static fn (array $event): bool => $event['event_type'] === 'CancellationScopeOpened')));
+            foreach (['checkpoint', 'open'] as $operation) {
+                self::assertTrue($transport->lost[$operation]);
+                self::assertSame($transport->controls[$operation][0]['request'], $transport->controls[$operation][1]['request']);
+                self::assertTrue($transport->controls[$operation][1]['response']['duplicate']);
+                self::assertSame($owners[0], $transport->controls[$operation][0]['request']['lease_owner']);
+            }
+            $scheduled = array_values(array_filter($final, static fn (array $event): bool =>
+                in_array($event['event_type'], ['ActivityScheduled', 'TimerScheduled', 'ChildWorkflowScheduled'], true)));
+            self::assertCount(4, $scheduled);
+            self::assertSame($openings[0]['payload']['scope_id'], $scheduled[0]['payload']['activity']['cancellation_scope_id']);
+            self::assertSame($openings[1]['payload']['scope_id'], $scheduled[1]['payload']['cancellation_scope_id']);
+            self::assertSame($openings[0]['payload']['scope_id'], $scheduled[2]['payload']['cancellation_scope_id']);
+            self::assertSame('root', $scheduled[3]['payload']['activity']['cancellation_scope_id'] ?? 'root');
+            self::assertGreaterThan(count($openings), $transport->historyPages);
+            file_put_contents($this->directory.'/scope-authoring-proof.json', json_encode([
+                'original_and_replacement_owner' => $owners, 'side_effect_calls' => $sideEffectCalls,
+                'controls' => $transport->controls, 'canonical_history' => $final, 'history_page_requests' => $transport->historyPages,
+                'scoped_cancellation_delivery_qualified' => false,
+            ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
+        } finally {
+            if ($handle !== null) { $this->retainRunEvidence($client, $handle, 'scope-authoring'); $handle->terminateSelectedRun('scope authoring fixture complete'); }
+            foreach ($owners as $owner) { $client->deregisterWorkerRegistration($owner); }
+        }
+    }
+
     #[DataProvider('booleanProvider')]
     public function testWaitingTimerRunsCleanupAfterLiveOrColdWorkerDelivery(bool $coldReplacement): void
     {

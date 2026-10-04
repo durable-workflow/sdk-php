@@ -23,6 +23,7 @@ final class ReplayResult
         public readonly ?CancellationDelivery $cancellationDelivery = null,
         public readonly ?PreparedLocalActivityCall $preparedLocalActivity = null,
         public readonly ?PreparedLocalActivityGroup $preparedLocalActivityGroup = null,
+        public readonly ?CancellationScopeOpening $cancellationScopeOpening = null,
     ) {
     }
 }

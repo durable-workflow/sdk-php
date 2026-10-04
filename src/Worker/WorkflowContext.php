@@ -36,6 +36,8 @@ final class WorkflowContext
 
     private int $cancellationShieldDepth = 0;
 
+    private string $cancellationScopeId = 'root';
+
     private ?string $deliveredCancellationRequestId = null;
 
     private ?CancellationContext $deliveredCancellationContext = null;
@@ -71,9 +73,41 @@ final class WorkflowContext
         private readonly bool $prepareLocalActivities = false,
         private readonly bool $prepareLocalActivityGroups = false,
         private readonly array $localActivityCancellationPolicies = [],
+        private readonly bool $allowCancellationScopeAuthoring = false,
     ) {
         $this->execution = $execution;
         $this->loadMessageStreamMessages();
+    }
+
+    /**
+     * @internal Unfrozen candidate authoring, without scoped delivery support.
+     * The body starts only after its original opening has committed. Deferred
+     * operations keep this immediate membership after the body returns.
+     *
+     * @param callable(): mixed $body
+     */
+    public function cancellationScope(callable $body, bool $shieldParent = false): mixed
+    {
+        $this->assertActiveFiber();
+        if (!$this->allowCancellationScopeAuthoring) {
+            throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker has not enabled candidate scope authoring.');
+        }
+        if ($this->isCapturing()) {
+            throw new WorkflowClaimAborted('cancellation_scope_opening_inside_group_not_supported: open the scope before capturing its operations.');
+        }
+        $parent = $this->cancellationScopeId;
+        $scopeId = $this->suspend(new WorkflowCommand('open_cancellation_scope', 'cancellation_scope', [
+            'parent_scope_id' => $parent, 'shield_parent' => $shieldParent,
+        ]));
+        if (!is_string($scopeId) || $scopeId === '' || $scopeId === 'root') {
+            throw new WorkflowClaimAborted('Scope body requires its original canonical opening identity.');
+        }
+        $this->cancellationScopeId = $scopeId;
+        try {
+            return $body();
+        } finally {
+            $this->cancellationScopeId = $parent;
+        }
     }
 
     public function messageStream(string $name): MessageStream
@@ -218,6 +252,9 @@ final class WorkflowContext
     public function localActivity(string $activityType, array $arguments = [], array $options = []): mixed
     {
         $this->assertActiveFiber();
+        if ($this->cancellationScopeId !== 'root') {
+            throw new WorkflowClaimAborted('cancellation_scope_local_activity_not_supported: this PHP worker has not qualified selective callback supervision.');
+        }
         if ($this->prepareLocalActivities && $this->isCapturing() && !$this->prepareLocalActivityGroups) {
             throw new WorkflowClaimAborted(
                 'prepared_local_parallel_admission_unavailable: the installed prepared-local contract cannot atomically admit this group.',
@@ -308,12 +345,12 @@ final class WorkflowContext
         $condition = Closure::fromCallable($predicate);
         $timeoutSeconds = $timeout === null ? null : max(0, (int) ceil($timeout));
 
-        return new DeferredWorkflowOperation(WorkflowCommand::conditionWait(
+        return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::conditionWait(
             $condition,
             self::conditionKey($key),
             ConditionWaitDefinition::fingerprint($condition),
             $timeoutSeconds,
-        ));
+        )));
     }
 
     /**
@@ -342,7 +379,7 @@ final class WorkflowContext
     {
         $this->assertActiveFiber();
 
-        return new DeferredWorkflowOperation(WorkflowCommand::activity($activityType, $arguments, $options));
+        return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::activity($activityType, $arguments, $options)));
     }
 
     /** Prepare a durable timer for an all/parallel barrier. */
@@ -350,7 +387,7 @@ final class WorkflowContext
     {
         $this->assertActiveFiber();
 
-        return new DeferredWorkflowOperation(WorkflowCommand::timer((int) ceil($seconds)));
+        return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::timer((int) ceil($seconds))));
     }
 
     /**
@@ -366,7 +403,7 @@ final class WorkflowContext
     ): DeferredWorkflowOperation {
         $this->assertActiveFiber();
 
-        return new DeferredWorkflowOperation(WorkflowCommand::childWorkflow($workflowType, $arguments, $options));
+        return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::childWorkflow($workflowType, $arguments, $options)));
     }
 
     /**
@@ -714,6 +751,16 @@ final class WorkflowContext
         $this->assertActiveFiber();
 
         return WorkflowFiberSuspension::suspend($command);
+    }
+
+    private function withCancellationScope(WorkflowCommand $command): WorkflowCommand
+    {
+        if (array_key_exists('cancellation_scope_id', $command->attributes)) {
+            throw new \InvalidArgumentException('Operation scope membership is assigned by the workflow authoring boundary.');
+        }
+
+        return $this->cancellationScopeId === 'root' ? $command
+            : $command->withAttributes(['cancellation_scope_id' => $this->cancellationScopeId]);
     }
 
     private function assertActiveFiber(): void

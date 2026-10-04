@@ -1294,12 +1294,13 @@ final class Client implements WorkflowClientInterface
         string $leaseOwner,
         int $attempt,
         string $nextPageToken,
+        ?RequestBudget $budget = null,
     ): array {
-        return $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/history', [
+        return $this->request('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/history', true, [
             'lease_owner' => $leaseOwner,
             'workflow_task_attempt' => $attempt,
             'next_history_page_token' => $nextPageToken,
-        ]);
+        ], budget: $budget);
     }
 
     /**

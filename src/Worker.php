@@ -1251,7 +1251,7 @@ final class Worker
     /** @param array<string, mixed> $task
      * @return list<array<string, mixed>>
      */
-    private function refreshWorkflowClaimHistory(array $task, string $token, bool $requireCancellation = false): array
+    private function refreshWorkflowClaimHistory(array $task, string $token, bool $requireCancellation = false, ?RequestBudget $budget = null): array
     {
         if (trim($token) === '') {
             throw new WorkflowClaimAborted('Claim history refresh needs a nonempty Server-issued cursor.');
@@ -1266,7 +1266,7 @@ final class Worker
             $seen[$token] = true;
             try {
                 $page = $this->client->workflowTaskHistory((string) $task['task_id'],
-                    (string) ($task['lease_owner'] ?? $this->workerId), (int) ($task['workflow_task_attempt'] ?? 1), $token);
+                    (string) ($task['lease_owner'] ?? $this->workerId), (int) ($task['workflow_task_attempt'] ?? 1), $token, $budget);
             } catch (Throwable $error) {
                 throw new WorkflowClaimAborted('Canonical cancellation history could not be loaded on this claim.', previous: $error);
             }
@@ -1311,6 +1311,7 @@ final class Worker
             $history = $this->refreshCancellationHistory($task);
         }
         $cancellationPasses = 0;
+        $lastScopeOpening = 0;
         while (true) {
             $observation = $this->claimCancellation === null ? null : $this->claimCancellationObservation();
             $state = CancellationHistory::fromEvents($history, (string) ($task['run_id'] ?? ''),
@@ -1326,7 +1327,7 @@ final class Worker
                     fn (string $activityType, array $arguments, array $options): array => $this->executeLocalActivity(
                         $task, $activityType, $arguments, $options,
                     ), $this->enablePreparedLocalActivities, $this->preparedLocalActivityGroupsSupported,
-                    $this->preparedLocalActivityCancellationPolicies);
+                    $this->preparedLocalActivityCancellationPolicies, allowCancellationScopeAuthoring: $this->enableCooperativeCancellation);
             } catch (CooperativeCancellationObserved) {
                 if (++$cancellationPasses > 3) {
                     throw new WorkflowClaimAborted('Cancellation replay did not converge on its canonical delivery.');
@@ -1344,6 +1345,24 @@ final class Worker
             }
             if ($replay->terminalFailure instanceof WorkflowClaimAborted) {
                 throw $replay->terminalFailure;
+            }
+            if ($replay->cancellationScopeOpening !== null) {
+                $opening = $replay->cancellationScopeOpening;
+                if ($opening->sequence <= $lastScopeOpening) {
+                    throw new WorkflowClaimAborted('Scope authoring did not advance past its original canonical opening.');
+                }
+                if ($replay->commands !== []) {
+                    $history = $this->checkpointPreparedLocalPrefix($task, $replay->commands, $opening->sequence, scopePrefix: true);
+                } else {
+                    $receipt = $this->client->openCancellationScopeOnClaim(
+                        (string) $task['task_id'], (string) $task['run_id'],
+                        (string) ($task['lease_owner'] ?? $this->workerId), (int) ($task['workflow_task_attempt'] ?? 1),
+                        $opening->sequence, $opening->parentScopeId, $opening->shieldParent,
+                    );
+                    $history = $receipt->history;
+                    $lastScopeOpening = $opening->sequence;
+                }
+                continue;
             }
             if ($replay->preparedLocalActivityGroup !== null) {
                 try {
@@ -1477,7 +1496,7 @@ final class Worker
      * @param list<array<string, mixed>> $commands
      * @return list<array<string, mixed>>
      */
-    private function checkpointPreparedLocalPrefix(array $task, array $commands, int $nextSequence): array
+    private function checkpointPreparedLocalPrefix(array $task, array $commands, int $nextSequence, bool $scopePrefix = false): array
     {
         $this->assertWorkflowMemoUpdatesAvailable($commands);
         foreach ($commands as $command) {
@@ -1490,9 +1509,19 @@ final class Worker
         $epoch = (int) ($task['workflow_task_attempt'] ?? 1);
         $start = $nextSequence - count($commands);
         $checkpointId = hash('sha256', json_encode([$taskId, $owner, $epoch, $start, $commands], JSON_THROW_ON_ERROR));
-        $receipt = $this->client->preparedLocalActivityOperation($taskId, $owner, $epoch, 'checkpoint', [
-            'checkpoint_id' => $checkpointId, 'start_sequence' => $start, 'commands' => $commands,
-        ]);
+        $body = ['checkpoint_id' => $checkpointId, 'start_sequence' => $start, 'commands' => $commands];
+        $budget = $scopePrefix ? new RequestBudget(5) : null;
+        try {
+            $receipt = $scopePrefix
+                ? $this->client->cancellationScopeOperation($taskId, $owner, $epoch, 'checkpoint', $body, $budget)
+                : $this->client->preparedLocalActivityOperation($taskId, $owner, $epoch, 'checkpoint', $body);
+        } catch (ServerException $error) {
+            if (!$scopePrefix || (!$error->isTransientConnectionFailure() && !$error->isTransientUpstreamFailure())) {
+                throw $error;
+            }
+            $budget?->remainingSeconds();
+            $receipt = $this->client->cancellationScopeOperation($taskId, $owner, $epoch, 'checkpoint', $body, $budget);
+        }
         if (($receipt['checkpointed'] ?? null) !== true || !is_bool($receipt['duplicate'] ?? null)
             || ($receipt['checkpoint_id'] ?? null) !== $checkpointId
             || ($receipt['task_id'] ?? null) !== $taskId || ($receipt['workflow_run_id'] ?? null) !== (string) $task['run_id']
@@ -1502,7 +1531,33 @@ final class Worker
             throw new WorkflowClaimAborted('Prepared local prefix lacks its original retained-claim receipt.');
         }
 
-        return $this->refreshPreparedLocalHistory($task, $receipt);
+        if (!$scopePrefix) {
+            return $this->refreshPreparedLocalHistory($task, $receipt);
+        }
+        $token = $receipt['history_refresh_page_token'] ?? null;
+        if (!is_string($token) || trim($token) === '') {
+            throw new WorkflowClaimAborted('Scope prefix lacks its original canonical history cursor.');
+        }
+        $history = $this->refreshWorkflowClaimHistory($task, $token, budget: $budget);
+        $expected = [];
+        foreach ($commands as $offset => $command) {
+            $expected[$start + $offset] = match ($command['type']) {
+                'record_side_effect' => 'SideEffectRecorded', 'record_version_marker' => 'VersionMarkerRecorded',
+                'upsert_memo' => 'MemoUpserted', 'upsert_search_attributes' => 'SearchAttributesUpserted',
+            };
+        }
+        foreach ($history as $event) {
+            $sequence = $event['payload']['sequence'] ?? null;
+            if (is_int($sequence) && ($expected[$sequence] ?? null) === ($event['event_type'] ?? $event['type'] ?? null)) {
+                unset($expected[$sequence]);
+            }
+        }
+        if ($expected !== []) {
+            throw new WorkflowClaimAborted('Scope prefix commands are absent from the original canonical history.');
+        }
+        $budget?->remainingSeconds();
+
+        return $history;
     }
 
     /** @param array<string, mixed> $task

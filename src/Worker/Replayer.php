@@ -45,6 +45,7 @@ final class Replayer
         bool $prepareLocalActivities = false,
         bool $prepareLocalActivityGroups = false,
         array $localActivityCancellationPolicies = [],
+        bool $allowCancellationScopeAuthoring = false,
     ): ReplayResult {
         if ($prepareLocalActivityGroups && !$prepareLocalActivities) {
             throw new LogicException('Prepared local groups require prepared local activity admission.');
@@ -52,7 +53,8 @@ final class Replayer
         if ($localActivityCancellationPolicies !== [] && !$prepareLocalActivities) {
             throw new LogicException('Local cancellation policies require prepared local activity admission.');
         }
-        $this->assertCancellationScopeReplaySupported($history);
+        $this->assertCancellationScopeReplaySupported($history, $allowCancellationScopeAuthoring, $task);
+        $scopes = new CancellationScopeHistory($history, (string) ($task['run_id'] ?? ''));
         $observation = $task['cancellation_request'] ?? null;
         if ($observation !== null && (!is_array($observation) || array_is_list($observation))) {
             throw new NonDeterministicWorkflow('Workflow cancellation observation must be an object.');
@@ -65,7 +67,8 @@ final class Replayer
         } catch (\InvalidArgumentException $error) {
             throw new NonDeterministicWorkflow($error->getMessage(), reason: 'invalid_cooperative_cancellation_history');
         }
-        $steps = $this->recordedSteps($history, $cancellation->request !== null);
+        $strictSequences = $cancellation->request !== null || $scopes->openings !== [];
+        $steps = $this->recordedSteps($history, $strictSequences, $scopes);
         $stepsBySequence = [];
         foreach ($steps as $step) {
             $stepsBySequence[$step['sequence']] = $step;
@@ -77,7 +80,7 @@ final class Replayer
         $selectionOperationIdentities = $this->selectionOperationIdentities($history);
         $completedHistory = $this->hasCompletedHistory($history);
         $context = null;
-        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, &$context): mixed {
+        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowCancellationScopeAuthoring, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -96,6 +99,7 @@ final class Replayer
                 $prepareLocalActivities,
                 $prepareLocalActivityGroups,
                 $localActivityCancellationPolicies,
+                $allowCancellationScopeAuthoring && $cancellation->request === null,
             );
 
             try {
@@ -160,7 +164,7 @@ final class Replayer
             }
             if ($suspended instanceof ParallelWorkflowCommand) {
                 $commandsBeforeGroup = count($commands);
-                $baseSequence = $cancellation->request === null && isset($steps[$stepCursor])
+                $baseSequence = !$strictSequences && isset($steps[$stepCursor])
                     ? $steps[$stepCursor]['sequence']
                     : $nextSequence;
                 $descriptors = $suspended->leafDescriptors($baseSequence);
@@ -222,7 +226,7 @@ final class Replayer
                     }
 
                     ++$matched;
-                    if ($cancellation->request !== null && $step['sequence'] !== $baseSequence + $offset) {
+                    if ($strictSequences && $step['sequence'] !== $baseSequence + $offset) {
                         throw new NonDeterministicWorkflow('Recorded parallel member belongs to a different authored call.', $baseSequence + $offset);
                     }
                     $this->assertCommandMatchesStep($command, $step);
@@ -408,6 +412,29 @@ final class Replayer
             if (!$suspended instanceof WorkflowCommand) {
                 throw new NonDeterministicWorkflow('Workflow suspended with an unsupported value instead of WorkflowCommand.');
             }
+
+            if ($suspended->type === 'open_cancellation_scope') {
+                $step = $steps[$stepCursor] ?? null;
+                if ($step === null) {
+                    if ($completedHistory) {
+                        throw new NonDeterministicWorkflow('Completed history has no authored scope opening.', $nextSequence);
+                    }
+
+                    return $this->result($commands, $context, cancellationScopeOpening: new CancellationScopeOpening(
+                        $nextSequence, (string) $suspended->attributes['parent_scope_id'], (bool) $suspended->attributes['shield_parent'],
+                    ));
+                }
+                if ($step['shape'] !== 'cancellation_scope' || $step['sequence'] !== $nextSequence
+                    || ($step['scope_parent'] ?? null) !== $suspended->attributes['parent_scope_id']
+                    || ($step['scope_shield'] ?? null) !== $suspended->attributes['shield_parent']) {
+                    throw new NonDeterministicWorkflow('Authored scope opening, parent or shielding changed.', $nextSequence,
+                        reason: 'cancellation_scope_opening_changed');
+                }
+                ++$stepCursor;
+                ++$nextSequence;
+                $suspended = $execution->resume($step['value']);
+                continue;
+            }
             if ($suspended->type === 'continue_as_new') {
                 $this->assertCancellationConsumed($cancellation, $cancellationConsumed);
                 $this->assertNoRemainingSteps($steps, $stepCursor, 'continue_as_new');
@@ -518,7 +545,7 @@ final class Replayer
 
             $step = $steps[$stepCursor] ?? null;
             if ($step !== null) {
-                if ($cancellation->request !== null && $step['sequence'] !== $nextSequence) {
+                if ($strictSequences && $step['sequence'] !== $nextSequence) {
                     throw new NonDeterministicWorkflow('Recorded result belongs to a different authored call.', $nextSequence);
                 }
                 $this->assertCommandMatchesStep($suspended, $step);
@@ -770,6 +797,7 @@ final class Replayer
         ?string $failedActivityExecutionId = null,
         ?PreparedLocalActivityCall $preparedLocalActivity = null,
         ?PreparedLocalActivityGroup $preparedLocalActivityGroup = null,
+        ?CancellationScopeOpening $cancellationScopeOpening = null,
     ): ReplayResult {
         return new ReplayResult(
             $commands,
@@ -780,6 +808,7 @@ final class Replayer
             $failedActivityExecutionId,
             preparedLocalActivity: $preparedLocalActivity,
             preparedLocalActivityGroup: $preparedLocalActivityGroup,
+            cancellationScopeOpening: $cancellationScopeOpening,
         );
     }
 
@@ -894,26 +923,38 @@ final class Replayer
             && $previous['timeout_seconds'] === $next['timeout_seconds'];
     }
 
-    /** @param list<array<string, mixed>> $history */
-    private function assertCancellationScopeReplaySupported(array $history): void
+    /** @param list<array<string, mixed>> $history
+     * @param array<string, mixed> $task
+     */
+    private function assertCancellationScopeReplaySupported(array $history, bool $allowAuthoring, array $task): void
     {
+        $hasScopes = false;
+        $hasCancellation = ($task['cancellation_request'] ?? null) !== null || ($task['cancel_requested'] ?? false) === true;
         foreach ($history as $event) {
-            if (in_array($event['event_type'] ?? $event['type'] ?? null, [
-                'CancellationScopeOpened', 'CancellationScopeRequested', 'CancellationScopeDelivered', 'CancellationScopeRequestConflicted',
-            ], true)) {
+            $kind = $event['event_type'] ?? $event['type'] ?? null;
+            $hasCancellation = $hasCancellation || in_array($kind, [CancellationHistory::REQUEST_EVENT, CancellationHistory::DELIVERY_EVENT], true);
+            if (in_array($kind, ['CancellationScopeRequested', 'CancellationScopeDelivered', 'CancellationScopeRequestConflicted'], true)
+                || (!$allowAuthoring && $kind === 'CancellationScopeOpened')) {
                 throw new WorkflowClaimAborted(
                     'cancellation_scope_execution_not_supported: this PHP worker has not qualified canonical scope replay and delivery.',
                 );
             }
+            $hasScopes = $hasScopes || $kind === 'CancellationScopeOpened';
             $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
             foreach ([$payload, $payload['activity'] ?? [], $payload['timer'] ?? [], $payload['child_workflow'] ?? []] as $snapshot) {
                 if (is_array($snapshot) && array_key_exists('cancellation_scope_id', $snapshot)
                     && $snapshot['cancellation_scope_id'] !== 'root') {
-                    throw new WorkflowClaimAborted(
-                        'cancellation_scope_execution_not_supported: this PHP worker cannot execute scoped operations without qualified scope replay and delivery.',
-                    );
+                    $hasScopes = true;
+                    if (!$allowAuthoring) {
+                        throw new WorkflowClaimAborted(
+                            'cancellation_scope_execution_not_supported: this PHP worker cannot execute scoped operations without qualified scope replay and delivery.',
+                        );
+                    }
                 }
             }
+        }
+        if ($hasScopes && $hasCancellation) {
+            throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker has not qualified cancellation delivery into authored scopes.');
         }
     }
 
@@ -932,10 +973,13 @@ final class Replayer
      *     parallel_path: list<array<string, mixed>>,
      *     resolution_order: int,
      *     child_policies?: array<string, string>,
-     *     activity_cancellation_policy?: string
+     *     activity_cancellation_policy?: string,
+     *     cancellation_scope_id?: string,
+     *     scope_parent?: string,
+     *     scope_shield?: bool
      * }>
      */
-    private function recordedSteps(array $history, bool $preserveConditionReopens = false): array
+    private function recordedSteps(array $history, bool $preserveConditionReopens, CancellationScopeHistory $scopes): array
     {
         $steps = [];
         $childPolicies = [];
@@ -1021,7 +1065,16 @@ final class Replayer
                 );
             }
 
-            if (in_array($type, ['ActivityScheduled', 'ActivityStarted'], true)) {
+            if ($type === 'CancellationScopeOpened') {
+                if (isset($steps[$key])) {
+                    throw new NonDeterministicWorkflow('Scope opening collides with another durable command.', $sequence, reason: 'durable_command_sequence_collision');
+                }
+                $opening = $scopes->openings[$sequence] ?? throw new NonDeterministicWorkflow('Unvalidated scope opening.', $sequence);
+                $steps[$key] = [
+                    ...$this->resolvedStep($sequence, 'cancellation_scope', $opening['scope_id'], resolutionOrder: $resolutionOrder),
+                    'scope_parent' => $opening['parent_scope_id'], 'scope_shield' => $opening['shield_parent'],
+                ];
+            } elseif (in_array($type, ['ActivityScheduled', 'ActivityStarted'], true)) {
                 $steps[$key] ??= $this->step(
                     $sequence,
                     'activity',
@@ -1300,6 +1353,16 @@ final class Replayer
                         resolutionOrder: $resolutionOrder,
                     );
                 }
+            }
+        }
+        foreach ($scopes->openings as $sequence => $_opening) {
+            if (($steps[(string) $sequence]['shape'] ?? null) !== 'cancellation_scope') {
+                throw new NonDeterministicWorkflow('Scope opening collides with another durable command.', $sequence, reason: 'durable_command_sequence_collision');
+            }
+        }
+        foreach ($scopes->memberships as $sequence => $membership) {
+            if (isset($steps[(string) $sequence])) {
+                $steps[(string) $sequence]['cancellation_scope_id'] = $membership;
             }
         }
         foreach ($childPolicies as $key => $policies) {
@@ -2039,6 +2102,10 @@ final class Replayer
     /** @param array<string, mixed> $step */
     private function assertCommandMatchesStep(WorkflowCommand $command, array $step): void
     {
+        if (($command->attributes['cancellation_scope_id'] ?? 'root') !== ($step['cancellation_scope_id'] ?? 'root')) {
+            throw new NonDeterministicWorkflow('Authored operation cancellation scope changed.', $step['sequence'],
+                reason: 'cancellation_scope_membership_changed');
+        }
         if ($step['shape'] !== $command->historyShape) {
             throw new NonDeterministicWorkflow(
                 "History contains {$step['shape']} but workflow scheduled {$command->historyShape}.",
@@ -2483,6 +2550,7 @@ final class Replayer
         }
 
         return match ($type) {
+            'CancellationScopeOpened' => 'cancellation_scope',
             'SideEffectRecorded' => 'side_effect',
             'VersionMarkerRecorded' => 'version_marker',
             'MemoUpserted' => 'memo',
