@@ -30,7 +30,8 @@ final class PreparedLocalActivityCall
 
     /**
      * Source profile for cleanup in the same scope as a committed single-call
-     * delivery. Descendant and populated projection replay remain unsupported.
+     * delivery, including its verified original operation inventory. Descendant
+     * scope execution remains unsupported.
      *
      * @param list<array<string, mixed>> $history
      */
@@ -43,7 +44,12 @@ final class PreparedLocalActivityCall
             throw new LogicException('Scoped cleanup requires its original authored operation membership.');
         }
         $scopes = new CancellationScopeHistory($history, $runId);
-        $committed = new CommittedCancellationScopeHistory($history, $runId, $workflowId, $scopes);
+        $committed = new CommittedCancellationScopeHistory($history, $runId, $workflowId, $scopes, inspectOperationProjections: true);
+        foreach ($committed->preparations as $preparation) {
+            if ($preparation['event']['payload']['descendant_members'] !== []) {
+                throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker has not qualified descendant scope execution.');
+            }
+        }
         foreach ($committed->deliveries as $delivery) {
             if ($delivery['context']->scopeId !== $scopeId) {
                 continue;

@@ -67,7 +67,8 @@ not enable scope execution. Both v1 and v2 contexts remain readable.
 ### Committed operation-scope replay
 
 The internal Replayer candidate can replay a committed scope delivery at an
-unscheduled single activity, timer, condition or child call. Source tests opt in
+single activity, timer, condition or child call, including a previously admitted
+call with a populated frozen inventory. Source tests opt in
 with `replayCommittedCancellationScopes`; the Worker does not enable this path.
 The parser requires the original authored tree, accepted request, v5 preparation
 and matching delivery event before entering workflow code. It preserves the
@@ -82,8 +83,15 @@ After leaving the scope, the parent retains its own cancellation state. A
 retained context's clock advances only at consumed blocking history, including
 an unaffected operation awaited by the parent.
 
-This profile supports workflow-local cleanup and an empty frozen member
-projection. Pending deliveries, populated projections, mixed groups, scope
+The authored call must match the original admission, including membership,
+operation kind, Activity and child policies, timer delay and condition descriptor.
+Replay consumes that call's recorded position once and preserves earlier
+completed operations. A committed condition delivery remains authoritative even
+when the same predicate is now satisfied. Native scalar fixtures cover all
+three Activity and child policies, a timer, and timed and untimed conditions.
+
+This profile supports workflow-local cleanup and verified frozen member
+projections. Pending deliveries, descendant execution, mixed groups, scope
 conflicts and simultaneous root cancellation are refused. A shield suppresses
 explicit cancellation checks. With prepared local admission enabled, a shield
 can author a sequential local cleanup call in that same delivered scope. Its
@@ -122,7 +130,7 @@ cleanup and connected replacement behavior are qualified.
 Other durable commands in a delivered scope remain unsupported. Remote
 activities, timers, children, continuations, metadata writes, side effects,
 new scopes and descendant cleanup require a separate cleanup authority contract.
-Selective projection replay, canonical preparation/delivery on the live claim,
+Canonical preparation/delivery on the live claim,
 and connected replacement qualification remain the next
 steps before enabling Worker scope execution.
 
@@ -371,7 +379,8 @@ claims.
 ## Canonical scope boundary receipt source profile
 
 The internal client can prove preparation and delivery for a single call with
-an empty projection or frozen Activities. It derives the Activity IDs and
+an empty projection or frozen Activities, timers, waits, children and descendants.
+It derives the Activity IDs and
 cancellation descriptor hashes from the original pre-preparation history,
 preserving policy, local execution mode and schedule-to-close deadline. A sibling
 cannot enter that inventory, and response loss or replacement cannot substitute
@@ -386,5 +395,6 @@ invalid receipt, incomplete history or exhausted budget aborts the claim.
 The history parser can inspect committed preparation before delivery, while
 ordinary cleanup replay still requires committed delivery. Receipt facts do
 not grant callback authority. Worker scope execution stays disabled and the
-candidate protocol remains unfrozen and unpublished. Timer, wait, child and
-descendant projections, groups and live scope recovery still need qualification.
+candidate protocol remains unfrozen and unpublished. Committed single-call
+projection replay has an internal source profile. Descendant execution, groups
+and live scope recovery still need qualification.

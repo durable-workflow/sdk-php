@@ -60,9 +60,17 @@ final class Replayer
         $hasScopes = $this->assertCancellationScopeReplaySupported($history, $allowCancellationScopeAuthoring, $task, $replayCommittedCancellationScopes);
         $scopes = new CancellationScopeHistory($hasScopes ? $history : [], (string) ($task['run_id'] ?? ''));
         // Source qualification only. The Worker does not enable this replay path.
-        $scopeDeliveries = $replayCommittedCancellationScopes
-            ? (new CommittedCancellationScopeHistory($history, (string) ($task['run_id'] ?? ''), (string) ($task['workflow_id'] ?? ''), $scopes))->deliveries
-            : [];
+        $scopeDeliveries = [];
+        if ($replayCommittedCancellationScopes) {
+            $committedScopes = new CommittedCancellationScopeHistory($history, (string) ($task['run_id'] ?? ''),
+                (string) ($task['workflow_id'] ?? ''), $scopes, inspectOperationProjections: true);
+            foreach ($committedScopes->preparations as $preparation) {
+                if ($preparation['event']['payload']['descendant_members'] !== []) {
+                    throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker has not qualified descendant scope execution.');
+                }
+            }
+            $scopeDeliveries = $committedScopes->deliveries;
+        }
         $observation = $task['cancellation_request'] ?? null;
         if ($observation !== null && (!is_array($observation) || array_is_list($observation))) {
             throw new NonDeterministicWorkflow('Workflow cancellation observation must be an object.');
@@ -143,9 +151,17 @@ final class Replayer
                 }
                 $boundary = $this->cancellationBoundary($suspended, $nextSequence, $stepsBySequence, $delivery->requestId, $delivery);
                 if ($boundary != $delivery || $context->currentCancellationScopeId() !== $scopeDelivery['context']->scopeId
-                    || $context->isCancellationShielded() || isset($stepsBySequence[$scopeSequence])) {
+                    || $context->isCancellationShielded()) {
                     throw new NonDeterministicWorkflow('Committed scope cancellation changed its authored call, membership or shielding.', $scopeSequence,
                         reason: 'cancellation_scope_boundary_mismatch');
+                }
+                $this->assertCancellationCallMatches($suspended, $delivery, $stepsBySequence, $context);
+                while (isset($steps[$stepCursor]) && $steps[$stepCursor]['sequence'] < $scopeSequence + $delivery->sequenceSpan) {
+                    if ($steps[$stepCursor]['sequence'] < $scopeSequence) {
+                        throw new NonDeterministicWorkflow('Scope cancellation skipped an earlier authored operation.', $steps[$stepCursor]['sequence'],
+                            reason: 'cancellation_scope_boundary_mismatch');
+                    }
+                    ++$stepCursor;
                 }
                 $nextSequence = $scopeSequence + $delivery->sequenceSpan;
                 $consumedScopeDeliveries[$scopeSequence] = true;

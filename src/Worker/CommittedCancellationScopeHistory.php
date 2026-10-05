@@ -9,7 +9,7 @@ use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use InvalidArgumentException;
 
 /**
- * @internal Cold replay of committed, unscheduled single-call scope boundaries.
+ * @internal Immutable receipts for committed single-call scope boundaries.
  * These facts never grant authority to prepare, stop or publish an operation.
  */
 final class CommittedCancellationScopeHistory

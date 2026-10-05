@@ -269,7 +269,12 @@ final class CommittedCancellationScopeReplayTest extends TestCase
             $this->replay(static function () use (&$entered): void { $entered = true; }, $fixture);
             self::fail('An unqualified projection cannot run workflow code.');
         } catch (WorkflowClaimAborted $error) {
+            self::assertFalse(str_ends_with($case, '_members'));
             self::assertStringContainsString('cancellation_scope_execution_not_supported', $error->getMessage());
+            self::assertFalse($entered);
+        } catch (NonDeterministicWorkflow $error) {
+            self::assertTrue(str_ends_with($case, '_members'));
+            self::assertSame('invalid_cancellation_scope_history', $error->reason);
             self::assertFalse($entered);
         }
     }
