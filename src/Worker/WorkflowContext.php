@@ -625,6 +625,32 @@ final class WorkflowContext
         return $this->cancellationShieldDepth > 0;
     }
 
+    /** @internal Only a verified committed subtree marker can supply these contexts.
+     * @param array<string, ScopedCancellationContext> $contexts
+     */
+    public function deliveredScopeCascade(array $contexts): WorkflowCancelled
+    {
+        $active = $contexts[$this->cancellationScopeId] ?? null;
+        if (!$active instanceof ScopedCancellationContext) {
+            throw new LogicException('Committed subtree delivery must include the active authored scope.');
+        }
+        foreach ($contexts as $scopeId => $context) {
+            if ($context->scopeId !== $scopeId || $context->workflowRunId !== $this->runId
+                || $context->workflowInstanceId !== $this->workflowId
+                || $context->rootContext->toArray() !== $active->rootContext->toArray()) {
+                throw new LogicException('Committed subtree delivery changes its original run or root.');
+            }
+        }
+        $error = $this->deliveredCancellation($active->requestId, $active);
+        $clock = $this->cancellationClock();
+        foreach ($contexts as $scopeId => $context) {
+            if ($scopeId === $active->scopeId) { continue; }
+            $this->deliveredScopeCancellations[$scopeId] = $context->withReplayClock($clock);
+        }
+
+        return $error;
+    }
+
     /** @internal Only a committed delivery marker authorizes this state change. */
     public function deliveredCancellation(string $requestId, CancellationContext|ScopedCancellationContext|null $context = null): WorkflowCancelled
     {
@@ -634,16 +660,7 @@ final class WorkflowContext
             throw new LogicException('Committed scope delivery must match its original request and active authored address.');
         }
         if ($context !== null) {
-            $reference = WeakReference::create($this);
-            $context = $context->withReplayClock(static function () use ($reference): DateTimeImmutable {
-                $workflow = $reference->get();
-                if (!$workflow instanceof self) {
-                    throw new LogicException('Cancellation remaining() requires an active workflow.');
-                }
-                $workflow->assertActiveFiber();
-
-                return ($workflow->cancellationReplayClock ??= new CancellationReplayClock())->time();
-            });
+            $context = $context->withReplayClock($this->cancellationClock());
         }
         if ($context instanceof ScopedCancellationContext) {
             $this->deliveredScopeCancellations[$context->scopeId] = $context;
@@ -653,6 +670,20 @@ final class WorkflowContext
         }
 
         return new WorkflowCancelled('Workflow cancellation was requested.', requestId: $requestId, context: $context);
+    }
+
+    /** @return Closure(): DateTimeImmutable */
+    private function cancellationClock(): Closure
+    {
+        $reference = WeakReference::create($this);
+
+        return static function () use ($reference): DateTimeImmutable {
+            $workflow = $reference->get();
+            if (!$workflow instanceof self) { throw new LogicException('Cancellation remaining() requires an active workflow.'); }
+            $workflow->assertActiveFiber();
+
+            return ($workflow->cancellationReplayClock ??= new CancellationReplayClock())->time();
+        };
     }
 
     /**

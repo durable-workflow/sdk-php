@@ -91,8 +91,9 @@ when the same predicate is now satisfied. Native scalar fixtures cover all
 three Activity and child policies, a timer, and timed and untimed conditions.
 
 This profile supports workflow-local cleanup and verified frozen member
-projections. Pending deliveries, descendant execution, mixed groups, scope
-conflicts and simultaneous root cancellation are refused. A shield suppresses
+projections, fully admitted all-mode groups and committed unshielded descendant
+replay. Pending deliveries, scope conflicts and simultaneous root cancellation
+are refused. A shield suppresses
 explicit cancellation checks. With prepared local admission enabled, a shield
 can author a sequential local cleanup call in that same delivered scope. Its
 descriptor carries only the original scope, request and delivery IDs. The SDK
@@ -129,7 +130,7 @@ cleanup and connected replacement behavior are qualified.
 
 Other durable commands in a delivered scope remain unsupported. Remote
 activities, timers, children, continuations, metadata writes, side effects,
-new scopes and descendant cleanup require a separate cleanup authority contract.
+new scopes and remote descendant cleanup require a separate cleanup authority contract.
 Canonical preparation/delivery on the live claim,
 and connected replacement qualification remain the next
 steps before enabling Worker scope execution.
@@ -407,6 +408,16 @@ from the cancelled scope leaves its parent unaffected.
 The group profile requires every original member to have been admitted before
 preparation. Partial groups, local or selection groups and direct signal-wait
 groups remain refused before workflow entry. PHP currently reads signals through
-conditions rather than authoring `SignalWaitOpened` calls. Descendant execution,
-live group preparation/delivery, physical cleanup recovery and published-artifact
+conditions rather than authoring `SignalWaitOpened` calls. Committed descendant
+replay uses one ancestor marker for its original frozen unshielded subtree.
+Delivery into the active descendant preserves its own accepted request and
+lineage. Ancestors retain their own context while the body unwinds, and the
+outer scope remains unaffected. Prepared local cleanup in any included scope
+uses that same preparation/delivery pair and its captured narrower authority
+ceiling. Replacement replay preserves all eight cleanup receipt fields.
+Shielded branches are excluded. Forged members, altered ancestry, deadlines,
+propagation events, omitted operations and changed authored calls fail before
+cleanup. Competing roots and overlapping subtree deliveries remain refused.
+
+Live scope/group preparation and selective supervision, physical cleanup recovery and published-artifact
 qualification remain required before Worker scope execution is enabled.

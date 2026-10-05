@@ -29,9 +29,8 @@ final class PreparedLocalActivityCall
     }
 
     /**
-     * Source profile for cleanup in the same scope as a committed single-call
-     * delivery, including its verified original operation inventory. Descendant
-     * scope execution remains unsupported.
+     * Source profile for cleanup in a committed delivery's frozen subtree,
+     * including each scope's original context and narrower authority ceiling.
      *
      * @param list<array<string, mixed>> $history
      */
@@ -45,20 +44,16 @@ final class PreparedLocalActivityCall
         }
         $scopes = new CancellationScopeHistory($history, $runId);
         $committed = new CommittedCancellationScopeHistory($history, $runId, $workflowId, $scopes, inspectOperationProjections: true);
-        foreach ($committed->preparations as $preparation) {
-            if ($preparation['event']['payload']['descendant_members'] !== []) {
-                throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker has not qualified descendant scope execution.');
-            }
-        }
         foreach ($committed->deliveries as $delivery) {
-            if ($delivery['context']->scopeId !== $scopeId) {
+            $state = $committed->scopeStatesForDelivery($delivery)[$scopeId] ?? null;
+            if ($state === null) {
                 continue;
             }
             $boundary = $delivery['boundary'];
             if ($sequence < $boundary->sequence + $boundary->sequenceSpan) {
                 throw new LogicException('Scoped cleanup must follow its original delivered operation range.');
             }
-            $context = $delivery['context'];
+            $context = $state['context'];
             $payload = $delivery['event']['payload'];
             $call = new self($command, $sequence, $recover);
             $call->scopeCleanup = [
@@ -69,7 +64,7 @@ final class PreparedLocalActivityCall
                 'delivery_history_event_id' => $delivery['event']['id'],
                 'preparation_history_event_id' => $payload['preparation_history_event_id'],
                 'cleanup_deadline_at' => $context->deadline()->format('Y-m-d\TH:i:s.u\Z'),
-                'authority_deadline_at' => $payload['authority_deadline_at'],
+                'authority_deadline_at' => $state['authority_deadline_at'],
             ];
 
             return $call;

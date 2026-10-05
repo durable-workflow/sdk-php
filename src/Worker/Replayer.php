@@ -64,12 +64,15 @@ final class Replayer
         if ($replayCommittedCancellationScopes) {
             $committedScopes = new CommittedCancellationScopeHistory($history, (string) ($task['run_id'] ?? ''),
                 (string) ($task['workflow_id'] ?? ''), $scopes, inspectOperationProjections: true);
-            foreach ($committedScopes->preparations as $preparation) {
-                if ($preparation['event']['payload']['descendant_members'] !== []) {
-                    throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker has not qualified descendant scope execution.');
+            $deliveredScopeIds = [];
+            foreach ($committedScopes->deliveries as $scopeSequence => $delivery) {
+                $states = $committedScopes->scopeStatesForDelivery($delivery);
+                if (array_intersect_key($deliveredScopeIds, $states) !== []) {
+                    throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker has not qualified overlapping subtree deliveries.');
                 }
+                $deliveredScopeIds += $states;
+                $scopeDeliveries[$scopeSequence] = [...$delivery, 'states' => $states];
             }
-            $scopeDeliveries = $committedScopes->deliveries;
         }
         $observation = $task['cancellation_request'] ?? null;
         if ($observation !== null && (!is_array($observation) || array_is_list($observation))) {
@@ -150,7 +153,8 @@ final class Replayer
                     break;
                 }
                 $boundary = $this->cancellationBoundary($suspended, $nextSequence, $stepsBySequence, $delivery->requestId, $delivery);
-                if ($boundary != $delivery || $context->currentCancellationScopeId() !== $scopeDelivery['context']->scopeId
+                $activeScope = $context->currentCancellationScopeId();
+                if ($boundary != $delivery || !isset($scopeDelivery['states'][$activeScope])
                     || $context->isCancellationShielded()) {
                     throw new NonDeterministicWorkflow('Committed scope cancellation changed its authored call, membership or shielding.', $scopeSequence,
                         reason: 'cancellation_scope_boundary_mismatch');
@@ -166,7 +170,9 @@ final class Replayer
                 $nextSequence = $scopeSequence + $delivery->sequenceSpan;
                 $consumedScopeDeliveries[$scopeSequence] = true;
                 $context->observeCancellationReplayTime($scopeDelivery['event']);
-                $suspended = $execution->throw($context->deliveredCancellation($delivery->requestId, $scopeDelivery['context']));
+                $suspended = $execution->throw($context->deliveredScopeCascade(array_map(
+                    static fn (array $state): ScopedCancellationContext => $state['context'], $scopeDelivery['states'],
+                )));
                 continue 2;
             }
             if ($cancellation->request !== null && !$cancellationConsumed) {

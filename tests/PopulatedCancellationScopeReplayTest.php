@@ -148,15 +148,16 @@ final class PopulatedCancellationScopeReplayTest extends TestCase
         }
     }
 
-    public function test_descendant_execution_remains_refused_before_entry(): void
+    public function test_descendant_marker_still_requires_its_original_authored_boundary(): void
     {
         $fixture = json_decode(file_get_contents(__DIR__.'/fixtures/committed-scope-operation-projections.json'), true, flags: JSON_THROW_ON_ERROR)['descendants'];
         $entered = false;
-        $this->expectException(WorkflowClaimAborted::class);
+        $this->expectException(NonDeterministicWorkflow::class);
+        $this->expectExceptionMessage('Workflow terminated without replaying its committed scope cancellation boundary.');
         try {
             $this->replay(static function () use (&$entered): void { $entered = true; }, $fixture);
         } finally {
-            self::assertFalse($entered);
+            self::assertTrue($entered);
         }
     }
 

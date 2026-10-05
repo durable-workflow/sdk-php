@@ -9,7 +9,7 @@ use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use InvalidArgumentException;
 
 /**
- * @internal Immutable receipts for committed single-call scope boundaries.
+ * @internal Immutable receipts for committed scope boundaries and their frozen subtree.
  * These facts never grant authority to prepare, stop or publish an operation.
  */
 final class CommittedCancellationScopeHistory
@@ -148,23 +148,39 @@ final class CommittedCancellationScopeHistory
                             throw new InvalidArgumentException('Scope preparation changes its original descendant projection.');
                         }
                     }
+                    $projectionsByScope = [$scopeId => $projections];
+                    foreach ($payload['descendant_members'] as $member) {
+                        $waits = $member['wait_members'];
+                        $projectionsByScope[$member['scope_id']] = [
+                            'ActivityScheduled' => $member['activity_members'], 'TimerScheduled' => $member['timer_members'],
+                            'ChildWorkflowScheduled' => $member['child_members'], 'wait' => $waits,
+                            'ConditionWaitOpened' => array_values(array_filter($waits, static fn (array $wait): bool => $wait['kind'] === 'condition')),
+                            'SignalWaitOpened' => array_values(array_filter($waits, static fn (array $wait): bool => $wait['kind'] === 'signal')),
+                        ];
+                    }
+                    $operationScope = $scopes->memberships[$boundary->sequence] ?? $scopeId;
+                    if (!isset($projectionsByScope[$operationScope])) {
+                        throw new InvalidArgumentException('Scope boundary cannot consume an operation outside its frozen subtree.');
+                    }
                     if ($boundary->callKind === 'parallel') {
-                        self::assertCompleteGroup($boundary, $scopeId, array_slice($history, 0, $historyIndex), $scopes);
+                        self::assertCompleteGroup($boundary, $operationScope, array_slice($history, 0, $historyIndex), $scopes);
                     } elseif (!in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child'], true)) {
                         throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker only supports committed single activity, timer, condition and child scope boundaries.');
                     }
                     // Every admitted operation must be accounted for by its qualified projection.
-                    foreach ($admissions as $admission => $addressesBySequence) {
-                        $sequences = array_column($projections[$admission] ?? [], 'sequence');
-                        $unsupported = array_diff_key(array_filter($addressesBySequence, static fn (string $address): bool => $address === $scopeId), array_flip($sequences));
-                        $callKind = match ($admission) { 'ActivityScheduled' => 'activity', 'TimerScheduled' => 'timer',
-                            'ConditionWaitOpened' => 'condition', 'SignalWaitOpened' => 'signal', default => 'child' };
-                        // A condition/signal timeout shares its wait's authored position.
-                        $timeout = $admission === 'TimerScheduled' && in_array($boundary->sequence,
-                            array_column($projections['wait'] ?? [], 'sequence'), true);
-                        if ($unsupported !== [] || (isset($addressesBySequence[$boundary->sequence])
-                            && (!in_array($boundary->sequence, $sequences, true) || (!$timeout && $boundary->callKind !== 'parallel' && $boundary->callKind !== $callKind)))) {
-                            throw new InvalidArgumentException('Scope preparation cannot omit or replace an admitted operation.');
+                    foreach ($projectionsByScope as $memberScope => $projections) {
+                        foreach ($admissions as $admission => $addressesBySequence) {
+                            $sequences = array_column($projections[$admission] ?? [], 'sequence');
+                            $unsupported = array_diff_key(array_filter($addressesBySequence, static fn (string $address): bool => $address === $memberScope), array_flip($sequences));
+                            $callKind = match ($admission) { 'ActivityScheduled' => 'activity', 'TimerScheduled' => 'timer',
+                                'ConditionWaitOpened' => 'condition', 'SignalWaitOpened' => 'signal', default => 'child' };
+                            // A condition/signal timeout shares its wait's authored position.
+                            $timeout = $admission === 'TimerScheduled' && in_array($boundary->sequence,
+                                array_column($projections['wait'] ?? [], 'sequence'), true);
+                            if ($unsupported !== [] || (($addressesBySequence[$boundary->sequence] ?? null) === $memberScope
+                                && (!in_array($boundary->sequence, $sequences, true) || (!$timeout && $boundary->callKind !== 'parallel' && $boundary->callKind !== $callKind)))) {
+                                throw new InvalidArgumentException('Scope preparation cannot omit or replace an admitted operation.');
+                            }
                         }
                     }
                     $preparations[$scopeId] = ['id' => $event['id'], 'boundary' => $boundary, 'deadline' => $deadline, 'time' => $recordedAt];
@@ -186,12 +202,40 @@ final class CommittedCancellationScopeHistory
                 throw new NonDeterministicWorkflow($error->getMessage(), reason: 'invalid_cancellation_scope_history');
             }
         }
-        if ($requireCommittedDelivery && ($preparations !== [] || count($deliveries) !== count($requests))) {
+        $coveredRequests = [];
+        foreach ($deliveries as $delivery) {
+            $coveredRequests[$delivery['context']->scopeId] = true;
+            foreach ($verifiedPreparations[$delivery['context']->scopeId]['event']['payload']['descendant_members'] as $member) {
+                $coveredRequests[$member['scope_id']] = true;
+            }
+        }
+        if ($requireCommittedDelivery && ($preparations !== [] || array_diff_key($requests, $coveredRequests) !== [])) {
             throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker requires committed scope delivery before replaying cleanup.');
         }
         ksort($deliveries);
         $this->deliveries = $deliveries;
         $this->preparations = $verifiedPreparations;
+    }
+
+    /**
+     * @param array{context: ScopedCancellationContext, boundary: CancellationDelivery, event: array<string, mixed>} $delivery
+     * @return array<string, array{context: ScopedCancellationContext, authority_deadline_at: string}>
+     */
+    public function scopeStatesForDelivery(array $delivery): array
+    {
+        $context = $delivery['context'];
+        $payload = $this->preparations[$context->scopeId]['event']['payload'];
+        $states = [$context->scopeId => ['context' => $context, 'authority_deadline_at' => $payload['authority_deadline_at']]];
+        foreach ($payload['descendant_members'] as $member) {
+            $descendant = ScopedCancellationContext::fromArray($member['cancellation']);
+            if ($descendant->rootContext->toArray() !== $context->rootContext->toArray()
+                || array_slice($descendant->lineage, 0, count($context->lineage)) !== $context->lineage) {
+                throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker has not qualified competing descendant roots.');
+            }
+            $states[$descendant->scopeId] = ['context' => $descendant, 'authority_deadline_at' => $member['authority_deadline_at']];
+        }
+
+        return $states;
     }
 
     /** @param list<array<string, mixed>> $prefix */
