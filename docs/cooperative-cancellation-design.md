@@ -106,6 +106,22 @@ the same proof and budget. The Worker still keeps this profile disabled.
 
 ### Frozen receipt inspection
 
+The internal `CancellationScopeDeliveryClaim` coordinates scalar preparation
+and delivery on one task, owner and attempt. Preparation proves canonical
+history and preserves the selected context, boundary and any existing
+preparation identity or authority ceiling. That prepared history must be
+replayed before delivery accepts its exact boundary and preparation.
+
+The original monotonic request budget is shared by mutation, reconciliation
+and every history page. Its wall-clock mapping is captured once. An
+acknowledged tighter preparation ceiling restricts that same budget before the
+first history read, and cannot later be extended or renewed. An expired
+preparation or a final fraction shorter than a whole transport second refuses
+further requests. A historical read-only receipt can still be inspected
+without granting execution authority. This coordination uses Native fixture
+shapes with explicitly synthetic current timestamps. It neither enables the
+Worker profile nor demonstrates physical scoped callback supervision.
+
 The internal claim client can verify populated Activity, timer, wait and child
 receipts against complete canonical history. Each projection comes from the
 prefix before the original preparation. Timers retain their original fire time

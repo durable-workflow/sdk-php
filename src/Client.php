@@ -1451,6 +1451,8 @@ final class Client implements WorkflowClientInterface
      * No Worker capability or cleanup authority is granted. Delivery requires a
      * previously proved preparation. Reconciliation and every history page
      * share the caller's original monotonic budget without renewing it.
+     * Execution coordination enforces any acknowledged narrower ceiling before
+     * reading history. The default also supports read-only historical proof.
      */
     public function cancellationScopeBoundaryOnClaim(
         string $taskId,
@@ -1463,6 +1465,7 @@ final class Client implements WorkflowClientInterface
         string $phase,
         RequestBudget $budget,
         ?CancellationScopeDeliveryReceipt $preparation = null,
+        bool $enforceAuthorityDeadline = false,
     ): CancellationScopeDeliveryReceipt {
         if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion) || !$this->boundedWorkerRequests) {
             throw new \LogicException('Canonical scope boundaries require protocol 1.20 and bounded worker requests.');
@@ -1499,6 +1502,10 @@ final class Client implements WorkflowClientInterface
                 $receipt = $this->cancellationScopeOperation($taskId, $leaseOwner, $attempt, $phase, $body, $budget);
             }
             $token = CancellationScopeDeliveryReceipt::assertAcknowledgement($receipt, $expected, $delivering);
+            if ($enforceAuthorityDeadline) {
+                $budget->restrictWallAuthorityDeadline(new \DateTimeImmutable($receipt['authority_deadline_at']));
+                $budget->remainingSeconds();
+            }
             $history = $this->cancellationScopeClaimHistory($taskId, $leaseOwner, $attempt, $token, $budget);
             $proved = CancellationScopeDeliveryReceipt::fromCanonicalHistory($receipt, $history, $expected, $delivering);
             if ($preparation !== null) {
