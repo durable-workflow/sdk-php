@@ -43,7 +43,8 @@ final class PreparedLocalActivityCall
             throw new LogicException('Scoped cleanup requires its original authored operation membership.');
         }
         $scopes = new CancellationScopeHistory($history, $runId);
-        $committed = new CommittedCancellationScopeHistory($history, $runId, $workflowId, $scopes, inspectOperationProjections: true);
+        $committed = new CommittedCancellationScopeHistory($history, $runId, $workflowId, $scopes,
+            inspectOperationProjections: true, allowPreparedLocalBoundary: true);
         foreach ($committed->deliveries as $delivery) {
             $state = $committed->scopeStatesForDelivery($delivery)[$scopeId] ?? null;
             if ($state === null) {

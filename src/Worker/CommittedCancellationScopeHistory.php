@@ -24,7 +24,7 @@ final class CommittedCancellationScopeHistory
     private readonly array $pendingRequests;
 
     /** @param list<array<string, mixed>> $history */
-    public function __construct(array $history, string $runId, string $workflowId, CancellationScopeHistory $scopes, bool $requireCommittedDelivery = true, bool $inspectActivityProjections = false, bool $inspectOperationProjections = false)
+    public function __construct(array $history, string $runId, string $workflowId, CancellationScopeHistory $scopes, bool $requireCommittedDelivery = true, bool $inspectActivityProjections = false, bool $inspectOperationProjections = false, bool $allowPreparedLocalBoundary = false)
     {
         $addresses = [];
         foreach ($scopes->openings as $sequence => $opening) {
@@ -41,6 +41,7 @@ final class CommittedCancellationScopeHistory
         $deliveries = [];
         $opened = [];
         $admissions = [];
+        $localActivities = [];
         /** @var array<string, true> $deliveredScopes */
         $deliveredScopes = [];
         foreach ($history as $historyIndex => $event) {
@@ -52,6 +53,9 @@ final class CommittedCancellationScopeHistory
             if (in_array($kind, ['ActivityScheduled', 'TimerScheduled', 'ChildWorkflowScheduled', 'ConditionWaitOpened', 'SignalWaitOpened'], true)
                 && is_int($eventPayload['sequence'] ?? null)) {
                 $admissions[$kind][$eventPayload['sequence']] = $scopes->memberships[$eventPayload['sequence']] ?? 'root';
+                if ($kind === 'ActivityScheduled') {
+                    $localActivities[$eventPayload['sequence']] = ($eventPayload['local_activity'] ?? false) === true;
+                }
             }
             if (!in_array($kind, ['CancellationScopeRequested', 'CancellationScopeDeliveryPrepared', 'CancellationScopeDelivered'], true)) {
                 continue;
@@ -172,7 +176,8 @@ final class CommittedCancellationScopeHistory
                     }
                     if ($boundary->callKind === 'parallel') {
                         self::assertCompleteGroup($boundary, $operationScope, array_slice($history, 0, $historyIndex), $scopes);
-                    } elseif (!in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child'], true)) {
+                    } elseif (!in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child'], true)
+                        && !($allowPreparedLocalBoundary && $boundary->callKind === 'local_activity')) {
                         throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker only supports committed single activity, timer, condition and child scope boundaries.');
                     }
                     // Every admitted operation must be accounted for by its qualified projection.
@@ -180,7 +185,8 @@ final class CommittedCancellationScopeHistory
                         foreach ($admissions as $admission => $addressesBySequence) {
                             $sequences = array_column($projections[$admission] ?? [], 'sequence');
                             $unsupported = array_diff_key(array_filter($addressesBySequence, static fn (string $address): bool => $address === $memberScope), array_flip($sequences));
-                            $callKind = match ($admission) { 'ActivityScheduled' => 'activity', 'TimerScheduled' => 'timer',
+                            $callKind = match ($admission) { 'ActivityScheduled' => $boundary->callKind === 'local_activity'
+                                && ($localActivities[$boundary->sequence] ?? false) ? 'local_activity' : 'activity', 'TimerScheduled' => 'timer',
                                 'ConditionWaitOpened' => 'condition', 'SignalWaitOpened' => 'signal', default => 'child' };
                             // A condition/signal timeout shares its wait's authored position.
                             $timeout = $admission === 'TimerScheduled' && in_array($boundary->sequence,

@@ -118,7 +118,8 @@ final class CancellationScopeDeliveryReceipt
         try {
             $scopes = new CancellationScopeHistory($history, $expected['workflow_run_id']);
             $committed = new CommittedCancellationScopeHistory($history, $expected['workflow_run_id'],
-                $expected['workflow_instance_id'], $scopes, requireCommittedDelivery: false, inspectActivityProjections: true, inspectOperationProjections: true);
+                $expected['workflow_instance_id'], $scopes, requireCommittedDelivery: false, inspectActivityProjections: true,
+                inspectOperationProjections: true, allowPreparedLocalBoundary: $expected['call_kind'] === 'local_activity');
             $prepared = $committed->preparations[$expected['scope_id']] ?? null;
             $context = ScopedCancellationContext::fromArray($receipt['cancellation']);
             $boundary = CancellationDelivery::fromPayload([...$receipt, 'workflow_command_id' => $expected['request_id']]);

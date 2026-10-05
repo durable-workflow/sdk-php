@@ -48,6 +48,7 @@ final class Replayer
         bool $allowCancellationScopeAuthoring = false,
         bool $replayCommittedCancellationScopes = false,
         bool $prepareCancellationScopeDelivery = false,
+        bool $allowScopedPreparedLocalActivities = false,
     ): ReplayResult {
         if ($prepareLocalActivityGroups && !$prepareLocalActivities) {
             throw new LogicException('Prepared local groups require prepared local activity admission.');
@@ -61,6 +62,9 @@ final class Replayer
         if ($prepareCancellationScopeDelivery && !$replayCommittedCancellationScopes) {
             throw new LogicException('Pending scope selection requires canonical committed scope replay.');
         }
+        if ($allowScopedPreparedLocalActivities && (!$prepareLocalActivities || !$prepareCancellationScopeDelivery)) {
+            throw new LogicException('Scoped local callbacks require prepared admission and canonical scope delivery.');
+        }
         $hasScopes = $this->assertCancellationScopeReplaySupported($history, $allowCancellationScopeAuthoring, $task, $replayCommittedCancellationScopes);
         $scopes = new CancellationScopeHistory($hasScopes ? $history : [], (string) ($task['run_id'] ?? ''));
         // Unfrozen source profile, enabled only by the Worker's explicit scope opt-in.
@@ -69,7 +73,7 @@ final class Replayer
         if ($replayCommittedCancellationScopes) {
             $committedScopes = new CommittedCancellationScopeHistory($history, (string) ($task['run_id'] ?? ''),
                 (string) ($task['workflow_id'] ?? ''), $scopes, requireCommittedDelivery: !$prepareCancellationScopeDelivery,
-                inspectOperationProjections: true);
+                inspectOperationProjections: true, allowPreparedLocalBoundary: $allowScopedPreparedLocalActivities);
             $deliveredScopeIds = [];
             foreach ($committedScopes->deliveries as $scopeSequence => $delivery) {
                 $states = $committedScopes->scopeStatesForDelivery($delivery);
@@ -107,7 +111,7 @@ final class Replayer
         $allowScopeAuthoring = $allowCancellationScopeAuthoring
             && ($cancellation->request === null || $replayCommittedCancellationScopes);
         $context = null;
-        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, &$context): mixed {
+        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, $allowScopedPreparedLocalActivities, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -128,6 +132,7 @@ final class Replayer
                 $localActivityCancellationPolicies,
                 $allowScopeAuthoring,
                 $scopes->openings !== [],
+                $allowScopedPreparedLocalActivities,
             );
 
             try {
@@ -206,8 +211,9 @@ final class Replayer
                             throw new NonDeterministicWorkflow('Pending scope delivery changed its original prepared call.', $nextSequence,
                                 reason: 'cancellation_scope_boundary_mismatch');
                         }
-                        if (!in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child'], true)) {
-                            throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: pending local, selected and group delivery is not qualified by this PHP worker.');
+                        if (!in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child'], true)
+                            && !($boundary->callKind === 'local_activity' && $allowScopedPreparedLocalActivities)) {
+                            throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this pending operation kind is not qualified by this PHP worker.');
                         }
                         $this->assertCancellationCallMatches($suspended, $boundary, $stepsBySequence, $context);
                         if ($preparation !== null && !isset($committedScopes->scopeStatesForDelivery($preparation)[$context->currentCancellationScopeId()])) {

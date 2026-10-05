@@ -33,6 +33,7 @@ use DurableWorkflow\Worker\PreparedLocalActivityRunner;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\ReplayResult;
+use DurableWorkflow\Worker\ScopedActivityCancellationObserved;
 use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkflowClaimDeferred;
 use DurableWorkflow\Worker\WorkflowClaimRevoked;
@@ -1337,7 +1338,8 @@ final class Worker
                     ), $this->enablePreparedLocalActivities, $this->preparedLocalActivityGroupsSupported,
                     $this->preparedLocalActivityCancellationPolicies, allowCancellationScopeAuthoring: $this->enableCooperativeCancellation,
                     replayCommittedCancellationScopes: $this->enableCancellationScopes,
-                    prepareCancellationScopeDelivery: $this->enableCancellationScopes);
+                    prepareCancellationScopeDelivery: $this->enableCancellationScopes,
+                    allowScopedPreparedLocalActivities: $this->enableCancellationScopes && $this->enablePreparedLocalActivities);
             } catch (CooperativeCancellationObserved) {
                 if (++$cancellationPasses > 3) {
                     throw new WorkflowClaimAborted('Cancellation replay did not converge on its canonical delivery.');
@@ -1432,6 +1434,14 @@ final class Worker
             if ($replay->preparedLocalActivity !== null) {
                 try {
                     $history = $this->executePreparedLocalActivity($task, $history, $replay);
+                } catch (ScopedActivityCancellationObserved $error) {
+                    if (!$this->enableCancellationScopes || $error->historyRefreshPageToken === null
+                        || trim($error->historyRefreshPageToken) === '') {
+                        throw new WorkflowClaimAborted('Scoped local stop lacks canonical scope replay authority.', previous: $error);
+                    }
+                    // The runner has already joined and acknowledged this attempt.
+                    // Retain the hosting claim and replay the canonical scope boundary.
+                    $history = $this->refreshWorkflowClaimHistory($task, $error->historyRefreshPageToken);
                 } catch (CooperativeCancellationObserved) {
                     $history = $this->refreshCancellationHistory($task);
                 }

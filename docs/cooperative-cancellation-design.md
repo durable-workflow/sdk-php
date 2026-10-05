@@ -473,7 +473,14 @@ membership. A scoped leaf cannot become a root operation by returning its handle
 or awaiting its group outside the scope. A committed root boundary over scoped
 work fails before another scope intent or cleanup can execute.
 
-Pending local, selected and group boundaries and overlapping delivered subtrees
-remain explicitly unsupported. Live selective physical supervision, connected
-scoped cleanup recovery, all portable consumers and exact published-artifact
-qualification remain required for general scope execution and release claims.
+The source profile also admits scalar prepared local callbacks. Native control
+prepares the accepted original scope boundary before fencing its callback, using
+the same ancestor lineage as replay. The Worker joins and acknowledges the
+stopped attempt, refreshes canonical history on its retained claim and resumes
+scope delivery before cleanup. This avoids replacing a scope fence with a run
+fence when the run request propagated into the scope.
+
+Ordinary scoped local groups, selected/group delivery and overlapping delivered
+subtrees remain explicitly unsupported. Partial sibling supervision, all portable
+consumers and exact published-artifact qualification remain required for general
+scope execution and release claims.

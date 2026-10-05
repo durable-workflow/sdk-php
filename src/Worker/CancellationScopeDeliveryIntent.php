@@ -17,7 +17,7 @@ final class CancellationScopeDeliveryIntent
         public readonly ?DateTimeImmutable $authorityDeadline = null,
     ) {
         if ($boundary->requestId !== $context->requestId
-            || !in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child'], true)
+            || !in_array($boundary->callKind, ['activity', 'local_activity', 'timer', 'condition', 'child'], true)
             || ($preparationHistoryEventId === null) !== ($authorityDeadline === null)
             || ($preparationHistoryEventId !== null && trim($preparationHistoryEventId) === '')
             || ($authorityDeadline !== null && ($authorityDeadline < $context->requestedAt() || $authorityDeadline > $context->deadline()))) {

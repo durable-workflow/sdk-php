@@ -78,6 +78,7 @@ final class WorkflowContext
         private readonly array $localActivityCancellationPolicies = [],
         private readonly bool $allowCancellationScopeAuthoring = false,
         private bool $hasAuthoredCancellationScopes = false,
+        private readonly bool $allowScopedPreparedLocalActivities = false,
     ) {
         $this->execution = $execution;
         $this->loadMessageStreamMessages();
@@ -260,10 +261,11 @@ final class WorkflowContext
     public function localActivity(string $activityType, array $arguments = [], array $options = []): mixed
     {
         $this->assertActiveFiber();
+        $deliveredScope = isset($this->deliveredScopeCancellations[$this->cancellationScopeId])
+            || ($this->cancellationScopeId === 'root' && $this->deliveredCancellationContext !== null);
         if ($this->hasAuthoredCancellationScopes && (!$this->prepareLocalActivities
-            || !$this->isCancellationShielded()
-            || (!isset($this->deliveredScopeCancellations[$this->cancellationScopeId])
-                && !($this->cancellationScopeId === 'root' && $this->deliveredCancellationContext !== null)))) {
+            || ($deliveredScope ? !$this->isCancellationShielded()
+                : (!$this->allowScopedPreparedLocalActivities || $this->isCapturing())))) {
             throw new WorkflowClaimAborted('cancellation_scope_local_activity_not_supported: this PHP worker has not qualified selective callback supervision.');
         }
         if ($this->prepareLocalActivities && $this->isCapturing() && !$this->prepareLocalActivityGroups) {
