@@ -17,7 +17,7 @@ final class PreparedLocalActivityAttempt
 
     /**
      * @param array<string, string|null> $deadlines
-     * @param array{request_id: string, root_request_id: string, delivery_history_event_id: string, cleanup_deadline_at: string}|null $cleanup
+     * @param array<string, string>|null $cleanup
      */
     private function __construct(
         public readonly string $taskId,
@@ -38,7 +38,7 @@ final class PreparedLocalActivityAttempt
 
     /**
      * @param array<string, mixed> $response
-     * @param array{request_id: string, root_request_id: string, delivery_history_event_id: string, cleanup_deadline_at: string}|null $expectedCleanup
+     * @param array<string, string>|null $expectedCleanup
      */
     public static function fromPreparation(
         array $response, string $taskId, string $runId, string $owner, int $epoch, string $nonce,
@@ -60,14 +60,17 @@ final class PreparedLocalActivityAttempt
         if ($heartbeatTimeout !== null && $heartbeatTimeout < 1) {
             throw new InvalidArgumentException('Application heartbeat timeout must be positive.');
         }
-        self::validateCleanup($response, $expectedCleanup);
+        self::validateCleanup($response, $expectedCleanup, $cancellationScopeId);
         $serverTime = self::timestamp($response['server_time'] ?? null);
-        $cleanupDeadline = $expectedCleanup === null ? null : self::timestamp($expectedCleanup['cleanup_deadline_at']);
+        $cleanupDeadline = self::cleanupDeadline($expectedCleanup);
         if ($cleanupDeadline !== null && $cleanupDeadline <= $serverTime) {
             throw new InvalidArgumentException('Local cleanup admission has exhausted its original budget.');
         }
         if (self::timestamp($response['lease_expires_at'] ?? null) <= $serverTime) {
             throw new InvalidArgumentException('Local admission has no live callback lease.');
+        }
+        if ($cleanupDeadline !== null && self::timestamp($response['lease_expires_at']) > $cleanupDeadline) {
+            throw new InvalidArgumentException('Local admission exceeds its original cleanup authority ceiling.');
         }
         $deadlines = [];
         foreach ([...self::DEADLINES, 'heartbeat_deadline_at'] as $field) {
@@ -174,7 +177,8 @@ final class PreparedLocalActivityAttempt
     private function validateObservation(array $response, bool $renew, bool $applicationHeartbeat): void
     {
         $this->validateIdentity($response);
-        self::validateCleanup($response, $this->cleanup);
+        self::validateCleanup($response, $this->cleanup, $this->cancellationScopeId);
+        $cleanupDeadline = self::cleanupDeadline($this->cleanup);
         if (!is_bool($response['active'] ?? null) || !is_bool($response['renewed'] ?? null)
             || !is_bool($response['stop_required'] ?? null)
             || ($response['lease_owner'] ?? null) !== $this->leaseOwner
@@ -201,7 +205,7 @@ final class PreparedLocalActivityAttempt
             if (self::timestamp($this->heartbeatDeadline) <= $serverTime
                 || $updated < self::timestamp($this->heartbeatDeadline)
                 || $updated > $serverTime->modify('+'.$this->heartbeatTimeout.' seconds')
-                || ($this->cleanup !== null && $updated > self::timestamp($this->cleanup['cleanup_deadline_at']))) {
+                || ($cleanupDeadline !== null && $updated > $cleanupDeadline)) {
                 throw new InvalidArgumentException('Application heartbeat changed a fixed budget or exceeded its timeout.');
             }
         } elseif ($this->heartbeatDeadline === null ? $heartbeatDeadline !== null :
@@ -214,7 +218,10 @@ final class PreparedLocalActivityAttempt
                     throw new InvalidArgumentException('Local control returned an expired activity or workflow lease.');
                 }
             }
-            foreach ([...array_values($this->deadlines), $heartbeatDeadline, $this->cleanup['cleanup_deadline_at'] ?? null] as $deadline) {
+            if ($cleanupDeadline !== null && self::timestamp($response['lease_expires_at']) > $cleanupDeadline) {
+                throw new InvalidArgumentException('Local control exceeds its original cleanup authority ceiling.');
+            }
+            foreach ([...array_values($this->deadlines), $heartbeatDeadline, $cleanupDeadline?->format('Y-m-d\TH:i:s.u\Z')] as $deadline) {
                 if ($deadline !== null && self::timestamp($deadline) <= $serverTime) {
                     throw new InvalidArgumentException('Local control returned active after an execution deadline.');
                 }
@@ -226,7 +233,7 @@ final class PreparedLocalActivityAttempt
      * @param array<string, mixed> $response
      * @param array<string, mixed>|null $expected
      */
-    private static function validateCleanup(array $response, ?array $expected): void
+    private static function validateCleanup(array $response, ?array $expected, string $operationScope): void
     {
         $actual = $response['cancellation_cleanup'] ?? null;
         if ($expected === null) {
@@ -236,16 +243,39 @@ final class PreparedLocalActivityAttempt
             return;
         }
         $fields = ['request_id', 'root_request_id', 'delivery_history_event_id', 'cleanup_deadline_at'];
+        if (array_key_exists('scope_id', $expected)) {
+            $fields = [...$fields, 'scope_id', 'operation_scope_id', 'preparation_history_event_id', 'authority_deadline_at'];
+            if (($expected['scope_id'] ?? null) === 'root'
+                || ($expected['operation_scope_id'] ?? null) !== $operationScope
+                || ($expected['scope_id'] ?? null) !== $operationScope
+                || ($response['cancellation_scope_id'] ?? $operationScope) !== $operationScope
+                || self::timestamp($expected['authority_deadline_at'] ?? null) > self::timestamp($expected['cleanup_deadline_at'] ?? null)) {
+                throw new InvalidArgumentException('Local cleanup changed its original authored scope or authority ceiling.');
+            }
+        }
         if (!is_array($actual) || count($actual) !== count($fields) || count($expected) !== count($fields)) {
             throw new InvalidArgumentException('Local receipt changed canonical cancellation cleanup authority.');
         }
         foreach ($fields as $field) {
             $original = self::text($expected, $field);
             $value = self::text($actual, $field);
-            if ($field === 'cleanup_deadline_at' ? self::timestamp($original) != self::timestamp($value) : $original !== $value) {
+            if (in_array($field, ['cleanup_deadline_at', 'authority_deadline_at'], true)
+                ? self::timestamp($original) != self::timestamp($value) : $original !== $value) {
                 throw new InvalidArgumentException('Local receipt changed canonical cancellation cleanup authority.');
             }
         }
+    }
+
+    /** @param array<string, string>|null $cleanup */
+    private static function cleanupDeadline(?array $cleanup): ?DateTimeImmutable
+    {
+        if ($cleanup === null) {
+            return null;
+        }
+        $deadline = self::timestamp($cleanup['cleanup_deadline_at']);
+        $authority = isset($cleanup['scope_id']) ? self::timestamp($cleanup['authority_deadline_at']) : $deadline;
+
+        return $authority < $deadline ? $authority : $deadline;
     }
 
     /** @param array<string, mixed> $response */

@@ -85,11 +85,21 @@ an unaffected operation awaited by the parent.
 This profile supports workflow-local cleanup and an empty frozen member
 projection. Pending deliveries, populated projections, mixed groups, scope
 conflicts and simultaneous root cancellation are refused. A shield suppresses
-explicit cancellation checks but does not permit new durable commands in a
-delivered scope. Activities, timers, children, continuations, metadata writes,
-side effects and new scopes require a separate cleanup authority contract.
+explicit cancellation checks. With prepared local admission enabled, a shield
+can author a sequential local cleanup call in that same delivered scope. Its
+descriptor carries only the original scope, request and delivery IDs. The SDK
+derives the expected receipt from canonical history, including the original
+preparation ID and captured authority ceiling. It validates all eight receipt
+fields before executing a callback. Callback leases, execution timeouts,
+application heartbeats and supervisor requests cannot exceed that ceiling,
+even when the immutable request deadline is later. Replacement replay keeps
+the same proof and budget. The Worker still keeps this profile disabled.
+
+Other durable commands in a delivered scope remain unsupported. Remote
+activities, timers, children, continuations, metadata writes, side effects,
+new scopes and descendant cleanup require a separate cleanup authority contract.
 Selective projection replay, canonical preparation/delivery on the live claim,
-bounded durable cleanup and connected replacement qualification remain the next
+and connected replacement qualification remain the next
 steps before enabling Worker scope execution.
 
 The parser rejects mismatched local runs, request identities, budgets, invalid

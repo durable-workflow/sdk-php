@@ -18,6 +18,7 @@ use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\DurableOperationHandle;
 use DurableWorkflow\Worker\QueryContext;
+use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\Saga;
 use DurableWorkflow\Worker\WorkflowContext;
 
@@ -358,6 +359,11 @@ final class ReplayRegressionConsumer
             throw new RuntimeException("{$identity}.history must not be empty.");
         }
 
+        if ($workflowType === 'golden.prepared-local-scoped-cleanup') {
+            self::executeScopedCleanup($identity, $fixture, $history);
+            return;
+        }
+
         $workflowTasks = $fixture['workflow_tasks'] ?? null;
         if ($workflowTasks !== null) {
             if (array_key_exists('command_sequence', $fixture)) {
@@ -543,6 +549,48 @@ final class ReplayRegressionConsumer
             $observed = array_merge($observed, $commands[0]);
         }
         self::assertExpected($identity, $fixture, $observed);
+    }
+
+    /**
+     * Internal source profile only. The published Worker keeps scopes disabled.
+     * @param array<string, mixed> $fixture
+     * @param list<array<string, mixed>> $history
+     */
+    private static function executeScopedCleanup(string $identity, array $fixture, array $history): void
+    {
+        $task = null;
+        foreach ($history as $event) {
+            if (($event['event_type'] ?? $event['type'] ?? null) === 'WorkflowStarted') {
+                $task = ['workflow_id' => $event['payload']['workflow_instance_id'],
+                    'run_id' => $event['payload']['workflow_run_id']];
+                break;
+            }
+        }
+        if ($task === null) {
+            throw new RuntimeException('Scoped cleanup fixture requires its original workflow identity.');
+        }
+        $workflow = static fn (WorkflowContext $context) => $context->cancellationScope(
+            static fn () => $context->cancellationScope(static function () use ($context): mixed {
+                try { $context->sleep(10); } catch (WorkflowCancelled) {
+                    return $context->cancellationShield(static fn () => $context->localActivity('tests.scoped-cleanup', [], [
+                        'retry_policy' => ['max_attempts' => 2, 'backoff_seconds' => [0]],
+                    ]));
+                }
+                throw new RuntimeException('The original scoped timer must deliver cancellation.');
+            }),
+        );
+        $codec = new AvroPayloadCodec();
+        $result = (new Replayer($codec))->replay($workflow, $history, [], 'regression-corpus', $task,
+            localActivityExecutor: static function (): never { throw new RuntimeException('Scoped replay repeated a cleanup side effect.'); },
+            prepareLocalActivities: true, allowCancellationScopeAuthoring: true, replayCommittedCancellationScopes: true);
+        $call = $result->preparedLocalActivity;
+        if ($call === null || $result->commands !== []) {
+            throw new RuntimeException('Canonical scoped cleanup must suspend before callback admission.');
+        }
+        $command = ['type' => 'prepare_local_activity', 'sequence' => $call->sequence,
+            'recover' => $call->recover, 'local_activity' => self::decodeEnvelopes($call->descriptor($codec), $codec),
+            'cancellation_cleanup' => $call->cleanupSnapshot()];
+        self::assertExpected($identity, $fixture, ['command_sequence' => [$command], ...$command]);
     }
 
     /**

@@ -260,7 +260,9 @@ final class WorkflowContext
     public function localActivity(string $activityType, array $arguments = [], array $options = []): mixed
     {
         $this->assertActiveFiber();
-        if ($this->hasAuthoredCancellationScopes) {
+        if ($this->hasAuthoredCancellationScopes && (!$this->prepareLocalActivities
+            || !$this->isCancellationShielded()
+            || !isset($this->deliveredScopeCancellations[$this->cancellationScopeId]))) {
             throw new WorkflowClaimAborted('cancellation_scope_local_activity_not_supported: this PHP worker has not qualified selective callback supervision.');
         }
         if ($this->prepareLocalActivities && $this->isCapturing() && !$this->prepareLocalActivityGroups) {
@@ -284,6 +286,7 @@ final class WorkflowContext
             $this->localActivityExecutor,
             prepared: $this->prepareLocalActivities,
         );
+        $command = $this->withCancellationScope($command);
         if (array_key_exists('cancellation_policy', $command->attributes)
             && !in_array($command->attributes['cancellation_policy'], $this->localActivityCancellationPolicies, true)) {
             throw new WorkflowClaimAborted('prepared_local_activity_cancellation_policy_not_supported: requested '.$command->attributes['cancellation_policy']
@@ -780,7 +783,8 @@ final class WorkflowContext
     private function suspend(WorkflowCommand|ParallelWorkflowCommand $command): mixed
     {
         $this->assertActiveFiber();
-        if (isset($this->deliveredScopeCancellations[$this->cancellationScopeId])) {
+        if (isset($this->deliveredScopeCancellations[$this->cancellationScopeId])
+            && !($command instanceof WorkflowCommand && $this->isPreparedScopeCleanup($command))) {
             throw new WorkflowClaimAborted('cancellation_scope_cleanup_authority_missing: a delivered scope cannot admit a new command.');
         }
 
@@ -789,7 +793,7 @@ final class WorkflowContext
 
     private function withCancellationScope(WorkflowCommand $command): WorkflowCommand
     {
-        if (isset($this->deliveredScopeCancellations[$this->cancellationScopeId])) {
+        if (isset($this->deliveredScopeCancellations[$this->cancellationScopeId]) && !$this->isPreparedScopeCleanup($command)) {
             throw new WorkflowClaimAborted('cancellation_scope_cleanup_authority_missing: a delivered scope cannot admit a new operation.');
         }
         if (array_key_exists('cancellation_scope_id', $command->attributes)) {
@@ -798,6 +802,12 @@ final class WorkflowContext
 
         return $this->cancellationScopeId === 'root' ? $command
             : $command->withAttributes(['cancellation_scope_id' => $this->cancellationScopeId]);
+    }
+
+    private function isPreparedScopeCleanup(WorkflowCommand $command): bool
+    {
+        return $this->prepareLocalActivities && $this->isCancellationShielded()
+            && $command->type === 'record_local_activity';
     }
 
     private function assertActiveFiber(): void

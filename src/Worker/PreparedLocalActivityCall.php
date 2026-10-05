@@ -10,6 +10,9 @@ use LogicException;
 /** @internal An authored call awaiting durable admission, never an executed callback. */
 final class PreparedLocalActivityCall
 {
+    /** @var array<string, string>|null Derived only from canonical scope history. */
+    private ?array $scopeCleanup = null;
+
     public function __construct(
         public readonly WorkflowCommand $command,
         public readonly int $sequence,
@@ -25,6 +28,49 @@ final class PreparedLocalActivityCall
         }
     }
 
+    /**
+     * Source profile for cleanup in the same scope as a committed single-call
+     * delivery. Descendant and populated projection replay remain unsupported.
+     *
+     * @param list<array<string, mixed>> $history
+     */
+    public static function fromCommittedScopeDelivery(
+        WorkflowCommand $command, int $sequence, bool $recover, array $history,
+        string $runId, string $workflowId,
+    ): self {
+        $scopeId = $command->attributes['cancellation_scope_id'] ?? null;
+        if (!is_string($scopeId) || trim($scopeId) === '' || $scopeId === 'root') {
+            throw new LogicException('Scoped cleanup requires its original authored operation membership.');
+        }
+        $scopes = new CancellationScopeHistory($history, $runId);
+        $committed = new CommittedCancellationScopeHistory($history, $runId, $workflowId, $scopes);
+        foreach ($committed->deliveries as $delivery) {
+            if ($delivery['context']->scopeId !== $scopeId) {
+                continue;
+            }
+            $boundary = $delivery['boundary'];
+            if ($sequence < $boundary->sequence + $boundary->sequenceSpan) {
+                throw new LogicException('Scoped cleanup must follow its original delivered operation range.');
+            }
+            $context = $delivery['context'];
+            $payload = $delivery['event']['payload'];
+            $call = new self($command, $sequence, $recover);
+            $call->scopeCleanup = [
+                'scope_id' => $scopeId,
+                'operation_scope_id' => $scopeId,
+                'request_id' => $context->requestId,
+                'root_request_id' => $context->rootRequestId,
+                'delivery_history_event_id' => $delivery['event']['id'],
+                'preparation_history_event_id' => $payload['preparation_history_event_id'],
+                'cleanup_deadline_at' => $context->deadline()->format('Y-m-d\TH:i:s.u\Z'),
+                'authority_deadline_at' => $payload['authority_deadline_at'],
+            ];
+
+            return $call;
+        }
+        throw new LogicException('Scoped cleanup requires a committed delivery for its original scope.');
+    }
+
     /** @return array<string, mixed> */
     public function descriptor(PayloadCodec $codec): array
     {
@@ -33,7 +79,13 @@ final class PreparedLocalActivityCall
         unset($attributes['arguments_value']);
         $descriptor = ['type' => 'record_local_activity', ...$attributes,
             'arguments' => $codec->envelope($arguments), 'payload_codec' => $codec->name()];
-        if ($this->cancellationCleanup !== null) {
+        if ($this->scopeCleanup !== null) {
+            $descriptor['cancellation_cleanup'] = [
+                'scope_id' => $this->scopeCleanup['scope_id'],
+                'request_id' => $this->scopeCleanup['request_id'],
+                'delivery_history_event_id' => $this->scopeCleanup['delivery_history_event_id'],
+            ];
+        } elseif ($this->cancellationCleanup !== null) {
             $descriptor['cancellation_cleanup'] = [
                 'request_id' => $this->cancellationCleanup->requestId,
                 'delivery_history_event_id' => $this->deliveryHistoryEventId,
@@ -44,9 +96,12 @@ final class PreparedLocalActivityCall
         return $descriptor;
     }
 
-    /** @return array{request_id: string, root_request_id: string, delivery_history_event_id: string, cleanup_deadline_at: string}|null */
+    /** @return array<string, string>|null */
     public function cleanupSnapshot(): ?array
     {
+        if ($this->scopeCleanup !== null) {
+            return $this->scopeCleanup;
+        }
         return $this->cancellationCleanup === null ? null : [
             'request_id' => $this->cancellationCleanup->requestId,
             'root_request_id' => $this->cancellationCleanup->rootRequestId,

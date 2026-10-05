@@ -299,8 +299,11 @@ final class PreparedLocalActivityRunner
                 $deadline = min($deadline, $this->clockOrigin + $epoch, $started + $epoch - $server);
             }
         }
-        $cleanup = $receipt['cancellation_cleanup']['cleanup_deadline_at'] ?? null;
-        if ($cleanup !== null) {
+        foreach (['cleanup_deadline_at', 'authority_deadline_at'] as $field) {
+            $cleanup = $receipt['cancellation_cleanup'][$field] ?? null;
+            if ($cleanup === null) {
+                continue;
+            }
             $epoch = (float) (new DateTimeImmutable($cleanup))->format('U.u');
             $deadline = min($deadline, $this->clockOrigin + $epoch, $started + $epoch - $server);
         }

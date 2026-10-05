@@ -1,0 +1,390 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "prepared-local-scoped-cleanup-original-authority",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.prepared-local-scoped-cleanup",
+    "input": []
+  },
+  "native_commit": "6fcba5c64e9c5f673969b04906a35717e4b83421",
+  "history": [
+    {
+      "id": "01m44r4780p4z6475ye9qh5axz",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "payload": {
+        "workflow_command_id": "01m44r477wf9dgywdpzfqgss9z",
+        "workflow_instance_id": "scope-cleanup-fixture",
+        "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+        "workflow_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+        "workflow_type": "test-signal-workflow",
+        "business_key": null,
+        "visibility_labels": null,
+        "memo": null,
+        "search_attributes": null,
+        "outcome": "started_new",
+        "command": {
+          "id": "01m44r477wf9dgywdpzfqgss9z",
+          "sequence": 1,
+          "type": "start",
+          "target_scope": "instance",
+          "resolved_run_id": "01m44r477r8f88azjzjn60rfam",
+          "payload_codec": "avro",
+          "payload": "wwHioz3/VYAiNwwA",
+          "source": "php",
+          "caller_label": "PHP API",
+          "auth_status": "not_applicable",
+          "auth_method": "none",
+          "status": "accepted",
+          "outcome": "started_new",
+          "accepted_at": "2026-10-05T00:00:00.123456Z",
+          "applied_at": "2026-10-05T00:00:00.123456Z"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.123456Z"
+    },
+    {
+      "id": "01m44r4783ykgevq1e054wc88m",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+        "workflow_type": "test-signal-workflow",
+        "workflow_instance_id": "scope-cleanup-fixture",
+        "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+        "workflow_command_id": "01m44r477wf9dgywdpzfqgss9z",
+        "business_key": null,
+        "visibility_labels": null,
+        "memo": null,
+        "search_attributes": null,
+        "execution_timeout_seconds": null,
+        "run_timeout_seconds": null,
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
+        "workflow_definition_fingerprint": "sha256:5617b572b0eb270f91fe65ee11da3d428b3f6b570d381a87213671a587b20475",
+        "declared_queries": [],
+        "declared_query_contracts": [],
+        "declared_signals": [
+          "name-provided"
+        ],
+        "declared_signal_contracts": [],
+        "declared_updates": [],
+        "declared_update_contracts": [],
+        "declared_entry_method": "handle",
+        "declared_entry_mode": "canonical",
+        "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+        "command": {
+          "id": "01m44r477wf9dgywdpzfqgss9z",
+          "sequence": 1,
+          "type": "start",
+          "target_scope": "instance",
+          "resolved_run_id": "01m44r477r8f88azjzjn60rfam",
+          "payload_codec": "avro",
+          "payload": "wwHioz3/VYAiNwwA",
+          "source": "php",
+          "caller_label": "PHP API",
+          "auth_status": "not_applicable",
+          "auth_method": "none",
+          "status": "accepted",
+          "outcome": "started_new",
+          "accepted_at": "2026-10-05T00:00:00.123456Z",
+          "applied_at": "2026-10-05T00:00:00.123456Z"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.123456Z"
+    },
+    {
+      "id": "01m44r47939wpy8wsxxra7zj0b",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 3,
+      "event_type": "CancellationScopeOpened",
+      "payload": {
+        "schema": "durable-workflow.cancellation-scope/v1",
+        "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+        "sequence": 1,
+        "scope_id": "01M44R47924ZNK515V4Y1KVQGH",
+        "parent_scope_id": "root",
+        "shield_parent": false,
+        "task": {
+          "id": "01m44r47850ahkr0zz58jyn6vx",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-10-05T00:00:00.123456Z",
+          "lease_owner": "original",
+          "lease_expires_at": "2026-10-05T00:01:00.123456Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "testing",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-10-05T00:00:00.123456Z",
+          "last_dispatched_at": "2026-10-05T00:00:00.123456Z"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.123456Z"
+    },
+    {
+      "id": "01m44r47976ez3kf2adw87aqxk",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 4,
+      "event_type": "CancellationScopeOpened",
+      "payload": {
+        "schema": "durable-workflow.cancellation-scope/v1",
+        "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+        "sequence": 2,
+        "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+        "parent_scope_id": "01M44R47924ZNK515V4Y1KVQGH",
+        "shield_parent": false,
+        "task": {
+          "id": "01m44r47850ahkr0zz58jyn6vx",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-10-05T00:00:00.123456Z",
+          "lease_owner": "original",
+          "lease_expires_at": "2026-10-05T00:01:00.123456Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "testing",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-10-05T00:00:00.123456Z",
+          "last_dispatched_at": "2026-10-05T00:00:00.123456Z"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.123456Z"
+    },
+    {
+      "id": "01m44r479eh9z9ewqygyyvf8sn",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 5,
+      "event_type": "CancellationScopeRequested",
+      "payload": {
+        "schema": "durable-workflow.cancellation-scope-request/v1",
+        "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+        "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+        "parent_scope_id": null,
+        "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+        "cancellation": {
+          "schema": "durable-workflow.scoped-cancellation-context/v1",
+          "root_context": {
+            "schema": "durable-workflow.cancellation-context/v1",
+            "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "root_request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "root_workflow_instance_id": "scope-cleanup-fixture",
+            "root_workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+            "parent_request_id": null,
+            "reason": "release one scope",
+            "requester": {
+              "type": "php",
+              "label": "PHP API"
+            },
+            "source": "php",
+            "requested_at": "2026-10-05T00:00:00.123456Z",
+            "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z",
+            "lineage": [
+              {
+                "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+                "workflow_instance_id": "scope-cleanup-fixture",
+                "workflow_run_id": "01m44r477r8f88azjzjn60rfam"
+              }
+            ]
+          },
+          "lineage": [
+            {
+              "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+              "workflow_instance_id": "scope-cleanup-fixture",
+              "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+              "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+              "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z"
+            }
+          ]
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.123456Z"
+    },
+    {
+      "id": "01m44r47a5rgd44hypbza9cwm4",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 6,
+      "event_type": "CancellationScopeDeliveryPrepared",
+      "payload": {
+        "schema": "durable-workflow.cancellation-scope-preparation/v5",
+        "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+        "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+        "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+        "cancellation": {
+          "schema": "durable-workflow.scoped-cancellation-context/v1",
+          "root_context": {
+            "schema": "durable-workflow.cancellation-context/v1",
+            "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "root_request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "root_workflow_instance_id": "scope-cleanup-fixture",
+            "root_workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+            "parent_request_id": null,
+            "reason": "release one scope",
+            "requester": {
+              "type": "php",
+              "label": "PHP API"
+            },
+            "source": "php",
+            "requested_at": "2026-10-05T00:00:00.123456Z",
+            "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z",
+            "lineage": [
+              {
+                "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+                "workflow_instance_id": "scope-cleanup-fixture",
+                "workflow_run_id": "01m44r477r8f88azjzjn60rfam"
+              }
+            ]
+          },
+          "lineage": [
+            {
+              "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+              "workflow_instance_id": "scope-cleanup-fixture",
+              "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+              "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+              "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z"
+            }
+          ]
+        },
+        "sequence": 3,
+        "call_kind": "timer",
+        "sequence_span": 1,
+        "operation_sequence": null,
+        "operation_sequence_span": 1,
+        "authority_deadline_at": "2026-10-05T00:00:15.123456Z",
+        "activity_members": [],
+        "timer_members": [],
+        "wait_members": [],
+        "child_members": [],
+        "descendant_members": [],
+        "task": {
+          "id": "01m44r47850ahkr0zz58jyn6vx",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-10-05T00:00:00.123456Z",
+          "lease_owner": "original",
+          "lease_expires_at": "2026-10-05T00:00:02.123456Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "testing",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-10-05T00:00:00.123456Z",
+          "last_dispatched_at": "2026-10-05T00:00:00.123456Z"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.250000Z"
+    },
+    {
+      "id": "01m44r47b3znjx2rxbhf0n2xeb",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 7,
+      "event_type": "CancellationScopeDelivered",
+      "payload": {
+        "schema": "durable-workflow.cancellation-scope-delivery/v1",
+        "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+        "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+        "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+        "cancellation": {
+          "schema": "durable-workflow.scoped-cancellation-context/v1",
+          "root_context": {
+            "schema": "durable-workflow.cancellation-context/v1",
+            "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "root_request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "root_workflow_instance_id": "scope-cleanup-fixture",
+            "root_workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+            "parent_request_id": null,
+            "reason": "release one scope",
+            "requester": {
+              "type": "php",
+              "label": "PHP API"
+            },
+            "source": "php",
+            "requested_at": "2026-10-05T00:00:00.123456Z",
+            "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z",
+            "lineage": [
+              {
+                "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+                "workflow_instance_id": "scope-cleanup-fixture",
+                "workflow_run_id": "01m44r477r8f88azjzjn60rfam"
+              }
+            ]
+          },
+          "lineage": [
+            {
+              "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+              "workflow_instance_id": "scope-cleanup-fixture",
+              "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+              "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+              "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z"
+            }
+          ]
+        },
+        "sequence": 3,
+        "call_kind": "timer",
+        "sequence_span": 1,
+        "operation_sequence": null,
+        "operation_sequence_span": 1,
+        "authority_deadline_at": "2026-10-05T00:00:15.123456Z",
+        "preparation_history_event_id": "01m44r47a5rgd44hypbza9cwm4",
+        "task": {
+          "id": "01m44r47850ahkr0zz58jyn6vx",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-10-05T00:00:00.123456Z",
+          "lease_owner": "original",
+          "lease_expires_at": "2026-10-05T00:00:02.250000Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "testing",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-10-05T00:00:00.123456Z",
+          "last_dispatched_at": "2026-10-05T00:00:00.123456Z"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.500000Z"
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "prepare_local_activity",
+        "sequence": 4,
+        "recover": false,
+        "local_activity": {
+          "type": "record_local_activity",
+          "activity_type": "tests.scoped-cleanup",
+          "execution_mode": "local",
+          "arguments": [],
+          "payload_codec": "avro",
+          "retry_policy": {
+            "max_attempts": 2,
+            "backoff_seconds": [
+              0
+            ]
+          },
+          "cancellation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+          "cancellation_cleanup": {
+            "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+            "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "delivery_history_event_id": "01m44r47b3znjx2rxbhf0n2xeb"
+          }
+        },
+        "cancellation_cleanup": {
+          "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+          "operation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+          "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+          "root_request_id": "01M44R479A3D514FAEAZ6MT2YF",
+          "delivery_history_event_id": "01m44r47b3znjx2rxbhf0n2xeb",
+          "preparation_history_event_id": "01m44r47a5rgd44hypbza9cwm4",
+          "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z",
+          "authority_deadline_at": "2026-10-05T00:00:15.123456Z"
+        }
+      }
+    ]
+  }
+}

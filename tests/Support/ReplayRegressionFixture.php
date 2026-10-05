@@ -94,10 +94,21 @@ final class ReplayRegressionFixture
         }
 
         $codec = new AvroPayloadCodec();
+        $scopedCleanup = $workflowType === 'golden.prepared-local-scoped-cleanup';
+        $task = self::taskAttributes($workflowType);
+        if ($scopedCleanup) {
+            foreach ($history as $event) {
+                if (($event['event_type'] ?? $event['type'] ?? null) === 'WorkflowStarted') {
+                    $task = ['workflow_id' => $event['payload']['workflow_instance_id'],
+                        'run_id' => $event['payload']['workflow_run_id']];
+                    break;
+                }
+            }
+        }
         $localActivityInvocations = 0;
         $localActivityExecutor = in_array($workflowType, [
             'golden.local-activity-terminal-failure', 'golden.local-activity-recovered', 'golden.prepared-local-cleanup',
-            'golden.prepared-local-group',
+            'golden.prepared-local-group', 'golden.prepared-local-scoped-cleanup',
         ], true)
             ? static function () use (&$localActivityInvocations): array {
                 ++$localActivityInvocations;
@@ -115,17 +126,19 @@ final class ReplayRegressionFixture
                 $history,
                 $input,
                 'regression-corpus',
-                self::taskAttributes($workflowType),
+                $task,
                 $localActivityExecutor,
-                in_array($workflowType, ['golden.prepared-local-cleanup', 'golden.prepared-local-group'], true),
+                in_array($workflowType, ['golden.prepared-local-cleanup', 'golden.prepared-local-group', 'golden.prepared-local-scoped-cleanup'], true),
                 $workflowType === 'golden.prepared-local-group',
+                allowCancellationScopeAuthoring: $scopedCleanup,
+                replayCommittedCancellationScopes: $scopedCleanup,
             );
             gc_collect_cycles();
             $commands = array_map(
                 static fn (array $command): array => self::decodeEnvelopes($command, $codec),
                 $result->commands,
             );
-            if ($workflowType === 'golden.prepared-local-cleanup') {
+            if (in_array($workflowType, ['golden.prepared-local-cleanup', 'golden.prepared-local-scoped-cleanup'], true)) {
                 $call = $result->preparedLocalActivity;
                 if ($call === null) {
                     throw new RuntimeException('Canonical cleanup did not suspend at prepared admission.');
@@ -339,6 +352,16 @@ final class ReplayRegressionFixture
                     throw $cancelled;
                 }
             },
+            'golden.prepared-local-scoped-cleanup' => static fn (WorkflowContext $context) => $context->cancellationScope(
+                static fn () => $context->cancellationScope(static function () use ($context): mixed {
+                    try { $context->sleep(10); } catch (WorkflowCancelled) {
+                        return $context->cancellationShield(static fn () => $context->localActivity('tests.scoped-cleanup', [], [
+                            'retry_policy' => ['max_attempts' => 2, 'backoff_seconds' => [0]],
+                        ]));
+                    }
+                    throw new RuntimeException('The original scoped timer must deliver cancellation.');
+                }),
+            ),
             'golden.prepared-local-group' => static fn (WorkflowContext $context): array => $context->all([
                 static fn () => $context->localActivity('golden.first'),
                 static fn () => $context->localActivity('golden.second'),

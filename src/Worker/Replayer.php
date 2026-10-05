@@ -750,6 +750,16 @@ final class Replayer
         WorkflowContext $context,
         bool $cancellationConsumed,
     ): PreparedLocalActivityCall {
+        if ($context->cancellationContext() instanceof ScopedCancellationContext) {
+            if (!$context->isCancellationShielded()) {
+                throw new NonDeterministicWorkflow('Prepared scoped cleanup requires a shield after canonical delivery.', $sequence,
+                    reason: 'local_activity_cleanup_authority_missing');
+            }
+
+            return PreparedLocalActivityCall::fromCommittedScopeDelivery(
+                $command, $sequence, $recover, $history, $context->runId, $context->workflowId,
+            );
+        }
         if ($cancellation->request === null) {
             return new PreparedLocalActivityCall($command, $sequence, $recover);
         }
