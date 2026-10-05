@@ -17,8 +17,11 @@ final class CommittedCancellationScopeHistory
     /** @var array<int, array{context: ScopedCancellationContext, boundary: CancellationDelivery, event: array<string, mixed>}> */
     public readonly array $deliveries;
 
+    /** @var array<string, array{context: ScopedCancellationContext, boundary: CancellationDelivery, event: array<string, mixed>}> */
+    public readonly array $preparations;
+
     /** @param list<array<string, mixed>> $history */
-    public function __construct(array $history, string $runId, string $workflowId, CancellationScopeHistory $scopes)
+    public function __construct(array $history, string $runId, string $workflowId, CancellationScopeHistory $scopes, bool $requireCommittedDelivery = true)
     {
         $addresses = [];
         foreach ($scopes->openings as $sequence => $opening) {
@@ -27,6 +30,7 @@ final class CommittedCancellationScopeHistory
         $requests = [];
         $requestIds = [];
         $preparations = [];
+        $verifiedPreparations = [];
         /** @var array<int, array{context: ScopedCancellationContext, boundary: CancellationDelivery, event: array<string, mixed>}> $deliveries */
         $deliveries = [];
         $opened = [];
@@ -128,6 +132,7 @@ final class CommittedCancellationScopeHistory
                         throw new InvalidArgumentException('Empty scope preparation cannot replace an admitted operation.');
                     }
                     $preparations[$scopeId] = ['id' => $event['id'], 'boundary' => $boundary, 'deadline' => $deadline, 'time' => $recordedAt];
+                    $verifiedPreparations[$scopeId] = ['context' => $context, 'boundary' => $boundary, 'event' => $event];
                     continue;
                 }
                 $preparation = $preparations[$scopeId] ?? null;
@@ -145,11 +150,12 @@ final class CommittedCancellationScopeHistory
                 throw new NonDeterministicWorkflow($error->getMessage(), reason: 'invalid_cancellation_scope_history');
             }
         }
-        if ($preparations !== [] || count($deliveries) !== count($requests)) {
+        if ($requireCommittedDelivery && ($preparations !== [] || count($deliveries) !== count($requests))) {
             throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker requires committed scope delivery before replaying cleanup.');
         }
         ksort($deliveries);
         $this->deliveries = $deliveries;
+        $this->preparations = $verifiedPreparations;
     }
 
     private static function timestamp(mixed $value): DateTimeImmutable

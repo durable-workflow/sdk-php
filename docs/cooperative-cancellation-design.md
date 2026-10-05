@@ -336,3 +336,19 @@ and finish cleanup before the original 30-second deadline. Supported workflow
 lease, heartbeat and repair settings must be recorded with that test. The exact
 published artifacts and one cascade inspection view are required before release
 claims.
+
+## Canonical scope boundary receipt source profile
+
+The internal client can prove preparation and delivery for a single call with
+an empty frozen member projection. Both phases and complete history paging
+share the caller's original bounded request budget. Delivery requires a
+previously verified preparation and retains its request, lineage, authored
+range, preparation event and captured authority ceiling. One transient lost
+reply may reconcile the same mutation. A pending stop, explicit refusal,
+invalid receipt, incomplete history or exhausted budget aborts the claim.
+
+The history parser can inspect committed preparation before delivery, while
+ordinary cleanup replay still requires committed delivery. Receipt facts do
+not grant callback authority. Worker scope execution stays disabled and the
+candidate protocol remains unfrozen and unpublished. Populated projections,
+groups, descendants and live scope recovery still need qualification.

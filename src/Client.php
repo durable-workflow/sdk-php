@@ -51,6 +51,7 @@ use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\CancellationRequest;
 use DurableWorkflow\Worker\CancellationDelivery;
 use DurableWorkflow\Worker\CancellationScopeOpenReceipt;
+use DurableWorkflow\Worker\CancellationScopeDeliveryReceipt;
 use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkerSessionOptions;
 use InvalidArgumentException;
@@ -1433,26 +1434,7 @@ final class Client implements WorkflowClientInterface
                 $receipt = $this->cancellationScopeOperation($taskId, $leaseOwner, $attempt, 'open', $body, $budget);
             }
             $token = CancellationScopeOpenReceipt::assertAcknowledgement($receipt, $expected);
-            $seen = [];
-            $history = [];
-            do {
-                if (isset($seen[$token])) {
-                    throw new WorkflowClaimAborted('Scope opening history repeated its opaque cursor.');
-                }
-                $seen[$token] = true;
-                $page = $this->request('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/history', true, [
-                    'lease_owner' => $leaseOwner, 'workflow_task_attempt' => $attempt, 'next_history_page_token' => $token,
-                ], budget: $budget);
-                if (($page['task_id'] ?? null) !== $taskId || ($page['workflow_task_attempt'] ?? null) !== $attempt
-                    || !is_array($page['history_events'] ?? null) || !array_is_list($page['history_events'])
-                    || !array_key_exists('next_history_page_token', $page)
-                    || ($page['next_history_page_token'] !== null && (!is_string($page['next_history_page_token'])
-                        || trim($page['next_history_page_token']) === ''))) {
-                    throw new WorkflowClaimAborted('Scope opening history lacks its original claim or complete page shape.');
-                }
-                array_push($history, ...$page['history_events']);
-                $token = $page['next_history_page_token'];
-            } while ($token !== null);
+            $history = $this->cancellationScopeClaimHistory($taskId, $leaseOwner, $attempt, $token, $budget);
             $scope = CancellationScopeOpenReceipt::fromCanonicalHistory($receipt, $history, $expected);
             $budget->remainingSeconds();
 
@@ -1462,6 +1444,101 @@ final class Client implements WorkflowClientInterface
         } catch (\Throwable $error) {
             throw new WorkflowClaimAborted('Scope opening authority could not be proved on the original claim.', previous: $error);
         }
+    }
+
+    /**
+     * @internal Verify an empty-projection scope boundary on its original claim.
+     * No Worker capability or cleanup authority is granted. Delivery requires a
+     * previously proved preparation. Reconciliation and every history page
+     * share the caller's original monotonic budget without renewing it.
+     */
+    public function cancellationScopeBoundaryOnClaim(
+        string $taskId,
+        string $runId,
+        string $workflowId,
+        string $leaseOwner,
+        int $attempt,
+        string $scopeId,
+        CancellationDelivery $boundary,
+        string $phase,
+        RequestBudget $budget,
+        ?CancellationScopeDeliveryReceipt $preparation = null,
+    ): CancellationScopeDeliveryReceipt {
+        if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion) || !$this->boundedWorkerRequests) {
+            throw new \LogicException('Canonical scope boundaries require protocol 1.20 and bounded worker requests.');
+        }
+        foreach ([$taskId, $runId, $workflowId, $leaseOwner, $scopeId, $boundary->requestId] as $identity) {
+            if (trim($identity) === '' || strlen($identity) > 255 || preg_match('//u', $identity) !== 1) {
+                throw new InvalidArgumentException('Scope boundaries require bounded original claim and cancellation identities.');
+            }
+        }
+        $delivering = $phase === 'deliver';
+        if (!in_array($phase, ['prepare', 'deliver'], true) || $attempt < 1 || $scopeId === 'root'
+            || !in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child'], true)
+            || ($delivering && $preparation === null) || (!$delivering && $preparation !== null)) {
+            throw new InvalidArgumentException('Scope delivery requires its verified original preparation and claim.');
+        }
+        if ($preparation !== null && ($preparation->context->workflowRunId !== $runId
+            || $preparation->context->workflowInstanceId !== $workflowId || $preparation->context->scopeId !== $scopeId
+            || $preparation->boundary != $boundary)) {
+            throw new InvalidArgumentException('Scope delivery cannot borrow another verified preparation.');
+        }
+        $body = ['scope_id' => $scopeId, 'request_id' => $boundary->requestId, 'sequence' => $boundary->sequence,
+            'call_kind' => $boundary->callKind, 'sequence_span' => $boundary->sequenceSpan,
+            'operation_sequence' => $boundary->operationSequence, 'operation_sequence_span' => $boundary->operationSequenceSpan];
+        $expected = ['task_id' => $taskId, 'workflow_run_id' => $runId, 'workflow_instance_id' => $workflowId,
+            'lease_owner' => $leaseOwner, 'workflow_task_attempt' => $attempt, 'namespace' => $this->namespace, ...$body];
+        try {
+            try {
+                $receipt = $this->cancellationScopeOperation($taskId, $leaseOwner, $attempt, $phase, $body, $budget);
+            } catch (ServerException $error) {
+                if (!$error->isTransientConnectionFailure() && !$error->isTransientUpstreamFailure()) {
+                    throw $error;
+                }
+                $budget->remainingSeconds();
+                $receipt = $this->cancellationScopeOperation($taskId, $leaseOwner, $attempt, $phase, $body, $budget);
+            }
+            $token = CancellationScopeDeliveryReceipt::assertAcknowledgement($receipt, $expected, $delivering);
+            $history = $this->cancellationScopeClaimHistory($taskId, $leaseOwner, $attempt, $token, $budget);
+            $proved = CancellationScopeDeliveryReceipt::fromCanonicalHistory($receipt, $history, $expected, $delivering);
+            if ($preparation !== null) {
+                $proved->assertOriginalPreparation($preparation);
+            }
+            $budget->remainingSeconds();
+
+            return $proved;
+        } catch (WorkflowClaimAborted $error) {
+            throw $error;
+        } catch (\Throwable $error) {
+            throw new WorkflowClaimAborted('Scope boundary authority could not be proved on the original claim.', previous: $error);
+        }
+    }
+
+    /** @return list<mixed> */
+    private function cancellationScopeClaimHistory(string $taskId, string $leaseOwner, int $attempt, string $token, RequestBudget $budget): array
+    {
+        $seen = [];
+        $history = [];
+        do {
+            if (isset($seen[$token])) {
+                throw new WorkflowClaimAborted('Scope history repeated its opaque cursor.');
+            }
+            $seen[$token] = true;
+            $page = $this->request('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/history', true, [
+                'lease_owner' => $leaseOwner, 'workflow_task_attempt' => $attempt, 'next_history_page_token' => $token,
+            ], budget: $budget);
+            if (($page['task_id'] ?? null) !== $taskId || ($page['workflow_task_attempt'] ?? null) !== $attempt
+                || !is_array($page['history_events'] ?? null) || !array_is_list($page['history_events'])
+                || !array_key_exists('next_history_page_token', $page)
+                || ($page['next_history_page_token'] !== null && (!is_string($page['next_history_page_token'])
+                    || trim($page['next_history_page_token']) === ''))) {
+                throw new WorkflowClaimAborted('Scope history lacks its original claim or complete page shape.');
+            }
+            array_push($history, ...$page['history_events']);
+            $token = $page['next_history_page_token'];
+        } while ($token !== null);
+
+        return $history;
     }
 
     /**
