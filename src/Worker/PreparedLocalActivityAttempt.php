@@ -221,7 +221,8 @@ final class PreparedLocalActivityAttempt
             if ($cleanupDeadline !== null && self::timestamp($response['lease_expires_at']) > $cleanupDeadline) {
                 throw new InvalidArgumentException('Local control exceeds its original cleanup authority ceiling.');
             }
-            foreach ([...array_values($this->deadlines), $heartbeatDeadline, $cleanupDeadline?->format('Y-m-d\TH:i:s.u\Z')] as $deadline) {
+            foreach ([...array_values($this->deadlines), $heartbeatDeadline,
+                $this->cleanup['cleanup_deadline_at'] ?? null, $this->cleanup['authority_deadline_at'] ?? null] as $deadline) {
                 if ($deadline !== null && self::timestamp($deadline) <= $serverTime) {
                     throw new InvalidArgumentException('Local control returned active after an execution deadline.');
                 }

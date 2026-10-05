@@ -86,6 +86,32 @@ final class PreparedLocalActivityScopeCleanupTest extends TestCase
         return [['original_admission'], ['replacement_admission'], ['late_duplicate_admission']];
     }
 
+    #[DataProvider('equivalentAuthorityTimes')]
+    public function test_equivalent_timezone_representation_preserves_the_captured_instant(string $authority): void
+    {
+        $fixture = self::fixture();
+        $history = self::history($fixture, 'before');
+        foreach ($history as &$event) {
+            if (in_array($event['event_type'], ['CancellationScopeDeliveryPrepared', 'CancellationScopeDelivered'], true)) {
+                $event['payload']['authority_deadline_at'] = $authority;
+            }
+        }
+        unset($event);
+        $call = self::replay($history)->preparedLocalActivity;
+        self::assertSame($authority, $call->cleanupSnapshot()['authority_deadline_at']);
+        $admission = $fixture['late_duplicate_admission'];
+        $attempt = PreparedLocalActivityAttempt::fromPreparation($admission, $admission['workflow_task_id'],
+            $fixture['task']['run_id'], $admission['lease_owner'], $admission['workflow_task_attempt'],
+            $admission['worker_attempt_id'], expectedCleanup: $call->cleanupSnapshot(), cancellationScopeId: $fixture['scope_id']);
+        $attempt->validateControl($fixture['late_control'], true);
+        self::addToAssertionCount(1);
+    }
+
+    public static function equivalentAuthorityTimes(): array
+    {
+        return [['2026-10-04T19:00:15.123456-05:00'], ['2026-10-05T01:00:15.123456+01:00']];
+    }
+
     #[DataProvider('receiptMutations')]
     public function test_altered_scoped_cleanup_receipt_cannot_admit_or_renew_a_callback(string $operation, string $field): void
     {
