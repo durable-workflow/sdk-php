@@ -1486,8 +1486,11 @@ final class CooperativeCancellationTest extends TestCase
                 $worker = new Worker($this->client($transport, $namespace), $queue,
                     workerId: $queue.'-'.getmypid(), enableCooperativeCancellation: true, enablePreparedLocalActivities: $preparedLocal,
                     diagnosticListener: function (string $event, array $context) use ($notify, &$failureReported, $blockCleanup): void {
-                        if (in_array($event, ['worker.claim_aborted', 'worker.claim_deferred'], true)) {
+                        if (in_array($event, ['worker.claim_aborted', 'worker.claim_deferred',
+                            'worker.activity_cancellation_acknowledged', 'worker.activity_cancellation_acknowledgement_failed'], true)) {
                             fwrite(STDOUT, 'Connected claim diagnostic: '.json_encode(['event' => $event, 'context' => $context], JSON_THROW_ON_ERROR)."\n");
+                            file_put_contents($this->directory.'/claim-diagnostics.jsonl',
+                                json_encode(['event' => $event, 'context' => $context], JSON_THROW_ON_ERROR)."\n", FILE_APPEND);
                         }
                         if ($event === 'worker.registered') {
                             $notify('registered');
@@ -1891,6 +1894,20 @@ final class CooperativeCancellationTest extends TestCase
             }
             usleep(100_000);
         } while (microtime(true) < $deadline);
+        if ($status !== 'cancelled') {
+            // Retain the original stalled state before teardown stops its owners.
+            foreach (['execution' => static fn (): array => $handle->describe()->raw,
+                'history' => fn (): array => $this->history($client, $handle),
+                'diagnostics' => static fn (): array => $client->workflowDiagnostics($handle->workflowId, (string) $handle->selectedRunId),
+            ] as $name => $snapshot) {
+                try {
+                    file_put_contents($this->directory.'/stalled-cleanup-'.$name.'.json',
+                        json_encode($snapshot(), JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
+                } catch (Throwable $error) {
+                    file_put_contents($this->directory.'/stalled-cleanup-'.$name.'-error.txt', $error::class.': '.$error->getMessage());
+                }
+            }
+        }
         self::assertSame('cancelled', $status, 'Workflow did not finish its bounded cooperative cleanup.');
         try {
             $handle->result(1, 0.1);
