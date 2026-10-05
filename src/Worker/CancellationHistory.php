@@ -112,6 +112,23 @@ final class CancellationHistory
             return new self(null, null, $requestIndex, null, [], [], []);
         }
 
+        [$resolved, $failed, $selected] = self::resolutionsBefore($events, $requestIndex);
+        $state = new self($request, $delivery, $requestIndex, $deliveryIndex, $resolved, $failed, $selected);
+        if ($delivery !== null && !$state->rangeEligible(
+            $delivery->operationSequence ?? $delivery->sequence,
+            $delivery->operationSequence === null ? $delivery->sequenceSpan : $delivery->operationSequenceSpan,
+        )) {
+            throw self::invalid('Delivery cannot replace an earlier committed result.', $delivery->sequence);
+        }
+
+        return $state;
+    }
+
+    /** @param list<array<string, mixed>> $events
+     * @return array{array<int, true>, array<int, true>, array<string, true>}
+     */
+    private static function resolutionsBefore(array $events, int $requestIndex): array
+    {
         $resolved = [];
         $failed = [];
         $selected = [];
@@ -146,15 +163,20 @@ final class CancellationHistory
                 }
             }
         }
-        $state = new self($request, $delivery, $requestIndex, $deliveryIndex, $resolved, $failed, $selected);
-        if ($delivery !== null && !$state->rangeEligible(
-            $delivery->operationSequence ?? $delivery->sequence,
-            $delivery->operationSequence === null ? $delivery->sequenceSpan : $delivery->operationSequenceSpan,
-        )) {
-            throw self::invalid('Delivery cannot replace an earlier committed result.', $delivery->sequence);
-        }
+        return [$resolved, $failed, $selected];
+    }
 
-        return $state;
+    /** @internal Shared ordering rules for an already validated canonical request.
+     * @param list<array<string, mixed>> $events
+     */
+    public static function rangeEligibleBefore(array $events, int $requestIndex, int $sequence, int $span = 1): bool
+    {
+        if ($requestIndex < 0 || $requestIndex >= count($events)) {
+            throw new InvalidArgumentException('Cancellation eligibility needs its original canonical request index.');
+        }
+        [$resolved, $failed, $selected] = self::resolutionsBefore($events, $requestIndex);
+
+        return (new self(null, null, $requestIndex, null, $resolved, $failed, $selected))->rangeEligible($sequence, $span);
     }
 
     public function eligible(int $sequence, int $span = 1): bool

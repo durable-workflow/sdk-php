@@ -419,5 +419,16 @@ Shielded branches are excluded. Forged members, altered ancestry, deadlines,
 propagation events, omitted operations and changed authored calls fail before
 cleanup. Competing roots and overlapping subtree deliveries remain refused.
 
+The internal pending-request profile selects a scalar call from canonical scope
+history without exposing cancellation to workflow cleanup. It preserves results
+committed before the original request and lets that request win over later
+results. A descendant selects its accepted original ancestor request without
+crossing a shield or borrowing an independent root. An existing preparation
+retains its exact call, event identity and narrower authority ceiling, including
+on replacement replay. Changed or skipped prepared boundaries fail explicitly.
+Only a committed delivery exposes its context and resumes cleanup. The profile
+emits a selection intent rather than dispatching effects. Pending local,
+selected and group delivery remain refused, and Worker scope execution stays OFF.
+
 Live scope/group preparation and selective supervision, physical cleanup recovery and published-artifact
 qualification remain required before Worker scope execution is enabled.

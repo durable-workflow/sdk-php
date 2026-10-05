@@ -47,6 +47,7 @@ final class Replayer
         array $localActivityCancellationPolicies = [],
         bool $allowCancellationScopeAuthoring = false,
         bool $replayCommittedCancellationScopes = false,
+        bool $prepareCancellationScopeDelivery = false,
     ): ReplayResult {
         if ($prepareLocalActivityGroups && !$prepareLocalActivities) {
             throw new LogicException('Prepared local groups require prepared local activity admission.');
@@ -57,13 +58,18 @@ final class Replayer
         if ($replayCommittedCancellationScopes && !$allowCancellationScopeAuthoring) {
             throw new LogicException('Committed scope replay requires candidate scope authoring.');
         }
+        if ($prepareCancellationScopeDelivery && !$replayCommittedCancellationScopes) {
+            throw new LogicException('Pending scope selection requires canonical committed scope replay.');
+        }
         $hasScopes = $this->assertCancellationScopeReplaySupported($history, $allowCancellationScopeAuthoring, $task, $replayCommittedCancellationScopes);
         $scopes = new CancellationScopeHistory($hasScopes ? $history : [], (string) ($task['run_id'] ?? ''));
         // Source qualification only. The Worker does not enable this replay path.
         $scopeDeliveries = [];
+        $committedScopes = null;
         if ($replayCommittedCancellationScopes) {
             $committedScopes = new CommittedCancellationScopeHistory($history, (string) ($task['run_id'] ?? ''),
-                (string) ($task['workflow_id'] ?? ''), $scopes, inspectOperationProjections: true);
+                (string) ($task['workflow_id'] ?? ''), $scopes, requireCommittedDelivery: !$prepareCancellationScopeDelivery,
+                inspectOperationProjections: true);
             $deliveredScopeIds = [];
             foreach ($committedScopes->deliveries as $scopeSequence => $delivery) {
                 $states = $committedScopes->scopeStatesForDelivery($delivery);
@@ -174,6 +180,40 @@ final class Replayer
                     static fn (array $state): ScopedCancellationContext => $state['context'], $scopeDelivery['states'],
                 )));
                 continue 2;
+            }
+            if ($prepareCancellationScopeDelivery && !$context->isCancellationShielded()) {
+                $pending = $committedScopes->pendingRequestForScope($context->currentCancellationScopeId(), $scopes);
+                if ($pending !== null) {
+                    $request = $pending['context'];
+                    $preparation = $committedScopes->preparations[$request->scopeId] ?? null;
+                    $original = $preparation['boundary'] ?? null;
+                    if ($original !== null && $original->sequence < $nextSequence) {
+                        throw new NonDeterministicWorkflow('Workflow passed its original prepared scope boundary.', $original->sequence,
+                            reason: 'cancellation_scope_boundary_mismatch');
+                    }
+                    $boundary = $this->cancellationBoundary($suspended, $nextSequence, $stepsBySequence, $request->requestId, $original);
+                    $atOriginal = $original !== null && $original->sequence === $nextSequence;
+                    if ($atOriginal || ($original === null && $boundary !== null
+                        && CancellationHistory::rangeEligibleBefore($history, $pending['index'], $boundary->sequence, $boundary->sequenceSpan))) {
+                        if ($boundary === null || ($original !== null && $boundary != $original)) {
+                            throw new NonDeterministicWorkflow('Pending scope delivery changed its original prepared call.', $nextSequence,
+                                reason: 'cancellation_scope_boundary_mismatch');
+                        }
+                        if (!in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child'], true)) {
+                            throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: pending local, selected and group delivery is not qualified by this PHP worker.');
+                        }
+                        $this->assertCancellationCallMatches($suspended, $boundary, $stepsBySequence, $context);
+                        if ($preparation !== null && !isset($committedScopes->scopeStatesForDelivery($preparation)[$context->currentCancellationScopeId()])) {
+                            throw new NonDeterministicWorkflow('Pending scope call is absent from its original frozen subtree.', $nextSequence,
+                                reason: 'cancellation_scope_boundary_mismatch');
+                        }
+
+                        return new ReplayResult($commands, $context->messageStreamCursorAcknowledgements(), $context->messageStreamPendingWaits(),
+                            cancellationScopeDelivery: new CancellationScopeDeliveryIntent($request, $boundary,
+                                $preparation['event']['id'] ?? null,
+                                $preparation === null ? null : new \DateTimeImmutable($preparation['event']['payload']['authority_deadline_at'])));
+                    }
+                }
             }
             if ($cancellation->request !== null && !$cancellationConsumed) {
                 $boundary = $this->cancellationBoundary($suspended, $nextSequence, $stepsBySequence, $cancellation->request->requestId, $cancellation->delivery);
@@ -746,6 +786,14 @@ final class Replayer
             if (!isset($consumedScopeDeliveries[$sequence])) {
                 throw new NonDeterministicWorkflow('Workflow terminated without replaying its committed scope cancellation boundary.', $sequence,
                     reason: 'cancellation_scope_boundary_mismatch');
+            }
+        }
+        if ($prepareCancellationScopeDelivery) {
+            foreach ($committedScopes->preparations as $preparation) {
+                if (!isset($consumedScopeDeliveries[$preparation['boundary']->sequence])) {
+                    throw new NonDeterministicWorkflow('Workflow terminated without selecting its original prepared scope boundary.',
+                        $preparation['boundary']->sequence, reason: 'cancellation_scope_boundary_mismatch');
+                }
             }
         }
         $this->assertNoRemainingSteps($steps, $stepCursor, 'complete_workflow');

@@ -20,6 +20,9 @@ final class CommittedCancellationScopeHistory
     /** @var array<string, array{context: ScopedCancellationContext, boundary: CancellationDelivery, event: array<string, mixed>}> */
     public readonly array $preparations;
 
+    /** @var array<string, array{context: ScopedCancellationContext, time: DateTimeImmutable, index: int}> */
+    private readonly array $pendingRequests;
+
     /** @param list<array<string, mixed>> $history */
     public function __construct(array $history, string $runId, string $workflowId, CancellationScopeHistory $scopes, bool $requireCommittedDelivery = true, bool $inspectActivityProjections = false, bool $inspectOperationProjections = false)
     {
@@ -89,7 +92,7 @@ final class CommittedCancellationScopeHistory
                             throw new InvalidArgumentException('Inherited scope cancellation changes its accepted parent or crosses a shield.');
                         }
                     }
-                    $requests[$scopeId] = ['context' => $context, 'time' => $recordedAt];
+                    $requests[$scopeId] = ['context' => $context, 'time' => $recordedAt, 'index' => $historyIndex];
                     $requestIds[$context->requestId] = true;
                     continue;
                 }
@@ -215,6 +218,30 @@ final class CommittedCancellationScopeHistory
         ksort($deliveries);
         $this->deliveries = $deliveries;
         $this->preparations = $verifiedPreparations;
+        $this->pendingRequests = array_diff_key($requests, $coveredRequests);
+    }
+
+    /** Select an accepted original ancestor without crossing a shield or borrowing another root.
+     * @return array{context: ScopedCancellationContext, time: DateTimeImmutable, index: int}|null
+     */
+    public function pendingRequestForScope(string $scopeId, CancellationScopeHistory $scopes): ?array
+    {
+        $addresses = [];
+        foreach ($scopes->openings as $opening) { $addresses[$opening['scope_id']] = $opening; }
+        $request = $this->pendingRequests[$scopeId] ?? null;
+        $active = $request;
+        while (isset($addresses[$scopeId]) && !$addresses[$scopeId]['shield_parent']) {
+            $scopeId = $addresses[$scopeId]['parent_scope_id'];
+            $ancestor = $this->pendingRequests[$scopeId] ?? null;
+            if ($ancestor === null) { continue; }
+            if ($active === null || $ancestor['context']->rootContext->toArray() !== $active['context']->rootContext->toArray()
+                || array_slice($active['context']->lineage, 0, count($ancestor['context']->lineage)) !== $ancestor['context']->lineage) {
+                throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: pending scope selection requires its accepted original ancestor lineage.');
+            }
+            $request = $ancestor;
+        }
+
+        return $request;
     }
 
     /**

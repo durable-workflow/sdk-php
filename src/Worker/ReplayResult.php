@@ -24,6 +24,7 @@ final class ReplayResult
         public readonly ?PreparedLocalActivityCall $preparedLocalActivity = null,
         public readonly ?PreparedLocalActivityGroup $preparedLocalActivityGroup = null,
         public readonly ?CancellationScopeOpening $cancellationScopeOpening = null,
+        public readonly ?CancellationScopeDeliveryIntent $cancellationScopeDelivery = null,
     ) {
     }
 }
