@@ -295,6 +295,15 @@ protocol remains 1.19.
 
 ## Remaining qualification
 
+The internal scope transport also admits Server preparation and delivery
+controls. They retain the original claim owner, epoch, scope request and authored
+call range. Both require a caller-supplied shared bounded request budget. The
+transport rejects supplied deadlines, borrowed preparation IDs and malformed
+call ranges. An uncertain reply is returned as an error without retrying or
+claiming delivery. Its raw response is not callback authority. Canonical
+preparation/delivery receipt validation and live recovery qualification must
+precede Worker scope execution, which remains disabled.
+
 Prepared local Activities can author `CancellationPolicy::TryCancel` or
 `CancellationPolicy::WaitCancellationCompleted` in `cancellation_policy` when
 the negotiated protocol 1.20 worker enables prepared local execution and runtime

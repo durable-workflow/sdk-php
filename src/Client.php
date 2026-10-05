@@ -1342,7 +1342,9 @@ final class Client implements WorkflowClientInterface
 
     /**
      * @internal Unfrozen scope admission transport. This does not negotiate scope
-     * execution or validate the canonical receipt. The workflow replay layer must
+     * execution or validate the canonical receipt. Preparation and delivery need
+     * an explicit shared budget and cannot supply new deadline authority.
+     * The workflow replay layer must
      * verify committed prefix/scope history before entering application code.
      * @param array<string, mixed> $body
      * @return array<string, mixed>
@@ -1361,9 +1363,26 @@ final class Client implements WorkflowClientInterface
         if ($budget !== null && !$this->boundedWorkerRequests) {
             throw new \LogicException('A cancellation scope authority budget requires bounded worker requests.');
         }
-        if (!in_array($operation, ['open', 'checkpoint'], true) || trim($taskId) === '' || trim($leaseOwner) === ''
+        if (!in_array($operation, ['open', 'checkpoint', 'prepare', 'deliver'], true) || trim($taskId) === '' || trim($leaseOwner) === ''
             || $attempt < 1 || array_key_exists('lease_owner', $body) || array_key_exists('workflow_task_attempt', $body)) {
             throw new InvalidArgumentException('Invalid cancellation scope operation or original claim authority.');
+        }
+        if (in_array($operation, ['prepare', 'deliver'], true)) {
+            if (array_diff(array_keys($body), ['scope_id', 'request_id', 'sequence', 'call_kind',
+                'sequence_span', 'operation_sequence', 'operation_sequence_span']) !== []) {
+                throw new InvalidArgumentException('Scope delivery accepts only its original authored boundary.');
+            }
+            foreach (['scope_id', 'request_id'] as $field) {
+                $identity = $body[$field] ?? null;
+                if (!is_string($identity) || trim($identity) === '' || strlen($identity) > 255
+                    || preg_match('//u', $identity) !== 1 || ($field === 'scope_id' && $identity === 'root')) {
+                    throw new InvalidArgumentException('Scope delivery requires its original scope and request identities.');
+                }
+            }
+            CancellationDelivery::fromPayload([...$body, 'workflow_command_id' => $body['request_id']]);
+            if (!$this->boundedWorkerRequests || $budget === null) {
+                throw new \LogicException('Scope preparation and delivery require an explicit shared bounded authority budget.');
+            }
         }
 
         return $this->request('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/cancellation-scopes/'.$operation, true, [
