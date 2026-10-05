@@ -1982,17 +1982,25 @@ final class Worker
             $receipt = $status['cancellation_acknowledgement'] ?? null;
             if (($status['task_id'] ?? null) !== $taskId
                 || ($status['activity_attempt_id'] ?? null) !== $attemptId
-                || ($status['lease_owner'] ?? null) !== $leaseOwner
-                || ($status['can_continue'] ?? null) !== false
-                || ($status['cancel_requested'] ?? null) !== true
-                || ($status['heartbeat_recorded'] ?? null) !== false
+                || ($status['lease_owner'] ?? null) !== $leaseOwner) {
+                throw new WorkflowClaimAborted('Remote callback-stop observation changed its original claim identity.');
+            }
+            if (($status['cancel_requested'] ?? null) !== true) {
+                $this->diagnostic('worker.activity_cancellation_acknowledgement_skipped', [
+                    'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
+                    'callback_stopped' => true, 'reason' => 'cancellation_not_observed',
+                ]);
+
+                return;
+            }
+            if (($status['can_continue'] ?? null) !== false || ($status['heartbeat_recorded'] ?? null) !== false
                 || !is_array($receipt)
                 || !in_array($receipt['callback_state'] ?? null, ['unknown', 'stopped'], true)) {
-                return;
+                throw new WorkflowClaimAborted('Remote callback stopped without canonical cancellation acknowledgement proof.');
             }
             foreach (['request_id', 'root_request_id', 'cleanup_deadline_at', 'cancellation_history_event_id'] as $field) {
                 if (!is_string($receipt[$field] ?? null) || trim($receipt[$field]) === '') {
-                    return;
+                    throw new WorkflowClaimAborted('Remote callback-stop proof omitted its original '.$field.'.');
                 }
             }
             if (preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/', $receipt['cleanup_deadline_at']) !== 1) {
@@ -2027,6 +2035,7 @@ final class Worker
                 'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
                 'request_id' => $receipt['request_id'], 'root_request_id' => $receipt['root_request_id'],
                 'cleanup_deadline_at' => $receipt['cleanup_deadline_at'],
+                'callback_stopped' => true,
                 'history_event_id' => $reply['history_event_id'], 'duplicate' => $reply['duplicate'],
             ]);
         } catch (Throwable $error) {
@@ -2034,6 +2043,7 @@ final class Worker
             // Never turn a receipt refusal into publication or a fresh cleanup budget.
             $this->diagnostic('worker.activity_cancellation_acknowledgement_failed', [
                 'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
+                'callback_stopped' => true,
                 'message' => $error->getMessage(),
             ], 'warning');
         }

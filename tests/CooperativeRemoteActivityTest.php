@@ -94,6 +94,8 @@ final class CooperativeRemoteActivityTest extends TestCase
             ['absent', null], ['request_id', ''], ['root_request_id', []],
             ['cleanup_deadline_at', null], ['cancellation_history_event_id', false],
             ['callback_state', 'fenced'], ['cancel_requested', false], ['heartbeat_recorded', true],
+            ['task_id', 'another-task'], ['activity_attempt_id', 'another-attempt'],
+            ['lease_owner', 'another-owner'], ['can_continue', true],
         ];
     }
 
@@ -109,7 +111,7 @@ final class CooperativeRemoteActivityTest extends TestCase
             $transport->status['can_continue'] = false;
             $transport->status['cancel_requested'] = true;
             $receipt = RemoteOwnerTransport::receipt();
-            if (in_array($field, ['cancel_requested', 'heartbeat_recorded'], true)) { $transport->status[$field] = $value; }
+            if (in_array($field, ['cancel_requested', 'heartbeat_recorded', 'task_id', 'activity_attempt_id', 'lease_owner', 'can_continue'], true)) { $transport->status[$field] = $value; }
             else { $receipt[$field] = $value; }
             $transport->status['cancellation_acknowledgement'] = $field === 'absent' ? null : $receipt;
         };
@@ -122,6 +124,16 @@ final class CooperativeRemoteActivityTest extends TestCase
         self::assertSame([], $transport->acknowledgments);
         self::assertSame([], $transport->completions);
         self::assertSame([], $transport->failures);
+        $event = $field === 'cancel_requested' ? 'worker.activity_cancellation_acknowledgement_skipped'
+            : 'worker.activity_cancellation_acknowledgement_failed';
+        self::assertContains($event, $transport->events);
+        self::assertNotContains('worker.activity_cancellation_acknowledged', $transport->events);
+        $report = array_values(array_filter($transport->diagnostics, static fn (array $entry): bool => $entry['event'] === $event));
+        self::assertCount(1, $report);
+        self::assertTrue($report[0]['context']['callback_stopped']);
+        self::assertSame('task', $report[0]['context']['task_id']);
+        self::assertSame('attempt', $report[0]['context']['activity_attempt_id']);
+        self::assertCount(2, $pids);
         foreach ($pids as $pid) { self::assertFalse(posix_kill($pid, 0)); }
     }
 
@@ -354,6 +366,7 @@ final class CooperativeRemoteActivityTest extends TestCase
             'queue', workerId: 'owner', enableCooperativeCancellation: true,
             diagnosticListener: static function (string $event, array $context) use (&$pids, $transport): void {
                 $transport->events[] = $event;
+                $transport->diagnostics[] = ['event' => $event, 'context' => $context];
                 if ($event === 'worker.activity_process_started') { $pids = [$context['relay_pid'], $context['callback_pid']]; }
                 if ($event === 'worker.claim_aborted') { $transport->aborts[] = $context['message']; }
             });
@@ -374,6 +387,7 @@ final class RemoteOwnerTransport implements BoundedTransport
     public array $aborts = [];
     public array $acknowledgments = [];
     public array $events = [];
+    public array $diagnostics = [];
     public ?string $acknowledgmentFailure = null;
     public ?string $transientAcknowledgmentFault = null;
     public bool $persistentTransientFailure = false;

@@ -1304,6 +1304,7 @@ final class CooperativeCancellationTest extends TestCase
     {
         $queue = $this->queue('remote');
         $client = $this->client();
+        $handle = null;
         [$workflowPid, $workflowMessages] = $this->spawnWorker($queue, pauseWorkflowClaim: $coldWorkflow, remotePolicy: $policy);
         [$ownerPid, $ownerMessages] = $this->spawnWorker($queue, userHeartbeat: $userHeartbeat, remoteRole: true, receiptFault: $receiptFault);
         try {
@@ -1323,6 +1324,11 @@ final class CooperativeCancellationTest extends TestCase
             }
             $started = microtime(true);
             $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 60);
+            file_put_contents($this->directory.'/remote-request.json', json_encode([
+                'application_heartbeat' => $userHeartbeat, 'cold_workflow' => $coldWorkflow,
+                'policy' => $policy?->value ?? CancellationPolicy::TryCancel->value,
+                'receipt_fault' => $receiptFault, 'accepted' => $accepted,
+            ], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
             if ($coldWorkflow) {
                 $this->awaitMessage($workflowMessages, 'workflow-claim-held');
                 $heldWorkflowClaim = json_decode((string) file_get_contents($this->directory.'/held-workflow-claim'), true, flags: JSON_THROW_ON_ERROR);
@@ -1473,6 +1479,19 @@ final class CooperativeCancellationTest extends TestCase
             }
             self::assertSame($events, $this->history($client, $handle));
         } finally {
+            if ($handle !== null) {
+                $this->retainRunEvidence($client, $handle, 'remote-recovery');
+                try {
+                    if (is_file($this->directory.'/remote-fence')) {
+                        $fence = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
+                        file_put_contents($this->directory.'/remote-attempt-status.json', json_encode(
+                            $client->activityTaskStatus($fence['task_id'], $fence['activity_attempt_id'], $fence['lease_owner']),
+                            JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
+                    }
+                } catch (Throwable $error) {
+                    file_put_contents($this->directory.'/remote-attempt-capture-error.txt', $error::class.': '.$error->getMessage());
+                }
+            }
             if (is_file($this->directory.'/pause-workflow-claim')) { unlink($this->directory.'/pause-workflow-claim'); }
             if (is_resource($workflowMessages)) { fclose($workflowMessages); }
             fclose($ownerMessages);
@@ -1796,7 +1815,8 @@ final class CooperativeCancellationTest extends TestCase
                     workerId: $queue.'-'.getmypid(), enableCooperativeCancellation: true, enablePreparedLocalActivities: $preparedLocal,
                     diagnosticListener: function (string $event, array $context) use ($notify, &$failureReported, $blockCleanup): void {
                         if (in_array($event, ['worker.claim_aborted', 'worker.claim_deferred',
-                            'worker.activity_cancellation_acknowledged', 'worker.activity_cancellation_acknowledgement_failed'], true)) {
+                            'worker.activity_cancellation_acknowledged', 'worker.activity_cancellation_acknowledgement_failed',
+                            'worker.activity_cancellation_acknowledgement_skipped'], true)) {
                             fwrite(STDOUT, 'Connected claim diagnostic: '.json_encode(['event' => $event, 'context' => $context], JSON_THROW_ON_ERROR)."\n");
                             file_put_contents($this->directory.'/claim-diagnostics.jsonl',
                                 json_encode(['event' => $event, 'context' => $context], JSON_THROW_ON_ERROR)."\n", FILE_APPEND);

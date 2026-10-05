@@ -225,6 +225,13 @@ authority. Stop acknowledgment describes
 the supervised callback, not reversal of external side effects. Other processes
 and downstream systems need their own cooperating cancellation and fencing.
 
+Joined callbacks emit a distinct diagnostic when no cooperative cancellation
+was observed. A changed claim identity or malformed cancellation proof emits
+`worker.activity_cancellation_acknowledgement_failed`. These diagnostics carry
+`callback_stopped: true` and the original task and attempt IDs. They distinguish
+physical process stop from a retained stop acknowledgement without publishing
+results or manufacturing cancellation authority.
+
 The source-bound connected lane checks the receipt for blocked callbacks with
 and without application heartbeats, live and replacement workflow workers,
 duplicate acknowledgment and stale completion/failure refusal. Local callback
