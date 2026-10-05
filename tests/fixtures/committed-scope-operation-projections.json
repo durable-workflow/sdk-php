@@ -1,0 +1,3285 @@
+{
+    "_provenance": {
+        "native_commit": "0471f1ebbb98c61fe53663086d62dc2db74db9e3",
+        "input_fixture_sha256": "85320e25c7c19521bca4a1cff138911df1f19f76471ea033e961695e8ed761be",
+        "producers": [
+            "CancellationScopeDelivery::activityMembers",
+            "ScopedTimerCancellation::members",
+            "ScopedWaitCancellation::members",
+            "ScopedChildCancellation::members",
+            "CancellationScopeDescendants::members"
+        ],
+        "history_store": "isolated SQLite read-only projection inputs",
+        "effect_authority": false
+    },
+    "operations": {
+        "task": {
+            "workflow_id": "scope-fixture-plain",
+            "run_id": "01m43xf68q7341x3zjapav5pse"
+        },
+        "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+        "history": [
+            {
+                "id": "01m43xf68yxpw4t2kv4w8gga08",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 1,
+                "event_type": "StartAccepted",
+                "payload": {
+                    "workflow_command_id": "01m43xf68v3zv390headffbdgz",
+                    "workflow_instance_id": "scope-fixture-plain",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "workflow_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+                    "workflow_type": "test-signal-workflow",
+                    "business_key": null,
+                    "visibility_labels": null,
+                    "memo": null,
+                    "search_attributes": null,
+                    "outcome": "started_new",
+                    "command": {
+                        "id": "01m43xf68v3zv390headffbdgz",
+                        "sequence": 1,
+                        "type": "start",
+                        "target_scope": "instance",
+                        "resolved_run_id": "01m43xf68q7341x3zjapav5pse",
+                        "payload_codec": "avro",
+                        "payload": "wwHioz3/VYAiNwwA",
+                        "source": "php",
+                        "caller_label": "PHP API",
+                        "auth_status": "not_applicable",
+                        "auth_method": "none",
+                        "status": "accepted",
+                        "outcome": "started_new",
+                        "accepted_at": "2026-10-04T00:00:00.123456Z",
+                        "applied_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "01m43xf691v1srvsccbmkmmc4t",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 2,
+                "event_type": "WorkflowStarted",
+                "payload": {
+                    "workflow_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+                    "workflow_type": "test-signal-workflow",
+                    "workflow_instance_id": "scope-fixture-plain",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "workflow_command_id": "01m43xf68v3zv390headffbdgz",
+                    "business_key": null,
+                    "visibility_labels": null,
+                    "memo": null,
+                    "search_attributes": null,
+                    "execution_timeout_seconds": null,
+                    "run_timeout_seconds": null,
+                    "execution_deadline_at": null,
+                    "run_deadline_at": null,
+                    "workflow_definition_fingerprint": "sha256:5617b572b0eb270f91fe65ee11da3d428b3f6b570d381a87213671a587b20475",
+                    "declared_queries": [],
+                    "declared_query_contracts": [],
+                    "declared_signals": [
+                        "name-provided"
+                    ],
+                    "declared_signal_contracts": [],
+                    "declared_updates": [],
+                    "declared_update_contracts": [],
+                    "declared_entry_method": "handle",
+                    "declared_entry_mode": "canonical",
+                    "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+                    "command": {
+                        "id": "01m43xf68v3zv390headffbdgz",
+                        "sequence": 1,
+                        "type": "start",
+                        "target_scope": "instance",
+                        "resolved_run_id": "01m43xf68q7341x3zjapav5pse",
+                        "payload_codec": "avro",
+                        "payload": "wwHioz3/VYAiNwwA",
+                        "source": "php",
+                        "caller_label": "PHP API",
+                        "auth_status": "not_applicable",
+                        "auth_method": "none",
+                        "status": "accepted",
+                        "outcome": "started_new",
+                        "accepted_at": "2026-10-04T00:00:00.123456Z",
+                        "applied_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "01m43xf6a29mr7ywhvs5mrahrt",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 3,
+                "event_type": "CancellationScopeOpened",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "sequence": 1,
+                    "scope_id": "01M43XF6A1JYQH2ZMZ0XE0M00C",
+                    "parent_scope_id": "root",
+                    "shield_parent": false,
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "01m43xf6a5edjad2cnw74ktca8",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 4,
+                "event_type": "CancellationScopeOpened",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "sequence": 2,
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "parent_scope_id": "01M43XF6A1JYQH2ZMZ0XE0M00C",
+                    "shield_parent": false,
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "plain-timer",
+                "sequence": 5,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "TimerScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 10,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "timer_id": "timer-plain",
+                    "delay_seconds": 3600,
+                    "fire_at": "2026-10-04T01:00:00.123456Z"
+                }
+            },
+            {
+                "id": "signal-wait",
+                "sequence": 6,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "SignalWaitOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 11,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "signal_wait_id": "signal-wait-id",
+                    "timeout_seconds": 30,
+                    "signal_name": "inbox",
+                    "condition_key": null,
+                    "condition_definition_fingerprint": null,
+                    "condition_wait_occurrence_id": null
+                }
+            },
+            {
+                "id": "signal-timer",
+                "sequence": 7,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "TimerScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 11,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "timer_id": "signal-timer-id",
+                    "delay_seconds": 30,
+                    "fire_at": "2026-10-04T00:00:30.123456Z",
+                    "timer_kind": "signal_timeout",
+                    "signal_wait_id": "signal-wait-id",
+                    "condition_wait_occurrence_id": null
+                }
+            },
+            {
+                "id": "condition-wait",
+                "sequence": 8,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ConditionWaitOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 12,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "condition_wait_id": "condition-wait-id",
+                    "timeout_seconds": 30,
+                    "signal_name": null,
+                    "condition_key": "ready",
+                    "condition_definition_fingerprint": "predicate-v1",
+                    "condition_wait_occurrence_id": "occurrence-1"
+                }
+            },
+            {
+                "id": "condition-timer",
+                "sequence": 9,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "TimerScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 12,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "timer_id": "condition-timer-id",
+                    "delay_seconds": 30,
+                    "fire_at": "2026-10-04T00:00:30.123456Z",
+                    "timer_kind": "condition_timeout",
+                    "condition_wait_id": "condition-wait-id",
+                    "condition_wait_occurrence_id": "occurrence-1"
+                }
+            },
+            {
+                "id": "wait-no-timeout",
+                "sequence": 10,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ConditionWaitOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 13,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "condition_wait_id": "wait-no-timeout-id",
+                    "condition_key": "done"
+                }
+            },
+            {
+                "id": "child-0",
+                "sequence": 11,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildWorkflowScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 14,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-0",
+                    "child_workflow_instance_id": "child-instance-0",
+                    "child_workflow_run_id": "child-run-0",
+                    "cancellation_policy": "try_cancel",
+                    "parent_close_policy": "request_cancel",
+                    "child_workflow_type": "python-child"
+                }
+            },
+            {
+                "id": "child-1",
+                "sequence": 12,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildWorkflowScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 15,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-1",
+                    "child_workflow_instance_id": "child-instance-1",
+                    "child_workflow_run_id": "child-run-1",
+                    "cancellation_policy": "wait_cancellation_completed",
+                    "parent_close_policy": "request_cancel",
+                    "child_workflow_type": "python-child"
+                }
+            },
+            {
+                "id": "child-2",
+                "sequence": 13,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildWorkflowScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 16,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-2",
+                    "child_workflow_instance_id": "child-instance-2",
+                    "child_workflow_run_id": "child-run-2",
+                    "cancellation_policy": "abandon",
+                    "parent_close_policy": "request_cancel",
+                    "child_workflow_type": "python-child"
+                }
+            },
+            {
+                "id": "child-continued-before-preparation",
+                "sequence": 14,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildRunStarted",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 15,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-1",
+                    "child_workflow_instance_id": "child-instance-1",
+                    "child_workflow_run_id": "child-continued-run",
+                    "cancellation_policy": "wait_cancellation_completed"
+                }
+            },
+            {
+                "id": "01m43xf6acd9a7a5pepm5pjnb0",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 15,
+                "event_type": "CancellationScopeRequested",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-request/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "parent_scope_id": null,
+                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            }
+                        ]
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "01m43xf6az7v2abqsr0tbz27a1",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 16,
+                "event_type": "CancellationScopeDeliveryPrepared",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-preparation/v5",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            }
+                        ]
+                    },
+                    "sequence": 20,
+                    "call_kind": "timer",
+                    "sequence_span": 1,
+                    "operation_sequence": null,
+                    "operation_sequence_span": 1,
+                    "authority_deadline_at": "2026-10-04T00:00:30.123456Z",
+                    "activity_members": [],
+                    "timer_members": [
+                        {
+                            "sequence": 10,
+                            "timer_id": "timer-plain",
+                            "descriptor_hash": "d78a4b0d2c2f326857a31358e3ddfa20bd567e2364315ca30cef3cb11eae6c0f"
+                        },
+                        {
+                            "sequence": 11,
+                            "timer_id": "signal-timer-id",
+                            "descriptor_hash": "cb7fd119a14082cae54f6f418beb5769a3506cc5769df7ac10318017b1360b70"
+                        },
+                        {
+                            "sequence": 12,
+                            "timer_id": "condition-timer-id",
+                            "descriptor_hash": "167249f4220f18c56597a3a14165aa464443b4e71e7e28ffd708f271b6f0460e"
+                        }
+                    ],
+                    "wait_members": [
+                        {
+                            "kind": "signal",
+                            "sequence": 11,
+                            "wait_id": "signal-wait-id",
+                            "timer_id": "signal-timer-id",
+                            "descriptor_hash": "68a60d453bbc004c3c17ca4e33f95bbad92e24508e680152c1140be5f247a63f"
+                        },
+                        {
+                            "kind": "condition",
+                            "sequence": 12,
+                            "wait_id": "condition-wait-id",
+                            "timer_id": "condition-timer-id",
+                            "descriptor_hash": "e8f0ce4c1242168f2a97286c5ceea4bb9458822aedc8301734226b139510e960"
+                        },
+                        {
+                            "kind": "condition",
+                            "sequence": 13,
+                            "wait_id": "wait-no-timeout-id",
+                            "timer_id": null,
+                            "descriptor_hash": "b462fc9baefdd0f5b792ed8f41177d3a97a3d4bce08a58f04782a31215d4f6f6"
+                        }
+                    ],
+                    "child_members": [
+                        {
+                            "sequence": 14,
+                            "child_call_id": "child-call-0",
+                            "child_workflow_instance_id": "child-instance-0",
+                            "child_workflow_run_id": "child-run-0",
+                            "cancellation_policy": "try_cancel",
+                            "descriptor_hash": "19c48c0ad10c781d4c08900a51fa1d98e4606bc7b65556b12d705d3f49367d07"
+                        },
+                        {
+                            "sequence": 15,
+                            "child_call_id": "child-call-1",
+                            "child_workflow_instance_id": "child-instance-1",
+                            "child_workflow_run_id": "child-continued-run",
+                            "cancellation_policy": "wait_cancellation_completed",
+                            "descriptor_hash": "0d65b5082c06e33b7db952b1d61085a344a4b97b60d982998a4fba6b6e6748ef"
+                        },
+                        {
+                            "sequence": 16,
+                            "child_call_id": "child-call-2",
+                            "child_workflow_instance_id": "child-instance-2",
+                            "child_workflow_run_id": "child-run-2",
+                            "cancellation_policy": "abandon",
+                            "descriptor_hash": "a6a5e39e958de9cf34a656dc01f417209dae2a5787ab4ee0e169c9e3f08421bd"
+                        }
+                    ],
+                    "descendant_members": [],
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:09.123456Z"
+            },
+            {
+                "id": "01m43xf6bwxny6v9ys141sszkp",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 17,
+                "event_type": "CancellationScopeDelivered",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-delivery/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            }
+                        ]
+                    },
+                    "sequence": 20,
+                    "call_kind": "timer",
+                    "sequence_span": 1,
+                    "operation_sequence": null,
+                    "operation_sequence_span": 1,
+                    "authority_deadline_at": "2026-10-04T00:00:30.123456Z",
+                    "preparation_history_event_id": "01m43xf6az7v2abqsr0tbz27a1",
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:09.123456Z"
+            }
+        ]
+    },
+    "groups": {
+        "task": {
+            "workflow_id": "scope-fixture-plain",
+            "run_id": "01m43xf68q7341x3zjapav5pse"
+        },
+        "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+        "history": [
+            {
+                "id": "01m43xf68yxpw4t2kv4w8gga08",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 1,
+                "event_type": "StartAccepted",
+                "payload": {
+                    "workflow_command_id": "01m43xf68v3zv390headffbdgz",
+                    "workflow_instance_id": "scope-fixture-plain",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "workflow_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+                    "workflow_type": "test-signal-workflow",
+                    "business_key": null,
+                    "visibility_labels": null,
+                    "memo": null,
+                    "search_attributes": null,
+                    "outcome": "started_new",
+                    "command": {
+                        "id": "01m43xf68v3zv390headffbdgz",
+                        "sequence": 1,
+                        "type": "start",
+                        "target_scope": "instance",
+                        "resolved_run_id": "01m43xf68q7341x3zjapav5pse",
+                        "payload_codec": "avro",
+                        "payload": "wwHioz3/VYAiNwwA",
+                        "source": "php",
+                        "caller_label": "PHP API",
+                        "auth_status": "not_applicable",
+                        "auth_method": "none",
+                        "status": "accepted",
+                        "outcome": "started_new",
+                        "accepted_at": "2026-10-04T00:00:00.123456Z",
+                        "applied_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "01m43xf691v1srvsccbmkmmc4t",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 2,
+                "event_type": "WorkflowStarted",
+                "payload": {
+                    "workflow_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+                    "workflow_type": "test-signal-workflow",
+                    "workflow_instance_id": "scope-fixture-plain",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "workflow_command_id": "01m43xf68v3zv390headffbdgz",
+                    "business_key": null,
+                    "visibility_labels": null,
+                    "memo": null,
+                    "search_attributes": null,
+                    "execution_timeout_seconds": null,
+                    "run_timeout_seconds": null,
+                    "execution_deadline_at": null,
+                    "run_deadline_at": null,
+                    "workflow_definition_fingerprint": "sha256:5617b572b0eb270f91fe65ee11da3d428b3f6b570d381a87213671a587b20475",
+                    "declared_queries": [],
+                    "declared_query_contracts": [],
+                    "declared_signals": [
+                        "name-provided"
+                    ],
+                    "declared_signal_contracts": [],
+                    "declared_updates": [],
+                    "declared_update_contracts": [],
+                    "declared_entry_method": "handle",
+                    "declared_entry_mode": "canonical",
+                    "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+                    "command": {
+                        "id": "01m43xf68v3zv390headffbdgz",
+                        "sequence": 1,
+                        "type": "start",
+                        "target_scope": "instance",
+                        "resolved_run_id": "01m43xf68q7341x3zjapav5pse",
+                        "payload_codec": "avro",
+                        "payload": "wwHioz3/VYAiNwwA",
+                        "source": "php",
+                        "caller_label": "PHP API",
+                        "auth_status": "not_applicable",
+                        "auth_method": "none",
+                        "status": "accepted",
+                        "outcome": "started_new",
+                        "accepted_at": "2026-10-04T00:00:00.123456Z",
+                        "applied_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "01m43xf6a29mr7ywhvs5mrahrt",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 3,
+                "event_type": "CancellationScopeOpened",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "sequence": 1,
+                    "scope_id": "01M43XF6A1JYQH2ZMZ0XE0M00C",
+                    "parent_scope_id": "root",
+                    "shield_parent": false,
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "01m43xf6a5edjad2cnw74ktca8",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 4,
+                "event_type": "CancellationScopeOpened",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "sequence": 2,
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "parent_scope_id": "01M43XF6A1JYQH2ZMZ0XE0M00C",
+                    "shield_parent": false,
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "plain-timer",
+                "sequence": 5,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "TimerScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 10,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "timer_id": "timer-plain",
+                    "delay_seconds": 3600,
+                    "fire_at": "2026-10-04T01:00:00.123456Z",
+                    "parallel_group_id": "select-calls:11:6",
+                    "parallel_group_kind": "mixed",
+                    "parallel_group_mode": "select",
+                    "parallel_group_base_sequence": 11,
+                    "parallel_group_size": 6,
+                    "parallel_group_index": 2,
+                    "selection_member_key": "choice",
+                    "selection_member_index": 2,
+                    "selection_member_base_sequence": 14,
+                    "selection_member_size": 1,
+                    "selection_member_kind": "child",
+                    "parallel_group_path": [
+                        {
+                            "parallel_group_id": "parallel-calls:10:10",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_base_sequence": 10,
+                            "parallel_group_size": 10,
+                            "parallel_group_index": 1
+                        },
+                        {
+                            "parallel_group_id": "select-calls:11:6",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_mode": "select",
+                            "parallel_group_base_sequence": 11,
+                            "parallel_group_size": 6,
+                            "parallel_group_index": 2,
+                            "selection_member_key": "choice",
+                            "selection_member_index": 2,
+                            "selection_member_base_sequence": 14,
+                            "selection_member_size": 1,
+                            "selection_member_kind": "child"
+                        }
+                    ]
+                }
+            },
+            {
+                "id": "signal-wait",
+                "sequence": 6,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "SignalWaitOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 11,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "signal_wait_id": "signal-wait-id",
+                    "timeout_seconds": 30,
+                    "signal_name": "inbox",
+                    "condition_key": null,
+                    "condition_definition_fingerprint": null,
+                    "condition_wait_occurrence_id": null,
+                    "parallel_group_id": "select-calls:11:6",
+                    "parallel_group_kind": "mixed",
+                    "parallel_group_mode": "select",
+                    "parallel_group_base_sequence": 11,
+                    "parallel_group_size": 6,
+                    "parallel_group_index": 2,
+                    "selection_member_key": "choice",
+                    "selection_member_index": 2,
+                    "selection_member_base_sequence": 14,
+                    "selection_member_size": 1,
+                    "selection_member_kind": "child",
+                    "parallel_group_path": [
+                        {
+                            "parallel_group_id": "parallel-calls:10:10",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_base_sequence": 10,
+                            "parallel_group_size": 10,
+                            "parallel_group_index": 1
+                        },
+                        {
+                            "parallel_group_id": "select-calls:11:6",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_mode": "select",
+                            "parallel_group_base_sequence": 11,
+                            "parallel_group_size": 6,
+                            "parallel_group_index": 2,
+                            "selection_member_key": "choice",
+                            "selection_member_index": 2,
+                            "selection_member_base_sequence": 14,
+                            "selection_member_size": 1,
+                            "selection_member_kind": "child"
+                        }
+                    ]
+                }
+            },
+            {
+                "id": "signal-timer",
+                "sequence": 7,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "TimerScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 11,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "timer_id": "signal-timer-id",
+                    "delay_seconds": 30,
+                    "fire_at": "2026-10-04T00:00:30.123456Z",
+                    "timer_kind": "signal_timeout",
+                    "signal_wait_id": "signal-wait-id",
+                    "condition_wait_occurrence_id": null,
+                    "parallel_group_id": "select-calls:11:6",
+                    "parallel_group_kind": "mixed",
+                    "parallel_group_mode": "select",
+                    "parallel_group_base_sequence": 11,
+                    "parallel_group_size": 6,
+                    "parallel_group_index": 2,
+                    "selection_member_key": "choice",
+                    "selection_member_index": 2,
+                    "selection_member_base_sequence": 14,
+                    "selection_member_size": 1,
+                    "selection_member_kind": "child",
+                    "parallel_group_path": [
+                        {
+                            "parallel_group_id": "parallel-calls:10:10",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_base_sequence": 10,
+                            "parallel_group_size": 10,
+                            "parallel_group_index": 1
+                        },
+                        {
+                            "parallel_group_id": "select-calls:11:6",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_mode": "select",
+                            "parallel_group_base_sequence": 11,
+                            "parallel_group_size": 6,
+                            "parallel_group_index": 2,
+                            "selection_member_key": "choice",
+                            "selection_member_index": 2,
+                            "selection_member_base_sequence": 14,
+                            "selection_member_size": 1,
+                            "selection_member_kind": "child"
+                        }
+                    ]
+                }
+            },
+            {
+                "id": "condition-wait",
+                "sequence": 8,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ConditionWaitOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 12,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "condition_wait_id": "condition-wait-id",
+                    "timeout_seconds": 30,
+                    "signal_name": null,
+                    "condition_key": "ready",
+                    "condition_definition_fingerprint": "predicate-v1",
+                    "condition_wait_occurrence_id": "occurrence-1",
+                    "parallel_group_id": "select-calls:11:6",
+                    "parallel_group_kind": "mixed",
+                    "parallel_group_mode": "select",
+                    "parallel_group_base_sequence": 11,
+                    "parallel_group_size": 6,
+                    "parallel_group_index": 2,
+                    "selection_member_key": "choice",
+                    "selection_member_index": 2,
+                    "selection_member_base_sequence": 14,
+                    "selection_member_size": 1,
+                    "selection_member_kind": "child",
+                    "parallel_group_path": [
+                        {
+                            "parallel_group_id": "parallel-calls:10:10",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_base_sequence": 10,
+                            "parallel_group_size": 10,
+                            "parallel_group_index": 1
+                        },
+                        {
+                            "parallel_group_id": "select-calls:11:6",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_mode": "select",
+                            "parallel_group_base_sequence": 11,
+                            "parallel_group_size": 6,
+                            "parallel_group_index": 2,
+                            "selection_member_key": "choice",
+                            "selection_member_index": 2,
+                            "selection_member_base_sequence": 14,
+                            "selection_member_size": 1,
+                            "selection_member_kind": "child"
+                        }
+                    ]
+                }
+            },
+            {
+                "id": "condition-timer",
+                "sequence": 9,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "TimerScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 12,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "timer_id": "condition-timer-id",
+                    "delay_seconds": 30,
+                    "fire_at": "2026-10-04T00:00:30.123456Z",
+                    "timer_kind": "condition_timeout",
+                    "condition_wait_id": "condition-wait-id",
+                    "condition_wait_occurrence_id": "occurrence-1",
+                    "parallel_group_id": "select-calls:11:6",
+                    "parallel_group_kind": "mixed",
+                    "parallel_group_mode": "select",
+                    "parallel_group_base_sequence": 11,
+                    "parallel_group_size": 6,
+                    "parallel_group_index": 2,
+                    "selection_member_key": "choice",
+                    "selection_member_index": 2,
+                    "selection_member_base_sequence": 14,
+                    "selection_member_size": 1,
+                    "selection_member_kind": "child",
+                    "parallel_group_path": [
+                        {
+                            "parallel_group_id": "parallel-calls:10:10",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_base_sequence": 10,
+                            "parallel_group_size": 10,
+                            "parallel_group_index": 1
+                        },
+                        {
+                            "parallel_group_id": "select-calls:11:6",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_mode": "select",
+                            "parallel_group_base_sequence": 11,
+                            "parallel_group_size": 6,
+                            "parallel_group_index": 2,
+                            "selection_member_key": "choice",
+                            "selection_member_index": 2,
+                            "selection_member_base_sequence": 14,
+                            "selection_member_size": 1,
+                            "selection_member_kind": "child"
+                        }
+                    ]
+                }
+            },
+            {
+                "id": "wait-no-timeout",
+                "sequence": 10,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ConditionWaitOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 13,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "condition_wait_id": "wait-no-timeout-id",
+                    "condition_key": "done",
+                    "parallel_group_id": "select-calls:11:6",
+                    "parallel_group_kind": "mixed",
+                    "parallel_group_mode": "select",
+                    "parallel_group_base_sequence": 11,
+                    "parallel_group_size": 6,
+                    "parallel_group_index": 2,
+                    "selection_member_key": "choice",
+                    "selection_member_index": 2,
+                    "selection_member_base_sequence": 14,
+                    "selection_member_size": 1,
+                    "selection_member_kind": "child",
+                    "parallel_group_path": [
+                        {
+                            "parallel_group_id": "parallel-calls:10:10",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_base_sequence": 10,
+                            "parallel_group_size": 10,
+                            "parallel_group_index": 1
+                        },
+                        {
+                            "parallel_group_id": "select-calls:11:6",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_mode": "select",
+                            "parallel_group_base_sequence": 11,
+                            "parallel_group_size": 6,
+                            "parallel_group_index": 2,
+                            "selection_member_key": "choice",
+                            "selection_member_index": 2,
+                            "selection_member_base_sequence": 14,
+                            "selection_member_size": 1,
+                            "selection_member_kind": "child"
+                        }
+                    ]
+                }
+            },
+            {
+                "id": "child-0",
+                "sequence": 11,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildWorkflowScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 14,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-0",
+                    "child_workflow_instance_id": "child-instance-0",
+                    "child_workflow_run_id": "child-run-0",
+                    "cancellation_policy": "try_cancel",
+                    "parent_close_policy": "request_cancel",
+                    "child_workflow_type": "python-child",
+                    "parallel_group_id": "select-calls:11:6",
+                    "parallel_group_kind": "mixed",
+                    "parallel_group_mode": "select",
+                    "parallel_group_base_sequence": 11,
+                    "parallel_group_size": 6,
+                    "parallel_group_index": 2,
+                    "selection_member_key": "choice",
+                    "selection_member_index": 2,
+                    "selection_member_base_sequence": 14,
+                    "selection_member_size": 1,
+                    "selection_member_kind": "child",
+                    "parallel_group_path": [
+                        {
+                            "parallel_group_id": "parallel-calls:10:10",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_base_sequence": 10,
+                            "parallel_group_size": 10,
+                            "parallel_group_index": 1
+                        },
+                        {
+                            "parallel_group_id": "select-calls:11:6",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_mode": "select",
+                            "parallel_group_base_sequence": 11,
+                            "parallel_group_size": 6,
+                            "parallel_group_index": 2,
+                            "selection_member_key": "choice",
+                            "selection_member_index": 2,
+                            "selection_member_base_sequence": 14,
+                            "selection_member_size": 1,
+                            "selection_member_kind": "child"
+                        }
+                    ]
+                }
+            },
+            {
+                "id": "child-1",
+                "sequence": 12,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildWorkflowScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 15,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-1",
+                    "child_workflow_instance_id": "child-instance-1",
+                    "child_workflow_run_id": "child-run-1",
+                    "cancellation_policy": "wait_cancellation_completed",
+                    "parent_close_policy": "request_cancel",
+                    "child_workflow_type": "python-child",
+                    "parallel_group_id": "select-calls:11:6",
+                    "parallel_group_kind": "mixed",
+                    "parallel_group_mode": "select",
+                    "parallel_group_base_sequence": 11,
+                    "parallel_group_size": 6,
+                    "parallel_group_index": 2,
+                    "selection_member_key": "choice",
+                    "selection_member_index": 2,
+                    "selection_member_base_sequence": 14,
+                    "selection_member_size": 1,
+                    "selection_member_kind": "child",
+                    "parallel_group_path": [
+                        {
+                            "parallel_group_id": "parallel-calls:10:10",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_base_sequence": 10,
+                            "parallel_group_size": 10,
+                            "parallel_group_index": 1
+                        },
+                        {
+                            "parallel_group_id": "select-calls:11:6",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_mode": "select",
+                            "parallel_group_base_sequence": 11,
+                            "parallel_group_size": 6,
+                            "parallel_group_index": 2,
+                            "selection_member_key": "choice",
+                            "selection_member_index": 2,
+                            "selection_member_base_sequence": 14,
+                            "selection_member_size": 1,
+                            "selection_member_kind": "child"
+                        }
+                    ]
+                }
+            },
+            {
+                "id": "child-2",
+                "sequence": 13,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildWorkflowScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 16,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-2",
+                    "child_workflow_instance_id": "child-instance-2",
+                    "child_workflow_run_id": "child-run-2",
+                    "cancellation_policy": "abandon",
+                    "parent_close_policy": "request_cancel",
+                    "child_workflow_type": "python-child",
+                    "parallel_group_id": "select-calls:11:6",
+                    "parallel_group_kind": "mixed",
+                    "parallel_group_mode": "select",
+                    "parallel_group_base_sequence": 11,
+                    "parallel_group_size": 6,
+                    "parallel_group_index": 2,
+                    "selection_member_key": "choice",
+                    "selection_member_index": 2,
+                    "selection_member_base_sequence": 14,
+                    "selection_member_size": 1,
+                    "selection_member_kind": "child",
+                    "parallel_group_path": [
+                        {
+                            "parallel_group_id": "parallel-calls:10:10",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_base_sequence": 10,
+                            "parallel_group_size": 10,
+                            "parallel_group_index": 1
+                        },
+                        {
+                            "parallel_group_id": "select-calls:11:6",
+                            "parallel_group_kind": "mixed",
+                            "parallel_group_mode": "select",
+                            "parallel_group_base_sequence": 11,
+                            "parallel_group_size": 6,
+                            "parallel_group_index": 2,
+                            "selection_member_key": "choice",
+                            "selection_member_index": 2,
+                            "selection_member_base_sequence": 14,
+                            "selection_member_size": 1,
+                            "selection_member_kind": "child"
+                        }
+                    ]
+                }
+            },
+            {
+                "id": "child-continued-before-preparation",
+                "sequence": 14,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildRunStarted",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 15,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-1",
+                    "child_workflow_instance_id": "child-instance-1",
+                    "child_workflow_run_id": "child-continued-run",
+                    "cancellation_policy": "wait_cancellation_completed"
+                }
+            },
+            {
+                "id": "01m43xf6acd9a7a5pepm5pjnb0",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 15,
+                "event_type": "CancellationScopeRequested",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-request/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "parent_scope_id": null,
+                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            }
+                        ]
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "01m43xf6az7v2abqsr0tbz27a1",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 16,
+                "event_type": "CancellationScopeDeliveryPrepared",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-preparation/v5",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            }
+                        ]
+                    },
+                    "sequence": 20,
+                    "call_kind": "timer",
+                    "sequence_span": 1,
+                    "operation_sequence": null,
+                    "operation_sequence_span": 1,
+                    "authority_deadline_at": "2026-10-04T00:00:30.123456Z",
+                    "activity_members": [],
+                    "timer_members": [
+                        {
+                            "sequence": 10,
+                            "timer_id": "timer-plain",
+                            "descriptor_hash": "d3012a07431c6e6fccdadde3185bdea12d2c5bae3c83c631704bab9e84c2badc"
+                        },
+                        {
+                            "sequence": 11,
+                            "timer_id": "signal-timer-id",
+                            "descriptor_hash": "3cc49b05da15311eac9d5791fb2099a5ade355ba4ea9ae90f86b597bfdd1ecb8"
+                        },
+                        {
+                            "sequence": 12,
+                            "timer_id": "condition-timer-id",
+                            "descriptor_hash": "4793559947b722bcc9f8d3a5d983f0c496b1d3da62127b14d677d241be3862f9"
+                        }
+                    ],
+                    "wait_members": [
+                        {
+                            "kind": "signal",
+                            "sequence": 11,
+                            "wait_id": "signal-wait-id",
+                            "timer_id": "signal-timer-id",
+                            "descriptor_hash": "0c73d277e69cb9a54a442fe8c16b461aca8218d80db5780ed57f41a4a85da3b3"
+                        },
+                        {
+                            "kind": "condition",
+                            "sequence": 12,
+                            "wait_id": "condition-wait-id",
+                            "timer_id": "condition-timer-id",
+                            "descriptor_hash": "dbf2614f9457f7e94ec5e6858923b8381beaaefe3d322dbc4b1acb33d360eb86"
+                        },
+                        {
+                            "kind": "condition",
+                            "sequence": 13,
+                            "wait_id": "wait-no-timeout-id",
+                            "timer_id": null,
+                            "descriptor_hash": "c7c84bd9d2dc024450a9c520deba77ac10239e019a587d42201ad7dd03fe2236"
+                        }
+                    ],
+                    "child_members": [
+                        {
+                            "sequence": 14,
+                            "child_call_id": "child-call-0",
+                            "child_workflow_instance_id": "child-instance-0",
+                            "child_workflow_run_id": "child-run-0",
+                            "cancellation_policy": "try_cancel",
+                            "descriptor_hash": "d4c2dd2ddf569b6b6b156b4d82f30a59262f30fff94a5d579c737266cfa228a2"
+                        },
+                        {
+                            "sequence": 15,
+                            "child_call_id": "child-call-1",
+                            "child_workflow_instance_id": "child-instance-1",
+                            "child_workflow_run_id": "child-continued-run",
+                            "cancellation_policy": "wait_cancellation_completed",
+                            "descriptor_hash": "e3eec098ec70e85f527e9bb6cf14faaed9092540e32638b022e23f4c9ef50763"
+                        },
+                        {
+                            "sequence": 16,
+                            "child_call_id": "child-call-2",
+                            "child_workflow_instance_id": "child-instance-2",
+                            "child_workflow_run_id": "child-run-2",
+                            "cancellation_policy": "abandon",
+                            "descriptor_hash": "ec6572e50f0c0eb8738ec8d523f93991476d5e501428d03c6e9af0824e53c022"
+                        }
+                    ],
+                    "descendant_members": [],
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:09.123456Z"
+            },
+            {
+                "id": "01m43xf6bwxny6v9ys141sszkp",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 17,
+                "event_type": "CancellationScopeDelivered",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-delivery/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            }
+                        ]
+                    },
+                    "sequence": 20,
+                    "call_kind": "timer",
+                    "sequence_span": 1,
+                    "operation_sequence": null,
+                    "operation_sequence_span": 1,
+                    "authority_deadline_at": "2026-10-04T00:00:30.123456Z",
+                    "preparation_history_event_id": "01m43xf6az7v2abqsr0tbz27a1",
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:09.123456Z"
+            }
+        ]
+    },
+    "descendants": {
+        "task": {
+            "workflow_id": "scope-fixture-plain",
+            "run_id": "01m43xf68q7341x3zjapav5pse"
+        },
+        "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+        "history": [
+            {
+                "id": "01m43xf68yxpw4t2kv4w8gga08",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 1,
+                "event_type": "StartAccepted",
+                "payload": {
+                    "workflow_command_id": "01m43xf68v3zv390headffbdgz",
+                    "workflow_instance_id": "scope-fixture-plain",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "workflow_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+                    "workflow_type": "test-signal-workflow",
+                    "business_key": null,
+                    "visibility_labels": null,
+                    "memo": null,
+                    "search_attributes": null,
+                    "outcome": "started_new",
+                    "command": {
+                        "id": "01m43xf68v3zv390headffbdgz",
+                        "sequence": 1,
+                        "type": "start",
+                        "target_scope": "instance",
+                        "resolved_run_id": "01m43xf68q7341x3zjapav5pse",
+                        "payload_codec": "avro",
+                        "payload": "wwHioz3/VYAiNwwA",
+                        "source": "php",
+                        "caller_label": "PHP API",
+                        "auth_status": "not_applicable",
+                        "auth_method": "none",
+                        "status": "accepted",
+                        "outcome": "started_new",
+                        "accepted_at": "2026-10-04T00:00:00.123456Z",
+                        "applied_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "01m43xf691v1srvsccbmkmmc4t",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 2,
+                "event_type": "WorkflowStarted",
+                "payload": {
+                    "workflow_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+                    "workflow_type": "test-signal-workflow",
+                    "workflow_instance_id": "scope-fixture-plain",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "workflow_command_id": "01m43xf68v3zv390headffbdgz",
+                    "business_key": null,
+                    "visibility_labels": null,
+                    "memo": null,
+                    "search_attributes": null,
+                    "execution_timeout_seconds": null,
+                    "run_timeout_seconds": null,
+                    "execution_deadline_at": null,
+                    "run_deadline_at": null,
+                    "workflow_definition_fingerprint": "sha256:5617b572b0eb270f91fe65ee11da3d428b3f6b570d381a87213671a587b20475",
+                    "declared_queries": [],
+                    "declared_query_contracts": [],
+                    "declared_signals": [
+                        "name-provided"
+                    ],
+                    "declared_signal_contracts": [],
+                    "declared_updates": [],
+                    "declared_update_contracts": [],
+                    "declared_entry_method": "handle",
+                    "declared_entry_mode": "canonical",
+                    "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+                    "command": {
+                        "id": "01m43xf68v3zv390headffbdgz",
+                        "sequence": 1,
+                        "type": "start",
+                        "target_scope": "instance",
+                        "resolved_run_id": "01m43xf68q7341x3zjapav5pse",
+                        "payload_codec": "avro",
+                        "payload": "wwHioz3/VYAiNwwA",
+                        "source": "php",
+                        "caller_label": "PHP API",
+                        "auth_status": "not_applicable",
+                        "auth_method": "none",
+                        "status": "accepted",
+                        "outcome": "started_new",
+                        "accepted_at": "2026-10-04T00:00:00.123456Z",
+                        "applied_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "01m43xf6a29mr7ywhvs5mrahrt",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 3,
+                "event_type": "CancellationScopeOpened",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "sequence": 1,
+                    "scope_id": "01M43XF6A1JYQH2ZMZ0XE0M00C",
+                    "parent_scope_id": "root",
+                    "shield_parent": false,
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "01m43xf6a5edjad2cnw74ktca8",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 4,
+                "event_type": "CancellationScopeOpened",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "sequence": 2,
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "parent_scope_id": "01M43XF6A1JYQH2ZMZ0XE0M00C",
+                    "shield_parent": false,
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "desc-child-opened",
+                "sequence": 5,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "CancellationScopeOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "desc-child",
+                    "parent_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "shield_parent": false,
+                    "sequence": 3
+                }
+            },
+            {
+                "id": "desc-grandchild-opened",
+                "sequence": 6,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "CancellationScopeOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "desc-grandchild",
+                    "parent_scope_id": "desc-child",
+                    "shield_parent": false,
+                    "sequence": 4
+                }
+            },
+            {
+                "id": "desc-shield-opened",
+                "sequence": 7,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "CancellationScopeOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "desc-shield",
+                    "parent_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "shield_parent": true,
+                    "sequence": 5
+                }
+            },
+            {
+                "id": "desc-shield-child-opened",
+                "sequence": 8,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "CancellationScopeOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "desc-shield-child",
+                    "parent_scope_id": "desc-shield",
+                    "shield_parent": false,
+                    "sequence": 6
+                }
+            },
+            {
+                "id": "plain-timer",
+                "sequence": 9,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "TimerScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 10,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "timer_id": "timer-plain",
+                    "delay_seconds": 3600,
+                    "fire_at": "2026-10-04T01:00:00.123456Z"
+                }
+            },
+            {
+                "id": "signal-wait",
+                "sequence": 10,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "SignalWaitOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 11,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "signal_wait_id": "signal-wait-id",
+                    "timeout_seconds": 30,
+                    "signal_name": "inbox",
+                    "condition_key": null,
+                    "condition_definition_fingerprint": null,
+                    "condition_wait_occurrence_id": null
+                }
+            },
+            {
+                "id": "signal-timer",
+                "sequence": 11,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "TimerScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 11,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "timer_id": "signal-timer-id",
+                    "delay_seconds": 30,
+                    "fire_at": "2026-10-04T00:00:30.123456Z",
+                    "timer_kind": "signal_timeout",
+                    "signal_wait_id": "signal-wait-id",
+                    "condition_wait_occurrence_id": null
+                }
+            },
+            {
+                "id": "condition-wait",
+                "sequence": 12,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ConditionWaitOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 12,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "condition_wait_id": "condition-wait-id",
+                    "timeout_seconds": 30,
+                    "signal_name": null,
+                    "condition_key": "ready",
+                    "condition_definition_fingerprint": "predicate-v1",
+                    "condition_wait_occurrence_id": "occurrence-1"
+                }
+            },
+            {
+                "id": "condition-timer",
+                "sequence": 13,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "TimerScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 12,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "timer_id": "condition-timer-id",
+                    "delay_seconds": 30,
+                    "fire_at": "2026-10-04T00:00:30.123456Z",
+                    "timer_kind": "condition_timeout",
+                    "condition_wait_id": "condition-wait-id",
+                    "condition_wait_occurrence_id": "occurrence-1"
+                }
+            },
+            {
+                "id": "wait-no-timeout",
+                "sequence": 14,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ConditionWaitOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 13,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "condition_wait_id": "wait-no-timeout-id",
+                    "condition_key": "done"
+                }
+            },
+            {
+                "id": "child-0",
+                "sequence": 15,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildWorkflowScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 14,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-0",
+                    "child_workflow_instance_id": "child-instance-0",
+                    "child_workflow_run_id": "child-run-0",
+                    "cancellation_policy": "try_cancel",
+                    "parent_close_policy": "request_cancel",
+                    "child_workflow_type": "python-child"
+                }
+            },
+            {
+                "id": "child-1",
+                "sequence": 16,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildWorkflowScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 15,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-1",
+                    "child_workflow_instance_id": "child-instance-1",
+                    "child_workflow_run_id": "child-run-1",
+                    "cancellation_policy": "wait_cancellation_completed",
+                    "parent_close_policy": "request_cancel",
+                    "child_workflow_type": "python-child"
+                }
+            },
+            {
+                "id": "child-2",
+                "sequence": 17,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildWorkflowScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 16,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-2",
+                    "child_workflow_instance_id": "child-instance-2",
+                    "child_workflow_run_id": "child-run-2",
+                    "cancellation_policy": "abandon",
+                    "parent_close_policy": "request_cancel",
+                    "child_workflow_type": "python-child"
+                }
+            },
+            {
+                "id": "child-continued-before-preparation",
+                "sequence": 18,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildRunStarted",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 15,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-1",
+                    "child_workflow_instance_id": "child-instance-1",
+                    "child_workflow_run_id": "child-continued-run",
+                    "cancellation_policy": "wait_cancellation_completed"
+                }
+            },
+            {
+                "id": "descendant-timer",
+                "sequence": 19,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "TimerScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 17,
+                    "cancellation_scope_id": "desc-child",
+                    "timer_id": "descendant-timer-id",
+                    "delay_seconds": 30,
+                    "fire_at": "2026-10-04T00:00:30.123456Z"
+                }
+            },
+            {
+                "id": "01m43xf6acd9a7a5pepm5pjnb0",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 20,
+                "event_type": "CancellationScopeRequested",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-request/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "parent_scope_id": null,
+                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            }
+                        ]
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "inherited-child-accepted",
+                "sequence": 21,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "CancellationScopeRequested",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-request/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "desc-child",
+                    "parent_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "request_id": "inherited-child-request",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            },
+                            {
+                                "request_id": "inherited-child-request",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "desc-child",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "id": "inherited-grandchild-accepted",
+                "sequence": 22,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "CancellationScopeRequested",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-request/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "desc-grandchild",
+                    "parent_scope_id": "desc-child",
+                    "request_id": "inherited-grandchild-request",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            },
+                            {
+                                "request_id": "inherited-child-request",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "desc-child",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            },
+                            {
+                                "request_id": "inherited-grandchild-request",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "desc-grandchild",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "id": "01m43xf6az7v2abqsr0tbz27a1",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 23,
+                "event_type": "CancellationScopeDeliveryPrepared",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-preparation/v5",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            }
+                        ]
+                    },
+                    "sequence": 20,
+                    "call_kind": "timer",
+                    "sequence_span": 1,
+                    "operation_sequence": null,
+                    "operation_sequence_span": 1,
+                    "authority_deadline_at": "2026-10-04T00:00:30.123456Z",
+                    "activity_members": [],
+                    "timer_members": [
+                        {
+                            "sequence": 10,
+                            "timer_id": "timer-plain",
+                            "descriptor_hash": "d78a4b0d2c2f326857a31358e3ddfa20bd567e2364315ca30cef3cb11eae6c0f"
+                        },
+                        {
+                            "sequence": 11,
+                            "timer_id": "signal-timer-id",
+                            "descriptor_hash": "cb7fd119a14082cae54f6f418beb5769a3506cc5769df7ac10318017b1360b70"
+                        },
+                        {
+                            "sequence": 12,
+                            "timer_id": "condition-timer-id",
+                            "descriptor_hash": "167249f4220f18c56597a3a14165aa464443b4e71e7e28ffd708f271b6f0460e"
+                        }
+                    ],
+                    "wait_members": [
+                        {
+                            "kind": "signal",
+                            "sequence": 11,
+                            "wait_id": "signal-wait-id",
+                            "timer_id": "signal-timer-id",
+                            "descriptor_hash": "68a60d453bbc004c3c17ca4e33f95bbad92e24508e680152c1140be5f247a63f"
+                        },
+                        {
+                            "kind": "condition",
+                            "sequence": 12,
+                            "wait_id": "condition-wait-id",
+                            "timer_id": "condition-timer-id",
+                            "descriptor_hash": "e8f0ce4c1242168f2a97286c5ceea4bb9458822aedc8301734226b139510e960"
+                        },
+                        {
+                            "kind": "condition",
+                            "sequence": 13,
+                            "wait_id": "wait-no-timeout-id",
+                            "timer_id": null,
+                            "descriptor_hash": "b462fc9baefdd0f5b792ed8f41177d3a97a3d4bce08a58f04782a31215d4f6f6"
+                        }
+                    ],
+                    "child_members": [
+                        {
+                            "sequence": 14,
+                            "child_call_id": "child-call-0",
+                            "child_workflow_instance_id": "child-instance-0",
+                            "child_workflow_run_id": "child-run-0",
+                            "cancellation_policy": "try_cancel",
+                            "descriptor_hash": "19c48c0ad10c781d4c08900a51fa1d98e4606bc7b65556b12d705d3f49367d07"
+                        },
+                        {
+                            "sequence": 15,
+                            "child_call_id": "child-call-1",
+                            "child_workflow_instance_id": "child-instance-1",
+                            "child_workflow_run_id": "child-continued-run",
+                            "cancellation_policy": "wait_cancellation_completed",
+                            "descriptor_hash": "0d65b5082c06e33b7db952b1d61085a344a4b97b60d982998a4fba6b6e6748ef"
+                        },
+                        {
+                            "sequence": 16,
+                            "child_call_id": "child-call-2",
+                            "child_workflow_instance_id": "child-instance-2",
+                            "child_workflow_run_id": "child-run-2",
+                            "cancellation_policy": "abandon",
+                            "descriptor_hash": "a6a5e39e958de9cf34a656dc01f417209dae2a5787ab4ee0e169c9e3f08421bd"
+                        }
+                    ],
+                    "descendant_members": [
+                        {
+                            "scope_id": "desc-child",
+                            "parent_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                            "scope_history_event_id": "desc-child-opened",
+                            "request_history_event_id": "inherited-child-accepted",
+                            "request_id": "inherited-child-request",
+                            "propagation_history_event_id": "inherited-child-accepted",
+                            "authority_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "cancellation": {
+                                "schema": "durable-workflow.scoped-cancellation-context/v1",
+                                "root_context": {
+                                    "schema": "durable-workflow.cancellation-context/v1",
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "root_workflow_instance_id": "scope-fixture-plain",
+                                    "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                    "parent_request_id": null,
+                                    "reason": "release one scope",
+                                    "requester": {
+                                        "type": "php",
+                                        "label": "PHP API"
+                                    },
+                                    "source": "php",
+                                    "requested_at": "2026-10-04T00:00:00.123456Z",
+                                    "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                                    "lineage": [
+                                        {
+                                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                            "workflow_instance_id": "scope-fixture-plain",
+                                            "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                        }
+                                    ]
+                                },
+                                "lineage": [
+                                    {
+                                        "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                        "workflow_instance_id": "scope-fixture-plain",
+                                        "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                        "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                        "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                                    },
+                                    {
+                                        "request_id": "inherited-child-request",
+                                        "workflow_instance_id": "scope-fixture-plain",
+                                        "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                        "scope_id": "desc-child",
+                                        "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                                    }
+                                ]
+                            },
+                            "activity_members": [],
+                            "timer_members": [
+                                {
+                                    "sequence": 17,
+                                    "timer_id": "descendant-timer-id",
+                                    "descriptor_hash": "b37b71a960ac7b3edf51dbf31e3a0d22c863c10d05abf2ac362f74d6ac131bf6"
+                                }
+                            ],
+                            "wait_members": [],
+                            "child_members": []
+                        },
+                        {
+                            "scope_id": "desc-grandchild",
+                            "parent_scope_id": "desc-child",
+                            "scope_history_event_id": "desc-grandchild-opened",
+                            "request_history_event_id": "inherited-grandchild-accepted",
+                            "request_id": "inherited-grandchild-request",
+                            "propagation_history_event_id": "inherited-grandchild-accepted",
+                            "authority_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "cancellation": {
+                                "schema": "durable-workflow.scoped-cancellation-context/v1",
+                                "root_context": {
+                                    "schema": "durable-workflow.cancellation-context/v1",
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "root_workflow_instance_id": "scope-fixture-plain",
+                                    "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                    "parent_request_id": null,
+                                    "reason": "release one scope",
+                                    "requester": {
+                                        "type": "php",
+                                        "label": "PHP API"
+                                    },
+                                    "source": "php",
+                                    "requested_at": "2026-10-04T00:00:00.123456Z",
+                                    "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                                    "lineage": [
+                                        {
+                                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                            "workflow_instance_id": "scope-fixture-plain",
+                                            "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                        }
+                                    ]
+                                },
+                                "lineage": [
+                                    {
+                                        "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                        "workflow_instance_id": "scope-fixture-plain",
+                                        "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                        "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                        "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                                    },
+                                    {
+                                        "request_id": "inherited-child-request",
+                                        "workflow_instance_id": "scope-fixture-plain",
+                                        "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                        "scope_id": "desc-child",
+                                        "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                                    },
+                                    {
+                                        "request_id": "inherited-grandchild-request",
+                                        "workflow_instance_id": "scope-fixture-plain",
+                                        "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                        "scope_id": "desc-grandchild",
+                                        "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                                    }
+                                ]
+                            },
+                            "activity_members": [],
+                            "timer_members": [],
+                            "wait_members": [],
+                            "child_members": []
+                        }
+                    ],
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:09.123456Z"
+            },
+            {
+                "id": "01m43xf6bwxny6v9ys141sszkp",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 24,
+                "event_type": "CancellationScopeDelivered",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-delivery/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            }
+                        ]
+                    },
+                    "sequence": 20,
+                    "call_kind": "timer",
+                    "sequence_span": 1,
+                    "operation_sequence": null,
+                    "operation_sequence_span": 1,
+                    "authority_deadline_at": "2026-10-04T00:00:30.123456Z",
+                    "preparation_history_event_id": "01m43xf6az7v2abqsr0tbz27a1",
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:09.123456Z"
+            }
+        ]
+    },
+    "competing": {
+        "task": {
+            "workflow_id": "scope-fixture-plain",
+            "run_id": "01m43xf68q7341x3zjapav5pse"
+        },
+        "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+        "history": [
+            {
+                "id": "01m43xf68yxpw4t2kv4w8gga08",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 1,
+                "event_type": "StartAccepted",
+                "payload": {
+                    "workflow_command_id": "01m43xf68v3zv390headffbdgz",
+                    "workflow_instance_id": "scope-fixture-plain",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "workflow_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+                    "workflow_type": "test-signal-workflow",
+                    "business_key": null,
+                    "visibility_labels": null,
+                    "memo": null,
+                    "search_attributes": null,
+                    "outcome": "started_new",
+                    "command": {
+                        "id": "01m43xf68v3zv390headffbdgz",
+                        "sequence": 1,
+                        "type": "start",
+                        "target_scope": "instance",
+                        "resolved_run_id": "01m43xf68q7341x3zjapav5pse",
+                        "payload_codec": "avro",
+                        "payload": "wwHioz3/VYAiNwwA",
+                        "source": "php",
+                        "caller_label": "PHP API",
+                        "auth_status": "not_applicable",
+                        "auth_method": "none",
+                        "status": "accepted",
+                        "outcome": "started_new",
+                        "accepted_at": "2026-10-04T00:00:00.123456Z",
+                        "applied_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "01m43xf691v1srvsccbmkmmc4t",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 2,
+                "event_type": "WorkflowStarted",
+                "payload": {
+                    "workflow_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+                    "workflow_type": "test-signal-workflow",
+                    "workflow_instance_id": "scope-fixture-plain",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "workflow_command_id": "01m43xf68v3zv390headffbdgz",
+                    "business_key": null,
+                    "visibility_labels": null,
+                    "memo": null,
+                    "search_attributes": null,
+                    "execution_timeout_seconds": null,
+                    "run_timeout_seconds": null,
+                    "execution_deadline_at": null,
+                    "run_deadline_at": null,
+                    "workflow_definition_fingerprint": "sha256:5617b572b0eb270f91fe65ee11da3d428b3f6b570d381a87213671a587b20475",
+                    "declared_queries": [],
+                    "declared_query_contracts": [],
+                    "declared_signals": [
+                        "name-provided"
+                    ],
+                    "declared_signal_contracts": [],
+                    "declared_updates": [],
+                    "declared_update_contracts": [],
+                    "declared_entry_method": "handle",
+                    "declared_entry_mode": "canonical",
+                    "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+                    "command": {
+                        "id": "01m43xf68v3zv390headffbdgz",
+                        "sequence": 1,
+                        "type": "start",
+                        "target_scope": "instance",
+                        "resolved_run_id": "01m43xf68q7341x3zjapav5pse",
+                        "payload_codec": "avro",
+                        "payload": "wwHioz3/VYAiNwwA",
+                        "source": "php",
+                        "caller_label": "PHP API",
+                        "auth_status": "not_applicable",
+                        "auth_method": "none",
+                        "status": "accepted",
+                        "outcome": "started_new",
+                        "accepted_at": "2026-10-04T00:00:00.123456Z",
+                        "applied_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "01m43xf6a29mr7ywhvs5mrahrt",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 3,
+                "event_type": "CancellationScopeOpened",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "sequence": 1,
+                    "scope_id": "01M43XF6A1JYQH2ZMZ0XE0M00C",
+                    "parent_scope_id": "root",
+                    "shield_parent": false,
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "01m43xf6a5edjad2cnw74ktca8",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 4,
+                "event_type": "CancellationScopeOpened",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "sequence": 2,
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "parent_scope_id": "01M43XF6A1JYQH2ZMZ0XE0M00C",
+                    "shield_parent": false,
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "desc-child-opened",
+                "sequence": 5,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "CancellationScopeOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "desc-child",
+                    "parent_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "shield_parent": false,
+                    "sequence": 3
+                }
+            },
+            {
+                "id": "desc-grandchild-opened",
+                "sequence": 6,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "CancellationScopeOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "desc-grandchild",
+                    "parent_scope_id": "desc-child",
+                    "shield_parent": false,
+                    "sequence": 4
+                }
+            },
+            {
+                "id": "desc-shield-opened",
+                "sequence": 7,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "CancellationScopeOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "desc-shield",
+                    "parent_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "shield_parent": true,
+                    "sequence": 5
+                }
+            },
+            {
+                "id": "desc-shield-child-opened",
+                "sequence": 8,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "CancellationScopeOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "desc-shield-child",
+                    "parent_scope_id": "desc-shield",
+                    "shield_parent": false,
+                    "sequence": 6
+                }
+            },
+            {
+                "id": "plain-timer",
+                "sequence": 9,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "TimerScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 10,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "timer_id": "timer-plain",
+                    "delay_seconds": 3600,
+                    "fire_at": "2026-10-04T01:00:00.123456Z"
+                }
+            },
+            {
+                "id": "signal-wait",
+                "sequence": 10,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "SignalWaitOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 11,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "signal_wait_id": "signal-wait-id",
+                    "timeout_seconds": 30,
+                    "signal_name": "inbox",
+                    "condition_key": null,
+                    "condition_definition_fingerprint": null,
+                    "condition_wait_occurrence_id": null
+                }
+            },
+            {
+                "id": "signal-timer",
+                "sequence": 11,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "TimerScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 11,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "timer_id": "signal-timer-id",
+                    "delay_seconds": 30,
+                    "fire_at": "2026-10-04T00:00:30.123456Z",
+                    "timer_kind": "signal_timeout",
+                    "signal_wait_id": "signal-wait-id",
+                    "condition_wait_occurrence_id": null
+                }
+            },
+            {
+                "id": "condition-wait",
+                "sequence": 12,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ConditionWaitOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 12,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "condition_wait_id": "condition-wait-id",
+                    "timeout_seconds": 30,
+                    "signal_name": null,
+                    "condition_key": "ready",
+                    "condition_definition_fingerprint": "predicate-v1",
+                    "condition_wait_occurrence_id": "occurrence-1"
+                }
+            },
+            {
+                "id": "condition-timer",
+                "sequence": 13,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "TimerScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 12,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "timer_id": "condition-timer-id",
+                    "delay_seconds": 30,
+                    "fire_at": "2026-10-04T00:00:30.123456Z",
+                    "timer_kind": "condition_timeout",
+                    "condition_wait_id": "condition-wait-id",
+                    "condition_wait_occurrence_id": "occurrence-1"
+                }
+            },
+            {
+                "id": "wait-no-timeout",
+                "sequence": 14,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ConditionWaitOpened",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 13,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "condition_wait_id": "wait-no-timeout-id",
+                    "condition_key": "done"
+                }
+            },
+            {
+                "id": "child-0",
+                "sequence": 15,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildWorkflowScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 14,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-0",
+                    "child_workflow_instance_id": "child-instance-0",
+                    "child_workflow_run_id": "child-run-0",
+                    "cancellation_policy": "try_cancel",
+                    "parent_close_policy": "request_cancel",
+                    "child_workflow_type": "python-child"
+                }
+            },
+            {
+                "id": "child-1",
+                "sequence": 16,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildWorkflowScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 15,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-1",
+                    "child_workflow_instance_id": "child-instance-1",
+                    "child_workflow_run_id": "child-run-1",
+                    "cancellation_policy": "wait_cancellation_completed",
+                    "parent_close_policy": "request_cancel",
+                    "child_workflow_type": "python-child"
+                }
+            },
+            {
+                "id": "child-2",
+                "sequence": 17,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildWorkflowScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 16,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-2",
+                    "child_workflow_instance_id": "child-instance-2",
+                    "child_workflow_run_id": "child-run-2",
+                    "cancellation_policy": "abandon",
+                    "parent_close_policy": "request_cancel",
+                    "child_workflow_type": "python-child"
+                }
+            },
+            {
+                "id": "child-continued-before-preparation",
+                "sequence": 18,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "ChildRunStarted",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 15,
+                    "cancellation_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "child_call_id": "child-call-1",
+                    "child_workflow_instance_id": "child-instance-1",
+                    "child_workflow_run_id": "child-continued-run",
+                    "cancellation_policy": "wait_cancellation_completed"
+                }
+            },
+            {
+                "id": "descendant-timer",
+                "sequence": 19,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "TimerScheduled",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "sequence": 17,
+                    "cancellation_scope_id": "desc-child",
+                    "timer_id": "descendant-timer-id",
+                    "delay_seconds": 30,
+                    "fire_at": "2026-10-04T00:00:30.123456Z"
+                }
+            },
+            {
+                "id": "independent-child-accepted",
+                "sequence": 20,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "CancellationScopeRequested",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-request/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "desc-child",
+                    "parent_scope_id": null,
+                    "request_id": "independent-child-request",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "independent-child-request",
+                            "root_request_id": "independent-child-request",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:20.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "independent-child-request",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "independent-child-request",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "desc-child",
+                                "cleanup_deadline_at": "2026-10-04T00:00:20.123456Z"
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "id": "01m43xf6acd9a7a5pepm5pjnb0",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 21,
+                "event_type": "CancellationScopeRequested",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-request/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "parent_scope_id": null,
+                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            }
+                        ]
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:00.123456Z"
+            },
+            {
+                "id": "original-child-conflict",
+                "sequence": 22,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "CancellationScopeRequestConflicted",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "scope_id": "desc-child",
+                    "schema": "durable-workflow.cancellation-scope-request/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "reason": "cancellation_root_conflict",
+                    "parent_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "incoming_cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            },
+                            {
+                                "request_id": "inherited-child-request",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "desc-child",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            }
+                        ]
+                    },
+                    "accepted_cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "independent-child-request",
+                            "root_request_id": "independent-child-request",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:20.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "independent-child-request",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "independent-child-request",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "desc-child",
+                                "cleanup_deadline_at": "2026-10-04T00:00:20.123456Z"
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "id": "inherited-grandchild-accepted",
+                "sequence": 23,
+                "namespace": "sdk-scope-fixture",
+                "event_type": "CancellationScopeRequested",
+                "timestamp": "2026-10-04T00:00:09.123456Z",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-request/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "desc-grandchild",
+                    "parent_scope_id": "desc-child",
+                    "request_id": "inherited-grandchild-request",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "independent-child-request",
+                            "root_request_id": "independent-child-request",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:20.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "independent-child-request",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "independent-child-request",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "desc-child",
+                                "cleanup_deadline_at": "2026-10-04T00:00:20.123456Z"
+                            },
+                            {
+                                "request_id": "inherited-grandchild-request",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "desc-grandchild",
+                                "cleanup_deadline_at": "2026-10-04T00:00:20.123456Z"
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "id": "01m43xf6az7v2abqsr0tbz27a1",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 24,
+                "event_type": "CancellationScopeDeliveryPrepared",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-preparation/v5",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            }
+                        ]
+                    },
+                    "sequence": 20,
+                    "call_kind": "timer",
+                    "sequence_span": 1,
+                    "operation_sequence": null,
+                    "operation_sequence_span": 1,
+                    "authority_deadline_at": "2026-10-04T00:00:30.123456Z",
+                    "activity_members": [],
+                    "timer_members": [
+                        {
+                            "sequence": 10,
+                            "timer_id": "timer-plain",
+                            "descriptor_hash": "d78a4b0d2c2f326857a31358e3ddfa20bd567e2364315ca30cef3cb11eae6c0f"
+                        },
+                        {
+                            "sequence": 11,
+                            "timer_id": "signal-timer-id",
+                            "descriptor_hash": "cb7fd119a14082cae54f6f418beb5769a3506cc5769df7ac10318017b1360b70"
+                        },
+                        {
+                            "sequence": 12,
+                            "timer_id": "condition-timer-id",
+                            "descriptor_hash": "167249f4220f18c56597a3a14165aa464443b4e71e7e28ffd708f271b6f0460e"
+                        }
+                    ],
+                    "wait_members": [
+                        {
+                            "kind": "signal",
+                            "sequence": 11,
+                            "wait_id": "signal-wait-id",
+                            "timer_id": "signal-timer-id",
+                            "descriptor_hash": "68a60d453bbc004c3c17ca4e33f95bbad92e24508e680152c1140be5f247a63f"
+                        },
+                        {
+                            "kind": "condition",
+                            "sequence": 12,
+                            "wait_id": "condition-wait-id",
+                            "timer_id": "condition-timer-id",
+                            "descriptor_hash": "e8f0ce4c1242168f2a97286c5ceea4bb9458822aedc8301734226b139510e960"
+                        },
+                        {
+                            "kind": "condition",
+                            "sequence": 13,
+                            "wait_id": "wait-no-timeout-id",
+                            "timer_id": null,
+                            "descriptor_hash": "b462fc9baefdd0f5b792ed8f41177d3a97a3d4bce08a58f04782a31215d4f6f6"
+                        }
+                    ],
+                    "child_members": [
+                        {
+                            "sequence": 14,
+                            "child_call_id": "child-call-0",
+                            "child_workflow_instance_id": "child-instance-0",
+                            "child_workflow_run_id": "child-run-0",
+                            "cancellation_policy": "try_cancel",
+                            "descriptor_hash": "19c48c0ad10c781d4c08900a51fa1d98e4606bc7b65556b12d705d3f49367d07"
+                        },
+                        {
+                            "sequence": 15,
+                            "child_call_id": "child-call-1",
+                            "child_workflow_instance_id": "child-instance-1",
+                            "child_workflow_run_id": "child-continued-run",
+                            "cancellation_policy": "wait_cancellation_completed",
+                            "descriptor_hash": "0d65b5082c06e33b7db952b1d61085a344a4b97b60d982998a4fba6b6e6748ef"
+                        },
+                        {
+                            "sequence": 16,
+                            "child_call_id": "child-call-2",
+                            "child_workflow_instance_id": "child-instance-2",
+                            "child_workflow_run_id": "child-run-2",
+                            "cancellation_policy": "abandon",
+                            "descriptor_hash": "a6a5e39e958de9cf34a656dc01f417209dae2a5787ab4ee0e169c9e3f08421bd"
+                        }
+                    ],
+                    "descendant_members": [
+                        {
+                            "scope_id": "desc-child",
+                            "parent_scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                            "scope_history_event_id": "desc-child-opened",
+                            "request_history_event_id": "independent-child-accepted",
+                            "request_id": "independent-child-request",
+                            "propagation_history_event_id": "original-child-conflict",
+                            "authority_deadline_at": "2026-10-04T00:00:20.123456Z",
+                            "cancellation": {
+                                "schema": "durable-workflow.scoped-cancellation-context/v1",
+                                "root_context": {
+                                    "schema": "durable-workflow.cancellation-context/v1",
+                                    "request_id": "independent-child-request",
+                                    "root_request_id": "independent-child-request",
+                                    "root_workflow_instance_id": "scope-fixture-plain",
+                                    "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                    "parent_request_id": null,
+                                    "reason": "release one scope",
+                                    "requester": {
+                                        "type": "php",
+                                        "label": "PHP API"
+                                    },
+                                    "source": "php",
+                                    "requested_at": "2026-10-04T00:00:00.123456Z",
+                                    "cleanup_deadline_at": "2026-10-04T00:00:20.123456Z",
+                                    "lineage": [
+                                        {
+                                            "request_id": "independent-child-request",
+                                            "workflow_instance_id": "scope-fixture-plain",
+                                            "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                        }
+                                    ]
+                                },
+                                "lineage": [
+                                    {
+                                        "request_id": "independent-child-request",
+                                        "workflow_instance_id": "scope-fixture-plain",
+                                        "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                        "scope_id": "desc-child",
+                                        "cleanup_deadline_at": "2026-10-04T00:00:20.123456Z"
+                                    }
+                                ]
+                            },
+                            "activity_members": [],
+                            "timer_members": [
+                                {
+                                    "sequence": 17,
+                                    "timer_id": "descendant-timer-id",
+                                    "descriptor_hash": "b37b71a960ac7b3edf51dbf31e3a0d22c863c10d05abf2ac362f74d6ac131bf6"
+                                }
+                            ],
+                            "wait_members": [],
+                            "child_members": []
+                        },
+                        {
+                            "scope_id": "desc-grandchild",
+                            "parent_scope_id": "desc-child",
+                            "scope_history_event_id": "desc-grandchild-opened",
+                            "request_history_event_id": "inherited-grandchild-accepted",
+                            "request_id": "inherited-grandchild-request",
+                            "propagation_history_event_id": "inherited-grandchild-accepted",
+                            "authority_deadline_at": "2026-10-04T00:00:20.123456Z",
+                            "cancellation": {
+                                "schema": "durable-workflow.scoped-cancellation-context/v1",
+                                "root_context": {
+                                    "schema": "durable-workflow.cancellation-context/v1",
+                                    "request_id": "independent-child-request",
+                                    "root_request_id": "independent-child-request",
+                                    "root_workflow_instance_id": "scope-fixture-plain",
+                                    "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                    "parent_request_id": null,
+                                    "reason": "release one scope",
+                                    "requester": {
+                                        "type": "php",
+                                        "label": "PHP API"
+                                    },
+                                    "source": "php",
+                                    "requested_at": "2026-10-04T00:00:00.123456Z",
+                                    "cleanup_deadline_at": "2026-10-04T00:00:20.123456Z",
+                                    "lineage": [
+                                        {
+                                            "request_id": "independent-child-request",
+                                            "workflow_instance_id": "scope-fixture-plain",
+                                            "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                        }
+                                    ]
+                                },
+                                "lineage": [
+                                    {
+                                        "request_id": "independent-child-request",
+                                        "workflow_instance_id": "scope-fixture-plain",
+                                        "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                        "scope_id": "desc-child",
+                                        "cleanup_deadline_at": "2026-10-04T00:00:20.123456Z"
+                                    },
+                                    {
+                                        "request_id": "inherited-grandchild-request",
+                                        "workflow_instance_id": "scope-fixture-plain",
+                                        "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                        "scope_id": "desc-grandchild",
+                                        "cleanup_deadline_at": "2026-10-04T00:00:20.123456Z"
+                                    }
+                                ]
+                            },
+                            "activity_members": [],
+                            "timer_members": [],
+                            "wait_members": [],
+                            "child_members": []
+                        }
+                    ],
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:09.123456Z"
+            },
+            {
+                "id": "01m43xf6bwxny6v9ys141sszkp",
+                "namespace": "sdk-scope-fixture",
+                "sequence": 25,
+                "event_type": "CancellationScopeDelivered",
+                "payload": {
+                    "schema": "durable-workflow.cancellation-scope-delivery/v1",
+                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                    "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                            "root_workflow_instance_id": "scope-fixture-plain",
+                            "root_workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                            "parent_request_id": null,
+                            "reason": "release one scope",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-04T00:00:00.123456Z",
+                            "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                    "workflow_instance_id": "scope-fixture-plain",
+                                    "workflow_run_id": "01m43xf68q7341x3zjapav5pse"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M43XF6A8D0VH3FG2M21RRPPZ",
+                                "workflow_instance_id": "scope-fixture-plain",
+                                "workflow_run_id": "01m43xf68q7341x3zjapav5pse",
+                                "scope_id": "01M43XF6A4PXETWBHA5DZH9ZE5",
+                                "cleanup_deadline_at": "2026-10-04T00:00:30.123456Z"
+                            }
+                        ]
+                    },
+                    "sequence": 20,
+                    "call_kind": "timer",
+                    "sequence_span": 1,
+                    "operation_sequence": null,
+                    "operation_sequence_span": 1,
+                    "authority_deadline_at": "2026-10-04T00:00:30.123456Z",
+                    "preparation_history_event_id": "01m43xf6az7v2abqsr0tbz27a1",
+                    "task": {
+                        "id": "01m43xf692g8zz7d38k45m9g0z",
+                        "type": "workflow",
+                        "status": "leased",
+                        "available_at": "2026-10-04T00:00:00.123456Z",
+                        "lease_owner": "original",
+                        "lease_expires_at": "2026-10-04T00:01:00.123456Z",
+                        "attempt_count": 1,
+                        "repair_count": 0,
+                        "connection": "testing",
+                        "queue": "default",
+                        "last_dispatch_attempt_at": "2026-10-04T00:00:00.123456Z",
+                        "last_dispatched_at": "2026-10-04T00:00:00.123456Z"
+                    }
+                },
+                "timestamp": "2026-10-04T00:00:09.123456Z"
+            }
+        ]
+    }
+}

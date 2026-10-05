@@ -21,7 +21,7 @@ final class CommittedCancellationScopeHistory
     public readonly array $preparations;
 
     /** @param list<array<string, mixed>> $history */
-    public function __construct(array $history, string $runId, string $workflowId, CancellationScopeHistory $scopes, bool $requireCommittedDelivery = true, bool $inspectActivityProjections = false)
+    public function __construct(array $history, string $runId, string $workflowId, CancellationScopeHistory $scopes, bool $requireCommittedDelivery = true, bool $inspectActivityProjections = false, bool $inspectOperationProjections = false)
     {
         $addresses = [];
         foreach ($scopes->openings as $sequence => $opening) {
@@ -45,7 +45,7 @@ final class CommittedCancellationScopeHistory
             }
             if (in_array($kind, ['ActivityScheduled', 'TimerScheduled', 'ChildWorkflowScheduled', 'ConditionWaitOpened', 'SignalWaitOpened'], true)
                 && is_int($eventPayload['sequence'] ?? null)) {
-                $admissions[$eventPayload['sequence']] = $scopes->memberships[$eventPayload['sequence']] ?? 'root';
+                $admissions[$kind][$eventPayload['sequence']] = $scopes->memberships[$eventPayload['sequence']] ?? 'root';
             }
             if (!in_array($kind, ['CancellationScopeRequested', 'CancellationScopeDeliveryPrepared', 'CancellationScopeDelivered'], true)) {
                 continue;
@@ -120,27 +120,50 @@ final class CommittedCancellationScopeHistory
                         if (!is_array($payload[$field] ?? null) || !array_is_list($payload[$field])) {
                             throw new InvalidArgumentException('Scope preparation omits its frozen member projection.');
                         }
-                        if ($payload[$field] !== [] && ($field !== 'activity_members' || !$inspectActivityProjections)) {
+                        if ($payload[$field] !== [] && !$inspectOperationProjections && ($field !== 'activity_members' || !$inspectActivityProjections)) {
                             throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: committed scope member projection replay is not yet qualified by this PHP worker.');
                         }
                     }
                     $members = [];
-                    if ($inspectActivityProjections) {
+                    if ($inspectActivityProjections || $inspectOperationProjections) {
                         $members = CancellationScopeActivityProjection::normalize($payload['activity_members']);
                         if ($members !== CancellationScopeActivityProjection::fromHistoryPrefix(array_slice($history, 0, $historyIndex), $scopeId)) {
                             throw new InvalidArgumentException('Scope preparation changes its original Activity projection.');
+                        }
+                    }
+                    $projections = ['ActivityScheduled' => $members];
+                    if ($inspectOperationProjections) {
+                        $prefix = array_slice($history, 0, $historyIndex);
+                        foreach (['timer_members' => 'TimerScheduled', 'wait_members' => 'wait', 'child_members' => 'ChildWorkflowScheduled'] as $field => $admission) {
+                            $projection = CancellationScopeOperationProjection::normalize($field, $payload[$field]);
+                            if ($projection !== CancellationScopeOperationProjection::fromHistoryPrefix($field, $prefix, $scopeId, $runId)) {
+                                throw new InvalidArgumentException('Scope preparation changes its original operation projection.');
+                            }
+                            $projections[$admission] = $projection;
+                        }
+                        $projections['ConditionWaitOpened'] = array_values(array_filter($projections['wait'], static fn (array $member): bool => $member['kind'] === 'condition'));
+                        $projections['SignalWaitOpened'] = array_values(array_filter($projections['wait'], static fn (array $member): bool => $member['kind'] === 'signal'));
+                        if (CancellationScopeDescendantProjection::normalize($payload['descendant_members'])
+                            !== CancellationScopeDescendantProjection::fromHistoryPrefix($prefix, $scopeId, $runId, $payload['authority_deadline_at'])) {
+                            throw new InvalidArgumentException('Scope preparation changes its original descendant projection.');
                         }
                     }
                     if (!in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child'], true)) {
                         throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker only supports committed single activity, timer, condition and child scope boundaries.');
                     }
                     // Every admitted operation must be accounted for by its qualified projection.
-                    $activitySequences = $inspectActivityProjections ? array_column($members, 'sequence') : [];
-                    $unsupportedAdmissions = array_diff_key(array_filter($admissions, static fn (string $address): bool => $address === $scopeId),
-                        array_flip($activitySequences));
-                    if ($unsupportedAdmissions !== [] || (isset($admissions[$boundary->sequence])
-                        && (!in_array($boundary->sequence, $activitySequences, true) || $boundary->callKind !== 'activity'))) {
-                        throw new InvalidArgumentException('Scope preparation cannot omit or replace an admitted operation.');
+                    foreach ($admissions as $admission => $addressesBySequence) {
+                        $sequences = array_column($projections[$admission] ?? [], 'sequence');
+                        $unsupported = array_diff_key(array_filter($addressesBySequence, static fn (string $address): bool => $address === $scopeId), array_flip($sequences));
+                        $callKind = match ($admission) { 'ActivityScheduled' => 'activity', 'TimerScheduled' => 'timer',
+                            'ConditionWaitOpened' => 'condition', 'SignalWaitOpened' => 'signal', default => 'child' };
+                        // A condition/signal timeout shares its wait's authored position.
+                        $timeout = $admission === 'TimerScheduled' && in_array($boundary->sequence,
+                            array_column($projections['wait'] ?? [], 'sequence'), true);
+                        if ($unsupported !== [] || (isset($addressesBySequence[$boundary->sequence])
+                            && (!in_array($boundary->sequence, $sequences, true) || (!$timeout && $boundary->callKind !== $callKind)))) {
+                            throw new InvalidArgumentException('Scope preparation cannot omit or replace an admitted operation.');
+                        }
                     }
                     $preparations[$scopeId] = ['id' => $event['id'], 'boundary' => $boundary, 'deadline' => $deadline, 'time' => $recordedAt];
                     $verifiedPreparations[$scopeId] = ['context' => $context, 'boundary' => $boundary, 'event' => $event];

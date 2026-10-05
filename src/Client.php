@@ -1447,7 +1447,7 @@ final class Client implements WorkflowClientInterface
     }
 
     /**
-     * @internal Verify a scope boundary and its frozen Activities on its original claim.
+     * @internal Verify a scope boundary and its frozen operations and subtree on its original claim.
      * No Worker capability or cleanup authority is granted. Delivery requires a
      * previously proved preparation. Reconciliation and every history page
      * share the caller's original monotonic budget without renewing it.

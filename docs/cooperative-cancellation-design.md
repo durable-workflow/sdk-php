@@ -95,6 +95,30 @@ application heartbeats and supervisor requests cannot exceed that ceiling,
 even when the immutable request deadline is later. Replacement replay keeps
 the same proof and budget. The Worker still keeps this profile disabled.
 
+### Frozen receipt inspection
+
+The internal claim client can verify populated Activity, timer, wait and child
+receipts against complete canonical history. Each projection comes from the
+prefix before the original preparation. Timers retain their original fire time
+and wait-timeout links. Waits retain their signal or condition descriptor.
+Children retain the latest start recorded before preparation, their original
+call and instance, and their cancellation policy. Later continuations and
+admissions cannot change a verified receipt.
+
+The preparation also freezes the unshielded subtree in opening order. Every
+descendant retains its accepted request, propagation event, context, operations
+and original authority ceiling. An independently accepted descendant request
+requires its recorded competing-root conflict and keeps its earlier deadline.
+Shielded scopes and their descendants remain outside that subtree. Replacement
+claims must preserve all previously verified facts.
+
+The operation projection fixtures use Native's scalar producers, including
+nested group metadata, against an isolated SQLite history store. They exercise
+receipt parsing and canonical history verification. A verified projection or
+delivery marker does not prove physical callback stop or authorize dispatch.
+The Worker still refuses populated scope execution until selective supervision,
+cleanup and connected replacement behavior are qualified.
+
 Other durable commands in a delivered scope remain unsupported. Remote
 activities, timers, children, continuations, metadata writes, side effects,
 new scopes and descendant cleanup require a separate cleanup authority contract.
