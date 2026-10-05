@@ -7,6 +7,7 @@ services:
   server:
     volumes:
       - ../workflow-package:/app/vendor/durable-workflow/workflow:ro
+      - ./tests/Integration/native-scope-request.php:/app/sdk-source-fixtures/native-scope-request.php:ro
   worker:
     volumes:
       - ../workflow-package:/app/vendor/durable-workflow/workflow:ro

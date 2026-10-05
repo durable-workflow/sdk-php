@@ -74,6 +74,16 @@ runs `CooperativeCancellationTest` plus the persisted memo restart case, retains
 the JUnit results and raw scenario histories for 90 days and
 removes the stack and images. The ordinary worker default remains protocol 1.19.
 
+With the Native overlay, scope boundary cases use the explicit testing-only
+`native-scope-request.php` fixture to admit a request for their synthetic run.
+Server has no public per-scope request endpoint yet. Actual Server preparation,
+delivery and original-claim history paging must then preserve that request,
+deadline and preparation, including lost accepted replies. Duplicate Native
+admission keeps the original context. The fixture runs as UID/GID 1000 with
+bounded process time, and its source is mounted read-only in the isolated stack.
+These cases prove internal controls and canonical receipts. They do not enable
+Worker scope execution or qualify live scoped cleanup and replacement.
+
 The connected cases cover waiting timers, cold worker replacement, duplicate
 request identity/deadline, a discarded successful delivery reply, shielded local
 cleanup, local user heartbeats and cancellation during a blocked callback.

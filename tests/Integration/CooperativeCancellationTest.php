@@ -15,6 +15,7 @@ use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\CancellationPolicy;
+use DurableWorkflow\Worker\CancellationDelivery;
 use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\ParentClosePolicy;
 use DurableWorkflow\Worker\Replayer;
@@ -186,6 +187,136 @@ final class CooperativeCancellationTest extends TestCase
         } finally {
             $handle->terminateSelectedRun('scope opening fixture complete');
         }
+    }
+
+    #[DataProvider('booleanProvider')]
+    public function test_scope_boundary_receipts_preserve_native_identity_deadline_and_original_claim(bool $loseReplies): void
+    {
+        if (getenv('DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION') !== '1') {
+            self::markTestSkipped('Scope boundary proof requires the exact Native source overlay.');
+        }
+        $queue = $this->queue('scope-boundary');
+        $owner = $queue.'-owner';
+        $transport = new class($loseReplies) implements BoundedTransport {
+            private Psr18Transport $inner;
+            public array $mutations = [];
+            public array $lost = [];
+            public int $historyPages = 0;
+            public function __construct(private readonly bool $loseReplies) { $this->inner = new Psr18Transport(); }
+            public function supportsBoundedRequests(): bool { return true; }
+            public function send(string $method, string $uri, array $headers, ?array $body = null): ?array {
+                return $this->inner->send($method, $uri, $headers, $body);
+            }
+            public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array {
+                if (str_ends_with($uri, '/history')) { $body['history_page_size'] = 1; ++$this->historyPages; }
+                $response = $this->inner->sendBounded($method, $uri, $headers, $body, $timeoutSeconds);
+                foreach (['prepare', 'deliver'] as $phase) {
+                    if (!str_ends_with($uri, '/cancellation-scopes/'.$phase)) { continue; }
+                    $this->mutations[$phase][] = ['request' => $body, 'response' => $response];
+                    if ($this->loseReplies && !isset($this->lost[$phase])) {
+                        $this->lost[$phase] = true;
+                        throw new TransportException('Accepted scope '.$phase.' reply intentionally lost.', transientConnectionFailure: true);
+                    }
+                }
+                return $response;
+            }
+        };
+        $client = $this->client($transport)->withBoundedWorkerRequests();
+        $definition = new Worker($client, $queue, workerId: $owner, enableCooperativeCancellation: true);
+        $definition->registerWorkflow('tests.php-scope-boundary', static function (WorkflowContext $context): void {
+            $context->cancellationScope(static fn () => $context->sleep(10));
+        });
+        $client->registerWorker($owner, $queue, ['tests.php-scope-boundary'], [],
+            capabilities: ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown',
+                'message_streams', 'memo_upserts', 'typed_search_attributes', 'durable_selection', 'local_activities',
+                'worker_sessions', 'sticky_execution', 'cross_kind_poll_wake', 'cooperative_cancellation'],
+            workflowCommandContracts: $definition->contracts()['workflow_commands'], capabilityManifest: [
+                ...CapabilityManifest::portableWorkerAffinity(),
+                'cooperative_cancellation' => ['supported' => true, 'minimum_protocol_version' => '1.20',
+                    'implementation' => 'authored_call_canonical_delivery'],
+            ]);
+        $handle = $client->startWorkflow('tests.php-scope-boundary', $queue, $queue, []);
+        $accepted = null;
+        $prepared = null;
+        $delivered = null;
+        try {
+            $task = $client->pollWorkflowTask($owner, $queue, 1);
+            self::assertIsArray($task);
+            self::assertSame($handle->selectedRunId, $task['run_id']);
+            $scope = $client->openCancellationScopeOnClaim($task['task_id'], $task['run_id'], $owner, $task['workflow_task_attempt'], 1);
+            $input = ['run_id' => $task['run_id'], 'workflow_id' => $queue, 'scope_id' => $scope->scopeId];
+            $accepted = $this->requestNativeScopeFixture($input);
+            self::assertEquals($accepted, $this->requestNativeScopeFixture($input), 'A duplicate keeps its original identity and deadline.');
+            $payload = $accepted['payload'];
+            self::assertSame('durable-workflow.cancellation-scope-request/v1', $payload['schema']);
+            self::assertSame($scope->scopeId, $payload['scope_id']);
+            self::assertSame($task['run_id'], $payload['workflow_run_id']);
+            $boundary = CancellationDelivery::fromPayload(['workflow_command_id' => $payload['request_id'], 'sequence' => 2, 'call_kind' => 'timer']);
+            $deadline = new \DateTimeImmutable($payload['cancellation']['root_context']['cleanup_deadline_at']);
+            $remaining = (float) $deadline->format('U.u') - microtime(true);
+            self::assertGreaterThan(5, $remaining);
+            $budget = new \DurableWorkflow\Transport\RequestBudget(5, hrtime(true) / 1e9 + $remaining);
+            $prepared = $client->cancellationScopeBoundaryOnClaim($task['task_id'], $task['run_id'], $queue, $owner,
+                $task['workflow_task_attempt'], $scope->scopeId, $boundary, 'prepare', $budget);
+            $delivered = $client->cancellationScopeBoundaryOnClaim($task['task_id'], $task['run_id'], $queue, $owner,
+                $task['workflow_task_attempt'], $scope->scopeId, $boundary, 'deliver', $budget, $prepared);
+            self::assertNull($prepared->deliveryHistoryEventId);
+            self::assertNotNull($delivered->deliveryHistoryEventId);
+            self::assertSame($prepared->preparationHistoryEventId, $delivered->preparationHistoryEventId);
+            self::assertSame($prepared->context->toArray(), $delivered->context->toArray());
+            self::assertEquals($prepared->authorityDeadline, $delivered->authorityDeadline);
+            self::assertEquals($deadline, $delivered->context->deadline());
+            self::assertSame($payload['request_id'], $delivered->context->requestId);
+            self::assertEquals($payload['cancellation'], $delivered->context->toArray());
+            self::assertSame(1, count(array_filter($delivered->history, static fn (array $event): bool => $event['event_type'] === 'CancellationScopeRequested')));
+            self::assertSame(1, count(array_filter($delivered->history, static fn (array $event): bool => $event['event_type'] === 'CancellationScopeDeliveryPrepared')));
+            self::assertSame(1, count(array_filter($delivered->history, static fn (array $event): bool => $event['event_type'] === 'CancellationScopeDelivered')));
+            self::assertGreaterThanOrEqual(count($scope->history) + count($prepared->history) + count($delivered->history), $transport->historyPages);
+            foreach (['prepare', 'deliver'] as $phase) {
+                self::assertCount($loseReplies ? 2 : 1, $transport->mutations[$phase]);
+                if ($loseReplies) {
+                    self::assertTrue($transport->lost[$phase]);
+                    self::assertSame($transport->mutations[$phase][0]['request'], $transport->mutations[$phase][1]['request']);
+                    self::assertSame($transport->mutations[$phase][0]['response']['history_event_id'], $transport->mutations[$phase][1]['response']['history_event_id']);
+                }
+                foreach ($transport->mutations[$phase] as $mutation) {
+                    self::assertSame($owner, $mutation['request']['lease_owner']);
+                    self::assertSame($task['workflow_task_attempt'], $mutation['request']['workflow_task_attempt']);
+                    self::assertSame($payload['request_id'], $mutation['request']['request_id']);
+                    self::assertSame($scope->scopeId, $mutation['request']['scope_id']);
+                    self::assertSame($prepared->preparationHistoryEventId, $mutation['response']['preparation_history_event_id']);
+                    self::assertFalse($mutation['response']['claim_released']);
+                    self::assertSame([], $mutation['response']['created_task_ids']);
+                }
+            }
+        } finally {
+            file_put_contents($this->directory.'/scope-boundary-proof.json', json_encode([
+                'lost_replies' => $loseReplies, 'accepted_native_request' => $accepted, 'mutations' => $transport->mutations,
+                'history_page_requests' => $transport->historyPages, 'prepared_history' => $prepared?->history,
+                'delivered_history' => $delivered?->history, 'scope_execution_qualified' => false,
+            ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
+            try { $this->retainRunEvidence($client, $handle, 'scope-boundary'); }
+            finally { $handle->terminateSelectedRun('scope boundary receipt fixture complete'); }
+        }
+    }
+
+    private function requestNativeScopeFixture(array $input): array
+    {
+        $process = proc_open(['timeout', '--kill-after=1', '12', 'docker', 'compose', 'exec', '-T', '--user', '1000:1000',
+            '--env', 'DURABLE_WORKFLOW_NATIVE_SCOPE_FIXTURE=1', 'server', 'timeout', '--kill-after=1', '5',
+            'php', '/app/sdk-source-fixtures/native-scope-request.php'],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, dirname(__DIR__, 2));
+        self::assertIsResource($process);
+        fwrite($pipes[0], json_encode($input, JSON_THROW_ON_ERROR));
+        fclose($pipes[0]);
+        $output = stream_get_contents($pipes[1]);
+        $errors = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        self::assertSame(0, proc_close($process), 'Native scope fixture failed: '.$errors);
+        $receipt = json_decode($output, true, flags: JSON_THROW_ON_ERROR);
+        self::assertIsArray($receipt);
+        return $receipt;
     }
 
     public function test_scope_authoring_survives_lost_replies_and_cold_replacement_without_reparenting(): void
