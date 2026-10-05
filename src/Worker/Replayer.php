@@ -104,8 +104,10 @@ final class Replayer
         $selectionCancellations = $this->selectionCancellations($history, $selectionCancellationOrders);
         $selectionOperationIdentities = $this->selectionOperationIdentities($history);
         $completedHistory = $this->hasCompletedHistory($history);
+        $allowScopeAuthoring = $allowCancellationScopeAuthoring
+            && ($cancellation->request === null || $replayCommittedCancellationScopes);
         $context = null;
-        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowCancellationScopeAuthoring, &$context): mixed {
+        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -124,7 +126,7 @@ final class Replayer
                 $prepareLocalActivities,
                 $prepareLocalActivityGroups,
                 $localActivityCancellationPolicies,
-                $allowCancellationScopeAuthoring && $cancellation->request === null,
+                $allowScopeAuthoring,
                 $scopes->openings !== [],
             );
 
@@ -146,6 +148,11 @@ final class Replayer
         $consumedScopeDeliveries = [];
 
         while (!$execution->isTerminated()) {
+            if (!$cancellationConsumed && $cancellation->delivery?->sequence === $nextSequence
+                && !$this->isRootCancellationBoundary($suspended, $cancellation->delivery, $stepsBySequence, $context)) {
+                throw new NonDeterministicWorkflow('Committed root cancellation cannot replace a scoped operation.', $nextSequence,
+                    reason: 'cooperative_cancellation_boundary_mismatch');
+            }
             foreach ($scopeDeliveries as $scopeSequence => $scopeDelivery) {
                 if (isset($consumedScopeDeliveries[$scopeSequence])) {
                     continue;
@@ -225,7 +232,8 @@ final class Replayer
                     );
                 }
                 if ($delivery !== null && $delivery->sequence === $nextSequence) {
-                    if ($boundary != $delivery || $context->isCancellationShielded()) {
+                    if ($boundary != $delivery || $context->isCancellationShielded()
+                        || !$this->isRootCancellationBoundary($suspended, $delivery, $stepsBySequence, $context)) {
                         throw new NonDeterministicWorkflow(
                             'Committed cancellation call kind, operation range or shielding changed.', $delivery->sequence,
                             reason: 'cooperative_cancellation_boundary_mismatch',
@@ -250,12 +258,17 @@ final class Replayer
                         $boundary->operationSequence ?? $boundary->sequence,
                         $boundary->operationSequence === null ? $boundary->sequenceSpan : $boundary->operationSequenceSpan,
                     )) {
-                    $this->assertCancellationCallMatches($suspended, $boundary, $stepsBySequence, $context);
+                    if ($this->isRootCancellationBoundary($suspended, $boundary, $stepsBySequence, $context)) {
+                        $this->assertCancellationCallMatches($suspended, $boundary, $stepsBySequence, $context);
 
-                    return new ReplayResult(
-                        $commands, $context->messageStreamCursorAcknowledgements(), $context->messageStreamPendingWaits(),
-                        cancellationDelivery: $boundary,
-                    );
+                        return new ReplayResult(
+                            $commands, $context->messageStreamCursorAcknowledgements(), $context->messageStreamPendingWaits(),
+                            cancellationDelivery: $boundary,
+                        );
+                    }
+                    if ($context->currentCancellationScopeId() === 'root') {
+                        throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: root delivery cannot replace deferred scoped group or selection members.');
+                    }
                 }
             }
             if ($suspended instanceof ParallelWorkflowCommand) {
@@ -1030,6 +1043,38 @@ final class Replayer
         }
     }
 
+    /** @param array<int, array<string, mixed>> $stepsBySequence */
+    private function isRootCancellationBoundary(
+        mixed $command,
+        CancellationDelivery $boundary,
+        array $stepsBySequence,
+        WorkflowContext $context,
+    ): bool {
+        if ($context->currentCancellationScopeId() !== 'root') {
+            return false;
+        }
+        $base = $boundary->operationSequence ?? $boundary->sequence;
+        if ($command instanceof DurableOperationHandle) {
+            $command = $command->operation;
+        }
+        if ($command instanceof DeferredWorkflowOperation) {
+            $command = $command->command;
+        }
+        if (!$command instanceof WorkflowCommand && !$command instanceof ParallelWorkflowCommand) {
+            return false;
+        }
+        $leaves = $command instanceof ParallelWorkflowCommand ? $command->leafDescriptors($base)
+            : [['operation' => new DeferredWorkflowOperation($command)]];
+        foreach ($leaves as $offset => $leaf) {
+            if (($leaf['operation']->command->attributes['cancellation_scope_id'] ?? 'root') !== 'root'
+                || ($stepsBySequence[$base + $offset]['cancellation_scope_id'] ?? 'root') !== 'root') {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /** @param array<string, mixed> $previous
      *  @param array<string, mixed> $next
      */
@@ -1048,9 +1093,11 @@ final class Replayer
     {
         $hasScopes = false;
         $hasCancellation = ($task['cancellation_request'] ?? null) !== null || ($task['cancel_requested'] ?? false) === true;
+        $hasRunRequest = ($task['cancellation_request'] ?? null) !== null;
         foreach ($history as $event) {
             $kind = $event['event_type'] ?? $event['type'] ?? null;
             $hasCancellation = $hasCancellation || in_array($kind, [CancellationHistory::REQUEST_EVENT, CancellationHistory::DELIVERY_EVENT], true);
+            $hasRunRequest = $hasRunRequest || $kind === CancellationHistory::REQUEST_EVENT;
             if ($kind === 'CancellationScopeRequestConflicted'
                 || (!$replayCommittedScopes && in_array($kind, ['CancellationScopeRequested', 'CancellationScopeDeliveryPrepared', 'CancellationScopeDelivered'], true))
                 || (!$allowAuthoring && $kind === 'CancellationScopeOpened')) {
@@ -1072,7 +1119,7 @@ final class Replayer
                 }
             }
         }
-        if ($hasScopes && $hasCancellation) {
+        if ($hasScopes && $hasCancellation && (!$replayCommittedScopes || !$hasRunRequest)) {
             throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker has not qualified cancellation delivery into authored scopes.');
         }
 

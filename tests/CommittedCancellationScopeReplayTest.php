@@ -32,15 +32,14 @@ final class CommittedCancellationScopeReplayTest extends TestCase
         self::assertSame($fixture['history'][4]['payload']['workflow_command_id'], $request['context']->parentRequestId);
         self::assertSame(['root', $fixture['history'][2]['payload']['scope_id']], array_column($request['context']->lineage, 'scope_id'));
         self::assertSame($fixture['history'][4]['payload']['cleanup_deadline_at'], $request['context']->deadline()->format('Y-m-d\TH:i:s.u\Z'));
-        // Root delivery into authored scopes remains guarded until execution composition is qualified.
+        // Canonical parent recognition does not enable scope execution by default.
         $entered = false;
         try {
             (new Replayer(new AvroPayloadCodec()))->replay(static function () use (&$entered): void { $entered = true; },
-                $fixture['history'], [], 'php-workers', $fixture['task'],
-                allowCancellationScopeAuthoring: true, replayCommittedCancellationScopes: true, prepareCancellationScopeDelivery: true);
-            self::fail('Canonical parent recognition must not enable unqualified delivery.');
+                $fixture['history'], [], 'php-workers', $fixture['task'], allowCancellationScopeAuthoring: true);
+            self::fail('Default replay must retain its scope admission guard.');
         } catch (WorkflowClaimAborted $error) {
-            self::assertStringContainsString('authored scopes', $error->getMessage());
+            self::assertStringContainsString('cancellation_scope_execution_not_supported', $error->getMessage());
             self::assertFalse($entered);
         }
     }

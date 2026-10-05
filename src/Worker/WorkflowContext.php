@@ -262,7 +262,8 @@ final class WorkflowContext
         $this->assertActiveFiber();
         if ($this->hasAuthoredCancellationScopes && (!$this->prepareLocalActivities
             || !$this->isCancellationShielded()
-            || !isset($this->deliveredScopeCancellations[$this->cancellationScopeId]))) {
+            || (!isset($this->deliveredScopeCancellations[$this->cancellationScopeId])
+                && !($this->cancellationScopeId === 'root' && $this->deliveredCancellationContext !== null)))) {
             throw new WorkflowClaimAborted('cancellation_scope_local_activity_not_supported: this PHP worker has not qualified selective callback supervision.');
         }
         if ($this->prepareLocalActivities && $this->isCapturing() && !$this->prepareLocalActivityGroups) {

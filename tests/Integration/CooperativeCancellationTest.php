@@ -602,6 +602,74 @@ final class CooperativeCancellationTest extends TestCase
     }
 
     #[DataProvider('booleanProvider')]
+    public function testRunCancellationResumesInheritedScopedCleanupBeforeRootDelivery(bool $killDuringCleanup): void
+    {
+        if (getenv('DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION') !== '1') {
+            self::markTestSkipped('Run and scope composition requires the exact Native source overlay.');
+        }
+        $queue = $this->queue('run-scope');
+        $client = $this->client();
+        [$pid, $messages] = $this->spawnWorker($queue, userHeartbeat: false, preparedLocal: true,
+            blockCleanup: $killDuringCleanup, scopes: true);
+        $handle = null;
+        try {
+            $this->awaitMessage($messages, 'registered');
+            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['scoped-root']);
+            $this->awaitEvent($client, $handle, 'TimerScheduled');
+            $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 30);
+            $root = $accepted['cancellation_request'];
+            if ($killDuringCleanup) {
+                $this->awaitMessage($messages, 'scoped-cleanup-entered');
+                $first = json_decode((string) file_get_contents($this->directory.'/scoped-root-scoped-entered.json'),
+                    true, flags: JSON_THROW_ON_ERROR);
+                $this->stopWorker($pid, true);
+                $pid = 0;
+                fclose($messages);
+                $this->assertProcessStops($first['callback_pid']);
+                [$pid, $messages] = $this->spawnWorker($queue, userHeartbeat: false, preparedLocal: true, scopes: true);
+                $this->awaitMessage($messages, 'registered');
+            }
+            $duplicate = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 300);
+            self::assertTrue($duplicate['duplicate']);
+            foreach (['request_id', 'requested_at', 'cleanup_deadline_at'] as $field) {
+                self::assertSame($root[$field], $duplicate['cancellation_request'][$field]);
+            }
+            $history = $this->assertCancelledCleanup($client, $handle, $root['request_id'], $messages,
+                expectedCleanupCount: 2);
+            $scoped = array_values(array_filter($history, static fn (array $event): bool =>
+                $event['event_type'] === 'CancellationScopeDelivered'));
+            self::assertCount(1, $scoped);
+            self::assertSame($root['request_id'], $scoped[0]['payload']['cancellation']['root_context']['root_request_id']);
+            self::assertSame($root['cleanup_deadline_at'], $scoped[0]['payload']['authority_deadline_at']);
+            $delivery = array_values(array_filter($history, static fn (array $event): bool =>
+                $event['event_type'] === 'CooperativeCancellationDelivered'))[0];
+            self::assertLessThan($delivery['sequence'], $scoped[0]['sequence']);
+            self::assertNotContains('ActivityHeartbeatRecorded', array_column($history, 'event_type'));
+            self::assertFileDoesNotExist($this->directory.'/scoped-root-scoped-late');
+            foreach (['scoped', 'root'] as $phase) {
+                $context = json_decode((string) file_get_contents($this->directory.'/scoped-root-'.$phase.'.json'),
+                    true, flags: JSON_THROW_ON_ERROR);
+                $original = $context['root_context'] ?? $context;
+                self::assertSame($root['request_id'], $original['root_request_id']);
+                self::assertSame($root['cleanup_deadline_at'], $original['cleanup_deadline_at']);
+            }
+            $terminal = array_values(array_filter($history, static fn (array $event): bool =>
+                $event['event_type'] === 'WorkflowCancelled'))[0];
+            self::assertLessThan(new \DateTimeImmutable($root['cleanup_deadline_at']),
+                new \DateTimeImmutable($terminal['timestamp']));
+            if ($killDuringCleanup) {
+                self::assertContains('ActivityRetryScheduled', array_column($history, 'event_type'));
+                self::assertSame('unknown', array_values(array_filter($history, static fn (array $event): bool =>
+                    $event['event_type'] === 'ActivityRetryScheduled'))[0]['payload']['local_recovery']['callback_stop_state']);
+            }
+        } finally {
+            if ($handle !== null) { $this->retainRunEvidence($client, $handle, 'run-scope'); }
+            if (is_resource($messages)) { fclose($messages); }
+            $this->stopWorker($pid);
+        }
+    }
+
+    #[DataProvider('booleanProvider')]
     public function testWaitingTimerRunsCleanupAfterLiveOrColdWorkerDelivery(bool $coldReplacement): void
     {
         $queue = $this->queue('timer');
@@ -1785,7 +1853,7 @@ final class CooperativeCancellationTest extends TestCase
     }
 
     /** @return array{int, resource} */
-    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false, int $remoteBlockSeconds = 60, bool $blockCleanup = false, bool $observeChildWait = false, bool $preparedLocal = false, ?CancellationPolicy $remotePolicy = null, ?CancellationPolicy $localPolicy = null, ?string $receiptFault = null): array
+    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false, int $remoteBlockSeconds = 60, bool $blockCleanup = false, bool $observeChildWait = false, bool $preparedLocal = false, ?CancellationPolicy $remotePolicy = null, ?CancellationPolicy $localPolicy = null, ?string $receiptFault = null, bool $scopes = false): array
     {
         $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
         if ($sockets === false) {
@@ -1813,6 +1881,7 @@ final class CooperativeCancellationTest extends TestCase
                 $failureReported = false;
                 $worker = new Worker($this->client($transport, $namespace), $queue,
                     workerId: $queue.'-'.getmypid(), enableCooperativeCancellation: true, enablePreparedLocalActivities: $preparedLocal,
+                    enableCancellationScopes: $scopes,
                     diagnosticListener: function (string $event, array $context) use ($notify, &$failureReported, $blockCleanup): void {
                         if (in_array($event, ['worker.claim_aborted', 'worker.claim_deferred',
                             'worker.activity_cancellation_acknowledged', 'worker.activity_cancellation_acknowledgement_failed',
@@ -1874,7 +1943,16 @@ final class CooperativeCancellationTest extends TestCase
                     $directory = $this->directory;
                     $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind, ?string $childQueue = null, ?string $remoteQueue = null) use ($queue, $preparedLocal, $remotePolicy, $localPolicy, $directory): string {
                         try {
-                            if ($kind === 'child-wait') {
+                            if ($kind === 'scoped-root') {
+                                $context->cancellationScope(static function () use ($context): void {
+                                    try { $context->sleep(300); } catch (WorkflowCancelled $error) {
+                                        $context->cancellationShield(static fn () => $context->localActivity('tests.php-scope-cleanup',
+                                            [$error->requestId, $context->cancellationContext()?->toArray()],
+                                            ['retry_policy' => ['max_attempts' => 3]]));
+                                    }
+                                });
+                                $context->sleep(300);
+                            } elseif ($kind === 'child-wait') {
                                 $context->childWorkflow('tests.php-cooperative', ['timer'], [
                                     'queue' => $queue,
                                     'cancellation_policy' => CancellationPolicy::WaitCancellationCompleted,
@@ -1923,7 +2001,8 @@ final class CooperativeCancellationTest extends TestCase
                                 ]));
                                 return (string) $error->requestId;
                             }
-                            $context->cancellationShield(static fn () => $context->localActivity('tests.php-cooperative-cleanup',
+                            $context->cancellationShield(static fn () => $context->localActivity(
+                                $kind === 'scoped-root' ? 'tests.php-scope-cleanup' : 'tests.php-cooperative-cleanup',
                                 [$error->requestId, $context->cancellationContext()?->toArray()],
                                 $preparedLocal ? ['retry_policy' => ['max_attempts' => 3]] : []));
                             if ($kind === 'polyglot') {
@@ -1984,6 +2063,21 @@ final class CooperativeCancellationTest extends TestCase
                     $context->heartbeat(['request_id' => $requestId]);
                     return $requestId;
                 });
+                if ($scopes) {
+                    $worker->registerActivity('tests.php-scope-cleanup', function (ActivityContext $_context, string $_requestId,
+                        array $cancellationContext) use ($notify, $blockCleanup): string {
+                        $phase = isset($cancellationContext['root_context']) ? 'scoped' : 'root';
+                        if ($blockCleanup && $phase === 'scoped') {
+                            file_put_contents($this->directory.'/scoped-root-scoped-entered.json',
+                                json_encode(['callback_pid' => getmypid()], JSON_THROW_ON_ERROR));
+                            $notify('scoped-cleanup-entered');
+                            sleep(60);
+                            file_put_contents($this->directory.'/scoped-root-scoped-late', 'stale scoped cleanup returned');
+                        }
+                        file_put_contents($this->directory.'/scoped-root-'.$phase.'.json', json_encode($cancellationContext, JSON_THROW_ON_ERROR));
+                        return ($cancellationContext['root_context'] ?? $cancellationContext)['root_request_id'];
+                    });
+                }
                 foreach ([0, 1] as $index) {
                     $worker->registerActivity('tests.php-cooperative-group-work-'.$index, function (ActivityContext $context) use ($notify, $index): string {
                         $notify('group-entered-'.$index);

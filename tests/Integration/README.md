@@ -84,6 +84,15 @@ bounded process time, and its source is mounted read-only in the isolated stack.
 These cases prove internal controls and canonical receipts. They do not enable
 Worker scope execution or qualify live scoped cleanup and replacement.
 
+The run/scope composition cases use the normal run cancellation API with the
+explicit scalar scope Worker opt-in. They execute inherited scoped cleanup and
+root cleanup within one original 30-second deadline, without application
+heartbeats. The interruption case kills the owning Worker during scoped cleanup,
+checks physical callback exit, and requires a replacement to replay the same
+scope delivery and resume cleanup. Duplicate cancellation preserves its original
+identity and deadline. These are connected source checks for the selected scalar
+composition, with the scope Worker default still disabled.
+
 The connected cases cover waiting timers, cold worker replacement, duplicate
 request identity/deadline, a discarded successful delivery reply, shielded local
 cleanup, local user heartbeats and cancellation during a blocked callback.

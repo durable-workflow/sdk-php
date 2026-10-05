@@ -464,6 +464,15 @@ the same mutation, preparation identity and authority ceiling. An exhausted
 budget, missing history or changed authority aborts the claim. Replacement
 workers preserve an existing preparation or replay an existing delivery.
 
+The same source opt-in composes a run request with authored scopes. Its accepted
+run context is the canonical parent of inherited scope requests. Scoped delivery
+and shielded prepared cleanup replay before root delivery, then root cleanup can
+run after leaving the scope. Both retain the original root identity and deadline.
+Root delivery checks the active scope and each operation's recorded or deferred
+membership. A scoped leaf cannot become a root operation by returning its handle
+or awaiting its group outside the scope. A committed root boundary over scoped
+work fails before another scope intent or cleanup can execute.
+
 Pending local, selected and group boundaries and overlapping delivered subtrees
 remain explicitly unsupported. Live selective physical supervision, connected
 scoped cleanup recovery, all portable consumers and exact published-artifact
