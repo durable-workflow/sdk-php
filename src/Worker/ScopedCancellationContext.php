@@ -125,6 +125,34 @@ final class ScopedCancellationContext
         return new self($root, $normalized, $deadline);
     }
 
+    /** @internal Preserve the canonical run request as the implicit root scope. */
+    public static function fromRunContext(CancellationContext $context): self
+    {
+        $last = $context->lineage[count($context->lineage) - 1];
+        $deadline = $context->deadline()->format('Y-m-d\TH:i:s.u\Z');
+        if ($context->scopeOrigin !== null) {
+            $snapshot = $context->scopeOrigin->toArray();
+            $snapshot['lineage'][] = [
+                'request_id' => $context->requestId,
+                'workflow_instance_id' => $last['workflow_instance_id'],
+                'workflow_run_id' => $last['workflow_run_id'],
+                'scope_id' => 'root',
+                'cleanup_deadline_at' => $deadline,
+            ];
+            return self::fromArray($snapshot);
+        }
+        $root = $context->toArray();
+        $root['request_id'] = $context->rootRequestId;
+        $root['parent_request_id'] = null;
+        $root['lineage'] = [$context->lineage[0]];
+        return self::fromArray([
+            'schema' => self::SCHEMA,
+            'root_context' => $root,
+            'lineage' => array_map(static fn (array $entry): array => [...$entry,
+                'scope_id' => 'root', 'cleanup_deadline_at' => $deadline], $context->lineage),
+        ]);
+    }
+
     public function requestedAt(): DateTimeImmutable
     {
         return $this->rootContext->requestedAt();

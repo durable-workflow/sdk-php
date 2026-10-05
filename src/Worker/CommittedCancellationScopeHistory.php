@@ -31,6 +31,9 @@ final class CommittedCancellationScopeHistory
             $addresses[$opening['scope_id']] = [...$opening, 'sequence' => $sequence];
         }
         $requests = [];
+        $runCancellation = CancellationHistory::fromEvents($history, $runId);
+        $runRoot = $runCancellation->request?->context === null ? null
+            : ScopedCancellationContext::fromRunContext($runCancellation->request->context);
         $requestIds = [];
         $preparations = [];
         $verifiedPreparations = [];
@@ -83,7 +86,9 @@ final class CommittedCancellationScopeHistory
                             throw new InvalidArgumentException('Direct scope cancellation cannot substitute an inherited lineage.');
                         }
                     } else {
-                        $parentRequest = is_string($parent) ? ($requests[$parent]['context'] ?? null) : null;
+                        $parentRequest = $parent === 'root' && $runCancellation->requestIndex < $historyIndex
+                            && $runRoot?->workflowRunId === $runId && $runRoot->workflowInstanceId === $workflowId
+                            ? $runRoot : (is_string($parent) ? ($requests[$parent]['context'] ?? null) : null);
                         if (!$parentRequest instanceof ScopedCancellationContext || $address['shield_parent']
                             || $parent !== $address['parent_scope_id']
                             || $context->rootContext->toArray() !== $parentRequest->rootContext->toArray()

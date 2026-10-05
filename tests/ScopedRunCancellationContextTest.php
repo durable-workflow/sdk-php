@@ -19,6 +19,22 @@ use PHPUnit\Framework\TestCase;
 
 final class ScopedRunCancellationContextTest extends TestCase
 {
+    public function testRunRootScopeKeepsInheritedAddressesAndTheOriginalBoundedDeadline(): void
+    {
+        foreach (['child', 'grandchild'] as $name) {
+            $context = CancellationContext::fromArray(self::fixtures()[$name]);
+            $root = ScopedCancellationContext::fromRunContext($context);
+            self::assertSame($context->rootRequestId, $root->rootRequestId);
+            self::assertSame($context->requestId, $root->requestId);
+            self::assertSame('root', $root->scopeId);
+            self::assertEquals($context->deadline(), $root->deadline());
+            self::assertSame($context->scopeOrigin->rootContext->toArray(), $root->rootContext->toArray());
+            self::assertSame($context->scopeOrigin->lineage, array_slice($root->lineage, 0, -1));
+            self::assertSame($context->scopeOrigin->requestId, $root->parentRequestId);
+            self::assertSame($context->toArray(), CancellationContext::fromArray($context->toArray())->toArray());
+        }
+    }
+
     public function testNativeChildAndGrandchildKeepEveryScopeAddressAndTheOriginalBudget(): void
     {
         $fixtures = self::fixtures();

@@ -9,6 +9,8 @@ use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Worker\Replayer;
+use DurableWorkflow\Worker\CancellationScopeHistory;
+use DurableWorkflow\Worker\CommittedCancellationScopeHistory;
 use DurableWorkflow\Worker\ScopedCancellationContext;
 use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkflowContext;
@@ -18,6 +20,58 @@ use PHPUnit\Framework\TestCase;
 
 final class CommittedCancellationScopeReplayTest extends TestCase
 {
+    public function testAcceptedRunRequestIsTheCanonicalParentOfItsUnshieldedScope(): void
+    {
+        $fixture = self::runInheritedFixture();
+        $scopes = new CancellationScopeHistory($fixture['history'], $fixture['task']['run_id']);
+        $committed = new CommittedCancellationScopeHistory($fixture['history'], $fixture['task']['run_id'],
+            $fixture['task']['workflow_id'], $scopes, requireCommittedDelivery: false);
+        $request = $committed->pendingRequestForScope($fixture['history'][2]['payload']['scope_id'], $scopes);
+        self::assertNotNull($request);
+        self::assertSame('root-child-request', $request['context']->requestId);
+        self::assertSame($fixture['history'][4]['payload']['workflow_command_id'], $request['context']->parentRequestId);
+        self::assertSame(['root', $fixture['history'][2]['payload']['scope_id']], array_column($request['context']->lineage, 'scope_id'));
+        self::assertSame($fixture['history'][4]['payload']['cleanup_deadline_at'], $request['context']->deadline()->format('Y-m-d\TH:i:s.u\Z'));
+        // Root delivery into authored scopes remains guarded until execution composition is qualified.
+        $entered = false;
+        try {
+            (new Replayer(new AvroPayloadCodec()))->replay(static function () use (&$entered): void { $entered = true; },
+                $fixture['history'], [], 'php-workers', $fixture['task'],
+                allowCancellationScopeAuthoring: true, replayCommittedCancellationScopes: true, prepareCancellationScopeDelivery: true);
+            self::fail('Canonical parent recognition must not enable unqualified delivery.');
+        } catch (WorkflowClaimAborted $error) {
+            self::assertStringContainsString('authored scopes', $error->getMessage());
+            self::assertFalse($entered);
+        }
+    }
+
+    #[DataProvider('invalidRunInheritance')]
+    public function testRunInheritanceRequiresAnEarlierExactRequestAndCannotCrossAShield(string $failure): void
+    {
+        $fixture = self::runInheritedFixture();
+        if ($failure === 'missing') {
+            array_splice($fixture['history'], 4, 1);
+        } elseif ($failure === 'later') {
+            [$fixture['history'][4], $fixture['history'][5]] = [$fixture['history'][5], $fixture['history'][4]];
+        } elseif ($failure === 'shield') {
+            $fixture['history'][2]['payload']['shield_parent'] = true;
+        } elseif ($failure === 'metadata') {
+            $fixture['history'][5]['payload']['cancellation']['root_context']['reason'] = 'substituted reason';
+        } elseif ($failure === 'deadline') {
+            $fixture['history'][5]['payload']['cancellation']['lineage'][1]['cleanup_deadline_at'] = '2026-10-04T00:00:25.123456Z';
+        }
+        self::renumber($fixture['history']);
+        $scopes = new CancellationScopeHistory($fixture['history'], $fixture['task']['run_id']);
+        $this->expectException(NonDeterministicWorkflow::class);
+        new CommittedCancellationScopeHistory($fixture['history'], $fixture['task']['run_id'],
+            $fixture['task']['workflow_id'], $scopes, requireCommittedDelivery: false);
+    }
+
+    public static function invalidRunInheritance(): array
+    {
+        return [['missing'], ['later'], ['shield'], ['metadata'], ['deadline']];
+    }
+
     #[DataProvider('scopeVariants')]
     public function test_native_delivery_replays_original_identity_clock_and_scope_without_cancelling_parent(string $variant): void
     {
@@ -343,6 +397,27 @@ final class CommittedCancellationScopeReplayTest extends TestCase
     private static function fixture(string $variant = 'unshielded'): array
     {
         return json_decode((string) file_get_contents(__DIR__.'/fixtures/committed-scope-delivery.json'), true, flags: JSON_THROW_ON_ERROR)[$variant];
+    }
+
+    private static function runInheritedFixture(): array
+    {
+        $fixture = self::fixture();
+        $request = $fixture['history'][4];
+        $root = $request['payload']['cancellation']['root_context'];
+        $scope = $fixture['history'][2]['payload']['scope_id'];
+        $lineage = [...$root['lineage'][0], 'scope_id' => 'root', 'cleanup_deadline_at' => $root['cleanup_deadline_at']];
+        $request['payload'] = ['schema' => 'durable-workflow.cancellation-scope-request/v1',
+            'workflow_run_id' => $fixture['task']['run_id'], 'scope_id' => $scope,
+            'request_id' => 'root-child-request', 'parent_scope_id' => 'root', 'cancellation' => [
+                'schema' => ScopedCancellationContext::SCHEMA, 'root_context' => $root,
+                'lineage' => [$lineage, [...$lineage, 'scope_id' => $scope, 'request_id' => 'root-child-request']],
+            ]];
+        $rootEvent = [...$request, 'id' => 'run-cancellation', 'event_type' => 'CooperativeCancellationRequested',
+            'payload' => ['workflow_command_id' => $root['request_id'], 'workflow_run_id' => $fixture['task']['run_id'],
+                'workflow_instance_id' => $fixture['task']['workflow_id'], 'cleanup_deadline_at' => $root['cleanup_deadline_at'], 'cancellation' => $root]];
+        $fixture['history'] = [...array_slice($fixture['history'], 0, 4), $rootEvent, $request];
+        self::renumber($fixture['history']);
+        return $fixture;
     }
 
     private static function event(array $fixture, string $kind, array $payload, string $timestamp): array
