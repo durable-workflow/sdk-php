@@ -7,6 +7,7 @@ namespace DurableWorkflow\Tests;
 use DurableWorkflow\Client;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\WorkflowCancelled;
+use DurableWorkflow\Tests\Support\ReplayRegressionFixture;
 use DurableWorkflow\Transport\BoundedTransport;
 use DurableWorkflow\Transport\RequestBudget;
 use DurableWorkflow\Worker\CooperativeActivityExecutor;
@@ -25,6 +26,13 @@ use PHPUnit\Framework\TestCase;
 
 final class PreparedLocalActivityScopeCleanupTest extends TestCase
 {
+    public function test_native_cleanup_golden_executes_through_the_source_replayer_profile(): void
+    {
+        $commands = ReplayRegressionFixture::executeFile(__DIR__.'/fixtures/prepared-local/scoped-cleanup-original-authority.json');
+        self::assertSame(['prepare_local_activity'], array_column($commands, 'type'));
+        self::assertSame(self::fixture()['original_admission']['cancellation_cleanup'], $commands[0]['cancellation_cleanup']);
+    }
+
     #[DataProvider('historyStages')]
     public function test_cold_replay_derives_cleanup_proof_from_native_delivery_without_running_a_callback(string $stage, bool $recover): void
     {
