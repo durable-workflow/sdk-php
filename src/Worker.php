@@ -1442,6 +1442,15 @@ final class Worker
                     // The runner has already joined and acknowledged this attempt.
                     // Retain the hosting claim and replay the canonical scope boundary.
                     $history = $this->refreshWorkflowClaimHistory($task, $error->historyRefreshPageToken);
+                    $canonicalRunRequest = CancellationHistory::fromEvents(
+                        $history, (string) $task['run_id'], $this->claimCancellation
+                    )->request;
+                    if ($canonicalRunRequest !== null) {
+                        // A canonical run request supplies root replay with the
+                        // Server-issued cursor from this same original claim.
+                        $this->claimCancellation = $canonicalRunRequest
+                            ->withHistoryRefreshPageToken($error->historyRefreshPageToken);
+                    }
                 } catch (CooperativeCancellationObserved) {
                     $history = $this->refreshCancellationHistory($task);
                 }

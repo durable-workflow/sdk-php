@@ -5,8 +5,13 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Client;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
+use DurableWorkflow\Tests\Support\FakeTransport;
+use DurableWorkflow\Transport\BoundedTransport;
+use DurableWorkflow\Transport\RequestBudget;
+use DurableWorkflow\Worker\CancellationDelivery;
 use DurableWorkflow\Worker\CancellationContext;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\ReplayResult;
@@ -18,6 +23,57 @@ use PHPUnit\Framework\TestCase;
 
 final class ScopedPreparedLocalReplayTest extends TestCase
 {
+    public function testClientPreparesAndDeliversTheSameNativeScalarLocalBoundary(): void
+    {
+        $fixture = self::fixture();
+        $preparedHistory = array_slice($fixture['history'], 0, $fixture['history_ranges']['prepared']);
+        $history = array_slice($fixture['history'], 0, $fixture['history_ranges']['scope_delivered']);
+        $event = array_values(array_filter($preparedHistory, static fn (array $row): bool =>
+            $row['event_type'] === 'CancellationScopeDeliveryPrepared'))[0];
+        $payload = $event['payload'];
+        $body = array_intersect_key($payload, array_flip(['scope_id', 'request_id', 'sequence', 'call_kind',
+            'sequence_span', 'operation_sequence', 'operation_sequence_span']));
+        $taskId = $payload['task']['id'];
+        $receipt = ['prepared' => true, 'delivered' => false, 'claim_released' => false, 'task_id' => $taskId,
+            'workflow_run_id' => $fixture['task']['run_id'], 'lease_owner' => 'original', 'workflow_task_attempt' => 1,
+            'created_task_ids' => [], 'reason' => null, 'history_event_id' => $event['id'],
+            'preparation_history_event_id' => $event['id'], 'history_refresh_page_token' => 'original-cursor',
+            'cancellation' => $payload['cancellation'], 'authority_deadline_at' => $payload['authority_deadline_at'],
+            ...array_intersect_key($payload, array_flip(['activity_members', 'timer_members', 'wait_members',
+                'child_members', 'descendant_members'])), ...$body];
+        $page = ['task_id' => $taskId, 'workflow_task_attempt' => 1, 'next_history_page_token' => null];
+        $deliveredEvent = $history[count($history) - 1];
+        $transport = new class([$receipt, [...$page, 'history_events' => $preparedHistory],
+            [...$receipt, 'delivered' => true, 'history_event_id' => $deliveredEvent['id']],
+            [...$page, 'history_events' => $history]]) implements BoundedTransport {
+            public FakeTransport $fake;
+            public function __construct(array $responses) { $this->fake = new FakeTransport($responses); }
+            public function supportsBoundedRequests(): bool { return true; }
+            public function send(string $method, string $uri, array $headers, ?array $body = null): ?array {
+                throw new \LogicException('The original claim requires bounded requests.');
+            }
+            public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array {
+                return $this->fake->send($method, $uri, $headers, $body);
+            }
+        };
+        $client = (new Client('https://server.example', namespace: 'sdk-root-scopes', transport: $transport,
+            workerToken: 'fixture-worker', workerProtocolVersion: '1.20'))->withBoundedWorkerRequests();
+        $boundary = CancellationDelivery::fromPayload([...$body, 'workflow_command_id' => $body['request_id']]);
+        $prepared = $client->cancellationScopeBoundaryOnClaim($taskId, $fixture['task']['run_id'], $fixture['task']['workflow_id'],
+            'original', 1, $fixture['scope_id'], $boundary, 'prepare', new RequestBudget(5));
+        $delivered = $client->cancellationScopeBoundaryOnClaim($taskId, $fixture['task']['run_id'], $fixture['task']['workflow_id'],
+            'original', 1, $fixture['scope_id'], $boundary, 'deliver', new RequestBudget(5), $prepared);
+        self::assertSame($event['id'], $delivered->preparationHistoryEventId);
+        self::assertSame($deliveredEvent['id'], $delivered->deliveryHistoryEventId);
+        self::assertSame($prepared->context->toArray(), $delivered->context->toArray());
+        self::assertCount(4, $transport->fake->requests);
+        foreach ([0, 2] as $index) {
+            self::assertSame('local_activity', $transport->fake->requests[$index]['body']['call_kind']);
+            self::assertSame('original', $transport->fake->requests[$index]['body']['lease_owner']);
+            self::assertSame(1, $transport->fake->requests[$index]['body']['workflow_task_attempt']);
+        }
+    }
+
     #[DataProvider('prefixes')]
     public function testOriginalLocalStopReplaysBeforeScopeAndRootCleanup(string $prefix): void
     {
