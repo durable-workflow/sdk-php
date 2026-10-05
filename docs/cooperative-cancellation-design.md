@@ -396,5 +396,17 @@ The history parser can inspect committed preparation before delivery, while
 ordinary cleanup replay still requires committed delivery. Receipt facts do
 not grant callback authority. Worker scope execution stays disabled and the
 candidate protocol remains unfrozen and unpublished. Committed single-call
-projection replay has an internal source profile. Descendant execution, groups
-and live scope recovery still need qualification.
+projection replay and fully admitted `all()` groups have internal source profiles.
+The group profile preserves flat and nested Activity, timer, child and condition
+members, their original paths and cancellation policies, the complete authored
+range and the existing cleanup receipt. A committed delivery wins even when a
+condition is now satisfied. Replayed cleanup retains the original request,
+lineage, preparation/delivery events and narrower authority deadline. Returning
+from the cancelled scope leaves its parent unaffected.
+
+The group profile requires every original member to have been admitted before
+preparation. Partial groups, local or selection groups and direct signal-wait
+groups remain refused before workflow entry. PHP currently reads signals through
+conditions rather than authoring `SignalWaitOpened` calls. Descendant execution,
+live group preparation/delivery, physical cleanup recovery and published-artifact
+qualification remain required before Worker scope execution is enabled.

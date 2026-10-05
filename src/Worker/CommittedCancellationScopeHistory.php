@@ -148,7 +148,9 @@ final class CommittedCancellationScopeHistory
                             throw new InvalidArgumentException('Scope preparation changes its original descendant projection.');
                         }
                     }
-                    if (!in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child'], true)) {
+                    if ($boundary->callKind === 'parallel') {
+                        self::assertCompleteGroup($boundary, $scopeId, array_slice($history, 0, $historyIndex), $scopes);
+                    } elseif (!in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child'], true)) {
                         throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker only supports committed single activity, timer, condition and child scope boundaries.');
                     }
                     // Every admitted operation must be accounted for by its qualified projection.
@@ -161,7 +163,7 @@ final class CommittedCancellationScopeHistory
                         $timeout = $admission === 'TimerScheduled' && in_array($boundary->sequence,
                             array_column($projections['wait'] ?? [], 'sequence'), true);
                         if ($unsupported !== [] || (isset($addressesBySequence[$boundary->sequence])
-                            && (!in_array($boundary->sequence, $sequences, true) || (!$timeout && $boundary->callKind !== $callKind)))) {
+                            && (!in_array($boundary->sequence, $sequences, true) || (!$timeout && $boundary->callKind !== 'parallel' && $boundary->callKind !== $callKind)))) {
                             throw new InvalidArgumentException('Scope preparation cannot omit or replace an admitted operation.');
                         }
                     }
@@ -190,6 +192,50 @@ final class CommittedCancellationScopeHistory
         ksort($deliveries);
         $this->deliveries = $deliveries;
         $this->preparations = $verifiedPreparations;
+    }
+
+    /** @param list<array<string, mixed>> $prefix */
+    private static function assertCompleteGroup(CancellationDelivery $boundary, string $scopeId, array $prefix, CancellationScopeHistory $scopes): void
+    {
+        $members = [];
+        foreach ($prefix as $event) {
+            $kind = $event['event_type'] ?? $event['type'] ?? null;
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $sequence = $payload['sequence'] ?? null;
+            if (!in_array($kind, ['ActivityScheduled', 'TimerScheduled', 'ChildWorkflowScheduled', 'ConditionWaitOpened', 'SignalWaitOpened'], true)
+                || !is_int($sequence) || !$boundary->interrupts($sequence)
+                || ($kind === 'TimerScheduled' && in_array($payload['timer_kind'] ?? null, ['condition_timeout', 'signal_timeout'], true))) {
+                continue;
+            }
+            if (($scopes->memberships[$sequence] ?? 'root') !== $scopeId || isset($members[$sequence])) {
+                throw new InvalidArgumentException('Scope group changes an original member address or duplicates its authored position.');
+            }
+            if ($kind === 'SignalWaitOpened' || ($payload['local_activity'] ?? false) === true || ($payload['execution_mode'] ?? null) === 'local') {
+                throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker has not qualified scoped signal or local group execution.');
+            }
+            $path = $payload['parallel_group_path'] ?? [$payload];
+            if (!is_array($path) || !array_is_list($path) || $path === [] || !is_array($path[0])) {
+                throw new InvalidArgumentException('Scope group requires its original admitted group path.');
+            }
+            foreach ($path as $entry) {
+                if (!is_array($entry)) {
+                    throw new InvalidArgumentException('Scope group has a malformed original group path.');
+                }
+                if (($entry['parallel_group_mode'] ?? 'all') !== 'all'
+                    || (is_string($entry['parallel_group_id'] ?? null) && str_starts_with($entry['parallel_group_id'], 'select-calls:'))) {
+                    throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker has not qualified scoped selection groups.');
+                }
+            }
+            if (($path[0]['parallel_group_base_sequence'] ?? null) !== $boundary->sequence
+                || ($path[0]['parallel_group_size'] ?? null) !== $boundary->sequenceSpan
+                || ($path[0]['parallel_group_index'] ?? null) !== $sequence - $boundary->sequence) {
+                throw new InvalidArgumentException('Scope group changes its original range or member index.');
+            }
+            $members[$sequence] = true;
+        }
+        if (count($members) !== $boundary->sequenceSpan) {
+            throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker requires every original scoped group member admitted before replay.');
+        }
     }
 
     private static function timestamp(mixed $value): DateTimeImmutable
