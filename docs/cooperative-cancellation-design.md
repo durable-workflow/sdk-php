@@ -215,8 +215,13 @@ and original deadline. A duplicate returns the original receipt.
 
 An expired lease, lost connection, worker shutdown, terminal legacy cancellation
 or malformed observation cannot supply a cooperative stop receipt. A callback
-that never started is not reported as joined. A refused or lost receipt produces
-a diagnostic and does not regain result authority. Stop acknowledgment describes
+that never started is not reported as joined. Receipt discovery and reporting
+share one five-second monotonic budget. Known transient connection and upstream
+failures retry at most three times per request, retaining the captured attempt,
+owner and request identity. Reporting is also capped by the original cleanup
+deadline. A lost accepted reply returns the original receipt on retry. A refused
+proof or exhausted budget produces a diagnostic and does not regain result
+authority. Stop acknowledgment describes
 the supervised callback, not reversal of external side effects. Other processes
 and downstream systems need their own cooperating cancellation and fencing.
 

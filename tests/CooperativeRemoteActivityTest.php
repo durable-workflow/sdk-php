@@ -159,6 +159,106 @@ final class CooperativeRemoteActivityTest extends TestCase
         foreach ($pids as $pid) { self::assertFalse(posix_kill($pid, 0)); }
     }
 
+    public static function transientReceiptProvider(): array
+    {
+        return [['status'], ['connection'], ['upstream'], ['lost_reply']];
+    }
+
+    #[DataProvider('transientReceiptProvider')]
+    public function testJoinedCallbackReceiptRecoversTransientFailureWithOriginalIdentity(string $fault): void
+    {
+        $transport = new RemoteOwnerTransport();
+        $transport->transientAcknowledgmentFault = $fault === 'status' ? null : $fault;
+        $entered = $this->directory.'/entered';
+        $pids = [];
+        $worker = $this->worker($transport, $pids);
+        $statusFailed = false;
+        $transport->observe = static function (RemoteOwnerTransport $transport) use ($entered, $fault, &$statusFailed, &$pids): void {
+            if (!is_file($entered)) { return; }
+            $transport->status['can_continue'] = false;
+            $transport->status['cancel_requested'] = true;
+            $transport->status['cancellation_acknowledgement'] = RemoteOwnerTransport::receipt();
+            if ($fault === 'status' && !$statusFailed && count($pids) === 2
+                && !posix_kill($pids[0], 0) && !posix_kill($pids[1], 0)) {
+                $statusFailed = true;
+                throw new TransportException('Stop receipt discovery connection failed.', transientConnectionFailure: true);
+            }
+        };
+        $transport->onAcknowledgment = static function () use (&$pids): void {
+            foreach ($pids as $pid) { self::assertFalse(posix_kill($pid, 0), 'A receipt requires a stopped and joined callback.'); }
+        };
+        $worker->registerActivity('remote', static function (ActivityContext $context) use ($entered): never {
+            file_put_contents($entered, 'entered');
+            sleep(60);
+            throw new RuntimeException('Stopped callback must not resume.');
+        });
+        $started = microtime(true);
+        $worker->tick(0);
+        self::assertLessThan(3, microtime(true) - $started);
+        self::assertSame($fault === 'status', $statusFailed);
+        self::assertCount($fault === 'status' ? 1 : 2, $transport->acknowledgments);
+        foreach ($transport->acknowledgments as $request) {
+            self::assertSame(['activity_attempt_id' => 'attempt', 'lease_owner' => 'owner', 'request_id' => 'local-request'], $request);
+        }
+        self::assertContains('worker.activity_cancellation_acknowledged', $transport->events);
+        self::assertNotContains('worker.activity_cancellation_acknowledgement_failed', $transport->events);
+        self::assertSame(1, $transport->retainedStopReceipts);
+        self::assertSame([], $transport->completions);
+        self::assertSame([], $transport->failures);
+        self::assertSame([], $transport->userHeartbeats);
+        foreach ($pids as $pid) { self::assertFalse(posix_kill($pid, 0)); }
+    }
+
+    public static function receiptBudgetProvider(): array
+    {
+        return [['expired'], ['invalid'], ['original_deadline'], ['persistent']];
+    }
+
+    #[DataProvider('receiptBudgetProvider')]
+    public function testJoinedStopReportCannotRestartBudgetOrPublishAfterRefusal(string $fault): void
+    {
+        $transport = new RemoteOwnerTransport();
+        $entered = $this->directory.'/entered';
+        $pids = [];
+        $worker = $this->worker($transport, $pids);
+        $transport->persistentTransientFailure = $fault === 'persistent';
+        $transport->transientAcknowledgmentFault = in_array($fault, ['persistent', 'original_deadline'], true) ? 'connection' : null;
+        $transport->observe = static function (RemoteOwnerTransport $transport) use ($entered, $fault, &$pids): void {
+            if (!is_file($entered)) { return; }
+            $transport->status['can_continue'] = false;
+            $transport->status['cancel_requested'] = true;
+            $receipt = RemoteOwnerTransport::receipt();
+            if ($fault === 'expired') { $receipt['cleanup_deadline_at'] = '2000-01-01T00:00:00Z'; }
+            if ($fault === 'invalid') { $receipt['cleanup_deadline_at'] = '2026-02-30T00:00:00Z'; }
+            if ($fault === 'original_deadline' && count($pids) === 2
+                && !posix_kill($pids[0], 0) && !posix_kill($pids[1], 0)) {
+                $receipt['cleanup_deadline_at'] = (new \DateTimeImmutable('+1 second'))
+                    ->modify('+200 milliseconds')->format('Y-m-d\TH:i:s.uP');
+            }
+            $transport->status['cancellation_acknowledgement'] = $receipt;
+        };
+        $transport->onAcknowledgment = static function () use (&$pids, $fault): void {
+            foreach ($pids as $pid) { self::assertFalse(posix_kill($pid, 0)); }
+            if ($fault === 'original_deadline') { usleep(350_000); }
+        };
+        $worker->registerActivity('remote', static function (ActivityContext $context) use ($entered): never {
+            file_put_contents($entered, 'entered');
+            sleep(60);
+            throw new RuntimeException('Stopped callback must not resume.');
+        });
+        $started = microtime(true);
+        $worker->tick(0);
+        self::assertLessThan(3, microtime(true) - $started);
+        self::assertCount(match ($fault) { 'persistent' => 3, 'original_deadline' => 1, default => 0 }, $transport->acknowledgments);
+        self::assertSame(0, $transport->retainedStopReceipts);
+        self::assertNotContains('worker.activity_cancellation_acknowledged', $transport->events);
+        self::assertContains('worker.activity_cancellation_acknowledgement_failed', $transport->events);
+        self::assertSame([], $transport->completions);
+        self::assertSame([], $transport->failures);
+        self::assertSame([], $transport->userHeartbeats);
+        foreach ($pids as $pid) { self::assertFalse(posix_kill($pid, 0)); }
+    }
+
     public function testUserProgressIsProxiedAndResultTypesSurvive(): void
     {
         $transport = new RemoteOwnerTransport();
@@ -275,6 +375,9 @@ final class RemoteOwnerTransport implements BoundedTransport
     public array $acknowledgments = [];
     public array $events = [];
     public ?string $acknowledgmentFailure = null;
+    public ?string $transientAcknowledgmentFault = null;
+    public bool $persistentTransientFailure = false;
+    public int $retainedStopReceipts = 0;
     public ?\Closure $onAcknowledgment = null;
     public ?\Closure $observe = null;
     private bool $polled = false;
@@ -321,9 +424,17 @@ final class RemoteOwnerTransport implements BoundedTransport
             $this->onAcknowledgment?->__invoke();
             $this->acknowledgments[] = $body;
             if ($this->acknowledgmentFailure === 'transport') { throw new TransportException('Receipt transport unavailable.'); }
+            if ((count($this->acknowledgments) === 1 || $this->persistentTransientFailure) && $this->transientAcknowledgmentFault !== null) {
+                if ($this->transientAcknowledgmentFault === 'lost_reply') { $this->retainedStopReceipts = 1; }
+                throw $this->transientAcknowledgmentFault === 'upstream'
+                    ? new TransportException('Temporary upstream unavailable.', status: 503)
+                    : new TransportException('Stop receipt connection interrupted.', transientConnectionFailure: true);
+            }
+            $duplicate = $this->retainedStopReceipts === 1;
+            if ($this->acknowledgmentFailure === null) { $this->retainedStopReceipts = 1; }
             return ['task_id' => 'task', 'activity_attempt_id' => 'attempt', 'lease_owner' => 'owner',
                 'request_id' => $this->acknowledgmentFailure === 'mismatched' ? 'other' : $body['request_id'],
-                'acknowledged' => $this->acknowledgmentFailure !== 'refused', 'duplicate' => false,
+                'acknowledged' => $this->acknowledgmentFailure !== 'refused', 'duplicate' => $duplicate,
                 'reason' => $this->acknowledgmentFailure === 'refused' ? 'stale' : null,
                 'history_event_id' => $this->acknowledgmentFailure === 'unproved' ? null : 'stop-history', 'heartbeat_recorded' => false];
         }

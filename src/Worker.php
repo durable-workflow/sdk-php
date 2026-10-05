@@ -1972,7 +1972,13 @@ final class Worker
     private function acknowledgeStoppedRemoteActivity(string $taskId, string $attemptId, string $leaseOwner): void
     {
         try {
-            $status = $this->client->activityTaskStatus($taskId, $attemptId, $leaseOwner);
+            // Discovery and every retry share one bounded report budget. This
+            // observation grants no callback or workflow execution authority.
+            $reportDeadline = hrtime(true) / 1e9 + 5;
+            $budget = new RequestBudget(5, $reportDeadline);
+            $status = $this->retryStoppedRemoteActivityReceiptRequest(
+                fn (): array => $this->client->activityTaskStatus($taskId, $attemptId, $leaseOwner, $budget), $budget,
+            );
             $receipt = $status['cancellation_acknowledgement'] ?? null;
             if (($status['task_id'] ?? null) !== $taskId
                 || ($status['activity_attempt_id'] ?? null) !== $attemptId
@@ -1989,7 +1995,23 @@ final class Worker
                     return;
                 }
             }
-            $reply = $this->client->acknowledgeActivityCancellation($taskId, $attemptId, $leaseOwner, $receipt['request_id']);
+            if (preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/', $receipt['cleanup_deadline_at']) !== 1) {
+                throw new WorkflowClaimAborted('Remote stop receipt has an invalid original cleanup deadline.');
+            }
+            $cleanupDeadline = new \DateTimeImmutable($receipt['cleanup_deadline_at']);
+            $parseErrors = \DateTimeImmutable::getLastErrors();
+            if ($parseErrors !== false && ($parseErrors['warning_count'] !== 0 || $parseErrors['error_count'] !== 0)) {
+                throw new WorkflowClaimAborted('Remote stop receipt has an invalid original cleanup deadline.');
+            }
+            $reportDeadline = min($reportDeadline,
+                hrtime(true) / 1e9 + (float) $cleanupDeadline->format('U.u') - microtime(true));
+            $budget = new RequestBudget(5, $reportDeadline);
+            // Never refresh the captured identity or deadline after an uncertain
+            // response. Native's duplicate receipt retains the first history ID.
+            $reply = $this->retryStoppedRemoteActivityReceiptRequest(
+                fn (): array => $this->client->acknowledgeActivityCancellation($taskId, $attemptId, $leaseOwner, $receipt['request_id'], $budget),
+                $budget,
+            );
             if (($reply['task_id'] ?? null) !== $taskId
                 || ($reply['activity_attempt_id'] ?? null) !== $attemptId
                 || ($reply['lease_owner'] ?? null) !== $leaseOwner
@@ -2014,6 +2036,26 @@ final class Worker
                 'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
                 'message' => $error->getMessage(),
             ], 'warning');
+        }
+    }
+
+    /** @param \Closure(): array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    private function retryStoppedRemoteActivityReceiptRequest(\Closure $request, RequestBudget $budget): array
+    {
+        for ($attempt = 0; ; ++$attempt) {
+            $budget->remainingSeconds();
+            try {
+                return $request();
+            } catch (ServerException $error) {
+                // A protocol refusal or malformed proof is final. Only known
+                // transient transport failures can retry the same stop report.
+                if ($attempt >= 2 || (!$error->isTransientConnectionFailure() && !$error->isTransientUpstreamFailure())) {
+                    throw $error;
+                }
+                usleep(100_000 * ($attempt + 1));
+            }
         }
     }
 

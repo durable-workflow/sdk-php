@@ -1678,7 +1678,7 @@ final class Client implements WorkflowClientInterface
     /** Observe ownership without renewing a lease or recording user progress.
      * @return array<string, mixed>
      */
-    public function activityTaskStatus(string $taskId, string $activityAttemptId, string $leaseOwner): array
+    public function activityTaskStatus(string $taskId, string $activityAttemptId, string $leaseOwner, ?RequestBudget $budget = null): array
     {
         if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion)) {
             throw new InvalidArgumentException('Activity attempt observation requires worker protocol 1.20.');
@@ -1687,7 +1687,7 @@ final class Client implements WorkflowClientInterface
         return $this->worker('POST', '/worker/activity-tasks/'.$this->segment($taskId).'/status', [
             'activity_attempt_id' => $activityAttemptId,
             'lease_owner' => $leaseOwner,
-        ]);
+        ], $budget);
     }
 
     /** Report an original owner's stopped and joined remote callback. Never renews task authority.
@@ -1698,6 +1698,7 @@ final class Client implements WorkflowClientInterface
         string $activityAttemptId,
         string $leaseOwner,
         string $requestId,
+        ?RequestBudget $budget = null,
     ): array {
         if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion)) {
             throw new InvalidArgumentException('Activity cancellation acknowledgment requires worker protocol 1.20.');
@@ -1712,7 +1713,7 @@ final class Client implements WorkflowClientInterface
             'activity_attempt_id' => $activityAttemptId,
             'lease_owner' => $leaseOwner,
             'request_id' => $requestId,
-        ]);
+        ], $budget);
     }
 
     /**
@@ -1777,8 +1778,11 @@ final class Client implements WorkflowClientInterface
      * @param array<string, mixed>|null $body
      * @return array<string, mixed>
      */
-    private function worker(string $method, string $path, ?array $body = null): array
+    private function worker(string $method, string $path, ?array $body = null, ?RequestBudget $budget = null): array
     {
+        if ($budget !== null && !$this->boundedWorkerRequests) {
+            throw new \LogicException('An activity receipt budget requires bounded worker requests.');
+        }
         if ($method === 'POST'
             && str_starts_with($path, '/worker/workflow-tasks/')
             && str_ends_with($path, '/complete')
@@ -1789,7 +1793,7 @@ final class Client implements WorkflowClientInterface
             $this->assertWorkflowCommandPayloads($commands);
         }
 
-        return $this->request($method, $path, true, $body);
+        return $this->request($method, $path, true, $body, budget: $budget);
     }
 
     /** @param list<mixed> $commands */

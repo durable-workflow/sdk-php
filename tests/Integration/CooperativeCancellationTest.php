@@ -1001,16 +1001,18 @@ final class CooperativeCancellationTest extends TestCase
     {
         return [[false, false], [true, false], [false, true], [true, true],
             [false, false, CancellationPolicy::TryCancel],
-            [false, false, CancellationPolicy::WaitCancellationCompleted]];
+            [false, false, CancellationPolicy::WaitCancellationCompleted],
+            [false, false, CancellationPolicy::WaitCancellationCompleted, 'connection'],
+            [false, false, CancellationPolicy::WaitCancellationCompleted, 'lost_reply']];
     }
 
     #[DataProvider('remoteProvider')]
-    public function testRemoteRequestStopsBlockedOwnerAfterLiveOrColdWorkflowDelivery(bool $userHeartbeat, bool $coldWorkflow, ?CancellationPolicy $policy = null): void
+    public function testRemoteRequestStopsBlockedOwnerAfterLiveOrColdWorkflowDelivery(bool $userHeartbeat, bool $coldWorkflow, ?CancellationPolicy $policy = null, ?string $receiptFault = null): void
     {
         $queue = $this->queue('remote');
         $client = $this->client();
         [$workflowPid, $workflowMessages] = $this->spawnWorker($queue, pauseWorkflowClaim: $coldWorkflow, remotePolicy: $policy);
-        [$ownerPid, $ownerMessages] = $this->spawnWorker($queue, userHeartbeat: $userHeartbeat, remoteRole: true);
+        [$ownerPid, $ownerMessages] = $this->spawnWorker($queue, userHeartbeat: $userHeartbeat, remoteRole: true, receiptFault: $receiptFault);
         try {
             $this->awaitMessage($workflowMessages, 'registered');
             $this->awaitMessage($ownerMessages, 'registered');
@@ -1126,6 +1128,20 @@ final class CooperativeCancellationTest extends TestCase
                 self::assertFalse($receipt['received_after_deadline']);
                 self::assertFalse($status['heartbeat_recorded']);
                 self::assertFalse($status['can_continue']);
+                if ($receiptFault !== null) {
+                    $reports = array_map(static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR),
+                        file($this->directory.'/remote-receipt-requests.jsonl', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES));
+                    self::assertCount(2, $reports);
+                    self::assertSame($reports[0]['body'], $reports[1]['body']);
+                    self::assertSame($accepted['cancellation_request']['request_id'], $reports[0]['body']['request_id']);
+                    self::assertSame($receiptFault, $reports[0]['outcome']);
+                    self::assertSame('received', $reports[1]['outcome']);
+                    self::assertSame($receiptFault === 'lost_reply', $reports[1]['reply']['duplicate']);
+                    self::assertSame($receipt['history_event_id'], $reports[1]['reply']['history_event_id']);
+                    if ($receiptFault === 'lost_reply') {
+                        self::assertSame($reports[0]['reply']['history_event_id'], $reports[1]['reply']['history_event_id']);
+                    }
+                }
                 $duplicate = $client->acknowledgeActivityCancellation($fence['task_id'], $fence['activity_attempt_id'],
                     $fence['lease_owner'], $receipt['request_id']);
                 self::assertTrue($duplicate['acknowledged']);
@@ -1457,7 +1473,7 @@ final class CooperativeCancellationTest extends TestCase
     }
 
     /** @return array{int, resource} */
-    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false, int $remoteBlockSeconds = 60, bool $blockCleanup = false, bool $observeChildWait = false, bool $preparedLocal = false, ?CancellationPolicy $remotePolicy = null, ?CancellationPolicy $localPolicy = null): array
+    private function spawnWorker(string $queue, bool $loseReply = false, bool $userHeartbeat = true, string $namespace = 'default', bool $remoteRole = false, bool $pauseWorkflowClaim = false, int $remoteBlockSeconds = 60, bool $blockCleanup = false, bool $observeChildWait = false, bool $preparedLocal = false, ?CancellationPolicy $remotePolicy = null, ?CancellationPolicy $localPolicy = null, ?string $receiptFault = null): array
     {
         $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
         if ($sockets === false) {
@@ -1479,7 +1495,7 @@ final class CooperativeCancellationTest extends TestCase
             try {
                 // Construct transport and worker after fork. No inherited HTTP connection is used.
                 $transport = $observeChildWait ? new ChildWaitObservationTransport($this->directory, $notify)
-                    : ($remoteRole ? new RemoteOwnerObservationTransport($notify)
+                    : ($remoteRole ? new RemoteOwnerObservationTransport($notify, $receiptFault, $this->directory)
                     : ($pauseWorkflowClaim ? new PauseWorkflowClaimTransport($this->directory, $notify)
                         : ($loseReply ? new DiscardFirstDeliveryReplyTransport($notify) : null)));
                 $failureReported = false;
@@ -2019,8 +2035,9 @@ final class RemoteOwnerObservationTransport implements \DurableWorkflow\Transpor
 {
     private readonly Psr18Transport $inner;
     private bool $notified = false;
+    private bool $receiptFaultInjected = false;
 
-    public function __construct(private readonly \Closure $notify) { $this->inner = new Psr18Transport(); }
+    public function __construct(private readonly \Closure $notify, private readonly ?string $receiptFault = null, private readonly ?string $directory = null) { $this->inner = new Psr18Transport(); }
     public function supportsBoundedRequests(): bool { return $this->inner->supportsBoundedRequests(); }
     public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
     {
@@ -2028,12 +2045,32 @@ final class RemoteOwnerObservationTransport implements \DurableWorkflow\Transpor
     }
     public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
     {
+        $stopReport = $this->receiptFault !== null && str_ends_with($uri, '/acknowledge-cancellation');
+        if ($stopReport && !$this->receiptFaultInjected && $this->receiptFault === 'connection') {
+            $this->receiptFaultInjected = true;
+            $this->recordStopReport(['body' => $body, 'outcome' => 'connection']);
+            throw new TransportException('Qualification interrupted the first stop receipt connection.', transientConnectionFailure: true);
+        }
         $reply = $this->inner->sendBounded($method, $uri, $headers, $body, $timeoutSeconds);
+        if ($stopReport) {
+            $discard = !$this->receiptFaultInjected && $this->receiptFault === 'lost_reply';
+            $this->receiptFaultInjected = true;
+            $this->recordStopReport(['body' => $body, 'reply' => $reply, 'outcome' => $discard ? 'lost_reply' : 'received']);
+            if ($discard) {
+                throw new TransportException('Qualification discarded the committed stop receipt reply.', transientConnectionFailure: true);
+            }
+        }
         if (!$this->notified && str_ends_with($uri, '/worker/heartbeat') && ($reply['acknowledged'] ?? false) === true) {
             $this->notified = true;
             ($this->notify)('owner-heartbeat');
         }
         return $reply;
+    }
+
+    /** @param array<string, mixed> $report */
+    private function recordStopReport(array $report): void
+    {
+        file_put_contents($this->directory.'/remote-receipt-requests.jsonl', json_encode($report, JSON_THROW_ON_ERROR)."\n", FILE_APPEND);
     }
 }
 
