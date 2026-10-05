@@ -300,6 +300,168 @@ final class CooperativeCancellationTest extends TestCase
         }
     }
 
+    #[DataProvider('scopeActivityPolicies')]
+    public function test_populated_scope_receipts_preserve_selective_remote_policy_and_original_inventory(string $policy): void
+    {
+        if (getenv('DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION') !== '1') {
+            self::markTestSkipped('Populated scope proof requires the exact Native source overlay.');
+        }
+        $queue = $this->queue('scope-boundary');
+        $owner = $queue.'-owner';
+        $transport = new class implements BoundedTransport {
+            private Psr18Transport $inner;
+            public array $mutations = [];
+            public array $lost = [];
+            public int $historyPages = 0;
+            public function __construct() { $this->inner = new Psr18Transport(); }
+            public function supportsBoundedRequests(): bool { return true; }
+            public function send(string $method, string $uri, array $headers, ?array $body = null): ?array {
+                return $this->inner->send($method, $uri, $headers, $body);
+            }
+            public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array {
+                if (str_ends_with($uri, '/history')) { $body['history_page_size'] = 1; ++$this->historyPages; }
+                $response = $this->inner->sendBounded($method, $uri, $headers, $body, $timeoutSeconds);
+                foreach (['prepare', 'deliver'] as $phase) {
+                    if (!str_ends_with($uri, '/cancellation-scopes/'.$phase)) { continue; }
+                    $this->mutations[$phase][] = ['request' => $body, 'response' => $response];
+                    if (!isset($this->lost[$phase]) && ($phase === 'prepare' || ($response['delivered'] ?? null) === true)) {
+                        $this->lost[$phase] = true;
+                        throw new TransportException('Accepted populated scope '.$phase.' reply intentionally lost.', transientConnectionFailure: true);
+                    }
+                }
+                return $response;
+            }
+        };
+        $client = $this->client($transport)->withBoundedWorkerRequests();
+        $definition = new Worker($client, $queue, workerId: $owner, enableCooperativeCancellation: true);
+        $definition->registerWorkflow('tests.php-scope-boundary', static function (WorkflowContext $context): void {
+            $context->cancellationScope(static fn () => $context->activity('tests.scope-receipt-activity'));
+        });
+        $client->registerWorker($owner, $queue, ['tests.php-scope-boundary'], ['tests.scope-receipt-activity'],
+            capabilities: ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown',
+                'message_streams', 'memo_upserts', 'typed_search_attributes', 'durable_selection', 'local_activities',
+                'worker_sessions', 'sticky_execution', 'cross_kind_poll_wake', 'cooperative_cancellation'],
+            workflowCommandContracts: $definition->contracts()['workflow_commands'], capabilityManifest: [
+                ...CapabilityManifest::portableWorkerAffinity(),
+                'cooperative_cancellation' => ['supported' => true, 'minimum_protocol_version' => '1.20',
+                    'implementation' => 'authored_call_canonical_delivery'],
+            ]);
+        $handle = $client->startWorkflow('tests.php-scope-boundary', $queue, $queue, []);
+        $accepted = null;
+        $prepared = null;
+        $delivered = null;
+        $ack = null;
+        $claims = [];
+        try {
+            $task = $client->pollWorkflowTask($owner, $queue, 1);
+            self::assertIsArray($task);
+            $scope = $client->openCancellationScopeOnClaim($task['task_id'], $task['run_id'], $owner, $task['workflow_task_attempt'], 1);
+            $sibling = $client->openCancellationScopeOnClaim($task['task_id'], $task['run_id'], $owner, $task['workflow_task_attempt'], 2, shieldParent: true);
+            $commands = [];
+            foreach ([$scope->scopeId, $sibling->scopeId] as $address) {
+                $commands[] = ['type' => 'schedule_activity', 'activity_type' => 'tests.scope-receipt-activity',
+                    'arguments' => $client->payloadCodec()->envelope([]), 'cancellation_scope_id' => $address,
+                    'cancellation_policy' => $policy, 'schedule_to_close_timeout' => 120];
+            }
+            $checkpoint = $client->cancellationScopeOperation($task['task_id'], $owner, $task['workflow_task_attempt'], 'checkpoint',
+                ['checkpoint_id' => $queue.'-activities', 'start_sequence' => 3, 'commands' => $commands], new \DurableWorkflow\Transport\RequestBudget(5));
+            self::assertTrue($checkpoint['checkpointed'], $checkpoint['reason'] ?? '');
+            foreach ([0, 1] as $unused) {
+                $activity = $client->pollActivityTask($owner, $queue, 1);
+                self::assertIsArray($activity);
+                $claims[$activity['activity_execution_id']] = $activity;
+            }
+            $initial = $this->history($client, $handle);
+            $admissions = array_values(array_filter($initial, static fn (array $event): bool => $event['event_type'] === 'ActivityScheduled'));
+            self::assertCount(2, $admissions);
+            $targetId = $admissions[0]['payload']['activity_execution_id'];
+            $siblingId = $admissions[1]['payload']['activity_execution_id'];
+            self::assertSame($scope->scopeId, $admissions[0]['payload']['activity']['cancellation_scope_id']);
+            self::assertSame($sibling->scopeId, $admissions[1]['payload']['activity']['cancellation_scope_id']);
+            $input = ['run_id' => $task['run_id'], 'workflow_id' => $queue, 'scope_id' => $scope->scopeId];
+            $accepted = $this->requestNativeScopeFixture($input);
+            $payload = $accepted['payload'];
+            $boundary = CancellationDelivery::fromPayload(['workflow_command_id' => $payload['request_id'], 'sequence' => 3, 'call_kind' => 'activity']);
+            $deadline = new \DateTimeImmutable($payload['cancellation']['root_context']['cleanup_deadline_at']);
+            $remaining = (float) $deadline->format('U.u') - microtime(true);
+            self::assertGreaterThan(5, $remaining);
+            $budget = new \DurableWorkflow\Transport\RequestBudget(5, hrtime(true) / 1e9 + $remaining);
+            $prepared = $client->cancellationScopeBoundaryOnClaim($task['task_id'], $task['run_id'], $queue, $owner,
+                $task['workflow_task_attempt'], $scope->scopeId, $boundary, 'prepare', $budget);
+            self::assertCount(1, $prepared->activityMembers);
+            self::assertSame($targetId, $prepared->activityMembers[0]['activity_execution_id']);
+            if ($policy === 'wait_cancellation_completed') {
+                try {
+                    $client->cancellationScopeBoundaryOnClaim($task['task_id'], $task['run_id'], $queue, $owner,
+                        $task['workflow_task_attempt'], $scope->scopeId, $boundary, 'deliver', $budget, $prepared);
+                    self::fail('Wait policy must retain its stop barrier.');
+                } catch (WorkflowClaimAborted) {
+                    self::assertFalse($transport->mutations['deliver'][0]['response']['delivered']);
+                    self::assertSame('cancellation_scope_activity_stop_not_acknowledged', $transport->mutations['deliver'][0]['response']['reason']);
+                }
+                // These claims deliberately never invoke an application callback.
+                // Acknowledging the unstarted target qualifies the backend barrier,
+                // not physical cancellation of a running SDK callback.
+                $target = $claims[$targetId];
+                $ack = $client->acknowledgeActivityCancellation($target['task_id'], $target['activity_attempt_id'], $owner, $payload['request_id'], $budget);
+                self::assertTrue($ack['acknowledged'], $ack['reason'] ?? '');
+            }
+            $delivered = $client->cancellationScopeBoundaryOnClaim($task['task_id'], $task['run_id'], $queue, $owner,
+                $task['workflow_task_attempt'], $scope->scopeId, $boundary, 'deliver', $budget, $prepared);
+            self::assertSame($prepared->activityMembers, $delivered->activityMembers);
+            self::assertSame($prepared->preparationHistoryEventId, $delivered->preparationHistoryEventId);
+            self::assertSame($prepared->context->toArray(), $delivered->context->toArray());
+            self::assertEquals($prepared->authorityDeadline, $delivered->authorityDeadline);
+            self::assertEquals($deadline, $delivered->context->deadline());
+            self::assertEquals($accepted, $this->requestNativeScopeFixture($input));
+            foreach (['prepare', 'deliver'] as $phase) {
+                self::assertTrue($transport->lost[$phase]);
+                $acceptedMutations = array_values(array_filter($transport->mutations[$phase],
+                    static fn (array $mutation): bool => $phase === 'prepare' || ($mutation['response']['delivered'] ?? null) === true));
+                self::assertCount(2, $acceptedMutations);
+                self::assertSame($acceptedMutations[0]['request'], $acceptedMutations[1]['request']);
+                self::assertSame($acceptedMutations[0]['response']['history_event_id'], $acceptedMutations[1]['response']['history_event_id']);
+                self::assertSame($prepared->activityMembers, $acceptedMutations[1]['response']['activity_members']);
+                self::assertFalse($acceptedMutations[1]['response']['claim_released']);
+                self::assertSame([], $acceptedMutations[1]['response']['created_task_ids']);
+            }
+            foreach ([$targetId, $siblingId] as $id) {
+                $activity = $claims[$id];
+                $canContinue = $id === $siblingId || $policy === 'abandon';
+                $status = $client->activityTaskStatus($activity['task_id'], $activity['activity_attempt_id'], $owner);
+                self::assertSame($canContinue, $status['can_continue']);
+                if ($canContinue) {
+                    self::assertTrue($client->completeActivityTask($activity['task_id'], $activity['activity_attempt_id'], $owner, 'fixture outcome')['recorded']);
+                } else {
+                    try {
+                        $client->completeActivityTask($activity['task_id'], $activity['activity_attempt_id'], $owner, 'stale fixture outcome');
+                        self::fail('A fenced target cannot publish a late result.');
+                    } catch (\DurableWorkflow\Exception\ServerException $error) { self::assertSame(409, $error->status); }
+                }
+            }
+            $final = $this->history($client, $handle);
+            $kinds = array_column($final, 'event_type');
+            self::assertSame($policy === 'abandon' ? 0 : 1, count(array_filter($kinds, static fn (string $kind): bool => $kind === 'ActivityCancelled')));
+            self::assertNotContains('CooperativeCancellationRequested', $kinds);
+            self::assertNotContains('WorkflowCancelled', $kinds);
+            self::assertSame(1, count(array_filter($kinds, static fn (string $kind): bool => $kind === 'CancellationScopeDelivered')));
+        } finally {
+            file_put_contents($this->directory.'/scope-activity-proof.json', json_encode([
+                'policy' => $policy, 'accepted_native_request' => $accepted, 'mutations' => $transport->mutations,
+                'claimed_unstarted_activities' => $claims, 'unstarted_stop_acknowledgement' => $ack,
+                'history_page_requests' => $transport->historyPages, 'prepared_history' => $prepared?->history,
+                'delivered_history' => $delivered?->history, 'application_callback_invoked' => false, 'scope_execution_qualified' => false,
+            ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
+            try { $this->retainRunEvidence($client, $handle, 'scope-activity'); }
+            finally { $handle->terminateSelectedRun('populated scope receipt fixture complete'); }
+        }
+    }
+
+    public static function scopeActivityPolicies(): array
+    {
+        return [['try_cancel'], ['wait_cancellation_completed'], ['abandon']];
+    }
+
     private function requestNativeScopeFixture(array $input): array
     {
         $process = proc_open(['timeout', '--kill-after=1', '12', 'docker', 'compose', 'exec', '-T', '--user', '1000:1000',

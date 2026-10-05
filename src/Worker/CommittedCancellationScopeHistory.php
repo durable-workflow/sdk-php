@@ -21,7 +21,7 @@ final class CommittedCancellationScopeHistory
     public readonly array $preparations;
 
     /** @param list<array<string, mixed>> $history */
-    public function __construct(array $history, string $runId, string $workflowId, CancellationScopeHistory $scopes, bool $requireCommittedDelivery = true)
+    public function __construct(array $history, string $runId, string $workflowId, CancellationScopeHistory $scopes, bool $requireCommittedDelivery = true, bool $inspectActivityProjections = false)
     {
         $addresses = [];
         foreach ($scopes->openings as $sequence => $opening) {
@@ -37,7 +37,7 @@ final class CommittedCancellationScopeHistory
         $admissions = [];
         /** @var array<string, true> $deliveredScopes */
         $deliveredScopes = [];
-        foreach ($history as $event) {
+        foreach ($history as $historyIndex => $event) {
             $kind = $event['event_type'] ?? $event['type'] ?? null;
             $eventPayload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
             if ($kind === 'CancellationScopeOpened') {
@@ -120,16 +120,27 @@ final class CommittedCancellationScopeHistory
                         if (!is_array($payload[$field] ?? null) || !array_is_list($payload[$field])) {
                             throw new InvalidArgumentException('Scope preparation omits its frozen member projection.');
                         }
-                        if ($payload[$field] !== []) {
+                        if ($payload[$field] !== [] && ($field !== 'activity_members' || !$inspectActivityProjections)) {
                             throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: committed scope member projection replay is not yet qualified by this PHP worker.');
+                        }
+                    }
+                    $members = [];
+                    if ($inspectActivityProjections) {
+                        $members = CancellationScopeActivityProjection::normalize($payload['activity_members']);
+                        if ($members !== CancellationScopeActivityProjection::fromHistoryPrefix(array_slice($history, 0, $historyIndex), $scopeId)) {
+                            throw new InvalidArgumentException('Scope preparation changes its original Activity projection.');
                         }
                     }
                     if (!in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child'], true)) {
                         throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker only supports committed single activity, timer, condition and child scope boundaries.');
                     }
-                    // An admitted operation cannot be omitted from an empty projection.
-                    if (isset($admissions[$boundary->sequence]) || in_array($scopeId, $admissions, true)) {
-                        throw new InvalidArgumentException('Empty scope preparation cannot replace an admitted operation.');
+                    // Every admitted operation must be accounted for by its qualified projection.
+                    $activitySequences = $inspectActivityProjections ? array_column($members, 'sequence') : [];
+                    $unsupportedAdmissions = array_diff_key(array_filter($admissions, static fn (string $address): bool => $address === $scopeId),
+                        array_flip($activitySequences));
+                    if ($unsupportedAdmissions !== [] || (isset($admissions[$boundary->sequence])
+                        && (!in_array($boundary->sequence, $activitySequences, true) || $boundary->callKind !== 'activity'))) {
+                        throw new InvalidArgumentException('Scope preparation cannot omit or replace an admitted operation.');
                     }
                     $preparations[$scopeId] = ['id' => $event['id'], 'boundary' => $boundary, 'deadline' => $deadline, 'time' => $recordedAt];
                     $verifiedPreparations[$scopeId] = ['context' => $context, 'boundary' => $boundary, 'event' => $event];

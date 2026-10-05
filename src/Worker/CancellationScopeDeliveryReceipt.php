@@ -10,13 +10,17 @@ use InvalidArgumentException;
 /** @internal Verified committed scope facts, never permission to execute cleanup. */
 final class CancellationScopeDeliveryReceipt
 {
-    /** @param list<array<string, mixed>> $history */
+    /**
+     * @param list<array{sequence: int, activity_execution_id: string, descriptor_hash: string}> $activityMembers
+     * @param list<array<string, mixed>> $history
+     */
     private function __construct(
         public readonly ScopedCancellationContext $context,
         public readonly CancellationDelivery $boundary,
         public readonly string $preparationHistoryEventId,
         public readonly ?string $deliveryHistoryEventId,
         public readonly DateTimeImmutable $authorityDeadline,
+        public readonly array $activityMembers,
         public readonly array $history,
     ) {
     }
@@ -45,7 +49,12 @@ final class CancellationScopeDeliveryReceipt
             || !is_string($token) || trim($token) === '') {
             throw new WorkflowClaimAborted('Scope boundary lacks a complete retained-claim acknowledgement.');
         }
-        foreach (['activity_members', 'timer_members', 'wait_members', 'child_members'] as $field) {
+        try {
+            CancellationScopeActivityProjection::normalize($receipt['activity_members'] ?? null);
+        } catch (InvalidArgumentException $error) {
+            throw new WorkflowClaimAborted('Scope receipt has an invalid frozen Activity projection.', previous: $error);
+        }
+        foreach (['timer_members', 'wait_members', 'child_members'] as $field) {
             if (($receipt[$field] ?? null) !== []) {
                 throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: populated receipt projections are not qualified.');
             }
@@ -99,14 +108,16 @@ final class CancellationScopeDeliveryReceipt
         try {
             $scopes = new CancellationScopeHistory($history, $expected['workflow_run_id']);
             $committed = new CommittedCancellationScopeHistory($history, $expected['workflow_run_id'],
-                $expected['workflow_instance_id'], $scopes, requireCommittedDelivery: false);
+                $expected['workflow_instance_id'], $scopes, requireCommittedDelivery: false, inspectActivityProjections: true);
             $prepared = $committed->preparations[$expected['scope_id']] ?? null;
             $context = ScopedCancellationContext::fromArray($receipt['cancellation']);
             $boundary = CancellationDelivery::fromPayload([...$receipt, 'workflow_command_id' => $expected['request_id']]);
             $deadline = self::timestamp($receipt['authority_deadline_at']);
+            $activityMembers = CancellationScopeActivityProjection::normalize($receipt['activity_members']);
             if ($prepared === null || $prepared['event']['id'] !== $receipt['preparation_history_event_id']
                 || $prepared['context']->toArray() !== $context->toArray() || $prepared['boundary'] != $boundary
-                || self::timestamp($prepared['event']['payload']['authority_deadline_at']) != $deadline) {
+                || self::timestamp($prepared['event']['payload']['authority_deadline_at']) != $deadline
+                || CancellationScopeActivityProjection::normalize($prepared['event']['payload']['activity_members']) !== $activityMembers) {
                 throw new WorkflowClaimAborted('Scope receipt differs from its original committed preparation.');
             }
             $deliveryId = null;
@@ -119,7 +130,7 @@ final class CancellationScopeDeliveryReceipt
                 $deliveryId = $receipt['history_event_id'];
             }
 
-            return new self($context, $boundary, $receipt['preparation_history_event_id'], $deliveryId, $deadline, $history);
+            return new self($context, $boundary, $receipt['preparation_history_event_id'], $deliveryId, $deadline, $activityMembers, $history);
         } catch (WorkflowClaimAborted $error) {
             throw $error;
         } catch (\Throwable $error) {
@@ -131,7 +142,7 @@ final class CancellationScopeDeliveryReceipt
     {
         if ($this->preparationHistoryEventId !== $original->preparationHistoryEventId
             || $this->context->toArray() !== $original->context->toArray() || $this->boundary != $original->boundary
-            || $this->authorityDeadline != $original->authorityDeadline) {
+            || $this->authorityDeadline != $original->authorityDeadline || $this->activityMembers !== $original->activityMembers) {
             throw new WorkflowClaimAborted('Scope delivery changes its previously verified original preparation.');
         }
     }

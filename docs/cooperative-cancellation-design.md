@@ -340,7 +340,12 @@ claims.
 ## Canonical scope boundary receipt source profile
 
 The internal client can prove preparation and delivery for a single call with
-an empty frozen member projection. Both phases and complete history paging
+an empty projection or frozen Activities. It derives the Activity IDs and
+cancellation descriptor hashes from the original pre-preparation history,
+preserving policy, local execution mode and schedule-to-close deadline. A sibling
+cannot enter that inventory, and response loss or replacement cannot substitute
+new members. This proves admission facts, not callback stop or cleanup authority.
+Both phases and complete history paging
 share the caller's original bounded request budget. Delivery requires a
 previously verified preparation and retains its request, lineage, authored
 range, preparation event and captured authority ceiling. One transient lost
@@ -350,5 +355,5 @@ invalid receipt, incomplete history or exhausted budget aborts the claim.
 The history parser can inspect committed preparation before delivery, while
 ordinary cleanup replay still requires committed delivery. Receipt facts do
 not grant callback authority. Worker scope execution stays disabled and the
-candidate protocol remains unfrozen and unpublished. Populated projections,
-groups, descendants and live scope recovery still need qualification.
+candidate protocol remains unfrozen and unpublished. Timer, wait, child and
+descendant projections, groups and live scope recovery still need qualification.
