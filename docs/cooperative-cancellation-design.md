@@ -358,7 +358,8 @@ transport rejects supplied deadlines, borrowed preparation IDs and malformed
 call ranges. An uncertain reply is returned as an error without retrying or
 claiming delivery. Its raw response is not callback authority. Canonical
 preparation/delivery receipt validation and live recovery qualification must
-precede Worker scope execution, which remains disabled.
+precede general Worker scope execution. The bounded scalar source profile below
+has an explicit opt-in and remains disabled by default.
 
 Prepared local Activities can author `CancellationPolicy::TryCancel` or
 `CancellationPolicy::WaitCancellationCompleted` in `cancellation_policy` when
@@ -411,7 +412,7 @@ invalid receipt, incomplete history or exhausted budget aborts the claim.
 
 The history parser can inspect committed preparation before delivery, while
 ordinary cleanup replay still requires committed delivery. Receipt facts do
-not grant callback authority. Worker scope execution stays disabled and the
+not grant callback authority. Worker scope execution stays disabled by default and the
 candidate protocol remains unfrozen and unpublished. Committed single-call
 projection replay and fully admitted `all()` groups have internal source profiles.
 The group profile preserves flat and nested Activity, timer, child and condition
@@ -444,7 +445,26 @@ retains its exact call, event identity and narrower authority ceiling, including
 on replacement replay. Changed or skipped prepared boundaries fail explicitly.
 Only a committed delivery exposes its context and resumes cleanup. The profile
 emits a selection intent rather than dispatching effects. Pending local,
-selected and group delivery remain refused, and Worker scope execution stays OFF.
+selected and group delivery remain refused.
 
-Live scope/group preparation and selective supervision, physical cleanup recovery and published-artifact
-qualification remain required before Worker scope execution is enabled.
+## Managed Worker scalar scope source profile
+
+`enableCancellationScopes: true` explicitly enables scalar preparation/delivery
+and committed scope replay in a protocol 1.20 cooperative Worker. It is an
+unfrozen source profile, defaults to false, and does not advertise complete
+portable cancellation-scope capability. Ordinary cooperative workers continue
+refusing scope requests and deliveries.
+
+The managed claim loop retains one original task, owner, attempt, selected
+request and bounded request budget. Any retained prefix checkpoint uses that
+same budget. The Worker proves preparation, replays its canonical history,
+then delivers the original frozen boundary and replays matching canonical
+delivery before workflow cleanup can observe the request. Reply loss preserves
+the same mutation, preparation identity and authority ceiling. An exhausted
+budget, missing history or changed authority aborts the claim. Replacement
+workers preserve an existing preparation or replay an existing delivery.
+
+Pending local, selected and group boundaries and overlapping delivered subtrees
+remain explicitly unsupported. Live selective physical supervision, connected
+scoped cleanup recovery, all portable consumers and exact published-artifact
+qualification remain required for general scope execution and release claims.

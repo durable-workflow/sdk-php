@@ -9,7 +9,7 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Transport\RequestBudget;
 use InvalidArgumentException;
 
-/** @internal Unfrozen scalar coordination. The Worker does not enable scope execution. */
+/** @internal Unfrozen scalar coordination, enabled only by the Worker's source opt-in. */
 final class CancellationScopeDeliveryClaim
 {
     private readonly RequestBudget $budget;

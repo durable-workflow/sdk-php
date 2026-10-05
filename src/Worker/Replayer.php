@@ -63,7 +63,7 @@ final class Replayer
         }
         $hasScopes = $this->assertCancellationScopeReplaySupported($history, $allowCancellationScopeAuthoring, $task, $replayCommittedCancellationScopes);
         $scopes = new CancellationScopeHistory($hasScopes ? $history : [], (string) ($task['run_id'] ?? ''));
-        // Source qualification only. The Worker does not enable this replay path.
+        // Unfrozen source profile, enabled only by the Worker's explicit scope opt-in.
         $scopeDeliveries = [];
         $committedScopes = null;
         if ($replayCommittedCancellationScopes) {

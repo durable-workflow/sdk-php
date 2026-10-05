@@ -18,6 +18,7 @@ use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\CancellationHistory;
 use DurableWorkflow\Worker\CancellationDelivery;
 use DurableWorkflow\Worker\CancellationRequest;
+use DurableWorkflow\Worker\CancellationScopeDeliveryClaim;
 use DurableWorkflow\Worker\CooperativeCancellationObserved;
 use DurableWorkflow\Worker\CooperativeActivityExecutor;
 use DurableWorkflow\Worker\DiscoveredHandlers;
@@ -121,7 +122,12 @@ final class Worker
         private readonly bool $enableCooperativeCancellation = false,
         /** Source opt-in for durably admitted sequential local callbacks. */
         private readonly bool $enablePreparedLocalActivities = false,
+        /** Unfrozen source opt-in for scalar scope delivery and committed scope replay. */
+        private readonly bool $enableCancellationScopes = false,
     ) {
+        if ($enableCancellationScopes && !$enableCooperativeCancellation) {
+            throw new \InvalidArgumentException('Cancellation scopes require the cooperative worker opt-in.');
+        }
         if ($enablePreparedLocalActivities && !$enableCooperativeCancellation) {
             throw new \InvalidArgumentException('Prepared local activities require the cooperative worker opt-in.');
         }
@@ -1312,6 +1318,8 @@ final class Worker
         }
         $cancellationPasses = 0;
         $lastScopeOpening = 0;
+        /** @var array<string, array{claim: CancellationScopeDeliveryClaim, budget: RequestBudget, phase: string, checkpointed: bool}> $scopeClaims */
+        $scopeClaims = [];
         while (true) {
             $observation = $this->claimCancellation === null ? null : $this->claimCancellationObservation();
             $state = CancellationHistory::fromEvents($history, (string) ($task['run_id'] ?? ''),
@@ -1327,7 +1335,9 @@ final class Worker
                     fn (string $activityType, array $arguments, array $options): array => $this->executeLocalActivity(
                         $task, $activityType, $arguments, $options,
                     ), $this->enablePreparedLocalActivities, $this->preparedLocalActivityGroupsSupported,
-                    $this->preparedLocalActivityCancellationPolicies, allowCancellationScopeAuthoring: $this->enableCooperativeCancellation);
+                    $this->preparedLocalActivityCancellationPolicies, allowCancellationScopeAuthoring: $this->enableCooperativeCancellation,
+                    replayCommittedCancellationScopes: $this->enableCancellationScopes,
+                    prepareCancellationScopeDelivery: $this->enableCancellationScopes);
             } catch (CooperativeCancellationObserved) {
                 if (++$cancellationPasses > 3) {
                     throw new WorkflowClaimAborted('Cancellation replay did not converge on its canonical delivery.');
@@ -1345,6 +1355,46 @@ final class Worker
             }
             if ($replay->terminalFailure instanceof WorkflowClaimAborted) {
                 throw $replay->terminalFailure;
+            }
+            if ($replay->cancellationScopeDelivery !== null) {
+                $intent = $replay->cancellationScopeDelivery;
+                $key = $intent->context->scopeId;
+                try {
+                    if (!isset($scopeClaims[$key])) {
+                        $budget = new RequestBudget(5);
+                        $scopeClaims[$key] = [
+                            'claim' => new CancellationScopeDeliveryClaim($this->client, (string) $task['task_id'],
+                                (string) ($task['lease_owner'] ?? $this->workerId), (int) ($task['workflow_task_attempt'] ?? 1), $intent, $budget),
+                            'budget' => $budget, 'phase' => 'selected', 'checkpointed' => false,
+                        ];
+                    }
+                    $claim = $scopeClaims[$key];
+                    $claim['budget']->remainingSeconds();
+                    if ($claim['phase'] === 'delivered') {
+                        throw new WorkflowClaimAborted('Scope replay did not consume its original canonical delivery.');
+                    }
+                    if ($replay->commands !== []) {
+                        if ($claim['checkpointed']) {
+                            throw new WorkflowClaimAborted('Scope prefix did not advance past its original canonical checkpoint.');
+                        }
+                        $history = $this->checkpointPreparedLocalPrefix($task, $replay->commands, $intent->boundary->sequence,
+                            scopePrefix: true, budget: $claim['budget']);
+                        $scopeClaims[$key]['checkpointed'] = true;
+                    } elseif ($claim['phase'] === 'selected') {
+                        $receipt = $claim['claim']->prepare();
+                        $history = $receipt->history;
+                        $scopeClaims[$key]['phase'] = 'prepared';
+                    } else {
+                        $receipt = $claim['claim']->deliver($intent);
+                        $history = $receipt->history;
+                        $scopeClaims[$key]['phase'] = 'delivered';
+                    }
+                } catch (WorkflowClaimAborted|NonDeterministicWorkflow $error) {
+                    throw $error;
+                } catch (Throwable $error) {
+                    throw new WorkflowClaimAborted('Scope delivery authority could not be proved on the original claim.', previous: $error);
+                }
+                continue;
             }
             if ($replay->cancellationScopeOpening !== null) {
                 $opening = $replay->cancellationScopeOpening;
@@ -1502,7 +1552,7 @@ final class Worker
      * @param list<array<string, mixed>> $commands
      * @return list<array<string, mixed>>
      */
-    private function checkpointPreparedLocalPrefix(array $task, array $commands, int $nextSequence, bool $scopePrefix = false): array
+    private function checkpointPreparedLocalPrefix(array $task, array $commands, int $nextSequence, bool $scopePrefix = false, ?RequestBudget $budget = null): array
     {
         $this->assertWorkflowMemoUpdatesAvailable($commands);
         foreach ($commands as $command) {
@@ -1516,7 +1566,7 @@ final class Worker
         $start = $nextSequence - count($commands);
         $checkpointId = hash('sha256', json_encode([$taskId, $owner, $epoch, $start, $commands], JSON_THROW_ON_ERROR));
         $body = ['checkpoint_id' => $checkpointId, 'start_sequence' => $start, 'commands' => $commands];
-        $budget = $scopePrefix ? new RequestBudget(5) : null;
+        $budget = $scopePrefix ? ($budget ?? new RequestBudget(5)) : null;
         try {
             $receipt = $scopePrefix
                 ? $this->client->cancellationScopeOperation($taskId, $owner, $epoch, 'checkpoint', $body, $budget)
