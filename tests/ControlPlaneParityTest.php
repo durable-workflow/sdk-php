@@ -484,6 +484,7 @@ final class ControlPlaneParityTest extends TestCase
             'operator metrics' => static fn (Client $client) => $client->operatorMetrics(),
             'operator dashboard' => static fn (Client $client) => $client->operatorDashboard(),
             'bounded operator dashboard' => static fn (Client $client) => $client->boundedOperatorDashboard(),
+            'workflow type dashboard' => static fn (Client $client) => $client->workflowTypeOperatorDashboard(['orders.import']),
             'workers' => static fn (Client $client) => $client->listWorkers(),
             'task queues' => static fn (Client $client) => $client->listTaskQueues(),
         ];
@@ -539,6 +540,70 @@ final class ControlPlaneParityTest extends TestCase
         try {
             $client->boundedOperatorDashboard();
             self::fail('An unsupported dashboard must preserve the Server refusal.');
+        } catch (ServerException $exception) {
+            self::assertSame($refusal, $exception);
+        }
+        self::assertCount(1, $transport->requests);
+    }
+
+    public function testWorkflowTypeDashboardKeepsTypesEmptySelectionAndNamespaceExplicit(): void
+    {
+        $response = ['namespace' => 'ops', 'dashboard' => [
+            'flows' => 3,
+            'workflow_scope' => ['workflow_types' => ['orders.import', 'invoice/a+b&x']],
+            'operator_metrics' => ['history_audit_evaluation' => 'not_requested'],
+        ]];
+        $transport = new FakeTransport([$response, ['dashboard' => ['flows' => 0]]]);
+        $client = new Client('https://server.example', transport: $transport, namespace: 'ops', controlToken: 'operator-test-token');
+
+        self::assertSame($response, $client->workflowTypeOperatorDashboard(['orders.import', 'invoice/a+b&x']));
+        self::assertSame(0, $client->workflowTypeOperatorDashboard([])['dashboard']['flows']);
+        self::assertSame('https://server.example/api/system/operator-dashboard/bounded/workflow-types?workflow_types=%5B%22orders.import%22%2C%22invoice%2Fa%2Bb%26x%22%5D', $transport->requests[0]['uri']);
+        self::assertSame('https://server.example/api/system/operator-dashboard/bounded/workflow-types?workflow_types=%5B%5D', $transport->requests[1]['uri']);
+        foreach ($transport->requests as $request) {
+            self::assertSame('GET', $request['method']);
+            self::assertSame('ops', $request['headers']['X-Namespace']);
+            self::assertSame('Bearer operator-test-token', $request['headers']['Authorization']);
+            self::assertSame('2', $request['headers']['X-Durable-Workflow-Control-Plane-Version']);
+            self::assertNull($request['body']);
+        }
+    }
+
+    /** @param array<mixed> $types */
+    #[DataProvider('invalidDashboardTypeSelections')]
+    public function testInvalidDashboardTypeSelectionIsRefusedBeforeSending(array $types): void
+    {
+        $transport = new FakeTransport();
+        $client = new Client('https://server.example', transport: $transport);
+        $this->expectException(\InvalidArgumentException::class);
+
+        try {
+            $client->workflowTypeOperatorDashboard($types);
+        } finally {
+            self::assertSame([], $transport->requests);
+        }
+    }
+
+    /** @return array<string, array{array<mixed>}> */
+    public static function invalidDashboardTypeSelections(): array
+    {
+        return [
+            'map' => [['type' => 'orders.import']],
+            'empty type' => [['']],
+            'non-string type' => [[1]],
+            'oversized encoded query' => [[str_repeat('x', 4096)]],
+        ];
+    }
+
+    public function testOlderServerWorkflowTypeRefusalCannotTriggerAnUnfilteredRead(): void
+    {
+        $refusal = new ServerException('Not found.', 404, 'not_found');
+        $transport = new FakeTransport([$refusal]);
+        $client = new Client('https://server.example', transport: $transport);
+
+        try {
+            $client->workflowTypeOperatorDashboard(['orders.import']);
+            self::fail('The unsupported route must preserve the original Server refusal.');
         } catch (ServerException $exception) {
             self::assertSame($refusal, $exception);
         }
