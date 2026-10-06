@@ -27,6 +27,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      stable: ${{ steps.release-channel.outputs.stable }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
@@ -34,6 +36,15 @@ jobs:
           php-version: '8.3'
           tools: composer:v2
           coverage: none
+      - name: Resolve the public documentation release channel
+        id: release-channel
+        run: |
+          version=$(php -r '$manifest = json_decode(file_get_contents("composer.json"), true, flags: JSON_THROW_ON_ERROR); echo $manifest["extra"]["durable-workflow"]["product-train"];')
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo stable=true >> "$GITHUB_OUTPUT"
+          else
+            echo stable=false >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
         with:
           node-version: '24'
@@ -99,7 +110,8 @@ jobs:
   deploy:
     if: >-
       github.server_url == 'https://github.com' &&
-      github.ref == 'refs/heads/main'
+      github.ref == 'refs/heads/main' &&
+      needs.build.outputs.stable == 'true'
     needs: build
     runs-on: ubuntu-latest
     permissions:
