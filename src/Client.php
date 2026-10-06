@@ -1034,6 +1034,17 @@ final class Client implements WorkflowClientInterface
         return $this->control('GET', '/system/operator-dashboard');
     }
 
+    /**
+     * Dashboard aggregates without fleet-wide history audits. Unevaluated
+     * audit counts remain null. Servers without this route report HTTP 404.
+     *
+     * @return array<string, mixed>
+     */
+    public function boundedOperatorDashboard(): array
+    {
+        return $this->control('GET', '/system/operator-dashboard/bounded');
+    }
+
     /** @return array<string, mixed> */
     public function listWorkers(?string $taskQueue = null, ?string $status = null): array
     {
