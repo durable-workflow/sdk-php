@@ -168,6 +168,10 @@ try {
 
 `ActivityContext::heartbeat()` records progress and throws `ActivityCancelled` when the Server requests cancellation. Heartbeat before and during long calls that can be safely divided into chunks.
 
+Workers that opt into [cooperative cancellation](https://durable-workflow.com/docs/2.0/polyglot/cancellation/)
+supervise callbacks and observe cancellation independently of application
+heartbeats. Prepared local activities use supervised callback processes.
+
 ## Use durable commands for workflow time
 
 The context provides these replay-aware commands:
