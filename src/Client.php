@@ -1055,6 +1055,14 @@ final class Client implements WorkflowClientInterface
      */
     public function workflowTypeOperatorDashboard(array $workflowTypes): array
     {
+        return $this->control('GET', $this->pathWithQuery('/system/operator-dashboard/bounded/workflow-types', [
+            'workflow_types' => $this->dashboardWorkflowTypeQuery($workflowTypes),
+        ]));
+    }
+
+    /** @param array<mixed> $workflowTypes */
+    private function dashboardWorkflowTypeQuery(array $workflowTypes): string
+    {
         if (!array_is_list($workflowTypes)) {
             throw new InvalidArgumentException('Dashboard workflow types must be a list of nonempty strings.');
         }
@@ -1068,9 +1076,7 @@ final class Client implements WorkflowClientInterface
             throw new InvalidArgumentException('The encoded dashboard workflow type selection exceeds 4096 bytes.');
         }
 
-        return $this->control('GET', $this->pathWithQuery('/system/operator-dashboard/bounded/workflow-types', [
-            'workflow_types' => $types,
-        ]));
+        return $types;
     }
 
     /** @return array<string, mixed> */
