@@ -21,6 +21,137 @@ final class PopulatedScopeGroupReplayTest extends TestCase
 
     public static function condition(): bool { return self::$satisfied; }
 
+    #[DataProvider('pendingGroups')]
+    public function test_pending_group_waits_for_its_original_delivery_without_cleanup(string $layout, bool $prepared): void
+    {
+        $fixture = self::fixture($layout);
+        $fixture['history'] = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
+            $event['event_type'] !== 'CancellationScopeDelivered'
+            && ($prepared || $event['event_type'] !== 'CancellationScopeDeliveryPrepared')));
+        $context = null; $prior = null;
+        $workflow = self::workflow($fixture, $context, $prior);
+        $replay = static fn () => (new Replayer(new AvroPayloadCodec()))->replay($workflow,
+            $fixture['history'], [], 'php-workers', $fixture['task'], allowCancellationScopeAuthoring: true,
+            replayCommittedCancellationScopes: true, prepareCancellationScopeDelivery: true);
+        $result = $replay();
+        self::assertSame('prior-value', $prior);
+        self::assertNull($context);
+        self::assertSame([], $result->commands);
+        self::assertNotNull($result->cancellationScopeDelivery);
+        $intent = $result->cancellationScopeDelivery;
+        self::assertSame($fixture['scope_id'], $intent->context->scopeId);
+        self::assertSame('parallel', $intent->boundary->callKind);
+        self::assertSame(4, $intent->boundary->sequence);
+        self::assertSame(4, $intent->boundary->sequenceSpan);
+        self::assertSame($prepared ? $fixture['history'][array_key_last($fixture['history'])]['id'] : null, $intent->preparationHistoryEventId);
+        $fixture['task'] += ['workflow_task_attempt' => 17, 'lease_owner' => 'replacement'];
+        $again = (new Replayer(new AvroPayloadCodec()))->replay($workflow, $fixture['history'], [], 'php-workers', $fixture['task'],
+            allowCancellationScopeAuthoring: true, replayCommittedCancellationScopes: true, prepareCancellationScopeDelivery: true);
+        self::assertEquals($intent, $again->cancellationScopeDelivery);
+        self::assertNull($context);
+    }
+
+    public static function pendingGroups(): iterable
+    {
+        foreach (['flat', 'nested'] as $layout) {
+            foreach ([false, true] as $prepared) { yield $layout.'-'.($prepared ? 'prepared' : 'requested') => [$layout, $prepared]; }
+        }
+    }
+
+    #[DataProvider('pendingChanges')]
+    public function test_changed_prepared_group_cannot_select_another_boundary_or_enter_cleanup(string $change): void
+    {
+        $fixture = self::fixture('nested');
+        $fixture['history'] = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
+            $event['event_type'] !== 'CancellationScopeDelivered'));
+        $context = null; $prior = null;
+        $this->expectException(NonDeterministicWorkflow::class);
+        try {
+            (new Replayer(new AvroPayloadCodec()))->replay(self::workflow($fixture, $context, $prior, $change),
+                $fixture['history'], [], 'php-workers', $fixture['task'], allowCancellationScopeAuthoring: true,
+                replayCommittedCancellationScopes: true, prepareCancellationScopeDelivery: true);
+        } finally { self::assertNull($context); }
+    }
+
+    public static function pendingChanges(): iterable
+    {
+        foreach (self::changes() as $name => $case) { if ($name !== 'shield') { yield $name => $case; } }
+    }
+
+    public function test_pending_group_with_a_missing_original_admission_refuses_before_cleanup_or_effects(): void
+    {
+        $fixture = self::fixture('flat');
+        $fixture['history'] = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
+            !in_array($event['event_type'], ['CancellationScopeDelivered', 'CancellationScopeDeliveryPrepared', 'ConditionWaitOpened'], true)));
+        $context = null; $prior = null;
+        $this->expectException(WorkflowClaimAborted::class);
+        try {
+            (new Replayer(new AvroPayloadCodec()))->replay(self::workflow($fixture, $context, $prior),
+                $fixture['history'], [], 'php-workers', $fixture['task'], allowCancellationScopeAuthoring: true,
+                replayCommittedCancellationScopes: true, prepareCancellationScopeDelivery: true);
+        } finally { self::assertNull($context); }
+    }
+
+    public function test_completed_first_member_preserves_the_pending_original_group(): void
+    {
+        $fixture = self::fixture('flat');
+        $fixture['history'] = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
+            !in_array($event['event_type'], ['CancellationScopeDelivered', 'CancellationScopeDeliveryPrepared'], true)));
+        $requestIndex = array_key_last($fixture['history']);
+        $event = $fixture['history'][6];
+        $event['id'] = 'first-group-member-completed'; $event['event_type'] = 'ActivityCompleted';
+        $event['payload']['result'] = (new AvroPayloadCodec())->envelope('first-result');
+        array_splice($fixture['history'], $requestIndex, 0, [$event]);
+        foreach ($fixture['history'] as $index => &$row) { $row['sequence'] = $index + 1; }
+        unset($row);
+        $context = null; $prior = null;
+        $result = (new Replayer(new AvroPayloadCodec()))->replay(self::workflow($fixture, $context, $prior),
+            $fixture['history'], [], 'php-workers', $fixture['task'], allowCancellationScopeAuthoring: true,
+            replayCommittedCancellationScopes: true, prepareCancellationScopeDelivery: true);
+        self::assertSame([], $result->commands);
+        self::assertSame(4, $result->cancellationScopeDelivery->boundary->sequence);
+        self::assertSame(4, $result->cancellationScopeDelivery->boundary->sequenceSpan);
+        self::assertNull($context);
+    }
+
+    public function test_a_group_completed_before_request_preserves_results_and_selects_the_next_call(): void
+    {
+        $fixture = self::fixture('flat');
+        $request = $fixture['history'][11];
+        $fixture['history'] = array_slice($fixture['history'], 0, 6);
+        foreach ([0, 1] as $index) {
+            $path = ['parallel_group_id' => 'parallel-timers:4:2', 'parallel_group_kind' => 'timer',
+                'parallel_group_base_sequence' => 4, 'parallel_group_size' => 2, 'parallel_group_index' => $index];
+            $payload = ['sequence' => 4 + $index, 'timer_id' => 'completed-group-'.$index, 'delay_seconds' => 1,
+                'fire_at' => '2026-10-04T00:00:03.123456Z', 'cancellation_scope_id' => $fixture['scope_id'],
+                ...$path, 'parallel_group_path' => [$path]];
+            foreach (['TimerScheduled' => '02', 'TimerFired' => '03'] as $type => $second) {
+                $fixture['history'][] = ['id' => $type.'-'.$index, 'namespace' => 'sdk-scope-fixture',
+                    'sequence' => count($fixture['history']) + 1, 'event_type' => $type, 'payload' => $payload,
+                    'timestamp' => '2026-10-04T00:00:'.$second.'.123456Z'];
+            }
+        }
+        $request['sequence'] = count($fixture['history']) + 1;
+        $fixture['history'][] = $request;
+        $values = null;
+        $handler = static function (WorkflowContext $workflow) use (&$values): void {
+            $workflow->cancellationScope(static function () use ($workflow, &$values): void {
+                $workflow->cancellationScope(static function () use ($workflow, &$values): void {
+                    self::assertSame('prior-value', $workflow->activity('prior-step'));
+                    $values = $workflow->all([$workflow->deferTimer(1), $workflow->deferTimer(1)]);
+                    $workflow->sleep(10);
+                    self::fail('The next call must retain its pending cancellation boundary.');
+                });
+            });
+        };
+        $result = (new Replayer(new AvroPayloadCodec()))->replay($handler, $fixture['history'], [], 'php-workers', $fixture['task'],
+            allowCancellationScopeAuthoring: true, replayCommittedCancellationScopes: true, prepareCancellationScopeDelivery: true);
+        self::assertSame([null, null], $values);
+        self::assertSame([], $result->commands);
+        self::assertSame(6, $result->cancellationScopeDelivery->boundary->sequence);
+        self::assertSame('timer', $result->cancellationScopeDelivery->boundary->callKind);
+    }
+
     #[DataProvider('layouts')]
     public function test_complete_original_group_delivers_once_and_preserves_parent(string $layout): void
     {

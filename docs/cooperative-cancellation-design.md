@@ -443,7 +443,7 @@ Shielded branches are excluded. Forged members, altered ancestry, deadlines,
 propagation events, omitted operations and changed authored calls fail before
 cleanup. Competing roots and overlapping subtree deliveries remain refused.
 
-The internal pending-request profile selects a scalar call from canonical scope
+The internal pending-request profile selects a scalar call or fully admitted all-group from canonical scope
 history without exposing cancellation to workflow cleanup. It preserves results
 committed before the original request and lets that request win over later
 results. A descendant selects its accepted original ancestor request without
@@ -451,12 +451,15 @@ crossing a shield or borrowing an independent root. An existing preparation
 retains its exact call, event identity and narrower authority ceiling, including
 on replacement replay. Changed or skipped prepared boundaries fail explicitly.
 Only a committed delivery exposes its context and resumes cleanup. The profile
-emits a selection intent rather than dispatching effects. Pending local,
-selected and group delivery remain refused.
+emits a selection intent rather than dispatching effects. All-groups require
+every original qualified member in the same authored scope. Pending siblings
+retain the original group range, while groups completed before the request keep
+their results before cancellation at the next call. Incomplete, selected and
+local group delivery remain refused.
 
-## Managed Worker scalar scope source profile
+## Managed Worker scope source profile
 
-`enableCancellationScopes: true` explicitly enables scalar preparation/delivery
+`enableCancellationScopes: true` explicitly enables scalar and admitted all-group preparation/delivery
 and committed scope replay in a protocol 1.20 cooperative Worker. It is an
 unfrozen source profile, defaults to false, and does not advertise complete
 portable cancellation-scope capability. Ordinary cooperative workers continue
@@ -487,7 +490,7 @@ stopped attempt, refreshes canonical history on its retained claim and resumes
 scope delivery before cleanup. This avoids replacing a scope fence with a run
 fence when the run request propagated into the scope.
 
-Ordinary scoped local groups, selected/group delivery and overlapping delivered
+Ordinary scoped local groups, selected delivery and overlapping delivered
 subtrees remain explicitly unsupported. Partial sibling supervision, all portable
 consumers and exact published-artifact qualification remain required for general
 scope execution and release claims.

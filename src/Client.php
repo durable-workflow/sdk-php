@@ -1477,7 +1477,7 @@ final class Client implements WorkflowClientInterface
         }
         $delivering = $phase === 'deliver';
         if (!in_array($phase, ['prepare', 'deliver'], true) || $attempt < 1 || $scopeId === 'root'
-            || !in_array($boundary->callKind, ['activity', 'local_activity', 'timer', 'condition', 'child'], true)
+            || !in_array($boundary->callKind, ['activity', 'local_activity', 'timer', 'condition', 'child', 'parallel'], true)
             || ($delivering && $preparation === null) || (!$delivering && $preparation !== null)) {
             throw new InvalidArgumentException('Scope delivery requires its verified original preparation and claim.');
         }

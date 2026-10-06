@@ -157,16 +157,21 @@ final class PendingCancellationScopeBoundaryTest extends TestCase
     }
 
     #[DataProvider('preparations')]
-    public function test_group_selection_remains_refused_before_cleanup_or_effects(bool $prepared): void
+    public function test_ancestor_group_selects_original_identity_without_entering_cleanup(bool $prepared): void
     {
         $fixture = self::fixture('committed-scope-descendants.json')['group'];
         $fixture['history'] = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
             $event['event_type'] !== 'CancellationScopeDelivered'
             && ($prepared || $event['event_type'] !== 'CancellationScopeDeliveryPrepared')));
         $cleaned = false;
-        $this->expectException(WorkflowClaimAborted::class);
-        try { $this->replay(self::descendantWorkflow($cleaned, group: true), $fixture); }
-        finally { self::assertFalse($cleaned); }
+        $result = $this->replay(self::descendantWorkflow($cleaned, group: true), $fixture);
+        self::assertFalse($cleaned);
+        self::assertSame([], $result->commands);
+        self::assertNotNull($result->cancellationScopeDelivery);
+        self::assertSame('parent-scope', $result->cancellationScopeDelivery->context->scopeId);
+        self::assertSame('parallel', $result->cancellationScopeDelivery->boundary->callKind);
+        self::assertSame(8, $result->cancellationScopeDelivery->boundary->sequence);
+        self::assertSame(4, $result->cancellationScopeDelivery->boundary->sequenceSpan);
     }
 
     public function test_missing_accepted_descendant_lineage_cannot_borrow_parent_preparation(): void

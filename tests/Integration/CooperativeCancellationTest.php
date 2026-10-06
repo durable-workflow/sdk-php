@@ -602,7 +602,7 @@ final class CooperativeCancellationTest extends TestCase
     }
 
     #[DataProvider('runScopeCallbacks')]
-    public function testRunCancellationResumesInheritedScopedCleanupBeforeRootDelivery(bool $killDuringCleanup, bool $localWork, bool $timerCleanup = false): void
+    public function testRunCancellationResumesInheritedScopedCleanupBeforeRootDelivery(bool $killDuringCleanup, bool $localWork, bool $timerCleanup = false, bool $groupWork = false): void
     {
         if (getenv('DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION') !== '1') {
             self::markTestSkipped('Run and scope composition requires the exact Native source overlay.');
@@ -614,7 +614,7 @@ final class CooperativeCancellationTest extends TestCase
         $handle = null;
         try {
             $this->awaitMessage($messages, 'registered');
-            $kind = $timerCleanup ? 'scoped-timer-root' : ($localWork ? 'scoped-local-root' : 'scoped-root');
+            $kind = $groupWork ? 'scoped-group-root' : ($timerCleanup ? 'scoped-timer-root' : ($localWork ? 'scoped-local-root' : 'scoped-root'));
             $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, [$kind]);
             if ($localWork) { $this->awaitMessage($messages, 'scoped-work-entered'); }
             else { $this->awaitEvent($client, $handle, 'TimerScheduled'); }
@@ -662,6 +662,11 @@ final class CooperativeCancellationTest extends TestCase
                 self::assertSame(1, $timers[0]['payload']['delay_seconds']);
                 self::assertCount(1, array_filter($history, static fn (array $event): bool => $event['event_type'] === 'TimerFired'));
             }
+            if ($groupWork) {
+                self::assertSame('parallel', $scoped[0]['payload']['call_kind']);
+                self::assertSame(2, $scoped[0]['payload']['sequence_span']);
+                self::assertCount(2, array_filter($history, static fn (array $event): bool => $event['event_type'] === 'TimerCancelled'));
+            }
             $delivery = array_values(array_filter($history, static fn (array $event): bool =>
                 $event['event_type'] === 'CooperativeCancellationDelivered'))[0];
             self::assertLessThan($delivery['sequence'], $scoped[0]['sequence']);
@@ -704,6 +709,7 @@ final class CooperativeCancellationTest extends TestCase
                 yield ($local ? 'local' : 'timer').'-'.($kill ? 'replacement' : 'live') => [$kill, $local];
             }
             yield 'cleanup-timer-'.($kill ? 'replacement' : 'live') => [$kill, false, true];
+            yield 'group-cleanup-timer-'.($kill ? 'replacement' : 'live') => [$kill, false, true, true];
         }
     }
 
@@ -1981,16 +1987,20 @@ final class CooperativeCancellationTest extends TestCase
                     $directory = $this->directory;
                     $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind, ?string $childQueue = null, ?string $remoteQueue = null) use ($queue, $preparedLocal, $remotePolicy, $localPolicy, $directory): string {
                         try {
-                            if (in_array($kind, ['scoped-root', 'scoped-local-root', 'scoped-timer-root'], true)) {
+                            if (in_array($kind, ['scoped-root', 'scoped-local-root', 'scoped-timer-root', 'scoped-group-root'], true)) {
                                 $context->cancellationScope(static function () use ($context, $kind): void {
                                     try {
                                         if ($kind === 'scoped-local-root') {
                                             $context->localActivity('tests.php-scoped-work', options: [
                                                 'cancellation_policy' => CancellationPolicy::WaitCancellationCompleted,
                                             ]);
+                                        } elseif ($kind === 'scoped-group-root') {
+                                            $context->all([$context->deferTimer(300), new \DurableWorkflow\Worker\ParallelWorkflowCommand([
+                                                $context->deferTimer(600),
+                                            ])]);
                                         } else { $context->sleep(300); }
                                     } catch (WorkflowCancelled $error) {
-                                        if ($kind === 'scoped-timer-root') {
+                                        if (in_array($kind, ['scoped-timer-root', 'scoped-group-root'], true)) {
                                             $context->cancellationShield(static fn () => $context->sleep(1));
                                         }
                                         $context->cancellationShield(static fn () => $context->localActivity('tests.php-scope-cleanup',
@@ -2049,7 +2059,7 @@ final class CooperativeCancellationTest extends TestCase
                                 return (string) $error->requestId;
                             }
                             $context->cancellationShield(static fn () => $context->localActivity(
-                                in_array($kind, ['scoped-root', 'scoped-local-root', 'scoped-timer-root'], true) ? 'tests.php-scope-cleanup' : 'tests.php-cooperative-cleanup',
+                                in_array($kind, ['scoped-root', 'scoped-local-root', 'scoped-timer-root', 'scoped-group-root'], true) ? 'tests.php-scope-cleanup' : 'tests.php-cooperative-cleanup',
                                 [$error->requestId, $context->cancellationContext()?->toArray()],
                                 $preparedLocal ? ['retry_policy' => ['max_attempts' => 3]] : []));
                             if ($kind === 'polyglot') {

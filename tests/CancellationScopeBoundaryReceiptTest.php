@@ -20,6 +20,45 @@ use PHPUnit\Framework\TestCase;
 
 final class CancellationScopeBoundaryReceiptTest extends TestCase
 {
+    #[DataProvider('scopeGroups')]
+    public function test_original_claim_transport_proves_flat_and_nested_group_preparation_and_delivery(string $layout): void
+    {
+        $fixture = json_decode(file_get_contents(__DIR__.'/fixtures/populated-scope-groups.json'), true,
+            flags: JSON_THROW_ON_ERROR)[$layout];
+        $history = $fixture['history'];
+        $delivered = $history[array_key_last($history)];
+        $prepared = $history[count($history) - 2];
+        $payload = $prepared['payload'];
+        $body = array_intersect_key($payload,
+            array_flip(['scope_id', 'request_id', 'sequence', 'call_kind', 'sequence_span', 'operation_sequence', 'operation_sequence_span']));
+        $receipt = ['prepared' => true, 'delivered' => false, 'claim_released' => false, 'created_task_ids' => [], 'reason' => null,
+            'task_id' => 'task/one', 'workflow_run_id' => $fixture['task']['run_id'], 'lease_owner' => 'original-owner',
+            'workflow_task_attempt' => 4, 'history_event_id' => $prepared['id'], 'preparation_history_event_id' => $prepared['id'],
+            'history_refresh_page_token' => 'opaque-start', ...$body,
+            ...array_intersect_key($payload, array_flip(['cancellation', 'authority_deadline_at', 'activity_members', 'timer_members', 'wait_members', 'child_members']))];
+        $transport = self::transport([$receipt,
+            self::page(array_slice($history, 0, 5), 'next'), self::page(array_slice($history, 5, count($history) - 6)),
+            [...$receipt, 'delivered' => true, 'history_event_id' => $delivered['id']],
+            self::page(array_slice($history, 0, count($history) - 1), 'next'), self::page([$delivered])]);
+        $boundary = CancellationDelivery::fromPayload([...$body, 'workflow_command_id' => $body['request_id']]);
+        $client = self::client($transport);
+        $budget = new RequestBudget(5);
+        $proof = $client->cancellationScopeBoundaryOnClaim('task/one', $fixture['task']['run_id'], $fixture['task']['workflow_id'],
+            'original-owner', 4, $fixture['scope_id'], $boundary, 'prepare', $budget);
+        $result = $client->cancellationScopeBoundaryOnClaim('task/one', $fixture['task']['run_id'], $fixture['task']['workflow_id'],
+            'original-owner', 4, $fixture['scope_id'], $boundary, 'deliver', $budget, $proof);
+        self::assertSame($history, $result->history);
+        self::assertSame($proof->preparationHistoryEventId, $result->preparationHistoryEventId);
+        self::assertSame($delivered['id'], $result->deliveryHistoryEventId);
+        foreach ([0, 3] as $index) {
+            self::assertSame(['lease_owner' => 'original-owner', 'workflow_task_attempt' => 4, ...$body],
+                $transport->fake->requests[$index]['body']);
+        }
+        self::assertCount(6, $transport->fake->requests);
+    }
+
+    public static function scopeGroups(): array { return [['flat'], ['nested']]; }
+
     public function test_native_preparation_and_delivery_are_proved_from_every_original_claim_page(): void
     {
         $history = self::history();

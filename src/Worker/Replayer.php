@@ -213,11 +213,14 @@ final class Replayer
                             throw new NonDeterministicWorkflow('Pending scope delivery changed its original prepared call.', $nextSequence,
                                 reason: 'cancellation_scope_boundary_mismatch');
                         }
-                        if (!in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child'], true)
+                        if (!in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child', 'parallel'], true)
                             && !($boundary->callKind === 'local_activity' && $allowScopedPreparedLocalActivities)) {
                             throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this pending operation kind is not qualified by this PHP worker.');
                         }
                         $this->assertCancellationCallMatches($suspended, $boundary, $stepsBySequence, $context);
+                        if ($suspended instanceof ParallelWorkflowCommand) {
+                            $this->assertPendingScopeGroup($suspended, $boundary, $stepsBySequence, $context->currentCancellationScopeId());
+                        }
                         if ($preparation !== null && !isset($committedScopes->scopeStatesForDelivery($preparation)[$context->currentCancellationScopeId()])) {
                             throw new NonDeterministicWorkflow('Pending scope call is absent from its original frozen subtree.', $nextSequence,
                                 reason: 'cancellation_scope_boundary_mismatch');
@@ -1001,6 +1004,24 @@ final class Replayer
             ]);
         } catch (\InvalidArgumentException $error) {
             throw new NonDeterministicWorkflow($error->getMessage(), $sequence, reason: 'cooperative_cancellation_boundary_mismatch');
+        }
+    }
+
+    /** @param array<int, array<string, mixed>> $stepsBySequence */
+    private function assertPendingScopeGroup(ParallelWorkflowCommand $group, CancellationDelivery $boundary,
+        array $stepsBySequence, string $scopeId): void
+    {
+        if ($group->mode !== 'all') {
+            throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: scope selection groups require their own qualified delivery contract.');
+        }
+        foreach ($group->leafDescriptors($boundary->sequence) as $offset => $descriptor) {
+            $command = $descriptor['operation']->command;
+            $step = $stepsBySequence[$boundary->sequence + $offset] ?? null;
+            if ($step === null || !in_array($command->type, ['schedule_activity', 'start_timer', 'start_child_workflow', 'open_condition_wait'], true)
+                || ($command->attributes['cancellation_scope_id'] ?? 'root') !== $scopeId
+                || array_filter($descriptor['group_path'], static fn (array $path): bool => ($path['parallel_group_mode'] ?? 'all') !== 'all') !== []) {
+                throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: scope all-groups require every original qualified member in one authored scope.');
+            }
         }
     }
 

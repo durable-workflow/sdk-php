@@ -123,7 +123,7 @@ final class Worker
         private readonly bool $enableCooperativeCancellation = false,
         /** Source opt-in for durably admitted sequential local callbacks. */
         private readonly bool $enablePreparedLocalActivities = false,
-        /** Unfrozen source opt-in for scalar scope delivery and committed scope replay. */
+        /** Unfrozen source opt-in for scalar/all-group scope delivery and committed scope replay. */
         private readonly bool $enableCancellationScopes = false,
     ) {
         if ($enableCancellationScopes && !$enableCooperativeCancellation) {
