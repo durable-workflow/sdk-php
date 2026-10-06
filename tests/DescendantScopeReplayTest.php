@@ -8,6 +8,8 @@ use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Worker\ParallelWorkflowCommand;
+use DurableWorkflow\Worker\CancellationScopeHistory;
+use DurableWorkflow\Worker\CommittedCancellationScopeHistory;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\ScopedCancellationContext;
 use DurableWorkflow\Worker\WorkflowClaimAborted;
@@ -137,6 +139,54 @@ final class DescendantScopeReplayTest extends TestCase
         $this->expectException(WorkflowClaimAborted::class);
         try { $this->replay(static function () use (&$entered): void { $entered = true; }, $fixture); }
         finally { self::assertFalse($entered); }
+    }
+
+    #[DataProvider('pendingRequests')]
+    public function test_pending_ancestor_prepares_before_inherited_requests_exist(string $layout, bool $inherited): void
+    {
+        $fixture = self::fixture($layout);
+        $fixture['history'] = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
+            !in_array($event['event_type'], ['CancellationScopeDeliveryPrepared', 'CancellationScopeDelivered'], true)
+            && ($inherited || $event['event_type'] !== 'CancellationScopeRequested'
+                || $event['payload']['scope_id'] === $fixture['scopes']['parent'])));
+        $observed = [];
+        $workflow = self::workflow($fixture, $observed);
+        $replay = static fn () => (new Replayer(new AvroPayloadCodec()))->replay($workflow,
+            $fixture['history'], [], 'php-workers', $fixture['task'], allowCancellationScopeAuthoring: true,
+            replayCommittedCancellationScopes: true, prepareCancellationScopeDelivery: true);
+        $result = $replay();
+        self::assertSame([], $observed);
+        self::assertSame([], $result->commands);
+        $intent = $result->cancellationScopeDelivery;
+        self::assertNotNull($intent);
+        self::assertSame(ScopedCancellationContext::fromArray($fixture['contexts']['parent'])->toArray(), $intent->context->toArray());
+        self::assertSame(8, $intent->boundary->sequence);
+        self::assertSame($layout === 'timer' ? 1 : 4, $intent->boundary->sequenceSpan);
+        self::assertNull($intent->preparationHistoryEventId);
+        $fixture['task']['lease_owner'] = 'replacement';
+        $fixture['task']['workflow_task_attempt'] = 17;
+        self::assertEquals($intent, $replay()->cancellationScopeDelivery);
+        self::assertSame([], $observed);
+    }
+
+    public static function pendingRequests(): iterable
+    {
+        foreach (['timer', 'group'] as $layout) {
+            foreach ([false, true] as $inherited) { yield $layout.'-'.($inherited ? 'inherited' : 'ancestor-only') => [$layout, $inherited]; }
+        }
+    }
+
+    public function test_pending_ancestor_cannot_bypass_a_competing_intermediate_request(): void
+    {
+        $fixture = json_decode(file_get_contents(__DIR__.'/fixtures/committed-scope-operation-projections.json'), true, flags: JSON_THROW_ON_ERROR)['competing'];
+        $fixture['history'] = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
+            !in_array($event['event_type'], ['CancellationScopeDeliveryPrepared', 'CancellationScopeDelivered'], true)
+            && ($event['event_type'] !== 'CancellationScopeRequested' || $event['payload']['scope_id'] !== 'desc-grandchild')));
+        $scopes = new CancellationScopeHistory($fixture['history'], $fixture['task']['run_id']);
+        $committed = new CommittedCancellationScopeHistory($fixture['history'], $fixture['task']['run_id'], $fixture['task']['workflow_id'], $scopes, requireCommittedDelivery: false);
+        $this->expectException(WorkflowClaimAborted::class);
+        $this->expectExceptionMessage('original ancestor lineage');
+        $committed->pendingRequestForScope('desc-grandchild', $scopes);
     }
 
     public function test_partial_descendant_group_remains_refused(): void

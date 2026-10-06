@@ -248,13 +248,12 @@ final class CommittedCancellationScopeHistory
         $addresses = [];
         foreach ($scopes->openings as $opening) { $addresses[$opening['scope_id']] = $opening; }
         $request = $this->pendingRequests[$scopeId] ?? null;
-        $active = $request;
         while (isset($addresses[$scopeId]) && !$addresses[$scopeId]['shield_parent']) {
             $scopeId = $addresses[$scopeId]['parent_scope_id'];
             $ancestor = $this->pendingRequests[$scopeId] ?? null;
             if ($ancestor === null) { continue; }
-            if ($active === null || $ancestor['context']->rootContext->toArray() !== $active['context']->rootContext->toArray()
-                || array_slice($active['context']->lineage, 0, count($ancestor['context']->lineage)) !== $ancestor['context']->lineage) {
+            if ($request !== null && ($ancestor['context']->rootContext->toArray() !== $request['context']->rootContext->toArray()
+                || array_slice($request['context']->lineage, 0, count($ancestor['context']->lineage)) !== $ancestor['context']->lineage)) {
                 throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: pending scope selection requires its accepted original ancestor lineage.');
             }
             $request = $ancestor;
