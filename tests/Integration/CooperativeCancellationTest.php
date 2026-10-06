@@ -655,7 +655,14 @@ final class CooperativeCancellationTest extends TestCase
                 self::assertSame($snapshot['scope_id'], $snapshot['operation_scope_id']);
                 self::assertSame($scoped[0]['payload']['request_id'], $snapshot['request_id']);
                 self::assertSame($root['request_id'], $snapshot['root_request_id']);
-                self::assertSame($scoped[0]['id'], $snapshot['delivery_history_event_id']);
+                $receipts = array_map(static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR),
+                    file($this->directory.'/scope-deliveries.jsonl', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES));
+                self::assertCount(1, $receipts);
+                $receipt = $receipts[0]['reply'];
+                self::assertSame($snapshot['scope_id'], $receipt['scope_id']);
+                self::assertSame($snapshot['request_id'], $receipt['request_id']);
+                self::assertSame($receipt['history_event_id'], $snapshot['delivery_history_event_id']);
+                self::assertSame($receipt['preparation_history_event_id'], $snapshot['preparation_history_event_id']);
                 self::assertSame($scoped[0]['payload']['preparation_history_event_id'], $snapshot['preparation_history_event_id']);
                 self::assertSame($root['cleanup_deadline_at'], $snapshot['cleanup_deadline_at']);
                 self::assertSame($root['cleanup_deadline_at'], $snapshot['authority_deadline_at']);
@@ -1921,7 +1928,8 @@ final class CooperativeCancellationTest extends TestCase
                 $transport = $observeChildWait ? new ChildWaitObservationTransport($this->directory, $notify)
                     : ($remoteRole ? new RemoteOwnerObservationTransport($notify, $receiptFault, $this->directory)
                     : ($pauseWorkflowClaim ? new PauseWorkflowClaimTransport($this->directory, $notify)
-                        : ($loseReply ? new DiscardFirstDeliveryReplyTransport($notify) : null)));
+                        : ($loseReply ? new DiscardFirstDeliveryReplyTransport($notify)
+                            : ($scopes ? new ScopeDeliveryObservationTransport($this->directory) : null))));
                 $failureReported = false;
                 $worker = new Worker($this->client($transport, $namespace), $queue,
                     workerId: $queue.'-'.getmypid(), enableCooperativeCancellation: true, enablePreparedLocalActivities: $preparedLocal,
@@ -2419,6 +2427,36 @@ final class CooperativeCancellationTest extends TestCase
             }
         }
         return $events;
+    }
+}
+
+/** Observes the worker receipt because public history intentionally omits event IDs. */
+final class ScopeDeliveryObservationTransport implements BoundedTransport
+{
+    private readonly Psr18Transport $inner;
+
+    public function __construct(private readonly string $directory) { $this->inner = new Psr18Transport(); }
+    public function supportsBoundedRequests(): bool { return $this->inner->supportsBoundedRequests(); }
+
+    public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
+    {
+        return $this->observe($uri, $body, $this->inner->send($method, $uri, $headers, $body));
+    }
+
+    public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
+    {
+        return $this->observe($uri, $body, $this->inner->sendBounded($method, $uri, $headers, $body, $timeoutSeconds));
+    }
+
+    private function observe(string $uri, ?array $body, ?array $reply): ?array
+    {
+        if (str_ends_with($uri, '/cancellation-scopes/deliver')) {
+            file_put_contents($this->directory.'/scope-deliveries.jsonl', json_encode([
+                'request' => $body, 'reply' => $reply,
+            ], JSON_THROW_ON_ERROR)."\n", FILE_APPEND);
+        }
+
+        return $reply;
     }
 }
 
