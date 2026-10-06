@@ -12,6 +12,7 @@ use DurableWorkflow\Model\ServiceOperationOptions;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Transport\Psr18Transport;
 use GuzzleHttp\Psr7\Response;
+use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Client\ClientInterface;
@@ -473,6 +474,7 @@ final class ControlPlaneParityTest extends TestCase
         $operations = [
             'workflow visibility' => static fn (Client $client) => $client->listWorkflows(),
             'workflow diagnostics' => static fn (Client $client) => $client->workflowDiagnostics('order-1', 'run-1'),
+            'workflow observation' => static fn (Client $client) => $client->workflowObservation('order-1', 'run-1'),
             'workflow activities' => static fn (Client $client) => $client->workflowActivities('order-1', 'run-1'),
             'workflow redrive' => static fn (Client $client) => $client->redriveWorkflow('order-1', 'run-1'),
             'search attributes' => static fn (Client $client) => $client->listSearchAttributes(),
@@ -529,6 +531,83 @@ final class ControlPlaneParityTest extends TestCase
         self::assertSame('ops', $transport->requests[0]['headers']['X-Namespace']);
         self::assertSame('Bearer operator-test-token', $transport->requests[0]['headers']['Authorization']);
         self::assertSame('2', $transport->requests[0]['headers']['X-Durable-Workflow-Control-Plane-Version']);
+    }
+
+    public function testWorkflowObservationKeepsRunNamespaceAndContextSelectionExplicit(): void
+    {
+        $response = ['run_id' => 'run/b', 'read_mode' => 'bounded', 'current_waits' => ['waits' => []],
+            'history' => ['events' => [['payload' => ['arguments' => ['codec' => 'avro', 'external_payload' => ['opaque' => true]]]]]],
+            'search_attributes' => ['Order /+' => ['codec' => 'avro', 'external_payload' => ['opaque' => true]]]];
+        $transport = new FakeTransport([$response, $response]);
+        $client = new Client('https://server.example', transport: $transport, namespace: 'ops', controlToken: 'operator-test-token');
+
+        self::assertSame($response, $client->workflowObservation('order/a'));
+        self::assertSame($response, $client->workflowObservation('order/a', 'run/b', ['Order /+', 'Account&Id'], 100, 'cursor/+'));
+        self::assertSame('https://server.example/api/workflows/order%2Fa/observation', $transport->requests[0]['uri']);
+        self::assertSame('https://server.example/api/workflows/order%2Fa/runs/run%2Fb/observation?search_attribute_keys%5B0%5D=Order%20%2F%2B&search_attribute_keys%5B1%5D=Account%26Id&history_page_size=100&history_page_token=cursor%2F%2B', $transport->requests[1]['uri']);
+        foreach ($transport->requests as $request) {
+            self::assertSame('GET', $request['method']);
+            self::assertNull($request['body']);
+            self::assertSame('ops', $request['headers']['X-Namespace']);
+            self::assertSame('Bearer operator-test-token', $request['headers']['Authorization']);
+            self::assertSame('2', $request['headers']['X-Durable-Workflow-Control-Plane-Version']);
+        }
+        self::assertCount(2, $transport->requests);
+    }
+
+    /** @param array<mixed> $keys */
+    #[DataProvider('invalidObservationKeys')]
+    public function testInvalidObservationSelectionIsRefusedBeforeSending(array $keys): void
+    {
+        $transport = new FakeTransport();
+        $client = new Client('https://server.example', transport: $transport);
+        $this->expectException(InvalidArgumentException::class);
+        try {
+            $client->workflowObservation('order-1', 'run-1', $keys);
+        } finally {
+            self::assertSame([], $transport->requests);
+        }
+    }
+
+    /** @return array<string, array{array<mixed>}> */
+    public static function invalidObservationKeys(): array
+    {
+        return [
+            'map' => [['key' => 'OrderId']],
+            'empty key' => [['']],
+            'non-string key' => [[1]],
+            'oversized key' => [[str_repeat('x', 256)]],
+            'duplicate key' => [['OrderId', 'OrderId']],
+            'too many keys' => [array_map('strval', range(1, 21))],
+        ];
+    }
+
+    public function testUnsupportedObservationPreservesRefusalWithoutAFullRead(): void
+    {
+        $refusal = new ServerException('Not found.', 404, 'not_found');
+        $transport = new FakeTransport([$refusal]);
+        $client = new Client('https://server.example', transport: $transport);
+        try {
+            $client->workflowObservation('order-1', 'run-1');
+            self::fail('An unsupported observation must preserve the Server refusal.');
+        } catch (ServerException $exception) {
+            self::assertSame($refusal, $exception);
+        }
+        self::assertCount(1, $transport->requests);
+    }
+
+    public function testInvalidObservationHistoryWindowCannotSendARequest(): void
+    {
+        $transport = new FakeTransport();
+        $client = new Client('https://server.example', transport: $transport);
+        foreach ([[0, null], [1001, null], [null, ''], [null, str_repeat('x', 4097)]] as [$size, $token]) {
+            try {
+                $client->workflowObservation('order-1', 'run-1', historyPageSize: $size, historyPageToken: $token);
+                self::fail('Invalid history window was accepted.');
+            } catch (InvalidArgumentException) {
+                self::assertSame([], $transport->requests);
+            }
+        }
     }
 
     public function testUnsupportedBoundedDashboardPreservesTheServerErrorWithoutAnotherRead(): void

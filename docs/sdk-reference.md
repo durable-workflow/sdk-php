@@ -37,6 +37,27 @@ additive Server route. Older Servers return their original HTTP 404 without an
 unfiltered fallback. The SDK rejects malformed selections and encoded query
 values larger than 4096 bytes before sending them.
 
+## Bounded workflow observations
+
+With an operator credential, `workflowObservation('order-1', 'run-1')` reads
+scalar run metadata, current waits, related run statuses and recent failure
+references. Omit the run ID to observe the instance's stored current pointer.
+Related runs have their own statuses. Unknown or pruned evidence stays explicit.
+This read does not establish authority to issue commands.
+
+Application context is opt in. Pass up to 20 distinct search attribute keys as
+the third argument. The response preserves their metadata without interpreting
+it as a payload reference. The observation includes 200 history events by
+default. `historyPageSize` selects up to 1000. Pass `history.next_page_token` as
+`historyPageToken` to continue inside the original sequence boundary. Supporting
+failure references also provide a cursor for direct inspection. These cursors
+belong to this observation route. Application values and external payload
+references in the history stay encoded.
+
+This additive Server route requires a runtime that supports bounded observations.
+An older runtime's refusal is returned directly. Use `workflowDiagnostics()`
+explicitly when full diagnostics are needed.
+
 ## Plain PHP quickstart
 
 Create an empty Composer project and install the current published package:

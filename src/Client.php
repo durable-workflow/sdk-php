@@ -518,6 +518,50 @@ final class Client implements WorkflowClientInterface
     }
 
     /**
+     * Read bounded run metadata without loading full diagnostics or application payloads.
+     *
+     * @param array<mixed> $searchAttributeKeys A list of explicit application context keys, at most 20.
+     * @return array<string, mixed>
+     */
+    public function workflowObservation(
+        string $workflowId,
+        ?string $runId = null,
+        array $searchAttributeKeys = [],
+        ?int $historyPageSize = null,
+        ?string $historyPageToken = null,
+    ): array {
+        if (!array_is_list($searchAttributeKeys) || count($searchAttributeKeys) > 20) {
+            throw new InvalidArgumentException('Search attribute keys must be a list of at most 20 distinct strings.');
+        }
+        $seen = [];
+        foreach ($searchAttributeKeys as $key) {
+            if (!is_string($key) || $key === '' || strlen($key) > 255 || isset($seen[$key])) {
+                throw new InvalidArgumentException('Search attribute keys must be distinct nonempty strings of at most 255 bytes.');
+            }
+            $seen[$key] = true;
+        }
+        if ($historyPageSize !== null && ($historyPageSize < 1 || $historyPageSize > 1000)) {
+            throw new InvalidArgumentException('Observation history page size must be from 1 to 1000.');
+        }
+        if ($historyPageToken !== null && ($historyPageToken === '' || strlen($historyPageToken) > 4096)) {
+            throw new InvalidArgumentException('Observation history cursor must be nonempty and at most 4096 bytes.');
+        }
+        $path = $this->workflowOperationPath($workflowId, $runId, 'observation');
+        $parameters = $this->withoutNulls([
+            'history_page_size' => $historyPageSize,
+            'history_page_token' => $historyPageToken,
+        ]);
+        if ($searchAttributeKeys !== []) {
+            $parameters = ['search_attribute_keys' => $searchAttributeKeys] + $parameters;
+        }
+        if ($parameters !== []) {
+            $path .= '?'.http_build_query($parameters, '', '&', PHP_QUERY_RFC3986);
+        }
+
+        return $this->control('GET', $path);
+    }
+
+    /**
      * @param list<mixed> $arguments
      * @return array<string, mixed>
      */
