@@ -462,6 +462,115 @@ final class CooperativeCancellationTest extends TestCase
         return [['try_cancel'], ['wait_cancellation_completed'], ['abandon']];
     }
 
+    #[DataProvider('scopedRemoteCallbacks')]
+    public function testScopedRemoteCallbackStopsWithoutApplicationHeartbeatsAndParentContinues(bool $grouped, CancellationPolicy $policy): void
+    {
+        if (getenv('DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION') !== '1') {
+            self::markTestSkipped('Scoped callback supervision requires the exact Native overlay.');
+        }
+        $queue = $this->queue('scope-boundary');
+        $client = $this->client();
+        [$workflowPid, $workflowMessages] = $this->spawnWorker($queue, remotePolicy: $policy, scopes: true);
+        [$ownerPid, $ownerMessages] = $this->spawnWorker($queue, userHeartbeat: false, remoteRole: true);
+        $handle = null;
+        try {
+            $this->awaitMessage($workflowMessages, 'registered');
+            $this->awaitMessage($ownerMessages, 'registered');
+            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue,
+                [$grouped ? 'scoped-remote-group-only' : 'scoped-remote-only']);
+            $this->awaitMessage($ownerMessages, 'remote-entered');
+            $this->awaitMessage($ownerMessages, 'owner-heartbeat');
+            $pids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
+            foreach ($pids as $pid) { self::assertTrue(posix_kill($pid, 0)); }
+            $fence = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
+            $initial = $this->history($client, $handle);
+            $opening = array_values(array_filter($initial, static fn (array $row): bool => $row['event_type'] === 'CancellationScopeOpened'))[0];
+            $input = ['run_id' => $handle->selectedRunId, 'workflow_id' => $queue, 'scope_id' => $opening['payload']['scope_id']];
+            $accepted = $this->requestNativeScopeFixture($input);
+            self::assertSame($accepted, $this->requestNativeScopeFixture($input));
+            $original = $accepted['payload']['cancellation']['root_context'];
+            $expected = \DurableWorkflow\Worker\ScopedCancellationContext::fromArray($accepted['payload']['cancellation'])->toArray();
+            $result = $handle->resultOfSelectedRun(20, 0.05);
+            self::assertIsString($result);
+            self::assertSame($expected, json_decode($result, true, flags: JSON_THROW_ON_ERROR));
+            foreach ($pids as $pid) { $this->assertProcessStops($pid); }
+            self::assertFileDoesNotExist($this->directory.'/late');
+            $deadline = microtime(true) + 5;
+            do {
+                $status = $client->activityTaskStatus($fence['task_id'], $fence['activity_attempt_id'], $fence['lease_owner']);
+                if (($status['cancellation_acknowledgement']['callback_state'] ?? null) === 'stopped') { break; }
+                usleep(50_000);
+            } while (microtime(true) < $deadline);
+            $receipt = $status['cancellation_acknowledgement'];
+            self::assertSame('stopped', $receipt['callback_state']);
+            self::assertSame($accepted['payload']['request_id'], $receipt['request_id']);
+            self::assertSame($original['root_request_id'], $receipt['root_request_id']);
+            self::assertSame($original['cleanup_deadline_at'], $receipt['cleanup_deadline_at']);
+            self::assertFalse($receipt['received_after_deadline']);
+            self::assertFalse($status['can_continue']);
+            self::assertFalse($status['heartbeat_recorded']);
+            $duplicate = $client->acknowledgeActivityCancellation($fence['task_id'], $fence['activity_attempt_id'],
+                $fence['lease_owner'], $receipt['request_id']);
+            self::assertTrue($duplicate['duplicate']);
+            self::assertSame($receipt['history_event_id'], $duplicate['history_event_id']);
+            $events = $this->history($client, $handle);
+            $kinds = array_column($events, 'event_type');
+            foreach (['CancellationScopeRequested', 'CancellationScopeDeliveryPrepared', 'CancellationScopeDelivered',
+                'ActivityCancelled', 'ActivityCancellationAcknowledged', 'WorkflowCompleted'] as $kind) {
+                self::assertSame(1, count(array_filter($kinds, static fn (string $value): bool => $value === $kind)), $kind);
+            }
+            foreach (['CooperativeCancellationRequested', 'CooperativeCancellationDelivered', 'WorkflowCancelled',
+                'WorkflowFailed', 'ActivityHeartbeatRecorded', 'ActivityCompleted'] as $kind) {
+                self::assertNotContains($kind, $kinds);
+            }
+            self::assertSame((int) $grouped, count(array_filter($kinds, static fn (string $value): bool => $value === 'TimerCancelled')));
+            self::assertSame(2 + (int) $grouped, count(array_filter($kinds, static fn (string $value): bool => $value === 'TimerScheduled')));
+            self::assertSame(2, count(array_filter($kinds, static fn (string $value): bool => $value === 'TimerFired')));
+            if ($policy === CancellationPolicy::WaitCancellationCompleted) {
+                self::assertLessThan(array_search('CancellationScopeDelivered', $kinds, true),
+                    array_search('ActivityCancellationAcknowledged', $kinds, true), 'Wait must join before cleanup delivery.');
+            }
+            $ack = array_values(array_filter($events, static fn (array $row): bool => $row['event_type'] === 'ActivityCancellationAcknowledged'))[0]['payload'];
+            self::assertSame($fence['activity_attempt_id'], $ack['activity_attempt_id']);
+            self::assertSame($fence['lease_owner'], $ack['lease_owner']);
+            self::assertSame('activity_worker', $ack['evidence_source']);
+            foreach (['request_id', 'root_request_id', 'cleanup_deadline_at', 'acknowledged_at'] as $field) {
+                self::assertSame($receipt[$field], $ack[$field]);
+            }
+            $terminal = array_values(array_filter($events, static fn (array $row): bool => $row['event_type'] === 'WorkflowCompleted'))[0];
+            self::assertLessThan(new \DateTimeImmutable($original['cleanup_deadline_at']), new \DateTimeImmutable($terminal['timestamp']));
+            foreach (['complete', 'fail'] as $outcome) {
+                try {
+                    if ($outcome === 'complete') { $client->completeActivityTask($fence['task_id'], $fence['activity_attempt_id'], $fence['lease_owner'], 'late'); }
+                    else { $client->failActivityTask($fence['task_id'], $fence['activity_attempt_id'], $fence['lease_owner'], 'late', 'LateQualification'); }
+                    self::fail('A scoped cancelled attempt accepted a late '.$outcome.'.');
+                } catch (\DurableWorkflow\Exception\ServerException $error) { self::assertSame(409, $error->status); }
+            }
+            self::assertSame($events, $this->history($client, $handle));
+            fwrite(STDOUT, 'Actual scoped callback stop and unchanged parent: '.json_encode([
+                'policy' => $policy->value, 'grouped' => $grouped, 'processes_stopped' => $pids,
+                'status' => $status, 'history' => $events,
+            ], JSON_THROW_ON_ERROR)."\n");
+        } finally {
+            if ($handle !== null) {
+                $this->retainRunEvidence($client, $handle, 'scoped-remote');
+                if (!in_array(strtolower((string) $handle->describe()->status), ['completed', 'failed', 'cancelled', 'terminated'], true)) {
+                    $handle->terminateSelectedRun('scoped remote qualification complete');
+                }
+            }
+            fclose($workflowMessages);
+            fclose($ownerMessages);
+            $this->stopWorker($workflowPid);
+            $this->stopWorker($ownerPid);
+        }
+    }
+
+    public static function scopedRemoteCallbacks(): array
+    {
+        return [[false, CancellationPolicy::TryCancel], [false, CancellationPolicy::WaitCancellationCompleted],
+            [true, CancellationPolicy::WaitCancellationCompleted]];
+    }
+
     private function requestNativeScopeFixture(array $input): array
     {
         $process = proc_open(['timeout', '--kill-after=1', '12', 'docker', 'compose', 'exec', '-T', '--user', '1000:1000',
@@ -1994,6 +2103,29 @@ final class CooperativeCancellationTest extends TestCase
                 if (!$remoteRole) {
                     $directory = $this->directory;
                     $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind, ?string $childQueue = null, ?string $remoteQueue = null) use ($queue, $preparedLocal, $remotePolicy, $localPolicy, $directory): string {
+                        if (in_array($kind, ['scoped-remote-only', 'scoped-remote-group-only'], true)) {
+                            $result = $context->cancellationScope(static function () use ($context, $kind, $remotePolicy): string {
+                                try {
+                                    $options = ['cancellation_policy' => $remotePolicy, 'schedule_to_close_timeout' => 60];
+                                    if ($kind === 'scoped-remote-group-only') {
+                                        $context->all([$context->deferActivity('tests.php-cooperative-remote', [], $options),
+                                            new \DurableWorkflow\Worker\ParallelWorkflowCommand([$context->deferTimer(300)])]);
+                                    } else { $context->activity('tests.php-cooperative-remote', [], $options); }
+                                } catch (WorkflowCancelled $error) {
+                                    if (!$error->context instanceof \DurableWorkflow\Worker\ScopedCancellationContext) {
+                                        throw new RuntimeException('Scoped remote cleanup requires its committed context.');
+                                    }
+                                    $context->cancellationShield(static fn () => $context->sleep(1));
+                                    return json_encode($error->context->toArray(), JSON_THROW_ON_ERROR);
+                                }
+                                throw new RuntimeException('Blocked scoped callback completed without cancellation.');
+                            });
+                            if ($context->isCancellationRequested() || $context->cancellationContext() !== null) {
+                                throw new RuntimeException('Handled scope cancellation leaked into its parent.');
+                            }
+                            $context->sleep(1);
+                            return $result;
+                        }
                         try {
                             if (in_array($kind, ['scoped-root', 'scoped-local-root', 'scoped-timer-root', 'scoped-group-root'], true)) {
                                 $context->cancellationScope(static function () use ($context, $kind): void {
