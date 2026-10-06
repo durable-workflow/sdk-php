@@ -45,6 +45,9 @@ final class WorkflowContext
     /** @var array<string, ScopedCancellationContext> */
     private array $deliveredScopeCancellations = [];
 
+    /** @var array<string, array<string, string>> Original delivery snapshots, never renewed budgets. */
+    private array $deliveredScopeCleanup = [];
+
     private ?CancellationReplayClock $cancellationReplayClock = null;
 
     /** @var list<list<DeferredWorkflowOperation|ParallelWorkflowCommand>> */
@@ -630,8 +633,9 @@ final class WorkflowContext
 
     /** @internal Only a verified committed subtree marker can supply these contexts.
      * @param array<string, ScopedCancellationContext> $contexts
+     * @param array<string, array<string, string>> $cleanupSnapshots
      */
-    public function deliveredScopeCascade(array $contexts): WorkflowCancelled
+    public function deliveredScopeCascade(array $contexts, array $cleanupSnapshots): WorkflowCancelled
     {
         $active = $contexts[$this->cancellationScopeId] ?? null;
         if (!$active instanceof ScopedCancellationContext) {
@@ -643,6 +647,11 @@ final class WorkflowContext
                 || $context->rootContext->toArray() !== $active->rootContext->toArray()) {
                 throw new LogicException('Committed subtree delivery changes its original run or root.');
             }
+            $snapshot = $cleanupSnapshots[$scopeId] ?? null;
+            if ($snapshot === null || $snapshot['scope_id'] !== $scopeId || $snapshot['request_id'] !== $context->requestId) {
+                throw new LogicException('Committed subtree delivery requires its original cleanup snapshot.');
+            }
+            $this->deliveredScopeCleanup[$scopeId] = $snapshot;
         }
         $error = $this->deliveredCancellation($active->requestId, $active);
         $clock = $this->cancellationClock();
@@ -818,7 +827,7 @@ final class WorkflowContext
     {
         $this->assertActiveFiber();
         if (isset($this->deliveredScopeCancellations[$this->cancellationScopeId])
-            && !($command instanceof WorkflowCommand && $this->isPreparedScopeCleanup($command))) {
+            && !($command instanceof WorkflowCommand && $this->isScopeCleanup($command))) {
             throw new WorkflowClaimAborted('cancellation_scope_cleanup_authority_missing: a delivered scope cannot admit a new command.');
         }
 
@@ -827,21 +836,27 @@ final class WorkflowContext
 
     private function withCancellationScope(WorkflowCommand $command): WorkflowCommand
     {
-        if (isset($this->deliveredScopeCancellations[$this->cancellationScopeId]) && !$this->isPreparedScopeCleanup($command)) {
+        if (isset($this->deliveredScopeCancellations[$this->cancellationScopeId]) && !$this->isScopeCleanup($command)) {
             throw new WorkflowClaimAborted('cancellation_scope_cleanup_authority_missing: a delivered scope cannot admit a new operation.');
         }
         if (array_key_exists('cancellation_scope_id', $command->attributes)) {
             throw new \InvalidArgumentException('Operation scope membership is assigned by the workflow authoring boundary.');
+        }
+        if ($command->type === 'start_timer' && isset($this->deliveredScopeCancellations[$this->cancellationScopeId])) {
+            $snapshot = $this->deliveredScopeCleanup[$this->cancellationScopeId]
+                ?? throw new WorkflowClaimAborted('cancellation_scope_cleanup_authority_missing: cleanup timer requires its original delivery.');
+            $command = $command->withAttributes(['cancellation_cleanup' => array_intersect_key($snapshot,
+                array_flip(['scope_id', 'request_id', 'delivery_history_event_id']))]);
         }
 
         return $this->cancellationScopeId === 'root' ? $command
             : $command->withAttributes(['cancellation_scope_id' => $this->cancellationScopeId]);
     }
 
-    private function isPreparedScopeCleanup(WorkflowCommand $command): bool
+    private function isScopeCleanup(WorkflowCommand $command): bool
     {
-        return $this->prepareLocalActivities && $this->isCancellationShielded()
-            && $command->type === 'record_local_activity';
+        return $this->isCancellationShielded() && ($command->type === 'start_timer'
+            || ($this->prepareLocalActivities && $command->type === 'record_local_activity'));
     }
 
     private function assertActiveFiber(): void

@@ -206,7 +206,6 @@ final class CommittedCancellationScopeReplayTest extends TestCase
                         $workflow->cancellationShield(static function () use ($workflow, $operation, &$entered): void {
                             match ($operation) {
                                 'activity' => $workflow->activity('unqualified-cleanup'),
-                                'timer' => $workflow->sleep(1),
                                 'child' => $workflow->childWorkflow('unqualified-child'),
                                 'scope' => $workflow->cancellationScope(static function () use (&$entered): void { $entered = true; }),
                                 'side effect' => $workflow->sideEffect(static function () use (&$entered): void { $entered = true; }),
@@ -225,7 +224,7 @@ final class CommittedCancellationScopeReplayTest extends TestCase
 
     public static function newScopedEffects(): array
     {
-        return array_map(static fn (string $operation): array => [$operation], ['activity', 'timer', 'child', 'scope', 'side effect', 'memo', 'continuation']);
+        return array_map(static fn (string $operation): array => [$operation], ['activity', 'child', 'scope', 'side effect', 'memo', 'continuation']);
     }
 
     #[DataProvider('malformedHistory')]

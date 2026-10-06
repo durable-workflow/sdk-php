@@ -432,6 +432,13 @@ lineage. Ancestors retain their own context while the body unwinds, and the
 outer scope remains unaffected. Prepared local cleanup in any included scope
 uses that same preparation/delivery pair and its captured narrower authority
 ceiling. Replacement replay preserves all eight cleanup receipt fields.
+Explicitly shielded cleanup timers use the same original scope, request and
+delivery event proof. Their history carries all eight authority fields, including
+the original ancestor receipt for an included descendant. Replay validates that
+snapshot before workflow entry and refuses changed shielding. The Server refuses
+an authored delay that would reach the original authority deadline. It preserves
+the delay rather than firing early or granting more cleanup time. A later
+ancestor inventory excludes validated shielded cleanup timers.
 Shielded branches are excluded. Forged members, altered ancestry, deadlines,
 propagation events, omitted operations and changed authored calls fail before
 cleanup. Competing roots and overlapping subtree deliveries remain refused.
@@ -466,7 +473,7 @@ workers preserve an existing preparation or replay an existing delivery.
 
 The same source opt-in composes a run request with authored scopes. Its accepted
 run context is the canonical parent of inherited scope requests. Scoped delivery
-and shielded prepared cleanup replay before root delivery, then root cleanup can
+and shielded prepared local or timer cleanup replay before root delivery, then root cleanup can
 run after leaving the scope. Both retain the original root identity and deadline.
 Root delivery checks the active scope and each operation's recorded or deferred
 membership. A scoped leaf cannot become a root operation by returning its handle

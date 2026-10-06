@@ -7,6 +7,7 @@ namespace DurableWorkflow\Tests;
 use DurableWorkflow\Worker\CancellationScopeDeliveryReceipt;
 use DurableWorkflow\Worker\CancellationScopeHistory;
 use DurableWorkflow\Worker\CommittedCancellationScopeHistory;
+use DurableWorkflow\Worker\ScopedCancellationContext;
 use DurableWorkflow\Worker\WorkflowClaimAborted;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -108,11 +109,25 @@ final class CancellationScopeOperationProjectionTest extends TestCase
     {
         [$history, $receipt, $expected] = self::fixture('descendants');
         $original = self::prove($history, $receipt, $expected, false);
+        $delivered = $history[array_key_last($history)];
+        $context = ScopedCancellationContext::fromArray($delivered['payload']['cancellation']);
         $late = self::find($history, 'child-continued-before-preparation');
         $late['id'] = 'continued-after-delivery'; $late['payload']['child_workflow_run_id'] = 'future-child-run';
         $late['sequence'] = count($history)+1; $history[] = $late;
         $late = self::find($history, 'plain-timer');
         $late['id'] = 'future-timer'; $late['payload']['sequence'] = 21; $late['payload']['timer_id'] = 'future-timer-id';
+        // A timer admitted in this delivered scope must be shielded cleanup,
+        // using the original receipt and a fire time inside its fixed budget.
+        $late['timestamp'] = '2026-10-04T00:00:10.123456Z';
+        $late['payload']['delay_seconds'] = 1; $late['payload']['fire_at'] = '2026-10-04T00:00:11.123456Z';
+        $late['payload']['cancellation_cleanup'] = [
+            'scope_id' => $context->scopeId, 'operation_scope_id' => $context->scopeId,
+            'request_id' => $context->requestId, 'root_request_id' => $context->rootRequestId,
+            'delivery_history_event_id' => $delivered['id'],
+            'preparation_history_event_id' => $delivered['payload']['preparation_history_event_id'],
+            'cleanup_deadline_at' => $context->deadline()->format('Y-m-d\TH:i:s.u\Z'),
+            'authority_deadline_at' => $delivered['payload']['authority_deadline_at'],
+        ];
         $late['sequence'] = count($history)+1; $history[] = $late;
         $late = self::find($history, 'desc-child-opened');
         $late['id'] = 'future-scope-opened'; $late['payload']['scope_id'] = 'future-scope'; $late['payload']['sequence'] = 22;

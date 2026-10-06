@@ -602,7 +602,7 @@ final class CooperativeCancellationTest extends TestCase
     }
 
     #[DataProvider('runScopeCallbacks')]
-    public function testRunCancellationResumesInheritedScopedCleanupBeforeRootDelivery(bool $killDuringCleanup, bool $localWork): void
+    public function testRunCancellationResumesInheritedScopedCleanupBeforeRootDelivery(bool $killDuringCleanup, bool $localWork, bool $timerCleanup = false): void
     {
         if (getenv('DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION') !== '1') {
             self::markTestSkipped('Run and scope composition requires the exact Native source overlay.');
@@ -614,7 +614,8 @@ final class CooperativeCancellationTest extends TestCase
         $handle = null;
         try {
             $this->awaitMessage($messages, 'registered');
-            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, [$localWork ? 'scoped-local-root' : 'scoped-root']);
+            $kind = $timerCleanup ? 'scoped-timer-root' : ($localWork ? 'scoped-local-root' : 'scoped-root');
+            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, [$kind]);
             if ($localWork) { $this->awaitMessage($messages, 'scoped-work-entered'); }
             else { $this->awaitEvent($client, $handle, 'TimerScheduled'); }
             $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 30);
@@ -645,6 +646,22 @@ final class CooperativeCancellationTest extends TestCase
             self::assertCount(1, $scoped);
             self::assertSame($root['request_id'], $scoped[0]['payload']['cancellation']['root_context']['root_request_id']);
             self::assertSame($root['cleanup_deadline_at'], $scoped[0]['payload']['authority_deadline_at']);
+            if ($timerCleanup) {
+                $timers = array_values(array_filter($history, static fn (array $event): bool =>
+                    $event['event_type'] === 'TimerScheduled' && isset($event['payload']['cancellation_cleanup'])));
+                self::assertCount(1, $timers);
+                $snapshot = $timers[0]['payload']['cancellation_cleanup'];
+                self::assertSame($scoped[0]['payload']['scope_id'], $snapshot['scope_id']);
+                self::assertSame($snapshot['scope_id'], $snapshot['operation_scope_id']);
+                self::assertSame($scoped[0]['payload']['request_id'], $snapshot['request_id']);
+                self::assertSame($root['request_id'], $snapshot['root_request_id']);
+                self::assertSame($scoped[0]['id'], $snapshot['delivery_history_event_id']);
+                self::assertSame($scoped[0]['payload']['preparation_history_event_id'], $snapshot['preparation_history_event_id']);
+                self::assertSame($root['cleanup_deadline_at'], $snapshot['cleanup_deadline_at']);
+                self::assertSame($root['cleanup_deadline_at'], $snapshot['authority_deadline_at']);
+                self::assertSame(1, $timers[0]['payload']['delay_seconds']);
+                self::assertCount(1, array_filter($history, static fn (array $event): bool => $event['event_type'] === 'TimerFired'));
+            }
             $delivery = array_values(array_filter($history, static fn (array $event): bool =>
                 $event['event_type'] === 'CooperativeCancellationDelivered'))[0];
             self::assertLessThan($delivery['sequence'], $scoped[0]['sequence']);
@@ -686,6 +703,7 @@ final class CooperativeCancellationTest extends TestCase
             foreach ([false, true] as $local) {
                 yield ($local ? 'local' : 'timer').'-'.($kill ? 'replacement' : 'live') => [$kill, $local];
             }
+            yield 'cleanup-timer-'.($kill ? 'replacement' : 'live') => [$kill, false, true];
         }
     }
 
@@ -1963,7 +1981,7 @@ final class CooperativeCancellationTest extends TestCase
                     $directory = $this->directory;
                     $worker->registerWorkflow('tests.php-cooperative', static function (WorkflowContext $context, string $kind, ?string $childQueue = null, ?string $remoteQueue = null) use ($queue, $preparedLocal, $remotePolicy, $localPolicy, $directory): string {
                         try {
-                            if (in_array($kind, ['scoped-root', 'scoped-local-root'], true)) {
+                            if (in_array($kind, ['scoped-root', 'scoped-local-root', 'scoped-timer-root'], true)) {
                                 $context->cancellationScope(static function () use ($context, $kind): void {
                                     try {
                                         if ($kind === 'scoped-local-root') {
@@ -1972,6 +1990,9 @@ final class CooperativeCancellationTest extends TestCase
                                             ]);
                                         } else { $context->sleep(300); }
                                     } catch (WorkflowCancelled $error) {
+                                        if ($kind === 'scoped-timer-root') {
+                                            $context->cancellationShield(static fn () => $context->sleep(1));
+                                        }
                                         $context->cancellationShield(static fn () => $context->localActivity('tests.php-scope-cleanup',
                                             [$error->requestId, $context->cancellationContext()?->toArray()],
                                             ['retry_policy' => ['max_attempts' => 3]]));
@@ -2028,7 +2049,7 @@ final class CooperativeCancellationTest extends TestCase
                                 return (string) $error->requestId;
                             }
                             $context->cancellationShield(static fn () => $context->localActivity(
-                                in_array($kind, ['scoped-root', 'scoped-local-root'], true) ? 'tests.php-scope-cleanup' : 'tests.php-cooperative-cleanup',
+                                in_array($kind, ['scoped-root', 'scoped-local-root', 'scoped-timer-root'], true) ? 'tests.php-scope-cleanup' : 'tests.php-cooperative-cleanup',
                                 [$error->requestId, $context->cancellationContext()?->toArray()],
                                 $preparedLocal ? ['retry_policy' => ['max_attempts' => 3]] : []));
                             if ($kind === 'polyglot') {

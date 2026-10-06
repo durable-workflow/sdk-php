@@ -190,7 +190,9 @@ final class Replayer
                 $context->observeCancellationReplayTime($scopeDelivery['event']);
                 $suspended = $execution->throw($context->deliveredScopeCascade(array_map(
                     static fn (array $state): ScopedCancellationContext => $state['context'], $scopeDelivery['states'],
-                )));
+                ), array_map(static fn (array $state): array => CancellationScopeTimerCleanup::snapshot(
+                    $state['context'], $state['authority_deadline_at'], $scopeDelivery['event'],
+                ), $scopeDelivery['states'])));
                 continue 2;
             }
             if ($prepareCancellationScopeDelivery && !$context->isCancellationShielded()) {
@@ -1149,6 +1151,7 @@ final class Replayer
      *     child_policies?: array<string, string>,
      *     activity_cancellation_policy?: string,
      *     cancellation_scope_id?: string,
+     *     cancellation_cleanup?: array<string, string>,
      *     scope_parent?: string,
      *     scope_shield?: bool
      * }>
@@ -1158,6 +1161,7 @@ final class Replayer
         $steps = [];
         $childPolicies = [];
         $activityPolicies = [];
+        $timerCleanup = [];
         $conditionStepsByWaitId = [];
         $versionMarkerSequences = [];
         $versionMarkerChangeIds = [];
@@ -1295,6 +1299,10 @@ final class Replayer
                     resolutionOrder: $resolutionOrder,
                 );
             } elseif ($type === 'TimerScheduled') {
+                if (isset($payload['cancellation_cleanup'])) {
+                    $timerCleanup[$key] = array_intersect_key($payload['cancellation_cleanup'],
+                        array_flip(['scope_id', 'request_id', 'delivery_history_event_id']));
+                }
                 if (!in_array($payload['timer_kind'] ?? null, ['condition_timeout', 'signal_timeout'], true)) {
                     $steps[$key] ??= $this->step(
                         $sequence,
@@ -1554,6 +1562,9 @@ final class Replayer
             if (($steps[$key]['shape'] ?? null) === 'activity') {
                 $steps[$key]['activity_cancellation_policy'] = $policy;
             }
+        }
+        foreach ($timerCleanup as $key => $proof) {
+            if (isset($steps[$key])) { $steps[$key]['cancellation_cleanup'] = $proof; }
         }
         ksort($steps, SORT_NUMERIC);
 
@@ -2282,6 +2293,10 @@ final class Replayer
     /** @param array<string, mixed> $step */
     private function assertCommandMatchesStep(WorkflowCommand $command, array $step): void
     {
+        if (($command->attributes['cancellation_cleanup'] ?? null) != ($step['cancellation_cleanup'] ?? null)) {
+            throw new NonDeterministicWorkflow('Cleanup timer changed its original delivery or shielding.', $step['sequence'],
+                reason: 'cancellation_scope_cleanup_authority_mismatch');
+        }
         if (($command->attributes['cancellation_scope_id'] ?? 'root') !== ($step['cancellation_scope_id'] ?? 'root')) {
             throw new NonDeterministicWorkflow('Authored operation cancellation scope changed.', $step['sequence'],
                 reason: 'cancellation_scope_membership_changed');

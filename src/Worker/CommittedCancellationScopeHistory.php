@@ -47,11 +47,19 @@ final class CommittedCancellationScopeHistory
         foreach ($history as $historyIndex => $event) {
             $kind = $event['event_type'] ?? $event['type'] ?? null;
             $eventPayload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $timerCleanup = null;
+            if ($kind === 'TimerScheduled') {
+                try {
+                    $timerCleanup = CancellationScopeTimerCleanup::fromHistory($event, array_slice($history, 0, $historyIndex));
+                } catch (InvalidArgumentException $error) {
+                    throw new NonDeterministicWorkflow($error->getMessage(), reason: 'invalid_cancellation_scope_history');
+                }
+            }
             if ($kind === 'CancellationScopeOpened') {
                 $opened[$eventPayload['scope_id']] = true;
             }
             if (in_array($kind, ['ActivityScheduled', 'TimerScheduled', 'ChildWorkflowScheduled', 'ConditionWaitOpened', 'SignalWaitOpened'], true)
-                && is_int($eventPayload['sequence'] ?? null)) {
+                && is_int($eventPayload['sequence'] ?? null) && $timerCleanup === null) {
                 $admissions[$kind][$eventPayload['sequence']] = $scopes->memberships[$eventPayload['sequence']] ?? 'root';
                 if ($kind === 'ActivityScheduled') {
                     $localActivities[$eventPayload['sequence']] = ($eventPayload['local_activity'] ?? false) === true;

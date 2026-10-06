@@ -66,10 +66,13 @@ final class CancellationScopeOperationProjection
     {
         $members = [];
         $timerSequences = [];
-        foreach ($prefix as $event) {
+        foreach ($prefix as $index => $event) {
             $kind = $event['event_type'] ?? $event['type'] ?? null;
             $payload = $event['payload'];
             if ($field === 'timer_members' && $kind === 'TimerScheduled' && self::address($payload, 'timer') === $scopeId) {
+                if (CancellationScopeTimerCleanup::fromHistory($event, array_slice($prefix, 0, $index)) !== null) {
+                    continue;
+                }
                 $sequence = $payload['sequence'] ?? null; $id = $payload['timer_id'] ?? null;
                 $delay = $payload['delay_seconds'] ?? null; $fireAt = $payload['fire_at'] ?? null;
                 $timerKind = $payload['timer_kind'] ?? null;
