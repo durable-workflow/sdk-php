@@ -1,0 +1,177 @@
+name: Published mixed cancellation
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_image:
+        description: Immutable durableworkflow/server@sha256 digest
+        required: true
+        type: string
+      php_version:
+        description: Exact published PHP SDK version
+        required: true
+        type: string
+      python_version:
+        description: Exact published Python SDK version
+        required: true
+        type: string
+      rust_version:
+        description: Exact published Rust SDK version
+        required: true
+        type: string
+      cli_version:
+        description: Exact published CLI release version
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  mixed-cascade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      COMPOSE_PROJECT_NAME: published-cancellation-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_FILE: docker-compose.test.yml:docker-compose.published-cancellation.yml
+      DW_PUBLISHED_SERVER_IMAGE: ${{ inputs.server_image }}
+      PHP_SDK_VERSION: ${{ inputs.php_version }}
+      PYTHON_SDK_VERSION: ${{ inputs.python_version }}
+      RUST_SDK_VERSION: ${{ inputs.rust_version }}
+      CLI_VERSION: ${{ inputs.cli_version }}
+      DURABLE_WORKFLOW_AUTH_TOKEN: test-token
+      DURABLE_WORKFLOW_COOPERATIVE_QUALIFICATION: '1'
+      DURABLE_WORKFLOW_PUBLISHED_CANCELLATION_QUALIFICATION: '1'
+      DURABLE_WORKFLOW_POLYGLOT_QUALIFICATION: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Require exact published identities
+        run: |
+          set -euo pipefail
+          [[ "$DW_PUBLISHED_SERVER_IMAGE" =~ ^durableworkflow/server@sha256:[0-9a-f]{64}$ ]]
+          for version in "$PHP_SDK_VERSION" "$PYTHON_SDK_VERSION" "$RUST_SDK_VERSION" "$CLI_VERSION"; do
+            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[1-9][0-9]*)?$ ]]
+          done
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.3'
+          extensions: pcntl, posix
+          tools: composer:v2
+          coverage: none
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.86.0
+      - name: Install the published SDKs and CLI
+        run: |
+          set -euo pipefail
+          mkdir -p build/consumer build/rust-worker/src build/published-evidence
+          composer init --working-dir=build/consumer --name=durable-workflow/published-cancellation --no-interaction
+          composer require --working-dir=build/consumer "durable-workflow/sdk:$PHP_SDK_VERSION" 'phpunit/phpunit:^10.5' --no-scripts --no-interaction --prefer-dist --no-progress
+          python -m pip install packaging==25.0 "durable-workflow==$PYTHON_SDK_VERSION"
+          python -m pip freeze > build/python-packages.txt
+          cp tests/Integration/polyglot-rust/src/main.rs build/rust-worker/src/main.rs
+          sed -E "s/^(durable-workflow = )\"=[^\"]+\"$/\1\"=$RUST_SDK_VERSION\"/" tests/Integration/polyglot-rust/Cargo.toml > build/rust-worker/Cargo.toml
+          cargo build --manifest-path build/rust-worker/Cargo.toml --message-format=json > build/rust-build.json
+          binary="$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "dw-polyglot-cancellation-activity") | .executable // empty' build/rust-build.json)"
+          test -x "$binary"
+          curl -fsSL "https://github.com/durable-workflow/cli/releases/download/$CLI_VERSION/dw.phar" -o build/dw.phar
+          curl -fsSL "https://github.com/durable-workflow/cli/releases/download/$CLI_VERSION/SHA256SUMS" -o build/SHA256SUMS
+          awk '$2 == "dw.phar" {print}' build/SHA256SUMS > build/cli-checksum
+          test "$(wc -l < build/cli-checksum)" = 1
+          (cd build && sha256sum -c cli-checksum)
+          php build/dw.phar --version > build/cli-version.txt
+          {
+            printf 'DURABLE_WORKFLOW_POLYGLOT_PYTHON_BINARY=%s\n' "$(command -v python)"
+            printf 'DURABLE_WORKFLOW_POLYGLOT_RUST_BINARY=%s\n' "$binary"
+            printf 'DURABLE_WORKFLOW_CANCELLATION_CLI_BINARY=%s/build/dw.phar\n' "$GITHUB_WORKSPACE"
+            printf 'DURABLE_WORKFLOW_POLYGLOT_ARTIFACT_DIRECTORY=%s/build/published-evidence\n' "$GITHUB_WORKSPACE"
+          } >> "$GITHUB_ENV"
+      - name: Verify registry packages and prevent source fallback
+        run: |
+          set -euo pipefail
+          php <<'PHP'
+          <?php
+          require 'build/consumer/vendor/autoload.php';
+          $name = 'durable-workflow/sdk';
+          $version = Composer\InstalledVersions::getPrettyVersion($name);
+          if ($version !== getenv('PHP_SDK_VERSION')) {
+              throw new RuntimeException('Installed PHP version differs from the selected release.');
+          }
+          $root = realpath(Composer\InstalledVersions::getInstallPath($name));
+          $implementation = realpath((new ReflectionClass(DurableWorkflow\Client::class))->getFileName());
+          if ($root === false || $implementation === false || !str_starts_with($implementation, $root.'/')) {
+              throw new RuntimeException('PHP loaded a source checkout instead of the registry package.');
+          }
+          PHP
+          python - <<'PY'
+          import importlib.metadata
+          import os
+          from packaging.version import Version
+          assert Version(importlib.metadata.version('durable-workflow')) == Version(os.environ['PYTHON_SDK_VERSION'])
+          PY
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+          packages = tomllib.loads(Path('build/rust-worker/Cargo.lock').read_text())['package']
+          sdk = [p for p in packages if p['name'] == 'durable-workflow']
+          assert len(sdk) == 1 and sdk[0]['version'] == os.environ['RUST_SDK_VERSION']
+          assert sdk[0]['source'].startswith('registry+') and len(sdk[0]['checksum']) == 64
+          PY
+          jq -n --arg runner "$GITHUB_SHA" --arg server "$DW_PUBLISHED_SERVER_IMAGE" --arg php "$PHP_SDK_VERSION" --arg python "$PYTHON_SDK_VERSION" --arg rust "$RUST_SDK_VERSION" --arg cli "$CLI_VERSION" '{qualification:"published",runner_commit:$runner,server_image:$server,php_sdk:$php,python_sdk:$python,rust_sdk:$rust,cli:$cli}' > build/published-tuple.json
+      - name: Start only the immutable published Server
+        run: |
+          set -euo pipefail
+          docker compose config --format json > build/runtime-compose.json
+          jq -e --arg image "$DW_PUBLISHED_SERVER_IMAGE" '[.services|to_entries[]|select(.key|IN("bootstrap","server","worker","repair"))|(.value.image == $image and (.value|has("build")|not))]|length==4 and all' build/runtime-compose.json
+          docker compose up -d --no-build --pull always --wait --wait-timeout 300
+          port="$(docker compose port server 8080 | sed 's/.*://')"
+          [[ "$port" =~ ^[0-9]+$ ]]
+          endpoint="http://127.0.0.1:$port"
+          curl -fsS -H 'Authorization: Bearer test-token' "$endpoint/api/cluster/info" > build/cluster-info.json
+          docker compose exec -T --user 1000:1000 server php -r 'require "/app/vendor/autoload.php"; echo json_encode(["workflow" => Composer\InstalledVersions::getPrettyVersion("durable-workflow/workflow"), "workflow_reference" => Composer\InstalledVersions::getReference("durable-workflow/workflow")], JSON_THROW_ON_ERROR), "\n";' > build/runtime-package-identity.json
+          php <<'PHP'
+          <?php
+          $sdk = json_decode(file_get_contents('build/consumer/vendor/durable-workflow/sdk/composer.json'), true, flags: JSON_THROW_ON_ERROR);
+          $cluster = json_decode(file_get_contents('build/cluster-info.json'), true, flags: JSON_THROW_ON_ERROR);
+          $expected = $sdk['extra']['durable-workflow']['supported-server-versions'];
+          if (($cluster['version'] ?? null) !== $expected) {
+              throw new RuntimeException('The runtime version differs from the published SDK compatibility tuple.');
+          }
+          PHP
+          printf 'DURABLE_WORKFLOW_RUNTIME_URL=%s\n' "$endpoint" >> "$GITHUB_ENV"
+      - name: Prove the original 30-second mixed cascade
+        run: |
+          set -o pipefail
+          build/consumer/vendor/bin/phpunit --no-configuration --bootstrap build/consumer/vendor/autoload.php --filter testPolyglotCascadeRecoversPhpCleanupWithinOriginalThirtySeconds tests/Integration/CooperativeCancellationTest.php --fail-on-warning --fail-on-skipped --log-junit build/published-cancellation.xml | tee build/published-cancellation.log
+      - name: Retain the published tuple and actual cascade
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: published-cancellation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/published-*.json
+            build/published-cancellation.xml
+            build/published-cancellation.log
+            build/published-evidence/
+            build/consumer/composer.lock
+            build/rust-worker/Cargo.lock
+            build/python-packages.txt
+            build/SHA256SUMS
+            build/cli-version.txt
+            build/cluster-info.json
+            build/runtime-compose.json
+            build/runtime-package-identity.json
+          if-no-files-found: warn
+          retention-days: 90
+      - name: Emit bounded runtime diagnostics
+        if: failure()
+        run: docker compose logs --no-color --tail 100 bootstrap server worker repair
+      - name: Remove the isolated runtime
+        if: always()
+        run: docker compose down -v --rmi all

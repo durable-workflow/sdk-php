@@ -113,24 +113,26 @@ final class Saga
         }
 
         $this->compensating = true;
-        foreach (array_reverse($this->compensations) as $compensation) {
-            try {
-                $this->context->activity(
-                    $compensation['activity_type'],
-                    $compensation['arguments'],
-                    $compensation['options'],
-                );
-            } catch (ActivityFailed $compensationFailure) {
-                $this->failure = new SagaCompensationFailed(
-                    $forwardFailure,
-                    $compensationFailure,
-                    $compensation['activity_type'],
-                    $compensation['registration_order'],
-                );
+        $this->context->cancellationShield(function () use ($forwardFailure): void {
+            foreach (array_reverse($this->compensations) as $compensation) {
+                try {
+                    $this->context->activity(
+                        $compensation['activity_type'],
+                        $compensation['arguments'],
+                        $compensation['options'],
+                    );
+                } catch (ActivityFailed $compensationFailure) {
+                    $this->failure = new SagaCompensationFailed(
+                        $forwardFailure,
+                        $compensationFailure,
+                        $compensation['activity_type'],
+                        $compensation['registration_order'],
+                    );
 
-                throw $this->failure;
+                    throw $this->failure;
+                }
             }
-        }
+        });
 
         $this->compensating = false;
         $this->compensated = true;

@@ -37,11 +37,22 @@ use DurableWorkflow\Model\WorkflowStreamDescription;
 use DurableWorkflow\Model\WorkflowStreamItem;
 use DurableWorkflow\Model\WorkflowStreamPage;
 use DurableWorkflow\Transport\Psr18Transport;
+use DurableWorkflow\Transport\BoundedTransport;
+use DurableWorkflow\Transport\BoundedPayloadTransport;
+use DurableWorkflow\Transport\BoundedPayloadUploadTransport;
+use DurableWorkflow\Transport\PayloadTransport;
+use DurableWorkflow\Transport\PayloadUploadTransport;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Transport\RuntimePayloads;
 use DurableWorkflow\Transport\RuntimePayloadUploads;
+use DurableWorkflow\Transport\RequestBudget;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\CapabilityManifest;
+use DurableWorkflow\Worker\CancellationRequest;
+use DurableWorkflow\Worker\CancellationDelivery;
+use DurableWorkflow\Worker\CancellationScopeOpenReceipt;
+use DurableWorkflow\Worker\CancellationScopeDeliveryReceipt;
+use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkerSessionOptions;
 use InvalidArgumentException;
 
@@ -57,6 +68,7 @@ final class Client implements WorkflowClientInterface
     private readonly Transport $transport;
     private readonly PayloadCodec $codec;
     private readonly RuntimePayloadUploads $payloadUploads;
+    private bool $boundedWorkerRequests = false;
 
     public function __construct(
         string $baseUri,
@@ -68,12 +80,16 @@ final class Client implements WorkflowClientInterface
         ?string $controlToken = null,
         ?string $workerToken = null,
         public readonly int $maxExternalPayloadBytes = 67108864,
+        public readonly string $workerProtocolVersion = Version::WORKER_PROTOCOL,
     ) {
         if (trim($baseUri) === '') {
             throw new InvalidArgumentException('The Durable Workflow server URI cannot be empty.');
         }
         if ($maxExternalPayloadBytes < 1) {
             throw new InvalidArgumentException('External payload response limit must be positive.');
+        }
+        if (!in_array($workerProtocolVersion, [Version::WORKER_PROTOCOL, Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL], true)) {
+            throw new InvalidArgumentException('Worker protocol must be the SDK default or the cooperative qualification protocol.');
         }
         $normalizedBaseUri = rtrim($baseUri, '/');
         $basePath = parse_url($normalizedBaseUri, PHP_URL_PATH);
@@ -107,6 +123,22 @@ final class Client implements WorkflowClientInterface
     public function payloadCodec(): PayloadCodec
     {
         return $this->codec;
+    }
+
+    /** @internal Isolate the cooperative worker's I/O policy from its caller's Client. */
+    public function withBoundedWorkerRequests(): self
+    {
+        if (!$this->transport instanceof BoundedTransport || !$this->transport->supportsBoundedRequests()) {
+            throw new InvalidArgumentException('Cooperative workers require a transport that honors bounded requests.');
+        }
+        if (($this->transport instanceof PayloadTransport && !$this->transport instanceof BoundedPayloadTransport)
+            || ($this->transport instanceof PayloadUploadTransport && !$this->transport instanceof BoundedPayloadUploadTransport)) {
+            throw new InvalidArgumentException('Cooperative workers require bounded payload transfer capabilities.');
+        }
+        $copy = clone $this;
+        $copy->boundedWorkerRequests = true;
+
+        return $copy;
     }
 
     /** Return a new client with the same transport, authentication, and codec for another namespace. */
@@ -254,12 +286,24 @@ final class Client implements WorkflowClientInterface
         return $runs;
     }
 
-    /** @return array<string, mixed> */
-    public function workflowHistory(string $workflowId, string $runId): array
+    /**
+     * Read one bounded history page. Pass its next_page_token to continue.
+     *
+     * @return array<string, mixed>
+     */
+    public function workflowHistory(
+        string $workflowId,
+        string $runId,
+        ?int $pageSize = null,
+        ?string $nextPageToken = null,
+    ): array
     {
         return $this->control(
             'GET',
-            '/workflows/'.$this->segment($workflowId).'/runs/'.$this->segment($runId).'/history',
+            $this->pathWithQuery(
+                '/workflows/'.$this->segment($workflowId).'/runs/'.$this->segment($runId).'/history',
+                ['page_size' => $pageSize, 'next_page_token' => $nextPageToken],
+            ),
         );
     }
 
@@ -550,6 +594,60 @@ final class Client implements WorkflowClientInterface
             $this->workflowOperationPath($workflowId, $runId, 'cancel'),
             $this->withoutNulls(['reason' => $reason]),
         );
+    }
+
+    /**
+     * Request bounded workflow-authored cleanup on a capable runtime.
+     * Repeated requests retain the Server's original identity and deadline.
+     *
+     * @return array<string, mixed>
+     */
+    public function requestWorkflowCancellation(
+        string $workflowId,
+        ?string $reason = null,
+        ?int $cleanupTimeoutSeconds = null,
+        ?string $runId = null,
+    ): array {
+        if (trim($workflowId) === '' || ($runId !== null && trim($runId) === '')) {
+            throw new InvalidArgumentException('Workflow ID and any selected run ID must be non-empty.');
+        }
+        if ($cleanupTimeoutSeconds !== null && ($cleanupTimeoutSeconds < 1 || $cleanupTimeoutSeconds > 3600)) {
+            throw new InvalidArgumentException('Cleanup timeout must be between 1 and 3600 seconds.');
+        }
+
+        $protocol = $this->clusterInfo()->raw['worker_protocol'] ?? null;
+        if (!is_array($protocol)
+            || !is_string($protocol['version'] ?? null)
+            || !Version::supportsCooperativeCancellation($protocol['version'])
+            || !is_array($protocol['server_capabilities'] ?? null)
+            || ($protocol['server_capabilities']['cooperative_cancellation'] ?? null) !== true) {
+            throw new \LogicException(
+                'Runtime must explicitly discover cooperative cancellation with compatible worker protocol 1.20.',
+            );
+        }
+
+        $result = $this->control('POST', $this->workflowOperationPath($workflowId, $runId, 'request-cancellation'),
+            $this->withoutNulls(['reason' => $reason, 'cleanup_timeout_seconds' => $cleanupTimeoutSeconds]),
+        );
+        try {
+            if (($result['accepted'] ?? null) !== true
+                || !is_bool($result['duplicate'] ?? null)
+                || ($result['workflow_id'] ?? null) !== $workflowId
+                || !is_string($result['run_id'] ?? null) || trim($result['run_id']) === ''
+                || ($runId !== null && $result['run_id'] !== $runId)
+                || !is_array($result['cancellation_request'] ?? null)
+                || array_is_list($result['cancellation_request'])) {
+                throw new InvalidArgumentException('Cancellation request response is not bound to the selected workflow/run.');
+            }
+            CancellationRequest::fromObservation($result['cancellation_request']);
+        } catch (InvalidArgumentException $error) {
+            throw new ServerException(
+                'Invalid cooperative cancellation acknowledgment.', 200,
+                'invalid_cooperative_cancellation_response', previous: $error,
+            );
+        }
+
+        return $result;
     }
 
     /** @return array<string, mixed> */
@@ -1124,16 +1222,19 @@ final class Client implements WorkflowClientInterface
      * @param array<string, int> $taskSlots
      * @return array<string, mixed>
      */
-    public function heartbeatWorker(string $workerId, array $taskSlots = []): array
+    public function heartbeatWorker(string $workerId, array $taskSlots = [], ?RequestBudget $budget = null): array
     {
-        return $this->worker('POST', '/worker/heartbeat', $this->withoutNulls([
+        if ($budget !== null && !$this->boundedWorkerRequests) {
+            throw new \LogicException('A worker authority budget requires bounded worker requests.');
+        }
+        return $this->request('POST', '/worker/heartbeat', true, $this->withoutNulls([
             'worker_id' => $workerId,
             'task_slots' => $taskSlots ?: null,
             'process_metrics' => [
                 'process_id' => getmypid(),
                 'process_uptime_seconds' => 0,
             ],
-        ]));
+        ]), budget: $budget);
     }
 
     public function deregisterWorker(string $workerId): void
@@ -1194,12 +1295,349 @@ final class Client implements WorkflowClientInterface
         string $leaseOwner,
         int $attempt,
         string $nextPageToken,
+        ?RequestBudget $budget = null,
     ): array {
-        return $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/history', [
+        return $this->request('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/history', true, [
             'lease_owner' => $leaseOwner,
             'workflow_task_attempt' => $attempt,
             'next_history_page_token' => $nextPageToken,
-        ]);
+        ], budget: $budget);
+    }
+
+    /**
+     * @internal Candidate protocol 1.20 prepared-local operations. Callers must
+     * validate the operation's receipt before executing or resuming application code.
+     * @param array<string, mixed> $body
+     * @return array<string, mixed>
+     */
+    public function preparedLocalActivityOperation(
+        string $taskId,
+        string $leaseOwner,
+        int $attempt,
+        string $operation,
+        array $body = [],
+        ?string $activityAttemptId = null,
+        ?RequestBudget $budget = null,
+    ): array {
+        if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion)) {
+            throw new \LogicException('Prepared local activity operations require worker protocol 1.20.');
+        }
+        if ($budget !== null && !$this->boundedWorkerRequests) {
+            throw new \LogicException('A prepared activity authority budget requires bounded worker requests.');
+        }
+        $admission = in_array($operation, ['checkpoint', 'checkpoint-group', 'prepare', 'recover'], true);
+        $existing = in_array($operation, ['control', 'heartbeat', 'outcome', 'acknowledge-cancellation'], true);
+        if ((!$admission && !$existing) || trim($taskId) === '' || trim($leaseOwner) === '' || $attempt < 1
+            || ($admission && $activityAttemptId !== null)
+            || ($existing && ($activityAttemptId === null || trim($activityAttemptId) === ''))
+            || array_key_exists('lease_owner', $body) || array_key_exists('workflow_task_attempt', $body)) {
+            throw new InvalidArgumentException('Invalid prepared local operation or claim authority.');
+        }
+        $path = '/worker/workflow-tasks/'.$this->segment($taskId).'/local-activities/'
+            .($activityAttemptId === null ? '' : $this->segment($activityAttemptId).'/').$operation;
+
+        return $this->request('POST', $path, true, [
+            'lease_owner' => $leaseOwner, 'workflow_task_attempt' => $attempt, ...$body,
+        ], budget: $budget);
+    }
+
+    /**
+     * @internal Unfrozen scope admission transport. This does not negotiate scope
+     * execution or validate the canonical receipt. Preparation and delivery need
+     * an explicit shared budget and cannot supply new deadline authority.
+     * The workflow replay layer must
+     * verify committed prefix/scope history before entering application code.
+     * @param array<string, mixed> $body
+     * @return array<string, mixed>
+     */
+    public function cancellationScopeOperation(
+        string $taskId,
+        string $leaseOwner,
+        int $attempt,
+        string $operation,
+        array $body = [],
+        ?RequestBudget $budget = null,
+    ): array {
+        if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion)) {
+            throw new \LogicException('Cancellation scope admission requires worker protocol 1.20.');
+        }
+        if ($budget !== null && !$this->boundedWorkerRequests) {
+            throw new \LogicException('A cancellation scope authority budget requires bounded worker requests.');
+        }
+        if (!in_array($operation, ['open', 'checkpoint', 'prepare', 'deliver'], true) || trim($taskId) === '' || trim($leaseOwner) === ''
+            || $attempt < 1 || array_key_exists('lease_owner', $body) || array_key_exists('workflow_task_attempt', $body)) {
+            throw new InvalidArgumentException('Invalid cancellation scope operation or original claim authority.');
+        }
+        if (in_array($operation, ['prepare', 'deliver'], true)) {
+            if (array_diff(array_keys($body), ['scope_id', 'request_id', 'sequence', 'call_kind',
+                'sequence_span', 'operation_sequence', 'operation_sequence_span']) !== []) {
+                throw new InvalidArgumentException('Scope delivery accepts only its original authored boundary.');
+            }
+            foreach (['scope_id', 'request_id'] as $field) {
+                $identity = $body[$field] ?? null;
+                if (!is_string($identity) || trim($identity) === '' || strlen($identity) > 255
+                    || preg_match('//u', $identity) !== 1 || ($field === 'scope_id' && $identity === 'root')) {
+                    throw new InvalidArgumentException('Scope delivery requires its original scope and request identities.');
+                }
+            }
+            CancellationDelivery::fromPayload([...$body, 'workflow_command_id' => $body['request_id']]);
+            if (!$this->boundedWorkerRequests || $budget === null) {
+                throw new \LogicException('Scope preparation and delivery require an explicit shared bounded authority budget.');
+            }
+        }
+
+        return $this->request('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/cancellation-scopes/'.$operation, true, [
+            'lease_owner' => $leaseOwner, 'workflow_task_attempt' => $attempt, ...$body,
+        ], budget: $budget);
+    }
+
+    /**
+     * @internal Unfrozen canonical opening admission. This does not enable scope
+     * execution. Return an identity only after all original-claim history pages
+     * prove the authored opening. A transport reconciliation reuses the same
+     * boundary, claim and monotonic budget, without releasing or renewing it.
+     */
+    public function openCancellationScopeOnClaim(
+        string $taskId,
+        string $runId,
+        string $leaseOwner,
+        int $attempt,
+        int $sequence,
+        string $parentScopeId = 'root',
+        bool $shieldParent = false,
+        ?RequestBudget $budget = null,
+    ): CancellationScopeOpenReceipt {
+        if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion) || !$this->boundedWorkerRequests) {
+            throw new \LogicException('Canonical scope opening requires protocol 1.20 and bounded worker requests.');
+        }
+        foreach ([$taskId, $runId, $leaseOwner, $parentScopeId] as $identity) {
+            if (trim($identity) === '' || strlen($identity) > 255 || preg_match('//u', $identity) !== 1) {
+                throw new InvalidArgumentException('Scope opening needs bounded original claim, run and parent identities.');
+            }
+        }
+        if ($attempt < 1 || $sequence < 1) {
+            throw new InvalidArgumentException('Scope opening needs positive original attempt and authored sequence.');
+        }
+        $expected = ['task_id' => $taskId, 'workflow_run_id' => $runId, 'lease_owner' => $leaseOwner,
+            'workflow_task_attempt' => $attempt, 'sequence' => $sequence, 'parent_scope_id' => $parentScopeId,
+            'shield_parent' => $shieldParent, 'namespace' => $this->namespace];
+        $body = ['sequence' => $sequence, 'parent_scope_id' => $parentScopeId, 'shield_parent' => $shieldParent];
+        $budget ??= new RequestBudget(5);
+        try {
+            try {
+                $receipt = $this->cancellationScopeOperation($taskId, $leaseOwner, $attempt, 'open', $body, $budget);
+            } catch (ServerException $error) {
+                if (!$error->isTransientConnectionFailure() && !$error->isTransientUpstreamFailure()) {
+                    throw $error;
+                }
+                $budget->remainingSeconds();
+                $receipt = $this->cancellationScopeOperation($taskId, $leaseOwner, $attempt, 'open', $body, $budget);
+            }
+            $token = CancellationScopeOpenReceipt::assertAcknowledgement($receipt, $expected);
+            $history = $this->cancellationScopeClaimHistory($taskId, $leaseOwner, $attempt, $token, $budget);
+            $scope = CancellationScopeOpenReceipt::fromCanonicalHistory($receipt, $history, $expected);
+            $budget->remainingSeconds();
+
+            return $scope;
+        } catch (WorkflowClaimAborted $error) {
+            throw $error;
+        } catch (\Throwable $error) {
+            throw new WorkflowClaimAborted('Scope opening authority could not be proved on the original claim.', previous: $error);
+        }
+    }
+
+    /**
+     * @internal Verify a scope boundary and its frozen operations and subtree on its original claim.
+     * No Worker capability or cleanup authority is granted. Delivery requires a
+     * previously proved preparation. Reconciliation and every history page
+     * share the caller's original monotonic budget without renewing it.
+     * Execution coordination enforces any acknowledged narrower ceiling before
+     * reading history. The default also supports read-only historical proof.
+     */
+    public function cancellationScopeBoundaryOnClaim(
+        string $taskId,
+        string $runId,
+        string $workflowId,
+        string $leaseOwner,
+        int $attempt,
+        string $scopeId,
+        CancellationDelivery $boundary,
+        string $phase,
+        RequestBudget $budget,
+        ?CancellationScopeDeliveryReceipt $preparation = null,
+        bool $enforceAuthorityDeadline = false,
+    ): CancellationScopeDeliveryReceipt {
+        if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion) || !$this->boundedWorkerRequests) {
+            throw new \LogicException('Canonical scope boundaries require protocol 1.20 and bounded worker requests.');
+        }
+        foreach ([$taskId, $runId, $workflowId, $leaseOwner, $scopeId, $boundary->requestId] as $identity) {
+            if (trim($identity) === '' || strlen($identity) > 255 || preg_match('//u', $identity) !== 1) {
+                throw new InvalidArgumentException('Scope boundaries require bounded original claim and cancellation identities.');
+            }
+        }
+        $delivering = $phase === 'deliver';
+        if (!in_array($phase, ['prepare', 'deliver'], true) || $attempt < 1 || $scopeId === 'root'
+            || !in_array($boundary->callKind, ['activity', 'local_activity', 'timer', 'condition', 'child', 'parallel'], true)
+            || ($delivering && $preparation === null) || (!$delivering && $preparation !== null)) {
+            throw new InvalidArgumentException('Scope delivery requires its verified original preparation and claim.');
+        }
+        if ($preparation !== null && ($preparation->context->workflowRunId !== $runId
+            || $preparation->context->workflowInstanceId !== $workflowId || $preparation->context->scopeId !== $scopeId
+            || $preparation->boundary != $boundary)) {
+            throw new InvalidArgumentException('Scope delivery cannot borrow another verified preparation.');
+        }
+        $body = ['scope_id' => $scopeId, 'request_id' => $boundary->requestId, 'sequence' => $boundary->sequence,
+            'call_kind' => $boundary->callKind, 'sequence_span' => $boundary->sequenceSpan,
+            'operation_sequence' => $boundary->operationSequence, 'operation_sequence_span' => $boundary->operationSequenceSpan];
+        $expected = ['task_id' => $taskId, 'workflow_run_id' => $runId, 'workflow_instance_id' => $workflowId,
+            'lease_owner' => $leaseOwner, 'workflow_task_attempt' => $attempt, 'namespace' => $this->namespace, ...$body];
+        try {
+            do {
+                $budget->remainingSeconds();
+                try {
+                    $receipt = $this->cancellationScopeOperation($taskId, $leaseOwner, $attempt, $phase, $body, $budget);
+                } catch (ServerException $error) {
+                    if (!$error->isTransientConnectionFailure() && !$error->isTransientUpstreamFailure()) {
+                        throw $error;
+                    }
+                    $budget->remainingSeconds();
+                    $receipt = $this->cancellationScopeOperation($taskId, $leaseOwner, $attempt, $phase, $body, $budget);
+                }
+                $pending = $delivering && ($receipt['reason'] ?? null) === 'cancellation_scope_activity_stop_not_acknowledged';
+                if ($pending) {
+                    if (array_key_exists('history_event_id', $receipt)) {
+                        throw new WorkflowClaimAborted('Pending scope stop cannot claim a committed delivery.');
+                    }
+                    // Prove only the retained preparation until the callback stops.
+                    // This internal frame grants no delivery or cleanup authority.
+                    $receipt['reason'] = null;
+                    $receipt['history_event_id'] = $preparation->preparationHistoryEventId;
+                }
+                $committed = $delivering && !$pending;
+                $token = CancellationScopeDeliveryReceipt::assertAcknowledgement($receipt, $expected, $committed);
+                if ($enforceAuthorityDeadline) {
+                    $budget->restrictWallAuthorityDeadline(new \DateTimeImmutable($receipt['authority_deadline_at']));
+                    $budget->remainingSeconds();
+                }
+                $history = $this->cancellationScopeClaimHistory($taskId, $leaseOwner, $attempt, $token, $budget);
+                $proved = CancellationScopeDeliveryReceipt::fromCanonicalHistory($receipt, $history, $expected, $committed);
+                if ($preparation !== null) {
+                    $proved->assertOriginalPreparation($preparation);
+                }
+                $budget->remainingSeconds();
+
+                if (!$pending) {
+                    return $proved;
+                }
+                // Remote callbacks are supervised by separate processes. Keep the
+                // original claim and budget while their stop receipt is committed.
+                usleep(100000);
+            } while (true);
+        } catch (WorkflowClaimAborted $error) {
+            throw $error;
+        } catch (\Throwable $error) {
+            throw new WorkflowClaimAborted('Scope boundary authority could not be proved on the original claim.', previous: $error);
+        }
+    }
+
+    /** @return list<mixed> */
+    private function cancellationScopeClaimHistory(string $taskId, string $leaseOwner, int $attempt, string $token, RequestBudget $budget): array
+    {
+        $seen = [];
+        $history = [];
+        do {
+            if (isset($seen[$token])) {
+                throw new WorkflowClaimAborted('Scope history repeated its opaque cursor.');
+            }
+            $seen[$token] = true;
+            $page = $this->request('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/history', true, [
+                'lease_owner' => $leaseOwner, 'workflow_task_attempt' => $attempt, 'next_history_page_token' => $token,
+            ], budget: $budget);
+            if (($page['task_id'] ?? null) !== $taskId || ($page['workflow_task_attempt'] ?? null) !== $attempt
+                || !is_array($page['history_events'] ?? null) || !array_is_list($page['history_events'])
+                || !array_key_exists('next_history_page_token', $page)
+                || ($page['next_history_page_token'] !== null && (!is_string($page['next_history_page_token'])
+                    || trim($page['next_history_page_token']) === ''))) {
+                throw new WorkflowClaimAborted('Scope history lacks its original claim or complete page shape.');
+            }
+            array_push($history, ...$page['history_events']);
+            $token = $page['next_history_page_token'];
+        } while ($token !== null);
+
+        return $history;
+    }
+
+    /**
+     * Commit delivery on the current claim without releasing or renewing its lease.
+     * Reload canonical history before throwing cancellation into workflow code,
+     * including when the delivery acknowledgment is lost or malformed.
+     *
+     * @return array<string, mixed>
+     */
+    public function deliverWorkflowCancellation(
+        string $taskId,
+        string $leaseOwner,
+        int $attempt,
+        CancellationDelivery $delivery,
+    ): array {
+        if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion)) {
+            throw new \LogicException('Cooperative cancellation delivery requires worker protocol 1.20.');
+        }
+        if (trim($taskId) === '' || trim($leaseOwner) === '' || $attempt < 1) {
+            throw new InvalidArgumentException('Cancellation delivery requires a task ID, lease owner and positive attempt.');
+        }
+        $body = [
+            'lease_owner' => $leaseOwner,
+            'workflow_task_attempt' => $attempt,
+            'request_id' => $delivery->requestId,
+            'sequence' => $delivery->sequence,
+            'call_kind' => $delivery->callKind,
+            'sequence_span' => $delivery->sequenceSpan,
+        ];
+        if ($delivery->operationSequence !== null) {
+            $body['operation_sequence'] = $delivery->operationSequence;
+            $body['operation_sequence_span'] = $delivery->operationSequenceSpan;
+        }
+        $response = $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/deliver-cancellation', $body);
+        try {
+            if (($response['delivered'] ?? null) === false
+                && match ($response['reason'] ?? null) {
+                    'cancellation_waiting_for_child' => in_array($delivery->callKind, ['child', 'parallel', 'selection_handle'], true),
+                    'cancellation_waiting_for_activity' => in_array($delivery->callKind, ['activity', 'local_activity', 'parallel', 'selection_handle'], true),
+                    default => false,
+                }
+                && ($response['claim_released'] ?? null) === true
+                && ($response['task_id'] ?? null) === $taskId
+                && ($response['request_id'] ?? null) === null
+                && ($response['sequence'] ?? null) === null
+                && ($response['call_kind'] ?? null) === null
+                && ($response['sequence_span'] ?? null) === null
+                && ($response['operation_sequence'] ?? null) === null
+                && ($response['operation_sequence_span'] ?? null) === null) {
+                return $response;
+            }
+            if (($response['delivered'] ?? null) !== true || ($response['task_id'] ?? null) !== $taskId) {
+                throw new InvalidArgumentException('Delivery acknowledgment does not match the workflow task.');
+            }
+            $recorded = CancellationDelivery::fromPayload([
+                'workflow_command_id' => $response['request_id'] ?? null,
+                'sequence' => $response['sequence'] ?? null,
+                'call_kind' => $response['call_kind'] ?? null,
+                'sequence_span' => $response['sequence_span'] ?? null,
+                'operation_sequence' => $response['operation_sequence'] ?? null,
+                'operation_sequence_span' => $response['operation_sequence_span'] ?? null,
+            ]);
+            if ($recorded != $delivery) {
+                throw new InvalidArgumentException('Delivery acknowledgment changes the committed authored call.');
+            }
+        } catch (InvalidArgumentException $error) {
+            throw new ServerException(
+                'Invalid cooperative cancellation delivery acknowledgment.', 200,
+                'invalid_cooperative_cancellation_delivery', previous: $error,
+            );
+        }
+
+        return $response;
     }
 
     /**
@@ -1359,6 +1797,47 @@ final class Client implements WorkflowClientInterface
         ]);
     }
 
+    /** Observe ownership without renewing a lease or recording user progress.
+     * @return array<string, mixed>
+     */
+    public function activityTaskStatus(string $taskId, string $activityAttemptId, string $leaseOwner, ?RequestBudget $budget = null): array
+    {
+        if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion)) {
+            throw new InvalidArgumentException('Activity attempt observation requires worker protocol 1.20.');
+        }
+
+        return $this->worker('POST', '/worker/activity-tasks/'.$this->segment($taskId).'/status', [
+            'activity_attempt_id' => $activityAttemptId,
+            'lease_owner' => $leaseOwner,
+        ], $budget);
+    }
+
+    /** Report an original owner's stopped and joined remote callback. Never renews task authority.
+     * @return array<string, mixed>
+     */
+    public function acknowledgeActivityCancellation(
+        string $taskId,
+        string $activityAttemptId,
+        string $leaseOwner,
+        string $requestId,
+        ?RequestBudget $budget = null,
+    ): array {
+        if (!Version::supportsCooperativeCancellation($this->workerProtocolVersion)) {
+            throw new InvalidArgumentException('Activity cancellation acknowledgment requires worker protocol 1.20.');
+        }
+        foreach ([$taskId, $activityAttemptId, $leaseOwner, $requestId] as $identity) {
+            if (trim($identity) === '' || strlen($identity) > 255) {
+                throw new InvalidArgumentException('Activity cancellation acknowledgment requires bounded, nonempty claim and request identities.');
+            }
+        }
+
+        return $this->worker('POST', '/worker/activity-tasks/'.$this->segment($taskId).'/acknowledge-cancellation', [
+            'activity_attempt_id' => $activityAttemptId,
+            'lease_owner' => $leaseOwner,
+            'request_id' => $requestId,
+        ], $budget);
+    }
+
     /**
      * Return the complete query-task poll response, including typed refusal and protocol metadata.
      *
@@ -1421,8 +1900,11 @@ final class Client implements WorkflowClientInterface
      * @param array<string, mixed>|null $body
      * @return array<string, mixed>
      */
-    private function worker(string $method, string $path, ?array $body = null): array
+    private function worker(string $method, string $path, ?array $body = null, ?RequestBudget $budget = null): array
     {
+        if ($budget !== null && !$this->boundedWorkerRequests) {
+            throw new \LogicException('An activity receipt budget requires bounded worker requests.');
+        }
         if ($method === 'POST'
             && str_starts_with($path, '/worker/workflow-tasks/')
             && str_ends_with($path, '/complete')
@@ -1433,7 +1915,7 @@ final class Client implements WorkflowClientInterface
             $this->assertWorkflowCommandPayloads($commands);
         }
 
-        return $this->request($method, $path, true, $body);
+        return $this->request($method, $path, true, $body, budget: $budget);
     }
 
     /** @param list<mixed> $commands */
@@ -1587,27 +2069,45 @@ final class Client implements WorkflowClientInterface
         bool $worker,
         ?array $body = null,
         ?string $operation = null,
+        ?RequestBudget $budget = null,
     ): array {
         $headers = [
             'Accept' => 'application/json',
             'Content-Type' => 'application/json',
             'X-Namespace' => $this->namespace,
             $worker ? 'X-Durable-Workflow-Protocol-Version' : 'X-Durable-Workflow-Control-Plane-Version'
-                => $worker ? Version::WORKER_PROTOCOL : Version::CONTROL_PLANE_PROTOCOL,
+                => $worker ? $this->workerProtocolVersion : Version::CONTROL_PLANE_PROTOCOL,
         ];
         if ($this->authentication !== null) {
             $headers = array_merge($headers, $this->authentication->headers($worker));
         }
 
         try {
+            $poll = str_ends_with($path, '/poll') && is_int($body['timeout_seconds'] ?? null);
+            $pollSeconds = $poll ? max(0, min(60, $body['timeout_seconds'])) : 0;
+            $budget ??= $worker && $this->boundedWorkerRequests ? new RequestBudget($pollSeconds + 5) : null;
             if ($body !== null) {
-                $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers);
+                $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers, $budget);
             }
-            $response = $this->transport->send($method, $this->baseUri.'/api'.$path, $headers, $body);
+            if ($worker && $this->boundedWorkerRequests) {
+                if (!$this->transport instanceof BoundedTransport || !$this->transport->supportsBoundedRequests()) {
+                    throw new InvalidArgumentException('The cooperative worker transport no longer supports bounded requests.');
+                }
+                $response = $this->transport->sendBounded($method, $this->baseUri.'/api'.$path, $headers, $body, $budget->remainingSeconds());
+            } else {
+                $response = $this->transport->send($method, $this->baseUri.'/api'.$path, $headers, $body);
+            }
 
-            return is_array($response) && !array_is_list($response)
-                ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes))->response($response, $path, $worker)
+            $budget?->remainingSeconds();
+            // The long poll happens before ownership. Hydration of its claimed
+            // task gets one short budget shared by all referenced payloads.
+            $responseBudget = $budget !== null && $poll ? new RequestBudget(5) : $budget;
+            $result = is_array($response) && !array_is_list($response)
+                ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes, $responseBudget))->response($response, $path, $worker)
                 : [];
+            $responseBudget?->remainingSeconds();
+
+            return $result;
         } catch (TransportException $exception) {
             $details = $exception->response;
             $reason = is_array($details) && isset($details['reason']) ? (string) $details['reason'] : null;

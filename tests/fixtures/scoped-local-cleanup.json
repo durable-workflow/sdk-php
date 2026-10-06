@@ -1,0 +1,1128 @@
+{
+  "native_commit": "6fcba5c64e9c5f673969b04906a35717e4b83421",
+  "task": {
+    "workflow_id": "scope-cleanup-fixture",
+    "run_id": "01m44r477r8f88azjzjn60rfam"
+  },
+  "outer_scope_id": "01M44R47924ZNK515V4Y1KVQGH",
+  "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+  "descriptor": {
+    "type": "record_local_activity",
+    "activity_type": "tests.scoped-cleanup",
+    "execution_mode": "local",
+    "arguments": "wwHioz3/VYAiNwwA",
+    "payload_codec": "avro",
+    "retry_policy": {
+      "max_attempts": 2,
+      "backoff_seconds": [
+        0
+      ]
+    },
+    "cancellation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+    "cancellation_cleanup": {
+      "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+      "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+      "delivery_history_event_id": "01m44r47b3znjx2rxbhf0n2xeb"
+    }
+  },
+  "history_ranges": {
+    "before": 7,
+    "started": 9,
+    "retry": 10,
+    "replacement_started": 11
+  },
+  "history": [
+    {
+      "id": "01m44r4780p4z6475ye9qh5axz",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "payload": {
+        "workflow_command_id": "01m44r477wf9dgywdpzfqgss9z",
+        "workflow_instance_id": "scope-cleanup-fixture",
+        "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+        "workflow_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+        "workflow_type": "test-signal-workflow",
+        "business_key": null,
+        "visibility_labels": null,
+        "memo": null,
+        "search_attributes": null,
+        "outcome": "started_new",
+        "command": {
+          "id": "01m44r477wf9dgywdpzfqgss9z",
+          "sequence": 1,
+          "type": "start",
+          "target_scope": "instance",
+          "resolved_run_id": "01m44r477r8f88azjzjn60rfam",
+          "payload_codec": "avro",
+          "payload": "wwHioz3/VYAiNwwA",
+          "source": "php",
+          "caller_label": "PHP API",
+          "auth_status": "not_applicable",
+          "auth_method": "none",
+          "status": "accepted",
+          "outcome": "started_new",
+          "accepted_at": "2026-10-05T00:00:00.123456Z",
+          "applied_at": "2026-10-05T00:00:00.123456Z"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.123456Z"
+    },
+    {
+      "id": "01m44r4783ykgevq1e054wc88m",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+        "workflow_type": "test-signal-workflow",
+        "workflow_instance_id": "scope-cleanup-fixture",
+        "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+        "workflow_command_id": "01m44r477wf9dgywdpzfqgss9z",
+        "business_key": null,
+        "visibility_labels": null,
+        "memo": null,
+        "search_attributes": null,
+        "execution_timeout_seconds": null,
+        "run_timeout_seconds": null,
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
+        "workflow_definition_fingerprint": "sha256:5617b572b0eb270f91fe65ee11da3d428b3f6b570d381a87213671a587b20475",
+        "declared_queries": [],
+        "declared_query_contracts": [],
+        "declared_signals": [
+          "name-provided"
+        ],
+        "declared_signal_contracts": [],
+        "declared_updates": [],
+        "declared_update_contracts": [],
+        "declared_entry_method": "handle",
+        "declared_entry_mode": "canonical",
+        "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+        "command": {
+          "id": "01m44r477wf9dgywdpzfqgss9z",
+          "sequence": 1,
+          "type": "start",
+          "target_scope": "instance",
+          "resolved_run_id": "01m44r477r8f88azjzjn60rfam",
+          "payload_codec": "avro",
+          "payload": "wwHioz3/VYAiNwwA",
+          "source": "php",
+          "caller_label": "PHP API",
+          "auth_status": "not_applicable",
+          "auth_method": "none",
+          "status": "accepted",
+          "outcome": "started_new",
+          "accepted_at": "2026-10-05T00:00:00.123456Z",
+          "applied_at": "2026-10-05T00:00:00.123456Z"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.123456Z"
+    },
+    {
+      "id": "01m44r47939wpy8wsxxra7zj0b",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 3,
+      "event_type": "CancellationScopeOpened",
+      "payload": {
+        "schema": "durable-workflow.cancellation-scope/v1",
+        "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+        "sequence": 1,
+        "scope_id": "01M44R47924ZNK515V4Y1KVQGH",
+        "parent_scope_id": "root",
+        "shield_parent": false,
+        "task": {
+          "id": "01m44r47850ahkr0zz58jyn6vx",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-10-05T00:00:00.123456Z",
+          "lease_owner": "original",
+          "lease_expires_at": "2026-10-05T00:01:00.123456Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "testing",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-10-05T00:00:00.123456Z",
+          "last_dispatched_at": "2026-10-05T00:00:00.123456Z"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.123456Z"
+    },
+    {
+      "id": "01m44r47976ez3kf2adw87aqxk",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 4,
+      "event_type": "CancellationScopeOpened",
+      "payload": {
+        "schema": "durable-workflow.cancellation-scope/v1",
+        "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+        "sequence": 2,
+        "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+        "parent_scope_id": "01M44R47924ZNK515V4Y1KVQGH",
+        "shield_parent": false,
+        "task": {
+          "id": "01m44r47850ahkr0zz58jyn6vx",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-10-05T00:00:00.123456Z",
+          "lease_owner": "original",
+          "lease_expires_at": "2026-10-05T00:01:00.123456Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "testing",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-10-05T00:00:00.123456Z",
+          "last_dispatched_at": "2026-10-05T00:00:00.123456Z"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.123456Z"
+    },
+    {
+      "id": "01m44r479eh9z9ewqygyyvf8sn",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 5,
+      "event_type": "CancellationScopeRequested",
+      "payload": {
+        "schema": "durable-workflow.cancellation-scope-request/v1",
+        "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+        "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+        "parent_scope_id": null,
+        "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+        "cancellation": {
+          "schema": "durable-workflow.scoped-cancellation-context/v1",
+          "root_context": {
+            "schema": "durable-workflow.cancellation-context/v1",
+            "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "root_request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "root_workflow_instance_id": "scope-cleanup-fixture",
+            "root_workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+            "parent_request_id": null,
+            "reason": "release one scope",
+            "requester": {
+              "type": "php",
+              "label": "PHP API"
+            },
+            "source": "php",
+            "requested_at": "2026-10-05T00:00:00.123456Z",
+            "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z",
+            "lineage": [
+              {
+                "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+                "workflow_instance_id": "scope-cleanup-fixture",
+                "workflow_run_id": "01m44r477r8f88azjzjn60rfam"
+              }
+            ]
+          },
+          "lineage": [
+            {
+              "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+              "workflow_instance_id": "scope-cleanup-fixture",
+              "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+              "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+              "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z"
+            }
+          ]
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.123456Z"
+    },
+    {
+      "id": "01m44r47a5rgd44hypbza9cwm4",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 6,
+      "event_type": "CancellationScopeDeliveryPrepared",
+      "payload": {
+        "schema": "durable-workflow.cancellation-scope-preparation/v5",
+        "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+        "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+        "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+        "cancellation": {
+          "schema": "durable-workflow.scoped-cancellation-context/v1",
+          "root_context": {
+            "schema": "durable-workflow.cancellation-context/v1",
+            "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "root_request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "root_workflow_instance_id": "scope-cleanup-fixture",
+            "root_workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+            "parent_request_id": null,
+            "reason": "release one scope",
+            "requester": {
+              "type": "php",
+              "label": "PHP API"
+            },
+            "source": "php",
+            "requested_at": "2026-10-05T00:00:00.123456Z",
+            "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z",
+            "lineage": [
+              {
+                "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+                "workflow_instance_id": "scope-cleanup-fixture",
+                "workflow_run_id": "01m44r477r8f88azjzjn60rfam"
+              }
+            ]
+          },
+          "lineage": [
+            {
+              "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+              "workflow_instance_id": "scope-cleanup-fixture",
+              "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+              "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+              "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z"
+            }
+          ]
+        },
+        "sequence": 3,
+        "call_kind": "timer",
+        "sequence_span": 1,
+        "operation_sequence": null,
+        "operation_sequence_span": 1,
+        "authority_deadline_at": "2026-10-05T00:00:15.123456Z",
+        "activity_members": [],
+        "timer_members": [],
+        "wait_members": [],
+        "child_members": [],
+        "descendant_members": [],
+        "task": {
+          "id": "01m44r47850ahkr0zz58jyn6vx",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-10-05T00:00:00.123456Z",
+          "lease_owner": "original",
+          "lease_expires_at": "2026-10-05T00:00:02.123456Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "testing",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-10-05T00:00:00.123456Z",
+          "last_dispatched_at": "2026-10-05T00:00:00.123456Z"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.250000Z"
+    },
+    {
+      "id": "01m44r47b3znjx2rxbhf0n2xeb",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 7,
+      "event_type": "CancellationScopeDelivered",
+      "payload": {
+        "schema": "durable-workflow.cancellation-scope-delivery/v1",
+        "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+        "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+        "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+        "cancellation": {
+          "schema": "durable-workflow.scoped-cancellation-context/v1",
+          "root_context": {
+            "schema": "durable-workflow.cancellation-context/v1",
+            "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "root_request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "root_workflow_instance_id": "scope-cleanup-fixture",
+            "root_workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+            "parent_request_id": null,
+            "reason": "release one scope",
+            "requester": {
+              "type": "php",
+              "label": "PHP API"
+            },
+            "source": "php",
+            "requested_at": "2026-10-05T00:00:00.123456Z",
+            "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z",
+            "lineage": [
+              {
+                "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+                "workflow_instance_id": "scope-cleanup-fixture",
+                "workflow_run_id": "01m44r477r8f88azjzjn60rfam"
+              }
+            ]
+          },
+          "lineage": [
+            {
+              "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+              "workflow_instance_id": "scope-cleanup-fixture",
+              "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+              "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+              "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z"
+            }
+          ]
+        },
+        "sequence": 3,
+        "call_kind": "timer",
+        "sequence_span": 1,
+        "operation_sequence": null,
+        "operation_sequence_span": 1,
+        "authority_deadline_at": "2026-10-05T00:00:15.123456Z",
+        "preparation_history_event_id": "01m44r47a5rgd44hypbza9cwm4",
+        "task": {
+          "id": "01m44r47850ahkr0zz58jyn6vx",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-10-05T00:00:00.123456Z",
+          "lease_owner": "original",
+          "lease_expires_at": "2026-10-05T00:00:02.250000Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "testing",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-10-05T00:00:00.123456Z",
+          "last_dispatched_at": "2026-10-05T00:00:00.123456Z"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.500000Z"
+    },
+    {
+      "id": "01m44r47dzzet23p238tn97f4v",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 8,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "execution_mode": "local",
+        "local_activity": true,
+        "activity_execution_id": "01m44r47dw71q87reb7tf4cndk",
+        "activity_class": "tests.scoped-cleanup",
+        "activity_type": "tests.scoped-cleanup",
+        "sequence": 4,
+        "workflow_task_id": "01m44r47850ahkr0zz58jyn6vx",
+        "activity": {
+          "id": "01m44r47dw71q87reb7tf4cndk",
+          "idempotency_key": "01m44r47dw71q87reb7tf4cndk",
+          "sequence": 4,
+          "type": "tests.scoped-cleanup",
+          "class": "tests.scoped-cleanup",
+          "execution_mode": "local",
+          "local_activity": true,
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 2,
+            "backoff_seconds": [
+              0
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "cancellation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+          "queue": "default",
+          "created_at": "2026-10-05T00:00:00.500000Z",
+          "arguments": "wwHioz3/VYAiNwwA"
+        },
+        "local_preparation": {
+          "version": 1,
+          "descriptor_fingerprint": "94af83cd4a8f98beae44e4613f3514916f9d36d24c1edb8622bcdffcc70453ed",
+          "worker_attempt_id": "original-local",
+          "workflow_task_attempt": 1,
+          "cancellation_cleanup": {
+            "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+            "operation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+            "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "root_request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "delivery_history_event_id": "01m44r47b3znjx2rxbhf0n2xeb",
+            "preparation_history_event_id": "01m44r47a5rgd44hypbza9cwm4",
+            "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z",
+            "authority_deadline_at": "2026-10-05T00:00:15.123456Z"
+          }
+        },
+        "task": {
+          "id": "01m44r47850ahkr0zz58jyn6vx",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-10-05T00:00:00.123456Z",
+          "lease_owner": "original",
+          "lease_expires_at": "2026-10-05T00:00:02.500000Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "testing",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-10-05T00:00:00.123456Z",
+          "last_dispatched_at": "2026-10-05T00:00:00.123456Z"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.500000Z"
+    },
+    {
+      "id": "01m44r47ec4wgffemq48haq56w",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 9,
+      "event_type": "ActivityStarted",
+      "payload": {
+        "execution_mode": "local",
+        "local_activity": true,
+        "activity_execution_id": "01m44r47dw71q87reb7tf4cndk",
+        "activity_attempt_id": "01M44R47E112HED2PRH7957A0X",
+        "activity_class": "tests.scoped-cleanup",
+        "activity_type": "tests.scoped-cleanup",
+        "sequence": 4,
+        "attempt_number": 1,
+        "workflow_task_id": "01m44r47850ahkr0zz58jyn6vx",
+        "lease_expires_at": "2026-10-05T00:00:02.500000Z",
+        "activity": {
+          "id": "01m44r47dw71q87reb7tf4cndk",
+          "idempotency_key": "01m44r47dw71q87reb7tf4cndk",
+          "sequence": 4,
+          "type": "tests.scoped-cleanup",
+          "class": "tests.scoped-cleanup",
+          "execution_mode": "local",
+          "local_activity": true,
+          "attempt_id": "01M44R47E112HED2PRH7957A0X",
+          "status": "running",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 2,
+            "backoff_seconds": [
+              0
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "cancellation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+          "queue": "default",
+          "last_heartbeat_at": "2026-10-05T00:00:00.500000Z",
+          "created_at": "2026-10-05T00:00:00.500000Z",
+          "started_at": "2026-10-05T00:00:00.500000Z",
+          "arguments": "wwHioz3/VYAiNwwA"
+        },
+        "activity_attempt": {
+          "id": "01M44R47E112HED2PRH7957A0X",
+          "worker_attempt_id": "original-local",
+          "activity_execution_id": "01m44r47dw71q87reb7tf4cndk",
+          "task_id": "01m44r47850ahkr0zz58jyn6vx",
+          "attempt_number": 1,
+          "status": "running",
+          "lease_owner": "original",
+          "started_at": "2026-10-05T00:00:00.500000Z",
+          "last_heartbeat_at": "2026-10-05T00:00:00.500000Z",
+          "lease_expires_at": "2026-10-05T00:00:02.500000Z"
+        },
+        "worker_attempt_id": "original-local",
+        "local_preparation": {
+          "version": 1,
+          "descriptor_fingerprint": "94af83cd4a8f98beae44e4613f3514916f9d36d24c1edb8622bcdffcc70453ed",
+          "worker_attempt_id": "original-local",
+          "workflow_task_attempt": 1,
+          "cancellation_cleanup": {
+            "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+            "operation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+            "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "root_request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "delivery_history_event_id": "01m44r47b3znjx2rxbhf0n2xeb",
+            "preparation_history_event_id": "01m44r47a5rgd44hypbza9cwm4",
+            "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z",
+            "authority_deadline_at": "2026-10-05T00:00:15.123456Z"
+          },
+          "schedule_to_close_deadline_at": "2026-10-05T00:00:15.123456Z"
+        },
+        "task": {
+          "id": "01m44r47850ahkr0zz58jyn6vx",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-10-05T00:00:00.123456Z",
+          "lease_owner": "original",
+          "lease_expires_at": "2026-10-05T00:00:02.500000Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "testing",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-10-05T00:00:00.123456Z",
+          "last_dispatched_at": "2026-10-05T00:00:00.123456Z"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:00.500000Z"
+    },
+    {
+      "id": "01m44r47m8aetnn1wekp4yy5gs",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 10,
+      "event_type": "ActivityRetryScheduled",
+      "payload": {
+        "execution_mode": "local",
+        "local_activity": true,
+        "activity_execution_id": "01m44r47dw71q87reb7tf4cndk",
+        "activity_attempt_id": "01M44R47E112HED2PRH7957A0X",
+        "activity_class": "tests.scoped-cleanup",
+        "activity_type": "tests.scoped-cleanup",
+        "sequence": 4,
+        "retry_task_id": "01m44r47m56swywe4mcbf4nykp",
+        "retry_of_task_id": "01m44r47850ahkr0zz58jyn6vx",
+        "retry_available_at": "2026-10-05T00:00:03.000000Z",
+        "retry_backoff_seconds": 0,
+        "retry_after_attempt_id": "01M44R47E112HED2PRH7957A0X",
+        "retry_after_attempt": 1,
+        "retry_reason": "cold_replay",
+        "max_attempts": 2,
+        "retry_policy": {
+          "snapshot_version": 1,
+          "max_attempts": 2,
+          "backoff_seconds": [
+            0
+          ],
+          "start_to_close_timeout": null,
+          "schedule_to_start_timeout": null,
+          "schedule_to_close_timeout": null,
+          "heartbeat_timeout": null,
+          "non_retryable_error_types": []
+        },
+        "timeout_kind": null,
+        "exception_type": null,
+        "exception_class": "RuntimeException",
+        "message": "Local activity attempt was interrupted before a terminal event.",
+        "code": 0,
+        "exception": {
+          "class": "RuntimeException",
+          "message": "Local activity attempt was interrupted before a terminal event.",
+          "code": 0,
+          "file": "/app/src/V2/Support/LocalActivityExecutor.php",
+          "line": 1215,
+          "trace": [
+            {
+              "class": "Workflow\\V2\\Support\\LocalActivityExecutor",
+              "type": "->",
+              "function": "recordInterruptedAttempt",
+              "file": "/app/src/V2/Support/LocalActivityExecutor.php",
+              "line": 361
+            },
+            {
+              "class": "Workflow\\V2\\Support\\LocalActivityExecutor",
+              "type": "->",
+              "function": "recoverPortableAttempt",
+              "file": "/app/src/V2/Support/PortableLocalActivityPreparation.php",
+              "line": 480
+            },
+            {
+              "class": "Workflow\\V2\\Support\\PortableLocalActivityPreparation",
+              "type": "::",
+              "function": "{closure:Workflow\\V2\\Support\\PortableLocalActivityPreparation::recover():327}",
+              "file": "/app/vendor/laravel/framework/src/Illuminate/Database/Concerns/ManagesTransactions.php",
+              "line": 35
+            },
+            {
+              "class": "Illuminate\\Database\\Connection",
+              "type": "->",
+              "function": "transaction",
+              "file": "/app/vendor/laravel/framework/src/Illuminate/Database/DatabaseManager.php",
+              "line": 502
+            },
+            {
+              "class": "Illuminate\\Database\\DatabaseManager",
+              "type": "->",
+              "function": "__call",
+              "file": "/app/vendor/laravel/framework/src/Illuminate/Support/Facades/Facade.php",
+              "line": 364
+            },
+            {
+              "class": "Illuminate\\Support\\Facades\\Facade",
+              "type": "::",
+              "function": "__callStatic",
+              "file": "/app/src/V2/Support/PortableLocalActivityPreparation.php",
+              "line": 327
+            },
+            {
+              "class": "Workflow\\V2\\Support\\PortableLocalActivityPreparation",
+              "type": "::",
+              "function": "recover",
+              "file": "/app/src/V2/Support/DefaultWorkflowTaskBridge.php",
+              "line": 1095
+            },
+            {
+              "class": "Workflow\\V2\\Support\\DefaultWorkflowTaskBridge",
+              "type": "->",
+              "function": "recoverLocalActivity",
+              "file": "/checks/NativeScopedCleanupFixtureTest.php",
+              "line": 71
+            },
+            {
+              "class": "NativeScopedCleanupFixtureTest",
+              "type": "->",
+              "function": "testExportsCanonicalCleanupAndReplacementReceipts",
+              "file": "/app/vendor/phpunit/phpunit/src/Framework/TestCase.php",
+              "line": 1463
+            },
+            {
+              "class": "PHPUnit\\Framework\\TestCase",
+              "type": "->",
+              "function": "invokeTestMethod",
+              "file": "/app/vendor/phpunit/phpunit/src/Framework/TestCase.php",
+              "line": 1477
+            },
+            {
+              "class": "PHPUnit\\Framework\\TestCase",
+              "type": "->",
+              "function": "runTest",
+              "file": "/app/vendor/phpunit/phpunit/src/Framework/TestCase.php",
+              "line": 496
+            },
+            {
+              "class": "PHPUnit\\Framework\\TestCase",
+              "type": "->",
+              "function": "runBare",
+              "file": "/app/vendor/phpunit/phpunit/src/Framework/TestRunner/TestRunner.php",
+              "line": 126
+            },
+            {
+              "class": "PHPUnit\\Framework\\TestRunner\\TestRunner",
+              "type": "->",
+              "function": "run",
+              "file": "/app/vendor/phpunit/phpunit/src/Framework/TestCase.php",
+              "line": 328
+            },
+            {
+              "class": "PHPUnit\\Framework\\TestCase",
+              "type": "->",
+              "function": "run",
+              "file": "/app/vendor/phpunit/phpunit/src/Framework/TestSuite.php",
+              "line": 627
+            },
+            {
+              "class": "PHPUnit\\Framework\\TestSuite",
+              "type": "->",
+              "function": "runTests",
+              "file": "/app/vendor/phpunit/phpunit/src/Framework/TestSuite.php",
+              "line": 420
+            },
+            {
+              "class": "PHPUnit\\Framework\\TestSuite",
+              "type": "->",
+              "function": "run",
+              "file": "/app/vendor/phpunit/phpunit/src/TextUI/TestRunner.php",
+              "line": 64
+            },
+            {
+              "class": "PHPUnit\\TextUI\\TestRunner",
+              "type": "->",
+              "function": "run",
+              "file": "/app/vendor/phpunit/phpunit/src/TextUI/Application.php",
+              "line": 255
+            },
+            {
+              "class": "PHPUnit\\TextUI\\Application",
+              "type": "->",
+              "function": "run",
+              "file": "/app/vendor/phpunit/phpunit/phpunit",
+              "line": 104
+            },
+            {
+              "function": "include",
+              "file": "/app/vendor/bin/phpunit",
+              "line": 122
+            }
+          ],
+          "properties": []
+        },
+        "workflow_task_id": "01m44r47850ahkr0zz58jyn6vx",
+        "activity": {
+          "id": "01m44r47dw71q87reb7tf4cndk",
+          "idempotency_key": "01m44r47dw71q87reb7tf4cndk",
+          "sequence": 4,
+          "type": "tests.scoped-cleanup",
+          "class": "tests.scoped-cleanup",
+          "execution_mode": "local",
+          "local_activity": true,
+          "attempt_id": "01M44R47E112HED2PRH7957A0X",
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 2,
+            "backoff_seconds": [
+              0
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "cancellation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+          "queue": "default",
+          "created_at": "2026-10-05T00:00:00.500000Z",
+          "started_at": "2026-10-05T00:00:00.500000Z",
+          "arguments": "wwHioz3/VYAiNwwA",
+          "exception": "wwHioz3/VYAiNw4OCmNsYXNzCiBSdW50aW1lRXhjZXB0aW9uDm1lc3NhZ2UKfkxvY2FsIGFjdGl2aXR5IGF0dGVtcHQgd2FzIGludGVycnVwdGVkIGJlZm9yZSBhIHRlcm1pbmFsIGV2ZW50Lghjb2RlBAAIZmlsZQpaL2FwcC9zcmMvVjIvU3VwcG9ydC9Mb2NhbEFjdGl2aXR5RXhlY3V0b3IucGhwCGxpbmUE/hIKdHJhY2UMJg4KCmNsYXNzClJXb3JrZmxvd1xWMlxTdXBwb3J0XExvY2FsQWN0aXZpdHlFeGVjdXRvcgh0eXBlCgQtPhBmdW5jdGlvbgowcmVjb3JkSW50ZXJydXB0ZWRBdHRlbXB0CGZpbGUKWi9hcHAvc3JjL1YyL1N1cHBvcnQvTG9jYWxBY3Rpdml0eUV4ZWN1dG9yLnBocAhsaW5lBNIFAA4KCmNsYXNzClJXb3JrZmxvd1xWMlxTdXBwb3J0XExvY2FsQWN0aXZpdHlFeGVjdXRvcgh0eXBlCgQtPhBmdW5jdGlvbgoscmVjb3ZlclBvcnRhYmxlQXR0ZW1wdAhmaWxlCnAvYXBwL3NyYy9WMi9TdXBwb3J0L1BvcnRhYmxlTG9jYWxBY3Rpdml0eVByZXBhcmF0aW9uLnBocAhsaW5lBMAHAA4KCmNsYXNzCmhXb3JrZmxvd1xWMlxTdXBwb3J0XFBvcnRhYmxlTG9jYWxBY3Rpdml0eVByZXBhcmF0aW9uCHR5cGUKBDo6EGZ1bmN0aW9uCpoBe2Nsb3N1cmU6V29ya2Zsb3dcVjJcU3VwcG9ydFxQb3J0YWJsZUxvY2FsQWN0aXZpdHlQcmVwYXJhdGlvbjo6cmVjb3ZlcigpOjMyN30IZmlsZQqsAS9hcHAvdmVuZG9yL2xhcmF2ZWwvZnJhbWV3b3JrL3NyYy9JbGx1bWluYXRlL0RhdGFiYXNlL0NvbmNlcm5zL01hbmFnZXNUcmFuc2FjdGlvbnMucGhwCGxpbmUERgAOCgpjbGFzcwo8SWxsdW1pbmF0ZVxEYXRhYmFzZVxDb25uZWN0aW9uCHR5cGUKBC0+EGZ1bmN0aW9uChZ0cmFuc2FjdGlvbghmaWxlCpIBL2FwcC92ZW5kb3IvbGFyYXZlbC9mcmFtZXdvcmsvc3JjL0lsbHVtaW5hdGUvRGF0YWJhc2UvRGF0YWJhc2VNYW5hZ2VyLnBocAhsaW5lBOwHAA4KCmNsYXNzCkZJbGx1bWluYXRlXERhdGFiYXNlXERhdGFiYXNlTWFuYWdlcgh0eXBlCgQtPhBmdW5jdGlvbgoMX19jYWxsCGZpbGUKjgEvYXBwL3ZlbmRvci9sYXJhdmVsL2ZyYW1ld29yay9zcmMvSWxsdW1pbmF0ZS9TdXBwb3J0L0ZhY2FkZXMvRmFjYWRlLnBocAhsaW5lBNgFAA4KCmNsYXNzCkJJbGx1bWluYXRlXFN1cHBvcnRcRmFjYWRlc1xGYWNhZGUIdHlwZQoEOjoQZnVuY3Rpb24KGF9fY2FsbFN0YXRpYwhmaWxlCnAvYXBwL3NyYy9WMi9TdXBwb3J0L1BvcnRhYmxlTG9jYWxBY3Rpdml0eVByZXBhcmF0aW9uLnBocAhsaW5lBI4FAA4KCmNsYXNzCmhXb3JrZmxvd1xWMlxTdXBwb3J0XFBvcnRhYmxlTG9jYWxBY3Rpdml0eVByZXBhcmF0aW9uCHR5cGUKBDo6EGZ1bmN0aW9uCg5yZWNvdmVyCGZpbGUKYi9hcHAvc3JjL1YyL1N1cHBvcnQvRGVmYXVsdFdvcmtmbG93VGFza0JyaWRnZS5waHAIbGluZQSOEQAOCgpjbGFzcwpaV29ya2Zsb3dcVjJcU3VwcG9ydFxEZWZhdWx0V29ya2Zsb3dUYXNrQnJpZGdlCHR5cGUKBC0+EGZ1bmN0aW9uCihyZWNvdmVyTG9jYWxBY3Rpdml0eQhmaWxlClQvY2hlY2tzL05hdGl2ZVNjb3BlZENsZWFudXBGaXh0dXJlVGVzdC5waHAIbGluZQSOAQAOCgpjbGFzcwo8TmF0aXZlU2NvcGVkQ2xlYW51cEZpeHR1cmVUZXN0CHR5cGUKBC0+EGZ1bmN0aW9uCmJ0ZXN0RXhwb3J0c0Nhbm9uaWNhbENsZWFudXBBbmRSZXBsYWNlbWVudFJlY2VpcHRzCGZpbGUKbC9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvRnJhbWV3b3JrL1Rlc3RDYXNlLnBocAhsaW5lBO4WAA4KCmNsYXNzCjRQSFBVbml0XEZyYW1ld29ya1xUZXN0Q2FzZQh0eXBlCgQtPhBmdW5jdGlvbgogaW52b2tlVGVzdE1ldGhvZAhmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0Q2FzZS5waHAIbGluZQSKFwAOCgpjbGFzcwo0UEhQVW5pdFxGcmFtZXdvcmtcVGVzdENhc2UIdHlwZQoELT4QZnVuY3Rpb24KDnJ1blRlc3QIZmlsZQpsL2FwcC92ZW5kb3IvcGhwdW5pdC9waHB1bml0L3NyYy9GcmFtZXdvcmsvVGVzdENhc2UucGhwCGxpbmUE4AcADgoKY2xhc3MKNFBIUFVuaXRcRnJhbWV3b3JrXFRlc3RDYXNlCHR5cGUKBC0+EGZ1bmN0aW9uCg5ydW5CYXJlCGZpbGUKhgEvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0UnVubmVyL1Rlc3RSdW5uZXIucGhwCGxpbmUE/AEADgoKY2xhc3MKTlBIUFVuaXRcRnJhbWV3b3JrXFRlc3RSdW5uZXJcVGVzdFJ1bm5lcgh0eXBlCgQtPhBmdW5jdGlvbgoGcnVuCGZpbGUKbC9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvRnJhbWV3b3JrL1Rlc3RDYXNlLnBocAhsaW5lBJAFAA4KCmNsYXNzCjRQSFBVbml0XEZyYW1ld29ya1xUZXN0Q2FzZQh0eXBlCgQtPhBmdW5jdGlvbgoGcnVuCGZpbGUKbi9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvRnJhbWV3b3JrL1Rlc3RTdWl0ZS5waHAIbGluZQTmCQAOCgpjbGFzcwo2UEhQVW5pdFxGcmFtZXdvcmtcVGVzdFN1aXRlCHR5cGUKBC0+EGZ1bmN0aW9uChBydW5UZXN0cwhmaWxlCm4vYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0U3VpdGUucGhwCGxpbmUEyAYADgoKY2xhc3MKNlBIUFVuaXRcRnJhbWV3b3JrXFRlc3RTdWl0ZQh0eXBlCgQtPhBmdW5jdGlvbgoGcnVuCGZpbGUKai9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvVGV4dFVJL1Rlc3RSdW5uZXIucGhwCGxpbmUEgAEADgoKY2xhc3MKMlBIUFVuaXRcVGV4dFVJXFRlc3RSdW5uZXIIdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL1RleHRVSS9BcHBsaWNhdGlvbi5waHAIbGluZQT+AwAOCgpjbGFzcwo0UEhQVW5pdFxUZXh0VUlcQXBwbGljYXRpb24IdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCkYvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvcGhwdW5pdAhsaW5lBNABAA4GEGZ1bmN0aW9uCg5pbmNsdWRlCGZpbGUKLi9hcHAvdmVuZG9yL2Jpbi9waHB1bml0CGxpbmUE9AEAABRwcm9wZXJ0aWVzDAAA"
+        },
+        "activity_attempt": {
+          "id": "01M44R47E112HED2PRH7957A0X",
+          "worker_attempt_id": "original-local",
+          "activity_execution_id": "01m44r47dw71q87reb7tf4cndk",
+          "task_id": "01m44r47850ahkr0zz58jyn6vx",
+          "attempt_number": 1,
+          "status": "expired",
+          "lease_owner": "original",
+          "started_at": "2026-10-05T00:00:00.500000Z",
+          "last_heartbeat_at": "2026-10-05T00:00:00.500000Z",
+          "closed_at": "2026-10-05T00:00:03.000000Z"
+        },
+        "worker_attempt_id": "original-local",
+        "local_recovery": {
+          "version": 1,
+          "descriptor_fingerprint": "94af83cd4a8f98beae44e4613f3514916f9d36d24c1edb8622bcdffcc70453ed",
+          "workflow_task_id": "01m44r47850ahkr0zz58jyn6vx",
+          "workflow_task_attempt": 2,
+          "lease_owner": "replacement",
+          "original_workflow_task_id": "01m44r47850ahkr0zz58jyn6vx",
+          "original_workflow_task_attempt": 1,
+          "original_lease_owner": "original",
+          "original_lease_expires_at": "2026-10-05T00:00:02.500000Z",
+          "callback_stop_state": "unknown"
+        },
+        "task": {
+          "id": "01m44r47850ahkr0zz58jyn6vx",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-10-05T00:00:00.123456Z",
+          "leased_at": "2026-10-05T00:00:03.000000Z",
+          "lease_owner": "replacement",
+          "lease_expires_at": "2026-10-05T00:00:05.000000Z",
+          "attempt_count": 2,
+          "repair_count": 1,
+          "connection": "testing",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-10-05T00:00:03.000000Z",
+          "last_dispatched_at": "2026-10-05T00:00:03.000000Z"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:03.000000Z"
+    },
+    {
+      "id": "01m44r47sdj8p29akr63zpwk9x",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 11,
+      "event_type": "ActivityStarted",
+      "payload": {
+        "execution_mode": "local",
+        "local_activity": true,
+        "activity_execution_id": "01m44r47dw71q87reb7tf4cndk",
+        "activity_attempt_id": "01M44R47S1J1DR4WSWPYVBWX1X",
+        "activity_class": "tests.scoped-cleanup",
+        "activity_type": "tests.scoped-cleanup",
+        "sequence": 4,
+        "attempt_number": 2,
+        "workflow_task_id": "01m44r47m56swywe4mcbf4nykp",
+        "lease_expires_at": "2026-10-05T00:00:05.000000Z",
+        "activity": {
+          "id": "01m44r47dw71q87reb7tf4cndk",
+          "idempotency_key": "01m44r47dw71q87reb7tf4cndk",
+          "sequence": 4,
+          "type": "tests.scoped-cleanup",
+          "class": "tests.scoped-cleanup",
+          "execution_mode": "local",
+          "local_activity": true,
+          "attempt_id": "01M44R47S1J1DR4WSWPYVBWX1X",
+          "status": "running",
+          "payload_codec": "avro",
+          "attempt_count": 2,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 2,
+            "backoff_seconds": [
+              0
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "cancellation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+          "queue": "default",
+          "last_heartbeat_at": "2026-10-05T00:00:03.000000Z",
+          "created_at": "2026-10-05T00:00:00.500000Z",
+          "started_at": "2026-10-05T00:00:03.000000Z",
+          "arguments": "wwHioz3/VYAiNwwA",
+          "exception": "wwHioz3/VYAiNw4OCmNsYXNzCiBSdW50aW1lRXhjZXB0aW9uDm1lc3NhZ2UKfkxvY2FsIGFjdGl2aXR5IGF0dGVtcHQgd2FzIGludGVycnVwdGVkIGJlZm9yZSBhIHRlcm1pbmFsIGV2ZW50Lghjb2RlBAAIZmlsZQpaL2FwcC9zcmMvVjIvU3VwcG9ydC9Mb2NhbEFjdGl2aXR5RXhlY3V0b3IucGhwCGxpbmUE/hIKdHJhY2UMJg4KCmNsYXNzClJXb3JrZmxvd1xWMlxTdXBwb3J0XExvY2FsQWN0aXZpdHlFeGVjdXRvcgh0eXBlCgQtPhBmdW5jdGlvbgowcmVjb3JkSW50ZXJydXB0ZWRBdHRlbXB0CGZpbGUKWi9hcHAvc3JjL1YyL1N1cHBvcnQvTG9jYWxBY3Rpdml0eUV4ZWN1dG9yLnBocAhsaW5lBNIFAA4KCmNsYXNzClJXb3JrZmxvd1xWMlxTdXBwb3J0XExvY2FsQWN0aXZpdHlFeGVjdXRvcgh0eXBlCgQtPhBmdW5jdGlvbgoscmVjb3ZlclBvcnRhYmxlQXR0ZW1wdAhmaWxlCnAvYXBwL3NyYy9WMi9TdXBwb3J0L1BvcnRhYmxlTG9jYWxBY3Rpdml0eVByZXBhcmF0aW9uLnBocAhsaW5lBMAHAA4KCmNsYXNzCmhXb3JrZmxvd1xWMlxTdXBwb3J0XFBvcnRhYmxlTG9jYWxBY3Rpdml0eVByZXBhcmF0aW9uCHR5cGUKBDo6EGZ1bmN0aW9uCpoBe2Nsb3N1cmU6V29ya2Zsb3dcVjJcU3VwcG9ydFxQb3J0YWJsZUxvY2FsQWN0aXZpdHlQcmVwYXJhdGlvbjo6cmVjb3ZlcigpOjMyN30IZmlsZQqsAS9hcHAvdmVuZG9yL2xhcmF2ZWwvZnJhbWV3b3JrL3NyYy9JbGx1bWluYXRlL0RhdGFiYXNlL0NvbmNlcm5zL01hbmFnZXNUcmFuc2FjdGlvbnMucGhwCGxpbmUERgAOCgpjbGFzcwo8SWxsdW1pbmF0ZVxEYXRhYmFzZVxDb25uZWN0aW9uCHR5cGUKBC0+EGZ1bmN0aW9uChZ0cmFuc2FjdGlvbghmaWxlCpIBL2FwcC92ZW5kb3IvbGFyYXZlbC9mcmFtZXdvcmsvc3JjL0lsbHVtaW5hdGUvRGF0YWJhc2UvRGF0YWJhc2VNYW5hZ2VyLnBocAhsaW5lBOwHAA4KCmNsYXNzCkZJbGx1bWluYXRlXERhdGFiYXNlXERhdGFiYXNlTWFuYWdlcgh0eXBlCgQtPhBmdW5jdGlvbgoMX19jYWxsCGZpbGUKjgEvYXBwL3ZlbmRvci9sYXJhdmVsL2ZyYW1ld29yay9zcmMvSWxsdW1pbmF0ZS9TdXBwb3J0L0ZhY2FkZXMvRmFjYWRlLnBocAhsaW5lBNgFAA4KCmNsYXNzCkJJbGx1bWluYXRlXFN1cHBvcnRcRmFjYWRlc1xGYWNhZGUIdHlwZQoEOjoQZnVuY3Rpb24KGF9fY2FsbFN0YXRpYwhmaWxlCnAvYXBwL3NyYy9WMi9TdXBwb3J0L1BvcnRhYmxlTG9jYWxBY3Rpdml0eVByZXBhcmF0aW9uLnBocAhsaW5lBI4FAA4KCmNsYXNzCmhXb3JrZmxvd1xWMlxTdXBwb3J0XFBvcnRhYmxlTG9jYWxBY3Rpdml0eVByZXBhcmF0aW9uCHR5cGUKBDo6EGZ1bmN0aW9uCg5yZWNvdmVyCGZpbGUKYi9hcHAvc3JjL1YyL1N1cHBvcnQvRGVmYXVsdFdvcmtmbG93VGFza0JyaWRnZS5waHAIbGluZQSOEQAOCgpjbGFzcwpaV29ya2Zsb3dcVjJcU3VwcG9ydFxEZWZhdWx0V29ya2Zsb3dUYXNrQnJpZGdlCHR5cGUKBC0+EGZ1bmN0aW9uCihyZWNvdmVyTG9jYWxBY3Rpdml0eQhmaWxlClQvY2hlY2tzL05hdGl2ZVNjb3BlZENsZWFudXBGaXh0dXJlVGVzdC5waHAIbGluZQSOAQAOCgpjbGFzcwo8TmF0aXZlU2NvcGVkQ2xlYW51cEZpeHR1cmVUZXN0CHR5cGUKBC0+EGZ1bmN0aW9uCmJ0ZXN0RXhwb3J0c0Nhbm9uaWNhbENsZWFudXBBbmRSZXBsYWNlbWVudFJlY2VpcHRzCGZpbGUKbC9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvRnJhbWV3b3JrL1Rlc3RDYXNlLnBocAhsaW5lBO4WAA4KCmNsYXNzCjRQSFBVbml0XEZyYW1ld29ya1xUZXN0Q2FzZQh0eXBlCgQtPhBmdW5jdGlvbgogaW52b2tlVGVzdE1ldGhvZAhmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0Q2FzZS5waHAIbGluZQSKFwAOCgpjbGFzcwo0UEhQVW5pdFxGcmFtZXdvcmtcVGVzdENhc2UIdHlwZQoELT4QZnVuY3Rpb24KDnJ1blRlc3QIZmlsZQpsL2FwcC92ZW5kb3IvcGhwdW5pdC9waHB1bml0L3NyYy9GcmFtZXdvcmsvVGVzdENhc2UucGhwCGxpbmUE4AcADgoKY2xhc3MKNFBIUFVuaXRcRnJhbWV3b3JrXFRlc3RDYXNlCHR5cGUKBC0+EGZ1bmN0aW9uCg5ydW5CYXJlCGZpbGUKhgEvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0UnVubmVyL1Rlc3RSdW5uZXIucGhwCGxpbmUE/AEADgoKY2xhc3MKTlBIUFVuaXRcRnJhbWV3b3JrXFRlc3RSdW5uZXJcVGVzdFJ1bm5lcgh0eXBlCgQtPhBmdW5jdGlvbgoGcnVuCGZpbGUKbC9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvRnJhbWV3b3JrL1Rlc3RDYXNlLnBocAhsaW5lBJAFAA4KCmNsYXNzCjRQSFBVbml0XEZyYW1ld29ya1xUZXN0Q2FzZQh0eXBlCgQtPhBmdW5jdGlvbgoGcnVuCGZpbGUKbi9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvRnJhbWV3b3JrL1Rlc3RTdWl0ZS5waHAIbGluZQTmCQAOCgpjbGFzcwo2UEhQVW5pdFxGcmFtZXdvcmtcVGVzdFN1aXRlCHR5cGUKBC0+EGZ1bmN0aW9uChBydW5UZXN0cwhmaWxlCm4vYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0U3VpdGUucGhwCGxpbmUEyAYADgoKY2xhc3MKNlBIUFVuaXRcRnJhbWV3b3JrXFRlc3RTdWl0ZQh0eXBlCgQtPhBmdW5jdGlvbgoGcnVuCGZpbGUKai9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvVGV4dFVJL1Rlc3RSdW5uZXIucGhwCGxpbmUEgAEADgoKY2xhc3MKMlBIUFVuaXRcVGV4dFVJXFRlc3RSdW5uZXIIdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL1RleHRVSS9BcHBsaWNhdGlvbi5waHAIbGluZQT+AwAOCgpjbGFzcwo0UEhQVW5pdFxUZXh0VUlcQXBwbGljYXRpb24IdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCkYvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvcGhwdW5pdAhsaW5lBNABAA4GEGZ1bmN0aW9uCg5pbmNsdWRlCGZpbGUKLi9hcHAvdmVuZG9yL2Jpbi9waHB1bml0CGxpbmUE9AEAABRwcm9wZXJ0aWVzDAAA"
+        },
+        "activity_attempt": {
+          "id": "01M44R47S1J1DR4WSWPYVBWX1X",
+          "worker_attempt_id": "replacement-local",
+          "activity_execution_id": "01m44r47dw71q87reb7tf4cndk",
+          "task_id": "01m44r47m56swywe4mcbf4nykp",
+          "attempt_number": 2,
+          "status": "running",
+          "lease_owner": "replacement",
+          "started_at": "2026-10-05T00:00:03.000000Z",
+          "last_heartbeat_at": "2026-10-05T00:00:03.000000Z",
+          "lease_expires_at": "2026-10-05T00:00:05.000000Z"
+        },
+        "worker_attempt_id": "replacement-local",
+        "local_preparation": {
+          "version": 1,
+          "descriptor_fingerprint": "94af83cd4a8f98beae44e4613f3514916f9d36d24c1edb8622bcdffcc70453ed",
+          "worker_attempt_id": "replacement-local",
+          "workflow_task_attempt": 1,
+          "cancellation_cleanup": {
+            "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+            "operation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+            "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "root_request_id": "01M44R479A3D514FAEAZ6MT2YF",
+            "delivery_history_event_id": "01m44r47b3znjx2rxbhf0n2xeb",
+            "preparation_history_event_id": "01m44r47a5rgd44hypbza9cwm4",
+            "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z",
+            "authority_deadline_at": "2026-10-05T00:00:15.123456Z"
+          },
+          "schedule_to_close_deadline_at": "2026-10-05T00:00:15.123456Z"
+        },
+        "task": {
+          "id": "01m44r47m56swywe4mcbf4nykp",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-10-05T00:00:03.000000Z",
+          "leased_at": "2026-10-05T00:00:03.000000Z",
+          "lease_owner": "replacement",
+          "lease_expires_at": "2026-10-05T00:00:05.000000Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "testing",
+          "queue": "default"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:03.000000Z"
+    },
+    {
+      "id": "01m44r48m38vszca82s2gr9p0j",
+      "namespace": "sdk-scope-cleanup-fixture",
+      "sequence": 12,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "execution_mode": "local",
+        "local_activity": true,
+        "activity_execution_id": "01m44r47dw71q87reb7tf4cndk",
+        "activity_attempt_id": "01M44R47S1J1DR4WSWPYVBWX1X",
+        "activity_class": "tests.scoped-cleanup",
+        "activity_type": "tests.scoped-cleanup",
+        "sequence": 4,
+        "attempt_number": 2,
+        "result": "wwHioz3/VYAiNwoOY2xlYW5lZA==",
+        "payload_codec": "avro",
+        "workflow_task_id": "01m44r47m56swywe4mcbf4nykp",
+        "activity": {
+          "id": "01m44r47dw71q87reb7tf4cndk",
+          "idempotency_key": "01m44r47dw71q87reb7tf4cndk",
+          "sequence": 4,
+          "type": "tests.scoped-cleanup",
+          "class": "tests.scoped-cleanup",
+          "execution_mode": "local",
+          "local_activity": true,
+          "attempt_id": "01M44R47S1J1DR4WSWPYVBWX1X",
+          "status": "completed",
+          "payload_codec": "avro",
+          "attempt_count": 2,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 2,
+            "backoff_seconds": [
+              0
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "cancellation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+          "queue": "default",
+          "last_heartbeat_at": "2026-10-05T00:00:03.000000Z",
+          "created_at": "2026-10-05T00:00:00.500000Z",
+          "started_at": "2026-10-05T00:00:03.000000Z",
+          "closed_at": "2026-10-05T00:00:14.800000Z",
+          "arguments": "wwHioz3/VYAiNwwA",
+          "result": "wwHioz3/VYAiNwoOY2xlYW5lZA=="
+        },
+        "activity_attempt": {
+          "id": "01M44R47S1J1DR4WSWPYVBWX1X",
+          "worker_attempt_id": "replacement-local",
+          "activity_execution_id": "01m44r47dw71q87reb7tf4cndk",
+          "task_id": "01m44r47m56swywe4mcbf4nykp",
+          "attempt_number": 2,
+          "status": "completed",
+          "lease_owner": "replacement",
+          "started_at": "2026-10-05T00:00:03.000000Z",
+          "last_heartbeat_at": "2026-10-05T00:00:03.000000Z",
+          "closed_at": "2026-10-05T00:00:14.800000Z"
+        },
+        "worker_attempt_id": "replacement-local",
+        "local_outcome": {
+          "version": 1,
+          "report_fingerprint": "42147c24a545f9337fb0404d589a7440ab57b3681120508ddfb1387b443cf546",
+          "workflow_task_attempt": 1,
+          "submitted_outcome": "completed"
+        },
+        "task": {
+          "id": "01m44r47m56swywe4mcbf4nykp",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-10-05T00:00:03.000000Z",
+          "leased_at": "2026-10-05T00:00:03.000000Z",
+          "lease_owner": "replacement",
+          "lease_expires_at": "2026-10-05T00:00:15.000000Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "testing",
+          "queue": "default"
+        }
+      },
+      "timestamp": "2026-10-05T00:00:14.800000Z"
+    }
+  ],
+  "original_admission": {
+    "prepared": true,
+    "duplicate": false,
+    "reason": null,
+    "activity_execution_id": "01m44r47dw71q87reb7tf4cndk",
+    "activity_attempt_id": "01M44R47E112HED2PRH7957A0X",
+    "worker_attempt_id": "original-local",
+    "attempt_number": 1,
+    "workflow_task_id": "01m44r47850ahkr0zz58jyn6vx",
+    "workflow_task_attempt": 1,
+    "lease_owner": "original",
+    "lease_expires_at": "2026-10-05T00:00:02.500000Z",
+    "start_to_close_deadline_at": "2026-10-05T00:00:15.123456Z",
+    "schedule_to_close_deadline_at": "2026-10-05T00:00:15.123456Z",
+    "heartbeat_deadline_at": "2026-10-05T00:00:15.123456Z",
+    "cancellation_cleanup": {
+      "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+      "operation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+      "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+      "root_request_id": "01M44R479A3D514FAEAZ6MT2YF",
+      "delivery_history_event_id": "01m44r47b3znjx2rxbhf0n2xeb",
+      "preparation_history_event_id": "01m44r47a5rgd44hypbza9cwm4",
+      "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z",
+      "authority_deadline_at": "2026-10-05T00:00:15.123456Z"
+    },
+    "cancellation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+    "server_time": "2026-10-05T00:00:00.500000Z"
+  },
+  "replacement_admission": {
+    "prepared": true,
+    "duplicate": false,
+    "reason": null,
+    "activity_execution_id": "01m44r47dw71q87reb7tf4cndk",
+    "activity_attempt_id": "01M44R47S1J1DR4WSWPYVBWX1X",
+    "worker_attempt_id": "replacement-local",
+    "attempt_number": 2,
+    "workflow_task_id": "01m44r47m56swywe4mcbf4nykp",
+    "workflow_task_attempt": 1,
+    "lease_owner": "replacement",
+    "lease_expires_at": "2026-10-05T00:00:05.000000Z",
+    "start_to_close_deadline_at": "2026-10-05T00:00:15.123456Z",
+    "schedule_to_close_deadline_at": "2026-10-05T00:00:15.123456Z",
+    "heartbeat_deadline_at": "2026-10-05T00:00:15.123456Z",
+    "cancellation_cleanup": {
+      "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+      "operation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+      "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+      "root_request_id": "01M44R479A3D514FAEAZ6MT2YF",
+      "delivery_history_event_id": "01m44r47b3znjx2rxbhf0n2xeb",
+      "preparation_history_event_id": "01m44r47a5rgd44hypbza9cwm4",
+      "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z",
+      "authority_deadline_at": "2026-10-05T00:00:15.123456Z"
+    },
+    "cancellation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+    "server_time": "2026-10-05T00:00:03.000000Z"
+  },
+  "late_duplicate_admission": {
+    "prepared": true,
+    "duplicate": true,
+    "reason": null,
+    "activity_execution_id": "01m44r47dw71q87reb7tf4cndk",
+    "activity_attempt_id": "01M44R47S1J1DR4WSWPYVBWX1X",
+    "worker_attempt_id": "replacement-local",
+    "attempt_number": 2,
+    "workflow_task_id": "01m44r47m56swywe4mcbf4nykp",
+    "workflow_task_attempt": 1,
+    "lease_owner": "replacement",
+    "lease_expires_at": "2026-10-05T00:00:15.000000Z",
+    "start_to_close_deadline_at": "2026-10-05T00:00:15.123456Z",
+    "schedule_to_close_deadline_at": "2026-10-05T00:00:15.123456Z",
+    "heartbeat_deadline_at": "2026-10-05T00:00:15.123456Z",
+    "cancellation_cleanup": {
+      "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+      "operation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+      "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+      "root_request_id": "01M44R479A3D514FAEAZ6MT2YF",
+      "delivery_history_event_id": "01m44r47b3znjx2rxbhf0n2xeb",
+      "preparation_history_event_id": "01m44r47a5rgd44hypbza9cwm4",
+      "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z",
+      "authority_deadline_at": "2026-10-05T00:00:15.123456Z"
+    },
+    "cancellation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+    "server_time": "2026-10-05T00:00:13.000000Z"
+  },
+  "late_control": {
+    "active": true,
+    "renewed": true,
+    "stop_required": false,
+    "reason": null,
+    "activity_execution_id": "01m44r47dw71q87reb7tf4cndk",
+    "activity_attempt_id": "01M44R47S1J1DR4WSWPYVBWX1X",
+    "workflow_task_id": "01m44r47m56swywe4mcbf4nykp",
+    "workflow_task_attempt": 1,
+    "lease_owner": "replacement",
+    "lease_expires_at": "2026-10-05T00:00:15.000000Z",
+    "workflow_lease_expires_at": "2026-10-05T00:00:15.000000Z",
+    "start_to_close_deadline_at": "2026-10-05T00:00:15.123456Z",
+    "schedule_to_close_deadline_at": "2026-10-05T00:00:15.123456Z",
+    "heartbeat_deadline_at": "2026-10-05T00:00:15.123456Z",
+    "cancellation_cleanup": {
+      "scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+      "operation_scope_id": "01M44R4796X7KMYBQK7GVZFJ7B",
+      "request_id": "01M44R479A3D514FAEAZ6MT2YF",
+      "root_request_id": "01M44R479A3D514FAEAZ6MT2YF",
+      "delivery_history_event_id": "01m44r47b3znjx2rxbhf0n2xeb",
+      "preparation_history_event_id": "01m44r47a5rgd44hypbza9cwm4",
+      "cleanup_deadline_at": "2026-10-05T00:00:30.123456Z",
+      "authority_deadline_at": "2026-10-05T00:00:15.123456Z"
+    },
+    "heartbeat_recorded": false,
+    "heartbeat_history_event_id": null,
+    "run_status": "pending",
+    "task_status": "leased",
+    "server_time": "2026-10-05T00:00:13.000000Z"
+  },
+  "stale_outcome": {
+    "recorded": false,
+    "duplicate": false,
+    "reason": "workflow_claim_mismatch",
+    "activity_attempt_id": "01M44R47E112HED2PRH7957A0X",
+    "claim_released": false,
+    "created_task_ids": []
+  },
+  "recovery": {
+    "recovered": true,
+    "duplicate": false,
+    "reason": null,
+    "event_id": "01m44r47m8aetnn1wekp4yy5gs",
+    "event_type": "ActivityRetryScheduled",
+    "activity_execution_id": "01m44r47dw71q87reb7tf4cndk",
+    "activity_attempt_id": "01M44R47E112HED2PRH7957A0X",
+    "workflow_task_id": "01m44r47850ahkr0zz58jyn6vx",
+    "recorded_at": "2026-10-05T00:00:03.000000Z",
+    "callback_stop_state": "unknown",
+    "claim_released": true,
+    "created_task_ids": [
+      "01m44r47m56swywe4mcbf4nykp"
+    ]
+  },
+  "outcome": {
+    "recorded": true,
+    "duplicate": false,
+    "reason": null,
+    "event_id": "01m44r48m38vszca82s2gr9p0j",
+    "event_type": "ActivityCompleted",
+    "workflow_run_id": "01m44r477r8f88azjzjn60rfam",
+    "workflow_task_id": "01m44r47m56swywe4mcbf4nykp",
+    "workflow_task_attempt": 1,
+    "activity_execution_id": "01m44r47dw71q87reb7tf4cndk",
+    "activity_attempt_id": "01M44R47S1J1DR4WSWPYVBWX1X",
+    "worker_attempt_id": "replacement-local",
+    "recorded_at": "2026-10-05T00:00:14.800000Z",
+    "claim_released": false,
+    "created_task_ids": []
+  }
+}

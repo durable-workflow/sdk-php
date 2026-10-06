@@ -48,6 +48,9 @@
           "glob": "src/Worker/ReplayResult.php"
         },
         {
+          "glob": "src/Worker/StickyWorkflowCache.php"
+        },
+        {
           "glob": "src/Worker.php",
           "content_patterns": [
             "function\\s+register\\s*\\("
@@ -70,6 +73,17 @@
           "content_patterns": [
             "function\\s+completeHistory\\s*\\(",
             "function\\s+executeWorkflowTask\\s*\\("
+          ]
+        },
+        {
+          "glob": "src/Worker.php",
+          "content_patterns": [
+            "function\\s+replayWorkflowClaim\\s*\\(",
+            "function\\s+refreshCancellationHistory\\s*\\(",
+            "function\\s+observeClaimCancellation\\s*\\(",
+            "function\\s+assertLocalWorkflowClaimActive\\s*\\(",
+            "function\\s+renewWorkflowTaskLease\\s*\\(",
+            "function\\s+executeLocalActivity\\s*\\("
           ]
         },
         {

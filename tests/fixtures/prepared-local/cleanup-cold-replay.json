@@ -1,0 +1,137 @@
+{
+    "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+    "fixture_schema": "durable-workflow.replay-regression/v1",
+    "id": "prepared-local-cleanup-cold-replay",
+    "protocol_version": "1.20",
+    "bindings": [
+        "php"
+    ],
+    "workflow": {
+        "type": "golden.prepared-local-cleanup",
+        "input": []
+    },
+    "history": [
+        {
+            "id": "canonical-request",
+            "event_type": "CooperativeCancellationRequested",
+            "recorded_at": "2026-10-02T00:00:01Z",
+            "payload": {
+                "workflow_run_id": "regression-inline",
+                "workflow_instance_id": "regression-workflow",
+                "workflow_command_id": "child-request",
+                "cleanup_deadline_at": "2026-10-02T00:00:30Z",
+                "reason": "qualification",
+                "cancellation": {
+                    "schema": "durable-workflow.cancellation-context/v1",
+                    "request_id": "child-request",
+                    "root_request_id": "root-request",
+                    "root_workflow_instance_id": "root-workflow",
+                    "root_workflow_run_id": "root-run",
+                    "parent_request_id": "root-request",
+                    "reason": "qualification",
+                    "requester": {
+                        "type": "operator",
+                        "id": "synthetic"
+                    },
+                    "source": "parent",
+                    "requested_at": "2026-10-02T00:00:00Z",
+                    "cleanup_deadline_at": "2026-10-02T00:00:30Z",
+                    "lineage": [
+                        {
+                            "request_id": "root-request",
+                            "workflow_instance_id": "root-workflow",
+                            "workflow_run_id": "root-run"
+                        },
+                        {
+                            "request_id": "child-request",
+                            "workflow_instance_id": "regression-workflow",
+                            "workflow_run_id": "regression-inline"
+                        }
+                    ]
+                }
+            }
+        },
+        {
+            "id": "canonical-delivery",
+            "event_type": "CooperativeCancellationDelivered",
+            "recorded_at": "2026-10-02T00:00:02Z",
+            "payload": {
+                "workflow_run_id": "regression-inline",
+                "workflow_command_id": "child-request",
+                "sequence": 1,
+                "call_kind": "timer",
+                "sequence_span": 1,
+                "cancellation": {
+                    "schema": "durable-workflow.cancellation-context/v1",
+                    "request_id": "child-request",
+                    "root_request_id": "root-request",
+                    "root_workflow_instance_id": "root-workflow",
+                    "root_workflow_run_id": "root-run",
+                    "parent_request_id": "root-request",
+                    "reason": "qualification",
+                    "requester": {
+                        "type": "operator",
+                        "id": "synthetic"
+                    },
+                    "source": "parent",
+                    "requested_at": "2026-10-02T00:00:00Z",
+                    "cleanup_deadline_at": "2026-10-02T00:00:30Z",
+                    "lineage": [
+                        {
+                            "request_id": "root-request",
+                            "workflow_instance_id": "root-workflow",
+                            "workflow_run_id": "root-run"
+                        },
+                        {
+                            "request_id": "child-request",
+                            "workflow_instance_id": "regression-workflow",
+                            "workflow_run_id": "regression-inline"
+                        }
+                    ]
+                }
+            }
+        },
+        {
+            "id": "cleanup-scheduled",
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "sequence": 2,
+                "activity_type": "golden.cleanup",
+                "execution_mode": "local"
+            }
+        },
+        {
+            "id": "cleanup-started",
+            "event_type": "ActivityStarted",
+            "payload": {
+                "sequence": 2
+            }
+        }
+    ],
+    "expected": {
+        "command_sequence": [
+            {
+                "type": "prepare_local_activity",
+                "sequence": 2,
+                "recover": true,
+                "local_activity": {
+                    "type": "record_local_activity",
+                    "activity_type": "golden.cleanup",
+                    "execution_mode": "local",
+                    "arguments": [],
+                    "payload_codec": "avro",
+                    "cancellation_cleanup": {
+                        "request_id": "child-request",
+                        "delivery_history_event_id": "canonical-delivery"
+                    }
+                },
+                "cancellation_cleanup": {
+                    "request_id": "child-request",
+                    "root_request_id": "root-request",
+                    "delivery_history_event_id": "canonical-delivery",
+                    "cleanup_deadline_at": "2026-10-02T00:00:30.000000Z"
+                }
+            }
+        ]
+    }
+}

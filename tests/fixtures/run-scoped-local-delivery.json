@@ -1,0 +1,1257 @@
+{
+    "native_commit": "fec0c95a6440edf98c128e711839b4a015f4da4d",
+    "task": {
+        "workflow_id": "sdk-run-scope-fixture",
+        "run_id": "01m46wmmxwrjavw7w0bxzb5szt"
+    },
+    "scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+    "history_ranges": {
+        "opened": 3,
+        "admitted": 5,
+        "requested": 7,
+        "callback_stopped": 10,
+        "prepared": 10,
+        "scope_delivered": 11,
+        "scope_cleaned": 14,
+        "root_delivered": 15,
+        "root_cleaned": 18
+    },
+    "history": [
+        {
+            "id": "01m46wmmy9fev61d1me1z6yy1j",
+            "namespace": "sdk-root-scopes",
+            "sequence": 1,
+            "event_type": "StartAccepted",
+            "payload": {
+                "workflow_command_id": "01m46wmmy372e9y2730s62s160",
+                "workflow_instance_id": "sdk-run-scope-fixture",
+                "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                "workflow_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+                "workflow_type": "test-signal-workflow",
+                "business_key": null,
+                "visibility_labels": null,
+                "memo": null,
+                "search_attributes": null,
+                "outcome": "started_new",
+                "command": {
+                    "id": "01m46wmmy372e9y2730s62s160",
+                    "sequence": 1,
+                    "type": "start",
+                    "target_scope": "instance",
+                    "resolved_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                    "payload_codec": "avro",
+                    "payload": "wwHioz3/VYAiNwwA",
+                    "source": "php",
+                    "caller_label": "PHP API",
+                    "auth_status": "not_applicable",
+                    "auth_method": "none",
+                    "status": "accepted",
+                    "outcome": "started_new",
+                    "accepted_at": "2026-10-05T00:00:00.000000Z",
+                    "applied_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:00.000000Z"
+        },
+        {
+            "id": "01m46wmmydgy40km590dv0abm5",
+            "namespace": "sdk-root-scopes",
+            "sequence": 2,
+            "event_type": "WorkflowStarted",
+            "payload": {
+                "workflow_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+                "workflow_type": "test-signal-workflow",
+                "workflow_instance_id": "sdk-run-scope-fixture",
+                "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                "workflow_command_id": "01m46wmmy372e9y2730s62s160",
+                "business_key": null,
+                "visibility_labels": null,
+                "memo": null,
+                "search_attributes": null,
+                "execution_timeout_seconds": null,
+                "run_timeout_seconds": null,
+                "execution_deadline_at": null,
+                "run_deadline_at": null,
+                "workflow_definition_fingerprint": "sha256:5617b572b0eb270f91fe65ee11da3d428b3f6b570d381a87213671a587b20475",
+                "declared_queries": [],
+                "declared_query_contracts": [],
+                "declared_signals": [
+                    "name-provided"
+                ],
+                "declared_signal_contracts": [],
+                "declared_updates": [],
+                "declared_update_contracts": [],
+                "declared_entry_method": "handle",
+                "declared_entry_mode": "canonical",
+                "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestSignalWorkflow",
+                "command": {
+                    "id": "01m46wmmy372e9y2730s62s160",
+                    "sequence": 1,
+                    "type": "start",
+                    "target_scope": "instance",
+                    "resolved_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                    "payload_codec": "avro",
+                    "payload": "wwHioz3/VYAiNwwA",
+                    "source": "php",
+                    "caller_label": "PHP API",
+                    "auth_status": "not_applicable",
+                    "auth_method": "none",
+                    "status": "accepted",
+                    "outcome": "started_new",
+                    "accepted_at": "2026-10-05T00:00:00.000000Z",
+                    "applied_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:00.000000Z"
+        },
+        {
+            "id": "01m46wmn4nzf3br85m6mrr0me9",
+            "namespace": "sdk-root-scopes",
+            "sequence": 3,
+            "event_type": "CancellationScopeOpened",
+            "payload": {
+                "schema": "durable-workflow.cancellation-scope/v1",
+                "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                "sequence": 1,
+                "scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                "parent_scope_id": "root",
+                "shield_parent": false,
+                "task": {
+                    "id": "01m46wmmye47fn5w05hetn2aey",
+                    "type": "workflow",
+                    "status": "leased",
+                    "available_at": "2026-10-05T00:00:00.000000Z",
+                    "lease_owner": "original",
+                    "lease_expires_at": "2026-10-05T00:01:00.000000Z",
+                    "attempt_count": 1,
+                    "repair_count": 0,
+                    "connection": "sqlite",
+                    "queue": "default",
+                    "last_dispatch_attempt_at": "2026-10-05T00:00:00.000000Z",
+                    "last_dispatched_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:00.000000Z"
+        },
+        {
+            "id": "01m46wmn6wgk0873482sg3t118",
+            "namespace": "sdk-root-scopes",
+            "sequence": 4,
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "execution_mode": "local",
+                "local_activity": true,
+                "activity_execution_id": "01m46wmn6skhqmf5kj1ye72d5b",
+                "activity_class": "tests.scoped-work",
+                "activity_type": "tests.scoped-work",
+                "sequence": 2,
+                "workflow_task_id": "01m46wmmye47fn5w05hetn2aey",
+                "activity": {
+                    "id": "01m46wmn6skhqmf5kj1ye72d5b",
+                    "idempotency_key": "01m46wmn6skhqmf5kj1ye72d5b",
+                    "sequence": 2,
+                    "type": "tests.scoped-work",
+                    "class": "tests.scoped-work",
+                    "execution_mode": "local",
+                    "local_activity": true,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 1,
+                        "backoff_seconds": [],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "cancellation_policy": "wait_cancellation_completed",
+                    "cancellation_scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                    "queue": "default",
+                    "created_at": "2026-10-05T00:00:00.000000Z",
+                    "arguments": "wwHioz3/VYAiNwwA"
+                },
+                "local_preparation": {
+                    "version": 1,
+                    "descriptor_fingerprint": "f4c5c227d813a4523db4d9193b13dc95b7e6e5726d7a69bb6bed99ad4983f73f",
+                    "worker_attempt_id": "scoped-work-attempt",
+                    "workflow_task_attempt": 1
+                },
+                "task": {
+                    "id": "01m46wmmye47fn5w05hetn2aey",
+                    "type": "workflow",
+                    "status": "leased",
+                    "available_at": "2026-10-05T00:00:00.000000Z",
+                    "lease_owner": "original",
+                    "lease_expires_at": "2026-10-05T00:01:00.000000Z",
+                    "attempt_count": 1,
+                    "repair_count": 0,
+                    "connection": "sqlite",
+                    "queue": "default",
+                    "last_dispatch_attempt_at": "2026-10-05T00:00:00.000000Z",
+                    "last_dispatched_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:00.000000Z"
+        },
+        {
+            "id": "01m46wmn71baqz5jaj8ageykj6",
+            "namespace": "sdk-root-scopes",
+            "sequence": 5,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "execution_mode": "local",
+                "local_activity": true,
+                "activity_execution_id": "01m46wmn6skhqmf5kj1ye72d5b",
+                "activity_attempt_id": "01M46WMN6YF8ECC24MT9XTHETF",
+                "activity_class": "tests.scoped-work",
+                "activity_type": "tests.scoped-work",
+                "sequence": 2,
+                "attempt_number": 1,
+                "workflow_task_id": "01m46wmmye47fn5w05hetn2aey",
+                "lease_expires_at": "2026-10-05T00:01:00.000000Z",
+                "activity": {
+                    "id": "01m46wmn6skhqmf5kj1ye72d5b",
+                    "idempotency_key": "01m46wmn6skhqmf5kj1ye72d5b",
+                    "sequence": 2,
+                    "type": "tests.scoped-work",
+                    "class": "tests.scoped-work",
+                    "execution_mode": "local",
+                    "local_activity": true,
+                    "attempt_id": "01M46WMN6YF8ECC24MT9XTHETF",
+                    "status": "running",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 1,
+                        "backoff_seconds": [],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "cancellation_policy": "wait_cancellation_completed",
+                    "cancellation_scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                    "queue": "default",
+                    "last_heartbeat_at": "2026-10-05T00:00:00.000000Z",
+                    "created_at": "2026-10-05T00:00:00.000000Z",
+                    "started_at": "2026-10-05T00:00:00.000000Z",
+                    "arguments": "wwHioz3/VYAiNwwA"
+                },
+                "activity_attempt": {
+                    "id": "01M46WMN6YF8ECC24MT9XTHETF",
+                    "worker_attempt_id": "scoped-work-attempt",
+                    "activity_execution_id": "01m46wmn6skhqmf5kj1ye72d5b",
+                    "task_id": "01m46wmmye47fn5w05hetn2aey",
+                    "attempt_number": 1,
+                    "status": "running",
+                    "lease_owner": "original",
+                    "started_at": "2026-10-05T00:00:00.000000Z",
+                    "last_heartbeat_at": "2026-10-05T00:00:00.000000Z",
+                    "lease_expires_at": "2026-10-05T00:01:00.000000Z"
+                },
+                "worker_attempt_id": "scoped-work-attempt",
+                "local_preparation": {
+                    "version": 1,
+                    "descriptor_fingerprint": "f4c5c227d813a4523db4d9193b13dc95b7e6e5726d7a69bb6bed99ad4983f73f",
+                    "worker_attempt_id": "scoped-work-attempt",
+                    "workflow_task_attempt": 1,
+                    "schedule_to_close_deadline_at": null
+                },
+                "task": {
+                    "id": "01m46wmmye47fn5w05hetn2aey",
+                    "type": "workflow",
+                    "status": "leased",
+                    "available_at": "2026-10-05T00:00:00.000000Z",
+                    "lease_owner": "original",
+                    "lease_expires_at": "2026-10-05T00:01:00.000000Z",
+                    "attempt_count": 1,
+                    "repair_count": 0,
+                    "connection": "sqlite",
+                    "queue": "default",
+                    "last_dispatch_attempt_at": "2026-10-05T00:00:00.000000Z",
+                    "last_dispatched_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:00.000000Z"
+        },
+        {
+            "id": "01m46wmn9e4t4pqsh71fnpp9e2",
+            "namespace": "sdk-root-scopes",
+            "sequence": 6,
+            "event_type": "CooperativeCancellationRequested",
+            "payload": {
+                "workflow_command_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                "workflow_instance_id": "sdk-run-scope-fixture",
+                "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                "command_type": "request_cancellation",
+                "reason": "finish the entire run",
+                "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z",
+                "cancellation": {
+                    "schema": "durable-workflow.cancellation-context/v1",
+                    "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                    "root_request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                    "root_workflow_instance_id": "sdk-run-scope-fixture",
+                    "root_workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                    "parent_request_id": null,
+                    "reason": "finish the entire run",
+                    "requester": {
+                        "type": "php",
+                        "label": "PHP API"
+                    },
+                    "source": "php",
+                    "requested_at": "2026-10-05T00:00:00.000000Z",
+                    "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z",
+                    "lineage": [
+                        {
+                            "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                            "workflow_instance_id": "sdk-run-scope-fixture",
+                            "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt"
+                        }
+                    ]
+                },
+                "command": {
+                    "id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                    "sequence": 2,
+                    "type": "request_cancellation",
+                    "target_scope": "instance",
+                    "resolved_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                    "payload_codec": "avro",
+                    "payload": "wwHioz3/VYAiNw4GDHJlYXNvbgoqZmluaXNoIHRoZSBlbnRpcmUgcnVuJmNsZWFudXBfZGVhZGxpbmVfYXQKNjIwMjYtMTAtMDVUMDA6MDA6MzAuMDAwMDAwWhhjYW5jZWxsYXRpb24OGAxzY2hlbWEKUGR1cmFibGUtd29ya2Zsb3cuY2FuY2VsbGF0aW9uLWNvbnRleHQvdjEUcmVxdWVzdF9pZAo0MDFNNDZXTU45NDIxU1BRMjdUTjlNMk1RM0Mecm9vdF9yZXF1ZXN0X2lkCjQwMU00NldNTjk0MjFTUFEyN1ROOU0yTVEzQzJyb290X3dvcmtmbG93X2luc3RhbmNlX2lkCipzZGstcnVuLXNjb3BlLWZpeHR1cmUocm9vdF93b3JrZmxvd19ydW5faWQKNDAxbTQ2d21teHdyamF2dzd3MGJ4emI1c3p0InBhcmVudF9yZXF1ZXN0X2lkAAxyZWFzb24KKmZpbmlzaCB0aGUgZW50aXJlIHJ1bhJyZXF1ZXN0ZXIOBAh0eXBlCgZwaHAKbGFiZWwKDlBIUCBBUEkADHNvdXJjZQoGcGhwGHJlcXVlc3RlZF9hdAo2MjAyNi0xMC0wNVQwMDowMDowMC4wMDAwMDBaJmNsZWFudXBfZGVhZGxpbmVfYXQKNjIwMjYtMTAtMDVUMDA6MDA6MzAuMDAwMDAwWg5saW5lYWdlDAIOBhRyZXF1ZXN0X2lkCjQwMU00NldNTjk0MjFTUFEyN1ROOU0yTVEzQyh3b3JrZmxvd19pbnN0YW5jZV9pZAoqc2RrLXJ1bi1zY29wZS1maXh0dXJlHndvcmtmbG93X3J1bl9pZAo0MDFtNDZ3bW14d3JqYXZ3N3cwYnh6YjVzenQAAAAA",
+                    "source": "php",
+                    "caller_label": "PHP API",
+                    "auth_status": "not_applicable",
+                    "auth_method": "none",
+                    "status": "accepted",
+                    "outcome": "cancellation_requested",
+                    "accepted_at": "2026-10-05T00:00:00.000000Z",
+                    "applied_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:00.000000Z"
+        },
+        {
+            "id": "01m46wmn9yr6eesm1jychnmds6",
+            "namespace": "sdk-root-scopes",
+            "sequence": 7,
+            "event_type": "CancellationScopeRequested",
+            "payload": {
+                "schema": "durable-workflow.cancellation-scope-request/v1",
+                "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                "scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                "parent_scope_id": "root",
+                "request_id": "01M46WMN9SGFSC54GGTQS8JVPB",
+                "cancellation": {
+                    "schema": "durable-workflow.scoped-cancellation-context/v1",
+                    "root_context": {
+                        "schema": "durable-workflow.cancellation-context/v1",
+                        "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                        "root_request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                        "root_workflow_instance_id": "sdk-run-scope-fixture",
+                        "root_workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                        "parent_request_id": null,
+                        "reason": "finish the entire run",
+                        "requester": {
+                            "type": "php",
+                            "label": "PHP API"
+                        },
+                        "source": "php",
+                        "requested_at": "2026-10-05T00:00:00.000000Z",
+                        "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z",
+                        "lineage": [
+                            {
+                                "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                                "workflow_instance_id": "sdk-run-scope-fixture",
+                                "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt"
+                            }
+                        ]
+                    },
+                    "lineage": [
+                        {
+                            "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                            "workflow_instance_id": "sdk-run-scope-fixture",
+                            "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                            "scope_id": "root",
+                            "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z"
+                        },
+                        {
+                            "request_id": "01M46WMN9SGFSC54GGTQS8JVPB",
+                            "workflow_instance_id": "sdk-run-scope-fixture",
+                            "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                            "scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                            "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z"
+                        }
+                    ]
+                }
+            },
+            "timestamp": "2026-10-05T00:00:00.000000Z"
+        },
+        {
+            "id": "01m46wmndf7315d4gmh56faqka",
+            "namespace": "sdk-root-scopes",
+            "sequence": 8,
+            "event_type": "CancellationScopeDeliveryPrepared",
+            "payload": {
+                "schema": "durable-workflow.cancellation-scope-preparation/v5",
+                "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                "scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                "request_id": "01M46WMN9SGFSC54GGTQS8JVPB",
+                "cancellation": {
+                    "schema": "durable-workflow.scoped-cancellation-context/v1",
+                    "root_context": {
+                        "schema": "durable-workflow.cancellation-context/v1",
+                        "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                        "root_request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                        "root_workflow_instance_id": "sdk-run-scope-fixture",
+                        "root_workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                        "parent_request_id": null,
+                        "reason": "finish the entire run",
+                        "requester": {
+                            "type": "php",
+                            "label": "PHP API"
+                        },
+                        "source": "php",
+                        "requested_at": "2026-10-05T00:00:00.000000Z",
+                        "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z",
+                        "lineage": [
+                            {
+                                "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                                "workflow_instance_id": "sdk-run-scope-fixture",
+                                "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt"
+                            }
+                        ]
+                    },
+                    "lineage": [
+                        {
+                            "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                            "workflow_instance_id": "sdk-run-scope-fixture",
+                            "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                            "scope_id": "root",
+                            "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z"
+                        },
+                        {
+                            "request_id": "01M46WMN9SGFSC54GGTQS8JVPB",
+                            "workflow_instance_id": "sdk-run-scope-fixture",
+                            "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                            "scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                            "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z"
+                        }
+                    ]
+                },
+                "sequence": 2,
+                "call_kind": "local_activity",
+                "sequence_span": 1,
+                "operation_sequence": null,
+                "operation_sequence_span": 1,
+                "authority_deadline_at": "2026-10-05T00:00:30.000000Z",
+                "activity_members": [
+                    {
+                        "sequence": 2,
+                        "activity_execution_id": "01m46wmn6skhqmf5kj1ye72d5b",
+                        "descriptor_hash": "8f6c7e0e381aab0c7d8583ba462c4bfdd5d437b254d3dd32540ce5913600a6a0"
+                    }
+                ],
+                "timer_members": [],
+                "wait_members": [],
+                "child_members": [],
+                "descendant_members": [],
+                "task": {
+                    "id": "01m46wmmye47fn5w05hetn2aey",
+                    "type": "workflow",
+                    "status": "leased",
+                    "available_at": "2026-10-05T00:00:00.000000Z",
+                    "lease_owner": "original",
+                    "lease_expires_at": "2026-10-05T00:00:10.000000Z",
+                    "attempt_count": 1,
+                    "repair_count": 0,
+                    "connection": "sqlite",
+                    "queue": "default",
+                    "last_dispatch_attempt_at": "2026-10-05T00:00:00.000000Z",
+                    "last_dispatched_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:00.000000Z"
+        },
+        {
+            "id": "01m46wmng7wpk8bx2dsyad0cep",
+            "namespace": "sdk-root-scopes",
+            "sequence": 9,
+            "event_type": "ActivityCancelled",
+            "payload": {
+                "execution_mode": "local",
+                "local_activity": true,
+                "workflow_command_id": "01M46WMN9SGFSC54GGTQS8JVPB",
+                "activity_execution_id": "01m46wmn6skhqmf5kj1ye72d5b",
+                "activity_attempt_id": "01M46WMN6YF8ECC24MT9XTHETF",
+                "activity_class": "tests.scoped-work",
+                "activity_type": "tests.scoped-work",
+                "sequence": 2,
+                "attempt_number": 1,
+                "cancelled_at": "2026-10-05T00:00:00.000000Z",
+                "activity": {
+                    "id": "01m46wmn6skhqmf5kj1ye72d5b",
+                    "idempotency_key": "01m46wmn6skhqmf5kj1ye72d5b",
+                    "sequence": 2,
+                    "type": "tests.scoped-work",
+                    "class": "tests.scoped-work",
+                    "execution_mode": "local",
+                    "local_activity": true,
+                    "attempt_id": "01M46WMN6YF8ECC24MT9XTHETF",
+                    "status": "cancelled",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 1,
+                        "backoff_seconds": [],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "cancellation_policy": "wait_cancellation_completed",
+                    "cancellation_scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                    "queue": "default",
+                    "last_heartbeat_at": "2026-10-05T00:00:00.000000Z",
+                    "created_at": "2026-10-05T00:00:00.000000Z",
+                    "started_at": "2026-10-05T00:00:00.000000Z",
+                    "closed_at": "2026-10-05T00:00:00.000000Z",
+                    "arguments": "wwHioz3/VYAiNwwA"
+                },
+                "activity_attempt": {
+                    "id": "01M46WMN6YF8ECC24MT9XTHETF",
+                    "worker_attempt_id": "scoped-work-attempt",
+                    "activity_execution_id": "01m46wmn6skhqmf5kj1ye72d5b",
+                    "task_id": "01m46wmmye47fn5w05hetn2aey",
+                    "attempt_number": 1,
+                    "status": "cancelled",
+                    "lease_owner": "original",
+                    "started_at": "2026-10-05T00:00:00.000000Z",
+                    "last_heartbeat_at": "2026-10-05T00:00:00.000000Z",
+                    "closed_at": "2026-10-05T00:00:00.000000Z"
+                },
+                "cancellation_scope": {
+                    "schema": "durable-workflow.activity-scope-cancellation/v1",
+                    "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                    "scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                    "request_id": "01M46WMN9SGFSC54GGTQS8JVPB",
+                    "request_history_event_id": "01m46wmn9yr6eesm1jychnmds6",
+                    "cancellation": {
+                        "schema": "durable-workflow.scoped-cancellation-context/v1",
+                        "root_context": {
+                            "schema": "durable-workflow.cancellation-context/v1",
+                            "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                            "root_request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                            "root_workflow_instance_id": "sdk-run-scope-fixture",
+                            "root_workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                            "parent_request_id": null,
+                            "reason": "finish the entire run",
+                            "requester": {
+                                "type": "php",
+                                "label": "PHP API"
+                            },
+                            "source": "php",
+                            "requested_at": "2026-10-05T00:00:00.000000Z",
+                            "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z",
+                            "lineage": [
+                                {
+                                    "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                                    "workflow_instance_id": "sdk-run-scope-fixture",
+                                    "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt"
+                                }
+                            ]
+                        },
+                        "lineage": [
+                            {
+                                "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                                "workflow_instance_id": "sdk-run-scope-fixture",
+                                "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                                "scope_id": "root",
+                                "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z"
+                            },
+                            {
+                                "request_id": "01M46WMN9SGFSC54GGTQS8JVPB",
+                                "workflow_instance_id": "sdk-run-scope-fixture",
+                                "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                                "scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                                "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z"
+                            }
+                        ]
+                    },
+                    "authority_deadline_at": "2026-10-05T00:00:30.000000Z"
+                },
+                "workflow_task_id": "01m46wmmye47fn5w05hetn2aey",
+                "task": {
+                    "id": "01m46wmmye47fn5w05hetn2aey",
+                    "type": "workflow",
+                    "status": "leased",
+                    "available_at": "2026-10-05T00:00:00.000000Z",
+                    "lease_owner": "original",
+                    "lease_expires_at": "2026-10-05T00:00:10.000000Z",
+                    "attempt_count": 1,
+                    "repair_count": 0,
+                    "connection": "sqlite",
+                    "queue": "default",
+                    "last_dispatch_attempt_at": "2026-10-05T00:00:00.000000Z",
+                    "last_dispatched_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:00.000000Z"
+        },
+        {
+            "id": "01m46wmnjez2qbq601s83e5tcy",
+            "namespace": "sdk-root-scopes",
+            "sequence": 10,
+            "event_type": "ActivityCancellationAcknowledged",
+            "payload": {
+                "execution_mode": "local",
+                "local_activity": true,
+                "sequence": 2,
+                "activity_execution_id": "01m46wmn6skhqmf5kj1ye72d5b",
+                "activity_attempt_id": "01M46WMN6YF8ECC24MT9XTHETF",
+                "lease_owner": "original",
+                "cancellation_history_event_id": "01m46wmng7wpk8bx2dsyad0cep",
+                "request_id": "01M46WMN9SGFSC54GGTQS8JVPB",
+                "root_request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z",
+                "callback_state": "stopped",
+                "evidence_source": "workflow_worker",
+                "acknowledged_at": "2026-10-05T00:00:00.000000Z",
+                "received_after_deadline": false,
+                "workflow_task_id": "01m46wmmye47fn5w05hetn2aey",
+                "task": {
+                    "id": "01m46wmmye47fn5w05hetn2aey",
+                    "type": "workflow",
+                    "status": "leased",
+                    "available_at": "2026-10-05T00:00:00.000000Z",
+                    "lease_owner": "original",
+                    "lease_expires_at": "2026-10-05T00:01:00.000000Z",
+                    "attempt_count": 1,
+                    "repair_count": 0,
+                    "connection": "sqlite",
+                    "queue": "default",
+                    "last_dispatch_attempt_at": "2026-10-05T00:00:00.000000Z",
+                    "last_dispatched_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:00.000000Z"
+        },
+        {
+            "id": "01m46wmnszva3c2jr4x958n0m8",
+            "namespace": "sdk-root-scopes",
+            "sequence": 11,
+            "event_type": "CancellationScopeDelivered",
+            "payload": {
+                "schema": "durable-workflow.cancellation-scope-delivery/v1",
+                "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                "scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                "request_id": "01M46WMN9SGFSC54GGTQS8JVPB",
+                "cancellation": {
+                    "schema": "durable-workflow.scoped-cancellation-context/v1",
+                    "root_context": {
+                        "schema": "durable-workflow.cancellation-context/v1",
+                        "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                        "root_request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                        "root_workflow_instance_id": "sdk-run-scope-fixture",
+                        "root_workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                        "parent_request_id": null,
+                        "reason": "finish the entire run",
+                        "requester": {
+                            "type": "php",
+                            "label": "PHP API"
+                        },
+                        "source": "php",
+                        "requested_at": "2026-10-05T00:00:00.000000Z",
+                        "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z",
+                        "lineage": [
+                            {
+                                "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                                "workflow_instance_id": "sdk-run-scope-fixture",
+                                "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt"
+                            }
+                        ]
+                    },
+                    "lineage": [
+                        {
+                            "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                            "workflow_instance_id": "sdk-run-scope-fixture",
+                            "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                            "scope_id": "root",
+                            "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z"
+                        },
+                        {
+                            "request_id": "01M46WMN9SGFSC54GGTQS8JVPB",
+                            "workflow_instance_id": "sdk-run-scope-fixture",
+                            "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                            "scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                            "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z"
+                        }
+                    ]
+                },
+                "sequence": 2,
+                "call_kind": "local_activity",
+                "sequence_span": 1,
+                "operation_sequence": null,
+                "operation_sequence_span": 1,
+                "authority_deadline_at": "2026-10-05T00:00:30.000000Z",
+                "preparation_history_event_id": "01m46wmndf7315d4gmh56faqka",
+                "task": {
+                    "id": "01m46wmmye47fn5w05hetn2aey",
+                    "type": "workflow",
+                    "status": "leased",
+                    "available_at": "2026-10-05T00:00:00.000000Z",
+                    "lease_owner": "original",
+                    "lease_expires_at": "2026-10-05T00:00:15.000000Z",
+                    "attempt_count": 1,
+                    "repair_count": 0,
+                    "connection": "sqlite",
+                    "queue": "default",
+                    "last_dispatch_attempt_at": "2026-10-05T00:00:00.000000Z",
+                    "last_dispatched_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:05.000000Z"
+        },
+        {
+            "id": "01m46wmnzxde3r0wr77ag0swwy",
+            "namespace": "sdk-root-scopes",
+            "sequence": 12,
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "execution_mode": "local",
+                "local_activity": true,
+                "activity_execution_id": "01m46wmnzvkmy0k5rb3xk95g3m",
+                "activity_class": "tests.scoped-cleanup",
+                "activity_type": "tests.scoped-cleanup",
+                "sequence": 3,
+                "workflow_task_id": "01m46wmmye47fn5w05hetn2aey",
+                "activity": {
+                    "id": "01m46wmnzvkmy0k5rb3xk95g3m",
+                    "idempotency_key": "01m46wmnzvkmy0k5rb3xk95g3m",
+                    "sequence": 3,
+                    "type": "tests.scoped-cleanup",
+                    "class": "tests.scoped-cleanup",
+                    "execution_mode": "local",
+                    "local_activity": true,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 1,
+                        "backoff_seconds": [],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "cancellation_scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                    "queue": "default",
+                    "created_at": "2026-10-05T00:00:05.000000Z",
+                    "arguments": "wwHioz3/VYAiNwwA"
+                },
+                "local_preparation": {
+                    "version": 1,
+                    "descriptor_fingerprint": "7ea8ea7b9165e11f0bac8440925f560a7473b6b5e6179d09441416f4d66fb21e",
+                    "worker_attempt_id": "scope-cleanup-attempt",
+                    "workflow_task_attempt": 1,
+                    "cancellation_cleanup": {
+                        "scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                        "operation_scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                        "request_id": "01M46WMN9SGFSC54GGTQS8JVPB",
+                        "root_request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                        "delivery_history_event_id": "01m46wmnszva3c2jr4x958n0m8",
+                        "preparation_history_event_id": "01m46wmndf7315d4gmh56faqka",
+                        "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z",
+                        "authority_deadline_at": "2026-10-05T00:00:30.000000Z"
+                    }
+                },
+                "task": {
+                    "id": "01m46wmmye47fn5w05hetn2aey",
+                    "type": "workflow",
+                    "status": "leased",
+                    "available_at": "2026-10-05T00:00:00.000000Z",
+                    "lease_owner": "original",
+                    "lease_expires_at": "2026-10-05T00:00:15.000000Z",
+                    "attempt_count": 1,
+                    "repair_count": 0,
+                    "connection": "sqlite",
+                    "queue": "default",
+                    "last_dispatch_attempt_at": "2026-10-05T00:00:00.000000Z",
+                    "last_dispatched_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:05.000000Z"
+        },
+        {
+            "id": "01m46wmp0gj64s884rt97xb3tc",
+            "namespace": "sdk-root-scopes",
+            "sequence": 13,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "execution_mode": "local",
+                "local_activity": true,
+                "activity_execution_id": "01m46wmnzvkmy0k5rb3xk95g3m",
+                "activity_attempt_id": "01M46WMNZY5R17ED6WHY536TEN",
+                "activity_class": "tests.scoped-cleanup",
+                "activity_type": "tests.scoped-cleanup",
+                "sequence": 3,
+                "attempt_number": 1,
+                "workflow_task_id": "01m46wmmye47fn5w05hetn2aey",
+                "lease_expires_at": "2026-10-05T00:00:15.000000Z",
+                "activity": {
+                    "id": "01m46wmnzvkmy0k5rb3xk95g3m",
+                    "idempotency_key": "01m46wmnzvkmy0k5rb3xk95g3m",
+                    "sequence": 3,
+                    "type": "tests.scoped-cleanup",
+                    "class": "tests.scoped-cleanup",
+                    "execution_mode": "local",
+                    "local_activity": true,
+                    "attempt_id": "01M46WMNZY5R17ED6WHY536TEN",
+                    "status": "running",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 1,
+                        "backoff_seconds": [],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "cancellation_scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                    "queue": "default",
+                    "last_heartbeat_at": "2026-10-05T00:00:05.000000Z",
+                    "created_at": "2026-10-05T00:00:05.000000Z",
+                    "started_at": "2026-10-05T00:00:05.000000Z",
+                    "arguments": "wwHioz3/VYAiNwwA"
+                },
+                "activity_attempt": {
+                    "id": "01M46WMNZY5R17ED6WHY536TEN",
+                    "worker_attempt_id": "scope-cleanup-attempt",
+                    "activity_execution_id": "01m46wmnzvkmy0k5rb3xk95g3m",
+                    "task_id": "01m46wmmye47fn5w05hetn2aey",
+                    "attempt_number": 1,
+                    "status": "running",
+                    "lease_owner": "original",
+                    "started_at": "2026-10-05T00:00:05.000000Z",
+                    "last_heartbeat_at": "2026-10-05T00:00:05.000000Z",
+                    "lease_expires_at": "2026-10-05T00:00:15.000000Z"
+                },
+                "worker_attempt_id": "scope-cleanup-attempt",
+                "local_preparation": {
+                    "version": 1,
+                    "descriptor_fingerprint": "7ea8ea7b9165e11f0bac8440925f560a7473b6b5e6179d09441416f4d66fb21e",
+                    "worker_attempt_id": "scope-cleanup-attempt",
+                    "workflow_task_attempt": 1,
+                    "cancellation_cleanup": {
+                        "scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                        "operation_scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                        "request_id": "01M46WMN9SGFSC54GGTQS8JVPB",
+                        "root_request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                        "delivery_history_event_id": "01m46wmnszva3c2jr4x958n0m8",
+                        "preparation_history_event_id": "01m46wmndf7315d4gmh56faqka",
+                        "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z",
+                        "authority_deadline_at": "2026-10-05T00:00:30.000000Z"
+                    },
+                    "schedule_to_close_deadline_at": "2026-10-05T00:00:30.000000Z"
+                },
+                "task": {
+                    "id": "01m46wmmye47fn5w05hetn2aey",
+                    "type": "workflow",
+                    "status": "leased",
+                    "available_at": "2026-10-05T00:00:00.000000Z",
+                    "lease_owner": "original",
+                    "lease_expires_at": "2026-10-05T00:00:15.000000Z",
+                    "attempt_count": 1,
+                    "repair_count": 0,
+                    "connection": "sqlite",
+                    "queue": "default",
+                    "last_dispatch_attempt_at": "2026-10-05T00:00:00.000000Z",
+                    "last_dispatched_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:05.000000Z"
+        },
+        {
+            "id": "01m46wmp7e9xc7s8nzwhff1hzy",
+            "namespace": "sdk-root-scopes",
+            "sequence": 14,
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "execution_mode": "local",
+                "local_activity": true,
+                "activity_execution_id": "01m46wmnzvkmy0k5rb3xk95g3m",
+                "activity_attempt_id": "01M46WMNZY5R17ED6WHY536TEN",
+                "activity_class": "tests.scoped-cleanup",
+                "activity_type": "tests.scoped-cleanup",
+                "sequence": 3,
+                "attempt_number": 1,
+                "result": "wwHioz3/VYAiNwoac2NvcGUtY2xlYW5lZA==",
+                "payload_codec": "avro",
+                "workflow_task_id": "01m46wmmye47fn5w05hetn2aey",
+                "activity": {
+                    "id": "01m46wmnzvkmy0k5rb3xk95g3m",
+                    "idempotency_key": "01m46wmnzvkmy0k5rb3xk95g3m",
+                    "sequence": 3,
+                    "type": "tests.scoped-cleanup",
+                    "class": "tests.scoped-cleanup",
+                    "execution_mode": "local",
+                    "local_activity": true,
+                    "attempt_id": "01M46WMNZY5R17ED6WHY536TEN",
+                    "status": "completed",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 1,
+                        "backoff_seconds": [],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "cancellation_scope_id": "01M46WMN4J7Q7DAFA8QDGKNKR6",
+                    "queue": "default",
+                    "last_heartbeat_at": "2026-10-05T00:00:05.000000Z",
+                    "created_at": "2026-10-05T00:00:05.000000Z",
+                    "started_at": "2026-10-05T00:00:05.000000Z",
+                    "closed_at": "2026-10-05T00:00:06.000000Z",
+                    "arguments": "wwHioz3/VYAiNwwA",
+                    "result": "wwHioz3/VYAiNwoac2NvcGUtY2xlYW5lZA=="
+                },
+                "activity_attempt": {
+                    "id": "01M46WMNZY5R17ED6WHY536TEN",
+                    "worker_attempt_id": "scope-cleanup-attempt",
+                    "activity_execution_id": "01m46wmnzvkmy0k5rb3xk95g3m",
+                    "task_id": "01m46wmmye47fn5w05hetn2aey",
+                    "attempt_number": 1,
+                    "status": "completed",
+                    "lease_owner": "original",
+                    "started_at": "2026-10-05T00:00:05.000000Z",
+                    "last_heartbeat_at": "2026-10-05T00:00:05.000000Z",
+                    "closed_at": "2026-10-05T00:00:06.000000Z"
+                },
+                "worker_attempt_id": "scope-cleanup-attempt",
+                "local_outcome": {
+                    "version": 1,
+                    "report_fingerprint": "c32cb4bcc458921215e509d0b9d301da67c823423a013ea8013f40fe53e03184",
+                    "workflow_task_attempt": 1,
+                    "submitted_outcome": "completed"
+                },
+                "task": {
+                    "id": "01m46wmmye47fn5w05hetn2aey",
+                    "type": "workflow",
+                    "status": "leased",
+                    "available_at": "2026-10-05T00:00:00.000000Z",
+                    "lease_owner": "original",
+                    "lease_expires_at": "2026-10-05T00:00:15.000000Z",
+                    "attempt_count": 1,
+                    "repair_count": 0,
+                    "connection": "sqlite",
+                    "queue": "default",
+                    "last_dispatch_attempt_at": "2026-10-05T00:00:00.000000Z",
+                    "last_dispatched_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:06.000000Z"
+        },
+        {
+            "id": "01m46wmp9xedda0dcfy70kttse",
+            "namespace": "sdk-root-scopes",
+            "sequence": 15,
+            "event_type": "CooperativeCancellationDelivered",
+            "payload": {
+                "workflow_command_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                "sequence": 4,
+                "call_kind": "timer",
+                "cancellation": {
+                    "schema": "durable-workflow.cancellation-context/v1",
+                    "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                    "root_request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                    "root_workflow_instance_id": "sdk-run-scope-fixture",
+                    "root_workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt",
+                    "parent_request_id": null,
+                    "reason": "finish the entire run",
+                    "requester": {
+                        "type": "php",
+                        "label": "PHP API"
+                    },
+                    "source": "php",
+                    "requested_at": "2026-10-05T00:00:00.000000Z",
+                    "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z",
+                    "lineage": [
+                        {
+                            "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                            "workflow_instance_id": "sdk-run-scope-fixture",
+                            "workflow_run_id": "01m46wmmxwrjavw7w0bxzb5szt"
+                        }
+                    ]
+                },
+                "task": {
+                    "id": "01m46wmmye47fn5w05hetn2aey",
+                    "type": "workflow",
+                    "status": "leased",
+                    "available_at": "2026-10-05T00:00:00.000000Z",
+                    "lease_owner": "original",
+                    "lease_expires_at": "2026-10-05T00:00:15.000000Z",
+                    "attempt_count": 1,
+                    "repair_count": 0,
+                    "connection": "sqlite",
+                    "queue": "default",
+                    "last_dispatch_attempt_at": "2026-10-05T00:00:00.000000Z",
+                    "last_dispatched_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:07.000000Z"
+        },
+        {
+            "id": "01m46wmpcffxsybkfq5qng75te",
+            "namespace": "sdk-root-scopes",
+            "sequence": 16,
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "execution_mode": "local",
+                "local_activity": true,
+                "activity_execution_id": "01m46wmpcd4t4228t6w3r41j10",
+                "activity_class": "tests.root-cleanup",
+                "activity_type": "tests.root-cleanup",
+                "sequence": 5,
+                "workflow_task_id": "01m46wmmye47fn5w05hetn2aey",
+                "activity": {
+                    "id": "01m46wmpcd4t4228t6w3r41j10",
+                    "idempotency_key": "01m46wmpcd4t4228t6w3r41j10",
+                    "sequence": 5,
+                    "type": "tests.root-cleanup",
+                    "class": "tests.root-cleanup",
+                    "execution_mode": "local",
+                    "local_activity": true,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 1,
+                        "backoff_seconds": [],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "queue": "default",
+                    "created_at": "2026-10-05T00:00:07.000000Z",
+                    "arguments": "wwHioz3/VYAiNwwA"
+                },
+                "local_preparation": {
+                    "version": 1,
+                    "descriptor_fingerprint": "3ecf6e9eca7a2ac95885e1c9891028a7dbf0c56cf41b256038d2a88b08519efa",
+                    "worker_attempt_id": "root-cleanup-attempt",
+                    "workflow_task_attempt": 1,
+                    "cancellation_cleanup": {
+                        "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                        "root_request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                        "delivery_history_event_id": "01m46wmp9xedda0dcfy70kttse",
+                        "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z"
+                    }
+                },
+                "task": {
+                    "id": "01m46wmmye47fn5w05hetn2aey",
+                    "type": "workflow",
+                    "status": "leased",
+                    "available_at": "2026-10-05T00:00:00.000000Z",
+                    "lease_owner": "original",
+                    "lease_expires_at": "2026-10-05T00:00:17.000000Z",
+                    "attempt_count": 1,
+                    "repair_count": 0,
+                    "connection": "sqlite",
+                    "queue": "default",
+                    "last_dispatch_attempt_at": "2026-10-05T00:00:00.000000Z",
+                    "last_dispatched_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:07.000000Z"
+        },
+        {
+            "id": "01m46wmpckegywj8gjt3758mhk",
+            "namespace": "sdk-root-scopes",
+            "sequence": 17,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "execution_mode": "local",
+                "local_activity": true,
+                "activity_execution_id": "01m46wmpcd4t4228t6w3r41j10",
+                "activity_attempt_id": "01M46WMPCGC2YHHM6292SNV02A",
+                "activity_class": "tests.root-cleanup",
+                "activity_type": "tests.root-cleanup",
+                "sequence": 5,
+                "attempt_number": 1,
+                "workflow_task_id": "01m46wmmye47fn5w05hetn2aey",
+                "lease_expires_at": "2026-10-05T00:00:17.000000Z",
+                "activity": {
+                    "id": "01m46wmpcd4t4228t6w3r41j10",
+                    "idempotency_key": "01m46wmpcd4t4228t6w3r41j10",
+                    "sequence": 5,
+                    "type": "tests.root-cleanup",
+                    "class": "tests.root-cleanup",
+                    "execution_mode": "local",
+                    "local_activity": true,
+                    "attempt_id": "01M46WMPCGC2YHHM6292SNV02A",
+                    "status": "running",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 1,
+                        "backoff_seconds": [],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "queue": "default",
+                    "last_heartbeat_at": "2026-10-05T00:00:07.000000Z",
+                    "created_at": "2026-10-05T00:00:07.000000Z",
+                    "started_at": "2026-10-05T00:00:07.000000Z",
+                    "arguments": "wwHioz3/VYAiNwwA"
+                },
+                "activity_attempt": {
+                    "id": "01M46WMPCGC2YHHM6292SNV02A",
+                    "worker_attempt_id": "root-cleanup-attempt",
+                    "activity_execution_id": "01m46wmpcd4t4228t6w3r41j10",
+                    "task_id": "01m46wmmye47fn5w05hetn2aey",
+                    "attempt_number": 1,
+                    "status": "running",
+                    "lease_owner": "original",
+                    "started_at": "2026-10-05T00:00:07.000000Z",
+                    "last_heartbeat_at": "2026-10-05T00:00:07.000000Z",
+                    "lease_expires_at": "2026-10-05T00:00:17.000000Z"
+                },
+                "worker_attempt_id": "root-cleanup-attempt",
+                "local_preparation": {
+                    "version": 1,
+                    "descriptor_fingerprint": "3ecf6e9eca7a2ac95885e1c9891028a7dbf0c56cf41b256038d2a88b08519efa",
+                    "worker_attempt_id": "root-cleanup-attempt",
+                    "workflow_task_attempt": 1,
+                    "cancellation_cleanup": {
+                        "request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                        "root_request_id": "01M46WMN9421SPQ27TN9M2MQ3C",
+                        "delivery_history_event_id": "01m46wmp9xedda0dcfy70kttse",
+                        "cleanup_deadline_at": "2026-10-05T00:00:30.000000Z"
+                    },
+                    "schedule_to_close_deadline_at": "2026-10-05T00:00:30.000000Z"
+                },
+                "task": {
+                    "id": "01m46wmmye47fn5w05hetn2aey",
+                    "type": "workflow",
+                    "status": "leased",
+                    "available_at": "2026-10-05T00:00:00.000000Z",
+                    "lease_owner": "original",
+                    "lease_expires_at": "2026-10-05T00:00:17.000000Z",
+                    "attempt_count": 1,
+                    "repair_count": 0,
+                    "connection": "sqlite",
+                    "queue": "default",
+                    "last_dispatch_attempt_at": "2026-10-05T00:00:00.000000Z",
+                    "last_dispatched_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:07.000000Z"
+        },
+        {
+            "id": "01m46wmpf65h26hc11ze7kydpx",
+            "namespace": "sdk-root-scopes",
+            "sequence": 18,
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "execution_mode": "local",
+                "local_activity": true,
+                "activity_execution_id": "01m46wmpcd4t4228t6w3r41j10",
+                "activity_attempt_id": "01M46WMPCGC2YHHM6292SNV02A",
+                "activity_class": "tests.root-cleanup",
+                "activity_type": "tests.root-cleanup",
+                "sequence": 5,
+                "attempt_number": 1,
+                "result": "wwHioz3/VYAiNwoYcm9vdC1jbGVhbmVk",
+                "payload_codec": "avro",
+                "workflow_task_id": "01m46wmmye47fn5w05hetn2aey",
+                "activity": {
+                    "id": "01m46wmpcd4t4228t6w3r41j10",
+                    "idempotency_key": "01m46wmpcd4t4228t6w3r41j10",
+                    "sequence": 5,
+                    "type": "tests.root-cleanup",
+                    "class": "tests.root-cleanup",
+                    "execution_mode": "local",
+                    "local_activity": true,
+                    "attempt_id": "01M46WMPCGC2YHHM6292SNV02A",
+                    "status": "completed",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 1,
+                        "backoff_seconds": [],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "queue": "default",
+                    "last_heartbeat_at": "2026-10-05T00:00:07.000000Z",
+                    "created_at": "2026-10-05T00:00:07.000000Z",
+                    "started_at": "2026-10-05T00:00:07.000000Z",
+                    "closed_at": "2026-10-05T00:00:08.000000Z",
+                    "arguments": "wwHioz3/VYAiNwwA",
+                    "result": "wwHioz3/VYAiNwoYcm9vdC1jbGVhbmVk"
+                },
+                "activity_attempt": {
+                    "id": "01M46WMPCGC2YHHM6292SNV02A",
+                    "worker_attempt_id": "root-cleanup-attempt",
+                    "activity_execution_id": "01m46wmpcd4t4228t6w3r41j10",
+                    "task_id": "01m46wmmye47fn5w05hetn2aey",
+                    "attempt_number": 1,
+                    "status": "completed",
+                    "lease_owner": "original",
+                    "started_at": "2026-10-05T00:00:07.000000Z",
+                    "last_heartbeat_at": "2026-10-05T00:00:07.000000Z",
+                    "closed_at": "2026-10-05T00:00:08.000000Z"
+                },
+                "worker_attempt_id": "root-cleanup-attempt",
+                "local_outcome": {
+                    "version": 1,
+                    "report_fingerprint": "8cfab1f8c3d2b9f046c4652ac1fe520c8714ed495593cb07be048f9f5f1424ce",
+                    "workflow_task_attempt": 1,
+                    "submitted_outcome": "completed"
+                },
+                "task": {
+                    "id": "01m46wmmye47fn5w05hetn2aey",
+                    "type": "workflow",
+                    "status": "leased",
+                    "available_at": "2026-10-05T00:00:00.000000Z",
+                    "lease_owner": "original",
+                    "lease_expires_at": "2026-10-05T00:00:17.000000Z",
+                    "attempt_count": 1,
+                    "repair_count": 0,
+                    "connection": "sqlite",
+                    "queue": "default",
+                    "last_dispatch_attempt_at": "2026-10-05T00:00:00.000000Z",
+                    "last_dispatched_at": "2026-10-05T00:00:00.000000Z"
+                }
+            },
+            "timestamp": "2026-10-05T00:00:08.000000Z"
+        }
+    ],
+    "native_terminal_status": "cancelled"
+}

@@ -126,12 +126,23 @@ final class StickyWorkflowCache
         }
     }
 
-    /** @param list<array<string, mixed>> $history */
-    private static function startsWithWorkflowStart(array $history): bool
+    /** @internal
+     *  @param list<array<string, mixed>> $history
+     */
+    public static function startsWithWorkflowStart(array $history): bool
     {
         $first = $history[0] ?? null;
-
-        return is_array($first) && ($first['event_type'] ?? $first['type'] ?? null) === 'WorkflowStarted';
+        if (!is_array($first)) {
+            return false;
+        }
+        $kind = $first['event_type'] ?? $first['type'] ?? null;
+        if ($kind === 'WorkflowStarted') {
+            return true;
+        }
+        // New runs retain the accepted start command before the start event.
+        $second = $history[1] ?? null;
+        return $kind === 'StartAccepted' && is_array($second)
+            && ($second['event_type'] ?? $second['type'] ?? null) === 'WorkflowStarted';
     }
 
     private static function key(string $workflowId, string $runId, string $buildId): string

@@ -9,8 +9,10 @@ use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use Closure;
+use DateTimeImmutable;
 use Fiber;
 use LogicException;
+use WeakReference;
 
 /** Straight-line deterministic operations available while a workflow Fiber is replayed. */
 final class WorkflowContext
@@ -32,6 +34,22 @@ final class WorkflowContext
 
     private int $workflowStreamCommandOrdinal = 0;
 
+    private int $cancellationShieldDepth = 0;
+
+    private string $cancellationScopeId = 'root';
+
+    private ?string $deliveredCancellationRequestId = null;
+
+    private ?CancellationContext $deliveredCancellationContext = null;
+
+    /** @var array<string, ScopedCancellationContext> */
+    private array $deliveredScopeCancellations = [];
+
+    /** @var array<string, array<string, string>> Original delivery snapshots, never renewed budgets. */
+    private array $deliveredScopeCleanup = [];
+
+    private ?CancellationReplayClock $cancellationReplayClock = null;
+
     /** @var list<list<DeferredWorkflowOperation|ParallelWorkflowCommand>> */
     private array $captureFrames = [];
 
@@ -47,6 +65,7 @@ final class WorkflowContext
     /**
      * @param list<array<string, mixed>> $history
      * @param Fiber<mixed, mixed, mixed, mixed>|null $execution
+     * @param list<string> $localActivityCancellationPolicies
      */
     public function __construct(
         public readonly string $workflowId,
@@ -57,9 +76,50 @@ final class WorkflowContext
         ?Fiber $execution = null,
         private readonly ?string $workflowCommandId = null,
         private readonly ?Closure $localActivityExecutor = null,
+        private readonly bool $prepareLocalActivities = false,
+        private readonly bool $prepareLocalActivityGroups = false,
+        private readonly array $localActivityCancellationPolicies = [],
+        private readonly bool $allowCancellationScopeAuthoring = false,
+        private bool $hasAuthoredCancellationScopes = false,
+        private readonly bool $allowScopedPreparedLocalActivities = false,
     ) {
         $this->execution = $execution;
         $this->loadMessageStreamMessages();
+    }
+
+    /**
+     * @internal Unfrozen candidate authoring, without scoped delivery support.
+     * The body starts only after its original opening has committed. Deferred
+     * operations keep this immediate membership after the body returns.
+     *
+     * @param callable(): mixed $body
+     */
+    public function cancellationScope(callable $body, bool $shieldParent = false): mixed
+    {
+        $this->assertActiveFiber();
+        if (!$this->allowCancellationScopeAuthoring) {
+            throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this PHP worker has not enabled candidate scope authoring.');
+        }
+        if (isset($this->deliveredScopeCancellations[$this->cancellationScopeId])) {
+            throw new WorkflowClaimAborted('cancellation_scope_cleanup_authority_missing: a delivered scope cannot admit a new scope.');
+        }
+        if ($this->isCapturing()) {
+            throw new WorkflowClaimAborted('cancellation_scope_opening_inside_group_not_supported: open the scope before capturing its operations.');
+        }
+        $parent = $this->cancellationScopeId;
+        $scopeId = $this->suspend(new WorkflowCommand('open_cancellation_scope', 'cancellation_scope', [
+            'parent_scope_id' => $parent, 'shield_parent' => $shieldParent,
+        ]));
+        if (!is_string($scopeId) || $scopeId === '' || $scopeId === 'root') {
+            throw new WorkflowClaimAborted('Scope body requires its original canonical opening identity.');
+        }
+        $this->cancellationScopeId = $scopeId;
+        $this->hasAuthoredCancellationScopes = true;
+        try {
+            return $body();
+        } finally {
+            $this->cancellationScopeId = $parent;
+        }
     }
 
     public function messageStream(string $name): MessageStream
@@ -204,6 +264,18 @@ final class WorkflowContext
     public function localActivity(string $activityType, array $arguments = [], array $options = []): mixed
     {
         $this->assertActiveFiber();
+        $deliveredScope = isset($this->deliveredScopeCancellations[$this->cancellationScopeId])
+            || ($this->cancellationScopeId === 'root' && $this->deliveredCancellationContext !== null);
+        if ($this->hasAuthoredCancellationScopes && (!$this->prepareLocalActivities
+            || ($deliveredScope ? !$this->isCancellationShielded()
+                : (!$this->allowScopedPreparedLocalActivities || $this->isCapturing())))) {
+            throw new WorkflowClaimAborted('cancellation_scope_local_activity_not_supported: this PHP worker has not qualified selective callback supervision.');
+        }
+        if ($this->prepareLocalActivities && $this->isCapturing() && !$this->prepareLocalActivityGroups) {
+            throw new WorkflowClaimAborted(
+                'prepared_local_parallel_admission_unavailable: the installed prepared-local contract cannot atomically admit this group.',
+            );
+        }
         if ($this->localActivityExecutor === null) {
             throw new LogicException('This worker explicitly refuses local activity execution.');
         }
@@ -213,12 +285,28 @@ final class WorkflowContext
             }
         }
 
-        return $this->suspend(WorkflowCommand::localActivity(
+        $command = WorkflowCommand::localActivity(
             $activityType,
             $arguments,
             $options,
             $this->localActivityExecutor,
-        ));
+            prepared: $this->prepareLocalActivities,
+        );
+        $command = $this->withCancellationScope($command);
+        if (array_key_exists('cancellation_policy', $command->attributes)
+            && !in_array($command->attributes['cancellation_policy'], $this->localActivityCancellationPolicies, true)) {
+            throw new WorkflowClaimAborted('prepared_local_activity_cancellation_policy_not_supported: requested '.$command->attributes['cancellation_policy']
+                .', installed policies '.($this->localActivityCancellationPolicies === [] ? 'none' : implode(', ', $this->localActivityCancellationPolicies))
+                .'. A negotiated original claim requires prepared_local_activity_cancellation_policies.');
+        }
+        if ($this->prepareLocalActivities && $this->isCapturing()) {
+            $operation = new DeferredWorkflowOperation($command);
+            $this->capture($operation);
+
+            return $operation;
+        }
+
+        return $this->suspend($command);
     }
 
     /** Create an isolated deterministic saga for activity compensation. */
@@ -274,12 +362,12 @@ final class WorkflowContext
         $condition = Closure::fromCallable($predicate);
         $timeoutSeconds = $timeout === null ? null : max(0, (int) ceil($timeout));
 
-        return new DeferredWorkflowOperation(WorkflowCommand::conditionWait(
+        return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::conditionWait(
             $condition,
             self::conditionKey($key),
             ConditionWaitDefinition::fingerprint($condition),
             $timeoutSeconds,
-        ));
+        )));
     }
 
     /**
@@ -308,7 +396,7 @@ final class WorkflowContext
     {
         $this->assertActiveFiber();
 
-        return new DeferredWorkflowOperation(WorkflowCommand::activity($activityType, $arguments, $options));
+        return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::activity($activityType, $arguments, $options)));
     }
 
     /** Prepare a durable timer for an all/parallel barrier. */
@@ -316,7 +404,7 @@ final class WorkflowContext
     {
         $this->assertActiveFiber();
 
-        return new DeferredWorkflowOperation(WorkflowCommand::timer((int) ceil($seconds)));
+        return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::timer((int) ceil($seconds))));
     }
 
     /**
@@ -332,7 +420,7 @@ final class WorkflowContext
     ): DeferredWorkflowOperation {
         $this->assertActiveFiber();
 
-        return new DeferredWorkflowOperation(WorkflowCommand::childWorkflow($workflowType, $arguments, $options));
+        return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::childWorkflow($workflowType, $arguments, $options)));
     }
 
     /**
@@ -485,14 +573,141 @@ final class WorkflowContext
 
     public function isCancellationRequested(): bool
     {
-        return $this->cancellationRequested;
+        return $this->cancellationRequested || $this->deliveredCancellationRequestId !== null
+            || isset($this->deliveredScopeCancellations[$this->cancellationScopeId]);
     }
 
     public function throwIfCancellationRequested(): void
     {
-        if ($this->cancellationRequested) {
-            throw new WorkflowCancelled('Workflow cancellation was requested.');
+        if ($this->isCancellationRequested() && !$this->isCancellationShielded()) {
+            $context = $this->cancellationContext();
+            throw new WorkflowCancelled(
+                'Workflow cancellation was requested.', requestId: $context->requestId ?? $this->deliveredCancellationRequestId,
+                context: $context,
+            );
         }
+    }
+
+    /** The original context becomes visible at its committed authored boundary. */
+    public function cancellationContext(): CancellationContext|ScopedCancellationContext|null
+    {
+        return $this->deliveredCancellationContext ?? $this->deliveredScopeCancellations[$this->cancellationScopeId] ?? null;
+    }
+
+    /** @internal Immediate authored address, retained while its body unwinds. */
+    public function currentCancellationScopeId(): string
+    {
+        return $this->cancellationScopeId;
+    }
+
+    /** @internal Retained contexts share the clock of consumed blocking history. */
+    public function hasDeliveredCancellation(): bool
+    {
+        return $this->deliveredCancellationRequestId !== null || $this->deliveredScopeCancellations !== [];
+    }
+
+    /**
+     * Permit deterministic cleanup without delivering the same request again.
+     * Server still owns the original cleanup deadline and task lease.
+     *
+     * @template TResult
+     * @param callable(): TResult $cleanup
+     * @return TResult
+     */
+    public function cancellationShield(callable $cleanup): mixed
+    {
+        $this->assertActiveFiber();
+        ++$this->cancellationShieldDepth;
+        try {
+            return $cleanup();
+        } finally {
+            --$this->cancellationShieldDepth;
+        }
+    }
+
+    /** @internal Replay checks shielding at the authored cancellation boundary. */
+    public function isCancellationShielded(): bool
+    {
+        return $this->cancellationShieldDepth > 0;
+    }
+
+    /** @internal Only a verified committed subtree marker can supply these contexts.
+     * @param array<string, ScopedCancellationContext> $contexts
+     * @param array<string, array<string, string>> $cleanupSnapshots
+     */
+    public function deliveredScopeCascade(array $contexts, array $cleanupSnapshots): WorkflowCancelled
+    {
+        $active = $contexts[$this->cancellationScopeId] ?? null;
+        if (!$active instanceof ScopedCancellationContext) {
+            throw new LogicException('Committed subtree delivery must include the active authored scope.');
+        }
+        $clock = $this->cancellationClock();
+        foreach ($contexts as $scopeId => $context) {
+            if ($context->scopeId !== $scopeId || $context->workflowRunId !== $this->runId
+                || $context->workflowInstanceId !== $this->workflowId
+                || $context->rootContext->toArray() !== $active->rootContext->toArray()) {
+                throw new LogicException('Committed subtree delivery changes its original run or root.');
+            }
+            $snapshot = $cleanupSnapshots[$scopeId] ?? null;
+            $ancestor = $snapshot === null ? null : ($contexts[$snapshot['scope_id']] ?? null);
+            if ($snapshot === null || $snapshot['operation_scope_id'] !== $scopeId
+                || !$ancestor instanceof ScopedCancellationContext || $snapshot['request_id'] !== $ancestor->requestId) {
+                throw new LogicException('Committed subtree delivery requires its original cleanup snapshot.');
+            }
+            $this->deliveredScopeCleanup[$scopeId] = $snapshot;
+            $contexts[$scopeId] = $context->withReplayClock($clock, new DateTimeImmutable($snapshot['authority_deadline_at']));
+        }
+        $error = $this->deliveredCancellation($active->requestId, $contexts[$active->scopeId]);
+        foreach ($contexts as $scopeId => $context) {
+            if ($scopeId === $active->scopeId) { continue; }
+            $this->deliveredScopeCancellations[$scopeId] = $context;
+        }
+
+        return $error;
+    }
+
+    /** @internal Only a committed delivery marker authorizes this state change. */
+    public function deliveredCancellation(string $requestId, CancellationContext|ScopedCancellationContext|null $context = null): WorkflowCancelled
+    {
+        if ($context instanceof ScopedCancellationContext && ($context->requestId !== $requestId
+            || $context->workflowRunId !== $this->runId || $context->workflowInstanceId !== $this->workflowId
+            || $context->scopeId !== $this->cancellationScopeId)) {
+            throw new LogicException('Committed scope delivery must match its original request and active authored address.');
+        }
+        if ($context !== null) {
+            $context = $context->withReplayClock($this->cancellationClock());
+        }
+        if ($context instanceof ScopedCancellationContext) {
+            $this->deliveredScopeCancellations[$context->scopeId] = $context;
+        } else {
+            $this->deliveredCancellationRequestId = $requestId;
+            $this->deliveredCancellationContext = $context;
+        }
+
+        return new WorkflowCancelled('Workflow cancellation was requested.', requestId: $requestId, context: $context);
+    }
+
+    /** @return Closure(): DateTimeImmutable */
+    private function cancellationClock(): Closure
+    {
+        $reference = WeakReference::create($this);
+
+        return static function () use ($reference): DateTimeImmutable {
+            $workflow = $reference->get();
+            if (!$workflow instanceof self) { throw new LogicException('Cancellation remaining() requires an active workflow.'); }
+            $workflow->assertActiveFiber();
+
+            return ($workflow->cancellationReplayClock ??= new CancellationReplayClock())->time();
+        };
+    }
+
+    /**
+     * @internal
+     * @param array<string, mixed>|null $event
+     */
+    public function observeCancellationReplayTime(?array $event): void
+    {
+        ($this->cancellationReplayClock ??= new CancellationReplayClock())->observe($event);
     }
 
     /** @return list<list<mixed>> */
@@ -614,8 +829,37 @@ final class WorkflowContext
     private function suspend(WorkflowCommand|ParallelWorkflowCommand $command): mixed
     {
         $this->assertActiveFiber();
+        if (isset($this->deliveredScopeCancellations[$this->cancellationScopeId])
+            && !($command instanceof WorkflowCommand && $this->isScopeCleanup($command))) {
+            throw new WorkflowClaimAborted('cancellation_scope_cleanup_authority_missing: a delivered scope cannot admit a new command.');
+        }
 
         return WorkflowFiberSuspension::suspend($command);
+    }
+
+    private function withCancellationScope(WorkflowCommand $command): WorkflowCommand
+    {
+        if (isset($this->deliveredScopeCancellations[$this->cancellationScopeId]) && !$this->isScopeCleanup($command)) {
+            throw new WorkflowClaimAborted('cancellation_scope_cleanup_authority_missing: a delivered scope cannot admit a new operation.');
+        }
+        if (array_key_exists('cancellation_scope_id', $command->attributes)) {
+            throw new \InvalidArgumentException('Operation scope membership is assigned by the workflow authoring boundary.');
+        }
+        if ($command->type === 'start_timer' && isset($this->deliveredScopeCancellations[$this->cancellationScopeId])) {
+            $snapshot = $this->deliveredScopeCleanup[$this->cancellationScopeId]
+                ?? throw new WorkflowClaimAborted('cancellation_scope_cleanup_authority_missing: cleanup timer requires its original delivery.');
+            $command = $command->withAttributes(['cancellation_cleanup' => array_intersect_key($snapshot,
+                array_flip(['scope_id', 'request_id', 'delivery_history_event_id']))]);
+        }
+
+        return $this->cancellationScopeId === 'root' ? $command
+            : $command->withAttributes(['cancellation_scope_id' => $this->cancellationScopeId]);
+    }
+
+    private function isScopeCleanup(WorkflowCommand $command): bool
+    {
+        return $this->isCancellationShielded() && ($command->type === 'start_timer'
+            || ($this->prepareLocalActivities && $command->type === 'record_local_activity'));
     }
 
     private function assertActiveFiber(): void

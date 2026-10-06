@@ -20,6 +20,11 @@ final class ReplayResult
         public readonly ?Throwable $terminalFailure = null,
         public readonly ?int $failedActivitySequence = null,
         public readonly ?string $failedActivityExecutionId = null,
+        public readonly ?CancellationDelivery $cancellationDelivery = null,
+        public readonly ?PreparedLocalActivityCall $preparedLocalActivity = null,
+        public readonly ?PreparedLocalActivityGroup $preparedLocalActivityGroup = null,
+        public readonly ?CancellationScopeOpening $cancellationScopeOpening = null,
+        public readonly ?CancellationScopeDeliveryIntent $cancellationScopeDelivery = null,
     ) {
     }
 }

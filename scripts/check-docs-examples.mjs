@@ -132,11 +132,11 @@ assert(
 );
 assert(
   quickstart.package?.composer_requirement === quickstart.package.published_version,
-  'quickstart Composer requirement must select the published stable release',
+  'quickstart Composer requirement must select the exact release',
 );
 assert(
-  /^\^\d+\.\d+$/.test(quickstart.package?.onboarding_requirement || ''),
-  'quickstart onboarding requirement must select a stable release series',
+  quickstart.package?.onboarding_requirement === `^${quickstart.package.published_version.split('.').slice(0, 2).join('.')}${quickstart.package.published_version.includes('-') ? '@RC' : ''}`,
+  'quickstart onboarding requirement must select the release series and channel',
 );
 assert(
   quickstart.workflow_authoring?.execution_model === 'fiber'

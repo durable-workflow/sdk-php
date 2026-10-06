@@ -1,0 +1,17 @@
+{
+    "schema": "durable-workflow.cancellation-context/v1",
+    "request_id": "request-1",
+    "root_request_id": "root-1",
+    "root_workflow_instance_id": "parent-instance",
+    "root_workflow_run_id": "parent-run",
+    "parent_request_id": "root-1",
+    "reason": "maintenance",
+    "requester": {"type": "operator", "id": "operator-1", "label": "Maintainer"},
+    "source": "control_plane",
+    "requested_at": "2026-10-01T00:00:00.123456Z",
+    "cleanup_deadline_at": "2026-10-01T00:00:30.123456Z",
+    "lineage": [
+        {"request_id": "root-1", "workflow_instance_id": "parent-instance", "workflow_run_id": "parent-run"},
+        {"request_id": "request-1", "workflow_instance_id": "child-instance", "workflow_run_id": "run-1"}
+    ]
+}

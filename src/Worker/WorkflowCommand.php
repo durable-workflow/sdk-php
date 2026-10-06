@@ -63,10 +63,35 @@ final class WorkflowCommand
      */
     public static function activity(string $activityType, array $arguments, array $options = []): self
     {
-        return new self('schedule_activity', 'activity', array_merge($options, [
+        return new self('schedule_activity', 'activity', array_merge(self::canonicalRemoteActivityOptions($options), [
             'activity_type' => $activityType,
             'arguments_value' => $arguments,
         ]));
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    public static function canonicalRemoteActivityOptions(array $options): array
+    {
+        if (!array_key_exists('cancellation_policy', $options)) {
+            return $options;
+        }
+        $policy = $options['cancellation_policy'];
+        if ($policy instanceof CancellationPolicy) {
+            $policy = $policy->value;
+        }
+        if (!is_string($policy) || CancellationPolicy::tryFrom($policy) === null) {
+            throw new InvalidArgumentException('Remote activity cancellation_policy must be a supported policy.');
+        }
+        if ($policy === CancellationPolicy::Abandon->value
+            && (!is_int($options['schedule_to_close_timeout'] ?? null) || $options['schedule_to_close_timeout'] < 1)) {
+            throw new InvalidArgumentException('Remote activity Abandon requires a finite positive schedule_to_close_timeout.');
+        }
+        $options['cancellation_policy'] = $policy;
+
+        return $options;
     }
 
     public static function timer(int $seconds): self
@@ -104,10 +129,39 @@ final class WorkflowCommand
      */
     public static function childWorkflow(string $workflowType, array $arguments, array $options = []): self
     {
-        return new self('start_child_workflow', 'child_workflow', array_merge($options, [
+        $policies = self::canonicalChildWorkflowPolicies($options);
+        unset($options['parent_close_policy'], $options['cancellation_policy']);
+
+        return new self('start_child_workflow', 'child_workflow', array_merge($options, $policies, [
             'workflow_type' => $workflowType,
             'arguments_value' => $arguments,
         ]));
+    }
+
+    /**
+     * Accept typed policies and their portable string values without changing omitted defaults.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, string>
+     */
+    public static function canonicalChildWorkflowPolicies(array $options): array
+    {
+        $policies = [];
+        foreach (['parent_close_policy' => ParentClosePolicy::class, 'cancellation_policy' => CancellationPolicy::class] as $field => $enum) {
+            $value = $options[$field] ?? null;
+            if ($value === null) {
+                continue;
+            }
+            if ($value instanceof $enum) {
+                $value = $value->value;
+            }
+            if (!is_string($value) || $enum::tryFrom($value) === null) {
+                throw new InvalidArgumentException("Child workflow {$field} must be a supported policy.");
+            }
+            $policies[$field] = $value;
+        }
+
+        return $policies;
     }
 
     /** @param callable(): mixed $operation */
@@ -130,6 +184,7 @@ final class WorkflowCommand
         array $arguments,
         array $options,
         callable $executor,
+        bool $prepared = false,
     ): self {
         $activityType = trim($activityType);
         if ($activityType === '') {
@@ -143,7 +198,7 @@ final class WorkflowCommand
                 'activity_type' => $activityType,
                 'arguments_value' => $arguments,
                 'execution_mode' => 'local',
-                ...self::canonicalLocalActivityOptions($options),
+                ...self::canonicalLocalActivityOptions($options, $prepared),
             ],
             localActivity: Closure::fromCallable($executor),
         );
@@ -155,18 +210,27 @@ final class WorkflowCommand
      * @param array<string, mixed> $options
      * @return array<string, mixed>
      */
-    public static function canonicalLocalActivityOptions(array $options): array
+    public static function canonicalLocalActivityOptions(array $options, bool $prepared = false): array
     {
         foreach ($options as $field => $_value) {
             if (in_array($field, self::LOCAL_ACTIVITY_IDENTITY_FIELDS, true)) {
                 throw new InvalidArgumentException("Local activity option {$field} is fixed by the SDK and cannot be overridden.");
             }
-            if (!in_array($field, self::LOCAL_ACTIVITY_OPTION_FIELDS, true)) {
+            if (!in_array($field, self::LOCAL_ACTIVITY_OPTION_FIELDS, true)
+                && !($prepared && $field === 'cancellation_policy')) {
                 throw new InvalidArgumentException("Local activities do not accept the {$field} option.");
             }
         }
 
         $canonical = [];
+        if (array_key_exists('cancellation_policy', $options)) {
+            $policy = $options['cancellation_policy'];
+            $policy = $policy instanceof CancellationPolicy ? $policy->value : $policy;
+            if (!in_array($policy, [CancellationPolicy::TryCancel->value, CancellationPolicy::WaitCancellationCompleted->value], true)) {
+                throw new InvalidArgumentException('Prepared local cancellation_policy must be TryCancel or WaitCancellationCompleted. Local Abandon and null are not supported.');
+            }
+            $canonical['cancellation_policy'] = $policy;
+        }
         if (array_key_exists('retry_policy', $options) && $options['retry_policy'] !== null) {
             $canonicalRetryPolicy = self::canonicalLocalActivityRetryPolicy($options['retry_policy']);
             if ($canonicalRetryPolicy !== []) {
@@ -302,6 +366,9 @@ final class WorkflowCommand
         try {
             $outcome = ($this->localActivity)($activityType, $arguments, $options);
         } catch (Throwable $exception) {
+            if ($exception instanceof WorkflowClaimAborted) {
+                throw $exception;
+            }
             if ($exception instanceof ServerException && $exception->isStorageAdmissionFailure()) {
                 throw $exception;
             }

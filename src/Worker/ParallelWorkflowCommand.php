@@ -84,6 +84,7 @@ class ParallelWorkflowCommand
      *     group_path: list<array{
      *         parallel_group_id: string,
      *         parallel_group_kind: string,
+     *         parallel_group_mode?: string,
      *         parallel_group_base_sequence: int,
      *         parallel_group_size: int,
      *         parallel_group_index: int
@@ -133,6 +134,7 @@ class ParallelWorkflowCommand
      *     group_path: list<array{
      *         parallel_group_id: string,
      *         parallel_group_kind: string,
+     *         parallel_group_mode?: string,
      *         parallel_group_base_sequence: int,
      *         parallel_group_size: int,
      *         parallel_group_index: int
@@ -242,6 +244,7 @@ class ParallelWorkflowCommand
      * @return array{
      *     parallel_group_id: string,
      *     parallel_group_kind: string,
+     *     parallel_group_mode?: string,
      *     parallel_group_base_sequence: int,
      *     parallel_group_size: int,
      *     parallel_group_index: int

@@ -39,13 +39,14 @@ final class DependencyBoundaryTest extends TestCase
         }
     }
 
-    public function testStableMetadataDeclaresExactQualifiedArtifacts(): void
+    public function testReleaseMetadataDeclaresExactArtifacts(): void
     {
         $metadata = $this->manifest()['extra']['durable-workflow'];
         $quickstart = $this->quickstartContract();
 
-        self::assertSame('2.1.6', $metadata['product-train']);
-        self::assertSame('2.4.0', $metadata['supported-server-versions']);
+        $versionPattern = '/^2\.[0-9]+\.[0-9]+(?:-(?:alpha|beta|rc)\.[0-9]+)?$/D';
+        self::assertMatchesRegularExpression($versionPattern, $metadata['product-train']);
+        self::assertMatchesRegularExpression($versionPattern, $metadata['supported-server-versions']);
         self::assertSame('1.19', $metadata['worker-protocol-version']);
         self::assertTrue($metadata['durable-selection']);
         self::assertSame('1.19', $metadata['durable-selection-minimum-worker-protocol-version']);
@@ -54,7 +55,8 @@ final class DependencyBoundaryTest extends TestCase
         self::assertSame($metadata['product-train'], $quickstart['package']['published_version']);
         self::assertSame($metadata['product-train'], $quickstart['package']['composer_requirement']);
         $series = implode('.', array_slice(explode('.', $metadata['product-train']), 0, 2));
-        self::assertSame('^'.$series, $quickstart['package']['onboarding_requirement']);
+        $channel = str_contains($metadata['product-train'], '-') ? '@RC' : '';
+        self::assertSame('^'.$series.$channel, $quickstart['package']['onboarding_requirement']);
         self::assertSame(
             'durableworkflow/server:'.$metadata['supported-server-versions'],
             $quickstart['runtime_targets']['server']['image'],

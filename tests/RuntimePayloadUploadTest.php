@@ -223,6 +223,14 @@ final class RuntimePayloadUploadTest extends TestCase
         yield 'activity result' => ['POST', '/worker/activity-tasks/task/complete', ['result' => $value], true];
         yield 'activity failure' => ['POST', '/worker/activity-tasks/task/fail', ['failure' => ['details' => $value]], true];
         yield 'workflow failure' => ['POST', '/worker/workflow-tasks/task/complete', ['commands' => [['type' => 'fail_workflow', 'exception' => ['details' => $value]]]], true];
+        foreach (['prepare', 'recover'] as $operation) {
+            yield 'prepared local '.$operation => ['POST', '/worker/workflow-tasks/task/local-activities/'.$operation,
+                ['descriptor' => ['arguments' => $value]], true];
+        }
+        yield 'prepared local outcome' => ['POST', '/worker/workflow-tasks/task/local-activities/attempt/outcome',
+            ['report' => ['result' => $value]], true];
+        yield 'prepared local prefix' => ['POST', '/worker/workflow-tasks/task/local-activities/checkpoint',
+            ['commands' => [['type' => 'record_side_effect', 'result' => $value]]], true];
     }
 
     public function testExternalQueryResultDoesNotSendDuplicateRawProjection(): void
@@ -338,6 +346,160 @@ final class RuntimePayloadUploadTest extends TestCase
         yield 'workflow stream' => ['/worker/workflow-tasks/task/complete',
             $workflow + ['commands' => [['type' => 'complete_workflow', 'workflow_stream' => ['items' => [['payload' => $envelope]]]]]],
             'workflow', ['commands', 0, 'workflow_stream', 'items', 0, 'payload']];
+    }
+
+    #[DataProvider('preparedCompletionProvider')]
+    public function testPreparedDrainingRetryPreservesClaimOperationAndBytes(string $path, array $body, string $operation, array $slot, array $identity): void
+    {
+        $discovery = self::completionDiscovery();
+        $discovery['namespace']['external_payload_storage']['transport']['upload']['completion_context']['prepared_schema']
+            = 'durable-workflow.v2.payload-completion-context.v2';
+        [, $http, $transport] = $this->client($discovery, workerOnly: true, drainUnbound: true);
+        $prepared = (new RuntimePayloadUploads($transport, 'https://runtime.test'))->request($body, 'POST', $path, true,
+            ['Authorization' => 'Bearer fixture-worker', 'X-Namespace' => 'tenant-one', 'X-Durable-Workflow-Protocol-Version' => '1.20']);
+        self::assertCount(3, $http->requests);
+        self::assertSame('', $http->requests[1]->getHeaderLine('X-Durable-Workflow-Payload-Completion'));
+        self::assertSame(['schema' => 'durable-workflow.v2.payload-completion-context.v2', 'kind' => 'workflow',
+            'task_id' => 'task', 'attempt' => 2, 'lease_owner' => 'worker', 'operation' => 'local_activity_'.$operation,
+            'slot' => $slot, ...$identity], json_decode($http->requests[2]->getHeaderLine('X-Durable-Workflow-Payload-Completion'), true, flags: JSON_THROW_ON_ERROR));
+        self::assertSame((string) $http->requests[1]->getBody(), (string) $http->requests[2]->getBody());
+        self::assertSame('Bearer fixture-worker', $http->requests[2]->getHeaderLine('Authorization'));
+        self::assertSame('tenant-one', $http->requests[2]->getHeaderLine('X-Namespace'));
+        self::assertSame('1.20', $http->requests[2]->getHeaderLine('X-Durable-Workflow-Protocol-Version'));
+        self::assertStringContainsString(RuntimePayloads::SCHEMA, json_encode($prepared));
+    }
+
+    public static function preparedCompletionProvider(): iterable
+    {
+        $envelope = (new AvroPayloadCodec())->envelope(str_repeat('x', 300));
+        $claim = ['lease_owner' => 'worker', 'workflow_task_attempt' => 2];
+        foreach (['prepare', 'recover'] as $operation) {
+            yield $operation => ['/worker/workflow-tasks/task/local-activities/'.$operation,
+                $claim + ['sequence' => 7, 'descriptor' => ['arguments' => $envelope]], $operation,
+                ['descriptor', 'arguments'], ['sequence' => 7]];
+        }
+        yield 'outcome' => ['/worker/workflow-tasks/task/local-activities/backend%2Dattempt/outcome',
+            $claim + ['report' => ['result' => $envelope]], 'outcome', ['report', 'result'], ['activity_attempt_id' => 'backend-attempt']];
+        yield 'checkpoint' => ['/worker/workflow-tasks/task/local-activities/checkpoint',
+            $claim + ['checkpoint_id' => 'prefix-7', 'start_sequence' => 5,
+                'commands' => [['type' => 'record_side_effect', 'result' => $envelope]]],
+            'checkpoint', ['commands', 0, 'result'], ['checkpoint_id' => 'prefix-7']];
+        foreach ([0, 1] as $largeMember) {
+            $small = (new AvroPayloadCodec())->envelope([]);
+            yield 'whole group member '.$largeMember => ['/worker/workflow-tasks/task/local-activities/checkpoint-group',
+                $claim + ['checkpoint_id' => 'whole-group-7', 'start_sequence' => 5,
+                    'commands' => [
+                        ['type' => 'start_child_workflow', 'arguments' => $largeMember === 0 ? $envelope : $small],
+                        ['type' => 'prepare_local_activity', 'arguments' => $largeMember === 1 ? $envelope : $small],
+                    ]],
+                'group_checkpoint', ['commands', $largeMember, 'arguments'], ['checkpoint_id' => 'whole-group-7']];
+        }
+    }
+
+    public function testScopePrefixDrainingRetryUsesScopeDiscoveryWithoutLocalActivityCapability(): void
+    {
+        $discovery = self::completionDiscovery();
+        $discovery['namespace']['external_payload_storage']['transport']['upload']['completion_context']['scope_schema']
+            = 'durable-workflow.v2.payload-completion-context.v2';
+        [, $http, $transport] = $this->client($discovery, workerOnly: true, drainUnbound: true);
+        $blob = (new AvroPayloadCodec())->envelope(str_repeat('before-scope', 100));
+        $body = ['lease_owner' => 'worker', 'workflow_task_attempt' => 2, 'checkpoint_id' => 'prefix-seven',
+            'start_sequence' => 7, 'commands' => [['type' => 'record_side_effect', 'result' => $blob]]];
+        $result = (new RuntimePayloadUploads($transport, 'https://runtime.test'))->request($body, 'POST',
+            '/worker/workflow-tasks/task/cancellation-scopes/checkpoint', true,
+            ['Authorization' => 'Bearer fixture-worker', 'X-Namespace' => 'tenant-one', 'X-Durable-Workflow-Protocol-Version' => '1.20']);
+        self::assertCount(3, $http->requests);
+        self::assertSame('', $http->requests[1]->getHeaderLine('X-Durable-Workflow-Payload-Completion'));
+        self::assertSame(['schema' => 'durable-workflow.v2.payload-completion-context.v2', 'kind' => 'workflow',
+            'task_id' => 'task', 'attempt' => 2, 'lease_owner' => 'worker', 'operation' => 'cancellation_scope_checkpoint',
+            'slot' => ['commands', 0, 'result'], 'checkpoint_id' => 'prefix-seven'],
+            json_decode($http->requests[2]->getHeaderLine('X-Durable-Workflow-Payload-Completion'), true, flags: JSON_THROW_ON_ERROR));
+        self::assertSame((string) $http->requests[1]->getBody(), (string) $http->requests[2]->getBody());
+        self::assertSame('Bearer fixture-worker', $http->requests[2]->getHeaderLine('Authorization'));
+        self::assertStringContainsString(RuntimePayloads::SCHEMA, json_encode($result));
+    }
+
+    #[DataProvider('unsupportedScopeCompletionProvider')]
+    public function testScopeUploadCannotInventDrainingAuthority(?string $schema, string $protocol, array $changes): void
+    {
+        $discovery = self::completionDiscovery();
+        $discovery['namespace']['external_payload_storage']['transport']['upload']['completion_context']['scope_schema'] = $schema;
+        [, $http, $transport] = $this->client($discovery, drainUnbound: true);
+        $body = array_replace(['lease_owner' => 'worker', 'workflow_task_attempt' => 2, 'checkpoint_id' => 'prefix-one',
+            'start_sequence' => 1, 'commands' => [['type' => 'record_side_effect',
+                'result' => (new AvroPayloadCodec())->envelope(str_repeat('x', 300))]]], $changes);
+        try {
+            (new RuntimePayloadUploads($transport, 'https://runtime.test'))->request($body, 'POST',
+                '/worker/workflow-tasks/task/cancellation-scopes/checkpoint', true, ['X-Durable-Workflow-Protocol-Version' => $protocol]);
+            self::fail('Unqualified scope upload must preserve the draining refusal.');
+        } catch (ExternalPayloadException $exception) {
+            self::assertSame('storage_pressure', $exception->reason);
+        }
+        self::assertCount(2, $http->requests);
+        foreach ($http->requests as $request) {
+            self::assertSame('', $request->getHeaderLine('X-Durable-Workflow-Payload-Completion'));
+        }
+    }
+
+    public static function unsupportedScopeCompletionProvider(): array
+    {
+        $schema = 'durable-workflow.v2.payload-completion-context.v2';
+        return [
+            [null, '1.20', []], ['unknown', '1.20', []], [$schema, '1.19', []],
+            [$schema, '1.20', ['checkpoint_id' => null]], [$schema, '1.20', ['workflow_task_attempt' => '2']],
+            [$schema, '1.20', ['lease_owner' => '']],
+        ];
+    }
+
+    #[DataProvider('unsupportedPreparedCompletionProvider')]
+    public function testPreparedUploadCannotInventDrainingAuthority(?string $schema, string $protocol, bool $worker, array $changes): void
+    {
+        $discovery = self::completionDiscovery();
+        $discovery['namespace']['external_payload_storage']['transport']['upload']['completion_context']['prepared_schema'] = $schema;
+        [, $http, $transport] = $this->client($discovery, drainUnbound: true);
+        $body = array_replace(['lease_owner' => 'worker', 'workflow_task_attempt' => 2, 'sequence' => 7,
+            'descriptor' => ['arguments' => (new AvroPayloadCodec())->envelope(str_repeat('x', 300))]], $changes);
+        try {
+            (new RuntimePayloadUploads($transport, 'https://runtime.test'))->request($body, 'POST',
+                '/worker/workflow-tasks/task/local-activities/prepare', $worker, ['X-Durable-Workflow-Protocol-Version' => $protocol]);
+            if ($worker) {
+                self::fail('Unqualified prepared upload must preserve the draining refusal.');
+            }
+        } catch (ExternalPayloadException $exception) {
+            self::assertSame('storage_pressure', $exception->reason);
+        }
+        self::assertCount($worker ? 2 : 0, $http->requests);
+    }
+
+    public static function unsupportedPreparedCompletionProvider(): iterable
+    {
+        $schema = 'durable-workflow.v2.payload-completion-context.v2';
+        yield 'older Server' => [null, '1.20', true, []];
+        yield 'unknown schema' => ['unknown', '1.20', true, []];
+        yield 'default worker' => [$schema, '1.19', true, []];
+        yield 'client' => [$schema, '1.20', false, []];
+        yield 'missing original epoch' => [$schema, '1.20', true, ['workflow_task_attempt' => null]];
+        yield 'wrong sequence type' => [$schema, '1.20', true, ['sequence' => '7']];
+        yield 'invalid owner' => [$schema, '1.20', true, ['lease_owner' => "worker\n"]];
+    }
+
+    public function testPreparedUploadDoesNotRetryAnAdmittedDrainingResponse(): void
+    {
+        $discovery = self::completionDiscovery();
+        $discovery['namespace']['external_payload_storage']['transport']['upload']['completion_context']['prepared_schema']
+            = 'durable-workflow.v2.payload-completion-context.v2';
+        [, $http, $transport] = $this->client($discovery, uploadResponse: new Response(503, [],
+            '{"reason":"storage_pressure","storage_state":"draining","request_admitted":true}'));
+        try {
+            (new RuntimePayloadUploads($transport, 'https://runtime.test'))->request([
+                'lease_owner' => 'worker', 'workflow_task_attempt' => 2, 'sequence' => 7,
+                'descriptor' => ['arguments' => (new AvroPayloadCodec())->envelope(str_repeat('x', 300))],
+            ], 'POST', '/worker/workflow-tasks/task/local-activities/prepare', true, ['X-Durable-Workflow-Protocol-Version' => '1.20']);
+            self::fail('An admitted response cannot authorize the draining fallback.');
+        } catch (ExternalPayloadException $exception) {
+            self::assertTrue($exception->details['request_admitted']);
+        }
+        self::assertCount(2, $http->requests);
     }
 
     public function testCompletionCapabilityDoesNotChangeNormalUploads(): void
