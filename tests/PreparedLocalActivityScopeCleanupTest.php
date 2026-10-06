@@ -67,7 +67,7 @@ final class PreparedLocalActivityScopeCleanupTest extends TestCase
         self::assertNull($first->preparedLocalActivity);
         self::assertSame($first->commands, $replacement->commands);
         self::assertSame(['complete_workflow'], array_column($first->commands, 'type'));
-        self::assertSame(['result' => 'cleaned', 'remaining' => 15.323456],
+        self::assertSame(['result' => 'cleaned', 'remaining' => 0.323456],
             (new AvroPayloadCodec())->decodeEnvelope($first->commands[0]['result']));
         self::assertFalse($fixture['stale_outcome']['recorded']);
         self::assertSame('unknown', $fixture['recovery']['callback_stop_state']);

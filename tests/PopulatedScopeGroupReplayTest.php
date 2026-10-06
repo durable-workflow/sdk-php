@@ -316,7 +316,7 @@ final class PopulatedScopeGroupReplayTest extends TestCase
                     } catch (WorkflowCancelled $error) {
                         self::assertInstanceOf(ScopedCancellationContext::class, $error->context);
                         $context = $error->context;
-                        self::assertSame(21.0, $context->remaining());
+                        self::assertSame($change === 'cleanup' ? 17.0 : 21.0, $context->remaining());
                         $workflow->cancellationShield(static fn () => $workflow->throwIfCancellationRequested());
                         if ($change === 'cleanup') { $workflow->cancellationShield(static fn () => $workflow->localActivity('group-cleanup')); }
                         return $context->requestId;

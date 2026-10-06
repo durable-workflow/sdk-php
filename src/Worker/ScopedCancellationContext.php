@@ -181,7 +181,7 @@ final class ScopedCancellationContext
         $seconds = (int) $deadline->format('U') - (int) $time->format('U');
         $microseconds = (int) $deadline->format('u') - (int) $time->format('u');
 
-        return max(0.0, $seconds + $microseconds / 1_000_000);
+        return max(0.0, ($seconds * 1_000_000 + $microseconds) / 1_000_000);
     }
 
     /** @internal @param Closure(): DateTimeImmutable $clock */
