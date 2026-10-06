@@ -3,6 +3,10 @@ name: Published mixed cancellation
 on:
   workflow_dispatch:
     inputs:
+      server_version:
+        description: Exact published Server release represented by the image digest
+        required: true
+        type: string
       server_image:
         description: Immutable durableworkflow/server@sha256 digest
         required: true
@@ -34,6 +38,7 @@ jobs:
     env:
       COMPOSE_PROJECT_NAME: published-cancellation-${{ github.run_id }}-${{ github.run_attempt }}
       COMPOSE_FILE: docker-compose.test.yml:docker-compose.published-cancellation.yml
+      SERVER_VERSION: ${{ inputs.server_version }}
       DW_PUBLISHED_SERVER_IMAGE: ${{ inputs.server_image }}
       PHP_SDK_VERSION: ${{ inputs.php_version }}
       PYTHON_SDK_VERSION: ${{ inputs.python_version }}
@@ -51,6 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$DW_PUBLISHED_SERVER_IMAGE" =~ ^durableworkflow/server@sha256:[0-9a-f]{64}$ ]]
+          [[ "$SERVER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           for version in "$PHP_SDK_VERSION" "$PYTHON_SDK_VERSION" "$RUST_SDK_VERSION" "$CLI_VERSION"; do
             [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[1-9][0-9]*)?$ ]]
           done
@@ -123,7 +129,7 @@ jobs:
           assert len(sdk) == 1 and sdk[0]['version'] == os.environ['RUST_SDK_VERSION']
           assert sdk[0]['source'].startswith('registry+') and len(sdk[0]['checksum']) == 64
           PY
-          jq -n --arg runner "$GITHUB_SHA" --arg server "$DW_PUBLISHED_SERVER_IMAGE" --arg php "$PHP_SDK_VERSION" --arg python "$PYTHON_SDK_VERSION" --arg rust "$RUST_SDK_VERSION" --arg cli "$CLI_VERSION" '{qualification:"published",runner_commit:$runner,server_image:$server,php_sdk:$php,python_sdk:$python,rust_sdk:$rust,cli:$cli}' > build/published-tuple.json
+          jq -n --arg runner "$GITHUB_SHA" --arg server "$DW_PUBLISHED_SERVER_IMAGE" --arg server_version "$SERVER_VERSION" --arg php "$PHP_SDK_VERSION" --arg python "$PYTHON_SDK_VERSION" --arg rust "$RUST_SDK_VERSION" --arg cli "$CLI_VERSION" '{qualification:"published",runner_commit:$runner,server_image:$server,server_version:$server_version,php_sdk:$php,python_sdk:$python,rust_sdk:$rust,cli:$cli}' > build/published-tuple.json
       - name: Start only the immutable published Server
         run: |
           set -euo pipefail
@@ -137,11 +143,10 @@ jobs:
           docker compose exec -T --user 1000:1000 server php -r 'require "/app/vendor/autoload.php"; echo json_encode(["workflow" => Composer\InstalledVersions::getPrettyVersion("durable-workflow/workflow"), "workflow_reference" => Composer\InstalledVersions::getReference("durable-workflow/workflow")], JSON_THROW_ON_ERROR), "\n";' > build/runtime-package-identity.json
           php <<'PHP'
           <?php
-          $sdk = json_decode(file_get_contents('build/consumer/vendor/durable-workflow/sdk/composer.json'), true, flags: JSON_THROW_ON_ERROR);
           $cluster = json_decode(file_get_contents('build/cluster-info.json'), true, flags: JSON_THROW_ON_ERROR);
-          $expected = $sdk['extra']['durable-workflow']['supported-server-versions'];
+          $expected = getenv('SERVER_VERSION');
           if (($cluster['version'] ?? null) !== $expected) {
-              throw new RuntimeException('The runtime version differs from the published SDK compatibility tuple.');
+              throw new RuntimeException('The runtime version differs from the selected published Server release.');
           }
           PHP
           printf 'DURABLE_WORKFLOW_RUNTIME_URL=%s\n' "$endpoint" >> "$GITHUB_ENV"
