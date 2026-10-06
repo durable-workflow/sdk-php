@@ -483,6 +483,7 @@ final class ControlPlaneParityTest extends TestCase
             'system health' => static fn (Client $client) => $client->systemHealth(),
             'operator metrics' => static fn (Client $client) => $client->operatorMetrics(),
             'operator dashboard' => static fn (Client $client) => $client->operatorDashboard(),
+            'bounded operator dashboard' => static fn (Client $client) => $client->boundedOperatorDashboard(),
             'workers' => static fn (Client $client) => $client->listWorkers(),
             'task queues' => static fn (Client $client) => $client->listTaskQueues(),
         ];
@@ -509,6 +510,39 @@ final class ControlPlaneParityTest extends TestCase
                 );
             }
         }
+    }
+
+    public function testBoundedOperatorDashboardUsesTheAuthenticatedControlPlaneRoute(): void
+    {
+        $response = ['namespace' => 'ops', 'dashboard' => [
+            'operator_metrics' => ['history_audit_evaluation' => 'not_requested', 'projections' => [
+                'run_waits' => ['needs_rebuild' => null],
+            ]],
+        ]];
+        $transport = new FakeTransport([$response]);
+        $client = new Client('https://server.example', transport: $transport, namespace: 'ops', controlToken: 'operator-test-token');
+
+        self::assertSame($response, $client->boundedOperatorDashboard());
+        self::assertSame('https://server.example/api/system/operator-dashboard/bounded', $transport->requests[0]['uri']);
+        self::assertSame('GET', $transport->requests[0]['method']);
+        self::assertSame('ops', $transport->requests[0]['headers']['X-Namespace']);
+        self::assertSame('Bearer operator-test-token', $transport->requests[0]['headers']['Authorization']);
+        self::assertSame('2', $transport->requests[0]['headers']['X-Durable-Workflow-Control-Plane-Version']);
+    }
+
+    public function testUnsupportedBoundedDashboardPreservesTheServerErrorWithoutAnotherRead(): void
+    {
+        $refusal = new ServerException('Bounded dashboards are unavailable.', 404, 'not_found');
+        $transport = new FakeTransport([$refusal]);
+        $client = new Client('https://server.example', transport: $transport);
+
+        try {
+            $client->boundedOperatorDashboard();
+            self::fail('An unsupported dashboard must preserve the Server refusal.');
+        } catch (ServerException $exception) {
+            self::assertSame($refusal, $exception);
+        }
+        self::assertCount(1, $transport->requests);
     }
 
     public function testOperatorObservationAndRunManagementUsePublicControlPlaneRoutes(): void
