@@ -1,0 +1,14 @@
+# Reuse the isolated test topology with only an immutable published runtime.
+services:
+  bootstrap:
+    build: !reset null
+    image: &published-image ${DW_PUBLISHED_SERVER_IMAGE:?Select the exact published Server digest}
+  server:
+    build: !reset null
+    image: *published-image
+  worker:
+    build: !reset null
+    image: *published-image
+  repair:
+    build: !reset null
+    image: *published-image

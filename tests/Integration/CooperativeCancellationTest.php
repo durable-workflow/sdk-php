@@ -27,7 +27,7 @@ use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Throwable;
 
-/** Connected source qualification. Published defaults remain protocol 1.19. */
+/** Connected cancellation qualification using exact source or published artifacts. */
 final class CooperativeCancellationTest extends TestCase
 {
     private string $runtimeUrl;
@@ -1028,8 +1028,9 @@ final class CooperativeCancellationTest extends TestCase
 
     private function requirePreparedLocalSource(): void
     {
-        if (getenv('DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION') !== '1') {
-            self::markTestSkipped('Prepared local qualification requires the exact Native source overlay.');
+        if (getenv('DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION') !== '1'
+            && getenv('DURABLE_WORKFLOW_PUBLISHED_CANCELLATION_QUALIFICATION') !== '1') {
+            self::markTestSkipped('Prepared local qualification requires a selected runtime with prepared-local support.');
         }
         self::assertTrue($this->client()->clusterInfo()->raw['worker_protocol']['server_capabilities']['prepared_local_activities'] ?? false);
     }
@@ -1037,7 +1038,7 @@ final class CooperativeCancellationTest extends TestCase
     public function testPolyglotCascadeRecoversPhpCleanupWithinOriginalThirtySeconds(): void
     {
         if (getenv('DURABLE_WORKFLOW_POLYGLOT_QUALIFICATION') !== '1') {
-            self::markTestSkipped('The mixed cascade requires exact Python and Rust Source candidates.');
+            self::markTestSkipped('The mixed cascade requires exact Python and Rust workers.');
         }
         $this->requirePreparedLocalSource();
         $queue = $this->queue('polyglot');
@@ -1234,7 +1235,9 @@ final class CooperativeCancellationTest extends TestCase
             self::assertEqualsWithDelta($deadline - (float) (new \DateTimeImmutable($cleanupEvent['timestamp']))->format('U.u'),
                 $budget['after_cleanup'], 0.000001);
             $this->assertCascadeCli($parent, $finished);
-            fwrite(STDOUT, 'Mixed-language Source cascade: '.json_encode([
+            $qualification = getenv('DURABLE_WORKFLOW_PUBLISHED_CANCELLATION_QUALIFICATION') === '1' ? 'published' : 'source';
+            fwrite(STDOUT, 'Mixed-language '.$qualification.' cascade: '.json_encode([
+                'qualification' => $qualification,
                 'root_request' => $request, 'child_context' => $childContext,
                 'initial_work_application_heartbeats' => false, 'cleanup_application_heartbeats' => 1,
                 'worker_sigkill_during_cleanup' => true,
