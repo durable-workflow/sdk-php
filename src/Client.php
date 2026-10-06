@@ -2034,11 +2034,13 @@ final class Client implements WorkflowClientInterface
      */
     private function pollTaskResponse(string $path, array $body): array
     {
-        for ($attempt = 0; $attempt < 2; ++$attempt) {
+        $retryTransientFailure = true;
+        while (true) {
             try {
                 return $this->worker('POST', $path, $body);
             } catch (ServerException $exception) {
-                if ($attempt === 0 && $exception->isTransientConnectionFailure()) {
+                if ($retryTransientFailure && $exception->isTransientConnectionFailure()) {
+                    $retryTransientFailure = false;
                     continue;
                 }
 
@@ -2055,8 +2057,6 @@ final class Client implements WorkflowClientInterface
                 return $response;
             }
         }
-
-        return [];
     }
 
     /**
