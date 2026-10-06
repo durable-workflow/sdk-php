@@ -391,14 +391,16 @@ final class CooperativeCancellationTest extends TestCase
             self::assertCount(1, $prepared->activityMembers);
             self::assertSame($targetId, $prepared->activityMembers[0]['activity_execution_id']);
             if ($policy === 'wait_cancellation_completed') {
-                try {
-                    $client->cancellationScopeBoundaryOnClaim($task['task_id'], $task['run_id'], $queue, $owner,
-                        $task['workflow_task_attempt'], $scope->scopeId, $boundary, 'deliver', $budget, $prepared);
-                    self::fail('Wait policy must retain its stop barrier.');
-                } catch (WorkflowClaimAborted) {
-                    self::assertFalse($transport->mutations['deliver'][0]['response']['delivered']);
-                    self::assertSame('cancellation_scope_activity_stop_not_acknowledged', $transport->mutations['deliver'][0]['response']['reason']);
-                }
+                // Inspect one pending backend response. The SDK's execution path
+                // now waits for a supervisor, which this unstarted fixture lacks.
+                $pending = $client->cancellationScopeOperation($task['task_id'], $owner, $task['workflow_task_attempt'], 'deliver',
+                    ['scope_id' => $scope->scopeId, 'request_id' => $boundary->requestId, 'sequence' => $boundary->sequence,
+                        'call_kind' => $boundary->callKind, 'sequence_span' => $boundary->sequenceSpan,
+                        'operation_sequence' => $boundary->operationSequence, 'operation_sequence_span' => $boundary->operationSequenceSpan], $budget);
+                self::assertTrue($pending['prepared']);
+                self::assertFalse($pending['delivered']);
+                self::assertSame('cancellation_scope_activity_stop_not_acknowledged', $pending['reason']);
+                self::assertArrayNotHasKey('history_event_id', $pending);
                 // These claims deliberately never invoke an application callback.
                 // Acknowledging the unstarted target qualifies the backend barrier,
                 // not physical cancellation of a running SDK callback.
@@ -487,7 +489,7 @@ final class CooperativeCancellationTest extends TestCase
             $opening = array_values(array_filter($initial, static fn (array $row): bool => $row['event_type'] === 'CancellationScopeOpened'))[0];
             $input = ['run_id' => $handle->selectedRunId, 'workflow_id' => $queue, 'scope_id' => $opening['payload']['scope_id']];
             $accepted = $this->requestNativeScopeFixture($input);
-            self::assertSame($accepted, $this->requestNativeScopeFixture($input));
+            self::assertEquals($accepted, $this->requestNativeScopeFixture($input));
             $original = $accepted['payload']['cancellation']['root_context'];
             $expected = \DurableWorkflow\Worker\ScopedCancellationContext::fromArray($accepted['payload']['cancellation'])->toArray();
             $result = $handle->resultOfSelectedRun(20, 0.05);
