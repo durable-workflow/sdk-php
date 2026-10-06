@@ -20,7 +20,8 @@ next:
 | `NonDeterministicWorkflow` | Code no longer matches committed history. | Restore compatible code; do not blindly retry. |
 | `WorkflowFailed` | The execution closed as failed. | Surface the recorded failure to the caller. |
 | `WorkflowTimedOut` | A Server deadline closed the run. | Start a new workflow only if business policy permits. |
-| `WorkflowCancelled` / `WorkflowTerminated` | Both close the Server run immediately, with distinct terminal reasons. | Do not expect workflow-code cleanup after either command. |
+| `WorkflowCancelled` | The run closed as Cancelled, after terminal cancellation or successful cooperative cleanup. | Inspect the cancellation lifecycle and cleanup outcome. |
+| `WorkflowTerminated` | Termination closed the run immediately. | Do not expect workflow-code cleanup after termination. |
 
 ## Make activity retries safe
 
@@ -51,12 +52,16 @@ from history. Discarding a suspended replay Fiber does not schedule cleanup or
 complete the workflow; PHP may still unwind local `finally` code, so put external
 effects in activities rather than directly in the workflow body.
 
-Do not use `finally` as a guarantee against terminal `cancelWorkflow()`,
-`terminateWorkflow()`, process death, or an already closed run. Service-mode
-Server does not yet expose the separate cooperative cancellation request
-available to embedded Laravel. When business cancellation requires
-compensation to finish, signal that intent and let the workflow complete its
-cleanup before closing the run.
+Use `requestCancellation()` with cooperating workers when cancellation requires
+bounded workflow cleanup. The request preserves one original deadline across
+children, activities, duplicates and worker replacement. Shielded durable
+cleanup replays after worker loss and successful cleanup closes the run as
+`Cancelled`. See the [cooperative cancellation guide](https://durable-workflow.com/docs/2.0/polyglot/cancellation/)
+for worker opt-in, operation policies and inspection.
+
+Terminal `cancelWorkflow()` and `terminateWorkflow()` still close the run
+immediately. They do not resume workflow cleanup, and an already closed run
+cannot schedule compensation through `finally`.
 
 ## Heartbeat long attempts
 
@@ -68,6 +73,11 @@ foreach ($batches as $index => $batch) {
 ```
 
 Heartbeat details make slow work observable and provide a cancellation checkpoint. Catch `ActivityCancelled` only to release local resources, then rethrow it so the runtime records cancellation correctly.
+
+Cooperative workers supervise callbacks independently of application
+heartbeats. A stop receipt proves callback stop, while attempt fencing rejects
+a stale result. Downstream side effects still need application idempotency or
+reconciliation.
 
 ## Preserve terminal distinctions at the client
 
