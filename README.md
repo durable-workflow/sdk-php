@@ -129,6 +129,25 @@ worker configuration, Message Streams, framework setup, and testing examples.
 The generated [API reference](https://php.durable-workflow.com/api/) documents
 every public class and method.
 
+## Cooperative cancellation release candidate
+
+Cooperative requests let workflow code perform bounded, replayable cleanup.
+Use a Server that advertises protocol 1.20 and the required capabilities, set
+the Client's `workerProtocolVersion` to `'1.20'`, and construct the Worker with
+`enableCooperativeCancellation: true`. Enable `enablePreparedLocalActivities`
+for durable local callback admission, stop receipts and explicit local policies.
+Independently cancellable scopes remain disabled.
+
+This opt-in requires Unix CLI with `pcntl` and `posix`. Activity callbacks run
+in supervised child processes so cancellation can stop blocking code without
+application heartbeats. Open handler-owned connections in the callback process
+and return results explicitly. Changes to captured process memory do not update
+the owning worker.
+
+Use `requestCancellation()` for cooperative cleanup. Existing `cancel()` closes
+the run immediately. See the [cancellation guide](docs/cooperative-cancellation-design.md)
+for operation policies, immutable context, shielding and recovery.
+
 ## Development
 
 ```bash
