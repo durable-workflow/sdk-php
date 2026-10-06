@@ -97,11 +97,11 @@ final class CancellationScopeCleanupTimerTest extends TestCase
     {
         $fixture = json_decode(file_get_contents(__DIR__.'/fixtures/committed-scope-descendants.json'), true,
             flags: JSON_THROW_ON_ERROR)['timer'];
-        $context = ScopedCancellationContext::fromArray($fixture['contexts'][$target]);
+        $context = ScopedCancellationContext::fromArray($fixture['contexts']['parent']);
         self::append($fixture, 'TimerScheduled', ['sequence' => 9, 'timer_id' => 'descendant-cleanup',
             'delay_seconds' => 1, 'fire_at' => '2026-10-04T00:00:13.123456Z',
             'cancellation_scope_id' => $fixture['scopes'][$target], 'cancellation_cleanup' => [
-                'scope_id' => $fixture['scopes'][$target], 'operation_scope_id' => $fixture['scopes'][$target],
+                'scope_id' => $fixture['scopes']['parent'], 'operation_scope_id' => $fixture['scopes'][$target],
                 'request_id' => $context->requestId, 'root_request_id' => $context->rootRequestId,
                 'delivery_history_event_id' => 'ancestor-delivered', 'preparation_history_event_id' => 'ancestor-prepared',
                 'cleanup_deadline_at' => '2026-10-04T00:00:30.123456Z', 'authority_deadline_at' => '2026-10-04T00:00:26.123456Z',

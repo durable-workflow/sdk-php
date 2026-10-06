@@ -55,18 +55,10 @@ final class PreparedLocalActivityCall
                 throw new LogicException('Scoped cleanup must follow its original delivered operation range.');
             }
             $context = $state['context'];
-            $payload = $delivery['event']['payload'];
             $call = new self($command, $sequence, $recover);
-            $call->scopeCleanup = [
-                'scope_id' => $scopeId,
-                'operation_scope_id' => $scopeId,
-                'request_id' => $context->requestId,
-                'root_request_id' => $context->rootRequestId,
-                'delivery_history_event_id' => $delivery['event']['id'],
-                'preparation_history_event_id' => $payload['preparation_history_event_id'],
-                'cleanup_deadline_at' => $context->deadline()->format('Y-m-d\TH:i:s.u\Z'),
-                'authority_deadline_at' => $state['authority_deadline_at'],
-            ];
+            $call->scopeCleanup = CancellationScopeTimerCleanup::snapshot(
+                $context, $state['authority_deadline_at'], $delivery['event'],
+            );
 
             return $call;
         }

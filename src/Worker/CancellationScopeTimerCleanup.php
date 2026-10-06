@@ -16,12 +16,13 @@ final class CancellationScopeTimerCleanup
      */
     public static function snapshot(ScopedCancellationContext $context, string $authorityDeadline, array $delivery): array
     {
+        $ancestor = ScopedCancellationContext::fromArray($delivery['payload']['cancellation']);
         return [
-            'scope_id' => $context->scopeId, 'operation_scope_id' => $context->scopeId,
-            'request_id' => $context->requestId, 'root_request_id' => $context->rootRequestId,
+            'scope_id' => $ancestor->scopeId, 'operation_scope_id' => $context->scopeId,
+            'request_id' => $ancestor->requestId, 'root_request_id' => $ancestor->rootRequestId,
             'delivery_history_event_id' => $delivery['id'],
             'preparation_history_event_id' => $delivery['payload']['preparation_history_event_id'],
-            'cleanup_deadline_at' => $context->deadline()->format('Y-m-d\TH:i:s.u\Z'),
+            'cleanup_deadline_at' => $ancestor->deadline()->format('Y-m-d\TH:i:s.u\Z'),
             'authority_deadline_at' => $authorityDeadline,
         ];
     }

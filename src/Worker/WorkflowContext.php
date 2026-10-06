@@ -649,7 +649,9 @@ final class WorkflowContext
                 throw new LogicException('Committed subtree delivery changes its original run or root.');
             }
             $snapshot = $cleanupSnapshots[$scopeId] ?? null;
-            if ($snapshot === null || $snapshot['scope_id'] !== $scopeId || $snapshot['request_id'] !== $context->requestId) {
+            $ancestor = $snapshot === null ? null : ($contexts[$snapshot['scope_id']] ?? null);
+            if ($snapshot === null || $snapshot['operation_scope_id'] !== $scopeId
+                || !$ancestor instanceof ScopedCancellationContext || $snapshot['request_id'] !== $ancestor->requestId) {
                 throw new LogicException('Committed subtree delivery requires its original cleanup snapshot.');
             }
             $this->deliveredScopeCleanup[$scopeId] = $snapshot;

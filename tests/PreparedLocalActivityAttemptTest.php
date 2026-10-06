@@ -254,6 +254,36 @@ final class PreparedLocalActivityAttemptTest extends TestCase
         PreparedLocalActivityAttempt::fromPreparation($response, 'task', 'run', 'original', 4, 'sdk-nonce', expectedCleanup: $cleanup);
     }
 
+    public function test_descendant_cleanup_retains_ancestor_receipt_and_narrower_operation_budget(): void
+    {
+        $cleanup = [...self::cleanup(), 'scope_id' => 'ancestor', 'operation_scope_id' => 'descendant',
+            'preparation_history_event_id' => 'ancestor-prepared', 'authority_deadline_at' => '2026-10-02T00:00:20Z'];
+        $response = [...self::preparation(), 'cancellation_scope_id' => 'descendant', 'cancellation_cleanup' => $cleanup,
+            'start_to_close_deadline_at' => $cleanup['authority_deadline_at'],
+            'schedule_to_close_deadline_at' => $cleanup['authority_deadline_at'],
+            'heartbeat_deadline_at' => $cleanup['authority_deadline_at']];
+        $attempt = PreparedLocalActivityAttempt::fromPreparation($response, 'task', 'run', 'original', 4, 'sdk-nonce',
+            expectedCleanup: $cleanup, cancellationScopeId: 'descendant');
+        $attempt->validateControl([...$response, 'active' => true, 'renewed' => true, 'stop_required' => false,
+            'workflow_lease_expires_at' => '2026-10-02T00:00:10Z'], true);
+        self::addToAssertionCount(1);
+        foreach (array_keys($cleanup) as $field) {
+            try {
+                PreparedLocalActivityAttempt::fromPreparation(
+                    [...$response, 'cancellation_cleanup' => [...$cleanup, $field => str_ends_with($field, 'deadline_at')
+                        ? '2026-10-02T00:00:40Z' : 'replacement']],
+                    'task', 'run', 'original', 4, 'sdk-nonce', expectedCleanup: $cleanup, cancellationScopeId: 'descendant',
+                );
+                self::fail('Changed ancestor receipt or descendant authority was accepted.');
+            } catch (InvalidArgumentException) {
+                self::addToAssertionCount(1);
+            }
+        }
+        $this->expectException(InvalidArgumentException::class);
+        PreparedLocalActivityAttempt::fromPreparation([...$response, 'schedule_to_close_deadline_at' => '2026-10-02T00:00:25Z'],
+            'task', 'run', 'original', 4, 'sdk-nonce', expectedCleanup: $cleanup, cancellationScopeId: 'descendant');
+    }
+
     public static function invalidCleanupProvider(): array
     {
         return ['local request' => [['request_id' => 'other']], 'root request' => [['root_request_id' => 'other']],

@@ -62,8 +62,9 @@ final class DescendantScopeReplayTest extends TestCase
         self::assertSame([], $first->commands);
         self::assertNotNull($first->preparedLocalActivity);
         $snapshot = $first->preparedLocalActivity->cleanupSnapshot();
-        self::assertSame($fixture['scopes'][$target], $snapshot['scope_id']);
-        self::assertSame($fixture['contexts'][$target]['lineage'][array_key_last($fixture['contexts'][$target]['lineage'])]['request_id'], $snapshot['request_id']);
+        self::assertSame($fixture['scopes']['parent'], $snapshot['scope_id']);
+        self::assertSame($fixture['scopes'][$target], $snapshot['operation_scope_id']);
+        self::assertSame($fixture['contexts']['parent']['lineage'][array_key_last($fixture['contexts']['parent']['lineage'])]['request_id'], $snapshot['request_id']);
         self::assertSame($fixture['contexts']['parent']['root_context']['root_request_id'], $snapshot['root_request_id']);
         self::assertSame('ancestor-prepared', $snapshot['preparation_history_event_id']);
         self::assertSame('ancestor-delivered', $snapshot['delivery_history_event_id']);

@@ -248,7 +248,6 @@ final class PreparedLocalActivityAttempt
             $fields = [...$fields, 'scope_id', 'operation_scope_id', 'preparation_history_event_id', 'authority_deadline_at'];
             if (($expected['scope_id'] ?? null) === 'root'
                 || ($expected['operation_scope_id'] ?? null) !== $operationScope
-                || ($expected['scope_id'] ?? null) !== $operationScope
                 || ($response['cancellation_scope_id'] ?? $operationScope) !== $operationScope
                 || self::timestamp($expected['authority_deadline_at'] ?? null) > self::timestamp($expected['cleanup_deadline_at'] ?? null)) {
                 throw new InvalidArgumentException('Local cleanup changed its original authored scope or authority ceiling.');
