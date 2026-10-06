@@ -1045,6 +1045,34 @@ final class Client implements WorkflowClientInterface
         return $this->control('GET', '/system/operator-dashboard/bounded');
     }
 
+    /**
+     * Bounded workflow aggregates for explicit types. An empty list matches
+     * no workflows. Operational metrics retain their namespace scope.
+     * Servers without this additive route report their original HTTP 404.
+     *
+     * @param list<string> $workflowTypes
+     * @return array<string, mixed>
+     */
+    public function workflowTypeOperatorDashboard(array $workflowTypes): array
+    {
+        if (!array_is_list($workflowTypes)) {
+            throw new InvalidArgumentException('Dashboard workflow types must be a list of nonempty strings.');
+        }
+        foreach ($workflowTypes as $type) {
+            if (!is_string($type) || $type === '') {
+                throw new InvalidArgumentException('Dashboard workflow types must be a list of nonempty strings.');
+            }
+        }
+        $types = json_encode($workflowTypes, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        if (strlen(rawurlencode($types)) > 4096) {
+            throw new InvalidArgumentException('The encoded dashboard workflow type selection exceeds 4096 bytes.');
+        }
+
+        return $this->control('GET', $this->pathWithQuery('/system/operator-dashboard/bounded/workflow-types', [
+            'workflow_types' => $types,
+        ]));
+    }
+
     /** @return array<string, mixed> */
     public function listWorkers(?string $taskQueue = null, ?string $status = null): array
     {

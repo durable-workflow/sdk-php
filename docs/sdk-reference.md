@@ -23,6 +23,20 @@ runnable path.
   through Laravel queues. That is a different deployment model, not a
   prerequisite for this SDK.
 
+## Operator dashboards
+
+Use an operator credential to read dashboard aggregates for the client's
+namespace. `boundedOperatorDashboard()` leaves fleet-wide history audits
+unevaluated. `workflowTypeOperatorDashboard(['orders.import'])` also limits
+workflow totals, trends and alerts to the explicit types. An empty list matches
+no workflows. Worker, queue and storage metrics retain the namespace scope.
+
+The selected types are returned in `dashboard.workflow_scope`, with concrete
+time windows in `dashboard.time_windows`. The type-filtered operation uses an
+additive Server route. Older Servers return their original HTTP 404 without an
+unfiltered fallback. The SDK rejects malformed selections and encoded query
+values larger than 4096 bytes before sending them.
+
 ## Plain PHP quickstart
 
 Create an empty Composer project and install the current published package:
