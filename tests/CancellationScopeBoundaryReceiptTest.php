@@ -257,12 +257,67 @@ final class CancellationScopeBoundaryReceiptTest extends TestCase
         }
     }
 
-    public function test_pending_activity_stop_cannot_claim_delivery_or_retry(): void
+    public function test_pending_activity_stop_cannot_claim_a_delivery_event(): void
     {
         $transport=self::transport([array_replace(self::receipt(true), ['delivered'=>false, 'reason'=>'cancellation_scope_activity_stop_not_acknowledged'])]);
         try { self::boundary($transport, true, self::preparation()); self::fail('Pending stop is not delivery.'); } catch (WorkflowClaimAborted) {
             self::assertCount(1, $transport->fake->requests);
         }
+    }
+
+    public function test_pending_stop_waits_for_committed_delivery_on_the_original_claim(): void
+    {
+        $transport = self::transport([self::pendingStop(), self::page(self::history(false)),
+            self::receipt(true), self::page(self::history())]);
+        $original = self::preparation();
+        $delivered = self::boundary($transport, true, $original);
+        $delivered->assertOriginalPreparation($original);
+        self::assertSame(self::history()[6]['id'], $delivered->deliveryHistoryEventId);
+        self::assertSame($transport->fake->requests[0]['body'], $transport->fake->requests[2]['body']);
+        self::assertCount(4, $transport->fake->requests);
+    }
+
+    #[DataProvider('pendingAuthorityChanges')]
+    public function test_pending_stop_cannot_substitute_original_authority(array $change): void
+    {
+        $transport = self::transport([array_replace(self::pendingStop(), $change), self::page(self::history(false))]);
+        try { self::boundary($transport, true, self::preparation()); self::fail('Changed pending authority must abort.'); }
+        catch (WorkflowClaimAborted) {
+            self::assertCount(1, array_filter($transport->fake->requests,
+                static fn (array $request): bool => str_ends_with($request['uri'], '/deliver')));
+        }
+    }
+
+    public static function pendingAuthorityChanges(): array
+    {
+        return [[['lease_owner'=>'replacement']], [['preparation_history_event_id'=>'borrowed']],
+            [['authority_deadline_at'=>'2026-10-04T00:00:31.123456Z']]];
+    }
+
+    public function test_pending_stop_does_not_renew_its_original_budget(): void
+    {
+        $transport = self::transport([], static function (string $method, string $uri): array {
+            return str_ends_with($uri, '/deliver') ? self::pendingStop() : self::page(self::history(false));
+        });
+        $started = hrtime(true) / 1e9;
+        try {
+            self::boundary($transport, true, self::preparation(), new RequestBudget(5, $started + 1.3));
+            self::fail('Pending stop must not renew its original budget.');
+        } catch (WorkflowClaimAborted) {
+            self::assertLessThan(1, hrtime(true) / 1e9 - $started);
+            $mutations = array_values(array_filter($transport->fake->requests,
+                static fn (array $request): bool => str_ends_with($request['uri'], '/deliver')));
+            self::assertGreaterThanOrEqual(2, count($mutations));
+            foreach ($mutations as $request) { self::assertSame($mutations[0]['body'], $request['body']); }
+        }
+    }
+
+    private static function pendingStop(): array
+    {
+        $receipt = self::receipt();
+        unset($receipt['history_event_id']);
+        $receipt['reason'] = 'cancellation_scope_activity_stop_not_acknowledged';
+        return $receipt;
     }
 
     public function test_persistent_uncertainty_has_only_one_reconciliation_without_inventing_a_receipt(): void

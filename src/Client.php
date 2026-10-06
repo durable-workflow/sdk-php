@@ -1492,28 +1492,47 @@ final class Client implements WorkflowClientInterface
         $expected = ['task_id' => $taskId, 'workflow_run_id' => $runId, 'workflow_instance_id' => $workflowId,
             'lease_owner' => $leaseOwner, 'workflow_task_attempt' => $attempt, 'namespace' => $this->namespace, ...$body];
         try {
-            try {
-                $receipt = $this->cancellationScopeOperation($taskId, $leaseOwner, $attempt, $phase, $body, $budget);
-            } catch (ServerException $error) {
-                if (!$error->isTransientConnectionFailure() && !$error->isTransientUpstreamFailure()) {
-                    throw $error;
+            do {
+                $budget->remainingSeconds();
+                try {
+                    $receipt = $this->cancellationScopeOperation($taskId, $leaseOwner, $attempt, $phase, $body, $budget);
+                } catch (ServerException $error) {
+                    if (!$error->isTransientConnectionFailure() && !$error->isTransientUpstreamFailure()) {
+                        throw $error;
+                    }
+                    $budget->remainingSeconds();
+                    $receipt = $this->cancellationScopeOperation($taskId, $leaseOwner, $attempt, $phase, $body, $budget);
+                }
+                $pending = $delivering && ($receipt['reason'] ?? null) === 'cancellation_scope_activity_stop_not_acknowledged';
+                if ($pending) {
+                    if (array_key_exists('history_event_id', $receipt)) {
+                        throw new WorkflowClaimAborted('Pending scope stop cannot claim a committed delivery.');
+                    }
+                    // Prove only the retained preparation until the callback stops.
+                    // This internal frame grants no delivery or cleanup authority.
+                    $receipt['reason'] = null;
+                    $receipt['history_event_id'] = $preparation->preparationHistoryEventId;
+                }
+                $committed = $delivering && !$pending;
+                $token = CancellationScopeDeliveryReceipt::assertAcknowledgement($receipt, $expected, $committed);
+                if ($enforceAuthorityDeadline) {
+                    $budget->restrictWallAuthorityDeadline(new \DateTimeImmutable($receipt['authority_deadline_at']));
+                    $budget->remainingSeconds();
+                }
+                $history = $this->cancellationScopeClaimHistory($taskId, $leaseOwner, $attempt, $token, $budget);
+                $proved = CancellationScopeDeliveryReceipt::fromCanonicalHistory($receipt, $history, $expected, $committed);
+                if ($preparation !== null) {
+                    $proved->assertOriginalPreparation($preparation);
                 }
                 $budget->remainingSeconds();
-                $receipt = $this->cancellationScopeOperation($taskId, $leaseOwner, $attempt, $phase, $body, $budget);
-            }
-            $token = CancellationScopeDeliveryReceipt::assertAcknowledgement($receipt, $expected, $delivering);
-            if ($enforceAuthorityDeadline) {
-                $budget->restrictWallAuthorityDeadline(new \DateTimeImmutable($receipt['authority_deadline_at']));
-                $budget->remainingSeconds();
-            }
-            $history = $this->cancellationScopeClaimHistory($taskId, $leaseOwner, $attempt, $token, $budget);
-            $proved = CancellationScopeDeliveryReceipt::fromCanonicalHistory($receipt, $history, $expected, $delivering);
-            if ($preparation !== null) {
-                $proved->assertOriginalPreparation($preparation);
-            }
-            $budget->remainingSeconds();
 
-            return $proved;
+                if (!$pending) {
+                    return $proved;
+                }
+                // Remote callbacks are supervised by separate processes. Keep the
+                // original claim and budget while their stop receipt is committed.
+                usleep(100000);
+            } while (true);
         } catch (WorkflowClaimAborted $error) {
             throw $error;
         } catch (\Throwable $error) {
