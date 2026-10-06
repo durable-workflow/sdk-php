@@ -45,7 +45,7 @@ final class CancellationScopeCleanupTimerTest extends TestCase
             $fixture['task']['workflow_task_attempt'] = $attempt;
             $result = $this->replay($fixture);
             self::assertSame(['complete_workflow'], array_column($result->commands, 'type'));
-            self::assertSame(['request' => self::snapshot($fixture)['request_id'], 'remaining' => 20.0],
+            self::assertSame(['request' => self::snapshot($fixture)['request_id'], 'remaining' => 16.0],
                 $codec->decodeEnvelope($result->commands[0]['result']));
         }
     }

@@ -174,13 +174,13 @@ final class PendingCancellationScopeBoundaryTest extends TestCase
         self::assertSame(4, $result->cancellationScopeDelivery->boundary->sequenceSpan);
     }
 
-    public function test_missing_accepted_descendant_lineage_cannot_borrow_parent_preparation(): void
+    public function test_committed_preparation_requires_its_accepted_descendant_lineage(): void
     {
-        $fixture = self::descendantFixture(false);
+        $fixture = self::descendantFixture(true);
         $fixture['history'] = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
             $event['event_type'] !== 'CancellationScopeRequested' || $event['payload']['scope_id'] !== 'grandchild-scope'));
         $cleaned = false;
-        $this->expectException(WorkflowClaimAborted::class);
+        $this->expectException(NonDeterministicWorkflow::class);
         try { $this->replay(self::descendantWorkflow($cleaned), $fixture); }
         finally { self::assertFalse($cleaned); }
     }

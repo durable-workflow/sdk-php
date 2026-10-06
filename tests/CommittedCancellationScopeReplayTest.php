@@ -151,7 +151,7 @@ final class CommittedCancellationScopeReplayTest extends TestCase
         return ['direct request' => ['unshielded'], 'direct request inside parent shield' => ['shielded']];
     }
 
-    public function test_authority_ceiling_does_not_replace_original_context_budget(): void
+    public function test_authority_ceiling_bounds_remaining_without_replacing_original_deadline(): void
     {
         $fixture = self::fixture();
         foreach ([5, 6] as $index) {
@@ -159,8 +159,22 @@ final class CommittedCancellationScopeReplayTest extends TestCase
         }
         $result = $this->replay(self::simpleWorkflow(), $fixture);
         $value = (new AvroPayloadCodec())->decodeEnvelope($result->commands[0]['result']);
-        self::assertSame(22.623456, $value['remaining']);
+        self::assertSame(18.5, $value['remaining']);
         self::assertSame('2026-10-04T00:00:30.123456Z', $value['deadline']);
+    }
+
+    public function test_rebinding_replay_clock_preserves_the_original_authority_ceiling(): void
+    {
+        $original = ScopedCancellationContext::fromArray(self::fixture()['history'][4]['payload']['cancellation']);
+        $clock = static fn () => new DateTimeImmutable('2026-10-04T00:00:07.500000Z');
+        $bounded = $original->withReplayClock($clock, new DateTimeImmutable('2026-10-04T00:00:10.000000Z'));
+        self::assertSame(2.5, $bounded->remaining());
+        self::assertSame(2.5, $bounded->withReplayClock($clock)->remaining());
+        self::assertSame(0.0, $bounded->withReplayClock(static fn () => new DateTimeImmutable('2026-10-04T00:00:11Z'))->remaining());
+        self::assertSame($original->toArray(), $bounded->toArray());
+        self::assertEquals($original->deadline(), $bounded->deadline());
+        $this->expectException(\InvalidArgumentException::class);
+        $bounded->withReplayClock($clock, $original->deadline());
     }
 
     public function test_immutable_context_clock_uses_narrowed_scope_deadline_and_cannot_escape_workflow_lifetime(): void

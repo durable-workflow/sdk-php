@@ -641,6 +641,7 @@ final class WorkflowContext
         if (!$active instanceof ScopedCancellationContext) {
             throw new LogicException('Committed subtree delivery must include the active authored scope.');
         }
+        $clock = $this->cancellationClock();
         foreach ($contexts as $scopeId => $context) {
             if ($context->scopeId !== $scopeId || $context->workflowRunId !== $this->runId
                 || $context->workflowInstanceId !== $this->workflowId
@@ -652,12 +653,12 @@ final class WorkflowContext
                 throw new LogicException('Committed subtree delivery requires its original cleanup snapshot.');
             }
             $this->deliveredScopeCleanup[$scopeId] = $snapshot;
+            $contexts[$scopeId] = $context->withReplayClock($clock, new DateTimeImmutable($snapshot['authority_deadline_at']));
         }
-        $error = $this->deliveredCancellation($active->requestId, $active);
-        $clock = $this->cancellationClock();
+        $error = $this->deliveredCancellation($active->requestId, $contexts[$active->scopeId]);
         foreach ($contexts as $scopeId => $context) {
             if ($scopeId === $active->scopeId) { continue; }
-            $this->deliveredScopeCancellations[$scopeId] = $context->withReplayClock($clock);
+            $this->deliveredScopeCancellations[$scopeId] = $context;
         }
 
         return $error;

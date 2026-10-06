@@ -17,6 +17,8 @@ final class ScopedCancellationContext
     /** @var (Closure(): DateTimeImmutable)|null */
     private ?Closure $replayClock = null;
 
+    private ?DateTimeImmutable $authorityDeadline = null;
+
     public readonly string $requestId;
     public readonly ?string $parentRequestId;
     public readonly string $workflowInstanceId;
@@ -175,17 +177,23 @@ final class ScopedCancellationContext
             throw new LogicException('Cancellation remaining() requires deterministic workflow time.');
         }
         $time = ($this->replayClock)();
-        $seconds = (int) $this->cleanupDeadline->format('U') - (int) $time->format('U');
-        $microseconds = (int) $this->cleanupDeadline->format('u') - (int) $time->format('u');
+        $deadline = $this->authorityDeadline ?? $this->cleanupDeadline;
+        $seconds = (int) $deadline->format('U') - (int) $time->format('U');
+        $microseconds = (int) $deadline->format('u') - (int) $time->format('u');
 
         return max(0.0, $seconds + $microseconds / 1_000_000);
     }
 
     /** @internal @param Closure(): DateTimeImmutable $clock */
-    public function withReplayClock(Closure $clock): self
+    public function withReplayClock(Closure $clock, ?DateTimeImmutable $authorityDeadline = null): self
     {
+        if ($authorityDeadline !== null && ($authorityDeadline < $this->requestedAt()
+            || $authorityDeadline > ($this->authorityDeadline ?? $this->cleanupDeadline))) {
+            throw new InvalidArgumentException('Scoped cancellation cannot extend or replace its original authority ceiling.');
+        }
         $context = clone $this;
         $context->replayClock = $clock;
+        if ($authorityDeadline !== null) { $context->authorityDeadline = $authorityDeadline; }
 
         return $context;
     }

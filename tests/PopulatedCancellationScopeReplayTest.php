@@ -194,7 +194,7 @@ final class PopulatedCancellationScopeReplayTest extends TestCase
                 } catch (WorkflowCancelled $error) {
                     self::assertInstanceOf(ScopedCancellationContext::class, $error->context);
                     $context = $error->context;
-                    self::assertSame(21.0, $context->remaining());
+                    self::assertSame($change === 'cleanup' ? 17.0 : 21.0, $context->remaining());
                     self::assertTrue($workflow->isCancellationRequested());
                     $workflow->cancellationShield(static fn () => $workflow->throwIfCancellationRequested());
                     if ($change === 'cleanup') {

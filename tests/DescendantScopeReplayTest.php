@@ -220,7 +220,7 @@ final class DescendantScopeReplayTest extends TestCase
                 $observed[$name] = $error->context;
                 self::assertTrue($workflow->isCancellationRequested());
                 self::assertSame($error->context, $workflow->cancellationContext());
-                self::assertSame(21.0, $error->context->remaining());
+                self::assertSame(17.0, $error->context->remaining());
                 if ($cleanup === $name) { $workflow->cancellationShield(static fn () => $workflow->localActivity('cleanup-'.$name)); }
             };
             $workflow->cancellationScope(static function () use ($workflow, $fixture, $change, $capture): void {
