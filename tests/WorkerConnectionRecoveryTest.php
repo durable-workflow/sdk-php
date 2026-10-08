@@ -92,6 +92,201 @@ final class WorkerConnectionRecoveryTest extends TestCase
         self::assertSame(1, count(array_filter($transport->requests, static fn (array $r): bool => str_ends_with($r['uri'], '/register'))));
     }
 
+    public function testPollRecoveryDoesNotOutrunAStaleHeartbeatRetry(): void
+    {
+        $now = 0.0;
+        $lastServerHeartbeat = 0.0;
+        $firstPoll = true;
+        $recovered = false;
+        $transport = new FakeTransport(handler: static function (string $method, string $uri) use (
+            &$now, &$lastServerHeartbeat, &$firstPoll, &$recovered,
+        ): array {
+            if (str_ends_with($uri, '/register')) {
+                return ['registered' => true, 'heartbeat_interval_seconds' => 10];
+            }
+            if (str_ends_with($uri, '/heartbeat')) {
+                if ($now < 40.0) {
+                    throw self::disconnected();
+                }
+                $lastServerHeartbeat = $now;
+
+                return ['acknowledged' => true];
+            }
+            if ($firstPoll) {
+                $firstPoll = false;
+                $now = 30.0;
+            }
+            // Poll and heartbeat requests have independent transport timing.
+            $now += 2.0;
+            if ($now < 40.0) {
+                throw self::disconnected();
+            }
+            if ($now - $lastServerHeartbeat >= 30.0) {
+                return ['task' => null, 'poll_status' => 'stale_worker_registration'];
+            }
+            $recovered = true;
+
+            return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+        });
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'orders',
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $us) use (&$now): void {
+                $now += $us / 1_000_000;
+                self::assertLessThan(60, $now, 'Recovery must remain bounded.');
+            },
+        );
+
+        $worker->run(0);
+
+        self::assertTrue($recovered, 'Polling must not permanently stop before the pending heartbeat recovers.');
+        self::assertSame(1, count(array_filter($transport->requests, static fn (array $r): bool => str_ends_with($r['uri'], '/register'))));
+        $polls = array_values(array_filter($transport->requests, static fn (array $r): bool => str_ends_with($r['uri'], '/poll')));
+        self::assertGreaterThan(1, count($polls));
+        self::assertCount(1, array_unique(array_map(static fn (array $r): mixed => $r['body']['poll_request_id'], $polls)));
+    }
+
+    public function testShutdownDuringHeartbeatRecoveryDoesNotAcquireAnotherTask(): void
+    {
+        $now = 0.0;
+        $worker = null;
+        $transport = new FakeTransport(handler: static function (string $method, string $uri) use (&$now): array {
+            if (str_ends_with($uri, '/register')) {
+                return ['registered' => true, 'heartbeat_interval_seconds' => 10];
+            }
+            if ($method === 'DELETE') {
+                return ['deregistered' => true];
+            }
+            if (str_ends_with($uri, '/heartbeat')) {
+                throw self::disconnected();
+            }
+            self::assertStringEndsWith('/workflow-tasks/poll', $uri);
+            $now = 10.0;
+
+            return ['task' => null, 'poll_status' => 'empty'];
+        });
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'orders',
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $us) use (&$now, &$worker): void {
+                $now += $us / 1_000_000;
+                $worker?->requestShutdown();
+            },
+        );
+
+        $worker->run(0);
+
+        self::assertCount(4, $transport->requests);
+        self::assertSame('DELETE', $transport->requests[3]['method']);
+    }
+
+    public function testHeartbeatRecoveryCannotReviveASupersededRegistration(): void
+    {
+        $now = 0.0;
+        $heartbeatCount = 0;
+        $transport = new FakeTransport(handler: static function (string $method, string $uri) use (&$now, &$heartbeatCount): array {
+            if (str_ends_with($uri, '/register')) {
+                return ['registered' => true, 'heartbeat_interval_seconds' => 10];
+            }
+            if ($method === 'DELETE') {
+                return ['deregistered' => true];
+            }
+            if (str_ends_with($uri, '/heartbeat')) {
+                if (++$heartbeatCount === 1) {
+                    throw self::disconnected();
+                }
+                throw TransportException::fromResponse(409, [
+                    'reason' => 'worker_registration_superseded',
+                ], '');
+            }
+            self::assertStringEndsWith('/workflow-tasks/poll', $uri);
+            $now = 10.0;
+
+            return ['task' => null, 'poll_status' => 'empty'];
+        });
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'orders',
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $us) use (&$now): void { $now += $us / 1_000_000; },
+        );
+
+        try {
+            $worker->run(0);
+            self::fail('A superseded registration must remain fenced.');
+        } catch (ServerException $exception) {
+            self::assertSame('worker_registration_superseded', $exception->reason);
+        }
+        self::assertSame(2, $heartbeatCount);
+        self::assertCount(5, $transport->requests);
+        self::assertSame('DELETE', $transport->requests[4]['method']);
+    }
+
+    public function testPendingHeartbeatDoesNotDelayAnAlreadyAcquiredActivity(): void
+    {
+        $now = 0.0;
+        $calls = 0;
+        $heartbeatCount = 0;
+        $completed = false;
+        $transport = new FakeTransport(handler: static function (string $method, string $uri) use (
+            &$now, &$heartbeatCount, &$completed,
+        ): array {
+            if (str_ends_with($uri, '/register')) {
+                return ['registered' => true, 'heartbeat_interval_seconds' => 10];
+            }
+            if (str_ends_with($uri, '/heartbeat')) {
+                if (++$heartbeatCount === 1) {
+                    throw self::disconnected();
+                }
+
+                return ['acknowledged' => true];
+            }
+            if (str_ends_with($uri, '/activity-tasks/poll')) {
+                $now = 10.0;
+
+                return ['task' => [
+                    'task_id' => 'activity-1',
+                    'activity_attempt_id' => 'attempt-1',
+                    'lease_owner' => 'worker-1',
+                    'activity_type' => 'greet',
+                    'payload_codec' => 'avro',
+                ]];
+            }
+            if (str_ends_with($uri, '/activity-tasks/activity-1/complete')) {
+                $completed = true;
+
+                return ['completed' => true];
+            }
+
+            return $completed
+                ? ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped']
+                : ['task' => null, 'poll_status' => 'empty'];
+        });
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'orders',
+            workerId: 'worker-1',
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $us) use (&$now, &$calls, &$completed): void {
+                self::assertSame(1, $calls, 'Retry waiting must follow execution of the acquired activity.');
+                self::assertTrue($completed);
+                $now += $us / 1_000_000;
+            },
+        );
+        $worker->registerActivity('greet', static function (ActivityContext $context) use (&$calls): string {
+            ++$calls;
+
+            return 'hello';
+        });
+
+        $worker->run(0);
+
+        self::assertSame(1, $calls);
+        self::assertTrue($completed);
+    }
+
     public function testShutdownInterruptsAnOutageWithoutAnotherPollOrHeartbeat(): void
     {
         $now = 0.0;
@@ -232,7 +427,7 @@ final class WorkerConnectionRecoveryTest extends TestCase
             new Client('https://server.example', transport: $transport),
             'orders',
             clock: static function () use (&$now): float { return $now; },
-            sleeper: static function (): void { self::fail('A heartbeat must not delay an acquired task.'); },
+            sleeper: static function (int $us) use (&$now): void { $now += $us / 1_000_000; },
             transientPollRetryObserver: static function (string $phase, int $attempt, float $delay) use (&$delays): void {
                 self::assertSame('heartbeat', $phase);
                 $delays[] = $delay;
