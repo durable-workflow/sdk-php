@@ -751,6 +751,7 @@ final class Worker
                 }
 
                 if (!$exception->isTransientConnectionFailure() && !$exception->isTransientUpstreamFailure()
+                    && !PollResponse::isTransientPayloadFailure($exception)
                     && !$databaseUnavailable && !$storageAdmission) {
                     $requestId = 'php-'.$taskKind.'-poll-'.bin2hex(random_bytes(16));
                 }
