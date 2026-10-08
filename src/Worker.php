@@ -998,10 +998,58 @@ final class Worker
                 default => throw new \LogicException("Unsupported polled task kind {$taskKind}."),
             };
         } catch (ServerException $exception) {
+            if ($taskKind === 'activity' && $this->discardClosedActivityAttempt($task, $exception)) {
+                return;
+            }
             if ($taskKind !== 'workflow' || !$this->isTimedOutWorkflowCompletion($task, $exception)) {
                 throw $exception;
             }
         }
+    }
+
+    /** @param array<string, mixed> $task */
+    private function discardClosedActivityAttempt(array $task, ServerException $exception): bool
+    {
+        $taskId = (string) ($task['task_id'] ?? '');
+        $attemptId = (string) ($task['activity_attempt_id'] ?? $task['attempt_id'] ?? '');
+        $owner = (string) ($task['lease_owner'] ?? $this->workerId);
+        $details = $exception->details;
+        if ($taskId === '' || $attemptId === '' || $owner === ''
+            || $exception->status !== 409 || $exception->reason !== 'stale_attempt'
+            || $details === null || array_is_list($details)
+            || ($details['reason'] ?? null) !== 'stale_attempt'
+            || ($details['recorded'] ?? null) !== false
+            || ($details['task_id'] ?? null) !== $taskId
+            || ($details['activity_attempt_id'] ?? null) !== $attemptId
+            || (array_key_exists('lease_owner', $details) && $details['lease_owner'] !== $owner)) {
+            return false;
+        }
+
+        // Server failure acknowledgements prove the refusal with the submitted
+        // task/attempt IDs. Completion replies also include the original owner
+        // and closed state, which must agree before discarding that result.
+        $failureRefusal = ($details['outcome'] ?? null) === 'failed'
+            && !array_key_exists('attempt_status', $details)
+            && !array_key_exists('activity_status', $details)
+            && !array_key_exists('task_status', $details);
+        $closedCompletion = ($details['outcome'] ?? null) === 'completed'
+            && ($details['lease_owner'] ?? null) === $owner
+            && in_array($details['attempt_status'] ?? null, ['failed', 'expired', 'cancelled'], true)
+            && in_array($details['activity_status'] ?? null, ['pending', 'running', 'failed', 'cancelled'], true)
+            && in_array($details['task_status'] ?? null, ['completed', 'cancelled', 'failed'], true);
+        if ((!$failureRefusal && !$closedCompletion)
+            || (array_key_exists('can_continue', $details) && $details['can_continue'] !== false)
+            || (array_key_exists('heartbeat_recorded', $details) && $details['heartbeat_recorded'] !== false)) {
+            return false;
+        }
+
+        $this->diagnostic('worker.claim_aborted', [
+            'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
+            'task_kind' => 'activity', 'reason' => 'stale_attempt',
+            'message' => 'Discarded a late activity outcome after the Server fenced its original attempt.',
+        ], 'warning');
+
+        return true;
     }
 
     /** @param array<string, mixed> $task */
@@ -2016,6 +2064,9 @@ final class Worker
                 ],
             );
         } catch (Throwable $exception) {
+            if ($exception instanceof ServerException && $this->discardClosedActivityAttempt($task, $exception)) {
+                return;
+            }
             if ($this->enableCooperativeCancellation && $exception instanceof WorkflowClaimAborted) {
                 if ($callbackStopped) {
                     $this->acknowledgeStoppedRemoteActivity($taskId, $attemptId, $leaseOwner);
