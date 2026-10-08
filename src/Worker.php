@@ -621,13 +621,14 @@ final class Worker
         $handled = false;
         $workflowPoll = $this->pollWithRetry(
             'workflow',
-            fn (string $requestId): array => $this->client->pollWorkflowTaskResponse(
+            fn (string $requestId, int $timeoutSeconds): array => $this->client->pollWorkflowTaskResponse(
                 $this->workerId,
                 $this->taskQueue,
-                $this->preparePoll($pollTimeoutSeconds),
+                $timeoutSeconds,
                 $requestId,
                 self::WORKFLOW_HISTORY_PAGE_SIZE,
             ),
+            $pollTimeoutSeconds,
         );
         if ($workflowPoll === null) {
             return false;
@@ -651,12 +652,13 @@ final class Worker
 
         $activityPoll = $this->pollWithRetry(
             'activity',
-            fn (string $requestId): array => $this->client->pollActivityTaskResponse(
+            fn (string $requestId, int $timeoutSeconds): array => $this->client->pollActivityTaskResponse(
                 $this->workerId,
                 $this->taskQueue,
-                $this->preparePoll($handled ? 0 : $pollTimeoutSeconds),
+                $timeoutSeconds,
                 $requestId,
             ),
+            $handled ? 0 : $pollTimeoutSeconds,
         );
         if ($activityPoll === null) {
             return $handled;
@@ -679,12 +681,13 @@ final class Worker
 
         $queryPoll = $this->pollWithRetry(
             'query',
-            fn (string $requestId): array => $this->client->pollQueryTaskResponse(
+            fn (string $requestId, int $timeoutSeconds): array => $this->client->pollQueryTaskResponse(
                 $this->workerId,
                 $this->taskQueue,
-                $this->preparePoll($handled ? 0 : $pollTimeoutSeconds),
+                $timeoutSeconds,
                 $requestId,
             ),
+            $handled ? 0 : $pollTimeoutSeconds,
         );
         if ($queryPoll === null) {
             return $handled;
@@ -716,16 +719,21 @@ final class Worker
     }
 
     /**
-     * @param \Closure(string): array<string, mixed> $poll
+     * @param \Closure(string, int): array<string, mixed> $poll
      * @return array<string, mixed>|null
      */
-    private function pollWithRetry(string $taskKind, \Closure $poll): ?array
+    private function pollWithRetry(string $taskKind, \Closure $poll, int $requestedTimeoutSeconds): ?array
     {
         $attempt = 0;
         $requestId = 'php-'.$taskKind.'-poll-'.bin2hex(random_bytes(16));
         while (!$this->shutdownRequested) {
             try {
-                return $poll($requestId);
+                $timeoutSeconds = $this->preparePoll($requestedTimeoutSeconds);
+                if ($this->shutdownRequested) {
+                    return null;
+                }
+
+                return $poll($requestId, $timeoutSeconds);
             } catch (ServerException $exception) {
                 $databaseUnavailable = $this->isTransientDatabaseFailure(
                     $exception,
@@ -2950,6 +2958,7 @@ final class Worker
         ));
     }
 
+    /** @phpstan-impure */
     private function preparePoll(int $requestedTimeoutSeconds): int
     {
         $timeoutSeconds = max(0, min(60, $requestedTimeoutSeconds));
@@ -2969,6 +2978,17 @@ final class Worker
             $this->heartbeat();
         } else {
             $this->heartbeatIfDue();
+        }
+
+        // An idle worker must refresh its existing registration before another
+        // acquisition can race ahead of a failed heartbeat's retry deadline.
+        // This does not run while a task is already being executed, and the
+        // heartbeat API retains the Server's fencing and rollout decisions.
+        while ($this->heartbeatRetryAttempt > 0 && !$this->shutdownRequested) {
+            $this->waitForTransientRetry(max(0.0, $this->heartbeatRetryAt - $this->now()));
+            if ($this->heartbeatRetryAttempt > 0 && !$this->shutdownRequested) {
+                $this->heartbeat();
+            }
         }
 
         return min($timeoutSeconds, max(1, $this->heartbeatIntervalSeconds - 1));

@@ -92,6 +92,12 @@ Do not send a workflow to a queue that has no compatible workflow handler. Inspe
 
 `Worker::run()` registers, negotiates heartbeat cadence, polls workflow/activity/query tasks, renews workflow-task leases, and reports terminal outcomes. Typed transient poll pressure is retried with capped backoff while registration heartbeats and shutdown checks remain responsive.
 
+After a transient registration-heartbeat failure, the managed loop refreshes
+that existing registration before acquiring another task. An already acquired
+task continues without waiting for that retry. Server fencing, stopped and
+draining responses remain authoritative, and the worker does not register again
+to bypass them.
+
 Use `tick()` only when a framework supervisor must own the outer loop:
 
 ```php

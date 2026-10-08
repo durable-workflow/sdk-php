@@ -103,7 +103,7 @@ final class WorkerDatabaseUnavailableTest extends TestCase
 
         self::worker($transport, $now)->run(0);
 
-        self::assertCount(3, $heartbeatTimes);
+        self::assertCount(4, $heartbeatTimes);
         foreach ($heartbeatTimes as $index => $time) {
             self::assertEqualsWithDelta($index + 1.0, $time, 0.00001);
         }

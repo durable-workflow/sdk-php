@@ -255,10 +255,9 @@ final class WorkerUpstreamRecoveryTest extends TestCase
             if (str_ends_with($path, '/heartbeat')) {
                 ++$heartbeats;
 
-                return new Response($status, [], '<html>Heartbeat unavailable</html>');
-            }
-            if (str_ends_with($path, '/workflow-tasks/poll')) {
-                $now += 1.0;
+                return $heartbeats === 1
+                    ? new Response($status, [], '<html>Heartbeat unavailable</html>')
+                    : self::json(['acknowledged' => true]);
             }
             if (str_ends_with($path, '/activity-tasks/poll')) {
                 $now += 1.0;
@@ -279,7 +278,10 @@ final class WorkerUpstreamRecoveryTest extends TestCase
             'orders',
             workerId: 'worker-1',
             clock: static function () use (&$now): float { return $now; },
-            sleeper: static function (): void { self::fail('Heartbeat recovery must not delay a leased task.'); },
+            sleeper: static function (int $us) use (&$now, &$executions): void {
+                self::assertSame(1, $executions, 'Heartbeat recovery must not delay a leased task.');
+                $now += $us / 1_000_000;
+            },
         );
         $worker->registerActivity('greet', static function (ActivityContext $context) use (&$executions): string {
             ++$executions;
