@@ -6,6 +6,16 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.2.6] - 2026-10-08
+
+### Fixed
+
+- Keep workers alive when an external payload download temporarily fails
+  during a workflow, activity or query poll. Recovery preserves the admitted
+  poll request identity and uses the existing observable backoff and worker
+  health checks. Authentication, expired references and payload integrity
+  failures remain errors.
+
 ## [2.1.6] - 2026-09-29
 
 ### Fixed

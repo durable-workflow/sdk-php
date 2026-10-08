@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Worker;
 
+use DurableWorkflow\Exception\ExternalPayloadException;
 use DurableWorkflow\Exception\ServerException;
 
 /** Classifies full worker poll response envelopes using protocol fields. */
@@ -41,7 +42,8 @@ final class PollResponse
      */
     public static function isTransientFailure(ServerException $exception): bool
     {
-        if ($exception->isTransientConnectionFailure() || $exception->isTransientUpstreamFailure()) {
+        if ($exception->isTransientConnectionFailure() || $exception->isTransientUpstreamFailure()
+            || self::isTransientPayloadFailure($exception)) {
             return true;
         }
 
@@ -77,6 +79,22 @@ final class PollResponse
         }
 
         return ($response['retryable'] ?? null) === true;
+    }
+
+    /** Payload hydration may fail after the original poll has already acquired a claim. */
+    public static function isTransientPayloadFailure(ServerException $exception): bool
+    {
+        if (!$exception instanceof ExternalPayloadException
+            || !in_array($exception->status, [502, 503, 504, 520, 521, 522, 523, 524, 530], true)
+            || $exception->reason !== 'external_payload_unavailable') {
+            return false;
+        }
+
+        $response = $exception->details;
+
+        return $response === null || (!array_is_list($response)
+            && ($response['reason'] ?? null) === $exception->reason
+            && (!array_key_exists('retryable', $response) || $response['retryable'] === true));
     }
 
     private function __construct()
