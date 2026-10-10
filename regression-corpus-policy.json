@@ -69,6 +69,15 @@
           ]
         },
         {
+          "glob": "src/Worker/HandlerDefinition.php",
+          "content_patterns": [
+            "function\\s+replaySafe\\s*\\("
+          ]
+        },
+        {
+          "glob": "src/Worker/WorkflowFactory.php"
+        },
+        {
           "glob": "src/Worker.php",
           "content_patterns": [
             "function\\s+completeHistory\\s*\\(",

@@ -163,6 +163,28 @@ final class HandlerResolver
 }
 """
         )
+        (self.root / "src/Worker/HandlerDefinition.php").write_text(
+            """<?php
+final class HandlerDefinition
+{
+    public static function replaySafe(callable $factory): callable
+    {
+        return $factory;
+    }
+}
+"""
+        )
+        (self.root / "src/Worker/WorkflowFactory.php").write_text(
+            """<?php
+final class WorkflowFactory
+{
+    public function create(): object
+    {
+        return ($this->factory)();
+    }
+}
+"""
+        )
         (self.root / "vendor/autoload.php").write_text("<?php\n")
         self.codec_runner = self.root / "codec-runner.py"
         self.codec_runner.write_text(
@@ -2952,6 +2974,16 @@ raise SystemExit(0 if "$history = ['changed'];" in source else 1)
                 self.root / "src/Worker/HandlerResolver.php",
                 "return new $class();",
                 "return clone new $class();",
+            ),
+            "handler replay factory": (
+                self.root / "src/Worker/HandlerDefinition.php",
+                "return $factory;",
+                "return $this->shared;",
+            ),
+            "workflow instance factory": (
+                self.root / "src/Worker/WorkflowFactory.php",
+                "return ($this->factory)();",
+                "return $this->shared;",
             ),
         }
 
