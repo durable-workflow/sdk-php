@@ -18,7 +18,7 @@ use Symfony\Contracts\Service\ServiceProviderInterface;
 final class WorkerFactory
 {
     /**
-     * @param ServiceProviderInterface|iterable<object> $handlers
+     * @param ServiceProviderInterface<object>|iterable<object> $handlers
      */
     public function __construct(
         private readonly ServiceConfiguration $configuration,

@@ -2197,21 +2197,16 @@ print(json.dumps({
         shutil.copytree(REPOSITORY_ROOT / "src", shared_source_root / "src")
         definition_path = shared_source_root / "src/Worker/HandlerDefinition.php"
         definition = definition_path.read_text()
-        replay_safe_resolver = """        return new self(
-            $contract,
-            static function () use ($prototype, $method): Closure {
-                $handler = clone $prototype;
+        method_start = definition.index("    public static function replaySafe(")
+        method_end = definition.index("    public function contract()", method_start)
+        shared_resolver = """    public static function replaySafe(object $prototype, string $method, WorkflowFactory $factory): self
+    {
+        return self::shared([$prototype, $method]);
+    }
 
-                return Closure::fromCallable([$handler, $method]);
-            },
-        );
 """
-        shared_resolver = (
-            "        return new self($contract, static fn (): Closure => $contract);\n"
-        )
-        self.assertIn(replay_safe_resolver, definition)
         definition_path.write_text(
-            definition.replace(replay_safe_resolver, shared_resolver, 1)
+            definition[:method_start] + shared_resolver + definition[method_end:]
         )
 
         defective_shared = self.run_official_php_runner(
