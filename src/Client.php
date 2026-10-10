@@ -141,6 +141,12 @@ final class Client implements WorkflowClientInterface
         return $copy;
     }
 
+    /** @internal Whether lifecycle requests can enforce their complete I/O budget. */
+    public function supportsBoundedWorkerRequests(): bool
+    {
+        return $this->transport instanceof BoundedTransport && $this->transport->supportsBoundedRequests();
+    }
+
     /** Return a new client with the same transport, authentication, and codec for another namespace. */
     public function withNamespace(string $namespace): self
     {
@@ -1332,9 +1338,26 @@ final class Client implements WorkflowClientInterface
     }
 
     /** @return array{worker_id: string, outcome: string, recovered_workflow_task_count: int} */
-    public function deregisterWorkerRegistration(string $workerId): array
+    public function deregisterWorkerRegistration(string $workerId, ?string $registrationToken = null, ?RequestBudget $budget = null): array
     {
-        $response = $this->worker('DELETE', '/worker/registrations/'.$this->segment($workerId));
+        if ($registrationToken !== null && preg_match('/^[a-f0-9]{32}$/D', $registrationToken) !== 1) {
+            throw new InvalidArgumentException('A registration fence must be the token returned by worker registration.');
+        }
+        $client = $budget === null ? $this : $this->withBoundedWorkerRequests();
+        $path = '/worker/registrations/'.$this->segment($workerId);
+        $response = $registrationToken === null
+            ? $client->request('DELETE', $path, true, budget: $budget)
+            : $client->request('POST', $path.'/deregister', true,
+                ['registration_token' => $registrationToken], budget: $budget);
+        if ($registrationToken !== null
+            && (($response['worker_id'] ?? null) !== $workerId
+                || ($response['registration_token'] ?? null) !== $registrationToken
+                || ($response['outcome'] ?? null) !== 'deregistered'
+                || !is_int($response['recovered_workflow_task_count'] ?? null)
+                || $response['recovered_workflow_task_count'] < 0)) {
+            throw new ServerException('The fenced deregistration receipt is invalid.', 200,
+                'invalid_worker_deregistration_receipt', $response);
+        }
 
         /** @var array{worker_id: string, outcome: string, recovered_workflow_task_count: int} $response */
         return $response;
