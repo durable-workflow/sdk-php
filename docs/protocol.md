@@ -94,13 +94,16 @@ interleaved workflow executions cannot consume one another's execution state.
 Generator-returning workflow handlers are not part of the 2.0 service-mode
 contract.
 
-Attribute-discovered workflow entry points, queries, and updates receive a fresh
-shallow clone of the registered workflow handler template for every invocation.
-The template retains constructor-injected collaborators, but mutable properties
-on the workflow handler always begin at their registration-time values. Activity
-handlers are different: the worker invokes the resolved activity service
-instance directly across tasks. Low-level callable registrations likewise keep
-the lifetime and captured state of the callable supplied by the application.
+Attribute-discovered workflow entry points, queries, and updates receive a newly
+constructed handler for every invocation. Class registration uses a fresh
+constructor or transient container resolution. Custom construction uses an
+explicit `WorkflowFactory`; it creates local mutable state while retaining
+configured injected services. Existing workflow objects and singleton workflow
+bindings require a factory migration rather than shallow cloning. Invalid
+factories are rejected before polling, or produce a recoverable replay error if
+they become invalid later. Activity handlers use their resolved service instance
+across tasks. Low-level callable registrations keep the lifetime and captured
+state of the callable supplied by the application.
 
 The runtime fetches all paginated history before replay. Activity handlers can
 heartbeat and observe cancellation. Query handlers receive immutable committed

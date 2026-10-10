@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace DurableWorkflow\Worker;
 
 use Closure;
+use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use Throwable;
 
 /** @internal Retains a handler contract separately from its invocation lifetime. */
 final class HandlerDefinition
@@ -27,14 +29,21 @@ final class HandlerDefinition
         return new self($contract, static fn (): Closure => $contract);
     }
 
-    public static function replaySafe(object $prototype, string $method): self
+    public static function replaySafe(object $prototype, string $method, WorkflowFactory $factory): self
     {
         $contract = Closure::fromCallable([$prototype, $method]);
 
         return new self(
             $contract,
-            static function () use ($prototype, $method): Closure {
-                $handler = clone $prototype;
+            static function () use ($factory, $method): Closure {
+                try {
+                    $handler = $factory->create();
+                } catch (Throwable $exception) {
+                    throw new NonDeterministicWorkflow(
+                        'Workflow instance construction failed: '.$exception->getMessage(),
+                        reason: 'workflow_instance_factory_invalid',
+                    );
+                }
 
                 return Closure::fromCallable([$handler, $method]);
             },

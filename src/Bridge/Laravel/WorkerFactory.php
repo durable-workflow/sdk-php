@@ -8,6 +8,7 @@ use DurableWorkflow\Bridge\Event\WorkerDiagnosticEvent;
 use DurableWorkflow\Bridge\ServiceConfiguration;
 use DurableWorkflow\Client;
 use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\WorkflowFactory;
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Contracts\Events\Dispatcher;
 use InvalidArgumentException;
@@ -64,7 +65,7 @@ final class WorkerFactory
 
         $handlers = [];
         foreach ($this->configuration->handlers as $handler) {
-            $handlers[] = $this->container->make($handler);
+            $handlers[] = new WorkflowFactory(fn (): object => $this->container->make($handler));
         }
 
         return $worker->register(...$handlers);

@@ -434,20 +434,50 @@ Worker::create($client, 'php-workers')
     ->run();
 ```
 
-`register()` resolves class names once and validates every attributed method
+`register()` resolves class names and validates every attributed method
 before registration or polling. With no container, concrete classes with no
 required constructor arguments are instantiated automatically. Pass any PSR-11
 `ContainerInterface` as the third argument to `Worker::create()` when handlers
 have application dependencies.
 
-Attributed workflow classes have a replay-scoped lifecycle. Registration
-captures a clean handler template, then each workflow task replay, query, and
-update runs on a fresh shallow clone. Mutable properties on the workflow object
-therefore cannot cross workflow IDs, runs, or replay attempts, while
-constructor-injected collaborators retain their configured identity. Keep
-workflow-local mutable state directly on the handler; injected collaborators
-are shared services and must not be used to hold execution-local state.
-Workflow handler classes must remain cloneable.
+Attributed workflow classes have a replay-scoped lifecycle. Each workflow task
+replay, query, and update constructs a new handler. Constructor-created nested
+state belongs to that invocation, including mutable objects held by readonly
+properties. Constructors and container factories must be free of external side
+effects because construction repeats during replay. Perform side effects in
+activities.
+
+With a PSR-11 container, workflow bindings must return a new instance on every
+resolution. Dependencies such as API clients, loggers, and configuration may
+remain shared. Laravel's bridge resolves workflows for each invocation. The
+Symfony bridge makes attributed workflow services non-shared while retaining
+their dependencies' configured lifetimes.
+
+Use `WorkflowFactory` for custom construction or a container that exposes only
+singleton workflow services:
+
+```php
+use DurableWorkflow\Worker\WorkflowFactory;
+
+$sharedClient = $container->get(ApplicationApiClient::class);
+$worker->register(new WorkflowFactory(
+    static fn (): OrderWorkflow => new OrderWorkflow($sharedClient),
+));
+```
+
+Create execution-local state inside the workflow constructor or factory. Do not
+capture a mutable workflow-state object outside the factory and share it among
+the new handlers. Injected services retain their identity and must not hold
+execution-local state.
+
+**Registration migration:** replace `register($workflowObject)` with class
+registration or `register(new WorkflowFactory(fn () => new YourWorkflow($dependencies)))`.
+The SDK cannot infer a configured object's construction recipe or distinguish
+its nested state from shared services. Reused factory results and singleton
+workflow bindings fail validation before polling. A factory that becomes invalid
+after startup produces a recoverable `workflow_instance_factory_invalid` replay
+error instead of a terminal workflow completion or failure. Workflow classes no
+longer need to be cloneable.
 
 Activity services have worker-scoped lifetimes instead: their resolved instance
 is reused for activity tasks, so they can retain clients and other service

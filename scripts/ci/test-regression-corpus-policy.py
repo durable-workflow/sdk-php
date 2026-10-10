@@ -163,6 +163,28 @@ final class HandlerResolver
 }
 """
         )
+        (self.root / "src/Worker/HandlerDefinition.php").write_text(
+            """<?php
+final class HandlerDefinition
+{
+    public static function replaySafe(callable $factory): callable
+    {
+        return $factory;
+    }
+}
+"""
+        )
+        (self.root / "src/Worker/WorkflowFactory.php").write_text(
+            """<?php
+final class WorkflowFactory
+{
+    public function create(): object
+    {
+        return ($this->factory)();
+    }
+}
+"""
+        )
         (self.root / "vendor/autoload.php").write_text("<?php\n")
         self.codec_runner = self.root / "codec-runner.py"
         self.codec_runner.write_text(
@@ -2197,21 +2219,16 @@ print(json.dumps({
         shutil.copytree(REPOSITORY_ROOT / "src", shared_source_root / "src")
         definition_path = shared_source_root / "src/Worker/HandlerDefinition.php"
         definition = definition_path.read_text()
-        replay_safe_resolver = """        return new self(
-            $contract,
-            static function () use ($prototype, $method): Closure {
-                $handler = clone $prototype;
+        method_start = definition.index("    public static function replaySafe(")
+        method_end = definition.index("    public function contract()", method_start)
+        shared_resolver = """    public static function replaySafe(object $prototype, string $method, WorkflowFactory $factory): self
+    {
+        return self::shared([$prototype, $method]);
+    }
 
-                return Closure::fromCallable([$handler, $method]);
-            },
-        );
 """
-        shared_resolver = (
-            "        return new self($contract, static fn (): Closure => $contract);\n"
-        )
-        self.assertIn(replay_safe_resolver, definition)
         definition_path.write_text(
-            definition.replace(replay_safe_resolver, shared_resolver, 1)
+            definition[:method_start] + shared_resolver + definition[method_end:]
         )
 
         defective_shared = self.run_official_php_runner(
@@ -2957,6 +2974,16 @@ raise SystemExit(0 if "$history = ['changed'];" in source else 1)
                 self.root / "src/Worker/HandlerResolver.php",
                 "return new $class();",
                 "return clone new $class();",
+            ),
+            "handler replay factory": (
+                self.root / "src/Worker/HandlerDefinition.php",
+                "return $factory;",
+                "return $this->shared;",
+            ),
+            "workflow instance factory": (
+                self.root / "src/Worker/WorkflowFactory.php",
+                "return ($this->factory)();",
+                "return $this->shared;",
             ),
         }
 
