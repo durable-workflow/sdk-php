@@ -47,6 +47,20 @@ $worker->requestShutdown();
 
 Keep the poll timeout short enough for the process to notice shutdown while still avoiding a busy loop.
 
+## Deregistration retries
+
+With a Server that advertises `worker_deregistration_fencing`, the worker captures
+its registration token and uses it when deregistering. Temporary connection or
+database contention can be retried within one ten-second budget covering requests
+and backoff. A completed receipt is replayed without removing a replacement worker.
+Any remaining cancellation deadline also limits this budget.
+
+Retries require bounded transport I/O. The default Guzzle transport supports it
+when `ext-curl` is installed. Custom unbounded transports make one fenced attempt
+and emit `worker.shutdown_retry_unavailable`. Older Servers retain one legacy
+deregistration attempt. Persistent failures emit `worker.shutdown_failed` and
+remain failures. An earlier worker error retains precedence.
+
 ## Rolling deployment sequence
 
 1. Start the new compatible worker pool.

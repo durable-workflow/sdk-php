@@ -73,6 +73,7 @@ final class Worker
     private array $updates = [];
     private bool $shutdownRequested = false;
     private bool $registered = false;
+    private ?string $registrationToken = null;
     private bool $pollSweepRequested = false;
     private float $lastHeartbeatAt = 0.0;
     private float $heartbeatRetryAt = 0.0;
@@ -347,6 +348,7 @@ final class Worker
                 return;
             }
             $this->applyHeartbeatInterval($registration);
+            $this->captureRegistrationFence($registration);
             $this->registered = true;
             $this->lastHeartbeatAt = $this->now();
             $this->diagnostic('worker.registered', [
@@ -372,7 +374,7 @@ final class Worker
             $this->stickyCache->clear();
             if ($this->registered) {
                 try {
-                    $this->client->deregisterWorkerRegistration($this->workerId);
+                    $this->deregisterWithRetry();
                     $this->registered = false;
                     $this->diagnostic('worker.deregistered', ['worker_id' => $this->workerId]);
                 } catch (Throwable $exception) {
@@ -390,6 +392,100 @@ final class Worker
                 'task_queue' => $this->taskQueue,
             ]);
         }
+    }
+
+    /** @param array<string, mixed> $registration */
+    private function captureRegistrationFence(array $registration): void
+    {
+        $capabilities = $registration['server_capabilities'] ?? [];
+        $token = $registration['registration_token'] ?? null;
+        if (!is_array($capabilities)) {
+            throw new ServerException('The worker registration fencing contract is invalid.', 201,
+                'invalid_worker_registration_fence');
+        }
+        $capability = $capabilities['worker_deregistration_fencing'] ?? null;
+        if (($capability === null || (is_array($capability) && ($capability['supported'] ?? null) === false))
+            && $token === null) {
+            $this->registrationToken = null;
+            return;
+        }
+        if (!is_array($capability) || array_is_list($capability)
+            || ($capability['schema'] ?? null) !== 'durable-workflow.v2.worker-deregistration.v1'
+            || ($capability['supported'] ?? null) !== true
+            || ($capability['endpoint'] ?? null) !== '/worker/registrations/{workerId}/deregister'
+            || ($capability['receipt_retention_seconds'] ?? null) !== 600
+            || !is_string($token) || preg_match('/^[a-f0-9]{32}$/D', $token) !== 1) {
+            throw new ServerException('The worker registration fencing contract is invalid.', 201,
+                'invalid_worker_registration_fence');
+        }
+        $this->registrationToken = $token;
+    }
+
+    private function deregisterWithRetry(): void
+    {
+        if ($this->registrationToken === null) {
+            $this->client->deregisterWorkerRegistration($this->workerId);
+            return;
+        }
+        if (!$this->client->supportsBoundedWorkerRequests()) {
+            $this->diagnostic('worker.shutdown_retry_unavailable', [
+                'worker_id' => $this->workerId, 'reason' => 'unbounded_transport',
+            ], 'warning');
+            $this->client->deregisterWorkerRegistration($this->workerId, $this->registrationToken);
+            return;
+        }
+
+        $budget = new RequestBudget(10, hrtime(true) / 1e9 + 10);
+        $deadline = $this->now() + 10;
+        if ($this->claimCancellation !== null) {
+            $authority = new \DateTimeImmutable($this->claimCancellation->cleanupDeadlineAt);
+            $budget->restrictWallAuthorityDeadline($authority);
+            $deadline = min($deadline, (float) $authority->format('U.u'));
+        }
+        for ($attempt = 1; ; ++$attempt) {
+            $budget->remainingSeconds();
+            try {
+                $this->client->deregisterWorkerRegistration($this->workerId, $this->registrationToken, $budget);
+                return;
+            } catch (ServerException $error) {
+                if (!$this->isTransientDeregistrationFailure($error) || $this->now() >= $deadline) {
+                    throw $error;
+                }
+                $delay = max(min(5.0, 0.1 * (2 ** min($attempt - 1, 6))),
+                    (float) ($error->details['retry_after_seconds'] ?? 0));
+                if ($this->now() + $delay >= $deadline) {
+                    $this->diagnostic('worker.shutdown_budget_expired', ['worker_id' => $this->workerId,
+                        'attempt' => $attempt, 'exception' => $error], 'error');
+                    throw $error;
+                }
+                $this->diagnostic('worker.retrying', ['worker_id' => $this->workerId,
+                    'operation' => 'deregister_worker', 'attempt' => $attempt,
+                    'delay_seconds' => $delay, 'exception' => $error], 'warning');
+                $wake = $this->now() + $delay;
+                while ($this->now() < $wake) {
+                    $budget->remainingSeconds();
+                    ($this->sleeper)((int) ceil(min(0.1, $wake - $this->now()) * 1_000_000));
+                }
+            }
+        }
+    }
+
+    private function isTransientDeregistrationFailure(ServerException $error): bool
+    {
+        if ($error->isTransientConnectionFailure() || $error->isTransientUpstreamFailure()) {
+            return true;
+        }
+        $reply = $error->details;
+        return $error->status === 503
+            && in_array($error->reason, ['backend_lock_pressure', 'backend_unavailable'], true)
+            && $reply !== null && !array_is_list($reply)
+            && ($reply['reason'] ?? null) === $error->reason
+            && ($reply['operation'] ?? null) === 'deregister_worker'
+            && ($reply['worker_id'] ?? null) === $this->workerId
+            && ($reply['registration_token'] ?? null) === $this->registrationToken
+            && ($reply['outcome'] ?? null) === 'unknown'
+            && ($reply['retryable'] ?? null) === true
+            && is_int($reply['retry_after_seconds'] ?? null) && $reply['retry_after_seconds'] > 0;
     }
 
     /** Validate every registered command contract without contacting the server. */
