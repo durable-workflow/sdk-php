@@ -43,16 +43,28 @@ final class LaravelInjectedApplicationService
     }
 }
 
+final class LaravelWorkflowState
+{
+    public int $invocations = 0;
+}
+
 final class LaravelGreetingWorkflow
 {
+    private readonly LaravelWorkflowState $state;
+    public static ?LaravelGreetingPrefix $expectedDependency = null;
+
     public function __construct(private readonly LaravelGreetingPrefix $prefix)
     {
+        $this->state = new LaravelWorkflowState();
     }
 
     /** @return array{primary: string, secondary: string} */
     #[Workflow('laravel.greeting')]
     public function workflow(WorkflowContext $context, string $name): array
     {
+        if (++$this->state->invocations !== 1 || $this->prefix !== self::$expectedDependency) {
+            throw new RuntimeException('Laravel must reconstruct local nested state and retain the shared dependency identity.');
+        }
         if ($this->prefix->value === '') {
             throw new RuntimeException('Laravel did not inject the workflow application dependency.');
         }
@@ -215,6 +227,7 @@ $values = [
 $app = new Application(sys_get_temp_dir().'/durable-workflow-laravel-compat');
 $app->instance('config', new Repository(['durable-workflow' => $values]));
 $app->instance(LaravelGreetingPrefix::class, new LaravelGreetingPrefix('hello from Laravel'));
+LaravelGreetingWorkflow::$expectedDependency = $app->make(LaravelGreetingPrefix::class);
 $events = new Dispatcher($app);
 $diagnostics = [];
 $events->listen(WorkerDiagnosticEvent::class, static function (WorkerDiagnosticEvent $event) use (&$diagnostics): void {

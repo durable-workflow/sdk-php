@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Bridge\Symfony\DependencyInjection;
 
+use DurableWorkflow\Attribute\Workflow;
 use DurableWorkflow\Bridge\ServiceConfiguration;
 use DurableWorkflow\Bridge\Symfony\WorkerCommand;
 use DurableWorkflow\Bridge\Symfony\WorkerFactory;
 use DurableWorkflow\Client;
 use DurableWorkflow\WorkflowClientInterface;
 use Psr\Log\LoggerInterface;
+use Symfony\Component\DependencyInjection\Argument\ServiceLocatorArgument;
 use Symfony\Component\DependencyInjection\Argument\TaggedIteratorArgument;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Extension\Extension;
@@ -47,14 +49,24 @@ final class DurableWorkflowExtension extends Extension
                     ->setAutowired(true)
                     ->setAutoconfigured(true);
             }
-            $container->findDefinition($handler)->addTag(self::HANDLER_TAG);
+            $definition = $container->findDefinition($handler);
+            $definition->addTag(self::HANDLER_TAG);
+            $class = $definition->getClass() ?? $handler;
+            if (class_exists($class)) {
+                foreach ((new \ReflectionClass($class))->getMethods() as $method) {
+                    if ($method->getAttributes(Workflow::class) !== []) {
+                        $definition->setShared(false);
+                        break;
+                    }
+                }
+            }
         }
 
         $container->register(WorkerFactory::class, WorkerFactory::class)
             ->setArguments([
                 new Reference(ServiceConfiguration::class),
                 new Reference(self::WORKER_CLIENT_SERVICE),
-                new TaggedIteratorArgument(self::HANDLER_TAG),
+                new ServiceLocatorArgument(new TaggedIteratorArgument(self::HANDLER_TAG, needsIndexes: true)),
                 new Reference(LoggerInterface::class, ContainerBuilder::NULL_ON_INVALID_REFERENCE),
                 new Reference(EventDispatcherInterface::class, ContainerBuilder::NULL_ON_INVALID_REFERENCE),
             ])

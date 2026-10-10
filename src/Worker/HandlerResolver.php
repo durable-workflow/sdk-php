@@ -58,7 +58,7 @@ final class HandlerResolver
         if ($constructor !== null && $constructor->getNumberOfRequiredParameters() > 0) {
             throw new InvalidWorkerDefinition(
                 $class.'::__construct()',
-                'Pass a PSR-11 container to Worker::create() to resolve constructor dependencies, or register an object instance.',
+                'Pass a PSR-11 container to Worker::create() to resolve constructor dependencies, or register a WorkflowFactory for workflows and an object instance for activities.',
             );
         }
 

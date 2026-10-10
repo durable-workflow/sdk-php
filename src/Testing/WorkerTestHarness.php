@@ -31,6 +31,7 @@ final class WorkerTestHarness
      * @param list<mixed> $input
      * @param list<array<string, mixed>> $history
      * @param array<string, mixed> $task
+     * @phpstan-impure
      */
     public function runWorkflow(
         string $workflowType,
@@ -47,7 +48,10 @@ final class WorkerTestHarness
         );
     }
 
-    /** @param list<mixed> $arguments */
+    /**
+     * @param list<mixed> $arguments
+     * @phpstan-impure
+     */
     public function runActivity(string $activityType, array $arguments = []): mixed
     {
         $context = new ActivityContext(
@@ -65,6 +69,7 @@ final class WorkerTestHarness
     /**
      * @param list<mixed> $arguments
      * @param list<array<string, mixed>> $history
+     * @phpstan-impure
      */
     public function runQuery(
         string $workflowType,
@@ -81,6 +86,7 @@ final class WorkerTestHarness
     /**
      * @param list<mixed> $arguments
      * @param list<array<string, mixed>> $history
+     * @phpstan-impure
      */
     public function runUpdate(
         string $workflowType,
