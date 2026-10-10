@@ -22,6 +22,16 @@ use Psr\Container\ContainerInterface;
 
 final class WorkflowHandlerLifetimeTest extends TestCase
 {
+    public function testConstructorCreatedNestedStateIsFreshAcrossExecutionsReplayQueriesAndUpdates(): void
+    {
+        $worker = Worker::create(
+            new Client('https://server.example', transport: new FakeTransport()),
+            'php-workers',
+        )->register(NestedStateWorkflow::class);
+
+        $this->assertReplaySafeLifetime($worker, 'nested-state', 'step-1');
+    }
+
     public function testNoContainerWorkflowStateIsFreshAcrossExecutionsAndReplay(): void
     {
         $worker = Worker::create(
@@ -187,6 +197,38 @@ final class WorkflowStepPrefix
 {
     public function __construct(public readonly string $value)
     {
+    }
+}
+
+final class NestedStateWorkflow
+{
+    private readonly object $state;
+
+    public function __construct(private readonly ?WorkflowStepPrefix $prefix = null)
+    {
+        $this->state = (object) ['replays' => 0];
+    }
+
+    #[Workflow('nested-state')]
+    public function run(WorkflowContext $context): array
+    {
+        ++$this->state->replays;
+        $prefix = $this->prefix === null ? '' : "{$this->prefix->value}-";
+        $result = $context->activity("{$prefix}step-{$this->state->replays}");
+
+        return ['replays' => $this->state->replays, 'result' => $result];
+    }
+
+    #[Query('state')]
+    public function state(QueryContext $context): int
+    {
+        return $this->state->replays;
+    }
+
+    #[Update('increment')]
+    public function increment(QueryContext $context, int $amount = 1): int
+    {
+        return $this->state->replays += $amount;
     }
 }
 
