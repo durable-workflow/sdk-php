@@ -6,6 +6,18 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.2.7] - 2026-10-11
+
+### Fixed
+
+- Recover orderly worker shutdown from temporary backend pressure when Server
+  advertises fenced deregistration. Requests and retries share one bounded
+  shutdown budget and preserve the original registration identity. A replayed
+  receipt cannot remove a replacement registration. Persistent shutdown
+  failures remain visible without replacing an earlier worker error.
+- Keep the existing single-attempt shutdown on older Servers. Custom transports
+  without bounded I/O make one fenced attempt and report why retry is unavailable.
+
 ## [2.2.6] - 2026-10-08
 
 ### Fixed
