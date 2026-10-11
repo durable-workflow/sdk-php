@@ -16,6 +16,11 @@ on:
       - 'package-lock.json'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
+    inputs:
+      stable_tag:
+        description: 'Published stable SDK tag to deploy, or empty for current main'
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -30,7 +35,18 @@ jobs:
     outputs:
       stable: ${{ steps.release-channel.outputs.stable }}
     steps:
+      - name: Validate the selected stable tag
+        if: inputs.stable_tag != ''
+        env:
+          STABLE_TAG: ${{ inputs.stable_tag }}
+        run: |
+          if [[ ! "$STABLE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo 'stable_tag must name an exact stable SDK version' >&2
+            exit 1
+          fi
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ inputs.stable_tag != '' && format('refs/tags/{0}', inputs.stable_tag) || github.sha }}
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: '8.3'
@@ -38,8 +54,16 @@ jobs:
           coverage: none
       - name: Resolve the public documentation release channel
         id: release-channel
+        env:
+          STABLE_TAG: ${{ inputs.stable_tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           version=$(php -r '$manifest = json_decode(file_get_contents("composer.json"), true, flags: JSON_THROW_ON_ERROR); echo $manifest["extra"]["durable-workflow"]["product-train"];')
+          if [ -n "$STABLE_TAG" ]; then
+            test "$version" = "$STABLE_TAG"
+            test "$(git describe --tags --exact-match HEAD)" = "$STABLE_TAG"
+            test "$(gh release view "$STABLE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq '(.isDraft == false and .isPrerelease == false)')" = true
+          fi
           if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo stable=true >> "$GITHUB_OUTPUT"
           else
@@ -93,9 +117,8 @@ jobs:
       - name: Check portal and API layouts in Chromium
         run: npm run check:docs-browser
       - name: Bind Pages artifact to the exact source revision
-        env:
-          SOURCE_REVISION: ${{ github.sha }}
         run: |
+          SOURCE_REVISION=$(git rev-parse HEAD)
           if ! printf '%s' "$SOURCE_REVISION" | grep -Eq '^[a-f0-9]{40}$'; then
             echo 'SOURCE_REVISION must be an exact lowercase commit SHA' >&2
             exit 1
