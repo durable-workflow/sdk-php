@@ -11,6 +11,16 @@ on:
         description: Exact qualified Server version declared by the published SDK
         required: true
         type: string
+      cooperative_server_image:
+        description: Optional immutable published Server image for worker-only cooperative discovery
+        required: false
+        type: string
+        default: ''
+      cooperative_server_version:
+        description: Exact Server version represented by the cooperative image
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -47,6 +57,7 @@ jobs:
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: '8.3'
+          extensions: pcntl, posix
           tools: composer:v2
           coverage: none
 
@@ -241,10 +252,47 @@ jobs:
             exit "$worker_status"
           fi
 
+      - name: Check out only the smoke runner
+        if: inputs.cooperative_server_image != ''
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify published cooperative discovery with a scoped worker token
+        if: inputs.cooperative_server_image != ''
+        env:
+          SDK_VERSION: ${{ inputs.sdk_version }}
+          COOPERATIVE_SERVER_IMAGE: ${{ inputs.cooperative_server_image }}
+          COOPERATIVE_SERVER_VERSION: ${{ inputs.cooperative_server_version }}
+        run: |
+          set -euo pipefail
+          [[ "$COOPERATIVE_SERVER_IMAGE" =~ ^durableworkflow/server@sha256:[0-9a-f]{64}$ ]]
+          [[ "$COOPERATIVE_SERVER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          docker pull "$COOPERATIVE_SERVER_IMAGE"
+          docker run --detach --name published-sdk-cooperative-runtime \
+            --user 1000:1000 --publish 127.0.0.1:8081:8080 \
+            --env DB_CONNECTION=sqlite --env CACHE_STORE=file \
+            --env DW_SERVER_KEY=base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+            --env DW_OPERATOR_TOKEN="$DURABLE_WORKFLOW_CLIENT_TOKEN" \
+            --env DW_WORKER_TOKEN="$DURABLE_WORKFLOW_WORKER_TOKEN" \
+            --env DW_ADMIN_TOKEN=published-smoke-admin \
+            --env DW_TASK_DISPATCH_MODE=poll --env DW_WORKER_POLL_TIMEOUT=1 \
+            "$COOPERATIVE_SERVER_IMAGE"
+          docker exec --user 1000:1000 published-sdk-cooperative-runtime server-bootstrap
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8081/api/ready > /dev/null; then break; fi
+            sleep 2
+          done
+          curl --fail --silent http://127.0.0.1:8081/api/ready > /dev/null
+          consumer="$(cat "$RUNNER_TEMP/service-mode-consumer")"
+          php tests/smoke/cooperative-worker-credentials.php "$consumer/vendor/autoload.php"
+
       - name: Show runtime diagnostics on failure
         if: failure()
-        run: docker logs --tail 100 published-sdk-runtime || true
+        run: |
+          docker logs --tail 100 published-sdk-runtime || true
+          docker logs --tail 100 published-sdk-cooperative-runtime || true
 
       - name: Remove the disposable runtime
         if: always()
-        run: docker rm --force --volumes published-sdk-runtime || true
+        run: docker rm --force --volumes published-sdk-runtime published-sdk-cooperative-runtime || true
