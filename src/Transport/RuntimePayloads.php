@@ -45,7 +45,7 @@ final class RuntimePayloads
                 && is_array($response['output_payload_reference'] ?? null)) {
                 // Keep the opaque reference while hydrating only the authorized
                 // terminal output of this exact call, never arbitrary metadata.
-                $response['output_envelope'] = $response['output_payload_reference'];
+                $response['output_envelope'] = ['codec' => 'avro', 'external_payload' => $response['output_payload_reference']];
             }
             foreach (['input_envelope', 'output_envelope', 'result_envelope'] as $field) {
                 $paths[] = [$field];
