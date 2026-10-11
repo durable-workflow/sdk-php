@@ -232,9 +232,9 @@ final class Client implements WorkflowClientInterface
     {
         $response = $this->serviceCatalogRead('/service-catalog/calls', id: $callId);
         if (($response['payloads_in_observer_namespace'] ?? null) === true) {
-            $response['output_available'] = is_array($response['output_envelope'] ?? null);
+            $response['output_available'] = is_array($response['result_envelope'] ?? null);
             $response['output'] = $response['output_available']
-                ? $this->decodedResponsePayload($response, 'output')
+                ? $this->decodedResponsePayload($response, 'result')
                 : null;
         }
 
