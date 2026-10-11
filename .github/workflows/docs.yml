@@ -21,6 +21,10 @@ on:
         description: 'Published stable SDK tag to deploy, or empty for current main'
         type: string
         required: false
+      stable_source:
+        description: 'Optional exact main commit with docs fixes and identical published SDK code'
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -39,14 +43,23 @@ jobs:
         if: inputs.stable_tag != ''
         env:
           STABLE_TAG: ${{ inputs.stable_tag }}
+          STABLE_SOURCE: ${{ inputs.stable_source }}
         run: |
           if [[ ! "$STABLE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo 'stable_tag must name an exact stable SDK version' >&2
             exit 1
           fi
+          if [ -n "$STABLE_SOURCE" ] && [[ ! "$STABLE_SOURCE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'stable_source must be an exact lowercase source commit' >&2
+            exit 1
+          fi
+      - name: Require a stable tag for a documentation source override
+        if: inputs.stable_source != '' && inputs.stable_tag == ''
+        run: exit 1
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
-          ref: ${{ inputs.stable_tag != '' && format('refs/tags/{0}', inputs.stable_tag) || github.sha }}
+          ref: ${{ inputs.stable_source || (inputs.stable_tag != '' && format('refs/tags/{0}', inputs.stable_tag)) || github.sha }}
+          fetch-depth: 0
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: '8.3'
@@ -56,13 +69,30 @@ jobs:
         id: release-channel
         env:
           STABLE_TAG: ${{ inputs.stable_tag }}
+          STABLE_SOURCE: ${{ inputs.stable_source }}
           GH_TOKEN: ${{ github.token }}
         run: |
           version=$(php -r '$manifest = json_decode(file_get_contents("composer.json"), true, flags: JSON_THROW_ON_ERROR); echo $manifest["extra"]["durable-workflow"]["product-train"];')
           if [ -n "$STABLE_TAG" ]; then
             test "$version" = "$STABLE_TAG"
-            test "$(git describe --tags --exact-match HEAD)" = "$STABLE_TAG"
             test "$(gh release view "$STABLE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq '(.isDraft == false and .isPrerelease == false)')" = true
+            if [ -z "$STABLE_SOURCE" ]; then
+              test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$STABLE_TAG^{commit}")"
+            else
+              test "$(git rev-parse HEAD)" = "$STABLE_SOURCE"
+              git merge-base --is-ancestor HEAD origin/main
+              git diff --exit-code "refs/tags/$STABLE_TAG" HEAD -- src examples resources config
+              git show "refs/tags/$STABLE_TAG:composer.json" > "$RUNNER_TEMP/published-sdk-composer.json"
+              PUBLISHED_MANIFEST="$RUNNER_TEMP/published-sdk-composer.json" php <<'PHP'
+          <?php
+          $published = json_decode(file_get_contents(getenv('PUBLISHED_MANIFEST')), true, flags: JSON_THROW_ON_ERROR);
+          $selected = json_decode(file_get_contents('composer.json'), true, flags: JSON_THROW_ON_ERROR);
+          unset($published['extra']['durable-workflow']['product-train'], $selected['extra']['durable-workflow']['product-train']);
+          if ($published !== $selected) {
+              throw new RuntimeException('Selected documentation source changes the published package manifest.');
+          }
+          PHP
+            fi
           fi
           if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo stable=true >> "$GITHUB_OUTPUT"
