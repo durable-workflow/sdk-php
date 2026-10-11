@@ -8,6 +8,8 @@ use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
+use DurableWorkflow\Model\ServiceOperationOptions;
+use DurableWorkflow\Model\ServiceOperationResult;
 use Closure;
 use DateTimeImmutable;
 use Fiber;
@@ -25,6 +27,40 @@ final class WorkflowContext
 
     public const MAX_PARALLEL_OPERATIONS = 1000;
 
+    /**
+     * Call a registered service through a durable workflow command, without HTTP in workflow code.
+     * The default waits for completion. Set wait_for=accepted to receive the original acceptance.
+     *
+     * @param array<string, mixed>|ServiceOperationOptions $options
+     */
+    public function serviceOperation(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        mixed $request = null,
+        array|ServiceOperationOptions $options = [],
+    ): ServiceOperationResult {
+        $this->assertActiveFiber();
+        if ($this->isCapturing() || $this->cancellationScopeId !== 'root') {
+            throw new WorkflowClaimAborted('service_operation_authoring_not_supported: call sequentially outside cancellation scopes and operation groups.');
+        }
+        $options = $options instanceof ServiceOperationOptions ? $options->toArray() : $options;
+        $ordinal = $this->serviceOperationOrdinal++;
+        $options['idempotency_key'] ??= 'php-service-operation:'.hash('sha256', $this->codec->encode([
+            $this->workflowId, $this->runId, $ordinal,
+            $endpointName, $serviceName, $operationName, $request,
+        ]));
+        $result = $this->suspend(WorkflowCommand::serviceOperation(
+            $endpointName, $serviceName, $operationName, $request,
+            $options,
+        ));
+        if (!$result instanceof ServiceOperationResult) {
+            throw new WorkflowClaimAborted('service_operation_result_missing: the original call has no recorded outcome.');
+        }
+
+        return $result;
+    }
+
     private const MIN_VERSION = -2_147_483_648;
 
     private const MAX_VERSION = 2_147_483_647;
@@ -33,6 +69,7 @@ final class WorkflowContext
     private readonly ?Fiber $execution;
 
     private int $workflowStreamCommandOrdinal = 0;
+    private int $serviceOperationOrdinal = 0;
 
     private int $cancellationShieldDepth = 0;
 

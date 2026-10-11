@@ -669,6 +669,9 @@ final class Replayer
                     throw new NonDeterministicWorkflow('Recorded result belongs to a different authored call.', $nextSequence);
                 }
                 $this->assertCommandMatchesStep($suspended, $step);
+                if ($step['value'] instanceof ServiceOperationHistory) {
+                    $step = array_replace($step, $step['value']->delivery($suspended));
+                }
                 if ($step['parallel_path'] !== []) {
                     throw new NonDeterministicWorkflow(
                         'Recorded parallel-group history was replaced by a sequential workflow operation.',
@@ -1198,6 +1201,13 @@ final class Replayer
             };
             $key = (string) $sequence;
 
+            $incomingShape = $this->historyEventShape($type, $payload);
+            if (($steps[$key]['shape'] ?? null) === 'service_operation'
+                && $incomingShape !== null && $incomingShape !== 'service_operation') {
+                throw new NonDeterministicWorkflow('Service call collides with another durable command.', $sequence,
+                    reason: 'durable_command_sequence_collision');
+            }
+
             if ($type !== 'CancellationScopeOpened' && isset($scopes->openings[$sequence])
                 && $this->historyEventShape($type, $payload) !== null) {
                 throw new NonDeterministicWorkflow('Scope opening collides with another durable command.', $sequence,
@@ -1270,7 +1280,17 @@ final class Replayer
                 );
             }
 
-            if ($type === 'CancellationScopeOpened') {
+            if (in_array($type, ['ServiceCallStarted', 'ServiceCallCompleted', 'ServiceCallFailed', 'ServiceCallCancelled'], true)) {
+                if (isset($steps[$key]) && $steps[$key]['shape'] !== 'service_operation') {
+                    throw new NonDeterministicWorkflow('Service call collides with another durable command.', $sequence,
+                        reason: 'durable_command_sequence_collision');
+                }
+                $steps[$key] ??= $this->step($sequence, 'service_operation');
+                $delivery = $steps[$key]['value'] instanceof ServiceOperationHistory
+                    ? $steps[$key]['value'] : new ServiceOperationHistory($this->codec, $sequence);
+                $delivery->record($type, $payload, $resolutionOrder);
+                $steps[$key]['value'] = $delivery;
+            } elseif ($type === 'CancellationScopeOpened') {
                 if (isset($steps[$key])) {
                     throw new NonDeterministicWorkflow('Scope opening collides with another durable command.', $sequence, reason: 'durable_command_sequence_collision');
                 }
@@ -2314,6 +2334,9 @@ final class Replayer
     /** @param array<string, mixed> $step */
     private function assertCommandMatchesStep(WorkflowCommand $command, array $step): void
     {
+        if ($step['value'] instanceof ServiceOperationHistory) {
+            $step['value']->assertIntent($command);
+        }
         if (($command->attributes['cancellation_cleanup'] ?? null) != ($step['cancellation_cleanup'] ?? null)) {
             throw new NonDeterministicWorkflow('Cleanup timer changed its original delivery or shielding.', $step['sequence'],
                 reason: 'cancellation_scope_cleanup_authority_mismatch');
@@ -2753,6 +2776,9 @@ final class Replayer
     /** @param array<string, mixed> $payload */
     private function historyEventShape(string $type, array $payload): ?string
     {
+        if (in_array($type, ['ServiceCallStarted', 'ServiceCallCompleted', 'ServiceCallFailed', 'ServiceCallCancelled'], true)) {
+            return 'service_operation';
+        }
         if (str_starts_with($type, 'Activity')) {
             return 'activity';
         }

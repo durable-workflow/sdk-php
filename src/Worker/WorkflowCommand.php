@@ -99,6 +99,46 @@ final class WorkflowCommand
         return new self('start_timer', 'timer', ['delay_seconds' => max(0, $seconds)]);
     }
 
+    /** @param array<string, mixed> $options */
+    public static function serviceOperation(
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        mixed $request,
+        array $options = [],
+    ): self {
+        foreach ([$endpointName, $serviceName, $operationName] as $name) {
+            if (trim($name) === '') {
+                throw new InvalidArgumentException('Service endpoint, service and operation names must be non-empty.');
+            }
+        }
+        $allowed = ['namespace', 'mode_override', 'wait_for', 'wait_timeout_seconds', 'idempotency_key',
+            'target_workflow_instance_id', 'target_workflow_run_id', 'connection', 'queue', 'business_key',
+            'labels', 'memo', 'search_attributes', 'duplicate_start_policy'];
+        foreach (array_keys($options) as $key) {
+            if (!in_array($key, $allowed, true)) {
+                throw new InvalidArgumentException("Unsupported workflow service option {$key}. Caller authority is assigned by Server.");
+            }
+        }
+        $options = array_filter($options, static fn (mixed $value): bool => $value !== null);
+        $options += ['mode_override' => 'sync', 'wait_for' => 'completed'];
+        if (!in_array($options['mode_override'], ['sync', 'async'], true)
+            || !in_array($options['wait_for'], ['completed', 'accepted'], true)) {
+            throw new InvalidArgumentException('Service mode_override must be sync or async, and wait_for must be completed or accepted.');
+        }
+        if (isset($options['wait_timeout_seconds'])
+            && (!is_int($options['wait_timeout_seconds']) || $options['wait_timeout_seconds'] < 0)) {
+            throw new InvalidArgumentException('Service wait_timeout_seconds must be a non-negative integer.');
+        }
+
+        return new self('start_service_operation', 'service_operation', [
+            ...$options,
+            'endpoint_name' => $endpointName, 'service_name' => $serviceName, 'operation_name' => $operationName,
+            'request_payload_value' => $request,
+            'metadata' => ['caller_sdk_language' => 'sdk-php'],
+        ]);
+    }
+
     /** @param Closure(): bool $predicate */
     public static function conditionWait(
         Closure $predicate,
@@ -750,6 +790,10 @@ final class WorkflowCommand
     {
         $wire = ['type' => $this->type];
         foreach ($this->attributes as $key => $value) {
+            if ($key === 'request_payload_value') {
+                $wire['request_payload'] = $codec->envelope($value);
+                continue;
+            }
             if ($key === 'arguments_value') {
                 $wire['arguments'] = $this->type === 'record_local_activity'
                     && $this->localActivityArgumentsEnvelope !== null
