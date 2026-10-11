@@ -53,8 +53,8 @@ The sequence, type, and details of context operations are durable. Changing them
 
 ## Call a registered service
 
-This authoring API is introduced in the PHP SDK 2.3 prerelease. The published
-caller qualification uses a matched Server and SDK tuple before stable promotion.
+This authoring API is introduced in the PHP SDK 2.3 prerelease. Install it with
+`composer require durable-workflow/sdk:^2.3@RC`.
 
 Use `serviceOperation()` inside a workflow to invoke a Server service endpoint.
 The call pauses until Server records its result. Worker restarts replay the same
