@@ -71,6 +71,29 @@ final class CooperativeCancellationWorkerTest extends TestCase
         return [['accepted'], ['lost acknowledgment'], ['malformed acknowledgment']];
     }
 
+    public function testCooperativeWorkerRegistersUsingOnlyItsWorkerCredential(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $client = new Client('https://server.example', transport: $transport,
+            workerToken: 'worker-test', workerProtocolVersion: '1.20');
+        $worker = new Worker($client, 'queue', workerId: 'worker-1', enableCooperativeCancellation: true,
+            clock: static fn (): float => 1790812800.0,
+            diagnosticListener: static function (string $event, array $details) use (&$worker): void {
+                if ($event === 'worker.registered') {
+                    $worker->requestShutdown();
+                }
+            });
+        $worker->registerWorkflow('cancel', static fn (WorkflowContext $context): string => 'done');
+
+        $worker->run(0);
+        self::assertSame('https://server.example/api/cluster/info', $transport->requests[0]['uri']);
+        self::assertNotEmpty(array_filter($transport->requests,
+            static fn (array $request): bool => str_ends_with($request['uri'], '/worker/register')));
+        foreach ($transport->requests as $request) {
+            self::assertSame('Bearer worker-test', $request['headers']['Authorization']);
+        }
+    }
+
     #[DataProvider('unsupportedChildPolicyProvider')]
     public function testCooperativeChildPoliciesRequireTheWorkerOptIn(string $protocol, array $options): void
     {
@@ -380,7 +403,7 @@ final class CooperativeCancellationWorkerTest extends TestCase
         } catch (WorkflowClaimAborted) {
             self::assertCount(1, $transport->requests);
             self::assertSame('https://server.example/api/cluster/info', $transport->requests[0]['uri']);
-            self::assertSame('2', $transport->requests[0]['headers']['X-Durable-Workflow-Control-Plane-Version']);
+            self::assertSame('1.20', $transport->requests[0]['headers']['X-Durable-Workflow-Protocol-Version']);
         }
     }
 
@@ -899,6 +922,12 @@ final class CooperativeWorkerTransport implements \DurableWorkflow\Transport\Bou
         if (str_ends_with($uri, '/cluster/info')) {
             return ['worker_protocol' => ['version' => $this->serverVersion,
                 'server_capabilities' => ['cooperative_cancellation' => $this->serverCapability]]];
+        }
+        if (str_ends_with($uri, '/worker/register')) {
+            return ['registered' => true];
+        }
+        if ($method === 'DELETE' && str_contains($uri, '/worker/registrations/')) {
+            return ['deregistered' => true];
         }
         if (str_ends_with($uri, '/workflow-tasks/poll')) {
             return ['task' => ['task_id' => $this->taskId, 'workflow_task_attempt' => $this->workflowTaskAttempt, 'lease_owner' => 'worker-1',
