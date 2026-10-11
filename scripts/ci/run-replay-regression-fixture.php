@@ -569,6 +569,10 @@ final class ReplayRegressionConsumer
                     $context->activity('cleanup');
                 }
             },
+            'golden.nexus-caller' => static function (WorkflowContext $context): mixed {
+                return $context->serviceOperation('billing', 'invoices', 'create', ['invoice_id' => 42],
+                    ['idempotency_key' => 'call-key'])->responsePayload;
+            },
             'golden.single-activity' => static function (
                 WorkflowContext $context,
                 mixed $name,
