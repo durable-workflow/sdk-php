@@ -1,0 +1,38 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-nexus-waiting-caller-terminal-result",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.nexus-caller", "input": []},
+  "history": [
+    {
+      "event_type": "ServiceCallStarted",
+      "payload": {
+        "sequence": 1,
+        "service_call_id": "call-1",
+        "endpoint_name": "billing",
+        "service_name": "invoices",
+        "operation_name": "create",
+        "operation_mode": "sync",
+        "wait_for": "completed",
+        "idempotency_key": "call-key",
+        "request_payload": {"codec": "avro", "blob": "wwHioz3/VYAiNw4CFGludm9pY2VfaWQEVAA="},
+        "service_call": {"id": "call-1", "result": null}
+      }
+    },
+    {
+      "event_type": "ServiceCallCompleted",
+      "payload": {
+        "sequence": 1,
+        "service_call_id": "call-1",
+        "endpoint_name": "billing",
+        "service_name": "invoices",
+        "operation_name": "create",
+        "response_payload": {"codec": "avro", "blob": "wwHioz3/VYAiNw4CEGFjY2VwdGVkAgEA"},
+        "service_call": {"id": "call-1", "result": null}
+      }
+    }
+  ],
+  "expected": {"command_sequence": [{"type": "complete_workflow", "result": {"accepted": true}}]}
+}

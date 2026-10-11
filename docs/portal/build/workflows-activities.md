@@ -51,6 +51,48 @@ $worker->registerWorkflow(
 
 The sequence, type, and details of context operations are durable. Changing them while old histories are still running can raise `NonDeterministicWorkflow`. Deploy replay-compatible code or drain incompatible histories before removing an old branch.
 
+## Call a registered service
+
+Use `serviceOperation()` inside a workflow to invoke a Server service endpoint.
+The call pauses until Server records its result. Worker restarts replay the same
+call identity and result without submitting another operation.
+
+```php
+use DurableWorkflow\Exception\ServiceOperationFailed;
+use DurableWorkflow\Worker\WorkflowContext;
+
+function invoice(WorkflowContext $context, int $invoiceId): mixed
+{
+    try {
+        $call = $context->serviceOperation('billing', 'invoices', 'create',
+            ['invoice_id' => $invoiceId], ['wait_timeout_seconds' => 30]);
+
+        return $call->responsePayload;
+    } catch (ServiceOperationFailed $failure) {
+        return ['call_id' => $failure->serviceCallId,
+            'error' => $failure->failureType, 'cancelled' => $failure->cancelled];
+    }
+}
+```
+
+Register this handler with `registerWorkflow()` as usual. The endpoint, service
+and operation must already exist, and the worker credential must have permission
+to call them. `namespace` selects the target namespace. Server assigns the caller
+identity from the leased run.
+
+The default options are `mode_override=sync` and `wait_for=completed`. Use
+`wait_for=accepted` or `mode_override=async` to receive the original admission
+instead. Its `serviceCallId` identifies the operation and its `serviceCall` map
+contains the recorded diagnostics. A later completion cannot replace that
+original asynchronous result during replay.
+
+`wait_timeout_seconds` is the Server wait budget, not a sleep in the SDK. Replay
+does not start a fresh budget. Keep the service names, request, routing and wait
+options stable for open runs, or guard changes with workflow version markers.
+Service operations currently run sequentially outside cancellation scopes and
+operation groups. The worker reports `service_operations_unavailable` when the
+connected runtime does not advertise the command.
+
 ## Fan out durable work and join it once
 
 `all()` (also available as `parallel()`) captures one durable operation from each closure, schedules every leaf in one workflow-task completion, then suspends the Fiber until the group can join. The returned array always follows declaration order, even when the Server records completions in another order:

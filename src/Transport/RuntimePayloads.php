@@ -71,7 +71,9 @@ final class RuntimePayloads
     private function historyPaths(array $prefix): array
     {
         $paths = [];
-        foreach ([['arguments'], ['result'], ['output'], ['activity', 'arguments'], ['activity', 'result'],
+        foreach ([['arguments'], ['result'], ['output'], ['request_payload'], ['response_payload'],
+            ['service_call', 'result_envelope'], ['response_or_failure_surface', 'result_envelope'],
+            ['activity', 'arguments'], ['activity', 'result'],
             ['command', 'payload'], ['exception', 'details']] as $field) {
             $paths[] = [...$prefix, '*', 'payload', ...$field];
         }

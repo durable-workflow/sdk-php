@@ -93,6 +93,7 @@ final class Worker
     private array $activeWorkerSessions = [];
     /** @var array<string, mixed>|null */
     private ?array $workflowMemoCapability = null;
+    private bool $serviceOperationsSupported = false;
     private ?CancellationRequest $claimCancellation = null;
     private ?string $claimDeliveredCancellationId = null;
     private bool $preparedLocalActivityGroupsSupported = false;
@@ -733,6 +734,10 @@ final class Worker
             return false;
         }
         $this->rememberWorkflowMemoCapability($workflowPoll);
+        $capabilities = $workflowPoll['server_capabilities'] ?? null;
+        $supportedCommands = is_array($capabilities) ? ($capabilities['supported_workflow_task_commands'] ?? null) : null;
+        $this->serviceOperationsSupported = is_array($supportedCommands)
+            && in_array('start_service_operation', $supportedCommands, true);
         $this->heartbeatIfDue();
         if ($this->crossKindPollWakeReceived($workflowPoll)) {
             $pollTimeoutSeconds = 0;
@@ -1254,6 +1259,7 @@ final class Worker
                 }
             }
             $this->assertWorkflowMemoUpdatesAvailable($commands);
+            $this->assertServiceOperationsAvailable($commands);
             $this->assertCancellationPoliciesAvailable($commands);
             $stickyClaim = $this->stickyCacheClaim($task);
             $this->retryStorageAdmission('workflow_complete', fn (): array => $this->client->completeWorkflowTask(
@@ -2001,6 +2007,18 @@ final class Worker
         throw new \RuntimeException(
             'workflow_memo_updates_unavailable: the connected runtime did not advertise workflow memo update support.',
         );
+    }
+
+    /** @param list<array<string, mixed>> $commands */
+    private function assertServiceOperationsAvailable(array $commands): void
+    {
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'start_service_operation' && !$this->serviceOperationsSupported) {
+                throw new WorkflowClaimAborted(
+                    'service_operations_unavailable: the connected runtime did not advertise start_service_operation support.',
+                );
+            }
+        }
     }
 
     /** @param list<array<string, mixed>> $commands */

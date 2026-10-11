@@ -320,6 +320,10 @@ final class ReplayRegressionFixture
     private static function workflow(string $workflowType): callable
     {
         return match ($workflowType) {
+            'golden.nexus-caller' => static function (WorkflowContext $context): mixed {
+                return $context->serviceOperation('billing', 'invoices', 'create', ['invoice_id' => 42],
+                    ['idempotency_key' => 'call-key'])->responsePayload;
+            },
             'golden.finally-disposal' => static function (WorkflowContext $context): void {
                 try {
                     $context->sleep(1);
