@@ -159,6 +159,21 @@ final class ServiceCatalogReadClientTest extends TestCase
         return [[null], [false], [0], [''], [['result', ['nested' => 'value']]]];
     }
 
+    #[DataProvider('outputs')]
+    public function testCommittedInlineResultEnvelopeIsDecoded(mixed $value): void
+    {
+        $codec = new AvroPayloadCodec();
+        $envelope = $codec->envelope($value);
+        $transport = new FakeTransport([$this->discovery(), [
+            'payloads_in_observer_namespace' => true, 'output_payload_reference' => null,
+            'result_envelope' => $envelope,
+        ]]);
+        $result = (new Client('https://runtime.test', transport: $transport))->describeServiceCatalogCall('call-1');
+        self::assertTrue($result['output_available']);
+        self::assertSame($codec->encode($value), $codec->encode($result['output']));
+        self::assertCount(2, $transport->requests);
+    }
+
     public function testExternalOutputUsesOnlyTheConfiguredRuntimeNamespaceAndOperatorCredential(): void
     {
         $codec = new AvroPayloadCodec();
@@ -177,6 +192,7 @@ final class ServiceCatalogReadClientTest extends TestCase
             if (count($requests) === 2) {
                 return Create::promiseFor(new Response(200, [], json_encode([
                     'id' => 'call-1', 'payloads_in_observer_namespace' => true, 'output_payload_reference' => $envelope,
+                    'result_envelope' => ['codec' => 'avro', 'external_payload' => $envelope],
                 ], JSON_THROW_ON_ERROR)));
             }
 
@@ -206,6 +222,7 @@ final class ServiceCatalogReadClientTest extends TestCase
             $transport = new FakeTransport([$this->discovery(), [
                 'payloads_in_observer_namespace' => $authorized,
                 'output_payload_reference' => $reference,
+                'result_envelope' => ['codec' => 'avro', 'external_payload' => $reference],
             ]]);
             $client = new Client('https://runtime.test', transport: $transport, maxExternalPayloadBytes: 1);
             try {
