@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.2.8] - 2026-10-11
+
+### Fixed
+
+- Discover cooperative worker capabilities with the worker credential. A
+  scoped worker token can register without a control token, while operator
+  diagnostics and control mutations retain their existing credential rules.
+
 ## [2.2.7] - 2026-10-11
 
 ### Fixed

@@ -173,6 +173,12 @@ final class Client implements WorkflowClientInterface
         return ClusterInfo::fromArray($this->control('GET', $path));
     }
 
+    /** Discover ordinary runtime capabilities using the worker credential. */
+    public function workerClusterInfo(): ClusterInfo
+    {
+        return ClusterInfo::fromArray($this->worker('GET', '/cluster/info'));
+    }
+
     /**
      * @param list<mixed> $input
      * @param array<string, mixed>|null $memo
