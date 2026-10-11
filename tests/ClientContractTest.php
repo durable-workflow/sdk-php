@@ -56,6 +56,39 @@ final class ClientContractTest extends TestCase
         self::assertSame('php-activity-poll', substr($transport->requests[0]['body']['poll_request_id'], 0, 17));
     }
 
+    public function testWorkerDiscoveryDoesNotRequireOrUseAControlCredential(): void
+    {
+        foreach ([null, 'control-test'] as $controlToken) {
+            $transport = new FakeTransport([['worker_protocol' => ['version' => '1.20']]]);
+            $client = new Client('https://server.example', namespace: 'tenant-a', transport: $transport,
+                workerToken: 'worker-test', controlToken: $controlToken, workerProtocolVersion: '1.20');
+
+            self::assertSame('1.20', $client->workerClusterInfo()->raw['worker_protocol']['version']);
+            $request = $transport->requests[0];
+            self::assertSame('GET', $request['method']);
+            self::assertSame('https://server.example/api/cluster/info', $request['uri']);
+            self::assertSame('Bearer worker-test', $request['headers']['Authorization']);
+            self::assertSame('tenant-a', $request['headers']['X-Namespace']);
+            self::assertSame('1.20', $request['headers']['X-Durable-Workflow-Protocol-Version']);
+            self::assertArrayNotHasKey('X-Durable-Workflow-Control-Plane-Version', $request['headers']);
+        }
+    }
+
+    public function testWorkerDiscoveryDoesNotAuthorizeOperatorDiagnostics(): void
+    {
+        $transport = new FakeTransport([[]]);
+        $client = new Client('https://server.example', transport: $transport, workerToken: 'worker-test');
+        $client->workerClusterInfo();
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('A control credential is required');
+        try {
+            $client->clusterInfo(includeDiagnostics: true);
+        } finally {
+            self::assertCount(1, $transport->requests);
+        }
+    }
+
     public function testDefaultWorkerRegistrationAdvertisesTheCompletePhpCapabilitySet(): void
     {
         $transport = new FakeTransport([['registered' => true]]);

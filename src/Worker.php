@@ -568,7 +568,7 @@ final class Worker
     private function registerWithRetry(): ?array
     {
         if ($this->enableCooperativeCancellation) {
-            $protocol = $this->client->clusterInfo()->raw['worker_protocol'] ?? null;
+            $protocol = $this->client->workerClusterInfo()->raw['worker_protocol'] ?? null;
             if (!is_array($protocol) || !is_string($protocol['version'] ?? null)
                 || !Version::supportsCooperativeCancellation($protocol['version'])
                 || ($protocol['server_capabilities']['cooperative_cancellation'] ?? null) !== true) {
