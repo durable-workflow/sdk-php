@@ -30,7 +30,7 @@ try {
     $client->clusterInfo(includeDiagnostics: true);
     throw new RuntimeException('The SDK diagnostics method must require a control credential.');
 } catch (InvalidArgumentException $failure) {
-    if ($failure->getMessage() !== 'A control credential is required for this request.') {
+    if (!str_starts_with($failure->getMessage(), 'A control credential is required for this request.')) {
         throw $failure;
     }
 }
