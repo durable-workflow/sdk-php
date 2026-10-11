@@ -26,13 +26,22 @@ if ($info->version !== getenv('COOPERATIVE_SERVER_VERSION')) {
     throw new RuntimeException('Discovery returned the wrong published runtime version.');
 }
 
-// Intentionally send the same worker-role credential through control requests.
-// The isolated Server must reject both, proving its actual role is restricted.
+try {
+    $client->clusterInfo(includeDiagnostics: true);
+    throw new RuntimeException('The SDK diagnostics method must require a control credential.');
+} catch (InvalidArgumentException $failure) {
+    if ($failure->getMessage() !== 'A control credential is required for this request.') {
+        throw $failure;
+    }
+}
+
+// Cluster discovery accepts authenticated roles, including diagnostics mode.
+// Operator metrics and mutations have actual Server role restrictions.
 $restricted = new Client($url, namespace: 'default', controlToken: $token);
 foreach (['diagnostics', 'start'] as $operation) {
     try {
         if ($operation === 'diagnostics') {
-            $restricted->clusterInfo(includeDiagnostics: true);
+            $restricted->operatorMetrics();
         } else {
             $restricted->startWorkflow('smoke.worker_discovery', 'must-refuse-'.bin2hex(random_bytes(8)), 'smoke');
         }
@@ -64,5 +73,6 @@ echo json_encode([
     'sdk_version' => $version, 'sdk_reference' => Composer\InstalledVersions::getReference($package),
     'server_version' => $info->version, 'server_image' => getenv('COOPERATIVE_SERVER_IMAGE'),
     'worker_protocol' => '1.20', 'worker_registered' => $registered, 'worker_deregistered' => $deregistered,
-    'operator_diagnostics_refused_by_server' => true, 'control_mutation_refused_by_server' => true,
+    'sdk_diagnostics_requires_control_credential' => true,
+    'operator_metrics_refused_by_server' => true, 'control_mutation_refused_by_server' => true,
 ], JSON_THROW_ON_ERROR).PHP_EOL;
