@@ -5,11 +5,21 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Client;
+use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Exception\ExternalPayloadException;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Tests\Support\FakeTransport;
+use DurableWorkflow\Transport\Psr18Transport;
+use DurableWorkflow\Transport\RuntimePayloads;
+use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Promise\Create;
+use GuzzleHttp\Psr7\Response;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Psr\Http\Message\RequestInterface;
 
 final class ServiceCatalogReadClientTest extends TestCase
 {
@@ -117,5 +127,113 @@ final class ServiceCatalogReadClientTest extends TestCase
     private function discovery(): array
     {
         return ['service_catalog_read_contract' => ['schema' => 'durable-workflow.v2.service-catalog-read.contract', 'version' => 1]];
+    }
+
+    #[DataProvider('outputs')]
+    public function testOwnedTerminalOutputIsDecodedWithoutReplacingTheOpaqueReference(mixed $value): void
+    {
+        $codec = new AvroPayloadCodec();
+        $blob = $codec->envelope($value)['blob'];
+        $reference = ['schema' => RuntimePayloads::SCHEMA, 'reference_id' => 'ep_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+            'codec' => 'avro', 'size_bytes' => strlen($blob), 'sha256' => hash('sha256', $blob)];
+        $handler = new MockHandler([
+            new Response(200, [], json_encode($this->discovery(), JSON_THROW_ON_ERROR)),
+            new Response(200, [], json_encode([
+                'id' => 'call-1', 'payloads_in_observer_namespace' => true, 'output_payload_reference' => $reference,
+            ], JSON_THROW_ON_ERROR)),
+            new Response(200, [
+                'Content-Type' => 'application/octet-stream', 'X-Durable-Workflow-Payload-Codec' => 'avro',
+                'X-Durable-Workflow-Payload-Size' => (string) strlen($blob),
+                'X-Durable-Workflow-Payload-SHA256' => hash('sha256', $blob),
+            ], $blob),
+        ]);
+        $transport = new Psr18Transport(new GuzzleClient(['handler' => HandlerStack::create($handler)]));
+        $result = (new Client('https://runtime.test', transport: $transport))->describeServiceCatalogCall('call-1');
+        self::assertTrue($result['output_available']);
+        self::assertSame($reference, $result['output_payload_reference']);
+        self::assertSame($codec->encode($value), $codec->encode($result['output']));
+    }
+
+    public static function outputs(): array
+    {
+        return [[null], [false], [0], [''], [['result', ['nested' => 'value']]]];
+    }
+
+    #[DataProvider('outputs')]
+    public function testCommittedInlineResultEnvelopeIsDecoded(mixed $value): void
+    {
+        $codec = new AvroPayloadCodec();
+        $envelope = $codec->envelope($value);
+        $transport = new FakeTransport([$this->discovery(), [
+            'payloads_in_observer_namespace' => true, 'output_payload_reference' => null,
+            'result_envelope' => $envelope,
+        ]]);
+        $result = (new Client('https://runtime.test', transport: $transport))->describeServiceCatalogCall('call-1');
+        self::assertTrue($result['output_available']);
+        self::assertSame($codec->encode($value), $codec->encode($result['output']));
+        self::assertCount(2, $transport->requests);
+    }
+
+    public function testExternalOutputUsesOnlyTheConfiguredRuntimeNamespaceAndOperatorCredential(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $value = ['result', str_repeat('x', 10000)];
+        $blob = $codec->envelope($value)['blob'];
+        $reference = ['schema' => RuntimePayloads::SCHEMA, 'reference_id' => 'ep_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+            'codec' => 'avro', 'size_bytes' => strlen($blob), 'sha256' => hash('sha256', $blob)];
+        $envelope = $reference;
+        $requests = [];
+        $http = new GuzzleClient(['handler' => function (RequestInterface $request, array $options) use (&$requests, $blob, $envelope) {
+            $requests[] = $request;
+            self::assertFalse($options['allow_redirects']);
+            if (count($requests) === 1) {
+                return Create::promiseFor(new Response(200, [], json_encode($this->discovery(), JSON_THROW_ON_ERROR)));
+            }
+            if (count($requests) === 2) {
+                return Create::promiseFor(new Response(200, [], json_encode([
+                    'id' => 'call-1', 'payloads_in_observer_namespace' => true, 'output_payload_reference' => $envelope,
+                    'result_envelope' => ['codec' => 'avro', 'external_payload' => $envelope],
+                ], JSON_THROW_ON_ERROR)));
+            }
+
+            return Create::promiseFor(new Response(200, [
+                'Content-Type' => 'application/octet-stream', 'X-Durable-Workflow-Payload-Codec' => 'avro',
+                'X-Durable-Workflow-Payload-Size' => (string) strlen($blob),
+                'X-Durable-Workflow-Payload-SHA256' => hash('sha256', $blob),
+            ], $blob));
+        }]);
+        $client = new Client('https://runtime.test/api/runtime/v1/namespaces/owner-id', namespace: 'owner',
+            transport: new Psr18Transport($http), controlToken: 'operator', workerToken: 'worker');
+        $result = $client->describeServiceCatalogCall('call-1');
+        self::assertSame($codec->encode($value), $codec->encode($result['output']));
+        self::assertSame($envelope, $result['output_payload_reference']);
+        self::assertCount(3, $requests);
+        self::assertSame('https://runtime.test/api/runtime/v1/namespaces/owner-id/api/external-payloads/v1/'.$reference['reference_id'], (string) $requests[2]->getUri());
+        self::assertSame('owner', $requests[2]->getHeaderLine('X-Namespace'));
+        self::assertSame('Bearer operator', $requests[2]->getHeaderLine('Authorization'));
+    }
+
+    public function testForeignOrUnverifiedOutputsAreNotFetchedAndOwnedDownloadsHonorTheByteLimit(): void
+    {
+        $blob = (new AvroPayloadCodec())->envelope(['private'])['blob'];
+        $reference = ['schema' => RuntimePayloads::SCHEMA, 'reference_id' => 'ep_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+            'codec' => 'avro', 'size_bytes' => strlen($blob), 'sha256' => hash('sha256', $blob)];
+        foreach ([false, null, true] as $authorized) {
+            $transport = new FakeTransport([$this->discovery(), [
+                'payloads_in_observer_namespace' => $authorized,
+                'output_payload_reference' => $reference,
+                'result_envelope' => ['codec' => 'avro', 'external_payload' => $reference],
+            ]]);
+            $client = new Client('https://runtime.test', transport: $transport, maxExternalPayloadBytes: 1);
+            try {
+                $result = $client->describeServiceCatalogCall('call-1');
+                self::assertNotTrue($authorized);
+                self::assertArrayNotHasKey('output', $result);
+            } catch (ExternalPayloadException $exception) {
+                self::assertTrue($authorized);
+                self::assertSame('external_payload_oversized', $exception->reason);
+            }
+            self::assertCount(2, $transport->requests);
+        }
     }
 }

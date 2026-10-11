@@ -79,6 +79,14 @@ does not authorize browsing another namespace. See the
 [Server read contract](https://github.com/durable-workflow/server/blob/main/docs/contracts/service-catalog-reads.md)
 for scopes, filters, pagination and detail bounds.
 
+For an authorized owner, call detail also includes `output_available` and the
+decoded `output`. This keeps `false`, `0`, an empty string and `null` distinct
+from a missing result. The original opaque reference remains available.
+Downloads use the configured runtime and operator credential, verify size and
+digest, and honor the client's `maxExternalPayloadBytes` limit. Foreign or
+unverified output references are not fetched. Decoded values retain the SDK's
+typed Avro binary and map adapters.
+
 ## A result wait timed out
 
 `WorkflowHandle::result()` polls for a bounded caller duration. When it times out, the durable execution may still be running. Call `describe()` and inspect its status before starting anything again. Reuse the original workflow ID or an application idempotency key; do not create duplicates just because the client lost patience.
