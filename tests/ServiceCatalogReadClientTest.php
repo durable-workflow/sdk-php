@@ -13,6 +13,8 @@ use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Transport\RuntimePayloads;
 use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Psr7\Response;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -131,14 +133,24 @@ final class ServiceCatalogReadClientTest extends TestCase
     public function testOwnedTerminalOutputIsDecodedWithoutReplacingTheOpaqueReference(mixed $value): void
     {
         $codec = new AvroPayloadCodec();
-        $envelope = $codec->envelope($value);
-        $transport = new FakeTransport([$this->discovery(), [
-            'id' => 'call-1', 'payloads_in_observer_namespace' => true,
-            'output_payload_reference' => $envelope,
-        ]]);
+        $blob = $codec->envelope($value)['blob'];
+        $reference = ['schema' => RuntimePayloads::SCHEMA, 'reference_id' => 'ep_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+            'codec' => 'avro', 'size_bytes' => strlen($blob), 'sha256' => hash('sha256', $blob)];
+        $handler = new MockHandler([
+            new Response(200, [], json_encode($this->discovery(), JSON_THROW_ON_ERROR)),
+            new Response(200, [], json_encode([
+                'id' => 'call-1', 'payloads_in_observer_namespace' => true, 'output_payload_reference' => $reference,
+            ], JSON_THROW_ON_ERROR)),
+            new Response(200, [
+                'Content-Type' => 'application/octet-stream', 'X-Durable-Workflow-Payload-Codec' => 'avro',
+                'X-Durable-Workflow-Payload-Size' => (string) strlen($blob),
+                'X-Durable-Workflow-Payload-SHA256' => hash('sha256', $blob),
+            ], $blob),
+        ]);
+        $transport = new Psr18Transport(new GuzzleClient(['handler' => HandlerStack::create($handler)]));
         $result = (new Client('https://runtime.test', transport: $transport))->describeServiceCatalogCall('call-1');
         self::assertTrue($result['output_available']);
-        self::assertSame($envelope, $result['output_payload_reference']);
+        self::assertSame($reference, $result['output_payload_reference']);
         self::assertSame($codec->encode($value), $codec->encode($result['output']));
     }
 
@@ -154,7 +166,7 @@ final class ServiceCatalogReadClientTest extends TestCase
         $blob = $codec->envelope($value)['blob'];
         $reference = ['schema' => RuntimePayloads::SCHEMA, 'reference_id' => 'ep_01ARZ3NDEKTSV4RRFFQ69G5FAV',
             'codec' => 'avro', 'size_bytes' => strlen($blob), 'sha256' => hash('sha256', $blob)];
-        $envelope = ['codec' => 'avro', 'external_payload' => $reference];
+        $envelope = $reference;
         $requests = [];
         $http = new GuzzleClient(['handler' => function (RequestInterface $request, array $options) use (&$requests, $blob, $envelope) {
             $requests[] = $request;
@@ -193,7 +205,7 @@ final class ServiceCatalogReadClientTest extends TestCase
         foreach ([false, null, true] as $authorized) {
             $transport = new FakeTransport([$this->discovery(), [
                 'payloads_in_observer_namespace' => $authorized,
-                'output_payload_reference' => ['codec' => 'avro', 'external_payload' => $reference],
+                'output_payload_reference' => $reference,
             ]]);
             $client = new Client('https://runtime.test', transport: $transport, maxExternalPayloadBytes: 1);
             try {
