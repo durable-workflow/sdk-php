@@ -41,6 +41,52 @@ Confirm the client's `taskQueue` exactly matches the worker's queue. Then confir
 
 If the workflow scheduled an activity, repeat the same check for the activity type. A workflow worker can be healthy while the activity capacity it needs is absent.
 
+## Inspect a durable service call
+
+Use an operator credential in the namespace you are investigating. The
+service catalog read methods return bounded pages and the original durable
+call, including its deadline, attempts and terminal cause.
+
+```php
+$page = $client->listServiceCatalogCalls([
+    'scope' => 'caller',
+    'status_bucket' => 'failed',
+    'per_page' => 50,
+]);
+foreach ($page['data'] as $row) {
+    $call = $client->describeServiceCatalogCall($row['id']);
+}
+```
+
+Browse registered endpoints, services and operations with
+`listServiceCatalogEndpoints()`, `listServiceCatalogServices()` and
+`listServiceCatalogOperations()`. Their corresponding
+`describeServiceCatalogEndpoint()`, `describeServiceCatalogService()` and
+`describeServiceCatalogOperation()` methods use catalog IDs. Lists accept
+`page` and `per_page`. Filter services by `endpoint_id`, operations by
+`endpoint_id` or `service_id`, and calls by those IDs or `operation_id`.
+
+The methods require the backend's advertised `service_catalog_read_contract`
+version 1. An absent or incompatible capability raises `ServerException` with
+`reason: backend_capability_unavailable` and the required/advertised contract.
+A discovery outage keeps its actual connection or backend failure. It does not
+become an unsupported-capability message.
+
+Foreign linked runs remain opaque references. Foreign input, output and failure
+payload references are null, with `payloads_in_observer_namespace: false`.
+Authorized payload references remain opaque runtime objects. A visible call
+does not authorize browsing another namespace. See the
+[Server read contract](https://github.com/durable-workflow/server/blob/main/docs/contracts/service-catalog-reads.md)
+for scopes, filters, pagination and detail bounds.
+
+For an authorized owner, call detail also includes `output_available` and the
+decoded `output`. This keeps `false`, `0`, an empty string and `null` distinct
+from a missing result. The original opaque reference remains available.
+Downloads use the configured runtime and operator credential, verify size and
+digest, and honor the client's `maxExternalPayloadBytes` limit. Foreign or
+unverified output references are not fetched. Decoded values retain the SDK's
+typed Avro binary and map adapters.
+
 ## A result wait timed out
 
 `WorkflowHandle::result()` polls for a bounded caller duration. When it times out, the durable execution may still be running. Call `describe()` and inspect its status before starting anything again. Reuse the original workflow ID or an application idempotency key; do not create duplicates just because the client lost patience.

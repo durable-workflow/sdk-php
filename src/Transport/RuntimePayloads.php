@@ -40,6 +40,13 @@ final class RuntimePayloads
             $paths = [...$paths, ...$this->historyPaths(['task', 'history_events']), ...$this->historyPaths(['history_events']),
                 ...$this->exportPaths(['task', 'history_export'])];
         } else {
+            if (preg_match('~\A/service-catalog/calls/[^/]+\z~', $path)
+                && ($response['payloads_in_observer_namespace'] ?? null) === true
+                && is_array($response['output_payload_reference'] ?? null)) {
+                // Keep the opaque reference while hydrating only the authorized
+                // terminal output of this exact call, never arbitrary metadata.
+                $response['output_envelope'] = ['codec' => 'avro', 'external_payload' => $response['output_payload_reference']];
+            }
             foreach (['input_envelope', 'output_envelope', 'result_envelope'] as $field) {
                 $paths[] = [$field];
             }

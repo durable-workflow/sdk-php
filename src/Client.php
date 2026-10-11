@@ -173,6 +173,108 @@ final class Client implements WorkflowClientInterface
         return ClusterInfo::fromArray($this->control('GET', $path));
     }
 
+    /**
+     * @param array<string, int|string> $filters
+     * @return array<string, mixed>
+     */
+    public function listServiceCatalogEndpoints(array $filters = []): array
+    {
+        return $this->serviceCatalogRead('/service-catalog/endpoints', $filters);
+    }
+
+    /** @return array<string, mixed> */
+    public function describeServiceCatalogEndpoint(string $endpointId): array
+    {
+        return $this->serviceCatalogRead('/service-catalog/endpoints', id: $endpointId);
+    }
+
+    /**
+     * @param array<string, int|string> $filters
+     * @return array<string, mixed>
+     */
+    public function listServiceCatalogServices(array $filters = []): array
+    {
+        return $this->serviceCatalogRead('/service-catalog/services', $filters);
+    }
+
+    /** @return array<string, mixed> */
+    public function describeServiceCatalogService(string $serviceId): array
+    {
+        return $this->serviceCatalogRead('/service-catalog/services', id: $serviceId);
+    }
+
+    /**
+     * @param array<string, int|string> $filters
+     * @return array<string, mixed>
+     */
+    public function listServiceCatalogOperations(array $filters = []): array
+    {
+        return $this->serviceCatalogRead('/service-catalog/operations', $filters);
+    }
+
+    /** @return array<string, mixed> */
+    public function describeServiceCatalogOperation(string $operationId): array
+    {
+        return $this->serviceCatalogRead('/service-catalog/operations', id: $operationId);
+    }
+
+    /**
+     * @param array<string, int|string> $filters
+     * @return array<string, mixed>
+     */
+    public function listServiceCatalogCalls(array $filters = []): array
+    {
+        return $this->serviceCatalogRead('/service-catalog/calls', $filters);
+    }
+
+    /** @return array<string, mixed> */
+    public function describeServiceCatalogCall(string $callId): array
+    {
+        $response = $this->serviceCatalogRead('/service-catalog/calls', id: $callId);
+        if (($response['payloads_in_observer_namespace'] ?? null) === true) {
+            $response['output_available'] = is_array($response['output_envelope'] ?? null);
+            $response['output'] = $response['output_available']
+                ? $this->decodedResponsePayload($response, 'output')
+                : null;
+        }
+
+        return $response;
+    }
+
+    /**
+     * @param array<string, int|string> $filters
+     * @return array<string, mixed>
+     */
+    private function serviceCatalogRead(string $path, array $filters = [], ?string $id = null): array
+    {
+        if ($id !== null) {
+            if (trim($id) === '') {
+                throw new InvalidArgumentException('Catalog detail requires a non-empty ID.');
+            }
+            $path .= '/'.$this->segment($id);
+        }
+        $schema = 'durable-workflow.v2.service-catalog-read.contract';
+        $contract = $this->clusterInfo()->raw['service_catalog_read_contract'] ?? null;
+        if (!is_array($contract) || ($contract['schema'] ?? null) !== $schema || ($contract['version'] ?? null) !== 1) {
+            throw new ServerException(
+                'The connected backend does not advertise service catalog operator reads with contract version 1.',
+                501,
+                'backend_capability_unavailable',
+                [
+                    'capability' => 'service_catalog_reads',
+                    'required_contract' => $schema,
+                    'required_contract_version' => 1,
+                    'advertised_contract' => $contract,
+                ],
+            );
+        }
+        if ($filters !== []) {
+            $path .= '?'.http_build_query($filters, '', '&', PHP_QUERY_RFC3986);
+        }
+
+        return $this->control('GET', $path);
+    }
+
     /** Discover ordinary runtime capabilities using the worker credential. */
     public function workerClusterInfo(): ClusterInfo
     {
