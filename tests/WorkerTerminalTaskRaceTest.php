@@ -129,6 +129,9 @@ final class WorkerTerminalTaskRaceTest extends TestCase
         yield 'repaired Ready task loses lease before heartbeat' => ['heartbeat', 'task_not_leased', 'ready'];
         yield 'repaired Ready task loses lease before completion' => ['completion', 'task_not_leased', 'ready'];
         yield 'repaired Ready task loses lease before fallback failure' => ['fallback', 'task_not_leased', 'ready'];
+        yield 'expired original lease before heartbeat' => ['heartbeat', 'lease_expired', 'leased'];
+        yield 'expired original lease before completion' => ['completion', 'lease_expired', 'leased'];
+        yield 'expired original lease before fallback failure' => ['fallback', 'lease_expired', 'leased'];
     }
 
     #[DataProvider('activityTerminalAcknowledgementProvider')]
@@ -528,6 +531,12 @@ final class WorkerTerminalTaskRaceTest extends TestCase
 
     private static function workflowTerminalConflict(string $taskId, string $reason, string $taskStatus = 'cancelled'): TransportException
     {
+        if ($reason === 'lease_expired') {
+            $response = ['task_id' => $taskId, 'workflow_task_attempt' => 1, 'task_status' => 'leased',
+                'lease_owner' => 'worker-1', 'reason' => 'lease_expired'];
+
+            return TransportException::fromResponse(409, $response, json_encode($response, JSON_THROW_ON_ERROR));
+        }
         if ($reason === 'run_timed_out') {
             return self::workflowTimeoutConflict($taskId);
         }
