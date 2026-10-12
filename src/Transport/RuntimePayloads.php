@@ -29,9 +29,10 @@ final class RuntimePayloads
 
     /**
      * @param array<string, mixed> $response
+     * @param list<list<int|string>>|null $payloadPaths
      * @return array<string, mixed>
      */
-    public function response(array $response, string $requestPath, bool $worker): array
+    public function response(array $response, string $requestPath, bool $worker, ?array $payloadPaths = null): array
     {
         $path = explode('?', $requestPath)[0];
         $paths = [];
@@ -71,7 +72,7 @@ final class RuntimePayloads
                 $paths = [...$paths, ...$this->exportPaths([])];
             }
         }
-        foreach ($paths as $segments) {
+        foreach ($payloadPaths ?? $paths as $segments) {
             $response = $this->at($response, $segments);
         }
 
@@ -111,7 +112,7 @@ final class RuntimePayloads
         return $paths;
     }
 
-    /** @param list<string> $segments */
+    /** @param list<int|string> $segments */
     private function at(mixed $value, array $segments): mixed
     {
         if ($segments === []) {
