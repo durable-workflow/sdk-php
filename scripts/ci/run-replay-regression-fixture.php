@@ -82,6 +82,7 @@ final class ReplayRegressionTransport implements Transport
     /** @var array<string, mixed>|null */
     private ?array $activityCompletionBody = null;
     private bool $activityCompleted = false;
+    private bool $workflowClaimRepaired = false;
 
     /**
      * @param list<array<string, mixed>> $tasks
@@ -93,6 +94,7 @@ final class ReplayRegressionTransport implements Transport
         private readonly bool $storagePressure = false,
         private readonly bool $backendUnavailable = false,
         private readonly bool $activityBackendUnavailable = false,
+        private readonly bool $workflowLeaseRecovery = false,
     ) {
     }
 
@@ -103,7 +105,12 @@ final class ReplayRegressionTransport implements Transport
                 return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
             }
 
-            return ['task' => $this->tasks[$this->workflowPoll++], 'poll_status' => 'leased'];
+            $task = $this->tasks[$this->workflowPoll++];
+            if ($this->workflowLeaseRecovery && $this->workflowClaimRepaired) {
+                $task['workflow_task_attempt'] = 2;
+            }
+
+            return ['task' => $task, 'poll_status' => 'leased'];
         }
 
         $task = $this->taskFor($uri, 'history');
@@ -121,9 +128,17 @@ final class ReplayRegressionTransport implements Transport
 
         $task = $this->taskFor($uri, 'heartbeat');
         if ($task !== null) {
+            if ($this->workflowLeaseRecovery && !$this->workflowClaimRepaired) {
+                $this->workflowClaimRepaired = true;
+                --$this->workflowPoll;
+                $refusal = ['task_id' => $task['task_id'], 'workflow_task_attempt' => 1,
+                    'task_status' => 'ready', 'reason' => 'task_not_leased',
+                    'error' => 'Workflow task is not currently leased.'];
+                throw TransportException::fromResponse(409, $refusal, json_encode($refusal, JSON_THROW_ON_ERROR));
+            }
             return [
                 'task_id' => $task['task_id'],
-                'workflow_task_attempt' => $task['workflow_task_attempt'],
+                'workflow_task_attempt' => $this->workflowClaimRepaired ? 2 : $task['workflow_task_attempt'],
                 'lease_owner' => $task['lease_owner'],
                 'renewed' => true,
                 'reason' => null,
@@ -131,6 +146,10 @@ final class ReplayRegressionTransport implements Transport
         }
 
         if (($completionTask = $this->taskFor($uri, 'complete')) !== null) {
+            if ($this->workflowLeaseRecovery
+                && (!$this->workflowClaimRepaired || ($body['workflow_task_attempt'] ?? null) !== 2)) {
+                throw new RuntimeException('A repaired workflow must complete only under its fresh attempt.');
+            }
             if ($this->backendUnavailable) {
                 if ($this->refusedCompletion !== null && $body !== $this->refusedCompletion) {
                     throw new RuntimeException('Backend recovery changed the workflow completion request.');
@@ -448,6 +467,7 @@ final class ReplayRegressionConsumer
             storagePressure: $workflowType === 'golden.local-activity-recovered',
             backendUnavailable: $workflowType === 'golden.completion-backend-loss',
             activityBackendUnavailable: $workflowType === 'golden.activity-completion-backend-loss',
+            workflowLeaseRecovery: $workflowType === 'golden.workflow-lease-recovery',
         );
         $now = 0.0;
         $worker = new Worker(
@@ -498,6 +518,9 @@ final class ReplayRegressionConsumer
         foreach ($tasks as $_task) {
             $worker->tick(0);
             gc_collect_cycles();
+        }
+        if ($workflowType === 'golden.workflow-lease-recovery') {
+            $worker->tick(0);
         }
         if ($localActivityInvocations !== ($workflowType === 'golden.activity-completion-backend-loss' ? 1 : 0)) {
             throw new RuntimeException("{$identity} repeated a recorded local activity during cold replay.");
@@ -768,6 +791,8 @@ final class ReplayRegressionConsumer
             },
             'golden.completion-backend-loss' => static fn (WorkflowContext $context): string =>
                 'completion-after-backend-recovery',
+            'golden.workflow-lease-recovery' => static fn (WorkflowContext $context): mixed =>
+                $context->activity('golden.lease-receipt'),
             'golden.activity-completion-backend-loss' => static fn (WorkflowContext $context): mixed =>
                 $context->activity('golden.backend-recovery'),
             default => throw new RuntimeException(

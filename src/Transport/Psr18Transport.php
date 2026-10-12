@@ -22,7 +22,7 @@ use Psr\Http\Message\StreamInterface;
 use Throwable;
 
 /** Default PSR-18 JSON and bounded runtime-payload transport. */
-final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUploadTransport, BoundedTransport
+final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUploadTransport, BoundedTransport, ProgressPayloadTransport
 {
     private readonly ClientInterface $client;
     private readonly RequestFactoryInterface $requestFactory;
@@ -113,8 +113,13 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         return $this->fetch($uri, $headers, $maxBytes, $timeoutSeconds);
     }
 
+    public function fetchPayloadWithProgress(string $uri, array $headers, int $maxBytes, \Closure $progress): string
+    {
+        return $this->fetch($uri, $headers, $maxBytes, progress: $progress);
+    }
+
     /** @param array<string, string> $headers */
-    private function fetch(string $uri, array $headers, int $maxBytes, ?int $timeoutSeconds = null): string
+    private function fetch(string $uri, array $headers, int $maxBytes, ?int $timeoutSeconds = null, ?\Closure $progress = null): string
     {
         if ($maxBytes < 0) {
             throw new \InvalidArgumentException('Payload read bound cannot be negative.');
@@ -127,6 +132,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             ? $this->sendRequest($request, true)
             : $this->sendPayloadBounded($request, max($maxBytes, 65536), $timeoutSeconds);
         $stream = $response->getBody();
+        $progressFailure = null;
         try {
             $status = $response->getStatusCode();
             if ($status < 200 || $status >= 300) {
@@ -163,12 +169,21 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
                 if (strlen($body) > $maxBytes) {
                     throw new ExternalPayloadException('Runtime payload response exceeds its declared size.', 422, 'external_payload_integrity_mismatch');
                 }
+                try {
+                    $progress?->__invoke();
+                } catch (Throwable $exception) {
+                    $progressFailure = $exception;
+                    throw $exception;
+                }
             }
 
             return $body;
         } catch (ExternalPayloadException $exception) {
             throw $exception;
         } catch (Throwable $exception) {
+            if ($progressFailure !== null) {
+                throw $progressFailure;
+            }
             throw new ExternalPayloadException('Runtime payload stream could not be read.', 503, 'external_payload_unavailable', previous: $exception);
         } finally {
             $stream->close();

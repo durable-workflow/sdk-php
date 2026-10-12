@@ -22,6 +22,8 @@ final class RuntimePayloads
         private readonly array $headers,
         private readonly int $limit,
         private readonly ?RequestBudget $budget = null,
+        /** @var (\Closure(): void)|null */
+        private readonly ?\Closure $progress = null,
     ) {
     }
 
@@ -155,8 +157,11 @@ final class RuntimePayloads
             ]);
             // IDs cannot contain a URL or path. Use only the already authenticated runtime.
             $uri = $this->baseUri.'/api/external-payloads/v1/'.$reference['reference_id'];
+            $this->progress?->__invoke();
             if ($this->budget === null) {
-                $blob = $this->transport->fetchPayload($uri, $headers, $reference['size_bytes']);
+                $blob = $this->progress !== null && $this->transport instanceof ProgressPayloadTransport
+                    ? $this->transport->fetchPayloadWithProgress($uri, $headers, $reference['size_bytes'], $this->progress)
+                    : $this->transport->fetchPayload($uri, $headers, $reference['size_bytes']);
             } else {
                 if (!$this->transport instanceof BoundedPayloadTransport) {
                     throw new ExternalPayloadException('The cooperative transport must bound payload downloads.', 415, 'external_payload_unsupported');
