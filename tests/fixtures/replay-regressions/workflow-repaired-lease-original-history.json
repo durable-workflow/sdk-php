@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-workflow-repaired-lease-original-history",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.workflow-lease-recovery", "input": []},
+  "history": [
+    {"event_type": "ActivityScheduled", "payload": {"sequence": 1, "activity_type": "golden.lease-receipt"}},
+    {"event_type": "ActivityCompleted", "payload": {"sequence": 1, "activity_type": "golden.lease-receipt",
+      "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwoUaGVsbG8sIEFkYQ=="}}}
+  ],
+  "expected": {"command_sequence": [{"type": "complete_workflow", "result": "hello, Ada"}]}
+}

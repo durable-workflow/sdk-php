@@ -552,6 +552,8 @@ final class ReplayRegressionFixture
             },
             'golden.completion-backend-loss' => static fn (WorkflowContext $context): string =>
                 'completion-after-backend-recovery',
+            'golden.workflow-lease-recovery' => static fn (WorkflowContext $context): mixed =>
+                $context->activity('golden.lease-receipt'),
             'golden.activity-completion-backend-loss' => static fn (WorkflowContext $context): mixed =>
                 $context->activity('golden.backend-recovery'),
             default => throw new RuntimeException(
