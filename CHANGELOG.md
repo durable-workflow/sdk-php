@@ -6,6 +6,12 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Retry expired idle worker I/O budgets with backoff and restore registration
+  before acquiring more work. Task and cancellation authority deadlines retain
+  their original bounds.
+
 ## [2.2.7] - 2026-10-11
 
 ### Fixed
