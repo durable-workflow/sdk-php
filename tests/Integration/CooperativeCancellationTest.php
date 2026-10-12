@@ -2009,7 +2009,7 @@ final class CooperativeCancellationTest extends TestCase
     private function client(?Transport $transport = null, string $namespace = 'default'): Client
     {
         return new Client($this->runtimeUrl, namespace: $namespace, token: $this->token,
-            transport: $transport, workerProtocolVersion: '1.20');
+            transport: $transport);
     }
 
     private function queue(string $kind): string

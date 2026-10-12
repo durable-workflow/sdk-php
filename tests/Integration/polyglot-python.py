@@ -91,7 +91,6 @@ async def main() -> None:
     logging.getLogger("durable_workflow.worker").setLevel(logging.DEBUG)
     log.setLevel(logging.DEBUG)
     queue = sys.argv[1]
-    os.environ["DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION"] = "1.20"
     shutdown = asyncio.Event()
     asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, shutdown.set)
     async with ObservedClient(
