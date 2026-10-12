@@ -1824,6 +1824,7 @@ final class Client implements WorkflowClientInterface
                 && match ($response['reason'] ?? null) {
                     'cancellation_waiting_for_child' => in_array($delivery->callKind, ['child', 'parallel', 'selection_handle'], true),
                     'cancellation_waiting_for_activity' => in_array($delivery->callKind, ['activity', 'local_activity', 'parallel', 'selection_handle'], true),
+                    'cancellation_waiting_for_service_operation' => $delivery->callKind === 'service_operation',
                     default => false,
                 }
                 && ($response['claim_released'] ?? null) === true

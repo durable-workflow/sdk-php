@@ -43,6 +43,58 @@ final class ServiceOperationReplayTest extends TestCase
         }
     }
 
+    public function testCancellationOfACompletionWaitingCallProducesOnlyItsOriginalDeliveryIntent(): void
+    {
+        $requested = self::cancellationRequest();
+        foreach ([[$requested], [self::event('ServiceCallStarted'), $requested]] as $history) {
+            foreach (range(1, 3) as $_) {
+                $result = $this->replay($history);
+                self::assertSame([], $result->commands);
+                self::assertSame('service_operation', $result->cancellationDelivery?->callKind);
+                self::assertSame('cancel-1', $result->cancellationDelivery?->requestId);
+                self::assertSame(1, $result->cancellationDelivery?->sequence);
+            }
+        }
+    }
+
+    public function testCanonicalDeliveryReplaysCallerCleanupWithoutRestartingTheService(): void
+    {
+        $workflow = static function (WorkflowContext $context): void {
+            try {
+                $context->serviceOperation('billing', 'invoices', 'create', ['invoice_id' => 42], ['idempotency_key' => 'call-key']);
+            } catch (\DurableWorkflow\Exception\WorkflowCancelled $cancel) {
+                self::assertSame('cancel-1', $cancel->requestId);
+                $context->sleep(1);
+                throw $cancel;
+            }
+        };
+        $history = [self::event('ServiceCallStarted'), self::cancellationRequest(),
+            self::event('ServiceCallCancelled'), ['event_type' => 'CooperativeCancellationDelivered', 'payload' => [
+                'workflow_run_id' => 'caller-run', 'workflow_command_id' => 'cancel-1', 'sequence' => 1,
+                'call_kind' => 'service_operation',
+            ]]];
+        foreach (range(1, 3) as $_) {
+            $result = (new Replayer(new AvroPayloadCodec()))->replay($workflow, $history, [], 'callers', self::task());
+            self::assertSame(['start_timer'], array_column($result->commands, 'type'));
+            self::assertSame(1, $result->commands[0]['delay_seconds']);
+            self::assertNull($result->cancellationDelivery);
+        }
+    }
+
+    #[DataProvider('intentChanges')]
+    public function testCancellationCannotHideAChangedOriginalCall(array $changes): void
+    {
+        $this->expectException(NonDeterministicWorkflow::class);
+        $this->replay([self::event('ServiceCallStarted', $changes), self::cancellationRequest()]);
+    }
+
+    private static function cancellationRequest(): array
+    {
+        return ['event_type' => 'CooperativeCancellationRequested', 'recorded_at' => '2026-10-12T08:00:02Z',
+            'payload' => ['workflow_run_id' => 'caller-run', 'workflow_command_id' => 'cancel-1',
+                'cleanup_deadline_at' => '2026-10-12T08:00:32Z']];
+    }
+
     /** @param mixed $value */
     #[DataProvider('results')]
     public function testTerminalTypedResultResumesTheOriginalCall(mixed $value): void

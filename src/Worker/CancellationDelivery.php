@@ -10,7 +10,7 @@ use InvalidArgumentException;
 final class CancellationDelivery
 {
     public const CALL_KINDS = [
-        'activity', 'local_activity', 'timer', 'condition', 'signal', 'child', 'parallel', 'selection_handle',
+        'activity', 'local_activity', 'timer', 'condition', 'signal', 'child', 'parallel', 'selection_handle', 'service_operation',
     ];
 
     private function __construct(

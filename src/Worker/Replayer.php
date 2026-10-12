@@ -983,6 +983,8 @@ final class Replayer
                 'record_local_activity' => 'local_activity',
                 'start_timer' => 'timer',
                 'start_child_workflow' => 'child',
+                'start_service_operation' => ($command->attributes['wait_for'] ?? 'completed') !== 'accepted'
+                    && ($command->attributes['mode_override'] ?? 'sync') !== 'async' ? 'service_operation' : null,
                 'open_condition_wait' => isset($stepsBySequence[$sequence])
                     || $delivery?->sequence === $sequence
                     || (!$command->conditionSatisfied() && ($command->attributes['timeout_seconds'] ?? null) !== 0)

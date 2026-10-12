@@ -71,7 +71,7 @@ final class CooperativeCancellationDeliveryTest extends TestCase
 
     public static function pendingDeliveryKinds(): array
     {
-        $cases = [];
+        $cases = ['Nexus' => ['service_operation', 'cancellation_waiting_for_service_operation']];
         foreach (['child', 'parallel', 'selection_handle'] as $kind) {
             $cases['child '.$kind] = [$kind, 'cancellation_waiting_for_child'];
         }
@@ -109,7 +109,7 @@ final class CooperativeCancellationDeliveryTest extends TestCase
             ['claim_released' => false], ['claim_released' => 'true'], ['claim_released' => null],
         ];
         $cases = [];
-        foreach (['child', 'activity'] as $kind) {
+        foreach (['child', 'activity', 'service_operation'] as $kind) {
             foreach ($changes as $change) {
                 $cases[] = [$change, 'cancellation_waiting_for_'.$kind, $kind];
             }

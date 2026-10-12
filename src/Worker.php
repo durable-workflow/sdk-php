@@ -606,7 +606,7 @@ final class Worker
                         'worker_sessions',
                         'sticky_execution',
                         'cross_kind_poll_wake',
-                        ...($this->enableCooperativeCancellation ? ['cooperative_cancellation'] : []),
+                        ...($this->enableCooperativeCancellation ? ['cooperative_cancellation', 'nexus_cooperative_cancellation'] : []),
                         ...($this->enablePreparedLocalActivities ? ['prepared_local_activities'] : []),
                         ...($this->preparedLocalActivityGroupsSupported ? ['prepared_local_activity_groups'] : []),
                         ...($this->preparedLocalActivityCancellationPolicies !== [] ? ['prepared_local_activity_cancellation_policies'] : []),
@@ -637,6 +637,12 @@ final class Worker
                             ],
                         ] : []),
                         ...($this->enableCooperativeCancellation ? [
+                            'nexus_cooperative_cancellation' => [
+                                'supported' => true,
+                                'minimum_protocol_version' => Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL,
+                                'implementation' => 'owned_workflow_run_canonical_delivery',
+                                'binding_kinds' => ['workflow_run'],
+                            ],
                             'cooperative_cancellation' => [
                                 'supported' => true,
                                 'minimum_protocol_version' => Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL,
