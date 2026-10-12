@@ -140,7 +140,8 @@ final class Worker
         if ($enableCooperativeCancellation && !CooperativeActivityExecutor::available()) {
             throw new \InvalidArgumentException('Cooperative workers require Unix CLI with pcntl and posix.');
         }
-        $this->client = $enableCooperativeCancellation ? $client->withBoundedWorkerRequests() : $client;
+        $workerClient = $enableCooperativeCancellation ? $client->withBoundedWorkerRequests() : $client;
+        $this->client = $workerClient->withWorkerPayloadObserver($this->workflowPayloadProgress(...));
         $this->workerId = $workerId ?? 'php-worker-'.bin2hex(random_bytes(8));
         $this->heartbeatIntervalSeconds = $this->validHeartbeatInterval($heartbeatIntervalSeconds)
             ?? self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS;
@@ -841,6 +842,15 @@ final class Worker
                 }
 
                 return $poll($requestId, $timeoutSeconds);
+            } catch (WorkflowClaimRevoked $exception) {
+                $cause = $exception->getPrevious();
+                $this->diagnostic('worker.claim_aborted', ['task_kind' => $taskKind, 'task_id' => $exception->taskId,
+                    'workflow_task_attempt' => $exception->taskAttempt, 'reason' => $exception->reason,
+                    'cause_reason' => $cause instanceof ServerException ? $cause->reason : null,
+                    'cause_type' => $cause === null ? null : $cause::class,
+                    'message' => $exception->getMessage()], 'warning');
+
+                return ['task' => null, 'poll_status' => 'empty'];
             } catch (ServerException $exception) {
                 $databaseUnavailable = $this->isTransientDatabaseFailure(
                     $exception,
@@ -1377,6 +1387,62 @@ final class Worker
         }
 
         return false;
+    }
+
+    /**
+     * @param array<string, mixed>|null $body
+     * @param array<string, mixed> $response
+     * @return (\Closure(): void)|null
+     */
+    private function workflowPayloadProgress(string $path, ?array $body, array $response, ?RequestBudget $budget): ?\Closure
+    {
+        if ($path === '/worker/workflow-tasks/poll') {
+            $task = $response['task'] ?? null;
+            if (!is_array($task)) {
+                return null;
+            }
+            $taskId = $task['task_id'] ?? null;
+            $owner = $task['lease_owner'] ?? $this->workerId;
+            $attempt = $task['workflow_task_attempt'] ?? 1;
+        } elseif (preg_match('~\A/worker/workflow-tasks/([^/]+)/history\z~', $path, $matches) === 1) {
+            $taskId = rawurldecode($matches[1]);
+            $owner = $body['lease_owner'] ?? null;
+            $attempt = $body['workflow_task_attempt'] ?? null;
+        } else {
+            return null;
+        }
+        if (!is_string($taskId) || $taskId === '' || $owner !== $this->workerId || !is_int($attempt) || $attempt < 1) {
+            return null;
+        }
+        $renewedAt = null;
+
+        return function () use ($taskId, $owner, $attempt, $budget, &$renewedAt): void {
+            if ($this->shutdownRequested) {
+                throw new WorkflowClaimRevoked('worker_stopped', 'Payload transfer stopped with its Worker.');
+            }
+            if ($renewedAt !== null && $this->now() - $renewedAt < 10) {
+                return;
+            }
+            $heartbeatBudget = $budget ?? ($this->client->supportsBoundedWorkerRequests() ? new RequestBudget(5) : null);
+            try {
+                $heartbeatBudget?->remainingSeconds();
+                $receipt = $this->client->heartbeatWorkflowTask($taskId, $owner, $attempt, $heartbeatBudget);
+                if (!$this->matchesWorkflowTaskLeaseFence($receipt, $taskId, $owner, $attempt)
+                    || ($receipt['renewed'] ?? null) !== true) {
+                    throw $this->workflowTaskLeaseResponseFailure('Payload transfer lease renewal was not acknowledged.', $receipt);
+                }
+                $this->heartbeatIfDue($heartbeatBudget);
+                $heartbeatBudget?->remainingSeconds();
+            } catch (Throwable $error) {
+                if ($error instanceof ServerException && in_array($error->status, [401, 403], true)) {
+                    throw $error;
+                }
+                throw new WorkflowClaimRevoked('payload_lease_unconfirmed',
+                    'Payload transfer stopped because its original workflow lease could not be confirmed.', previous: $error,
+                    taskId: $taskId, taskAttempt: $attempt);
+            }
+            $renewedAt = $this->now();
+        };
     }
 
     private function observeClaimCancellation(mixed $observation): CancellationRequest
@@ -3199,7 +3265,8 @@ final class Worker
         }
 
         try {
-            $acknowledgement = $this->client->heartbeatWorker($this->workerId, [
+            $heartbeatClient = $budget === null ? $this->client : $this->client->withBoundedWorkerRequests();
+            $acknowledgement = $heartbeatClient->heartbeatWorker($this->workerId, [
                 'workflow_available' => 1,
                 'activity_available' => 1,
             ], $budget);

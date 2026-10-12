@@ -17,6 +17,8 @@ use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\WorkflowContext;
 use GuzzleHttp\Psr7\PumpStream;
 use GuzzleHttp\Psr7\Response;
+use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Promise\FulfilledPromise;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Client\ClientInterface;
@@ -25,6 +27,105 @@ use Psr\Http\Message\ResponseInterface;
 
 final class WorkerExternalPayloadRecoveryTest extends TestCase
 {
+    #[DataProvider('slowWorkflowPayloads')]
+    public function testSlowWorkflowPayloadsRenewTheOriginalClaimAndStopIfItIsLost(string $phase, bool $loseClaim): void
+    {
+        $codec = new AvroPayloadCodec();
+        $large = str_repeat('p', 32768);
+        $blob = $codec->envelope([$large])['blob'];
+        $arguments = ['codec' => 'avro', 'external_payload' => RuntimeExternalPayloadTest::reference($blob)];
+        $now = 0.0;
+        $leaseUntil = 30.0;
+        $renewals = $executions = $completions = $failures = 0;
+        $workerHeartbeats = $polls = 0;
+        $handler = static function (RequestInterface $request) use (
+            $phase, $loseClaim, $codec, $blob, $arguments, &$now, &$leaseUntil, &$renewals, &$completions, &$failures, &$workerHeartbeats, &$polls,
+        ): ResponseInterface {
+            $path = $request->getUri()->getPath();
+            if (str_ends_with($path, '/register')) return self::json(['registered' => true, 'heartbeat_interval_seconds' => 10]);
+            if (str_ends_with($path, '/worker/heartbeat')) {
+                ++$workerHeartbeats;
+                return self::json(['acknowledged' => true]);
+            }
+            if (str_ends_with($path, '/deregister')) return self::json(['deregistered' => true]);
+            if (str_ends_with($path, '/workflow-tasks/poll')) {
+                if (++$polls > 1) return self::json(['task' => null, 'poll_status' => 'stopped']);
+                $task = self::task($blob);
+                $task['arguments'] = $phase === 'poll' ? $arguments : $codec->envelope(['portable']);
+                $task['next_history_page_token'] = $phase === 'history' ? 'page-1' : '';
+                return self::json(['task' => $task, 'poll_status' => 'leased']);
+            }
+            if (str_ends_with($path, '/task-1/history')) {
+                return self::json(['history_events' => [['event_type' => 'WorkflowStarted', 'payload' => ['arguments' => $arguments]]]]);
+            }
+            if (str_ends_with($path, '/task-1/heartbeat')) {
+                $body = json_decode((string) $request->getBody(), true, flags: JSON_THROW_ON_ERROR);
+                self::assertSame('worker-1', $body['lease_owner']);
+                self::assertSame(1, $body['workflow_task_attempt']);
+                if ($now >= $leaseUntil || ($loseClaim && $now >= 40)) {
+                    return new Response(409, [], json_encode(['task_id' => 'task-1', 'workflow_task_attempt' => 1,
+                        'lease_owner' => 'worker-1', 'task_status' => 'leased', 'reason' => 'lease_expired'], JSON_THROW_ON_ERROR));
+                }
+                ++$renewals;
+                $leaseUntil = $now + 30;
+                return self::json(['renewed' => true, 'task_id' => 'task-1', 'lease_owner' => 'worker-1', 'workflow_task_attempt' => 1]);
+            }
+            if (str_contains($path, '/external-payloads/')) {
+                $offset = 0;
+                return self::payload($blob, new PumpStream(static function (int $length) use ($blob, &$offset, &$now): string|false {
+                    if ($offset >= strlen($blob)) return false;
+                    $chunk = substr($blob, $offset, min($length, 8192));
+                    $offset += strlen($chunk);
+                    $now += 20;
+                    return $chunk;
+                }));
+            }
+            if (str_ends_with($path, '/task-1/complete')) {
+                self::assertLessThan($leaseUntil, $now);
+                ++$completions;
+                return self::json(['completed' => true]);
+            }
+            if (str_ends_with($path, '/task-1/fail')) {
+                ++$failures;
+                return self::json(['failed' => true]);
+            }
+            return self::json(['task' => null, 'poll_status' => 'empty']);
+        };
+        $http = new GuzzleClient(['handler' => static fn (RequestInterface $request, array $options): FulfilledPromise => new FulfilledPromise($handler($request))]);
+        $client = new Client('http://server.example', transport: new Psr18Transport($http));
+        $diagnostics = [];
+        $worker = new Worker($client, 'payload-workers', workerId: 'worker-1', clock: static function () use (&$now): float { return $now; },
+            diagnosticListener: static function (string $event, array $context) use (&$diagnostics): void {
+                if ($event === 'worker.claim_aborted') $diagnostics[] = $context;
+            });
+        $worker->registerWorkflow('payload.workflow', static function (WorkflowContext $ctx, string $argument) use ($phase, $large, &$executions): string {
+            self::assertSame($phase === 'poll' ? $large : 'portable', $argument);
+            ++$executions;
+            return 'recovered';
+        });
+        $worker->run(0);
+        self::assertSame($loseClaim ? 0 : 1, $executions);
+        self::assertSame($loseClaim ? 0 : 1, $completions);
+        self::assertSame(0, $failures, 'An interrupted transfer cannot publish a stale task failure.');
+        self::assertGreaterThanOrEqual(2, $renewals);
+        self::assertGreaterThanOrEqual(1, $workerHeartbeats, 'Registration health continues during the transfer.');
+        if ($loseClaim && $phase === 'poll') {
+            self::assertCount(1, $diagnostics);
+            self::assertSame('task-1', $diagnostics[0]['task_id']);
+            self::assertSame(1, $diagnostics[0]['workflow_task_attempt']);
+            self::assertSame('lease_expired', $diagnostics[0]['cause_reason']);
+        }
+        if (!$loseClaim) self::assertGreaterThan(60, $now, 'The stream must cross the original lease.');
+    }
+
+    public static function slowWorkflowPayloads(): iterable
+    {
+        foreach (['poll', 'history'] as $phase) {
+            yield "$phase renews through slow streaming" => [$phase, false];
+            yield "$phase stops at lost authority" => [$phase, true];
+        }
+    }
+
     #[DataProvider('recoverablePolls')]
     public function testAdmittedTaskRecoversWithOriginalPollIdentityAndExecutesOnce(string $kind, string $failure, int $failures): void
     {
