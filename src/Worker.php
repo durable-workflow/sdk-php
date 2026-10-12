@@ -3260,7 +3260,8 @@ final class Worker
         }
 
         try {
-            $acknowledgement = $this->client->heartbeatWorker($this->workerId, [
+            $heartbeatClient = $budget === null ? $this->client : $this->client->withBoundedWorkerRequests();
+            $acknowledgement = $heartbeatClient->heartbeatWorker($this->workerId, [
                 'workflow_available' => 1,
                 'activity_available' => 1,
             ], $budget);

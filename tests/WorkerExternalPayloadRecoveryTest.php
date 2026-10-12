@@ -17,6 +17,8 @@ use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\WorkflowContext;
 use GuzzleHttp\Psr7\PumpStream;
 use GuzzleHttp\Psr7\Response;
+use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Promise\FulfilledPromise;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Client\ClientInterface;
@@ -35,11 +37,19 @@ final class WorkerExternalPayloadRecoveryTest extends TestCase
         $now = 0.0;
         $leaseUntil = 30.0;
         $renewals = $executions = $completions = $failures = 0;
-        $client = self::client(static function (RequestInterface $request) use (
-            $phase, $loseClaim, $codec, $large, $blob, $arguments, &$now, &$leaseUntil, &$renewals, &$completions, &$failures,
+        $workerHeartbeats = $polls = 0;
+        $handler = static function (RequestInterface $request) use (
+            $phase, $loseClaim, $codec, $blob, $arguments, &$now, &$leaseUntil, &$renewals, &$completions, &$failures, &$workerHeartbeats, &$polls,
         ): ResponseInterface {
             $path = $request->getUri()->getPath();
+            if (str_ends_with($path, '/register')) return self::json(['registered' => true, 'heartbeat_interval_seconds' => 10]);
+            if (str_ends_with($path, '/worker/heartbeat')) {
+                ++$workerHeartbeats;
+                return self::json(['acknowledged' => true]);
+            }
+            if (str_ends_with($path, '/deregister')) return self::json(['deregistered' => true]);
             if (str_ends_with($path, '/workflow-tasks/poll')) {
+                if (++$polls > 1) return self::json(['task' => null, 'poll_status' => 'stopped']);
                 $task = self::task($blob);
                 $task['arguments'] = $phase === 'poll' ? $arguments : $codec->envelope(['portable']);
                 $task['next_history_page_token'] = $phase === 'history' ? 'page-1' : '';
@@ -80,18 +90,21 @@ final class WorkerExternalPayloadRecoveryTest extends TestCase
                 return self::json(['failed' => true]);
             }
             return self::json(['task' => null, 'poll_status' => 'empty']);
-        });
+        };
+        $http = new GuzzleClient(['handler' => static fn (RequestInterface $request, array $options): FulfilledPromise => new FulfilledPromise($handler($request))]);
+        $client = new Client('http://server.example', transport: new Psr18Transport($http));
         $worker = new Worker($client, 'payload-workers', workerId: 'worker-1', clock: static function () use (&$now): float { return $now; });
         $worker->registerWorkflow('payload.workflow', static function (WorkflowContext $ctx, string $argument) use ($phase, $large, &$executions): string {
             self::assertSame($phase === 'poll' ? $large : 'portable', $argument);
             ++$executions;
             return 'recovered';
         });
-        $worker->tick(0);
+        $worker->run(0);
         self::assertSame($loseClaim ? 0 : 1, $executions);
         self::assertSame($loseClaim ? 0 : 1, $completions);
         self::assertSame(0, $failures, 'An interrupted transfer cannot publish a stale task failure.');
         self::assertGreaterThanOrEqual(2, $renewals);
+        self::assertGreaterThanOrEqual(1, $workerHeartbeats, 'Registration health continues during the transfer.');
         if (!$loseClaim) self::assertGreaterThan(60, $now, 'The stream must cross the original lease.');
     }
 
