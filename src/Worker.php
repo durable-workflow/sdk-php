@@ -843,8 +843,12 @@ final class Worker
 
                 return $poll($requestId, $timeoutSeconds);
             } catch (WorkflowClaimRevoked $exception) {
-                $this->diagnostic('worker.claim_aborted', ['task_kind' => $taskKind,
-                    'reason' => $exception->reason, 'message' => $exception->getMessage()], 'warning');
+                $cause = $exception->getPrevious();
+                $this->diagnostic('worker.claim_aborted', ['task_kind' => $taskKind, 'task_id' => $exception->taskId,
+                    'workflow_task_attempt' => $exception->taskAttempt, 'reason' => $exception->reason,
+                    'cause_reason' => $cause instanceof ServerException ? $cause->reason : null,
+                    'cause_type' => $cause === null ? null : $cause::class,
+                    'message' => $exception->getMessage()], 'warning');
 
                 return ['task' => null, 'poll_status' => 'empty'];
             } catch (ServerException $exception) {
@@ -1434,7 +1438,8 @@ final class Worker
                     throw $error;
                 }
                 throw new WorkflowClaimRevoked('payload_lease_unconfirmed',
-                    'Payload transfer stopped because its original workflow lease could not be confirmed.', previous: $error);
+                    'Payload transfer stopped because its original workflow lease could not be confirmed.', previous: $error,
+                    taskId: $taskId, taskAttempt: $attempt);
             }
             $renewedAt = $this->now();
         };

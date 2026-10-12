@@ -93,7 +93,11 @@ final class WorkerExternalPayloadRecoveryTest extends TestCase
         };
         $http = new GuzzleClient(['handler' => static fn (RequestInterface $request, array $options): FulfilledPromise => new FulfilledPromise($handler($request))]);
         $client = new Client('http://server.example', transport: new Psr18Transport($http));
-        $worker = new Worker($client, 'payload-workers', workerId: 'worker-1', clock: static function () use (&$now): float { return $now; });
+        $diagnostics = [];
+        $worker = new Worker($client, 'payload-workers', workerId: 'worker-1', clock: static function () use (&$now): float { return $now; },
+            diagnosticListener: static function (string $event, array $context) use (&$diagnostics): void {
+                if ($event === 'worker.claim_aborted') $diagnostics[] = $context;
+            });
         $worker->registerWorkflow('payload.workflow', static function (WorkflowContext $ctx, string $argument) use ($phase, $large, &$executions): string {
             self::assertSame($phase === 'poll' ? $large : 'portable', $argument);
             ++$executions;
@@ -105,6 +109,12 @@ final class WorkerExternalPayloadRecoveryTest extends TestCase
         self::assertSame(0, $failures, 'An interrupted transfer cannot publish a stale task failure.');
         self::assertGreaterThanOrEqual(2, $renewals);
         self::assertGreaterThanOrEqual(1, $workerHeartbeats, 'Registration health continues during the transfer.');
+        if ($loseClaim && $phase === 'poll') {
+            self::assertCount(1, $diagnostics);
+            self::assertSame('task-1', $diagnostics[0]['task_id']);
+            self::assertSame(1, $diagnostics[0]['workflow_task_attempt']);
+            self::assertSame('lease_expired', $diagnostics[0]['cause_reason']);
+        }
         if (!$loseClaim) self::assertGreaterThan(60, $now, 'The stream must cross the original lease.');
     }
 

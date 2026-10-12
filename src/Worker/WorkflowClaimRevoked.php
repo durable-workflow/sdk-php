@@ -13,6 +13,8 @@ final class WorkflowClaimRevoked extends WorkflowClaimAborted
         public readonly string $reason,
         string $message,
         ?Throwable $previous = null,
+        public readonly ?string $taskId = null,
+        public readonly ?int $taskAttempt = null,
     ) {
         parent::__construct($message, previous: $previous);
     }
