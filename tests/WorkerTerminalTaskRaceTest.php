@@ -21,6 +21,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
     public function testManagedWorkerProcessesTheNextWorkflowAfterATerminalAcknowledgementRace(
         string $failurePoint,
         string $terminalReason,
+        string $taskStatus = 'cancelled',
     ): void {
         $workflowPolls = 0;
         $fallbackAcknowledgements = 0;
@@ -33,6 +34,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
         ) use (
             $failurePoint,
             $terminalReason,
+            $taskStatus,
             &$workflowPolls,
             &$fallbackAcknowledgements,
             &$nextWorkflowCompleted,
@@ -57,7 +59,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
 
             if (str_ends_with($uri, '/workflow-tasks/closed-task/heartbeat')) {
                 if ($failurePoint === 'heartbeat') {
-                    throw self::workflowTerminalConflict('closed-task', $terminalReason);
+                    throw self::workflowTerminalConflict('closed-task', $terminalReason, $taskStatus);
                 }
 
                 return self::renewedWorkflowTaskLease('closed-task');
@@ -65,7 +67,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
 
             if (str_ends_with($uri, '/workflow-tasks/closed-task/complete')) {
                 if ($failurePoint === 'completion') {
-                    throw self::workflowTerminalConflict('closed-task', $terminalReason);
+                    throw self::workflowTerminalConflict('closed-task', $terminalReason, $taskStatus);
                 }
 
                 self::fail('The closed workflow task should not complete.');
@@ -73,7 +75,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
 
             if (str_ends_with($uri, '/workflow-tasks/closed-task/fail')) {
                 ++$fallbackAcknowledgements;
-                throw self::workflowTerminalConflict('closed-task', $terminalReason);
+                throw self::workflowTerminalConflict('closed-task', $terminalReason, $taskStatus);
             }
 
             if (str_ends_with($uri, '/workflow-tasks/next-task/heartbeat')) {
@@ -114,7 +116,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
         self::assertSame($failurePoint === 'fallback' ? 1 : 0, $fallbackAcknowledgements);
     }
 
-    /** @return iterable<string, array{string, string}> */
+    /** @return iterable<string, array{0: string, 1: string, 2?: string}> */
     public static function workflowTerminalAcknowledgementProvider(): iterable
     {
         yield 'run closed during workflow heartbeat' => ['heartbeat', 'run_closed'];
@@ -124,6 +126,9 @@ final class WorkerTerminalTaskRaceTest extends TestCase
         yield 'cancelled workflow loses lease before heartbeat' => ['heartbeat', 'task_not_leased'];
         yield 'cancelled workflow loses lease before completion' => ['completion', 'task_not_leased'];
         yield 'cancelled workflow loses lease before fallback failure' => ['fallback', 'task_not_leased'];
+        yield 'repaired Ready task loses lease before heartbeat' => ['heartbeat', 'task_not_leased', 'ready'];
+        yield 'repaired Ready task loses lease before completion' => ['completion', 'task_not_leased', 'ready'];
+        yield 'repaired Ready task loses lease before fallback failure' => ['fallback', 'task_not_leased', 'ready'];
     }
 
     #[DataProvider('activityTerminalAcknowledgementProvider')]
@@ -521,7 +526,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
         return TransportException::fromResponse(409, $response, json_encode($response, JSON_THROW_ON_ERROR));
     }
 
-    private static function workflowTerminalConflict(string $taskId, string $reason): TransportException
+    private static function workflowTerminalConflict(string $taskId, string $reason, string $taskStatus = 'cancelled'): TransportException
     {
         if ($reason === 'run_timed_out') {
             return self::workflowTimeoutConflict($taskId);
@@ -534,7 +539,7 @@ final class WorkerTerminalTaskRaceTest extends TestCase
             'task_id' => $taskId,
             'workflow_task_attempt' => 1,
             'reason' => 'task_not_leased',
-            'task_status' => 'cancelled',
+            'task_status' => $taskStatus,
         ];
 
         return TransportException::fromResponse(409, $response, json_encode($response, JSON_THROW_ON_ERROR));
