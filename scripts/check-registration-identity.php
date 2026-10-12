@@ -32,6 +32,23 @@ if ($expectedVersion === SdkIdentity::SOURCE_DEVELOPMENT_VERSION) {
     exit(1);
 }
 
+if ($expectedVersion !== SdkIdentity::SOURCE_DEVELOPMENT_VERSION) {
+    $packageDirectory = InstalledVersions::getInstallPath(SdkIdentity::PACKAGE);
+    $manifest = json_decode((string) file_get_contents($packageDirectory.'/composer.json'), true, flags: JSON_THROW_ON_ERROR);
+    $quickstart = json_decode((string) file_get_contents($packageDirectory.'/docs/quickstart-contract.json'), true, flags: JSON_THROW_ON_ERROR);
+    $identities = [
+        'Composer product-train' => $manifest['extra']['durable-workflow']['product-train'] ?? null,
+        'quickstart published_version' => $quickstart['package']['published_version'] ?? null,
+        'quickstart composer_requirement' => $quickstart['package']['composer_requirement'] ?? null,
+    ];
+    foreach ($identities as $source => $version) {
+        if ($version !== $expectedVersion) {
+            fwrite(STDERR, "Installed {$source} identifies ".var_export($version, true)."; expected {$expectedVersion}\n");
+            exit(1);
+        }
+    }
+}
+
 $transport = new class implements Transport {
     /** @var array<string, mixed>|null */
     public ?array $registration = null;
