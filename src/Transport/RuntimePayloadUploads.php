@@ -133,16 +133,35 @@ final class RuntimePayloadUploads
         $uploaded = [];
         $upload = function (array $uploadHeaders, string $blob) use ($policy, $budget): array {
             $uri = $this->baseUri.'/api/external-payloads/v1';
-            if ($budget === null) {
-                return $this->transport->uploadPayload($uri, $uploadHeaders, $blob, $policy['timeout_seconds']);
-            }
-            if (!$this->transport instanceof BoundedPayloadUploadTransport) {
+            if ($budget !== null && !$this->transport instanceof BoundedPayloadUploadTransport) {
                 throw new ExternalPayloadException('The cooperative transport must bound payload uploads.', 415, 'external_payload_unsupported');
             }
-            $response = $this->transport->uploadPayloadBounded($uri, $uploadHeaders, $blob, min($budget->remainingSeconds(), $policy['timeout_seconds']));
-            $budget->remainingSeconds();
+            $deadline = hrtime(true) / 1e9 + $policy['timeout_seconds'];
+            $timeout = $policy['timeout_seconds'];
+            for ($attempt = 0; ; ++$attempt) {
+                try {
+                    if ($budget === null) {
+                        return $this->transport->uploadPayload($uri, $uploadHeaders, $blob, $timeout);
+                    }
+                    $response = $this->transport->uploadPayloadBounded($uri, $uploadHeaders, $blob, min($budget->remainingSeconds(), $timeout));
+                    $budget->remainingSeconds();
 
-            return $response;
+                    return $response;
+                } catch (TransportException $exception) {
+                    // A reservation or object can already exist after this refusal.
+                    // Retry only the upload, with identical bytes and completion
+                    // context, once within the original upload/request budget.
+                    $timeout = (int) floor($deadline - hrtime(true) / 1e9);
+                    if ($attempt !== 0 || $exception->status !== 503
+                        || ($exception->response['schema'] ?? null) !== 'durable-workflow.v2.runtime-external-payload-error.v1'
+                        || ($exception->response['reason'] ?? null) !== 'external_payload_unavailable'
+                        || ($exception->response['retryable'] ?? null) !== true
+                        || $timeout < 1) {
+                        throw $exception;
+                    }
+                    $budget?->remainingSeconds();
+                }
+            }
         };
         foreach ($selected as $index => $expected) {
             $blob = $payloads[$index]['blob'];
