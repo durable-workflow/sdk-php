@@ -1,9 +1,9 @@
 # Cooperative cancellation source design
 
-This document describes the unfinished source candidate for shared cancellation
-issue 136. The default worker protocol remains 1.19. Cooperation requires an
-explicit protocol 1.20 opt-in and a compatible Server and Native backend. The
-specification and published mixed-language qualification are still pending.
+Workers use protocol 1.20 by default. Cooperative cancellation still requires
+`enableCooperativeCancellation: true` and a compatible runtime that explicitly
+advertises the capability. Experimental cancellation scope options retain their
+separate qualification requirements.
 
 ## Recorded context
 

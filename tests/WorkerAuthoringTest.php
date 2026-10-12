@@ -156,7 +156,7 @@ final class WorkerAuthoringTest extends TestCase
                 'Accept' => 'application/json',
                 'Content-Type' => 'application/json',
                 'X-Namespace' => 'default',
-                'X-Durable-Workflow-Protocol-Version' => '1.19',
+                'X-Durable-Workflow-Protocol-Version' => '1.20',
             ],
             'body' => [
                 'worker_id' => 'worker-1',
