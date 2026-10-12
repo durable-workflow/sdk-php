@@ -867,7 +867,17 @@ final class Client implements WorkflowClientInterface
     ): mixed {
         $deadline = microtime(true) + $timeoutSeconds;
         do {
-            $execution = $this->describeWorkflow($workflowId, $followCurrentRun ? null : $selectedRunId);
+            $runId = $followCurrentRun ? null : $selectedRunId;
+            $path = '/workflows/'.$this->segment($workflowId);
+            if ($runId !== null) {
+                $path .= '/runs/'.$this->segment($runId);
+            }
+            // Waiting for terminal status needs no input or output bytes.
+            $execution = WorkflowExecution::fromArray(
+                $this->request('GET', $path, false, payloadPaths: static fn (array $response): array => []),
+                $workflowId,
+                $runId,
+            );
             $status = strtolower((string) $execution->status);
             if (in_array($status, ['completed', 'failed', 'cancelled', 'canceled', 'terminated', 'timed_out', 'timeout'], true)) {
                 $runId = $followCurrentRun ? $execution->runId : ($selectedRunId ?? $execution->runId);
@@ -2296,18 +2306,9 @@ final class Client implements WorkflowClientInterface
         }
     }
 
-    /**
-     * @param array<string, mixed>|null $body
-     * @return array<string, mixed>
-     */
-    private function request(
-        string $method,
-        string $path,
-        bool $worker,
-        ?array $body = null,
-        ?string $operation = null,
-        ?RequestBudget $budget = null,
-    ): array {
+    /** @return array<string, string> */
+    private function requestHeaders(bool $worker): array
+    {
         $headers = [
             'Accept' => 'application/json',
             'Content-Type' => 'application/json',
@@ -2319,6 +2320,24 @@ final class Client implements WorkflowClientInterface
             $headers = array_merge($headers, $this->authentication->headers($worker));
         }
 
+        return $headers;
+    }
+
+    /**
+     * @param array<string, mixed>|null $body
+     * @param (\Closure(array<string, mixed>): list<list<int|string>>)|null $payloadPaths
+     * @return array<string, mixed>
+     */
+    private function request(
+        string $method,
+        string $path,
+        bool $worker,
+        ?array $body = null,
+        ?string $operation = null,
+        ?RequestBudget $budget = null,
+        ?\Closure $payloadPaths = null,
+    ): array {
+        $headers = $this->requestHeaders($worker);
         try {
             $poll = str_ends_with($path, '/poll') && is_int($body['timeout_seconds'] ?? null);
             $pollSeconds = $poll ? max(0, min(60, $body['timeout_seconds'])) : 0;
@@ -2342,7 +2361,7 @@ final class Client implements WorkflowClientInterface
             $progress = $worker && $this->workerPayloadObserver !== null && is_array($response) && !array_is_list($response)
                 ? ($this->workerPayloadObserver)($path, $body, $response, $responseBudget) : null;
             $result = is_array($response) && !array_is_list($response)
-                ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes, $responseBudget, $progress))->response($response, $path, $worker)
+                ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes, $responseBudget, $progress))->response($response, $path, $worker, $payloadPaths?->__invoke($response))
                 : [];
             $responseBudget?->remainingSeconds();
 
@@ -2385,7 +2404,10 @@ final class Client implements WorkflowClientInterface
         string $status,
         WorkflowExecution $execution,
     ): mixed {
-        $history = $this->workflowHistory($workflowId, $runId);
+        $history = $this->request(
+            'GET', '/workflows/'.$this->segment($workflowId).'/runs/'.$this->segment($runId).'/history', false,
+            payloadPaths: self::terminalHistoryPayloadPaths(...),
+        );
         $events = $history['events'] ?? $history['history_events'] ?? [];
         if (is_array($events)) {
             foreach (array_reverse($events) as $event) {
@@ -2421,12 +2443,45 @@ final class Client implements WorkflowClientInterface
         }
 
         return match ($status) {
-            'completed' => $execution->output,
+            'completed' => $this->decodedResponsePayload(
+                (new RuntimePayloads($this->transport, $this->baseUri, $this->requestHeaders(false), $this->maxExternalPayloadBytes))
+                    ->response($execution->raw, '/workflows/'.$this->segment($workflowId).'/runs/'.$this->segment($runId), false, [['output_envelope']]),
+                'output',
+            ),
             'cancelled', 'canceled' => throw new WorkflowCancelled('Workflow was cancelled.'),
             'terminated' => throw new WorkflowTerminated('Workflow was terminated.'),
             'timed_out', 'timeout' => throw new WorkflowTimedOut('Workflow execution timed out.'),
             default => throw new WorkflowFailed('Workflow failed.'),
         };
+    }
+
+    /** @param array<string, mixed> $response
+     * @return list<list<int|string>>
+     */
+    private static function terminalHistoryPayloadPaths(array $response): array
+    {
+        $field = isset($response['events']) ? 'events' : 'history_events';
+        $events = $response[$field] ?? [];
+        if (!is_array($events)) {
+            return [];
+        }
+        foreach (array_reverse($events, true) as $index => $event) {
+            if (!is_array($event)) {
+                continue;
+            }
+            $type = $event['event_type'] ?? $event['type'] ?? '';
+            if ($type === 'WorkflowCompleted') {
+                return [[$field, $index, 'payload', 'output'], [$field, $index, 'payload', 'result']];
+            }
+            if ($type === 'WorkflowFailed') {
+                return [[$field, $index, 'payload', 'exception', 'details']];
+            }
+            if (in_array($type, ['WorkflowCancelled', 'WorkflowTerminated', 'WorkflowTimedOut'], true)) {
+                return [];
+            }
+        }
+
+        return [];
     }
 
     /** @param array<string, mixed> $response */
