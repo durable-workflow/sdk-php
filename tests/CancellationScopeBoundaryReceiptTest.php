@@ -361,10 +361,10 @@ final class CancellationScopeBoundaryReceiptTest extends TestCase
         } finally { self::assertSame([], $transport->fake->requests); }
     }
 
-    public function test_the_published_default_and_unbounded_client_cannot_negotiate_scope_receipt_proof(): void
+    public function test_previous_protocol_and_unbounded_client_cannot_negotiate_scope_receipt_proof(): void
     {
         foreach ([new Client('https://server.example',workerProtocolVersion:'1.20'),
-            (new Client('https://server.example'))->withBoundedWorkerRequests()] as $client) {
+            (new Client('https://server.example', workerProtocolVersion:'1.19'))->withBoundedWorkerRequests()] as $client) {
             try {
                 $client->cancellationScopeBoundaryOnClaim('task/one',self::runId(),self::workflowId(),'original-owner',4,
                     self::scopeId(),self::delivery(),'prepare',new RequestBudget(5));

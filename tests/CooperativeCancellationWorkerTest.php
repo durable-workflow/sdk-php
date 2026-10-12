@@ -412,10 +412,10 @@ final class CooperativeCancellationWorkerTest extends TestCase
         return [['1.19', true], ['1.20', false], ['1.20', 'true'], ['1.20', null], ['2.0', true], [null, true]];
     }
 
-    public function testWorkerCannotEnableCancellationWithDefaultClientProtocol(): void
+    public function testWorkerCannotEnableCancellationWithPreviousClientProtocol(): void
     {
         $this->expectException(\InvalidArgumentException::class);
-        new Worker(new Client('https://server.example'), 'queue', enableCooperativeCancellation: true);
+        new Worker(new Client('https://server.example', workerProtocolVersion: '1.19'), 'queue', enableCooperativeCancellation: true);
     }
 
     public function testLostLocalLeaseDiscardsResultWithoutFailingWorkflow(): void
@@ -855,7 +855,7 @@ final class CooperativeCancellationWorkerTest extends TestCase
 
     private function worker(CooperativeWorkerTransport $transport, ?\Closure $clock = null): Worker
     {
-        return new Worker(new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.20'),
+        return new Worker(new Client('https://server.example', transport: $transport),
             'queue', workerId: 'worker-1', enableCooperativeCancellation: true,
             clock: $clock ?? static fn (): float => 1790812800.0);
     }

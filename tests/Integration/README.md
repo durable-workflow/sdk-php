@@ -72,7 +72,7 @@ The CI workflow accepts `cooperative_qualification=true` with an exact public
 `server_commit` SHA. It builds that source in an isolated MySQL/Redis stack,
 runs `CooperativeCancellationTest` plus the persisted memo restart case, retains
 the JUnit results and raw scenario histories for 90 days and
-removes the stack and images. The ordinary worker default remains protocol 1.19.
+removes the stack and images. The ordinary worker default is protocol 1.20.
 
 With the Native overlay, scope boundary cases use the explicit testing-only
 `native-scope-request.php` fixture to admit a request for their synthetic run.

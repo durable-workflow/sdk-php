@@ -2,11 +2,17 @@
 
 The SDK sends control-plane version `2` to workflow, schedule, namespace,
 search-attribute, and service-operation routes. Cluster discovery uses
-`/api/cluster/info`. Worker requests use protocol `1.19` under `/api/worker`.
+`/api/cluster/info`. Worker requests use protocol `1.20` under `/api/worker`.
 Every request also carries `X-Namespace`; control and worker bearer tokens can
 be configured independently. `Client::withNamespace()` creates another client
 selection without mutating the original or replacing its transport, codec, or
 authentication.
+
+For a Server that supports only worker protocol `1.19`, set
+`workerProtocolVersion: '1.19'` when constructing the client. Cooperative workers
+require protocol `1.20`, an explicit worker opt-in and compatible runtime
+capabilities. Changing the protocol version does not enable optional worker
+features.
 
 ## Payloads
 

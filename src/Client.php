@@ -88,8 +88,8 @@ final class Client implements WorkflowClientInterface
         if ($maxExternalPayloadBytes < 1) {
             throw new InvalidArgumentException('External payload response limit must be positive.');
         }
-        if (!in_array($workerProtocolVersion, [Version::WORKER_PROTOCOL, Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL], true)) {
-            throw new InvalidArgumentException('Worker protocol must be the SDK default or the cooperative qualification protocol.');
+        if (!in_array($workerProtocolVersion, [Version::MINIMUM_WORKER_PROTOCOL, Version::WORKER_PROTOCOL], true)) {
+            throw new InvalidArgumentException('Worker protocol must be 1.19 or 1.20.');
         }
         $normalizedBaseUri = rtrim($baseUri, '/');
         $basePath = parse_url($normalizedBaseUri, PHP_URL_PATH);

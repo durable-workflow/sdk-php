@@ -52,7 +52,7 @@ final class ClientContractTest extends TestCase
         $client = new Client('https://server.example', transport: $transport);
 
         self::assertNull($client->pollActivityTask('worker-1', 'queue', 0));
-        self::assertSame('1.19', $transport->requests[0]['headers']['X-Durable-Workflow-Protocol-Version']);
+        self::assertSame('1.20', $transport->requests[0]['headers']['X-Durable-Workflow-Protocol-Version']);
         self::assertSame('php-activity-poll', substr($transport->requests[0]['body']['poll_request_id'], 0, 17));
     }
 
@@ -103,7 +103,7 @@ final class ClientContractTest extends TestCase
                 'Accept' => 'application/json',
                 'Content-Type' => 'application/json',
                 'X-Namespace' => 'default',
-                'X-Durable-Workflow-Protocol-Version' => '1.19',
+                'X-Durable-Workflow-Protocol-Version' => '1.20',
             ],
             'body' => [
                 'worker_id' => 'worker-1',
@@ -158,6 +158,22 @@ final class ClientContractTest extends TestCase
         );
 
         self::assertSame(['query_tasks'], $transport->requests[0]['body']['capabilities']);
+    }
+
+    public function testExplicitPreviousProtocolPreservesRegistrationAndPollHeaders(): void
+    {
+        $transport = new FakeTransport([['registered' => true], ['task' => null], []]);
+        $client = new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.19');
+
+        $client->registerWorker('worker-1', 'orders', ['orders.process'], []);
+        self::assertNull($client->pollWorkflowTask('worker-1', 'orders', 0));
+        $client->deregisterWorkerRegistration('worker-1');
+
+        foreach ($transport->requests as $request) {
+            self::assertSame('1.19', $request['headers']['X-Durable-Workflow-Protocol-Version']);
+            self::assertArrayNotHasKey('X-Durable-Workflow-Control-Plane-Version', $request['headers']);
+        }
+        self::assertNotContains('cooperative_cancellation', $transport->requests[0]['body']['capabilities']);
     }
 
     public function testWorkerRegistrationSendsDefinitionFingerprints(): void

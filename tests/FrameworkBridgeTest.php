@@ -82,7 +82,7 @@ final class FrameworkBridgeTest extends TestCase
             $workerTransport->requests[1]['uri'],
         );
         self::assertSame(
-            '1.19',
+            '1.20',
             $workerTransport->requests[1]['headers']['X-Durable-Workflow-Protocol-Version'],
         );
         self::assertSame([

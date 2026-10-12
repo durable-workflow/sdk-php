@@ -39,12 +39,12 @@ final class CancellationScopeClientTest extends TestCase
         ];
     }
 
-    public function test_default_protocol_refuses_scope_operations_without_sending(): void
+    public function test_previous_protocol_refuses_scope_operations_without_sending(): void
     {
         $transport = new FakeTransport([]);
         try {
-            (new Client('https://server.example', transport: $transport))->cancellationScopeOperation('task', 'owner', 1, 'open');
-            self::fail('Unqualified protocol must refuse scope opening.');
+            (new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.19'))->cancellationScopeOperation('task', 'owner', 1, 'open');
+            self::fail('Protocol 1.19 must refuse scope opening.');
         } catch (LogicException) {
             self::assertSame([], $transport->requests);
         }

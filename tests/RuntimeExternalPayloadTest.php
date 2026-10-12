@@ -102,7 +102,7 @@ final class RuntimeExternalPayloadTest extends TestCase
             self::assertSame(['codec' => 'avro', 'blob' => $blob], $result['task']['history_export']['payloads']['arguments']['data']);
             self::assertCount(2, $observed->requests, 'Repeated references in one response should fetch once.');
             self::assertSame('Bearer fixture-worker', $observed->requests[1]->getHeaderLine('Authorization'));
-            self::assertSame('1.19', $observed->requests[1]->getHeaderLine('X-Durable-Workflow-Protocol-Version'));
+            self::assertSame('1.20', $observed->requests[1]->getHeaderLine('X-Durable-Workflow-Protocol-Version'));
             self::assertSame('', $observed->requests[1]->getHeaderLine('X-Durable-Workflow-Control-Plane-Version'));
         }
     }

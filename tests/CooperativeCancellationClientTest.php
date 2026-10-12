@@ -49,8 +49,9 @@ final class CooperativeCancellationClientTest extends TestCase
         self::assertSame($firstResult['cancellation_request'], $secondResult['cancellation_request']);
         self::assertSame('https://server.example/api/workflows/order%2F1/request-cancellation', $transport->requests[3]['uri']);
         self::assertSame(['cleanup_timeout_seconds' => 3600], $transport->requests[3]['body']);
-        self::assertSame('1.19', Version::WORKER_PROTOCOL);
-        self::assertFalse(Version::supportsCooperativeCancellation());
+        self::assertSame('1.20', Version::WORKER_PROTOCOL);
+        self::assertTrue(Version::supportsCooperativeCancellation());
+        self::assertFalse(Version::supportsCooperativeCancellation('1.19'));
     }
 
     #[DataProvider('incapableRuntimeProvider')]
