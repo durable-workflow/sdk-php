@@ -47,7 +47,10 @@ final class RequestBudget
     {
         $remaining = $this->deadline - hrtime(true) / 1e9;
         if ($remaining <= 0 || ($this->authorityDeadline !== null && $remaining < 1)) {
-            throw new TransportException('The cooperative worker request time budget expired.');
+            // Idle I/O can retry with backoff. A task or cleanup authority
+            // ceiling must remain terminal for this original budget.
+            throw new TransportException('The cooperative worker request time budget expired.',
+                transientConnectionFailure: $this->authorityDeadline === null);
         }
 
         // Transport timeouts use whole seconds. A final budget check rejects

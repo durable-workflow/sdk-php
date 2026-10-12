@@ -7,6 +7,8 @@ namespace DurableWorkflow\Tests;
 use Closure;
 use DurableWorkflow\Client;
 use DurableWorkflow\Exception\ServerException;
+use DurableWorkflow\Tests\Support\FakeTransport;
+use DurableWorkflow\Transport\RequestBudget;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
@@ -127,6 +129,48 @@ final class WorkerUpstreamRecoveryTest extends TestCase
         self::assertSame(1, $completions);
         self::assertSame([0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 5.0, 5.0, 5.0], $delays);
         self::assertCount(1, array_unique($polls));
+    }
+
+    public function testIdleHeartbeatBudgetExpiryBacksOffBeforeAcquiringWork(): void
+    {
+        $expired = new RequestBudget(1);
+        usleep(1_100_000);
+        $now = 0.0;
+        $heartbeats = $registrations = $executions = $completions = 0;
+        $transport = new FakeTransport(handler: static function (string $method, string $uri) use (
+            $expired, &$now, &$heartbeats, &$registrations, &$completions,
+        ): array {
+            $path = parse_url($uri, PHP_URL_PATH);
+            if (str_ends_with($path, '/register')) {
+                ++$registrations;
+                return ['registered' => true, 'heartbeat_interval_seconds' => 1];
+            }
+            if (str_ends_with($path, '/heartbeat')) {
+                if (++$heartbeats === 1) $expired->remainingSeconds();
+                return ['acknowledged' => true];
+            }
+            if (str_ends_with($path, '/workflow-tasks/poll')) {
+                $now += 1.0;
+            }
+            if (str_ends_with($path, '/activity-tasks/poll')) {
+                self::assertSame(2, $heartbeats, 'Restore the heartbeat before acquiring another task.');
+                return ['task' => ['task_id' => 'activity-1', 'activity_attempt_id' => 'attempt-1',
+                    'lease_owner' => 'worker-1', 'activity_type' => 'greet', 'payload_codec' => 'avro']];
+            }
+            if (str_ends_with($path, '/activity-tasks/activity-1/complete')) ++$completions;
+            return ['task' => null, 'poll_status' => str_ends_with($path, '/query-tasks/poll') ? 'stopped' : 'empty'];
+        });
+        $client = new Client('https://server.example', transport: $transport);
+        $worker = self::worker($client, $now);
+        $worker->registerActivity('greet', static function (ActivityContext $context) use (&$executions): string {
+            ++$executions;
+            return 'hello';
+        });
+        $worker->run(0);
+        self::assertSame(1, $registrations);
+        self::assertSame(2, $heartbeats);
+        self::assertSame(1, $executions);
+        self::assertSame(1, $completions);
     }
 
     public function testShutdownInterruptsUpstreamBackoff(): void
