@@ -68,13 +68,13 @@ final class CancellationScopeDeliveryTransportTest extends TestCase
     }
 
     #[DataProvider('phases')]
-    public function test_default_protocol_refuses_the_new_controls_without_io(string $phase): void
+    public function test_previous_protocol_refuses_the_new_controls_without_io(string $phase): void
     {
         $transport = self::transport();
         try {
-            (new Client('https://server.example', transport: $transport))->withBoundedWorkerRequests()
+            (new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.19'))->withBoundedWorkerRequests()
                 ->cancellationScopeOperation('task', 'owner', 1, $phase, self::boundary(), new RequestBudget(5));
-            self::fail('Published defaults must not enable scope delivery.');
+            self::fail('Protocol 1.19 must refuse scope delivery.');
         } catch (LogicException) {
             self::assertSame([], $transport->requests);
         }

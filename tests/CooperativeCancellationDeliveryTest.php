@@ -20,7 +20,7 @@ final class CooperativeCancellationDeliveryTest extends TestCase
         $ack = self::ack();
         $transport = new FakeTransport([$ack]);
         $client = new Client('https://server.example', namespace: 'tenant-a', transport: $transport,
-            controlToken: 'control', workerToken: 'worker', workerProtocolVersion: '1.20',
+            controlToken: 'control', workerToken: 'worker',
         );
         self::assertSame($ack, $client->deliverWorkflowCancellation('task/1', 'worker-a', 3, self::boundary()));
         self::assertSame('https://server.example/api/worker/workflow-tasks/task%2F1/deliver-cancellation', $transport->requests[0]['uri']);
@@ -44,13 +44,13 @@ final class CooperativeCancellationDeliveryTest extends TestCase
         self::assertSame(2, $transport->requests[0]['body']['operation_sequence_span']);
     }
 
-    public function testDefaultProtocolRefusesDeliveryBeforeMutation(): void
+    public function testPreviousProtocolRefusesDeliveryBeforeMutation(): void
     {
         $transport = new FakeTransport();
-        $client = new Client('https://server.example', transport: $transport);
+        $client = new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.19');
         try {
             $client->deliverWorkflowCancellation('task/1', 'worker-a', 3, self::boundary());
-            self::fail('Default workers must not advertise or deliver this capability.');
+            self::fail('Protocol 1.19 must refuse cooperative delivery.');
         } catch (LogicException) {
             self::assertSame([], $transport->requests);
         }

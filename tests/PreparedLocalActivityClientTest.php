@@ -40,12 +40,12 @@ final class PreparedLocalActivityClientTest extends TestCase
         self::assertSame('1.20', $request['headers']['X-Durable-Workflow-Protocol-Version']);
     }
 
-    public function test_default_protocol_refuses_candidate_operations_before_sending(): void
+    public function test_previous_protocol_refuses_candidate_operations_before_sending(): void
     {
         $transport = new FakeTransport([]);
         try {
-            (new Client('https://server.example', transport: $transport))->preparedLocalActivityOperation('task', 'owner', 1, 'prepare');
-            self::fail('Default protocol must refuse candidate admission.');
+            (new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.19'))->preparedLocalActivityOperation('task', 'owner', 1, 'prepare');
+            self::fail('Protocol 1.19 must refuse candidate admission.');
         } catch (LogicException $error) {
             self::assertStringContainsString('1.20', $error->getMessage());
         }

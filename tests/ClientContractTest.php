@@ -167,7 +167,7 @@ final class ClientContractTest extends TestCase
 
         $client->registerWorker('worker-1', 'orders', ['orders.process'], []);
         self::assertNull($client->pollWorkflowTask('worker-1', 'orders', 0));
-        $client->deregisterWorker('worker-1');
+        $client->deregisterWorkerRegistration('worker-1');
 
         foreach ($transport->requests as $request) {
             self::assertSame('1.19', $request['headers']['X-Durable-Workflow-Protocol-Version']);
