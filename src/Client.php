@@ -2471,7 +2471,9 @@ final class Client implements WorkflowClientInterface
             }
             $type = $event['event_type'] ?? $event['type'] ?? '';
             if ($type === 'WorkflowCompleted') {
-                return [[$field, $index, 'payload', 'output'], [$field, $index, 'payload', 'result']];
+                $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+
+                return [[$field, $index, 'payload', isset($payload['output']) ? 'output' : 'result']];
             }
             if ($type === 'WorkflowFailed') {
                 return [[$field, $index, 'payload', 'exception', 'details']];

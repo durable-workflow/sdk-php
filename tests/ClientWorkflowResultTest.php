@@ -106,7 +106,7 @@ final class ClientWorkflowResultTest extends TestCase
                     ['event_type' => 'ActivityCompleted', 'payload' => ['result' => $unused]],
                     $status === 'failed'
                         ? ['event_type' => 'WorkflowFailed', 'payload' => ['message' => 'Order rejected.', 'exception_type' => 'OrderRejected']]
-                        : ['event_type' => 'WorkflowCompleted', 'payload' => ['output' => $output]],
+                        : ['event_type' => 'WorkflowCompleted', 'payload' => ['output' => $output, 'result' => $unused]],
                 ]];
             } else {
                 $body = ['workflow_id' => 'order', 'run_id' => 'run', 'status' => $status,
