@@ -69,6 +69,8 @@ final class Client implements WorkflowClientInterface
     private readonly PayloadCodec $codec;
     private readonly RuntimePayloadUploads $payloadUploads;
     private bool $boundedWorkerRequests = false;
+    /** @var (\Closure(string, array<string, mixed>|null, array<string, mixed>, RequestBudget|null): (?\Closure))|null */
+    private ?\Closure $workerPayloadObserver = null;
 
     public function __construct(
         string $baseUri,
@@ -123,6 +125,18 @@ final class Client implements WorkflowClientInterface
     public function payloadCodec(): PayloadCodec
     {
         return $this->codec;
+    }
+
+    /**
+     * @internal Keep Worker payload-transfer coordination on its own Client.
+     * @param \Closure(string, array<string, mixed>|null, array<string, mixed>, RequestBudget|null): (?\Closure) $observer
+     */
+    public function withWorkerPayloadObserver(\Closure $observer): self
+    {
+        $copy = clone $this;
+        $copy->workerPayloadObserver = $observer;
+
+        return $copy;
     }
 
     /** @internal Isolate the cooperative worker's I/O policy from its caller's Client. */
@@ -1931,12 +1945,14 @@ final class Client implements WorkflowClientInterface
     }
 
     /** @return array<string, mixed> */
-    public function heartbeatWorkflowTask(string $taskId, string $leaseOwner, int $attempt): array
+    public function heartbeatWorkflowTask(string $taskId, string $leaseOwner, int $attempt, ?RequestBudget $budget = null): array
     {
-        return $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/heartbeat', [
+        $client = $budget === null ? $this : $this->withBoundedWorkerRequests();
+
+        return $client->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/heartbeat', [
             'lease_owner' => $leaseOwner,
             'workflow_task_attempt' => $attempt,
-        ]);
+        ], $budget);
     }
 
     /**
@@ -2323,8 +2339,10 @@ final class Client implements WorkflowClientInterface
             // The long poll happens before ownership. Hydration of its claimed
             // task gets one short budget shared by all referenced payloads.
             $responseBudget = $budget !== null && $poll ? new RequestBudget(5) : $budget;
+            $progress = $worker && $this->workerPayloadObserver !== null && is_array($response) && !array_is_list($response)
+                ? ($this->workerPayloadObserver)($path, $body, $response, $responseBudget) : null;
             $result = is_array($response) && !array_is_list($response)
-                ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes, $responseBudget))->response($response, $path, $worker)
+                ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes, $responseBudget, $progress))->response($response, $path, $worker)
                 : [];
             $responseBudget?->remainingSeconds();
 
