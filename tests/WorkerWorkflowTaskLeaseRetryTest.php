@@ -336,7 +336,7 @@ final class WorkerWorkflowTaskLeaseRetryTest extends TestCase
         self::assertSame(0, $taskAcknowledgements);
     }
 
-    public function testLeaseLossDuringRetryRemainsFatalWithoutExecutingTheTask(): void
+    public function testLeaseLossDuringRetryDiscardsTheClaimWithoutExecutingTheTask(): void
     {
         $handlerCalls = 0;
         $heartbeatCalls = 0;
@@ -358,6 +358,10 @@ final class WorkerWorkflowTaskLeaseRetryTest extends TestCase
                 }
 
                 throw self::leaseExpiredConflict();
+            }
+
+            if (str_ends_with($uri, '/activity-tasks/poll') || str_ends_with($uri, '/query-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'empty'];
             }
 
             self::fail("Unexpected worker request: {$method} {$uri}");
@@ -382,17 +386,11 @@ final class WorkerWorkflowTaskLeaseRetryTest extends TestCase
             },
         );
 
-        try {
-            $worker->tick(0);
-            self::fail('Lease loss must remain visible to the managed worker supervisor.');
-        } catch (ServerException $exception) {
-            self::assertSame(409, $exception->status);
-            self::assertSame('lease_expired', $exception->reason);
-        }
+        self::assertTrue($worker->tick(0));
 
         self::assertSame(2, $heartbeatCalls);
         self::assertSame(0, $handlerCalls);
-        self::assertCount(3, $transport->requests);
+        self::assertCount(5, $transport->requests);
     }
 
     public function testShutdownInterruptsLeaseRenewalBackoffBeforeTaskExecution(): void
