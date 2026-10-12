@@ -89,6 +89,11 @@ final class CooperativeCancellationWorkerTest extends TestCase
         self::assertSame('https://server.example/api/cluster/info', $transport->requests[0]['uri']);
         self::assertNotEmpty(array_filter($transport->requests,
             static fn (array $request): bool => str_ends_with($request['uri'], '/worker/register')));
+        $registration = array_values(array_filter($transport->requests,
+            static fn (array $request): bool => str_ends_with($request['uri'], '/worker/register')))[0]['body'];
+        self::assertContains('cooperative_cancellation', $registration['capabilities']);
+        self::assertContains('nexus_cooperative_cancellation', $registration['capabilities']);
+        self::assertSame(['workflow_run'], $registration['capability_manifest']['nexus_cooperative_cancellation']['binding_kinds']);
         foreach ($transport->requests as $request) {
             self::assertSame('Bearer worker-test', $request['headers']['Authorization']);
         }
