@@ -136,6 +136,39 @@ final class BoundedPayloadTransportTest extends TestCase
         yield 'upload' => [false];
     }
 
+    #[DataProvider('uploadRetryBudgets')]
+    public function testRetryableUploadCannotRestartTheOriginalBudget(bool $cooperative): void
+    {
+        $requests = 0;
+        $discovery = self::discovery();
+        $discovery['namespace']['external_payload_storage']['transport']['limits']['request_timeout_seconds'] = 1;
+        $http = new GuzzleClient(['handler' => static function (RequestInterface $request, array $options) use (&$requests, $discovery) {
+            ++$requests;
+            if (str_ends_with($request->getUri()->getPath(), '/cluster/info')) {
+                return Create::promiseFor(new Response(200, [], json_encode($discovery)));
+            }
+            self::assertSame(1, $options['timeout']);
+            usleep(1100000);
+
+            return Create::promiseFor(new Response(503, [], '{"schema":"durable-workflow.v2.runtime-external-payload-error.v1","reason":"external_payload_unavailable","retryable":true}'));
+        }]);
+        try {
+            (new RuntimePayloadUploads(new Psr18Transport($http), 'https://runtime.test'))->request(
+                ['result' => (new AvroPayloadCodec())->envelope(str_repeat('x', 4096))],
+                'POST', '/worker/activity-tasks/task/complete', true, [], $cooperative ? new RequestBudget(1) : null);
+            self::fail('An exhausted upload budget must not authorize another request.');
+        } catch (ExternalPayloadException $exception) {
+            self::assertSame('external_payload_unavailable', $exception->reason);
+        }
+        self::assertSame(2, $requests);
+    }
+
+    public static function uploadRetryBudgets(): iterable
+    {
+        yield 'ordinary upload' => [false];
+        yield 'cooperative request' => [true];
+    }
+
     public function testHydratingSeveralObjectsSharesOneBudgetAndNeverReturnsAPartialTask(): void
     {
         $blob = (new AvroPayloadCodec())->envelope(['value'])['blob'];

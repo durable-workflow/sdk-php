@@ -307,6 +307,88 @@ final class RuntimePayloadUploadTest extends TestCase
         self::assertSame($http->requests[1]->getHeaders(), $http->requests[2]->getHeaders());
     }
 
+    public function testRetryableUploadFailureResendsExactBytesBeforeStartingOneWorkflow(): void
+    {
+        [$client, $http] = $this->client(uploadResponse: self::unavailableResponse(), retryUploadResponse: new Response(201, [],
+            json_encode(['schema' => 'durable-workflow.v2.runtime-external-payload-upload.v1', 'transport_version' => 1,
+                'reference' => self::reference((new AvroPayloadCodec())->encode([str_repeat('x', 200)]))])));
+        $client->startWorkflow('echo', 'one', 'queue', [str_repeat('x', 200)]);
+
+        self::assertCount(4, $http->requests);
+        self::assertSame((string) $http->requests[1]->getBody(), (string) $http->requests[2]->getBody());
+        self::assertSame($http->requests[1]->getHeaders(), $http->requests[2]->getHeaders());
+        self::assertLessThan($http->options[1]['timeout'], $http->options[2]['timeout']);
+        self::assertStringEndsWith('/api/workflows', $http->requests[3]->getUri()->getPath());
+    }
+
+    public function testDrainingReservationRetryKeepsTheOriginalCompletionSlot(): void
+    {
+        $blob = (new AvroPayloadCodec())->encode(str_repeat('x', 200));
+        [$client, $http] = $this->client(self::completionDiscovery(), workerOnly: true, drainUnbound: true,
+            uploadResponse: self::unavailableResponse(), retryUploadResponse: new Response(201, [],
+                json_encode(['schema' => 'durable-workflow.v2.runtime-external-payload-upload.v1', 'transport_version' => 1,
+                    'reference' => self::reference($blob)])));
+        $client->completeActivityTask('task', 'attempt', 'worker', str_repeat('x', 200));
+
+        self::assertCount(5, $http->requests);
+        self::assertSame('', $http->requests[1]->getHeaderLine('X-Durable-Workflow-Payload-Completion'));
+        self::assertNotSame('', $http->requests[2]->getHeaderLine('X-Durable-Workflow-Payload-Completion'));
+        self::assertSame($http->requests[2]->getHeaders(), $http->requests[3]->getHeaders());
+        self::assertSame($blob, (string) $http->requests[2]->getBody());
+        self::assertSame($blob, (string) $http->requests[3]->getBody());
+        self::assertSame('attempt', $this->body($http->requests[4])['activity_attempt_id']);
+    }
+
+    #[DataProvider('unavailableRetryRefusals')]
+    public function testUploadRetryDoesNotRepeatAfterASecondFailure(int $status, array $refusal): void
+    {
+        [$client, $http] = $this->client(uploadResponse: self::unavailableResponse(), retryUploadResponse: new Response($status, [], json_encode($refusal)));
+        try {
+            $client->completeActivityTask('task', 'attempt', 'worker', str_repeat('x', 200));
+            self::fail('A failed retry must not send completion.');
+        } catch (ExternalPayloadException $exception) {
+            self::assertSame($status, $exception->status);
+            self::assertSame($refusal, $exception->details);
+        }
+        self::assertCount(3, $http->requests);
+    }
+
+    public static function unavailableRetryRefusals(): iterable
+    {
+        yield 'still unavailable' => [503, json_decode((string) self::unavailableResponse()->getBody(), true)];
+        yield 'slot conflict' => [409, ['reason' => 'external_payload_completion_conflict', 'retryable' => false]];
+        yield 'lost lease' => [409, ['reason' => 'external_payload_completion_lease_rejected', 'retryable' => false]];
+    }
+
+    #[DataProvider('unavailableNonRetryResponses')]
+    public function testUploadRefusalRequiresTheExactRetryableRuntimeEnvelope(array $refusal): void
+    {
+        [$client, $http] = $this->client(uploadResponse: new Response(503, [], json_encode($refusal)));
+        try {
+            $client->startWorkflow('echo', 'one', 'queue', [str_repeat('x', 200)]);
+            self::fail('This refusal cannot authorize a retry.');
+        } catch (ExternalPayloadException $exception) {
+            self::assertSame($refusal, $exception->details);
+        }
+        self::assertCount(2, $http->requests);
+    }
+
+    public static function unavailableNonRetryResponses(): iterable
+    {
+        $body = json_decode((string) self::unavailableResponse()->getBody(), true);
+        yield 'not retryable' => [array_replace($body, ['retryable' => false])];
+        yield 'string boolean' => [array_replace($body, ['retryable' => 'true'])];
+        yield 'unknown schema' => [array_replace($body, ['schema' => 'unknown'])];
+        yield 'different error' => [array_replace($body, ['reason' => 'external_payload_unauthorized'])];
+        unset($body['schema']);
+        yield 'generic unavailable' => [$body];
+    }
+
+    private static function unavailableResponse(): Response
+    {
+        return new Response(503, [], '{"schema":"durable-workflow.v2.runtime-external-payload-error.v1","reason":"external_payload_unavailable","status":503,"retryable":true}');
+    }
+
     #[DataProvider('completionProvider')]
     public function testDrainingRetryBindsTheExactCompletionSlot(string $path, array $body, string $kind, array $slot): void
     {
@@ -663,13 +745,14 @@ final class RuntimePayloadUploadTest extends TestCase
         }
     }
 
-    private function client(?array $discovery = null, bool $workerOnly = false, ?Response $uploadResponse = null, bool $drainUnbound = false): array
+    private function client(?array $discovery = null, bool $workerOnly = false, ?Response $uploadResponse = null, bool $drainUnbound = false, ?Response $retryUploadResponse = null): array
     {
-        $http = new class($discovery ?? self::discovery(), $uploadResponse, $drainUnbound) {
+        $http = new class($discovery ?? self::discovery(), $uploadResponse, $drainUnbound, $retryUploadResponse) {
             public array $requests = [];
             public array $options = [];
             private string $uploadBody;
-            public function __construct(private array $discovery, private ?Response $uploadResponse, private bool $drainUnbound)
+            private int $uploadAttempts = 0;
+            public function __construct(private array $discovery, private ?Response $uploadResponse, private bool $drainUnbound, private ?Response $retryUploadResponse)
             {
                 $this->uploadBody = (string) $uploadResponse?->getBody();
             }
@@ -685,6 +768,9 @@ final class RuntimePayloadUploadTest extends TestCase
                         return Create::promiseFor(new Response(503, [], '{"reason":"storage_pressure","storage_state":"draining","request_admitted":false}'));
                     }
                     if ($this->uploadResponse !== null) {
+                        if (++$this->uploadAttempts > 1 && $this->retryUploadResponse !== null) {
+                            return Create::promiseFor($this->retryUploadResponse);
+                        }
                         return Create::promiseFor(new Response($this->uploadResponse->getStatusCode(), $this->uploadResponse->getHeaders(), $this->uploadBody));
                     }
                     $response = ['schema' => 'durable-workflow.v2.runtime-external-payload-upload.v1', 'transport_version' => 1,
