@@ -432,10 +432,15 @@ jobs:
           php "$GITHUB_WORKSPACE/scripts/check-registration-identity.php" \
             "$consumer/vendor/autoload.php" \
             source-development
-      - name: Exercise the pre-publication identity guard
-        env:
-          RELEASE_TAG: 9.8.7
-        run: composer check-release-identity
+      - name: Verify release identity and reject stale package metadata
+        run: |
+          release_tag=$(php -r '$manifest = json_decode(file_get_contents("composer.json"), true, flags: JSON_THROW_ON_ERROR); echo $manifest["extra"]["durable-workflow"]["product-train"];')
+          RELEASE_TAG="$release_tag" composer check-release-identity
+          if RELEASE_TAG=9.8.7 composer check-release-identity > "$RUNNER_TEMP/stale-release-metadata.log" 2>&1; then
+            echo 'Release identity guard accepted mismatched package metadata.' >&2
+            exit 1
+          fi
+          grep -F 'Installed Composer product-train identifies' "$RUNNER_TEMP/stale-release-metadata.log"
 
   cooperative-integration:
     name: Connected cooperative cancellation

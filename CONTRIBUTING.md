@@ -3,6 +3,13 @@
 Run Composer validation, focused PHPUnit coverage, PHPStan, and the public
 boundary check for changed code.
 
+Before publishing a tag, run `RELEASE_TAG=<exact-version> composer check-release-identity`.
+The installed Composer version, `extra.durable-workflow.product-train`, quickstart
+package versions and worker registration must identify that same PHP SDK release.
+Protocol versions and the supported Server baseline are separate compatibility
+declarations. Align release metadata before tagging a stable patch, even when
+development previously reserved a future prerelease.
+
 Replay and payload-codec fixes also follow the organization
 [regression-corpus contract](https://github.com/durable-workflow/.github/tree/main/regression-corpus).
 A replay fix adds one minimal history or command-sequence JSON fixture under

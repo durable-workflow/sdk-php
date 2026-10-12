@@ -158,6 +158,21 @@ jobs:
               true,
               flags: JSON_THROW_ON_ERROR,
           );
+          $quickstart = json_decode(
+              file_get_contents(dirname(getenv('SDK_LOCK_FILE')).'/vendor/durable-workflow/sdk/docs/quickstart-contract.json'),
+              true,
+              flags: JSON_THROW_ON_ERROR,
+          );
+          foreach ([
+              $packages[0]['extra']['durable-workflow']['product-train'] ?? null,
+              $packageManifest['extra']['durable-workflow']['product-train'] ?? null,
+              $quickstart['package']['published_version'] ?? null,
+              $quickstart['package']['composer_requirement'] ?? null,
+          ] as $identity) {
+              if ($identity !== $version) {
+                  throw new RuntimeException('Published SDK release metadata does not identify the installed package version.');
+              }
+          }
           if (($packageManifest['extra']['durable-workflow']['supported-server-versions'] ?? null) !== getenv('SERVER_VERSION')) {
               throw new RuntimeException('Requested Server version does not match the published SDK compatibility baseline.');
           }
