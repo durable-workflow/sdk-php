@@ -2471,7 +2471,11 @@ final class Worker
                 || ($reason === 'task_not_leased'
                     && (in_array($details['task_status'] ?? null, ['cancelled', 'completed'], true)
                         || (($details['task_status'] ?? null) === 'ready' && $workflowTaskAttempt !== null
-                            && ($details['workflow_task_attempt'] ?? null) === $workflowTaskAttempt))),
+                            && ($details['workflow_task_attempt'] ?? null) === $workflowTaskAttempt)))
+                || ($reason === 'lease_expired' && $workflowTaskAttempt !== null
+                    && ($details['workflow_task_attempt'] ?? null) === $workflowTaskAttempt
+                    && ($details['task_status'] ?? null) === 'leased'
+                    && ($details['lease_owner'] ?? null) === $this->workerId),
             'activity' => in_array($reason, ['run_cancelled', 'run_terminated'], true)
                 && ($details['can_continue'] ?? null) === false
                 && ($details['task_status'] ?? null) === 'cancelled',
