@@ -1313,6 +1313,7 @@ final class Worker
                         $failure instanceof NonDeterministicWorkflow ? $failure->sequence : null,
                     );
                 },
+                $attempt,
             );
         } finally {
             $this->claimCancellation = null;
@@ -1968,7 +1969,7 @@ final class Worker
         try {
             $response = $this->client->deliverWorkflowCancellation($taskId, $owner, $attempt, $intent);
         } catch (Throwable $error) {
-            if ($this->isTerminalTaskConflict('workflow', $taskId, $error)) {
+            if ($this->isTaskAuthorityLost('workflow', $taskId, $error, $attempt)) {
                 throw new WorkflowClaimRevoked('terminal_task_fence', 'Workflow claim has closed.', previous: $error);
             }
             throw $error;
@@ -2419,8 +2420,14 @@ final class Worker
         string $taskId,
         Throwable $taskFailure,
         callable $failureAcknowledgement,
+        ?int $workflowTaskAttempt = null,
     ): void {
-        if ($this->isTerminalTaskConflict($taskKind, $taskId, $taskFailure)) {
+        if ($this->isTaskAuthorityLost($taskKind, $taskId, $taskFailure, $workflowTaskAttempt)) {
+            if ($taskKind === 'workflow' && $taskFailure instanceof ServerException
+                && ($taskFailure->details['task_status'] ?? null) === 'ready') {
+                $this->diagnostic('worker.claim_aborted', ['task_id' => $taskId, 'task_kind' => $taskKind,
+                    'workflow_task_attempt' => $workflowTaskAttempt, 'reason' => 'task_not_leased'], 'warning');
+            }
             return;
         }
         $this->handlerFailure($taskKind, $taskId, $taskFailure);
@@ -2433,13 +2440,13 @@ final class Worker
                 $failureAcknowledgement($taskFailure);
             });
         } catch (Throwable $acknowledgementFailure) {
-            if (!$this->isTerminalTaskConflict($taskKind, $taskId, $acknowledgementFailure)) {
+            if (!$this->isTaskAuthorityLost($taskKind, $taskId, $acknowledgementFailure, $workflowTaskAttempt)) {
                 throw $acknowledgementFailure;
             }
         }
     }
 
-    private function isTerminalTaskConflict(string $taskKind, string $taskId, Throwable $exception): bool
+    private function isTaskAuthorityLost(string $taskKind, string $taskId, Throwable $exception, ?int $workflowTaskAttempt = null): bool
     {
         if (!$exception instanceof ServerException || $exception->status !== 409) {
             return false;
@@ -2462,7 +2469,13 @@ final class Worker
                     && ($details['can_continue'] ?? null) === false
                     && in_array($details['task_status'] ?? null, ['cancelled', 'completed'], true))
                 || ($reason === 'task_not_leased'
-                    && in_array($details['task_status'] ?? null, ['cancelled', 'completed'], true)),
+                    && (in_array($details['task_status'] ?? null, ['cancelled', 'completed'], true)
+                        || (($details['task_status'] ?? null) === 'ready' && $workflowTaskAttempt !== null
+                            && ($details['workflow_task_attempt'] ?? null) === $workflowTaskAttempt)))
+                || ($reason === 'lease_expired' && $workflowTaskAttempt !== null
+                    && ($details['workflow_task_attempt'] ?? null) === $workflowTaskAttempt
+                    && ($details['task_status'] ?? null) === 'leased'
+                    && ($details['lease_owner'] ?? null) === $this->workerId),
             'activity' => in_array($reason, ['run_cancelled', 'run_terminated'], true)
                 && ($details['can_continue'] ?? null) === false
                 && ($details['task_status'] ?? null) === 'cancelled',
@@ -2968,7 +2981,7 @@ final class Worker
             } catch (WorkflowClaimAborted $error) {
                 throw $error;
             } catch (Throwable $error) {
-                if ($this->isTerminalTaskConflict('workflow', (string) $task['task_id'], $error)) {
+                if ($this->isTaskAuthorityLost('workflow', (string) $task['task_id'], $error, (int) ($task['workflow_task_attempt'] ?? 1))) {
                     throw new WorkflowClaimRevoked('terminal_task_fence', 'Local workflow claim has closed.', previous: $error);
                 }
                 throw new WorkflowClaimAborted('Local workflow claim renewal failed.', previous: $error);
