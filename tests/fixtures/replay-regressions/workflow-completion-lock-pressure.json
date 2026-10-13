@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-workflow-completion-lock-pressure",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.completion-lock-pressure", "input": []},
+  "command_sequence": [{"type": "complete_workflow", "result": "completion-after-backend-recovery"}],
+  "expected": {"command_sequence": [{"type": "complete_workflow", "result": "completion-after-backend-recovery"}]}
+}
