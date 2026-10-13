@@ -130,7 +130,7 @@ $reservation = $version === -1
 
 A later deployment can raise the maximum while keeping the recorded versions in range. Existing runs keep their decision; only runs that have not recorded this change ID select the new maximum.
 
-For a boolean rollout, use `patched('require-reservation-review')`. It returns `false` for legacy histories and `true` for new histories. After the legacy branch is no longer supported, replace the conditional call with `deprecatePatch()` for the same ID before eventually removing the marker. Do not reuse a change ID for an unrelated rollout or switch one ID between `getVersion()` and the patch helpers.
+For a boolean rollout, use `patched('require-reservation-review')`. It returns `false` for legacy histories and `true` for new histories. After the legacy branch is no longer supported, replace the conditional call with `deprecatePatch()` for the same ID before eventually removing the marker. Compatible numeric and patch helpers share the same frozen version for a change ID. Every call must support that version, and `patched()` returns whether it equals `1`. Do not reuse a change ID for an unrelated rollout.
 
 ## Put side effects in activities
 

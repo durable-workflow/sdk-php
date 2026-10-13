@@ -145,7 +145,7 @@ final class Replayer
 
         $stepCursor = 0;
         $commands = [];
-        /** @var array<string, array{version: int, family: string, sequence: ?int}> $versionDecisions */
+        /** @var array<string, array{version: int, sequence: ?int}> $versionDecisions */
         $versionDecisions = [];
         $suspended = $execution->start();
         $nextSequence = 1;
@@ -592,7 +592,6 @@ final class Replayer
                         );
                         $versionDecisions[$changeId] = [
                             'version' => $version,
-                            'family' => $this->versionFamily($suspended),
                             'sequence' => $step['sequence'],
                         ];
                         $suspended = $execution->resume($suspended->versionResult($version));
@@ -619,7 +618,6 @@ final class Replayer
                     $nextSequence = max($nextSequence, $step['sequence'] + 1);
                     $versionDecisions[$changeId] = [
                         'version' => $version,
-                        'family' => $this->versionFamily($suspended),
                         'sequence' => $step['sequence'],
                     ];
                     $suspended = $execution->resume($suspended->versionResult($version));
@@ -637,7 +635,6 @@ final class Replayer
                     );
                     $versionDecisions[$changeId] = [
                         'version' => $version,
-                        'family' => $this->versionFamily($suspended),
                         'sequence' => null,
                     ];
                     $suspended = $execution->resume($suspended->versionResult($version));
@@ -656,7 +653,6 @@ final class Replayer
                 ++$nextSequence;
                 $versionDecisions[$changeId] = [
                     'version' => $version,
-                    'family' => $this->versionFamily($suspended),
                     'sequence' => null,
                 ];
                 $suspended = $execution->resume($suspended->versionResult($version));
@@ -2803,24 +2799,13 @@ final class Replayer
     }
 
     /**
-     * @param array{version: int, family: string, sequence: ?int} $decision
+     * @param array{version: int, sequence: ?int} $decision
      */
     private function assertVersionDecisionCompatible(
         string $changeId,
         array $decision,
         WorkflowCommand $command,
     ): void {
-        $family = $this->versionFamily($command);
-        if ($decision['family'] !== $family) {
-            throw new NonDeterministicWorkflow(
-                "Version marker {$changeId} cannot switch between getVersion and patch helpers in one workflow execution.",
-                $decision['sequence'],
-                $decision['family'],
-                $family,
-                'version_marker_kind_mismatch',
-            );
-        }
-
         $this->assertVersionSupported(
             $changeId,
             $decision['version'],
@@ -2848,11 +2833,6 @@ final class Replayer
             (string) $version,
             'version_marker_incompatible_range',
         );
-    }
-
-    private function versionFamily(WorkflowCommand $command): string
-    {
-        return $command->versionResultKind === 'version' ? 'getVersion' : 'patch';
     }
 
     /**
