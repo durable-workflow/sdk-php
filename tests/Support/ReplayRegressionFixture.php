@@ -550,7 +550,7 @@ final class ReplayRegressionFixture
 
                 throw new RuntimeException('Workflow failed after the local activity returned.');
             },
-            'golden.completion-backend-loss' => static fn (WorkflowContext $context): string =>
+            'golden.completion-backend-loss', 'golden.completion-lock-pressure' => static fn (WorkflowContext $context): string =>
                 'completion-after-backend-recovery',
             'golden.workflow-lease-recovery' => static fn (WorkflowContext $context): mixed =>
                 $context->activity('golden.lease-receipt'),

@@ -95,6 +95,7 @@ final class ReplayRegressionTransport implements Transport
         private readonly bool $backendUnavailable = false,
         private readonly bool $activityBackendUnavailable = false,
         private readonly bool $workflowLeaseRecovery = false,
+        private readonly bool $completionLockPressure = false,
     ) {
     }
 
@@ -150,7 +151,7 @@ final class ReplayRegressionTransport implements Transport
                 && (!$this->workflowClaimRepaired || ($body['workflow_task_attempt'] ?? null) !== 2)) {
                 throw new RuntimeException('A repaired workflow must complete only under its fresh attempt.');
             }
-            if ($this->backendUnavailable) {
+            if ($this->backendUnavailable || $this->completionLockPressure) {
                 if ($this->refusedCompletion !== null && $body !== $this->refusedCompletion) {
                     throw new RuntimeException('Backend recovery changed the workflow completion request.');
                 }
@@ -168,6 +169,13 @@ final class ReplayRegressionTransport implements Transport
                         'retryable' => true,
                         'retry_after_seconds' => 1,
                     ];
+                    if ($this->completionLockPressure) {
+                        $refusal['reason'] = 'backend_lock_pressure';
+                        $refusal['outcome'] = 'deferred';
+                        $refusal['recorded'] = false;
+                        $refusal['backend'] = ['driver' => 'sqlite', 'lock_pressure' => true];
+                        unset($refusal['worker_id'], $refusal['task_queue']);
+                    }
                     throw TransportException::fromResponse(503, $refusal, json_encode($refusal, JSON_THROW_ON_ERROR));
                 }
             }
@@ -468,6 +476,7 @@ final class ReplayRegressionConsumer
             backendUnavailable: $workflowType === 'golden.completion-backend-loss',
             activityBackendUnavailable: $workflowType === 'golden.activity-completion-backend-loss',
             workflowLeaseRecovery: $workflowType === 'golden.workflow-lease-recovery',
+            completionLockPressure: $workflowType === 'golden.completion-lock-pressure',
         );
         $now = 0.0;
         $worker = new Worker(
@@ -789,7 +798,7 @@ final class ReplayRegressionConsumer
 
                 throw new RuntimeException('Workflow failed after the local activity returned.');
             },
-            'golden.completion-backend-loss' => static fn (WorkflowContext $context): string =>
+            'golden.completion-backend-loss', 'golden.completion-lock-pressure' => static fn (WorkflowContext $context): string =>
                 'completion-after-backend-recovery',
             'golden.workflow-lease-recovery' => static fn (WorkflowContext $context): mixed =>
                 $context->activity('golden.lease-receipt'),
