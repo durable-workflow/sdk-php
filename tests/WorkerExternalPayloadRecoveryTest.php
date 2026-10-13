@@ -27,6 +27,109 @@ use Psr\Http\Message\ResponseInterface;
 
 final class WorkerExternalPayloadRecoveryTest extends TestCase
 {
+    #[DataProvider('slowNonWorkflowPayloads')]
+    public function testSlowNonWorkflowPayloadsMaintainPresenceWithoutInventingTaskHeartbeats(string $kind, string $outcome): void
+    {
+        $large = str_repeat('p', 32768);
+        $blob = (new AvroPayloadCodec())->envelope([$large])['blob'];
+        $now = $lastPresence = 0.0;
+        $offset = $executions = $completions = $registrations = $presence = $fetches = $presenceFailures = 0;
+        $polls = [];
+        $worker = null;
+        $client = self::client(static function (RequestInterface $request) use (
+            $kind, $outcome, $blob, &$now, &$lastPresence, &$offset, &$completions,
+            &$registrations, &$presence, &$fetches, &$presenceFailures, &$polls, &$worker,
+        ): ResponseInterface {
+            $path = $request->getUri()->getPath();
+            if (str_ends_with($path, '/register')) {
+                ++$registrations;
+                return self::json(['registered' => true, 'heartbeat_interval_seconds' => 10]);
+            }
+            if (str_ends_with($path, '/worker/heartbeat')) {
+                if ($now - $lastPresence >= 30 || ($outcome === 'fenced' && $now >= 40)) {
+                    return new Response(409, [], '{"reason":"worker_registration_fenced","error":"Registration was fenced."}');
+                }
+                if ($outcome === 'retry' && $presenceFailures++ === 0) {
+                    return new Response(503, [], '');
+                }
+                ++$presence;
+                $lastPresence = $now;
+                return self::json(['acknowledged' => true]);
+            }
+            self::assertFalse(str_ends_with($path, '/heartbeat'), 'Worker presence cannot manufacture query or activity progress.');
+            if (str_contains($path, '/external-payloads/')) {
+                ++$fetches;
+                $offset = 0;
+                return self::payload($blob, new PumpStream(static function (int $length) use (
+                    $blob, $outcome, &$offset, &$now, &$worker,
+                ): string|false {
+                    if ($offset >= strlen($blob)) return false;
+                    $chunk = substr($blob, $offset, min($length, 8192));
+                    $offset += strlen($chunk);
+                    $now += 20;
+                    if ($outcome === 'shutdown') $worker->requestShutdown();
+                    return $chunk;
+                }));
+            }
+            if (str_ends_with($path, '/complete')) {
+                $body = json_decode((string) $request->getBody(), true, flags: JSON_THROW_ON_ERROR);
+                self::assertSame('worker-1', $body['lease_owner']);
+                self::assertSame($kind === 'query' ? 1 : 'attempt-1', $body[$kind === 'query' ? 'query_task_attempt' : 'activity_attempt_id']);
+                ++$completions;
+                return self::json(['completed' => true]);
+            }
+            if (str_ends_with($path, '/poll')) {
+                if ($completions > 0) return self::json(['task' => null, 'poll_status' => 'stopped']);
+                if (!str_ends_with($path, "/{$kind}-tasks/poll")) return self::json(['task' => null, 'poll_status' => 'empty']);
+                $polls[] = (string) $request->getBody();
+                $task = self::task($blob);
+                $task['query_task_id'] = 'task-1';
+                $task['query_task_attempt'] = 1;
+                return self::json(['task' => $task, 'poll_status' => 'leased']);
+            }
+            return self::json(['deregistered' => true]);
+        });
+        $worker = new Worker($client, 'payload-workers', workerId: 'worker-1',
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $us) use (&$now): void { $now += $us / 1_000_000; });
+        $handler = static function (string $argument) use ($large, &$executions): string {
+            self::assertSame($large, $argument);
+            ++$executions;
+            return 'loaded';
+        };
+        $worker->registerActivity('payload.activity', static fn (ActivityContext $ctx, string $argument): string => $handler($argument))
+            ->registerQuery('payload.workflow', 'payload.query', static fn (QueryContext $ctx, string $argument): string => $handler($argument));
+        try {
+            $worker->run(0);
+            self::assertNotSame('fenced', $outcome, 'A fenced registration must remain a terminal refusal.');
+        } catch (ServerException $error) {
+            if ($outcome !== 'fenced') throw $error;
+            self::assertSame(409, $error->status);
+            self::assertSame('worker_registration_fenced', $error->reason);
+        }
+        self::assertSame(1, $registrations, 'Lost registration cannot be concealed by re-registration.');
+        self::assertSame($outcome === 'retry' ? 2 : 1, $fetches);
+        self::assertCount(1, array_unique($polls), 'Presence recovery preserves the original poll identity.');
+        $completed = in_array($outcome, ['complete', 'retry'], true);
+        self::assertSame($completed ? 1 : 0, $executions);
+        self::assertSame($completed ? 1 : 0, $completions);
+        if ($completed) {
+            self::assertGreaterThan(60, $now);
+            self::assertGreaterThanOrEqual(3, $presence);
+        } else {
+            self::assertLessThan(strlen($blob), $offset, 'Interrupted loading must stop reading before dispatch.');
+        }
+    }
+
+    public static function slowNonWorkflowPayloads(): iterable
+    {
+        foreach (['query', 'activity'] as $kind) {
+            foreach (['complete', 'fenced', 'shutdown', 'retry'] as $outcome) {
+                yield "$kind $outcome" => [$kind, $outcome];
+            }
+        }
+    }
+
     #[DataProvider('slowWorkflowPayloads')]
     public function testSlowWorkflowPayloadsRenewTheOriginalClaimAndStopIfItIsLost(string $phase, bool $loseClaim): void
     {
