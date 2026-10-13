@@ -853,6 +853,34 @@ final class CooperativeCancellationWorkerTest extends TestCase
         }
     }
 
+    public function testCompletionLockPressureCannotRestartTheOriginalCleanupDeadline(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $now = 1790812859.5;
+        $transport->onComplete = static function (CooperativeWorkerTransport $transport): void {
+            $response = ['reason' => 'backend_lock_pressure', 'operation' => 'complete_workflow_task',
+                'task_id' => $transport->taskId, 'workflow_task_attempt' => $transport->workflowTaskAttempt,
+                'lease_owner' => 'worker-1', 'outcome' => 'deferred', 'recorded' => false,
+                'retryable' => true, 'retry_after_seconds' => 1, 'backend' => ['driver' => 'sqlite', 'lock_pressure' => true]];
+            throw TransportException::fromResponse(503, $response, json_encode($response, JSON_THROW_ON_ERROR));
+        };
+        $worker = new Worker(new Client('https://server.example', transport: $transport), 'queue',
+            workerId: 'worker-1', enableCooperativeCancellation: true,
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $microseconds) use (&$now): void { $now += $microseconds / 1000000; });
+        $worker->registerWorkflow('cancel', static function (WorkflowContext $context): string {
+            try { $context->timer(1); } catch (\DurableWorkflow\Exception\WorkflowCancelled) {}
+
+            return 'cleanup';
+        });
+        self::assertTrue($worker->tick(0));
+        self::assertCount(1, $transport->completions);
+        self::assertSame([], $transport->failures);
+        self::assertSame('2026-10-01T00:01:00Z', $transport->observation['cleanup_deadline_at']);
+        self::assertGreaterThanOrEqual(1790812860.0, $now);
+        self::assertLessThan(1790812860.7, $now);
+    }
+
     private function worker(CooperativeWorkerTransport $transport, ?\Closure $clock = null): Worker
     {
         return new Worker(new Client('https://server.example', transport: $transport),
@@ -887,6 +915,7 @@ final class CooperativeWorkerTransport implements \DurableWorkflow\Transport\Bou
     public ?string $refreshFault = null;
     public ?\Closure $onHeartbeat = null;
     public ?\Closure $onDelivery = null;
+    public ?\Closure $onComplete = null;
 
     public function supportsBoundedRequests(): bool
     {
@@ -984,7 +1013,11 @@ final class CooperativeWorkerTransport implements \DurableWorkflow\Transport\Bou
                 'operation_sequence_span' => $body['operation_sequence_span'] ?? 1,
                 ...($this->deliveryReply === 'malformed acknowledgment' ? ['call_kind' => 'invalid'] : [])];
         }
-        if (str_ends_with($uri, '/complete')) { $this->completions[] = $body; return ['completed' => true]; }
+        if (str_ends_with($uri, '/complete')) {
+            $this->completions[] = $body;
+            if ($this->onComplete !== null) { ($this->onComplete)($this); }
+            return ['completed' => true];
+        }
         if (str_ends_with($uri, '/fail')) { $this->failures[] = $body; return ['failed' => true]; }
         throw new \RuntimeException('Unexpected request '.$method.' '.$uri);
     }

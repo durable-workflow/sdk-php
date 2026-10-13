@@ -12,6 +12,18 @@ project follows [Semantic Versioning](https://semver.org/).
   before acquiring more work. Task and cancellation authority deadlines retain
   their original bounds.
 
+## [2.3.9] - 2026-10-13
+
+### Fixed
+
+- Preserve computed workflow completions through explicitly fenced backend lock
+  pressure. Retry identical content with bounded backoff under the original
+  task, attempt and owner; reconcile a known committed completion without
+  running its handler again. Shutdown and cancellation retain their bounds.
+- Use the managed worker lifecycle in worker and shutdown guides. `run()` owns
+  registration, heartbeat state and deregistration; a `tick()` loop alone does
+  not establish that lifecycle.
+
 ## [2.2.7] - 2026-10-11
 
 ### Fixed

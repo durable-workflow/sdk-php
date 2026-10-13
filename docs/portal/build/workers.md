@@ -63,6 +63,9 @@ runtime. Passing an un-attributed class raises `InvalidWorkerDefinition` before
 registration or polling begins. Add a Durable Workflow handler attribute, or
 use the direct callable API instead.
 
+Handler registration configures this PHP object. `run()` separately registers
+the worker with the runtime before its first poll.
+
 Add the other handler types to the same worker before starting its loop:
 
 ```php
@@ -123,15 +126,21 @@ task continues without waiting for that retry. Server fencing, stopped and
 draining responses remain authoritative, and the worker does not register again
 to bypass them.
 
-Use `tick()` only when a framework supervisor must own the outer loop:
+Keep `run()` inside your CLI command or supervised process:
 
 ```php
-while (!$shutdownRequested) {
-    $worker->tick(pollTimeoutSeconds: 1);
-}
-
-$worker->requestShutdown();
+$worker->run(pollTimeoutSeconds: 1);
 ```
+
+The supervisor starts the process and delivers shutdown signals. The managed
+loop owns registration, heartbeat state and deregistration. Laravel and Symfony
+applications can use their supplied [Laravel](/frameworks/laravel/) or
+[Symfony](/frameworks/symfony/) worker commands.
+
+`tick()` performs one polling iteration. It does not establish or close that
+worker lifecycle. A fresh worker using `tick()` directly has no managed
+registration; calling a low-level client registration method does not initialize
+the Worker's heartbeat or cleanup state. Use `run()` for application workers.
 
 The lower-level `poll*TaskResponse()` APIs are for adapters that intentionally own lease, attempt, completion, and failure semantics. Application workers should prefer the managed loop.
 
