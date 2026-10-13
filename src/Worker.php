@@ -930,6 +930,12 @@ final class Worker
             try {
                 return $request();
             } catch (ServerException $exception) {
+                $workflowCompletionDeferred = $operation === 'workflow_complete' && $workflowTaskLease !== null
+                    && ($exception->isWorkflowTaskCompletionDeferred(
+                        $workflowTaskLease['task_id'], $workflowTaskLease['lease_owner'], $workflowTaskLease['attempt'],
+                    ) || $exception->isWorkflowTaskCompletionPublicationDeferred(
+                        $workflowTaskLease['task_id'], $workflowTaskLease['lease_owner'], $workflowTaskLease['attempt'],
+                    ));
                 $workflowBackendUnavailable = $workflowTaskLease !== null
                     && $exception->isWorkflowTaskBackendUnavailable(
                         $workflowTaskLease['task_id'],
@@ -956,8 +962,12 @@ final class Worker
                     return null;
                 }
                 $backendUnavailable = $workflowBackendUnavailable || $activityBackendUnavailable;
-                if ((!$exception->isStorageAdmissionFailure() && !$backendUnavailable && !$activityDiscoveryUnavailable)
+                if ((!$exception->isStorageAdmissionFailure() && !$backendUnavailable && !$activityDiscoveryUnavailable
+                    && !$workflowCompletionDeferred)
                     || $this->shutdownRequested) {
+                    if ($workflowCompletionDeferred && $this->shutdownRequested) {
+                        throw new WorkflowClaimDeferred('Shutdown stopped the fenced workflow completion retry.');
+                    }
                     throw $exception;
                 }
                 $uncertainActivityCompletion = $uncertainActivityCompletion || $activityBackendUnavailable;
@@ -976,6 +986,9 @@ final class Worker
                 ], 'warning');
                 $this->waitForTransientRetry($delaySeconds);
                 if ($this->shutdownRequested) {
+                    if ($workflowCompletionDeferred) {
+                        throw new WorkflowClaimDeferred('Shutdown stopped the fenced workflow completion retry.');
+                    }
                     // Leave the task unacknowledged; shutdown is not completion.
                     throw $exception;
                 }
@@ -1300,7 +1313,8 @@ final class Worker
             if ($exception instanceof WorkflowClaimDeferred) {
                 $this->diagnostic('worker.claim_deferred', [
                     'task_id' => $taskId, 'task_kind' => 'workflow',
-                    'reason' => 'claim_released', 'message' => $exception->getMessage(),
+                    'reason' => $this->shutdownRequested ? 'shutdown_requested' : 'claim_released',
+                    'message' => $exception->getMessage(),
                 ], 'info');
 
                 return;

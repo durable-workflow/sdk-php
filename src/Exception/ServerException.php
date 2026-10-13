@@ -100,6 +100,44 @@ class ServerException extends DurableWorkflowException
             && $response['retry_after_seconds'] > 0;
     }
 
+    /** A completion explicitly deferred before commit, under the original lease. */
+    public function isWorkflowTaskCompletionDeferred(string $taskId, string $leaseOwner, int $attempt): bool
+    {
+        return $this->workflowCompletionLockPressureState($taskId, $leaseOwner, $attempt) === false;
+    }
+
+    /** A committed completion whose publication needs same-fence reconciliation. */
+    public function isWorkflowTaskCompletionPublicationDeferred(string $taskId, string $leaseOwner, int $attempt): bool
+    {
+        return $this->workflowCompletionLockPressureState($taskId, $leaseOwner, $attempt) === true;
+    }
+
+    private function workflowCompletionLockPressureState(string $taskId, string $leaseOwner, int $attempt): ?bool
+    {
+        $response = $this->details;
+        if ($taskId === '' || $leaseOwner === '' || $attempt < 1
+            || $this->status !== 503 || $this->reason !== 'backend_lock_pressure'
+            || $response === null || array_is_list($response)
+            || ($response['reason'] ?? null) !== 'backend_lock_pressure'
+            || ($response['operation'] ?? null) !== 'complete_workflow_task'
+            || ($response['outcome'] ?? null) !== 'deferred'
+            || ($response['task_id'] ?? null) !== $taskId
+            || ($response['lease_owner'] ?? null) !== $leaseOwner
+            || ($response['workflow_task_attempt'] ?? null) !== $attempt
+            || ($response['retryable'] ?? null) !== true
+            || !is_bool($response['recorded'] ?? null)
+            || !is_int($response['retry_after_seconds'] ?? null)
+            || $response['retry_after_seconds'] < 1 || $response['retry_after_seconds'] > 5
+            || !is_array($response['backend'] ?? null)
+            || ($response['backend']['lock_pressure'] ?? null) !== true) {
+            return null;
+        }
+
+        // Do not shorten a Server delay beyond the managed worker's five-second
+        // retry ceiling. Missing/ambiguous recorded state is never unrecorded.
+        return $response['recorded'];
+    }
+
     /** A backend failure whose activity completion can be retried with the same attempt and lease. */
     public function isActivityTaskBackendUnavailable(string $taskId, string $attemptId, string $leaseOwner): bool
     {
