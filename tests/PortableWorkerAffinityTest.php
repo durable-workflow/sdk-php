@@ -1051,6 +1051,26 @@ final class PortableWorkerAffinityTest extends TestCase
         self::assertSame([], $transport->requests);
     }
 
+    public function testWorkerFactoryCacheConfigurationEvictsAndFetchesAuthoritativeHistory(): void
+    {
+        $outcome = $this->runStickyColdReplayScenario('eviction', useFactory: true);
+
+        self::assertSame($outcome['initial_commands'], $outcome['fallback_commands']);
+        self::assertSame(1, $outcome['history_fetches']);
+        self::assertSame(1, $outcome['metrics']['forced_cold_replay']);
+        self::assertGreaterThanOrEqual(1, $outcome['metrics']['eviction']);
+    }
+
+    public function testWorkerFactoryCacheConfigurationExpiresAndFetchesAuthoritativeHistory(): void
+    {
+        $outcome = $this->runStickyColdReplayScenario('expiry', useFactory: true);
+
+        self::assertSame($outcome['initial_commands'], $outcome['fallback_commands']);
+        self::assertSame(1, $outcome['history_fetches']);
+        self::assertSame(1, $outcome['metrics']['forced_cold_replay']);
+        self::assertSame(1, $outcome['metrics']['eviction']);
+    }
+
     public function testStickyCacheNeverPromotesAnUnreplayableRuntimeSuffix(): void
     {
         $cache = new StickyWorkflowCache(capacity: 1, ttlSeconds: 300);
@@ -1782,7 +1802,11 @@ final class PortableWorkerAffinityTest extends TestCase
      *     metrics: array{hit: int, miss: int, eviction: int, forced_cold_replay: int}
      * }
      */
-    private function runStickyColdReplayScenario(string $scenario, bool $acceptedStart = false): array
+    private function runStickyColdReplayScenario(
+        string $scenario,
+        bool $acceptedStart = false,
+        bool $useFactory = false,
+    ): array
     {
         $codec = new AvroPayloadCodec();
         $fullHistory = [
@@ -1838,12 +1862,13 @@ final class PortableWorkerAffinityTest extends TestCase
         };
         $commands = [];
         $historyFetches = 0;
+        $factoryTtlSeconds = $scenario === 'expiry' ? 1 : 37;
         $transport = new FakeTransport(handler: static function (
             string $method,
             string $uri,
             array $_headers,
             ?array $body,
-        ) use (&$tasks, &$commands, &$historyFetches, $fullHistory): array {
+        ) use (&$tasks, &$commands, &$historyFetches, $fullHistory, $useFactory, $factoryTtlSeconds): array {
             if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
                 $next = array_shift($tasks);
 
@@ -1871,6 +1896,9 @@ final class PortableWorkerAffinityTest extends TestCase
             if (str_ends_with($uri, '/complete')) {
                 preg_match('~/workflow-tasks/([^/]+)/complete$~', $uri, $matches);
                 $commands[$matches[1] ?? ''] = $body;
+                if ($useFactory) {
+                    self::assertSame($factoryTtlSeconds, $body['sticky_cache']['ttl_seconds'] ?? null);
+                }
 
                 return ['completed' => true];
             }
@@ -1884,8 +1912,14 @@ final class PortableWorkerAffinityTest extends TestCase
             self::fail("Unexpected worker request: {$method} {$uri}");
         });
         $now = 0.0;
-        $worker = new Worker(
-            new Client('https://server.example', transport: $transport),
+        $client = new Client('https://server.example', transport: $transport);
+        $worker = $useFactory ? Worker::create(
+            $client,
+            'sticky-workers',
+            stickyCacheCapacity: 1,
+            stickyCacheTtlSeconds: $factoryTtlSeconds,
+        ) : new Worker(
+            $client,
             'sticky-workers',
             workerId: 'sticky-worker',
             buildId: 'build-b',
@@ -1912,6 +1946,9 @@ final class PortableWorkerAffinityTest extends TestCase
             self::assertTrue($worker->tick(0), "{$scenario} workflow task {$index} was not handled.");
             if ($scenario === 'expiry' && $index === 0) {
                 $now = 2.0;
+                if ($useFactory) {
+                    usleep(1100000);
+                }
             }
         }
 

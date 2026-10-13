@@ -60,6 +60,8 @@ final class WorkerFactory
                 $this->logger->info('worker.registered_and_polling', $readiness);
                 $this->events?->dispatch(new WorkerDiagnosticEvent('worker.registered_and_polling', $readiness));
             },
+            stickyCacheCapacity: $this->configuration->stickyCacheCapacity,
+            stickyCacheTtlSeconds: $this->configuration->stickyCacheTtlSeconds,
         );
 
         $handlers = [];

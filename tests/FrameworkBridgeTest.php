@@ -37,6 +37,20 @@ final class FrameworkBridgeTest extends TestCase
         self::assertSame('orders', $configuration->client()->namespace);
     }
 
+    public function testHistoryCacheConfigurationKeepsDefaultsAndAcceptsTheTtlCeiling(): void
+    {
+        $values = ['endpoint' => 'https://server.example', 'task_queue' => 'php-workers'];
+        $defaults = ServiceConfiguration::fromArray($values);
+        self::assertSame(100, $defaults->stickyCacheCapacity);
+        self::assertSame(300, $defaults->stickyCacheTtlSeconds);
+
+        $configured = ServiceConfiguration::fromArray($values + [
+            'worker' => ['sticky_cache' => ['capacity' => 7, 'ttl_seconds' => 3600]],
+        ]);
+        self::assertSame(7, $configured->stickyCacheCapacity);
+        self::assertSame(3600, $configured->stickyCacheTtlSeconds);
+    }
+
     public function testRoleSpecificClientsCannotSendTheOppositeScopedCredential(): void
     {
         $configuration = ServiceConfiguration::fromArray([
@@ -202,6 +216,29 @@ final class FrameworkBridgeTest extends TestCase
             'credentials' => ['token' => 'shared', 'worker_token' => 'worker'],
         ], 'either the shared Durable Workflow token or scoped'];
         yield 'invalid timeout' => [['poll_timeout_seconds' => 61], 'between 0 and 60'];
+        yield 'invalid worker settings' => [['worker' => 'cache'], 'worker settings must be an array'];
+        yield 'null worker settings' => [['worker' => null], 'worker settings must be an array'];
+        yield 'invalid cache settings' => [[
+            'worker' => ['sticky_cache' => false],
+        ], 'worker.sticky_cache settings must be an array'];
+        foreach (['capacity', 'ttl_seconds'] as $key) {
+            foreach (['100', 1.5, true, null] as $index => $value) {
+                yield "non-integer cache {$key} {$index}" => [[
+                    'worker' => ['sticky_cache' => [$key => $value]],
+                ], "worker.sticky_cache.{$key} must be an integer"];
+            }
+        }
+        foreach ([0, -1] as $value) {
+            yield "invalid cache capacity {$value}" => [[
+                'worker' => ['sticky_cache' => ['capacity' => $value]],
+            ], 'worker.sticky_cache.capacity must be a positive integer'];
+            yield "invalid cache ttl {$value}" => [[
+                'worker' => ['sticky_cache' => ['ttl_seconds' => $value]],
+            ], 'worker.sticky_cache.ttl_seconds must be between 1 and 3600'];
+        }
+        yield 'oversized cache ttl' => [[
+            'worker' => ['sticky_cache' => ['ttl_seconds' => 3601]],
+        ], 'worker.sticky_cache.ttl_seconds must be between 1 and 3600'];
         yield 'invalid handlers' => [['handlers' => ['']], 'Each Durable Workflow handler'];
         yield 'duplicate handlers' => [[
             'handlers' => [BridgeFixtureHandler::class, BridgeFixtureHandler::class],

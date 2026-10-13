@@ -170,6 +170,8 @@ final class Worker
         ?ContainerInterface $container = null,
         ?LoggerInterface $logger = null,
         ?callable $diagnosticListener = null,
+        int $stickyCacheCapacity = 100,
+        int $stickyCacheTtlSeconds = 300,
     ): self {
         return new self(
             $client,
@@ -177,6 +179,8 @@ final class Worker
             container: $container,
             logger: $logger,
             diagnosticListener: $diagnosticListener,
+            stickyCacheCapacity: $stickyCacheCapacity,
+            stickyCacheTtlSeconds: $stickyCacheTtlSeconds,
         );
     }
 

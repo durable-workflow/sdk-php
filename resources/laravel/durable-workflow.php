@@ -18,4 +18,12 @@ return [
     ],
 
     'poll_timeout_seconds' => 5,
+
+    'worker' => [
+        // Process-local durable history only; misses/expiry still replay authoritative history.
+        'sticky_cache' => [
+            'capacity' => 100,
+            'ttl_seconds' => 300, // Positive integer, at most 3600 seconds.
+        ],
+    ],
 ];

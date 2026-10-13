@@ -141,6 +141,10 @@ function laravelCacheAssertContainsNoCredentials(string $cachePath): void
     if (!is_array($configuration)) {
         throw new RuntimeException('Laravel produced an invalid configuration cache.');
     }
+    if (($configuration['durable-workflow']['worker']['sticky_cache'] ?? null)
+        !== ['capacity' => 7, 'ttl_seconds' => 37]) {
+        throw new RuntimeException('Laravel configuration caching lost the configured history cache bounds.');
+    }
     $credentials = $configuration['durable-workflow']['credentials'] ?? [];
     if (!is_array($credentials)) {
         throw new RuntimeException('Cached Durable Workflow credentials must not be configured.');
@@ -161,6 +165,10 @@ function laravelCacheRunChild(string $basePath, string $role): void
     $configuration = $application->make('config')->get('durable-workflow', []);
     if (!is_array($configuration) || isset($configuration['credentials'])) {
         throw new RuntimeException('The Laravel role process loaded credentials from cached configuration.');
+    }
+    $settings = $application->make(ServiceConfiguration::class);
+    if ($settings->stickyCacheCapacity !== 7 || $settings->stickyCacheTtlSeconds !== 37) {
+        throw new RuntimeException('Cached Laravel settings lost the configured history cache bounds.');
     }
 
     if ($role === 'client') {
@@ -336,8 +344,11 @@ try {
     if (!symlink(dirname($autoloadPath), $fixturePath.'/vendor')) {
         throw new RuntimeException('Could not expose the compatibility dependency graph to the Laravel fixture.');
     }
-    if (!copy(dirname(__DIR__, 2).'/resources/laravel/durable-workflow.php', $fixturePath.'/config/durable-workflow.php')) {
-        throw new RuntimeException('Could not publish the Durable Workflow Laravel configuration.');
+    $publishedConfig = dirname(__DIR__, 2).'/resources/laravel/durable-workflow.php';
+    $fixtureConfig = '<?php $values = require '.var_export($publishedConfig, true).';'
+        .' $values["worker"]["sticky_cache"] = ["capacity" => 7, "ttl_seconds" => 37]; return $values;';
+    if (file_put_contents($fixturePath.'/config/durable-workflow.php', $fixtureConfig) === false) {
+        throw new RuntimeException('Could not publish the configured Durable Workflow Laravel fixture.');
     }
     if ((new ReflectionClass(Application::class))->hasMethod('configure')) {
         $bootstrap = <<<'PHP'
