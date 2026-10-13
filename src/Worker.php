@@ -1398,11 +1398,18 @@ final class Worker
 
             // Presence keeps this registration alive. It is not application
             // progress and cannot renew an activity or query execution budget.
-            return function () use ($budget): void {
+            $task = $response['task'];
+            $activity = $path === '/worker/activity-tasks/poll';
+            $observedAt = null;
+            return function () use ($budget, $task, $activity, &$observedAt): void {
                 if ($this->shutdownRequested) {
                     throw new WorkflowClaimRevoked('worker_stopped', 'Payload transfer stopped with its Worker.');
                 }
                 $heartbeatBudget = $budget ?? ($this->client->supportsBoundedWorkerRequests() ? new RequestBudget(5) : null);
+                if ($this->enableCooperativeCancellation && isset($task['lease_expires_at'])) {
+                    $this->assertPayloadDeadline($task['lease_expires_at']);
+                    $heartbeatBudget?->restrictWallAuthorityDeadline(new \DateTimeImmutable($task['lease_expires_at']));
+                }
                 $heartbeatBudget?->remainingSeconds();
                 $this->heartbeatIfDue($heartbeatBudget);
                 $heartbeatBudget?->remainingSeconds();
@@ -1411,6 +1418,19 @@ final class Worker
                     // poll retry preserve the original request and task identity.
                     throw new TransportException('Payload loading waits for confirmed Worker presence.',
                         transientConnectionFailure: true);
+                }
+                if ($this->enableCooperativeCancellation) {
+                    if ($activity && ($observedAt === null || $this->now() - $observedAt >= 1)) {
+                        try {
+                            $this->assertRemoteActivityClaimActive($task, $heartbeatBudget);
+                        } catch (Throwable $error) {
+                            throw new WorkflowClaimRevoked('payload_activity_claim_unconfirmed',
+                                'Activity payload loading stopped before callback dispatch.', previous: $error);
+                        }
+                        $observedAt = $this->now();
+                    } elseif (!$activity && isset($task['lease_expires_at'])) {
+                        $this->assertPayloadDeadline($task['lease_expires_at']);
+                    }
                 }
             };
         }
@@ -1433,21 +1453,38 @@ final class Worker
             return null;
         }
         $renewedAt = null;
+        $cancellation = $path === '/worker/workflow-tasks/poll' ? ($task['cancellation_request'] ?? null)
+            : ($this->claimCancellation === null ? null : [
+                'request_id' => $this->claimCancellation->requestId,
+                'requested_at' => $this->claimCancellation->requestedAt,
+                'cleanup_deadline_at' => $this->claimCancellation->cleanupDeadlineAt,
+                'history_refresh_page_token' => $this->claimCancellation->historyRefreshPageToken,
+            ]);
+        $originalCancellation = null;
 
-        return function () use ($taskId, $owner, $attempt, $budget, &$renewedAt): void {
+        return function () use ($taskId, $owner, $attempt, $budget, &$renewedAt, &$cancellation, &$originalCancellation): void {
             if ($this->shutdownRequested) {
                 throw new WorkflowClaimRevoked('worker_stopped', 'Payload transfer stopped with its Worker.');
             }
+            $this->assertPayloadCancellation($cancellation, $originalCancellation);
             if ($renewedAt !== null && $this->now() - $renewedAt < 10) {
                 return;
             }
             $heartbeatBudget = $budget ?? ($this->client->supportsBoundedWorkerRequests() ? new RequestBudget(5) : null);
+            if ($originalCancellation !== null) {
+                $heartbeatBudget?->restrictWallAuthorityDeadline(new \DateTimeImmutable($originalCancellation->cleanupDeadlineAt));
+            }
             try {
                 $heartbeatBudget?->remainingSeconds();
                 $receipt = $this->client->heartbeatWorkflowTask($taskId, $owner, $attempt, $heartbeatBudget);
                 if (!$this->matchesWorkflowTaskLeaseFence($receipt, $taskId, $owner, $attempt)
                     || ($receipt['renewed'] ?? null) !== true) {
                     throw $this->workflowTaskLeaseResponseFailure('Payload transfer lease renewal was not acknowledged.', $receipt);
+                }
+                if (isset($receipt['cancellation_request'])) {
+                    $cancellation = $receipt['cancellation_request'];
+                    $this->assertPayloadCancellation($cancellation, $originalCancellation);
+                    $heartbeatBudget?->restrictWallAuthorityDeadline(new \DateTimeImmutable($originalCancellation->cleanupDeadlineAt));
                 }
                 $this->heartbeatIfDue($heartbeatBudget);
                 $heartbeatBudget?->remainingSeconds();
@@ -1461,6 +1498,44 @@ final class Worker
             }
             $renewedAt = $this->now();
         };
+    }
+
+    private function assertPayloadDeadline(mixed $value): void
+    {
+        if (!is_string($value)
+            || preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/', $value) !== 1) {
+            throw new WorkflowClaimRevoked('payload_deadline_invalid', 'Payload loading requires its original valid deadline.');
+        }
+        $deadline = new \DateTimeImmutable($value);
+        $errors = \DateTimeImmutable::getLastErrors();
+        if (($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0))
+            || $this->now() >= (float) $deadline->format('U.u')) {
+            throw new WorkflowClaimRevoked('payload_deadline_expired', 'Payload loading exceeded its original authority deadline.');
+        }
+    }
+
+    private function assertPayloadCancellation(mixed $value, ?CancellationRequest &$original): void
+    {
+        if ($value === null) {
+            return;
+        }
+        try {
+            if (!$this->enableCooperativeCancellation || !is_array($value) || array_is_list($value)) {
+                throw new \InvalidArgumentException('Payload cancellation was not negotiated or is malformed.');
+            }
+            $request = CancellationRequest::fromObservation($value);
+            if ($original !== null && ($original->requestId !== $request->requestId
+                || $original->requestedAt !== $request->requestedAt
+                || $original->cleanupDeadlineAt !== $request->cleanupDeadlineAt)) {
+                throw new \InvalidArgumentException('Payload cancellation changed its original identity or deadline.');
+            }
+            $original ??= $request;
+            $this->assertPayloadDeadline($original->cleanupDeadlineAt);
+        } catch (WorkflowClaimRevoked $error) {
+            throw $error;
+        } catch (Throwable $error) {
+            throw new WorkflowClaimRevoked('payload_cancellation_invalid', 'Payload loading lost cancellation authority.', previous: $error);
+        }
     }
 
     private function observeClaimCancellation(mixed $observation): CancellationRequest
@@ -2404,12 +2479,12 @@ final class Worker
     }
 
     /** @param array<string, mixed> $task */
-    private function assertRemoteActivityClaimActive(array $task): void
+    private function assertRemoteActivityClaimActive(array $task, ?RequestBudget $budget = null): void
     {
         try {
             $reply = $this->client->activityTaskStatus((string) $task['task_id'],
                 (string) ($task['activity_attempt_id'] ?? $task['attempt_id'] ?? ''),
-                (string) ($task['lease_owner'] ?? $this->workerId));
+                (string) ($task['lease_owner'] ?? $this->workerId), $budget);
             if (($reply['task_id'] ?? null) !== $task['task_id']
                 || ($reply['activity_attempt_id'] ?? null) !== ($task['activity_attempt_id'] ?? $task['attempt_id'] ?? '')
                 || ($reply['lease_owner'] ?? null) !== ($task['lease_owner'] ?? $this->workerId)
@@ -2448,7 +2523,7 @@ final class Worker
             if ($this->now() >= min($timestamps)) {
                 throw new WorkflowClaimAborted('Remote activity ownership or execution deadline elapsed.');
             }
-            $this->heartbeatIfDue();
+            $this->heartbeatIfDue($budget);
             if ($this->shutdownRequested) {
                 throw new WorkflowClaimAborted('Worker shutdown abandoned its remote activity claim.');
             }

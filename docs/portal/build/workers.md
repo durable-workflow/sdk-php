@@ -92,6 +92,31 @@ Do not send a workflow to a queue that has no compatible workflow handler. Inspe
 
 `Worker::run()` registers, negotiates heartbeat cadence, polls workflow/activity/query tasks, renews workflow-task leases, and reports terminal outcomes. Typed transient poll pressure is retried with capped backoff while registration heartbeats and shutdown checks remain responsive.
 
+### Large payloads on slower connections
+
+Cooperative workers supervise external payload downloads while bytes arrive and
+while the connection waits. Worker presence and workflow lease renewal use short
+control requests. Activity status checks observe ownership and cancellation
+without recording application heartbeats. Query leases and original cancellation
+cleanup deadlines continue to limit loading.
+
+The default transport allows 30 seconds for each supervised payload download.
+Select a larger finite transfer timeout when your connection needs it:
+
+```php
+$client = new Client(
+    baseUri: $serverUrl,
+    transport: new Psr18Transport(payloadTransferTimeoutSeconds: 180),
+);
+```
+
+The transfer timeout accepts 1 through 900 seconds. It does not extend a run,
+activity, query, explicit request, or cancellation cleanup budget. Control RPCs
+retain their bounded timeouts. A partial, unauthorized, or invalid body is
+discarded before handler dispatch. Custom transports can implement the optional
+`BoundedProgressPayloadTransport` interface to provide the same supervised
+streaming support.
+
 After a transient registration-heartbeat failure, the managed loop refreshes
 that existing registration before acquiring another task. An already acquired
 task continues without waiting for that retry. Server fencing, stopped and
