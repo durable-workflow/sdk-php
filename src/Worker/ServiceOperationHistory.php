@@ -43,6 +43,21 @@ final class ServiceOperationHistory
                     $this->reject("Recorded service {$field} changed.");
                 }
             }
+            foreach (['linked_workflow_instance_id', 'linked_workflow_run_id', 'linked_workflow_update_id',
+                'accepted_at', 'call_deadline_at'] as $field) {
+                // Older or not-yet-resolved snapshots may acquire a binding.
+                // Once committed, a non-null original cannot move or disappear.
+                if (!isset($original[$field])) {
+                    continue;
+                }
+                $value = $incoming[$field] ?? null;
+                $same = in_array($field, ['accepted_at', 'call_deadline_at'], true)
+                    ? self::sameInstant($original[$field], $value)
+                    : $original[$field] === $value;
+                if (!$same) {
+                    $this->reject("Recorded service {$field} changed or was erased.");
+                }
+            }
             $originalId = self::callId($previous);
             $incomingId = self::callId($payload);
             if ($originalId !== $incomingId) {
@@ -50,7 +65,7 @@ final class ServiceOperationHistory
             }
         }
         if ($type === 'ServiceCallStarted') {
-            if ($this->admission !== null && $this->admission !== $payload) {
+            if ($this->admission !== null && !self::sameSnapshot($this->admission, $payload)) {
                 $this->reject('Recorded service admission changed.');
             }
             if ($this->admission === null && $this->terminal !== null) {
@@ -63,7 +78,7 @@ final class ServiceOperationHistory
             $this->admissionOrder = min($this->admissionOrder, $order);
             return;
         }
-        if ($this->terminal !== null && ($this->terminalType !== $type || $this->terminal !== $payload)) {
+        if ($this->terminal !== null && ($this->terminalType !== $type || !self::sameSnapshot($this->terminal, $payload))) {
             $this->reject('Recorded service terminal delivery changed.');
         }
         $this->terminal ??= $payload;
@@ -155,6 +170,68 @@ final class ServiceOperationHistory
     {
         $surface = self::surface($payload);
         return self::string($surface['service_call_id'] ?? null) ?? self::string($surface['id'] ?? null);
+    }
+
+    /**
+     * @param array<string, mixed> $original
+     * @param array<string, mixed> $incoming
+     */
+    private static function sameSnapshot(array $original, array $incoming): bool
+    {
+        $incoming = self::withEquivalentTimes($original, $incoming);
+        foreach (['service_call', 'response_or_failure_surface'] as $nested) {
+            if (is_array($original[$nested] ?? null) && is_array($incoming[$nested] ?? null)) {
+                $incoming[$nested] = self::withEquivalentTimes($original[$nested], $incoming[$nested]);
+            }
+        }
+
+        return $original === $incoming;
+    }
+
+    /**
+     * @param array<string, mixed> $original
+     * @param array<string, mixed> $incoming
+     * @return array<string, mixed>
+     */
+    private static function withEquivalentTimes(array $original, array $incoming): array
+    {
+        foreach (['accepted_at', 'call_deadline_at'] as $field) {
+            if (isset($original[$field], $incoming[$field])
+                && self::sameInstant($original[$field], $incoming[$field])) {
+                $incoming[$field] = $original[$field];
+            }
+        }
+
+        return $incoming;
+    }
+
+    private static function sameInstant(mixed $original, mixed $incoming): bool
+    {
+        if ($original === $incoming) {
+            return true;
+        }
+        $instant = self::timestamp($original);
+
+        return $instant !== null && $instant === self::timestamp($incoming);
+    }
+
+    private static function timestamp(mixed $value): ?string
+    {
+        if (!is_string($value) || preg_match(
+            '/\A(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)\z/',
+            $value,
+            $parts,
+        ) !== 1) {
+            return null;
+        }
+        $date = \DateTimeImmutable::createFromFormat('!Y-m-d\TH:i:sP', $parts[1].$parts[3]);
+        $errors = \DateTimeImmutable::getLastErrors();
+        if ($date === false || ($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0))) {
+            return null;
+        }
+
+        // Keep subsecond precision as decimal text instead of rounding to a float.
+        return $date->format('U').'.'.rtrim($parts[2], '0');
     }
 
     private static function string(mixed $value): ?string
