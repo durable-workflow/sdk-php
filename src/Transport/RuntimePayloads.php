@@ -24,6 +24,7 @@ final class RuntimePayloads
         private readonly ?RequestBudget $budget = null,
         /** @var (\Closure(): void)|null */
         private readonly ?\Closure $progress = null,
+        private readonly bool $boundedProgress = false,
     ) {
     }
 
@@ -159,7 +160,11 @@ final class RuntimePayloads
             // IDs cannot contain a URL or path. Use only the already authenticated runtime.
             $uri = $this->baseUri.'/api/external-payloads/v1/'.$reference['reference_id'];
             $this->progress?->__invoke();
-            if ($this->budget === null) {
+            if ($this->boundedProgress && $this->progress !== null && $this->transport instanceof BoundedProgressPayloadTransport) {
+                $blob = $this->transport->fetchPayloadWithBoundedProgress($uri, $headers, $reference['size_bytes'],
+                    $this->progress, $this->budget?->remainingSeconds());
+                $this->budget?->remainingSeconds();
+            } elseif ($this->budget === null) {
                 $blob = $this->progress !== null && $this->transport instanceof ProgressPayloadTransport
                     ? $this->transport->fetchPayloadWithProgress($uri, $headers, $reference['size_bytes'], $this->progress)
                     : $this->transport->fetchPayload($uri, $headers, $reference['size_bytes']);
