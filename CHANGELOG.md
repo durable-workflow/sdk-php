@@ -12,6 +12,15 @@ project follows [Semantic Versioning](https://semver.org/).
   before acquiring more work. Task and cancellation authority deadlines retain
   their original bounds.
 
+## [2.3.10] - 2026-10-13
+
+### Fixed
+
+- Share one frozen numeric decision across compatible `getVersion`, `patched`
+  and `deprecatePatch` calls for a change ID. Preserve each helper's result
+  projection and reject ranges that exclude the original version.
+- Correct the helper guidance and cover fresh, cold and unmarked legacy replay.
+
 ## [2.3.9] - 2026-10-13
 
 ### Fixed

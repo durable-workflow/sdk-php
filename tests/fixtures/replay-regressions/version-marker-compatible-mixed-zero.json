@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-version-marker-compatible-mixed-zero",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.mixed-version-zero", "input": []},
+  "history": [
+    {
+      "event_type": "VersionMarkerRecorded",
+      "payload": {
+        "sequence": 1, "change_id": "corrected-zero", "version": 0,
+        "min_supported": -7, "max_supported": 0
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [{"type": "complete_workflow", "result": [0, false, 0, false]}]
+  }
+}
