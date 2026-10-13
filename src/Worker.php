@@ -12,6 +12,7 @@ use DurableWorkflow\Exception\LocalActivityTimedOut;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\SagaCompensationFailed;
 use DurableWorkflow\Exception\ServerException;
+use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\ActivityExecutionFailure;
 use DurableWorkflow\Worker\CapabilityManifest;
@@ -141,7 +142,7 @@ final class Worker
             throw new \InvalidArgumentException('Cooperative workers require Unix CLI with pcntl and posix.');
         }
         $workerClient = $enableCooperativeCancellation ? $client->withBoundedWorkerRequests() : $client;
-        $this->client = $workerClient->withWorkerPayloadObserver($this->workflowPayloadProgress(...));
+        $this->client = $workerClient->withWorkerPayloadObserver($this->workerPayloadProgress(...));
         $this->workerId = $workerId ?? 'php-worker-'.bin2hex(random_bytes(8));
         $this->heartbeatIntervalSeconds = $this->validHeartbeatInterval($heartbeatIntervalSeconds)
             ?? self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS;
@@ -1394,8 +1395,31 @@ final class Worker
      * @param array<string, mixed> $response
      * @return (\Closure(): void)|null
      */
-    private function workflowPayloadProgress(string $path, ?array $body, array $response, ?RequestBudget $budget): ?\Closure
+    private function workerPayloadProgress(string $path, ?array $body, array $response, ?RequestBudget $budget): ?\Closure
     {
+        if (in_array($path, ['/worker/query-tasks/poll', '/worker/activity-tasks/poll'], true)) {
+            if (!$this->registered || !is_array($response['task'] ?? null)) {
+                return null;
+            }
+
+            // Presence keeps this registration alive. It is not application
+            // progress and cannot renew an activity or query execution budget.
+            return function () use ($budget): void {
+                if ($this->shutdownRequested) {
+                    throw new WorkflowClaimRevoked('worker_stopped', 'Payload transfer stopped with its Worker.');
+                }
+                $heartbeatBudget = $budget ?? ($this->client->supportsBoundedWorkerRequests() ? new RequestBudget(5) : null);
+                $heartbeatBudget?->remainingSeconds();
+                $this->heartbeatIfDue($heartbeatBudget);
+                $heartbeatBudget?->remainingSeconds();
+                if ($this->heartbeatRetryAttempt > 0) {
+                    // Drop the partial body and let the existing heartbeat-aware
+                    // poll retry preserve the original request and task identity.
+                    throw new TransportException('Payload loading waits for confirmed Worker presence.',
+                        transientConnectionFailure: true);
+                }
+            };
+        }
         if ($path === '/worker/workflow-tasks/poll') {
             $task = $response['task'] ?? null;
             if (!is_array($task)) {
