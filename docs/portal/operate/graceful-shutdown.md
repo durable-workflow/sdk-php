@@ -33,19 +33,27 @@ Set the platform's termination grace period longer than the maximum time one syn
 
 Long activities should heartbeat progress and split work into idempotent chunks. A PHP signal cannot safely interrupt an arbitrary library call and then claim its side effect did not happen.
 
-## Own the loop when a framework requires it
+## Integrate a framework command
 
-For a custom Console or supervisor integration, call `tick()` with a bounded poll timeout and invoke `requestShutdown()` from the framework's signal event:
+Run the managed loop inside your Console command. The supplied
+[Laravel](/frameworks/laravel/) and [Symfony](/frameworks/symfony/) worker commands
+already use this lifecycle:
 
 ```php
-while (!$application->isStopping()) {
-    $worker->tick(pollTimeoutSeconds: 1);
-}
-
-$worker->requestShutdown();
+$worker->run(pollTimeoutSeconds: 1);
 ```
 
-Keep the poll timeout short enough for the process to notice shutdown while still avoiding a busy loop.
+The process supervisor delivers `SIGTERM`; the managed signal path requests
+shutdown and `run()` deregisters in its cleanup. A framework callback may call
+`requestShutdown()` when it executes during the managed loop. That method sets
+the shutdown flag; deregistration occurs when `run()` exits, rather than at the
+instant the callback runs.
+
+`tick()` alone does not register a worker, initialize its heartbeat lifecycle or
+deregister it. A framework-owned `while` loop around `tick()` therefore does not
+provide the managed lifecycle, and `requestShutdown()` does not supply the
+missing setup or cleanup. Keep a finite poll timeout with `run()` so an idle
+worker can notice shutdown promptly.
 
 ## Deregistration retries
 
