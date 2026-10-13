@@ -298,6 +298,7 @@ final class WorkflowVersioningTest extends TestCase
         }
     }
 
+    /** @return iterable<string, array{int}> */
     public static function compatibleMixedVersionProvider(): iterable
     {
         yield 'legacy' => [-1];
