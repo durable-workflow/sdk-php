@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require $argv[1];
+require __DIR__.'/history-cache.php';
 
 use DurableWorkflow\Attribute\Activity;
 use DurableWorkflow\Attribute\Workflow;
@@ -211,6 +212,7 @@ $values = [
         LaravelTripActivities::class,
     ],
     'poll_timeout_seconds' => 5,
+    'worker' => ['sticky_cache' => ['capacity' => 1, 'ttl_seconds' => 37]],
 ];
 $app = new Application(sys_get_temp_dir().'/durable-workflow-laravel-compat');
 $app->instance('config', new Repository(['durable-workflow' => $values]));
@@ -256,6 +258,16 @@ if (($clientAuthentication->headers(false)['Authorization'] ?? null) !== 'Bearer
     throw new RuntimeException('Laravel provider did not preserve role-specific client credentials.');
 }
 $worker = $factory->make();
+verifyConfiguredHistoryCache(static function (Transport $transport) use ($app, $logger): DurableWorkflow\Worker {
+    $configuration = $app->make(DurableWorkflow\Bridge\ServiceConfiguration::class);
+
+    return (new WorkerFactory(
+        $app,
+        $configuration,
+        $configuration->workerClient($transport),
+        $logger,
+    ))->make();
+});
 if ($worker->contracts()['workflows'] !== ['laravel.greeting', 'laravel.compensated-trip']
     || $worker->contracts()['activities'] !== [
         'laravel.greet',

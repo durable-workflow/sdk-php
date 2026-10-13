@@ -37,6 +37,8 @@ final class WorkerFactory
                 $event = new WorkerDiagnosticEvent($name, $context);
                 $this->events?->dispatch($event, $name);
             },
+            stickyCacheCapacity: $this->configuration->stickyCacheCapacity,
+            stickyCacheTtlSeconds: $this->configuration->stickyCacheTtlSeconds,
         );
 
         $handlers = [];

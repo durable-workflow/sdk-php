@@ -6,6 +6,7 @@ namespace DurableWorkflow\Bridge;
 
 use DurableWorkflow\Client;
 use DurableWorkflow\Transport\Transport;
+use DurableWorkflow\Worker\StickyWorkflowCache;
 use InvalidArgumentException;
 
 /** Validated service-mode settings shared by the optional framework bridges. */
@@ -23,6 +24,8 @@ final class ServiceConfiguration
         public readonly ?string $controlToken = null,
         public readonly ?string $workerToken = null,
         public readonly int $pollTimeoutSeconds = 5,
+        public readonly int $stickyCacheCapacity = 100,
+        public readonly int $stickyCacheTtlSeconds = 300,
     ) {
         $this->validate();
     }
@@ -42,6 +45,15 @@ final class ServiceConfiguration
             throw new InvalidArgumentException('Durable Workflow handlers must be a list of service class names.');
         }
 
+        $worker = array_key_exists('worker', $values) ? $values['worker'] : [];
+        if (!is_array($worker)) {
+            throw new InvalidArgumentException('Durable Workflow worker settings must be an array.');
+        }
+        $stickyCache = array_key_exists('sticky_cache', $worker) ? $worker['sticky_cache'] : [];
+        if (!is_array($stickyCache)) {
+            throw new InvalidArgumentException('Durable Workflow worker.sticky_cache settings must be an array.');
+        }
+
         return new self(
             self::string($values, 'endpoint'),
             self::string($values, 'namespace', 'default'),
@@ -51,6 +63,8 @@ final class ServiceConfiguration
             self::nullableString($credentials, 'control_token'),
             self::nullableString($credentials, 'worker_token'),
             self::integer($values, 'poll_timeout_seconds', 5),
+            self::cacheInteger($stickyCache, 'capacity', 100),
+            self::cacheInteger($stickyCache, 'ttl_seconds', 300),
         );
     }
 
@@ -158,6 +172,12 @@ final class ServiceConfiguration
         if ($this->pollTimeoutSeconds < 0 || $this->pollTimeoutSeconds > 60) {
             throw new InvalidArgumentException('Durable Workflow poll_timeout_seconds must be between 0 and 60.');
         }
+        if ($this->stickyCacheCapacity < 1) {
+            throw new InvalidArgumentException('Durable Workflow worker.sticky_cache.capacity must be a positive integer.');
+        }
+        if ($this->stickyCacheTtlSeconds < 1 || $this->stickyCacheTtlSeconds > StickyWorkflowCache::MAX_TTL_SECONDS) {
+            throw new InvalidArgumentException('Durable Workflow worker.sticky_cache.ttl_seconds must be between 1 and 3600.');
+        }
     }
 
     /** @param array<string, mixed> $values */
@@ -191,6 +211,17 @@ final class ServiceConfiguration
         $value = $values[$key] ?? $default;
         if (!is_int($value)) {
             throw new InvalidArgumentException("Durable Workflow {$key} must be an integer.");
+        }
+
+        return $value;
+    }
+
+    /** @param array<string, mixed> $values */
+    private static function cacheInteger(array $values, string $key, int $default): int
+    {
+        $value = array_key_exists($key, $values) ? $values[$key] : $default;
+        if (!is_int($value)) {
+            throw new InvalidArgumentException("Durable Workflow worker.sticky_cache.{$key} must be an integer.");
         }
 
         return $value;

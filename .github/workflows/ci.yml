@@ -329,6 +329,7 @@ jobs:
             bridge_path=src/Bridge/Symfony
             compatibility_scripts=("tests/compat/${COMPAT_SCRIPT}")
           fi
+          compatibility_scripts+=(tests/compat/history-cache.php)
           "$consumer/vendor/bin/phpstan" analyse -c phpstan-framework.neon \
             --autoload-file="$consumer/vendor/autoload.php" \
             src/Bridge/FrameworkRuntimeException.php \

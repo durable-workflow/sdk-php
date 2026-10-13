@@ -42,6 +42,12 @@ durable_workflow:
 
 Use a bare self-hosted Server origin or the complete provisioned Cloud namespace runtime URI. Inject the control token only into application processes and the worker token only into the Console worker. A local Server can instead use one `credentials.token` value sourced from `DURABLE_WORKFLOW_TOKEN`.
 
+The Console worker's process-local history cache defaults to 100 histories and
+300 seconds. Optional `worker.sticky_cache.capacity` and
+`worker.sticky_cache.ttl_seconds` settings require positive integers; TTL cannot
+exceed 3600 seconds. Cache hits still replay the workflow. Expiry, eviction and
+worker replacement fall back to authoritative history and full replay.
+
 ## 3. Let attributes autoconfigure handlers
 
 Symfony's normal autoconfigured `src/` import recognizes the SDK attributes. This is the primary path; do not also list the same services under `durable_workflow.handlers`.
