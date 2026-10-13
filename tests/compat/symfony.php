@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require $argv[1];
+require __DIR__.'/history-cache.php';
 
 use DurableWorkflow\Attribute\Activity;
 use DurableWorkflow\Attribute\Workflow;
@@ -14,6 +15,7 @@ use DurableWorkflow\Bridge\Symfony\Testing\InteractsWithDurableWorkflow;
 use DurableWorkflow\Bridge\Symfony\WorkerFactory;
 use DurableWorkflow\Client;
 use DurableWorkflow\Testing\WorkflowClientFake;
+use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\WorkflowContext;
 use DurableWorkflow\WorkflowClientInterface;
@@ -125,6 +127,7 @@ $extension->load([[
     'endpoint' => 'http://localhost:8080',
     'namespace' => 'default',
     'task_queue' => 'symfony-workers',
+    'worker' => ['sticky_cache' => ['capacity' => 1, 'ttl_seconds' => 37]],
     'credentials' => [
         'control_token' => 'control-secret',
         'worker_token' => 'worker-secret',
@@ -171,6 +174,19 @@ if (($controlAuthentication->headers(false)['Authorization'] ?? null) !== 'Beare
     throw new RuntimeException('Symfony extension did not preserve role-specific client credentials.');
 }
 $worker = $factory->make();
+verifyConfiguredHistoryCache(static function (Transport $transport): DurableWorkflow\Worker {
+    $configuration = DurableWorkflow\Bridge\ServiceConfiguration::fromArray([
+        'endpoint' => 'http://localhost:8080',
+        'task_queue' => 'symfony-workers',
+        'worker' => ['sticky_cache' => ['capacity' => 1, 'ttl_seconds' => 37]],
+    ]);
+
+    return (new WorkerFactory(
+        $configuration,
+        $configuration->workerClient($transport),
+        [new SymfonyGreetingHandler(new SymfonyGreetingDependency())],
+    ))->make();
+});
 if ($worker->contracts()['workflows'] !== ['symfony.greeting']
     || $worker->contracts()['activities'] !== ['symfony.greet']
 ) {

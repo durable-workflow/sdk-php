@@ -36,6 +36,12 @@ final class Configuration implements ConfigurationInterface
         $children->scalarNode('task_queue')->defaultValue('php-workers')->cannotBeEmpty();
         $children->integerNode('poll_timeout_seconds')->defaultValue(5)->min(0)->max(60);
 
+        $worker = $children->arrayNode('worker')->addDefaultsIfNotSet();
+        $stickyCache = $worker->children()->arrayNode('sticky_cache')->addDefaultsIfNotSet();
+        $cacheChildren = $stickyCache->children();
+        $cacheChildren->integerNode('capacity')->defaultValue(100)->min(1);
+        $cacheChildren->integerNode('ttl_seconds')->defaultValue(300)->min(1)->max(3600);
+
         $credentials = $children->arrayNode('credentials');
         $credentials->addDefaultsIfNotSet();
         $credentialChildren = $credentials->children();

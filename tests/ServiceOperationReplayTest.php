@@ -43,6 +43,105 @@ final class ServiceOperationReplayTest extends TestCase
         }
     }
 
+    public function testCanonicalOriginalServiceReferencesSurviveTerminalReplay(): void
+    {
+        $result = $this->replay(self::canonicalHistory());
+        self::assertSame(['complete_workflow'], array_column($result->commands, 'type'));
+        self::assertSame(['accepted' => true], (new AvroPayloadCodec())->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    #[DataProvider('changedOriginalReferences')]
+    public function testOriginalServiceReferencesCannotChangeOrDisappear(string $field, mixed $value, bool $omit): void
+    {
+        $history = self::canonicalHistory();
+        foreach (['service_call', 'response_or_failure_surface'] as $surface) {
+            if ($omit) {
+                unset($history[1]['payload'][$surface][$field]);
+            } else {
+                $history[1]['payload'][$surface][$field] = $value;
+            }
+        }
+        if (array_key_exists($field, $history[1]['payload'])) {
+            if ($omit) {
+                unset($history[1]['payload'][$field]);
+            } else {
+                $history[1]['payload'][$field] = $value;
+            }
+        }
+        $this->expectException(NonDeterministicWorkflow::class);
+        $this->expectExceptionMessage("Recorded service {$field} changed or was erased.");
+        $this->replay($history);
+    }
+
+    /** @return iterable<string, array{string, mixed, bool}> */
+    public static function changedOriginalReferences(): iterable
+    {
+        $changed = [
+            'linked_workflow_instance_id' => 'other-target',
+            'linked_workflow_run_id' => 'other-target-run',
+            'linked_workflow_update_id' => 'other-update',
+            'accepted_at' => '2026-10-13T02:01:00.000000Z',
+            'call_deadline_at' => '2026-10-13T02:04:00.000000Z',
+        ];
+        foreach ($changed as $field => $value) {
+            yield "{$field} changed" => [$field, $value, false];
+            yield "{$field} erased" => [$field, null, false];
+            yield "{$field} omitted" => [$field, null, true];
+        }
+    }
+
+    public function testUnresolvedOriginalReferencesCanBeEnriched(): void
+    {
+        $history = self::canonicalHistory();
+        foreach (['linked_workflow_instance_id', 'linked_workflow_run_id', 'linked_workflow_update_id',
+            'accepted_at', 'call_deadline_at'] as $field) {
+            $history[0]['payload']['service_call'][$field] = null;
+            $history[0]['payload']['response_or_failure_surface'][$field] = null;
+            if (array_key_exists($field, $history[0]['payload'])) {
+                $history[0]['payload'][$field] = null;
+            }
+        }
+        self::assertSame(['complete_workflow'], array_column($this->replay($history)->commands, 'type'));
+    }
+
+    public function testEquivalentOriginalTimestampRepresentationsAndDuplicateSnapshotsReplay(): void
+    {
+        $history = self::canonicalHistory();
+        foreach (['service_call', 'response_or_failure_surface'] as $surface) {
+            $history[1]['payload'][$surface]['accepted_at'] = '2026-10-13T04:00:00+02:00';
+            $history[1]['payload'][$surface]['call_deadline_at'] = '2026-10-13T02:03:00.000000000+00:00';
+        }
+        $duplicateAdmission = $history[0];
+        foreach (['service_call', 'response_or_failure_surface'] as $surface) {
+            $duplicateAdmission['payload'][$surface]['accepted_at'] = '2026-10-13T02:00:00Z';
+            $duplicateAdmission['payload'][$surface]['call_deadline_at'] = '2026-10-13T03:03:00.000+01:00';
+        }
+        $duplicateTerminal = $history[1];
+        foreach (['service_call', 'response_or_failure_surface'] as $surface) {
+            $duplicateTerminal['payload'][$surface]['accepted_at'] = '2026-10-13T02:00:00.000Z';
+            $duplicateTerminal['payload'][$surface]['call_deadline_at'] = '2026-10-13T02:03:00Z';
+        }
+        self::assertSame(['complete_workflow'], array_column($this->replay([
+            $history[0], $duplicateAdmission, $history[1], $duplicateTerminal,
+        ])->commands, 'type'));
+    }
+
+    public function testOriginalTimestampNormalizationPreservesSubsecondPrecision(): void
+    {
+        $history = self::canonicalHistory();
+        foreach (['service_call', 'response_or_failure_surface'] as $surface) {
+            $history[0]['payload'][$surface]['call_deadline_at'] = '2026-10-13T02:03:00.123456Z';
+            $history[1]['payload'][$surface]['call_deadline_at'] = '2026-10-13T03:03:00.123456000+01:00';
+        }
+        self::assertSame(['complete_workflow'], array_column($this->replay($history)->commands, 'type'));
+        foreach (['service_call', 'response_or_failure_surface'] as $surface) {
+            $history[1]['payload'][$surface]['call_deadline_at'] = '2026-10-13T02:03:00.123456001Z';
+        }
+        $this->expectException(NonDeterministicWorkflow::class);
+        $this->expectExceptionMessage('Recorded service call_deadline_at changed or was erased.');
+        $this->replay($history);
+    }
+
     public function testCancellationOfACompletionWaitingCallProducesOnlyItsOriginalDeliveryIntent(): void
     {
         $requested = self::cancellationRequest();
@@ -220,6 +319,40 @@ final class ServiceOperationReplayTest extends TestCase
     private static function task(): array
     {
         return ['workflow_id' => 'caller', 'run_id' => 'caller-run'];
+    }
+
+    /** @return list<array<string, mixed>> */
+    private static function canonicalHistory(): array
+    {
+        $codec = new AvroPayloadCodec();
+        $events = [];
+        foreach (['ServiceCallStarted', 'ServiceCallCompleted'] as $type) {
+            $surface = [
+                'service_call_id' => 'call-1', 'namespace' => 'default',
+                'caller_namespace' => 'default', 'target_namespace' => 'default',
+                'endpoint_name' => 'billing', 'service_name' => 'invoices', 'operation_name' => 'create',
+                'operation_mode' => 'sync',
+                'status' => $type === 'ServiceCallStarted' ? 'accepted' : 'completed',
+                'linked_workflow_instance_id' => 'target', 'linked_workflow_run_id' => 'target-run',
+                'linked_workflow_update_id' => 'target-update',
+                'accepted_at' => '2026-10-13T02:00:00.000000Z',
+                'call_deadline_at' => '2026-10-13T02:03:00.000000Z',
+            ];
+            $events[] = ['event_type' => $type, 'payload' => [
+                'sequence' => 1, 'service_call_id' => 'call-1',
+                'workflow_instance_id' => 'caller', 'workflow_run_id' => 'caller-run',
+                'caller_workflow_instance_id' => 'caller', 'caller_workflow_run_id' => 'caller-run',
+                'endpoint_name' => 'billing', 'service_name' => 'invoices', 'operation_name' => 'create',
+                'operation_mode' => 'sync', 'wait_for' => 'completed',
+                'linked_workflow_instance_id' => 'target', 'linked_workflow_run_id' => 'target-run',
+                'linked_workflow_update_id' => 'target-update',
+                'request_payload' => $codec->envelope(['invoice_id' => 42]),
+                'response_payload' => $type === 'ServiceCallCompleted' ? $codec->envelope(['accepted' => true]) : null,
+                'service_call' => $surface, 'response_or_failure_surface' => $surface,
+            ]];
+        }
+
+        return $events;
     }
 
     /** @param array<string, mixed> $changes @return array<string, mixed> */

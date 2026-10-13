@@ -269,6 +269,14 @@ class through the Laravel container before polling. Dependencies read by a
 workflow must be deterministic and stable across replay; put database, network,
 clock, and other side-effecting dependencies in activities.
 
+The separately supervised Artisan worker keeps a bounded process-local history
+cache. Configure `worker.sticky_cache.capacity` and `worker.sticky_cache.ttl_seconds`
+in `config/durable-workflow.php` using integers. Defaults are 100 histories and
+300 seconds; capacity must be positive and TTL must be between 1 and 3600 seconds.
+These values survive `php artisan config:cache`. Expiry, eviction and worker
+replacement fetch authoritative history and replay it; a cache hit also replays
+the workflow. This cache does not retain live workflow execution or results.
+
 Container resolution is unchanged for a concurrent journey. A workflow service can fan out without giving up constructor injection or straight-line Fiber code:
 
 ```php
