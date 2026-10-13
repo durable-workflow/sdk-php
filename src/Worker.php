@@ -316,6 +316,7 @@ final class Worker
         return $this;
     }
 
+    /** Request that run() stop polling and perform its managed cleanup on exit. */
     public function requestShutdown(): void
     {
         if ($this->shutdownRequested) {
@@ -339,6 +340,7 @@ final class Worker
         return $this->stickyCache->metrics();
     }
 
+    /** Register, initialize heartbeat state, poll, and deregister on exit. */
     public function run(int $pollTimeoutSeconds = 5): void
     {
         $this->validate();
@@ -715,7 +717,10 @@ final class Worker
             && ($backend['lock_pressure'] ?? null) === true;
     }
 
-    /** Execute at most one task of each kind; useful for custom supervisors and tests. */
+    /**
+     * Execute at most one task of each kind without establishing or closing registration.
+     * Use run() for the managed worker lifecycle.
+     */
     public function tick(int $pollTimeoutSeconds = 1): bool
     {
         if ($this->shutdownRequested) {
