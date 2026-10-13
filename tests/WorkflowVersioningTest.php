@@ -272,7 +272,74 @@ final class WorkflowVersioningTest extends TestCase
         ];
     }
 
-    public function testDuplicateCallsRejectIncompatibleBoundsAndHelperSwitches(): void
+    #[DataProvider('compatibleMixedVersionProvider')]
+    public function testCompatibleHelpersShareFreshAndColdNumericDecisions(int $version): void
+    {
+        $workflow = static function (WorkflowContext $context) use ($version): array {
+            $selected = $context->getVersion('mixed', -7, $version);
+            $patched = $context->patched('mixed');
+            $context->deprecatePatch('mixed');
+            $wider = $context->getVersion('mixed', -1, 10);
+
+            return [$selected, $patched, $wider, $context->patched('mixed')];
+        };
+
+        $fresh = $this->replay($workflow);
+        self::assertSame(['record_version_marker', 'complete_workflow'], array_column($fresh->commands, 'type'));
+        self::assertSame($version, $fresh->commands[0]['version']);
+        $expected = [$version, $version === 1, $version, $version === 1];
+        self::assertSame($expected, $this->codec()->decodeEnvelope($fresh->commands[1]['result']));
+
+        $history = [$this->marker(1, 'mixed', $version, -7, $version)];
+        foreach ([$history, [...$history, ['event_type' => 'WorkflowCompleted', 'payload' => []]]] as $delivery) {
+            $cold = $this->replay($workflow, $delivery);
+            self::assertSame(['complete_workflow'], array_column($cold->commands, 'type'));
+            self::assertSame($expected, $this->codec()->decodeEnvelope($cold->commands[0]['result']));
+        }
+    }
+
+    public static function compatibleMixedVersionProvider(): iterable
+    {
+        yield 'legacy' => [-1];
+        yield 'zero' => [0];
+        yield 'patched' => [1];
+    }
+
+    public function testPatchFirstKeepsItsDecisionAcrossNumericCalls(): void
+    {
+        $result = $this->replay(static function (WorkflowContext $context): array {
+            $patched = $context->patched('mixed');
+            $version = $context->getVersion('mixed', 0, 7);
+            $context->deprecatePatch('mixed');
+
+            return [$patched, $version];
+        });
+
+        self::assertSame(['record_version_marker', 'complete_workflow'], array_column($result->commands, 'type'));
+        self::assertSame([true, 1], $this->codec()->decodeEnvelope($result->commands[1]['result']));
+    }
+
+    public function testLegacyMixedHelpersDoNotConsumeTheNextActivity(): void
+    {
+        $result = $this->replay(static function (WorkflowContext $context): array {
+            $version = $context->getVersion('mixed', -1, 7);
+            $patched = $context->patched('mixed');
+            $context->deprecatePatch('mixed');
+
+            return [$version, $patched, $context->activity('legacy.checkout')];
+        }, [[
+            'event_type' => 'ActivityCompleted',
+            'payload' => [
+                'sequence' => 1, 'activity_type' => 'legacy.checkout',
+                'result' => $this->codec()->envelope('original-result'),
+            ],
+        ]]);
+
+        self::assertSame(['complete_workflow'], array_column($result->commands, 'type'));
+        self::assertSame([-1, false, 'original-result'], $this->codec()->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    public function testDuplicateCallsRejectIncompatibleBoundsAcrossHelperKinds(): void
     {
         $workflows = [
             'incompatible bounds' => [
@@ -282,12 +349,12 @@ final class WorkflowVersioningTest extends TestCase
                 },
                 'version_marker_incompatible_range',
             ],
-            'helper family switch' => [
+            'helper switch with incompatible bounds' => [
                 static function (WorkflowContext $context): void {
                     $context->patched('checkout-routing');
-                    $context->getVersion('checkout-routing', -1, 1);
+                    $context->getVersion('checkout-routing', 2, 7);
                 },
-                'version_marker_kind_mismatch',
+                'version_marker_incompatible_range',
             ],
         ];
 
