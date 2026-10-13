@@ -113,7 +113,7 @@ return $version === -1
     : $context->activity('orders.reserve', [$orderId]);
 ```
 
-Deploy the bridge branch first, then raise the maximum in a later worker build. Each run keeps its recorded decision across process replacement and cold replay. `patched()` provides the same `-1` legacy / `1` patched rollout as a boolean, and `deprecatePatch()` keeps that marker in place after removing the conditional. Keep the change ID stable and do not switch one ID between `getVersion()` and the patch helpers.
+Deploy the bridge branch first, then raise the maximum in a later worker build. Each run keeps its recorded decision across process replacement and cold replay. `patched()` provides the same `-1` legacy / `1` patched rollout as a boolean, and `deprecatePatch()` keeps that marker in place after removing the conditional. Compatible numeric and patch helpers share the frozen decision for the same change ID. Every call must support that version, and `patched()` returns whether it equals `1`. Keep the change ID stable.
 
 ## 4. Inspect, then run the Console worker
 

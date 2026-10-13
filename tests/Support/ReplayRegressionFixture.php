@@ -427,6 +427,14 @@ final class ReplayRegressionFixture
 
                 return ['updates' => $context->updates((string) $updateName)];
             },
+            'golden.mixed-version-zero' => static function (WorkflowContext $context): array {
+                $version = $context->getVersion('corrected-zero', -7, 0);
+                $patched = $context->patched('corrected-zero');
+                $context->deprecatePatch('corrected-zero');
+                $wider = $context->getVersion('corrected-zero', 0, 10);
+
+                return [$version, $patched, $wider, $context->patched('corrected-zero')];
+            },
             'golden.context-identity' => static fn (WorkflowContext $context): array => [
                 'workflow_id' => $context->workflowId,
                 'run_id' => $context->runId,
