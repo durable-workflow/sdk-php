@@ -2339,6 +2339,7 @@ final class Client implements WorkflowClientInterface
     ): array {
         $headers = $this->requestHeaders($worker);
         try {
+            $callerBudget = $budget;
             $poll = str_ends_with($path, '/poll') && is_int($body['timeout_seconds'] ?? null);
             $pollSeconds = $poll ? max(0, min(60, $body['timeout_seconds'])) : 0;
             $budget ??= $worker && $this->boundedWorkerRequests ? new RequestBudget($pollSeconds + 5) : null;
@@ -2355,13 +2356,20 @@ final class Client implements WorkflowClientInterface
             }
 
             $budget?->remainingSeconds();
-            // The long poll happens before ownership. Hydration of its claimed
-            // task gets one short budget shared by all referenced payloads.
-            $responseBudget = $budget !== null && $poll ? new RequestBudget(5) : $budget;
+            // Control I/O and supervised payload I/O have separate bounds.
+            // Explicit caller/cleanup budgets still cover their entire request.
+            $responseBudget = $budget !== null && $poll && $callerBudget === null ? new RequestBudget(5) : $budget;
+            $canStreamBounded = $worker && $this->boundedWorkerRequests
+                && $this->transport instanceof \DurableWorkflow\Transport\BoundedProgressPayloadTransport;
+            $observerBudget = $canStreamBounded && $callerBudget === null ? null : $responseBudget;
             $progress = $worker && $this->workerPayloadObserver !== null && is_array($response) && !array_is_list($response)
-                ? ($this->workerPayloadObserver)($path, $body, $response, $responseBudget) : null;
+                ? ($this->workerPayloadObserver)($path, $body, $response, $observerBudget) : null;
+            $streamBounded = $canStreamBounded && $progress !== null;
+            if ($streamBounded && $callerBudget === null) {
+                $responseBudget = null;
+            }
             $result = is_array($response) && !array_is_list($response)
-                ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes, $responseBudget, $progress))->response($response, $path, $worker, $payloadPaths?->__invoke($response))
+                ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes, $responseBudget, $progress, $streamBounded))->response($response, $path, $worker, $payloadPaths?->__invoke($response))
                 : [];
             $responseBudget?->remainingSeconds();
 
