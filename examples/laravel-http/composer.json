@@ -5,7 +5,7 @@
     "license": "MIT",
     "require": {
         "php": "^8.3",
-        "durable-workflow/sdk": "2.4.0",
+        "durable-workflow/sdk": "2.4.1",
         "laravel/framework": "12.69.3",
         "laravel/octane": "2.21.0",
         "spiral/roadrunner-cli": "^2.6.0",
