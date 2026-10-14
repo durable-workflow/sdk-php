@@ -63,6 +63,7 @@ services:
       DURABLE_WORKFLOW_WORKER_TOKEN: ${DURABLE_WORKFLOW_WORKER_TOKEN:?Set a separate worker-role credential}
       EXAMPLE_PROCESS_ROLE: worker
     init: true
+    stop_signal: SIGTERM
     command: php artisan durable-workflow:worker
     depends_on:
       prepare:
