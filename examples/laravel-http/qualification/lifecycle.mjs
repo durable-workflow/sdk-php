@@ -6,9 +6,9 @@ assert.match(prefix ?? '', /^[a-zA-Z0-9_-]{1,40}$/, 'Select a fresh run prefix b
 let requestNumber = 0;
 const originals = [];
 
-async function request(user, path, method = 'GET', body, expectedStatus = 200) {
+async function request(user, path, method = 'GET', body, expectedStatus = 200, timeout = 30_000) {
     const response = await fetch(`${origin}/api/${path}`, {
-        method, signal: AbortSignal.timeout(30_000),
+        method, signal: AbortSignal.timeout(Math.max(1, Math.floor(timeout))),
         headers: {Authorization: `Bearer example-${user}`, Accept: 'application/json',
             'Content-Type': 'application/json', 'X-Request-Id': `${prefix}-request-${requestNumber++}`},
         body: body === undefined ? undefined : JSON.stringify(body),
@@ -21,7 +21,8 @@ async function request(user, path, method = 'GET', body, expectedStatus = 200) {
 async function waitStatus(user, id, expected) {
     const deadline = performance.now() + 35_000;
     do {
-        const result = await request(user, `workflows/${id}`);
+        const result = await request(user, `workflows/${id}`, 'GET', undefined, 200, Math.min(30_000, deadline - performance.now()));
+        assert.ok(performance.now() <= deadline, 'The original observation deadline expired.');
         if (result.value.status?.toLowerCase() === expected) return result;
         await new Promise(resolve => setTimeout(resolve, 250));
     } while (performance.now() < deadline);
