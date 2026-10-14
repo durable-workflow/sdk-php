@@ -174,7 +174,12 @@ if (($controlAuthentication->headers(false)['Authorization'] ?? null) !== 'Beare
     throw new RuntimeException('Symfony extension did not preserve role-specific client credentials.');
 }
 $worker = $factory->make();
-verifyConfiguredHistoryCache(static function (Transport $transport): DurableWorkflow\Worker {
+$cacheStoppedContext = null;
+$cacheEvents = new EventDispatcher();
+$cacheEvents->addListener('worker.stopped', static function (WorkerDiagnosticEvent $event) use (&$cacheStoppedContext): void {
+    $cacheStoppedContext = $event->context;
+});
+$cacheMetrics = verifyConfiguredHistoryCache(static function (Transport $transport) use ($cacheEvents): DurableWorkflow\Worker {
     $configuration = DurableWorkflow\Bridge\ServiceConfiguration::fromArray([
         'endpoint' => 'http://localhost:8080',
         'task_queue' => 'symfony-workers',
@@ -185,8 +190,12 @@ verifyConfiguredHistoryCache(static function (Transport $transport): DurableWork
         $configuration,
         $configuration->workerClient($transport),
         [new SymfonyGreetingHandler(new SymfonyGreetingDependency())],
+        events: $cacheEvents,
     ))->make();
 });
+if (($cacheStoppedContext['sticky_cache'] ?? null) !== $cacheMetrics) {
+    throw new RuntimeException('Symfony stopped event omitted the actual lifetime history-cache counters.');
+}
 if ($worker->contracts()['workflows'] !== ['symfony.greeting']
     || $worker->contracts()['activities'] !== ['symfony.greet']
 ) {
