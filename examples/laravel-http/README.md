@@ -125,6 +125,43 @@ capacity and TTL, with a 3600-second TTL ceiling. `EXAMPLE_HISTORY_CAPACITY` and
 retains history and still replays instructions. HTTP reuse does not retain a
 workflow Fiber or avoid execution replay.
 
+### Cache and connection checks
+
+Run `qualification/cache.php` in a separate tool container with only the client
+credential and a private writable checkpoint path. Start a fresh CLI process
+with the settings below before admitting each profile. The driver fixes a
+90-second observation, 600-second run and 900-second execution budget, checks the
+whole pre-release history prefix and requires exact typed output once.
+
+| Mode | Capacity / TTL | Action |
+| --- | --- | --- |
+| `expiry` | 100 / 1 second | One waiting original; idle three seconds, then release it. |
+| `eviction` | 1 / 300 seconds | Two waiting originals; release the target and its neighbor. |
+| `checkpoint`, then `resume` | 100 / 1 second | Preserve one waiting original across a bounded test-runtime outage. |
+
+```bash
+php qualification/cache.php expiry fresh-expiry /private/expiry.json
+php qualification/cache.php eviction fresh-eviction /private/eviction.json
+php qualification/cache.php checkpoint fresh-outage /private/outage.json
+# Interrupt only your isolated test runtime, restore it, and verify readiness.
+# The original observation cutoff continues while it is unavailable.
+php qualification/cache.php resume fresh-outage /private/outage.json
+```
+
+Do not run the three profiles together or reuse a checkpoint. The driver does
+not change the CLI's cache settings, stop services, restart workers or provision
+credentials. Use the normal supervisor for connection recovery and record actual
+worker replacements. Require an observed SDK transport error before claiming
+connection-error recovery; a network configuration change alone is insufficient.
+
+After normal CLI shutdown, read the actual `worker.stopped` diagnostic's
+`sticky_cache` counters from the logger or framework event: `hit`, `miss`,
+`eviction`, and `forced_cold_replay`. Missing counters fail the observation.
+Require a real eviction for expiry/capacity tests and a forced cold replay for
+the capacity test. A complete runtime history can yield zero forced cold replays
+after TTL expiry. Audit original task attempts/repairs and deregistration through
+the isolated runtime, then delete temporary checkpoints and test resources.
+
 ## Qualification before recommendation
 
 Freeze the normal dependency lock, RoadRunner binary hash, runtime image digest,
