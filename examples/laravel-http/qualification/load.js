@@ -20,6 +20,7 @@ const failed = new Counter('workflow_failed');
 const terminal = new Counter('workflow_terminal');
 const contextCompleted = new Counter('context_completed');
 const errors = new Counter('run_errors');
+const boundaryIterations = new Counter('generator_boundary_iterations');
 const observed = new Trend('workflow_observed_ms', true);
 const timings = Object.fromEntries(['context', 'start', 'status', 'query', 'signal', 'cancel']
     .map(name => [name, new Trend(`${name}_http_ms`, true)]));
@@ -29,9 +30,9 @@ const seenPids = new Set();
 export const options = {
     scenarios: {
         context: {executor: 'constant-arrival-rate', rate: 6, timeUnit: '1s', duration: `${seconds}s`,
-            preAllocatedVUs: 2, maxVUs: 8, exec: 'context', gracefulStop: '36s'},
+            preAllocatedVUs: 8, maxVUs: 8, exec: 'context', gracefulStop: '36s'},
         workflows: {executor: 'constant-arrival-rate', rate: 1, timeUnit: '1s', duration: `${seconds}s`,
-            preAllocatedVUs: 4, maxVUs: 16, exec: 'workflow', gracefulStop: '36s'},
+            preAllocatedVUs: 16, maxVUs: 16, exec: 'workflow', gracefulStop: '36s'},
     },
     thresholds: {
         checks: [{threshold: 'rate==1', abortOnFail: true}],
@@ -80,8 +81,15 @@ function request(user, path, name, method = 'GET', body, expected = 200, remaini
 
 export function context() {
     errors.add(0);
+    boundaryIterations.add(0);
+    const index = execution.scenario.iterationInTest;
+    if (index >= seconds * 6) {
+        boundaryIterations.add(1);
+        return;
+    }
     try {
-        const user = execution.scenario.iterationInTest % 2 === 0 ? 'alpha' : 'beta';
+        requireCheck(Date.now() < execution.scenario.startTime + seconds * 1000, 'context offer is inside the selected window');
+        const user = index % 2 === 0 ? 'alpha' : 'beta';
         const response = request(user, 'context', 'context');
         const value = response.json();
         requireCheck(value.user === user && value.namespace === namespace, 'context values match');
@@ -110,14 +118,23 @@ function waitStatus(user, id, expected, cutoff) {
 
 export function workflow() {
     errors.add(0);
-    offered.add(1);
+    failed.add(0);
+    completed.add(0);
+    cancelled.add(0);
+    boundaryIterations.add(0);
     const index = execution.scenario.iterationInTest;
+    if (index >= seconds) {
+        boundaryIterations.add(1);
+        return;
+    }
+    offered.add(1);
     const user = index % 2 === 0 ? 'alpha' : 'beta';
     const kind = mixed ? ['short', 'short', 'timer', 'signal', 'cancel'][index % 5] : 'short';
     const id = `${prefix}-${kind}-${index}`;
     const started = Date.now();
     const cutoff = started + 35000;
     try {
+        requireCheck(started < execution.scenario.startTime + seconds * 1000, 'workflow offer is inside the selected window');
         const acceptance = request(user, 'workflows', 'start', 'POST', {id, kind}, 201, cutoff - Date.now()).json();
         admitted.add(1);
         console.log(JSON.stringify({phase: 'admitted', user, kind, id, workflow_id: acceptance.workflow_id, run_id: acceptance.run_id, started}));

@@ -174,7 +174,11 @@ unchanged identities/deadlines.
 
 `qualification/load.js` uses the open-source k6 constant-arrival-rate executor:
 six authenticated context reads and one new original workflow per second. Run
-the tool separately from the fixed application allocation. Each original has
+the tool separately from the fixed application allocation. Preallocate all eight
+context and sixteen workflow virtual users; a missed offer still fails the run.
+The request sequence is finite. A generator tick at the window boundary is
+counted separately and cannot admit an extra workflow or context read. A late
+planned offer fails before HTTP admission. Each original has
 the existing 35-second observer; the outer run allows 36 seconds to drain after
 the last offer. Every expected admission, terminal result and context read is
 counted. Dropped offers, HTTP/check failures, incomplete originals, OOM or
@@ -195,20 +199,16 @@ types, and reads actual timer due/fired timestamps without inventing a clock.
 
 Use fresh projects/databases for three pairs with order FPM/Octane,
 Octane/FPM, FPM/Octane, then an FPM drift recheck and mixed soak. Separate warmup
-from measured offers. Report context/start/status latency separately from the
+from measured offers and keep CLI settings identical. Report context/start/status latency separately from the
 poll-observed workflow latency; the latter includes the declared 250ms status
 poll interval. Sample every app/backend/tool role through drain and verification.
+Include offered/completed/failed/unfinished operations, measured drain, timer
+due-to-resume latency, per-completion CPU, aggregate steady/peak memory, history
+bytes/requests and cache diagnostics. Reject OOM, swapping or growing backlog as
+a successful measurement. Exercise recycling/reload during the mixed soak.
 Keep the small k6 summary and readable report; delete raw samples, histories,
-databases, dependencies and temporary hosts after their immediate audit.
-
-Then run three independent FPM/Octane pairs and recheck FPM. Keep CLI execution
-settings identical. Report offered/completed/failed/unfinished operations,
-submission/status latency separately from workflow latency, measured drain,
-timer due-to-resume latency, per-completion CPU, aggregate steady/peak memory,
-history bytes/requests and existing cache diagnostics. Reject OOM, swapping or
-growing backlog as a successful measurement. Follow with a bounded mixed-request
-soak and explicit recycle/reload observations. Gains and tradeoffs belong in the
-owning issue, including a result with no consistent benefit.
+databases, dependencies and temporary hosts after their immediate audit. Report
+gains and tradeoffs in the owning issue, including no consistent benefit.
 
 Stop the Compose project and delete only this example's state when finished.
 This application does not provision or retire your runtime namespace or its
