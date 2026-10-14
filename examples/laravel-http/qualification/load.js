@@ -24,6 +24,7 @@ const observed = new Trend('workflow_observed_ms', true);
 const timings = Object.fromEntries(['context', 'start', 'status', 'query', 'signal', 'cancel']
     .map(name => [name, new Trend(`${name}_http_ms`, true)]));
 let requestNumber = 0;
+const seenPids = new Set();
 
 export const options = {
     scenarios: {
@@ -68,6 +69,12 @@ function request(user, path, name, method = 'GET', body, expected = 200, remaini
     requireCheck(header(response, 'X-Request-Id') === requestId, 'request context is isolated');
     requireCheck(header(response, 'X-Example-User') === user, 'user context is isolated');
     requireCheck(header(response, 'X-Example-Namespace') === namespace, 'namespace context is fixed');
+    const pid = header(response, 'X-Worker-Pid');
+    requireCheck(/^\d+$/.test(pid), 'HTTP worker identity is present');
+    if (!seenPids.has(pid)) {
+        seenPids.add(pid);
+        console.log(JSON.stringify({phase: 'http_worker_observed', pid}));
+    }
     return response;
 }
 
