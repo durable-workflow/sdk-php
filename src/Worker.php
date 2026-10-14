@@ -399,6 +399,7 @@ final class Worker
             $this->diagnostic('worker.stopped', [
                 'worker_id' => $this->workerId,
                 'task_queue' => $this->taskQueue,
+                'sticky_cache' => $this->stickyCacheMetrics(),
             ]);
         }
     }
