@@ -272,7 +272,7 @@ $cacheMetrics = verifyConfiguredHistoryCache(static function (Transport $transpo
         $app,
         $configuration,
         $configuration->workerClient($transport),
-        $logger,
+        new LaravelBridgeLogger(),
         $cacheEvents,
     ))->make();
 });
