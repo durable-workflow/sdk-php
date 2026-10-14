@@ -258,16 +258,27 @@ if (($clientAuthentication->headers(false)['Authorization'] ?? null) !== 'Bearer
     throw new RuntimeException('Laravel provider did not preserve role-specific client credentials.');
 }
 $worker = $factory->make();
-verifyConfiguredHistoryCache(static function (Transport $transport) use ($app, $logger): DurableWorkflow\Worker {
+$cacheStoppedContext = null;
+$cacheEvents = new Dispatcher($app);
+$cacheEvents->listen(WorkerDiagnosticEvent::class, static function (WorkerDiagnosticEvent $event) use (&$cacheStoppedContext): void {
+    if ($event->name === 'worker.stopped') {
+        $cacheStoppedContext = $event->context;
+    }
+});
+$cacheMetrics = verifyConfiguredHistoryCache(static function (Transport $transport) use ($app, $cacheEvents): DurableWorkflow\Worker {
     $configuration = $app->make(DurableWorkflow\Bridge\ServiceConfiguration::class);
 
     return (new WorkerFactory(
         $app,
         $configuration,
         $configuration->workerClient($transport),
-        $logger,
+        new LaravelBridgeLogger(),
+        $cacheEvents,
     ))->make();
 });
+if (($cacheStoppedContext['sticky_cache'] ?? null) !== $cacheMetrics) {
+    throw new RuntimeException('Laravel stopped event omitted the actual lifetime history-cache counters.');
+}
 if ($worker->contracts()['workflows'] !== ['laravel.greeting', 'laravel.compensated-trip']
     || $worker->contracts()['activities'] !== [
         'laravel.greet',

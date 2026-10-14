@@ -1071,6 +1071,35 @@ final class PortableWorkerAffinityTest extends TestCase
         self::assertSame(1, $outcome['metrics']['eviction']);
     }
 
+    public function testStoppedDiagnosticAndLogPreserveActualCacheCountersAfterCleanup(): void
+    {
+        $diagnostics = [];
+        $logger = new class extends \Psr\Log\AbstractLogger {
+            /** @var array<string, array<string, mixed>> */
+            public array $contexts = [];
+
+            public function log($level, $message, array $context = []): void
+            {
+                $this->contexts[(string) $message] = $context;
+            }
+        };
+        $outcome = $this->runStickyColdReplayScenario(
+            'diagnostics',
+            logger: $logger,
+            diagnosticListener: static function (string $name, array $context) use (&$diagnostics): void {
+                $diagnostics[$name] = $context;
+            },
+            afterPolling: static fn (Worker $worker) => $worker->run(0),
+        );
+
+        self::assertSame(['hit' => 1, 'miss' => 3, 'eviction' => 2, 'forced_cold_replay' => 1], $outcome['metrics']);
+        self::assertSame(1, $outcome['history_fetches']);
+        self::assertSame($outcome['initial_commands'], $outcome['fallback_commands']);
+        self::assertSame($outcome['metrics'], $diagnostics['worker.stopped']['sticky_cache'] ?? null);
+        self::assertSame($diagnostics['worker.stopped'], $logger->contexts['worker.stopped'] ?? null);
+        self::assertSame(['worker_id', 'task_queue', 'sticky_cache'], array_keys($diagnostics['worker.stopped']));
+    }
+
     public function testStickyCacheNeverPromotesAnUnreplayableRuntimeSuffix(): void
     {
         $cache = new StickyWorkflowCache(capacity: 1, ttlSeconds: 300);
@@ -1806,6 +1835,9 @@ final class PortableWorkerAffinityTest extends TestCase
         string $scenario,
         bool $acceptedStart = false,
         bool $useFactory = false,
+        ?\Psr\Log\LoggerInterface $logger = null,
+        ?\Closure $diagnosticListener = null,
+        ?\Closure $afterPolling = null,
     ): array
     {
         $codec = new AvroPayloadCodec();
@@ -1846,6 +1878,12 @@ final class PortableWorkerAffinityTest extends TestCase
             'sticky_replay_mode' => $replayMode,
         ];
         $tasks = match ($scenario) {
+            'diagnostics' => [
+                $task('target-initial', 'target-workflow', 'target-run', $fullHistory, 'cold_replay'),
+                $task('target-hit', 'target-workflow', 'target-run', [], 'sticky_hit_expected'),
+                $task('other-initial', 'other-workflow', 'other-run', $fullHistory, 'cold_replay'),
+                $task('target-fallback', 'target-workflow', 'target-run', [], 'sticky_hit_expected'),
+            ],
             'eviction' => [
                 $task('target-initial', 'target-workflow', 'target-run', $fullHistory, 'cold_replay'),
                 $task('other-initial', 'other-workflow', 'other-run', $fullHistory, 'cold_replay'),
@@ -1869,8 +1907,14 @@ final class PortableWorkerAffinityTest extends TestCase
             array $_headers,
             ?array $body,
         ) use (&$tasks, &$commands, &$historyFetches, $fullHistory, $useFactory, $factoryTtlSeconds): array {
+            if (str_ends_with($uri, '/api/worker/register')) {
+                return ['registered' => true, 'heartbeat_interval_seconds' => 10];
+            }
             if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
                 $next = array_shift($tasks);
+                if ($next === null) {
+                    return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+                }
 
                 return ['poll_status' => 'leased', 'task' => $next];
             }
@@ -1918,6 +1962,8 @@ final class PortableWorkerAffinityTest extends TestCase
             'sticky-workers',
             stickyCacheCapacity: 1,
             stickyCacheTtlSeconds: $factoryTtlSeconds,
+            logger: $logger,
+            diagnosticListener: $diagnosticListener,
         ) : new Worker(
             $client,
             'sticky-workers',
@@ -1926,8 +1972,10 @@ final class PortableWorkerAffinityTest extends TestCase
             clock: static function () use (&$now): float {
                 return $now;
             },
-            stickyCacheCapacity: $scenario === 'eviction' ? 1 : 10,
+            stickyCacheCapacity: in_array($scenario, ['eviction', 'diagnostics'], true) ? 1 : 10,
             stickyCacheTtlSeconds: $scenario === 'expiry' ? 1 : 300,
+            logger: $logger,
+            diagnosticListener: $diagnosticListener,
         );
         $worker->registerWorkflow(
             'sticky.workflow',
@@ -1951,6 +1999,7 @@ final class PortableWorkerAffinityTest extends TestCase
                 }
             }
         }
+        $afterPolling?->__invoke($worker);
 
         $initial = $commands['target-initial']['commands'] ?? null;
         $fallback = $commands['target-fallback']['commands'] ?? null;
