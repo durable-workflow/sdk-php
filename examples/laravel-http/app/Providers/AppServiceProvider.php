@@ -10,9 +10,11 @@ class AppServiceProvider extends ServiceProvider
 {
     public function boot(): void
     {
-        if (! $this->app->runningInConsole() && config('example.eager')) {
+        // Octane HTTP workers bootstrap through CLI. Preparation has no credentials.
+        if (getenv('EXAMPLE_PROCESS_ROLE') === 'http' && config('example.eager')) {
             $this->app->make(Client::class);
             $this->app->make(LaravelWorkflowClientInterface::class);
         }
+        $this->app->instance('example.sdk_boot_resolved', $this->app->resolved(Client::class));
     }
 }

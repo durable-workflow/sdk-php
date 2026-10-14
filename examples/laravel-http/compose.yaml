@@ -44,6 +44,7 @@ services:
     environment:
       <<: *environment
       DURABLE_WORKFLOW_CLIENT_TOKEN: ${DURABLE_WORKFLOW_CLIENT_TOKEN:?Set the application client-role credential}
+      EXAMPLE_PROCESS_ROLE: http
     init: true
     stop_signal: SIGTERM
     command: php artisan octane:start --server=roadrunner --host=0.0.0.0 --port=8000 --workers=2 --max-requests=500
@@ -60,6 +61,7 @@ services:
     environment:
       <<: *environment
       DURABLE_WORKFLOW_WORKER_TOKEN: ${DURABLE_WORKFLOW_WORKER_TOKEN:?Set a separate worker-role credential}
+      EXAMPLE_PROCESS_ROLE: worker
     init: true
     command: php artisan durable-workflow:worker
     depends_on:

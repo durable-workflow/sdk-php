@@ -10,6 +10,7 @@ Route::middleware('example')->group(function (): void {
         return response()->json([
             'user' => $request->attributes->get('example_user'),
             'namespace' => $client->namespace,
+            'client_resolved_at_boot' => app('example.sdk_boot_resolved'),
         ]);
     });
     Route::post('workflows', [WorkflowController::class, 'start']);
