@@ -113,8 +113,11 @@ must preserve the same original IDs and accepted 600/900-second deadlines, use
 the declared observation budget, and never seed a replacement workflow or
 manually repair history. After the replacement completes, `after` requires the
 whole original prefix, unchanged deadline fields and exact typed result. Delete
-the temporary checkpoint when the control ends. This helper's presence is not
-proof that SIGKILL or connection-loss recovery has been qualified.
+the temporary checkpoint when the control ends.
+
+One actual [SIGKILL and cold replacement control](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6175531934)
+passes with the same original run, complete history prefix and unchanged
+deadlines. It does not qualify cache expiry, eviction or runtime connection loss.
 
 History-cache defaults remain 100 entries/300 seconds. The existing SDK validates
 capacity and TTL, with a 3600-second TTL ceiling. `EXAMPLE_HISTORY_CAPACITY` and
