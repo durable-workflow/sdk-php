@@ -265,7 +265,7 @@ $cacheEvents->listen(WorkerDiagnosticEvent::class, static function (WorkerDiagno
         $cacheStoppedContext = $event->context;
     }
 });
-$cacheMetrics = verifyConfiguredHistoryCache(static function (Transport $transport) use ($app, $logger, $cacheEvents): DurableWorkflow\Worker {
+$cacheMetrics = verifyConfiguredHistoryCache(static function (Transport $transport) use ($app, $cacheEvents): DurableWorkflow\Worker {
     $configuration = $app->make(DurableWorkflow\Bridge\ServiceConfiguration::class);
 
     return (new WorkerFactory(
