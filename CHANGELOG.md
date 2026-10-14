@@ -12,6 +12,16 @@ project follows [Semantic Versioning](https://semver.org/).
   before acquiring more work. Task and cancellation authority deadlines retain
   their original bounds.
 
+## [2.4.0] - 2026-10-14
+
+### Added
+
+- Inspect one activity result in an exact workflow run through
+  `Client::workflowActivityResult()`. Available values retain the existing
+  typed payload envelope and authenticated external-byte verification.
+  Pending, failed, cancelled, pruned and unsupported states remain distinct.
+  The connected Server must support `workflow_activity_result_inspection`.
+
 ## [2.3.10] - 2026-10-13
 
 ### Fixed
