@@ -172,6 +172,31 @@ eviction, HTTP reload/recycling, CLI SIGKILL/cold replacement and runtime
 connection loss first. Inspect canonical histories for duplicate effects and
 unchanged identities/deadlines.
 
+`qualification/load.js` uses the open-source k6 constant-arrival-rate executor:
+six authenticated context reads and one new original workflow per second. Run
+the tool separately from the fixed application allocation. Each original has
+the existing 35-second observer; the outer run allows 36 seconds to drain after
+the last offer. Every expected admission, terminal result and context read is
+counted. Dropped offers, HTTP/check failures, incomplete originals, OOM or
+restarts invalidate a successful comparison.
+
+Set `EXAMPLE_ORIGIN`, `DURABLE_WORKFLOW_NAMESPACE`, a fresh `EXAMPLE_RUN_PREFIX`
+and `EXAMPLE_SUMMARY_PATH` in the tool container. Freeze its image digest and
+limits as well as application/backend roles. `EXAMPLE_DURATION_SECONDS` selects
+5–300 seconds; the planned warmup/window/soak are 30/120/300 seconds. The normal
+window uses one-activity workflows. `EXAMPLE_MIXED=true` cycles two short,
+one timer, one queried/signalled and one queried/cancelled original. Wire checks
+preserve the exact int64 digits; normal installed PHP readers and native task
+records independently verify types, attempts, histories and repairs afterward.
+
+Use fresh projects/databases for three pairs with order FPM/Octane,
+Octane/FPM, FPM/Octane, then an FPM drift recheck and mixed soak. Separate warmup
+from measured offers. Report context/start/status latency separately from the
+poll-observed workflow latency; the latter includes the declared 250ms status
+poll interval. Sample every app/backend/tool role through drain and verification.
+Keep the small k6 summary and readable report; delete raw samples, histories,
+databases, dependencies and temporary hosts after their immediate audit.
+
 Then run three independent FPM/Octane pairs and recheck FPM. Keep CLI execution
 settings identical. Report offered/completed/failed/unfinished operations,
 submission/status latency separately from workflow latency, measured drain,
