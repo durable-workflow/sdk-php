@@ -462,6 +462,12 @@ retry, shutdown, and handler failures then use the application's normal logging
 pipeline. The optional `diagnosticListener` receives the same event names and
 structured context.
 
+The `worker.stopped` context includes `sticky_cache` counters for `hit`, `miss`,
+`eviction` and `forced_cold_replay` over that worker process's lifetime. Clearing
+retained history during shutdown preserves these counters. Laravel and Symfony
+forward the same context through `WorkerDiagnosticEvent`. A cache hit still
+replays the workflow; these counters do not measure retained live execution.
+
 Signal methods are signature declarations for server admission and are not
 invoked. The workflow reads their committed values with
 `$context->signals('set-language')` during replay. Query and update methods are
