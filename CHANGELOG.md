@@ -12,6 +12,14 @@ project follows [Semantic Versioning](https://semver.org/).
   before acquiring more work. Task and cancellation authority deadlines retain
   their original bounds.
 
+## [2.4.0] - 2026-10-14
+
+### Added
+
+- Read one workflow activity result with `Client::workflowActivityResult()` on
+  Servers that advertise activity-result inspection. Existing payload decoding
+  verifies and hydrates only the selected result.
+
 ## [2.3.9] - 2026-10-13
 
 ### Fixed
