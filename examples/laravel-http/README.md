@@ -90,6 +90,20 @@ route resolves the normal SDK client without sending a runtime request. It
 checks HTTP request isolation only; it cannot prove workflow execution or
 runtime namespace authorization.
 
+With the real runtime and CLI worker ready, choose a fresh original prefix and
+run `qualification/lifecycle.mjs` with `EXAMPLE_ORIGIN` and `EXAMPLE_RUN_PREFIX`.
+It admits five originals once, observes four completions and one cancellation,
+and checks signal/query and a foreign-user refusal. Status observation budgets
+are 35 seconds; individual HTTP calls are capped at the remaining budget.
+`qualification/verify-results.php` reads those same original results through the
+installed PHP SDK and checks the exact int64/null/Unicode types. Run the drivers
+in a separate tool container so their resources are excluded from the fixed
+application allocation.
+
+The durable worker explicitly uses Docker's SIGTERM stop signal. The FPM image's
+default SIGQUIT belongs to the HTTP process; use SIGTERM for the CLI worker so
+its normal SDK shutdown can deregister.
+
 History-cache defaults remain 100 entries/300 seconds. The existing SDK validates
 capacity and TTL, with a 3600-second TTL ceiling. `EXAMPLE_HISTORY_CAPACITY` and
 `EXAMPLE_HISTORY_TTL` select this process's settings before startup. A cache hit
