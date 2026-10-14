@@ -12,6 +12,14 @@ project follows [Semantic Versioning](https://semver.org/).
   before acquiring more work. Task and cancellation authority deadlines retain
   their original bounds.
 
+## [2.4.1] - 2026-10-14
+
+### Fixed
+
+- Include actual lifetime history-cache counters in the worker's shutdown
+  diagnostic. Logs and Laravel/Symfony events preserve those counters after
+  retained history is cleared.
+
 ## [2.4.0] - 2026-10-14
 
 ### Added
