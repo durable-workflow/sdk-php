@@ -104,6 +104,18 @@ The durable worker explicitly uses Docker's SIGTERM stop signal. The FPM image's
 default SIGQUIT belongs to the HTTP process; use SIGTERM for the CLI worker so
 its normal SDK shutdown can deregister.
 
+The separate `recovery-timer` kind waits ten seconds after its echo activity.
+It provides a checkpoint before testing CLI replacement. Use the returned
+original workflow/run IDs with `qualification/recovery-checkpoint.php before`,
+writing a temporary file under the private state directory. The check requires
+one completed activity and one unfired persisted timer. An interruption control
+must preserve the same original IDs and accepted 600/900-second deadlines, use
+the declared observation budget, and never seed a replacement workflow or
+manually repair history. After the replacement completes, `after` requires the
+whole original prefix, unchanged deadline fields and exact typed result. Delete
+the temporary checkpoint when the control ends. This helper's presence is not
+proof that SIGKILL or connection-loss recovery has been qualified.
+
 History-cache defaults remain 100 entries/300 seconds. The existing SDK validates
 capacity and TTL, with a 3600-second TTL ceiling. `EXAMPLE_HISTORY_CAPACITY` and
 `EXAMPLE_HISTORY_TTL` select this process's settings before startup. A cache hit

@@ -17,7 +17,7 @@ final class WorkflowController extends Controller
 
     public function start(Request $request)
     {
-        $values = $request->validate(['id' => 'required|alpha_dash|max:60', 'kind' => 'required|in:short,timer,signal,cancel']);
+        $values = $request->validate(['id' => 'required|alpha_dash|max:60', 'kind' => 'required|in:short,timer,recovery-timer,signal,cancel']);
         $handle = $this->workflows->start(
             HttpWorkflow::class,
             [$request->attributes->get('example_user'), $values['kind']],

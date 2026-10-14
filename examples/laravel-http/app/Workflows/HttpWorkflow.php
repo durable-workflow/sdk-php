@@ -18,6 +18,8 @@ final class HttpWorkflow
         $echo = $context->activity('example.echo', [$user]);
         if ($kind === 'timer') {
             $context->sleep(1);
+        } elseif ($kind === 'recovery-timer') {
+            $context->sleep(10);
         } elseif ($kind === 'signal') {
             $context->waitCondition(fn (): bool => $context->signals('release') !== [], key: 'release');
         } elseif ($kind === 'cancel') {
