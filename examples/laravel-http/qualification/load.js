@@ -16,6 +16,7 @@ const offered = new Counter('workflow_offered');
 const admitted = new Counter('workflow_admitted');
 const completed = new Counter('workflow_completed');
 const cancelled = new Counter('workflow_cancelled');
+const failed = new Counter('workflow_failed');
 const terminal = new Counter('workflow_terminal');
 const contextCompleted = new Counter('context_completed');
 const errors = new Counter('run_errors');
@@ -90,7 +91,11 @@ function waitStatus(user, id, expected, cutoff) {
     while (Date.now() < cutoff) {
         const response = request(user, `workflows/${id}`, 'status', 'GET', undefined, 200, cutoff - Date.now());
         requireCheck(Date.now() <= cutoff, 'original observer has not expired');
-        if ((response.json().status || '').toLowerCase() === expected) return response;
+        const status = (response.json().status || '').toLowerCase();
+        if (status === expected) return response;
+        if (['completed', 'failed', 'cancelled', 'terminated', 'timed_out'].includes(status)) {
+            throw new Error(`Original reached unexpected terminal status ${status}.`);
+        }
         sleep(Math.min(0.25, Math.max(0, cutoff - Date.now()) / 1000));
     }
     throw new Error('Original 35-second observation expired.');
@@ -130,11 +135,14 @@ export function workflow() {
         terminal.add(1);
         console.log(JSON.stringify({phase: 'terminal', user, kind, id, workflow_id: acceptance.workflow_id, run_id: acceptance.run_id, elapsed_ms: Date.now() - started}));
     } catch (error) {
+        failed.add(1);
         errors.add(1);
         console.error(JSON.stringify({phase: 'workflow_failed', user, kind, id, message: String(error)}));
     }
 }
 
 export function handleSummary(data) {
+    data.example = {prefix, namespace, duration_seconds: seconds, context_rate: 6, workflow_rate: 1,
+        mixed, original_observer_seconds: 35, outer_drain_seconds: 36};
     return {stdout: JSON.stringify(data), [__ENV.EXAMPLE_SUMMARY_PATH || '/proof/summary.json']: JSON.stringify(data)};
 }

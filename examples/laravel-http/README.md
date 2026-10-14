@@ -188,6 +188,10 @@ window uses one-activity workflows. `EXAMPLE_MIXED=true` cycles two short,
 one timer, one queried/signalled and one queried/cancelled original. Wire checks
 preserve the exact int64 digits; normal installed PHP readers and native task
 records independently verify types, attempts, histories and repairs afterward.
+Run `php qualification/audit-load.php` with those same original environment
+values and only the client credential. It reads each selected original through
+the installed SDK, checks canonical activity/terminal counts and exact PHP
+types, and reads actual timer due/fired timestamps without inventing a clock.
 
 Use fresh projects/databases for three pairs with order FPM/Octane,
 Octane/FPM, FPM/Octane, then an FPM drift recheck and mixed soak. Separate warmup
