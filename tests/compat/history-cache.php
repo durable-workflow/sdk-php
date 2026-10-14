@@ -17,8 +17,14 @@ final class ConfiguredHistoryCacheTransport implements Transport
     public function send(string $method, string $uri, array $headers, ?array $body = null): array
     {
         $history = [['event_type' => 'WorkflowStarted', 'payload' => ['sequence' => 0]]];
+        if (str_ends_with($uri, '/worker/register')) {
+            return ['registered' => true, 'heartbeat_interval_seconds' => 10];
+        }
         if (str_ends_with($uri, '/workflow-tasks/poll')) {
             ++$this->polls;
+            if ($this->polls > 3) {
+                return ['poll_status' => 'stopped', 'reason' => 'worker_stopped', 'task' => null];
+            }
             $identity = $this->polls === 2 ? 'other' : 'original';
 
             return ['poll_status' => 'leased', 'task' => [
@@ -63,8 +69,11 @@ final class ConfiguredHistoryCacheTransport implements Transport
     }
 }
 
-/** @param Closure(Transport): Worker $makeWorker */
-function verifyConfiguredHistoryCache(Closure $makeWorker): void
+/**
+ * @param Closure(Transport): Worker $makeWorker
+ * @return array{hit: int, miss: int, eviction: int, forced_cold_replay: int}
+ */
+function verifyConfiguredHistoryCache(Closure $makeWorker): array
 {
     $transport = new ConfiguredHistoryCacheTransport();
     $worker = $makeWorker($transport);
@@ -72,9 +81,12 @@ function verifyConfiguredHistoryCache(Closure $makeWorker): void
     for ($index = 0; $index < 12 && $transport->completions < 3; ++$index) {
         $worker->tick(0);
     }
+    $worker->run(0);
     $metrics = $worker->stickyCacheMetrics();
     if ($transport->historyFetches !== 1 || $transport->completions !== 3
         || $metrics['eviction'] < 1 || $metrics['forced_cold_replay'] !== 1) {
         throw new RuntimeException('Configured capacity did not evict and fetch authoritative cold history.');
     }
+
+    return $metrics;
 }
