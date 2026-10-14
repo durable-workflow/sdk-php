@@ -444,6 +444,24 @@ final class Client implements WorkflowClientInterface
         );
     }
 
+    /**
+     * Inspect one activity's canonical result in an exact run.
+     *
+     * The response retains its diagnostic state. An available result_envelope
+     * can be decoded with payloadCodec(); external bytes use the existing
+     * authenticated, size- and checksum-verified payload transport.
+     *
+     * @return array<string, mixed>
+     */
+    public function workflowActivityResult(string $workflowId, string $runId, string $activityId): array
+    {
+        return $this->control(
+            'GET',
+            '/workflows/'.$this->segment($workflowId).'/runs/'.$this->segment($runId)
+                .'/activities/'.$this->segment($activityId).'/result',
+        );
+    }
+
     /** @return list<WorkflowStreamDescription> */
     public function listWorkflowStreams(string $workflowId, string $runId): array
     {
