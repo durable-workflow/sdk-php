@@ -12,6 +12,20 @@ project follows [Semantic Versioning](https://semver.org/).
   before acquiring more work. Task and cancellation authority deadlines retain
   their original bounds.
 
+## [2.4.2] - 2026-10-15
+
+### Fixed
+
+- Preserve original query deadlines through loading, preparation and result
+  submission. Observe advertised protocol 1.20 authority without renewing it,
+  and abandon expired claims without stopping the Worker or invoking a late
+  handler. Already-entered synchronous handlers remain non-interruptible.
+
+### Added
+
+- Optional `requireQueryTaskAuthority` pre-registration requirement, with
+  explicit transport, legacy and protocol 1.19 compatibility limits.
+
 ## [2.4.1] - 2026-10-14
 
 ### Fixed
