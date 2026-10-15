@@ -161,6 +161,16 @@ final class Client implements WorkflowClientInterface
         return $this->transport instanceof BoundedTransport && $this->transport->supportsBoundedRequests();
     }
 
+    /** @internal Query payload loading must keep observing the original claim. */
+    public function supportsSupervisedQueryRequests(): bool
+    {
+        return $this->supportsBoundedWorkerRequests()
+            && (!$this->transport instanceof PayloadTransport
+                || $this->transport instanceof \DurableWorkflow\Transport\BoundedProgressPayloadTransport)
+            && (!$this->transport instanceof PayloadUploadTransport
+                || $this->transport instanceof BoundedPayloadUploadTransport);
+    }
+
     /** Return a new client with the same transport, authentication, and codec for another namespace. */
     public function withNamespace(string $namespace): self
     {
@@ -2126,15 +2136,33 @@ final class Client implements WorkflowClientInterface
         return isset($response['task']) && is_array($response['task']) ? $response['task'] : null;
     }
 
-    /** @return array<string, mixed> */
-    public function completeQueryTask(string $taskId, string $leaseOwner, int $attempt, mixed $result): array
+    /**
+     * Observe an original query claim without renewing it. Requires advertised
+     * query_task_authority support and worker protocol 1.20.
+     *
+     * @return array<string, mixed>
+     */
+    public function queryTaskStatus(string $taskId, string $leaseOwner, int $attempt, ?RequestBudget $budget = null): array
     {
-        return $this->worker('POST', '/worker/query-tasks/'.$this->segment($taskId).'/complete', [
+        if ($this->workerProtocolVersion !== '1.20' || $taskId === '' || $leaseOwner === '' || $attempt < 1) {
+            throw new InvalidArgumentException('Query observation requires protocol 1.20 and the original claim identity.');
+        }
+        $query = http_build_query(['lease_owner' => $leaseOwner, 'query_task_attempt' => $attempt]);
+
+        return $this->withBoundedWorkerRequests()->worker('GET',
+            '/worker/query-tasks/'.$this->segment($taskId).'/status?'.$query, null, $budget ?? new RequestBudget(5));
+    }
+
+    /** @return array<string, mixed> */
+    public function completeQueryTask(string $taskId, string $leaseOwner, int $attempt, mixed $result, ?RequestBudget $budget = null): array
+    {
+        $client = $budget === null ? $this : $this->withBoundedWorkerRequests();
+        return $client->worker('POST', '/worker/query-tasks/'.$this->segment($taskId).'/complete', [
             'lease_owner' => $leaseOwner,
             'query_task_attempt' => $attempt,
             'result' => $result,
             'result_envelope' => $this->codec->envelope($result),
-        ]);
+        ], $budget);
     }
 
     /** @return array<string, mixed> */
@@ -2144,12 +2172,14 @@ final class Client implements WorkflowClientInterface
         int $attempt,
         string $message,
         string $reason = 'query_rejected',
+        ?RequestBudget $budget = null,
     ): array {
-        return $this->worker('POST', '/worker/query-tasks/'.$this->segment($taskId).'/fail', [
+        $client = $budget === null ? $this : $this->withBoundedWorkerRequests();
+        return $client->worker('POST', '/worker/query-tasks/'.$this->segment($taskId).'/fail', [
             'lease_owner' => $leaseOwner,
             'query_task_attempt' => $attempt,
             'failure' => ['message' => $message, 'reason' => $reason, 'type' => 'PhpQueryFailure'],
-        ]);
+        ], $budget);
     }
 
     /**
@@ -2377,8 +2407,9 @@ final class Client implements WorkflowClientInterface
             // Control I/O and supervised payload I/O have separate bounds.
             // Explicit caller/cleanup budgets still cover their entire request.
             $responseBudget = $budget !== null && $poll && $callerBudget === null ? new RequestBudget(5) : $budget;
-            $canStreamBounded = $worker && $this->boundedWorkerRequests
-                && $this->transport instanceof \DurableWorkflow\Transport\BoundedProgressPayloadTransport;
+            $canStreamBounded = $worker && ($this->boundedWorkerRequests || $path === '/worker/query-tasks/poll')
+                && $this->transport instanceof \DurableWorkflow\Transport\BoundedProgressPayloadTransport
+                && $this->transport instanceof BoundedTransport && $this->transport->supportsBoundedRequests();
             $observerBudget = $canStreamBounded && $callerBudget === null ? null : $responseBudget;
             $progress = $worker && $this->workerPayloadObserver !== null && is_array($response) && !array_is_list($response)
                 ? ($this->workerPayloadObserver)($path, $body, $response, $observerBudget) : null;
