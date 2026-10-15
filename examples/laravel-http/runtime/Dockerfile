@@ -6,9 +6,9 @@ RUN docker-php-ext-install -j1 bcmath opcache pcntl \
     && groupmod --gid 1000 www-data \
     && usermod --uid 1000 --gid 1000 www-data \
     && mkdir -p /app \
-    && chown 1000:1000 /app
-RUN docker-php-ext-install -j1 sockets
-RUN apt-get update \
+    && chown 1000:1000 /app \
+    && docker-php-ext-install -j1 sockets \
+    && apt-get update \
     && apt-get install -y --no-install-recommends unzip \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=composer /usr/bin/composer /usr/bin/composer
