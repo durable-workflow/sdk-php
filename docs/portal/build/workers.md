@@ -157,7 +157,9 @@ Protocol 1.19 never calls the status endpoint.
 
 Synchronous PHP handlers already running cannot be safely interrupted. Keep query
 handlers short and avoid side effects. The worker checks authority again before
-submitting their result. Direct `Client` completion and failure calls retain the
+submitting their result. Transport timeouts use whole seconds. If the remaining
+budget cannot cover bounded control I/O, the worker abandons that claim without
+extending its deadline. Direct `Client` completion and failure calls retain the
 Server's receipt and terminal-state semantics.
 
 Keep `run()` inside your CLI command or supervised process:

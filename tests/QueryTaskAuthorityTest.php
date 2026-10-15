@@ -128,6 +128,14 @@ final class QueryTaskAuthorityTest extends TestCase
         }
     }
 
+    public function testInsufficientBoundedIoTimeAbandonsOnlyTheOriginalClaim(): void
+    {
+        $authority = new QueryTaskAuthority(new Client('http://runtime'), self::task(), 'worker-1', 'queue', false);
+        $budget = new \DurableWorkflow\Transport\RequestBudget(5, hrtime(true) / 1e9 + 0.25);
+        $this->expectException(WorkflowClaimRevoked::class);
+        $authority->assertRequestBudget($budget);
+    }
+
     public function testOrdinaryUnboundedTransportKeepsLocalTimingWithoutClaimingLiveObservation(): void
     {
         $task = self::task();
