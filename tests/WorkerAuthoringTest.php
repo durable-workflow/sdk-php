@@ -128,7 +128,8 @@ final class WorkerAuthoringTest extends TestCase
         $worker->run(0);
 
         self::assertSame(
-            ['worker.starting', 'worker.registered', 'worker.stopped_by_server', 'worker.stopped'],
+            ['worker.starting', 'worker.query_authority_unavailable', 'worker.registered',
+                'worker.stopped_by_server', 'worker.stopped'],
             $events,
         );
         self::assertSame($events, array_column($logger->records, 'message'));

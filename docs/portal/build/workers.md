@@ -126,6 +126,40 @@ task continues without waiting for that retry. Server fencing, stopped and
 draining responses remain authoritative, and the worker does not register again
 to bypass them.
 
+### Query execution authority
+
+Query loading, preparation and result submission share the original query
+deadline. On protocol 1.20 runtimes that advertise `query_task_authority`, a
+bounded transport also observes the original claim without renewing its lease.
+The worker checks ownership before entering the handler and discards a late
+result. Registration heartbeats do not extend query authority.
+
+Require this mode before registration when your application needs it:
+
+```php
+$worker = Worker::create(
+    $client,
+    'orders',
+    requireQueryTaskAuthority: true,
+);
+```
+
+This option refuses an unsupported runtime, protocol or transport before
+registration. The default `Psr18Transport` supports bounded requests with Guzzle
+and cURL. Custom transports must provide bounded requests and supervised payload
+progress to bound external loading as well.
+
+Without the option, protocol 1.19 and unbounded transports keep their compatible
+mode. The worker enforces timing actually supplied in the delivery and reports
+`worker.query_authority_unavailable` when live observation is unavailable. A
+legacy delivery without timing cannot establish the original caller deadline.
+Protocol 1.19 never calls the status endpoint.
+
+Synchronous PHP handlers already running cannot be safely interrupted. Keep query
+handlers short and avoid side effects. The worker checks authority again before
+submitting their result. Direct `Client` completion and failure calls retain the
+Server's receipt and terminal-state semantics.
+
 Keep `run()` inside your CLI command or supervised process:
 
 ```php
