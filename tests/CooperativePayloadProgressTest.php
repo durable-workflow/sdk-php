@@ -66,13 +66,14 @@ final class CooperativePayloadProgressTest extends TestCase
         $worker = new Worker(new Client('http://runtime', transport: new Psr18Transport($http)), 'queue',
             workerId: 'worker-1', enableCooperativeCancellation: true);
         (new \ReflectionProperty($worker, 'registered'))->setValue($worker, true);
-        $observer = (new \ReflectionMethod($worker, 'workerPayloadProgress'))->invoke($worker, '/worker/query-tasks/poll', [],
-            ['task' => ['query_task_id' => 'query-1', 'lease_expires_at' => '2000-01-01T00:00:00Z']], null);
         try {
+            $observer = (new \ReflectionMethod($worker, 'workerPayloadProgress'))->invoke($worker, '/worker/query-tasks/poll', [],
+                ['task' => ['query_task_id' => 'query-1', 'query_task_attempt' => 1,
+                    'lease_owner' => 'worker-1', 'task_queue' => 'queue', 'lease_expires_at' => '2000-01-01T00:00:00Z']], null);
             $observer();
             self::fail('Expired query loading made another request.');
         } catch (WorkflowClaimRevoked $error) {
-            self::assertSame('payload_deadline_expired', $error->reason);
+            self::assertSame('query_execution_budget_expired', $error->reason);
         }
         self::assertSame(0, $calls);
     }

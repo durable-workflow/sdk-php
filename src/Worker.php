@@ -32,6 +32,7 @@ use DurableWorkflow\Worker\PreparedLocalActivityAttempt;
 use DurableWorkflow\Worker\PreparedLocalActivityCall;
 use DurableWorkflow\Worker\PreparedLocalActivityRunner;
 use DurableWorkflow\Worker\QueryContext;
+use DurableWorkflow\Worker\QueryTaskAuthority;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\ReplayResult;
 use DurableWorkflow\Worker\ScopedActivityCancellationObserved;
@@ -95,6 +96,8 @@ final class Worker
     /** @var array<string, mixed>|null */
     private ?array $workflowMemoCapability = null;
     private bool $serviceOperationsSupported = false;
+    private bool $queryTaskAuthoritySupported = false;
+    private ?QueryTaskAuthority $queryTaskAuthority = null;
     private ?CancellationRequest $claimCancellation = null;
     private ?string $claimDeliveredCancellationId = null;
     private bool $preparedLocalActivityGroupsSupported = false;
@@ -128,6 +131,7 @@ final class Worker
         private readonly bool $enablePreparedLocalActivities = false,
         /** Unfrozen source opt-in for scalar/all-group scope delivery and committed scope replay. */
         private readonly bool $enableCancellationScopes = false,
+        private readonly bool $requireQueryTaskAuthority = false,
     ) {
         if ($enableCancellationScopes && !$enableCooperativeCancellation) {
             throw new \InvalidArgumentException('Cancellation scopes require the cooperative worker opt-in.');
@@ -172,6 +176,7 @@ final class Worker
         ?callable $diagnosticListener = null,
         int $stickyCacheCapacity = 100,
         int $stickyCacheTtlSeconds = 300,
+        bool $requireQueryTaskAuthority = false,
     ): self {
         return new self(
             $client,
@@ -181,6 +186,7 @@ final class Worker
             diagnosticListener: $diagnosticListener,
             stickyCacheCapacity: $stickyCacheCapacity,
             stickyCacheTtlSeconds: $stickyCacheTtlSeconds,
+            requireQueryTaskAuthority: $requireQueryTaskAuthority,
         );
     }
 
@@ -358,6 +364,13 @@ final class Worker
             }
             $this->applyHeartbeatInterval($registration);
             $this->captureRegistrationFence($registration);
+            $this->queryTaskAuthoritySupported = $this->client->workerProtocolVersion === '1.20'
+                && ($registration['server_capabilities']['query_task_authority'] ?? null) === true
+                && $this->client->supportsSupervisedQueryRequests();
+            if (!$this->queryTaskAuthoritySupported && $this->queries !== []) {
+                $this->diagnostic('worker.query_authority_unavailable', ['worker_id' => $this->workerId,
+                    'mode' => 'legacy_local_timing', 'strong_authority' => false], 'warning');
+            }
             $this->registered = true;
             $this->lastHeartbeatAt = $this->now();
             $this->diagnostic('worker.registered', [
@@ -576,6 +589,15 @@ final class Worker
     /** @return array<string, mixed>|null */
     private function registerWithRetry(): ?array
     {
+        if ($this->requireQueryTaskAuthority) {
+            if ($this->client->workerProtocolVersion !== '1.20' || !$this->client->supportsSupervisedQueryRequests()) {
+                throw new WorkflowClaimAborted('Query authority requires protocol 1.20 and bounded Worker transport.');
+            }
+            $protocol = $this->client->withBoundedWorkerRequests()->workerClusterInfo()->raw['worker_protocol'] ?? null;
+            if (!is_array($protocol) || ($protocol['server_capabilities']['query_task_authority'] ?? null) !== true) {
+                throw new WorkflowClaimAborted('The runtime does not advertise query task authority.');
+            }
+        }
         if ($this->enableCooperativeCancellation) {
             $protocol = $this->client->workerClusterInfo()->raw['worker_protocol'] ?? null;
             if (!is_array($protocol) || !is_string($protocol['version'] ?? null)
@@ -848,6 +870,9 @@ final class Worker
 
                 return $poll($requestId, $timeoutSeconds);
             } catch (WorkflowClaimRevoked $exception) {
+                if ($taskKind === 'query') {
+                    $this->queryTaskAuthority = null;
+                }
                 $cause = $exception->getPrevious();
                 $this->diagnostic('worker.claim_aborted', ['task_kind' => $taskKind, 'task_id' => $exception->taskId,
                     'workflow_task_attempt' => $exception->taskAttempt, 'reason' => $exception->reason,
@@ -924,6 +949,9 @@ final class Worker
         $attempt = 0;
         $uncertainActivityCompletion = false;
         while (true) {
+            if (str_starts_with($operation, 'query_')) {
+                $this->queryTaskAuthority?->confirm();
+            }
             if ($operation !== 'workflow_fail') {
                 $this->assertCancellationDeadline();
             }
@@ -1061,13 +1089,15 @@ final class Worker
         $deadline = $this->now() + $delaySeconds;
         while (!$this->shutdownRequested) {
             $this->assertCancellationDeadline();
-            $this->heartbeatIfDue();
+            $this->queryTaskAuthority?->remaining();
+            $this->heartbeatIfDue($this->queryRequestBudget($this->queryTaskAuthority));
             $remainingSeconds = $deadline - $this->now();
             if ($remainingSeconds <= 0) {
                 return;
             }
 
             $sleepSeconds = min(self::TRANSIENT_RETRY_SLEEP_SLICE_SECONDS, $remainingSeconds);
+            $sleepSeconds = min($sleepSeconds, $this->queryTaskAuthority?->remaining() ?? INF);
             if ($this->registered) {
                 $untilHeartbeatSeconds = max(
                     $this->lastHeartbeatAt + $this->heartbeatIntervalSeconds,
@@ -1424,19 +1454,39 @@ final class Worker
             // progress and cannot renew an activity or query execution budget.
             $task = $response['task'];
             $activity = $path === '/worker/activity-tasks/poll';
+            $queryAuthority = null;
+            if (!$activity) {
+                $this->queryTaskAuthority = $queryAuthority = $this->queryAuthorityForTask($task);
+                $queryAuthority?->confirm();
+            }
             $observedAt = null;
-            return function () use ($budget, $task, $activity, &$observedAt): void {
+            $queryObservedAt = hrtime(true) / 1e9;
+            return function () use ($budget, $task, $activity, $queryAuthority, &$observedAt, &$queryObservedAt): void {
                 if ($this->shutdownRequested) {
                     throw new WorkflowClaimRevoked('worker_stopped', 'Payload transfer stopped with its Worker.');
                 }
-                $heartbeatBudget = $budget ?? ($this->client->supportsBoundedWorkerRequests() ? new RequestBudget(5) : null);
-                if ($this->enableCooperativeCancellation && isset($task['lease_expires_at'])) {
+                $queryAuthority?->remaining();
+                if ($queryAuthority !== null && hrtime(true) / 1e9 - $queryObservedAt >= 1) {
+                    $queryAuthority->confirm();
+                    $queryObservedAt = hrtime(true) / 1e9;
+                }
+                $heartbeatBudget = $this->queryRequestBudget($queryAuthority) ?? $budget
+                    ?? ($this->client->supportsBoundedWorkerRequests() ? new RequestBudget(5) : null);
+                if ($activity && $this->enableCooperativeCancellation && isset($task['lease_expires_at'])) {
                     $this->assertPayloadDeadline($task['lease_expires_at']);
                     $heartbeatBudget?->restrictWallAuthorityDeadline(new \DateTimeImmutable($task['lease_expires_at']));
                 }
-                $heartbeatBudget?->remainingSeconds();
+                if ($queryAuthority !== null && $heartbeatBudget !== null) {
+                    $queryAuthority->assertRequestBudget($heartbeatBudget);
+                } else {
+                    $heartbeatBudget?->remainingSeconds();
+                }
                 $this->heartbeatIfDue($heartbeatBudget);
-                $heartbeatBudget?->remainingSeconds();
+                if ($queryAuthority !== null && $heartbeatBudget !== null) {
+                    $queryAuthority->assertRequestBudget($heartbeatBudget);
+                } else {
+                    $heartbeatBudget?->remainingSeconds();
+                }
                 if ($this->heartbeatRetryAttempt > 0) {
                     // Drop the partial body and let the existing heartbeat-aware
                     // poll retry preserve the original request and task identity.
@@ -1452,10 +1502,9 @@ final class Worker
                                 'Activity payload loading stopped before callback dispatch.', previous: $error);
                         }
                         $observedAt = $this->now();
-                    } elseif (!$activity && isset($task['lease_expires_at'])) {
-                        $this->assertPayloadDeadline($task['lease_expires_at']);
                     }
                 }
+                $queryAuthority?->remaining();
             };
         }
         if ($path === '/worker/workflow-tasks/poll') {
@@ -2567,7 +2616,14 @@ final class Worker
         $taskId = (string) ($task['query_task_id'] ?? $task['task_id'] ?? '');
         $attempt = (int) ($task['query_task_attempt'] ?? 1);
         $leaseOwner = (string) ($task['lease_owner'] ?? $this->workerId);
+        $authority = $this->queryTaskAuthority;
         try {
+            if ($authority === null) {
+                $this->queryTaskAuthority = $authority = $this->queryAuthorityForTask($task);
+            } elseif (!$authority->matches($task)) {
+                throw new WorkflowClaimRevoked('query_claim_changed', 'Loaded query identity differs from its original claim.');
+            }
+            $authority?->confirm();
             $workflowType = (string) ($task['workflow_type'] ?? '');
             $queryName = (string) ($task['query_name'] ?? '');
             $handler = $this->queries[$workflowType][$queryName] ?? null;
@@ -2582,19 +2638,59 @@ final class Worker
                 $task,
             );
             $arguments = $this->decodeArguments($task['query_arguments'] ?? $task['arguments'] ?? null);
+            if ($this->shutdownRequested) {
+                throw new WorkflowClaimRevoked('worker_stopped', 'Worker stopped before query dispatch.');
+            }
+            $authority?->confirm();
             $result = $handler($context, ...$arguments);
+            $authority?->confirm();
             $this->retryStorageAdmission('query_complete', fn (): array =>
-                $this->client->completeQueryTask($taskId, $leaseOwner, $attempt, $result));
+                $this->client->completeQueryTask($taskId, $leaseOwner, $attempt, $result, $this->queryRequestBudget($authority)));
+        } catch (WorkflowClaimRevoked $exception) {
+            $this->diagnostic('worker.claim_aborted', ['task_kind' => 'query', 'task_id' => $taskId,
+                'reason' => $exception->reason, 'message' => $exception->getMessage()], 'warning');
         } catch (Throwable $exception) {
+            try {
+                $authority?->confirm();
+            } catch (WorkflowClaimRevoked $lost) {
+                $this->diagnostic('worker.claim_aborted', ['task_kind' => 'query', 'task_id' => $taskId,
+                    'reason' => $lost->reason, 'message' => $lost->getMessage()], 'warning');
+                return;
+            }
             $this->acknowledgeTaskFailure(
                 'query',
                 $taskId,
                 $exception,
-                function (Throwable $failure) use ($taskId, $leaseOwner, $attempt): void {
-                    $this->client->failQueryTask($taskId, $leaseOwner, $attempt, $failure->getMessage());
+                function (Throwable $failure) use ($taskId, $leaseOwner, $attempt, $authority): void {
+                    $this->client->failQueryTask($taskId, $leaseOwner, $attempt, $failure->getMessage(),
+                        budget: $this->queryRequestBudget($authority));
                 },
             );
+        } finally {
+            $this->queryTaskAuthority = null;
         }
+    }
+
+    /** @param array<string, mixed> $task */
+    private function queryAuthorityForTask(array $task): ?QueryTaskAuthority
+    {
+        if ($this->requireQueryTaskAuthority && !$this->queryTaskAuthoritySupported) {
+            throw new WorkflowClaimRevoked('query_authority_unavailable', 'This Worker requires runtime query authority.');
+        }
+        if (!$this->queryTaskAuthoritySupported && !array_key_exists('lease_expires_at', $task)
+            && !array_key_exists('query_deadline_at', $task) && !array_key_exists('query_admitted_at', $task)) {
+            // Older deliveries disclose no original timing. They retain legacy
+            // behavior and cannot provide the strong query-authority guarantee.
+            return null;
+        }
+
+        return new QueryTaskAuthority($this->client, $task, $this->workerId, $this->taskQueue,
+            $this->queryTaskAuthoritySupported);
+    }
+
+    private function queryRequestBudget(?QueryTaskAuthority $authority): ?RequestBudget
+    {
+        return $authority !== null && $this->client->supportsBoundedWorkerRequests() ? $authority->budget() : null;
     }
 
     /** @param callable(Throwable): void $failureAcknowledgement */
