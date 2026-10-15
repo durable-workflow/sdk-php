@@ -1482,9 +1482,17 @@ final class Worker
                     $this->assertPayloadDeadline($task['lease_expires_at']);
                     $heartbeatBudget?->restrictWallAuthorityDeadline(new \DateTimeImmutable($task['lease_expires_at']));
                 }
-                $heartbeatBudget?->remainingSeconds();
+                if ($queryAuthority !== null && $heartbeatBudget !== null) {
+                    $queryAuthority->assertRequestBudget($heartbeatBudget);
+                } else {
+                    $heartbeatBudget?->remainingSeconds();
+                }
                 $this->heartbeatIfDue($heartbeatBudget);
-                $heartbeatBudget?->remainingSeconds();
+                if ($queryAuthority !== null && $heartbeatBudget !== null) {
+                    $queryAuthority->assertRequestBudget($heartbeatBudget);
+                } else {
+                    $heartbeatBudget?->remainingSeconds();
+                }
                 if ($this->heartbeatRetryAttempt > 0) {
                     // Drop the partial body and let the existing heartbeat-aware
                     // poll retry preserve the original request and task identity.

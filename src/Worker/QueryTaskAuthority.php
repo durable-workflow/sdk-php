@@ -7,6 +7,7 @@ namespace DurableWorkflow\Worker;
 use DateTimeImmutable;
 use DateTimeZone;
 use DurableWorkflow\Client;
+use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Transport\RequestBudget;
 use Throwable;
 
@@ -77,7 +78,20 @@ final class QueryTaskAuthority
     {
         $this->remaining();
 
-        return new RequestBudget(5, $this->until);
+        $budget = new RequestBudget(5, $this->until);
+        $this->assertRequestBudget($budget);
+
+        return $budget;
+    }
+
+    public function assertRequestBudget(RequestBudget $budget): void
+    {
+        try {
+            $budget->remainingSeconds();
+        } catch (TransportException $error) {
+            throw new WorkflowClaimRevoked('query_control_budget_exhausted',
+                'The remaining query budget cannot cover bounded control I/O.', previous: $error);
+        }
     }
 
     /** @param array<string, mixed> $task */
