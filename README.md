@@ -1,5 +1,7 @@
 # Durable Workflow PHP SDK
 
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=durable-workflow_sdk-php&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=durable-workflow_sdk-php)
+
 <p align="center">
   <a href="https://github.com/durable-workflow/sdk-php/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/durable-workflow/sdk-php/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="https://packagist.org/packages/durable-workflow/sdk"><img src="https://img.shields.io/packagist/v/durable-workflow/sdk.svg" alt="Packagist version"></a>
