@@ -58,6 +58,8 @@ These limits are qualification settings, not a general capacity promise.
 The checked-in `runtime/roadrunner.yaml` enables the HTTP pool and local control
 RPC. The generated starter configuration also starts a jobs pool, which this
 HTTP-only application does not use. Durable polling stays in the CLI worker.
+`qualification/inputs.json` records the pinned runtime and tool images for the
+comparison; application dependencies remain in the normal Composer lock.
 
 ## Exercise the application
 
