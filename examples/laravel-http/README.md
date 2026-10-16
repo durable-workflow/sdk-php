@@ -55,6 +55,10 @@ and 1 GiB with no swap: HTTP 0.9 CPU/640 MiB, CLI 1 CPU/320 MiB, nginx
 0.1 CPU/64 MiB. Provision and report the separate Server/database allocation.
 These limits are qualification settings, not a general capacity promise.
 
+The checked-in `runtime/roadrunner.yaml` enables the HTTP pool and local control
+RPC. The generated starter configuration also starts a jobs pool, which this
+HTTP-only application does not use. Durable polling stays in the CLI worker.
+
 ## Exercise the application
 
 The two `example-alpha` and `example-beta` bearer values are synthetic application

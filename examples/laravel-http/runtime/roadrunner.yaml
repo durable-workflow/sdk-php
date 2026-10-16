@@ -1,0 +1,23 @@
+version: '3'
+
+rpc:
+    listen: 'tcp://127.0.0.1:6001'
+
+server:
+    command: 'php vendor/bin/roadrunner-worker'
+    relay: pipes
+
+http:
+    address: '0.0.0.0:8000'
+    middleware:
+        - static
+    static:
+        dir: public
+        forbid:
+            - .php
+            - .htaccess
+    pool:
+        num_workers: 2
+        max_jobs: 500
+        supervisor:
+            max_worker_memory: 100
