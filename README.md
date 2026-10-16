@@ -31,6 +31,7 @@ for portable payloads and accepts any PSR-18 HTTP client.
 | Plain PHP client or worker | [First workflow](https://php.durable-workflow.com/getting-started/first-workflow/) |
 | Laravel v1 or v2 embedded | [Choose a Laravel ownership model](https://php.durable-workflow.com/frameworks/laravel/) |
 | Laravel service mode | [Laravel service-mode bridge](https://php.durable-workflow.com/frameworks/laravel/#service-mode) |
+| Laravel HTTP hosting | [FPM and optional Octane example](examples/laravel-http/) |
 | Symfony service mode | [Symfony bundle](https://php.durable-workflow.com/frameworks/symfony/) |
 | Runtime authentication | [Authentication guide](https://php.durable-workflow.com/operate/authentication/) |
 

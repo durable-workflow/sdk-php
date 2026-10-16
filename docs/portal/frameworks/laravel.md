@@ -192,6 +192,8 @@ Rollback is also per runtime: stop new service starts and send new IDs back to
 embedded v2, while service workers finish or explicitly terminate the runs that
 the service namespace already owns.
 
+<span id="service-mode"></span>
+
 ## Build the service-mode form as Laravel services
 
 Both handler classes are resolved from Laravel's container. Constructor
@@ -456,6 +458,20 @@ application. It works with PHPUnit, Pest, or a plain Laravel test and needs
 neither a running Server nor source inspection.
 
 Use the same fake assertions for a concurrent application start; concurrency is an implementation detail of the registered handler, so the class-shaped start contract does not change. For handler-level coverage, build the registered Laravel worker in the test container and inspect `WorkerTestHarness::runWorkflow()`: every declared leaf must appear in the same command sequence with one group/path identity. Replay mixed-order or partial history through the same method to assert declaration-order results without starting a Server.
+
+## HTTP hosting and durable workers
+
+Use the [FPM and optional Octane example](https://github.com/durable-workflow/sdk-php/tree/main/examples/laravel-http)
+for a complete Laravel HTTP application with a normal Composer lock, explicit
+resource limits, request-context controls and a separately supervised Artisan
+worker. The recipe records its runtime/tool images and qualification outcomes.
+
+HTTP workers submit and inspect workflows. Run `durable-workflow:worker` in its
+own process; Server or Cloud owns durable state, timers and task leases. Keep
+each process's endpoint, namespace and credential authority fixed, and pass
+client and worker credentials only to their respective roles outside cached
+configuration. The CLI worker's history cache retains history and still replays
+workflow instructions.
 
 ## Qualification boundary
 
