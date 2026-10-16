@@ -1,8 +1,12 @@
 # Laravel service HTTP example
 
-This candidate application compares nginx/PHP-FPM with optional Laravel Octane
-and RoadRunner. Qualification is in progress on [PHP SDK #112](https://github.com/durable-workflow/sdk-php/issues/112).
-No performance or production hosting recommendation is established yet.
+This application runs with nginx/PHP-FPM or optional Laravel Octane and
+RoadRunner. The [qualification report](qualification/report.md) records the
+tested configuration, resource costs and limits.
+
+Qualification is incomplete. The mixed-load FPM runs failed, including a
+confirmed backend command deadlock tracked in [Workflow #819](https://github.com/durable-workflow/workflow/issues/819).
+This recipe has no production-capacity or performance recommendation yet.
 
 The application uses the normally published SDK. Durable workflow and activity
 polling runs in the separate `durable-workflow:worker` CLI container. HTTP
@@ -10,6 +14,13 @@ workers only submit and inspect runtime operations. Server or Cloud owns durable
 history, timers, task leases and recovery.
 
 ## Installation
+
+Check out the runnable application:
+
+```bash
+git clone --depth 1 https://github.com/durable-workflow/sdk-php.git
+cd sdk-php/examples/laravel-http
+```
 
 The exact PHP SDK, Laravel and Octane versions live in `composer.json` and the
 resolved dependencies in `composer.lock`. The image uses PHP 8.3.35. Preparation
@@ -30,10 +41,11 @@ DURABLE_WORKFLOW_WORKER_TOKEN=<worker-role credential>
 EXAMPLE_STATE_DIRECTORY=<absolute writable local state directory>
 ```
 
-Create the state directory as your local UID, then run:
+The checkout and state directory must be writable by UID/GID `1000:1000`, used
+by these containers. Start the FPM profile with:
 
 ```bash
-docker compose --env-file /private/example.env up --build -d
+docker compose --env-file /private/example.env -f compose.yaml -f compose.fpm.yaml up --build -d
 ```
 
 The HTTP container receives only the client token. The CLI container receives
@@ -43,17 +55,22 @@ Never rewrite a shared client using request headers or an authenticated user's
 token. Multiple runtime authorities need independently configured clients or
 separate application processes.
 
-For the FPM baseline:
+For the optional Octane profile:
 
 ```bash
-docker compose --env-file /private/example.env -f compose.yaml -f compose.fpm.yaml up --build -d
+docker compose --env-file /private/example.env up --build -d
 ```
 
-Both modes use two HTTP workers, one durable CLI worker and nginx with the same
+Both modes use four HTTP workers, one durable CLI worker and nginx with the same
 OPcache and cached configuration. The application allocation totals two CPUs
 and 1 GiB with no swap: HTTP 0.9 CPU/640 MiB, CLI 1 CPU/320 MiB, nginx
 0.1 CPU/64 MiB. Provision and report the separate Server/database allocation.
 These limits are qualification settings, not a general capacity promise.
+
+Synchronous query requests occupy HTTP workers while awaiting their result.
+Size the HTTP pool for that waiting time as well as request CPU. The FPM
+configuration gives in-flight requests a bounded 35-second process-control
+grace period during reload. The durable CLI worker remains independent.
 
 The checked-in `runtime/roadrunner.yaml` enables the HTTP pool and local control
 RPC. The generated starter configuration also starts a jobs pool, which this
@@ -121,9 +138,12 @@ manually repair history. After the replacement completes, `after` requires the
 whole original prefix, unchanged deadline fields and exact typed result. Delete
 the temporary checkpoint when the control ends.
 
-One actual [SIGKILL and cold replacement control](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6175531934)
+One actual [SIGKILL and cold replacement control](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6222923826)
 passes with the same original run, complete history prefix and unchanged
-deadlines. It does not qualify cache expiry, eviction or runtime connection loss.
+deadlines. Separate [cache and connection controls](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6223066356)
+cover expiry, capacity eviction and supervised recovery after API connection
+loss. The latter replaces the CLI process three times, so it does not establish
+recovery within one process.
 
 History-cache defaults remain 100 entries/300 seconds. The existing SDK validates
 capacity and TTL, with a 3600-second TTL ceiling. `EXAMPLE_HISTORY_CAPACITY` and

@@ -6,6 +6,16 @@
         "image": "durableworkflow/server@sha256:b3c53408dfadb0e029d66775cc1764af350d0bc3e200bda1ada219cba8fecea2",
         "workflow_version": "2.5.22"
     },
+    "services": {
+        "mysql": {
+            "version": "8.4.11",
+            "image": "mysql@sha256:24989179f58856db763f418010c1169fecc944e3ec1ea7e921572d83eb070f70"
+        },
+        "redis": {
+            "version": "7.4.11",
+            "image": "redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499"
+        }
+    },
     "tools": {
         "k6": "grafana/k6@sha256:98305727d160c065e1da695619c40ea4becbc3e116a3842da2d6027970e428c2",
         "node": "node@sha256:0e5f906573693feaa1e21057ebdcfdb5bd5021f050b2dc7c9deceb629c7da2a8"
