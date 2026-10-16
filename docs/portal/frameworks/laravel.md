@@ -192,6 +192,8 @@ Rollback is also per runtime: stop new service starts and send new IDs back to
 embedded v2, while service workers finish or explicitly terminate the runs that
 the service namespace already owns.
 
+<span id="service-mode"></span>
+
 ## Build the service-mode form as Laravel services
 
 Both handler classes are resolved from Laravel's container. Constructor
