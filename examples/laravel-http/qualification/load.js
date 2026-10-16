@@ -67,6 +67,10 @@ function request(user, path, name, method = 'GET', body, expected = 200, remaini
         tags: {name}, redirects: 0,
     });
     timings[name].add(response.timings.duration);
+    if (response.status !== expected) {
+        console.error(JSON.stringify({phase: 'request_failed', name, request_id: requestId,
+            status: response.status, error_code: response.error_code, timings: response.timings}));
+    }
     requireCheck(response.status === expected, `${name} returned expected status`);
     requireCheck(header(response, 'X-Request-Id') === requestId, 'request context is isolated');
     requireCheck(header(response, 'X-Example-User') === user, 'user context is isolated');

@@ -206,6 +206,12 @@ Octane/FPM, FPM/Octane, then an FPM drift recheck and mixed soak. Separate warmu
 from measured offers and keep CLI settings identical. Report context/start/status latency separately from the
 poll-observed workflow latency; the latter includes the declared 250ms status
 poll interval. Sample every app/backend/tool role through drain and verification.
+Both proxies emit JSON request IDs and connection/header/response timings without
+request bodies or authorization headers. A failed driver request records the
+same ID, status, error code and k6 transport timings. Correlate these records with
+component CPU, throttling, memory and queue state before attributing a timeout to
+the application, backend or load generator. These diagnostics do not relax the
+offered schedule or original deadlines.
 Include offered/completed/failed/unfinished operations, measured drain, timer
 due-to-resume latency, per-completion CPU, aggregate steady/peak memory, history
 bytes/requests and cache diagnostics. Reject OOM, swapping or growing backlog as
