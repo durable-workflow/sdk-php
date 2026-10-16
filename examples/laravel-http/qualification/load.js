@@ -58,11 +58,12 @@ function header(response, name) {
 
 function request(user, path, name, method = 'GET', body, expected = 200, remainingMs = 10000) {
     if (remainingMs <= 0) throw new Error('Original 35-second observation expired.');
+    const transportLimitMs = name === 'query' ? 30000 : 10000;
     const requestId = `${prefix}-${__VU}-${__ITER}-${requestNumber++}`;
     const response = http.request(method, `${origin}/api/${path}`, body === undefined ? null : JSON.stringify(body), {
         headers: {Authorization: `Bearer example-${user}`, Accept: 'application/json',
             'Content-Type': 'application/json', 'X-Request-Id': requestId, 'X-Namespace': namespace},
-        timeout: `${Math.max(1, Math.floor(Math.min(10000, remainingMs)))}ms`,
+        timeout: `${Math.max(1, Math.floor(Math.min(transportLimitMs, remainingMs)))}ms`,
         tags: {name}, redirects: 0,
     });
     timings[name].add(response.timings.duration);

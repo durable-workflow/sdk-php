@@ -184,6 +184,10 @@ the last offer. Every expected admission, terminal result and context read is
 counted. Dropped offers, HTTP/check failures, incomplete originals, OOM or
 restarts invalidate a successful comparison.
 
+A query request may use up to 30 seconds, capped by the original workflow's
+remaining observation budget. Other requests retain their ten-second transport
+cap. No request resets or extends the original 35-second observer.
+
 Set `EXAMPLE_ORIGIN`, `DURABLE_WORKFLOW_NAMESPACE`, a fresh `EXAMPLE_RUN_PREFIX`
 and `EXAMPLE_SUMMARY_PATH` in the tool container. Freeze its image digest and
 limits as well as application/backend roles. `EXAMPLE_DURATION_SECONDS` selects
