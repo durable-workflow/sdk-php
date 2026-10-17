@@ -1,6 +1,6 @@
 # Laravel HTTP hosting qualification: interim report
 
-These observations were collected October 16, 2026. Each result retains its
+These observations were collected October 16–17, 2026. Each result retains its
 original application profile. The current four-worker candidate is runtime
 source `e81b7c80e8854c7ce97fbd2e95e7ce17c8f10772`; earlier two-worker results
 use `f027697c83e753f708386d3487746c13a9a8c1e5`.
@@ -19,14 +19,44 @@ Its compatible library fix is now included in the newly published Server
 selected below. Fresh affected HTTP and hosting acceptance remain pending.
 No final hosting-capacity or Octane performance recommendation is established.
 
-## Next published backend
+## Current published backend
 
-The next cohort selects Server 2.8.7 / `964f9e3d`, immutable image index
+The October 17 cohort selects Server 2.8.7 / `964f9e3d`, immutable image index
 `27c08e15`, with normally installed Workflow 2.5.32 / `78075b6f`.
 The application, SDK lock, HTTP pools, workload, original deadlines and backend
 allocations remain unchanged from the last four-CPU API profile. That Server
 release has its own source, image and ordinary upgrade acceptance. It does not
 qualify these HTTP measurements. All earlier failed originals remain failed.
+
+The [fresh functional controls](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6243029697)
+verify all 166 normally installed SDK files and the exact application source.
+FPM passes alternating request identities, namespace refusals, five lifecycle
+originals, four cold typed reads, eager/lazy resolution and real master reloads.
+The initial 30-second warm run completes 30 workflows and 180 context requests
+with zero errors, drops, repairs or retried tasks.
+
+| Independent control | Original outcomes | Stopped cache: hit / miss / eviction / forced cold |
+| --- | --- | --- |
+| TTL 1 second, capacity 100 | One completes with exact history prefix, values and deadlines | 0 / 3 / 1 / 1 |
+| Capacity 1, TTL 300 seconds | Two complete with exact prefixes, values and deadlines | 0 / 6 / 3 / 4 |
+| Ten-second API outage | Same original completes within its original 90-second cutoff | 0 / 1 / 0 / 0, final replacement only |
+
+These four originals have sixteen completed first-attempt tasks and zero
+repairs, retries or pending tasks. Actual process settings and loaded Laravel
+configuration are checked before cache admission. The outage causes three
+supervised CLI replacements and leaves one stale registration. It does not
+establish recovery within one process. A separate deliberate CLI SIGKILL also
+passes same-original cold recovery with the eight-event final history and
+unchanged deadlines. Normal stacks deregister fully and stop without OOM or
+automatic restarts; intentional crash/outage results retain their stated limits.
+
+The first intended expiry control accidentally used the default TTL 300 because
+the experiment helper's exported defaults overrode Compose's requested settings.
+Its workflow completed, but its expiry assertion failed. A second setup was
+retired before business admission. After correcting only that helper, the fresh
+cache controls above verify the effective settings before starting new originals.
+Application and vendor bytes are unchanged. The earlier attempts remain
+unqualified for their intended cache settings.
 
 ## Method and remaining qualification
 
@@ -48,7 +78,7 @@ swap. Its reported CPU was AMD EPYC Rome. Component limits are:
 | HTTP application | 0.9 | 640 MiB |
 | Durable CLI worker | 1 | 320 MiB |
 | Application nginx | 0.1 | 64 MiB |
-| Separate Server API | 2 | 1 GiB |
+| Separate Server API | 2 in the earlier pairs, 4 in the October 17 cohort | 1 GiB |
 | Separate MySQL | 1 | 2 GiB |
 | Separate Server queue worker | 0.2 | 384 MiB |
 | Separate Server maintenance | 0.2 | 128 MiB |
@@ -136,6 +166,59 @@ They are not substituted for the final published tuple's measurements.
 Fresh repetitions and reload soaks are required after the corrected package is
 published and qualified in its normal Server consumer. Earlier results keep
 their original application/backend identities and outcomes.
+
+### Published 2.8.7 four-worker FPM run
+
+The October 17 mixed run uses the published backend above, unchanged application
+runtime `e81b7c80`, four HTTP workers and the four-CPU API allocation. It **fails**:
+
+| Observation | Result |
+| --- | ---: |
+| Admitted originals | 265 of 300 required |
+| Observed completed / cancelled | 201 / 51 |
+| Completed context requests | 1,743 of 1,800 required |
+| Dropped offers | 92 |
+| Canonical repairs | 82 |
+| Canonical completed / cancelled / waiting | 210 / 51 / 4 |
+
+Both real master reloads replace all four HTTP workers. All 51 observed
+cancellation requests and 51 signal requests return their expected 204, and
+102 query replies pass their committed-activity checks. The earlier cancellation
+deadlock is not observed in this run. That scoped result does not qualify the
+load target or establish a cause for the remaining backlog and repairs.
+
+The original driver also has a separate failure: two iterations start outside
+the offered window, fail its boundary assertions and trigger immediate threshold
+abort at about 302 seconds. Thirteen observers are interrupted before the declared
+36-second drain finishes. The independent audit then correctly refuses an
+unfinished signal original. Those transport interruptions are not attributed to
+a runtime crash. Dropped offers and repairs independently keep this run failed.
+
+A later read finds 82 distinct completed workflow tasks with one repair and one
+attempt each. Sampled repaired tasks waited four to six seconds before their
+first lease. This does not establish why they waited. All 265 activities complete
+once in the recorded canonical audit; original run/execution deadline offsets
+remain exact. The API records 521.84 CPU seconds, without CPU throttling; the
+application records 84.08 CPU seconds. There is no OOM, swap or sampled host CPU
+steal. Every normal role exits 0 without automatic restarts, all registrations
+are removed, and the stack is retired.
+
+The prospective driver correction refuses late admissions without inventing
+replacement offers and evaluates failures after the original observers drain.
+The 35-second per-original observer, 36-second drain, rates, VU limits and all
+success thresholds remain unchanged. This original is not rerun or relabeled.
+Fresh load acceptance remains required after the correction and diagnosis.
+
+The synthetic [drain regression](check-load-drain.sh) exercises the actual k6
+driver against an HTTP fixture, not a workflow runtime. Five originals each
+remain pending for four seconds during a five-second offered window. A separate
+case injects one HTTP failure at the last context request. The old driver aborts
+with only two terminal observations; the corrected driver observes all five and
+still returns k6's failure exit 99. Its clean case observes all five and exits 0.
+CI runs both cases without credentials or a real backend. Run locally with Docker
+and jq using `LOAD_DRAIN_RUN=unique-drain-test bash qualification/check-load-drain.sh`
+from the example directory. This check does not qualify load, durable execution
+or a higher capacity.
 
 ### Four-worker FPM mixed runs
 

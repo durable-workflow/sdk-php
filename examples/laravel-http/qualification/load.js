@@ -35,9 +35,9 @@ export const options = {
             preAllocatedVUs: 16, maxVUs: 16, exec: 'workflow', gracefulStop: '36s'},
     },
     thresholds: {
-        checks: [{threshold: 'rate==1', abortOnFail: true}],
-        run_errors: [{threshold: 'count==0', abortOnFail: true}],
-        http_req_failed: [{threshold: 'rate==0', abortOnFail: true}],
+        checks: ['rate==1'],
+        run_errors: ['count==0'],
+        http_req_failed: ['rate==0'],
         dropped_iterations: ['count==0'],
         workflow_offered: [`count==${seconds}`],
         workflow_admitted: [`count==${seconds}`],
@@ -88,12 +88,11 @@ export function context() {
     errors.add(0);
     boundaryIterations.add(0);
     const index = execution.scenario.iterationInTest;
-    if (index >= seconds * 6) {
+    if (index >= seconds * 6 || Date.now() >= execution.scenario.startTime + seconds * 1000) {
         boundaryIterations.add(1);
         return;
     }
     try {
-        requireCheck(Date.now() < execution.scenario.startTime + seconds * 1000, 'context offer is inside the selected window');
         const user = index % 2 === 0 ? 'alpha' : 'beta';
         const response = request(user, 'context', 'context');
         const value = response.json();
@@ -128,7 +127,8 @@ export function workflow() {
     cancelled.add(0);
     boundaryIterations.add(0);
     const index = execution.scenario.iterationInTest;
-    if (index >= seconds) {
+    const started = Date.now();
+    if (index >= seconds || started >= execution.scenario.startTime + seconds * 1000) {
         boundaryIterations.add(1);
         return;
     }
@@ -136,10 +136,8 @@ export function workflow() {
     const user = index % 2 === 0 ? 'alpha' : 'beta';
     const kind = mixed ? ['short', 'short', 'timer', 'signal', 'cancel'][index % 5] : 'short';
     const id = `${prefix}-${kind}-${index}`;
-    const started = Date.now();
     const cutoff = started + 35000;
     try {
-        requireCheck(started < execution.scenario.startTime + seconds * 1000, 'workflow offer is inside the selected window');
         const acceptance = request(user, 'workflows', 'start', 'POST', {id, kind}, 201, cutoff - Date.now()).json();
         admitted.add(1);
         console.log(JSON.stringify({phase: 'admitted', user, kind, id, workflow_id: acceptance.workflow_id, run_id: acceptance.run_id, started}));

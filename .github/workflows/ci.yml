@@ -369,6 +369,22 @@ jobs:
           WORKFLOW_REQUIREMENT: ${{ matrix.workflow }}
         run: scripts/ci/laravel-service-transition-smoke.sh
 
+  load-driver-drain:
+    name: Laravel HTTP load-driver drain
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LOAD_DRAIN_RUN: dw-load-drain-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+      - name: Preserve original observers after an independent HTTP failure
+        run: bash examples/laravel-http/qualification/check-load-drain.sh
+      - name: Remove only this test's HTTP fixture, generator and network
+        if: always()
+        run: bash examples/laravel-http/qualification/check-load-drain.sh cleanup
+
   analyse:
     runs-on: ubuntu-latest
     timeout-minutes: 10
