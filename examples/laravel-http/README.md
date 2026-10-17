@@ -8,8 +8,8 @@ Qualification is incomplete. The mixed-load FPM runs failed, including a
 confirmed backend command deadlock tracked in [Workflow #819](https://github.com/durable-workflow/workflow/issues/819).
 This recipe has no production-capacity or performance recommendation yet.
 The published runtime now selected by [the input manifest](qualification/inputs.json)
-includes that library fix. Fresh affected HTTP and four-worker hosting
-qualification remain pending; earlier mixed-load results are unchanged.
+includes that library fix. Fresh affected cancellation and signal controls pass.
+Full hosting qualification remains pending; earlier mixed-load results are unchanged.
 
 The application uses the normally published SDK. Durable workflow and activity
 polling runs in the separate `durable-workflow:worker` CLI container. HTTP
@@ -69,6 +69,13 @@ OPcache and cached configuration. The application allocation totals two CPUs
 and 1 GiB with no swap: HTTP 0.9 CPU/640 MiB, CLI 1 CPU/320 MiB, nginx
 0.1 CPU/64 MiB. Provision and report the separate Server/database allocation.
 These limits are qualification settings, not a general capacity promise.
+
+The prospective two-worker configuration adds `-f compose.worker-pool.yaml` to
+either Compose command. It runs two independent CLI workers at 0.5 CPU/160 MiB
+each, keeping their combined allocation at 1 CPU/320 MiB. Each process has its
+own registration and history cache. A small normal-SDK diagnostic supports
+testing this configuration next; its Laravel lifecycle, mixed-load and paired
+hosting acceptance remain pending. See the report before choosing it.
 
 Synchronous query requests occupy HTTP workers while awaiting their result.
 Size the HTTP pool for that waiting time as well as request CPU. The FPM

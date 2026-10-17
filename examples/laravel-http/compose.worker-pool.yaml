@@ -1,0 +1,7 @@
+services:
+  worker:
+    deploy:
+      replicas: 2
+    cpus: 0.5
+    mem_limit: 160m
+    memswap_limit: 160m

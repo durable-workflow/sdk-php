@@ -16,7 +16,8 @@ All 166 installed SDK source/resource/schema files match its released commit.
 confirmed backend command deadlock is tracked in
 [Workflow #819](https://github.com/durable-workflow/workflow/issues/819).
 Its compatible library fix is now included in the newly published Server
-selected below. Fresh affected HTTP and hosting acceptance remain pending.
+selected below. Fresh affected cancellation and signal controls pass; full
+hosting acceptance remains pending.
 No final hosting-capacity or Octane performance recommendation is established.
 
 ## Current published backend
@@ -64,6 +65,12 @@ Both profiles use nginx, four HTTP workers and one independent Artisan durable
 worker in the current recipe. The completed short comparisons below used two
 HTTP workers. Fresh paired comparisons and both complete mixed soaks are still
 required for the current recipe and corrected backend.
+
+The prospective [worker-pool override](../compose.worker-pool.yaml) runs two
+independent Artisan workers at 0.5 CPU/160 MiB each. HTTP and nginx allocations
+are unchanged, keeping the application total at 2 CPUs/1 GiB. Its actual Laravel
+lifecycle, shutdown, cache, recovery and load checks must run on that new
+configuration. Earlier one-worker results do not qualify it.
 
 Each cell starts with a fresh Server database, namespace, role
 credentials, application storage and processes. OPcache, cached configuration,
@@ -219,6 +226,44 @@ CI runs both cases without credentials or a real backend. Run locally with Docke
 and jq using `LOAD_DRAIN_RUN=unique-drain-test bash qualification/check-load-drain.sh`
 from the example directory. This check does not qualify load, durable execution
 or a higher capacity.
+
+### Published-SDK claim diagnostic
+
+A separate local diagnostic uses normal SDK 2.4.2 / `25d796ad` with all 166
+source/resource/schema files verified, the published 2.8.7 backend and the same
+pure SDK workflow/activity definitions as this application. It exercises eight
+fresh short, timer, signal/query and cancellation originals per configuration.
+It does not run Laravel HTTP, offered load or a performance comparison. The
+shared four-CPU host has existing swap and is not reserved for measurements.
+
+| Functional observation | One CLI process | Two CLI processes |
+| --- | ---: | ---: |
+| Combined SDK limit | 0.5 CPU / 320 MiB | 0.5 CPU / 320 MiB |
+| Completed / cancelled originals | 7 / 1 | 7 / 1 |
+| Completed / cancelled tasks | 30 / 1 | 30 / 1 |
+| Completed activities | 8 | 8 |
+| Repairs / retried tasks / final registrations | 0 / 0 / 0 | 0 / 0 / 0 |
+| Maximum observed ready-to-first-lease interval | 5.402 seconds | 2.009 seconds |
+| Longest of three actual queries | 5.451 seconds | 2.046 seconds |
+
+Both batches retain their original 35-second observers, exact typed results and
+600/900-second deadlines. Each process stops normally without OOM or automatic
+restart. Guzzle's ordinary request/statistics hooks record only allowlisted
+poll identities, paths, timing and response metadata. Vendor bytes are unchanged.
+
+In the one-process original, the worker spends 13.478 seconds in actual HTTP
+requests during the approximately 13.6-second active interval. Its workflow
+poll replies during queued work take at most 0.470 seconds. The initial held
+query poll returns `task_queue_changed`; subsequent sweeps lease workflow tasks.
+The 5.451-second query observes `workflow_task_pending` until its own workflow's
+pending resume completes, then receives the expected answer. These observations
+support trying independent worker concurrency. They do not identify the cause
+of the earlier mixed-run repairs, prove a missing wakeup, or establish a gain
+or capacity. The two-process batch is fresh evidence, not a rescue of the first.
+
+The next hosting qualification uses the prospective pool override, the corrected
+driver and fresh application processes. Original rates, budgets and success
+thresholds stay fixed. Full hosting acceptance remains open.
 
 ### Four-worker FPM mixed runs
 
