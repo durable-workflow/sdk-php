@@ -7,6 +7,9 @@ tested configuration, resource costs and limits.
 Qualification is incomplete. The mixed-load FPM runs failed, including a
 confirmed backend command deadlock tracked in [Workflow #819](https://github.com/durable-workflow/workflow/issues/819).
 This recipe has no production-capacity or performance recommendation yet.
+The published runtime now selected by [the input manifest](qualification/inputs.json)
+includes that library fix. Fresh affected HTTP and four-worker hosting
+qualification remain pending; earlier mixed-load results are unchanged.
 
 The application uses the normally published SDK. Durable workflow and activity
 polling runs in the separate `durable-workflow:worker` CLI container. HTTP

@@ -4,17 +4,29 @@ These observations were collected October 16, 2026. Each result retains its
 original application profile. The current four-worker candidate is runtime
 source `e81b7c80e8854c7ce97fbd2e95e7ce17c8f10772`; earlier two-worker results
 use `f027697c83e753f708386d3487746c13a9a8c1e5`.
-The [input manifest](inputs.json), [Composer lock](../composer.lock) and
-[RoadRunner configuration](../runtime/roadrunner.yaml) identify the published
-packages, images and HTTP pool. The SDK is installed normally from Composer.
+The [Composer lock](../composer.lock) and
+[RoadRunner configuration](../runtime/roadrunner.yaml) identify the application
+packages and HTTP pool. The October 16 results use published Server 2.8.6,
+immutable image index `b3c53408`, with Workflow 2.5.22. The [input manifest](inputs.json)
+now selects the next backend cohort; it does not retuple those observations.
+The SDK is installed normally from Composer.
 All 166 installed SDK source/resource/schema files match its released commit.
 
 **Qualification is incomplete.** The four-worker FPM mixed runs failed. A
 confirmed backend command deadlock is tracked in
 [Workflow #819](https://github.com/durable-workflow/workflow/issues/819).
-Its compatible library fix is published, but the affected Server image and
-hosting comparison still need qualification.
+Its compatible library fix is now included in the newly published Server
+selected below. Fresh affected HTTP and hosting acceptance remain pending.
 No final hosting-capacity or Octane performance recommendation is established.
+
+## Next published backend
+
+The next cohort selects Server 2.8.7 / `964f9e3d`, immutable image index
+`27c08e15`, with normally installed Workflow 2.5.32 / `78075b6f`.
+The application, SDK lock, HTTP pools, workload, original deadlines and backend
+allocations remain unchanged from the last four-CPU API profile. That Server
+release has its own source, image and ordinary upgrade acceptance. It does not
+qualify these HTTP measurements. All earlier failed originals remain failed.
 
 ## Method and remaining qualification
 

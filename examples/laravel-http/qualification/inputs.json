@@ -1,10 +1,10 @@
 {
     "platform": "linux/amd64",
     "server": {
-        "version": "2.8.6",
-        "commit": "f2775db76a21f21f3b64e751a4e3222e0badf4f5",
-        "image": "durableworkflow/server@sha256:b3c53408dfadb0e029d66775cc1764af350d0bc3e200bda1ada219cba8fecea2",
-        "workflow_version": "2.5.22"
+        "version": "2.8.7",
+        "commit": "964f9e3d5b713376757294fd38c2cb3b4cba1400",
+        "image": "ghcr.io/durable-workflow/server@sha256:27c08e15c86e897703c2bab87dcf61847946b379876b15d0a3a491bc91cf30cd",
+        "workflow_version": "2.5.32"
     },
     "services": {
         "mysql": {
