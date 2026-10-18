@@ -85,8 +85,8 @@ jobs:
           cargo build --manifest-path build/rust-worker/Cargo.toml --message-format=json > build/rust-build.json
           binary="$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "dw-polyglot-cancellation-activity") | .executable // empty' build/rust-build.json)"
           test -x "$binary"
-          curl -fsSL "https://github.com/durable-workflow/cli/releases/download/$CLI_VERSION/dw.phar" -o build/dw.phar
-          curl -fsSL "https://github.com/durable-workflow/cli/releases/download/$CLI_VERSION/SHA256SUMS" -o build/SHA256SUMS
+          curl --proto '=https' --proto-redir '=https' -fsSL "https://github.com/durable-workflow/cli/releases/download/$CLI_VERSION/dw.phar" -o build/dw.phar
+          curl --proto '=https' --proto-redir '=https' -fsSL "https://github.com/durable-workflow/cli/releases/download/$CLI_VERSION/SHA256SUMS" -o build/SHA256SUMS
           awk '$2 == "dw.phar" {print}' build/SHA256SUMS > build/cli-checksum
           test "$(wc -l < build/cli-checksum)" = 1
           (cd build && sha256sum -c cli-checksum)
