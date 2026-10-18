@@ -1341,7 +1341,7 @@ final class Client implements WorkflowClientInterface
      * @param list<string> $workflowTypes
      * @param list<string> $activityTypes
      * @param list<string> $capabilities
-     * @param array<string, array{
+     * @param array<array-key, array{
      *     queries: list<string>,
      *     query_contracts: list<array{name: string, parameters: list<array{
      *         name: string,
@@ -1378,7 +1378,7 @@ final class Client implements WorkflowClientInterface
      *     }>}>
      * }>|null $workflowCommandContracts
      * @param array<string, array<string, bool|string>>|null $capabilityManifest
-     * @param array<string, string>|null $workflowDefinitionFingerprints
+     * @param array<array-key, string>|null $workflowDefinitionFingerprints
      * @return array<string, mixed>
      * @throws InvalidArgumentException
      */
@@ -1431,8 +1431,8 @@ final class Client implements WorkflowClientInterface
             'sdk_version' => SdkIdentity::registration(),
             'supported_workflow_types' => $workflowTypes,
             'supported_activity_types' => $activityTypes,
-            'workflow_command_contracts' => $workflowCommandContracts,
-            'workflow_definition_fingerprints' => $workflowDefinitionFingerprints,
+            'workflow_command_contracts' => $this->registrationMap($workflowCommandContracts),
+            'workflow_definition_fingerprints' => $this->registrationMap($workflowDefinitionFingerprints),
             'capabilities' => $capabilities,
             'capability_manifest' => $capabilityManifest,
             'max_concurrent_workflow_tasks' => $maxConcurrentWorkflowTasks,
@@ -2627,6 +2627,17 @@ final class Client implements WorkflowClientInterface
     private function requestId(string $prefix): string
     {
         return $prefix.'-'.bin2hex(random_bytes(16));
+    }
+
+    /**
+     * Keep a keyed registration map from becoming a JSON list for names 0, 1, ...
+     *
+     * @param array<array-key, mixed>|null $values
+     * @return array<array-key, mixed>|\stdClass|null
+     */
+    private function registrationMap(?array $values): array|\stdClass|null
+    {
+        return $values !== null && $values !== [] && array_is_list($values) ? (object) $values : $values;
     }
 
     /**

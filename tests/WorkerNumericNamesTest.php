@@ -11,6 +11,7 @@ use DurableWorkflow\Attribute\Update;
 use DurableWorkflow\Attribute\Workflow;
 use DurableWorkflow\Client;
 use DurableWorkflow\Exception\InvalidWorkerDefinition;
+use DurableWorkflow\Testing\WorkerTestHarness;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
@@ -82,10 +83,8 @@ final class WorkerNumericNamesTest extends TestCase
     {
         $transport = $this->transport();
         $worker = $this->worker($transport);
-        $handlers = [];
         foreach (['0', '17', '017', 'ordinary'] as $name) {
             $handler = static fn (ActivityContext $context): string => $name;
-            $handlers[$name] = $handler;
             $worker->registerWorkflow($name, static fn (WorkflowContext $context): string => $name);
             $worker->registerActivity($name, $handler);
         }
@@ -93,8 +92,9 @@ final class WorkerNumericNamesTest extends TestCase
         $worker->run(0);
         self::assertSame(['0', '17', '017', 'ordinary'], $worker->contracts()['workflows']);
         self::assertSame(['0', '17', '017', 'ordinary'], $worker->contracts()['activities']);
+        $harness = new WorkerTestHarness($worker);
         foreach (['0', '17', '017', 'ordinary'] as $name) {
-            self::assertSame($handlers[$name], $worker->registeredHandler('activity', $name));
+            self::assertSame($name, $harness->runActivity($name));
         }
     }
 
