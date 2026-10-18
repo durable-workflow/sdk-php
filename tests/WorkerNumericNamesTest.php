@@ -73,7 +73,7 @@ final class WorkerNumericNamesTest extends TestCase
 
         $worker->validate();
         $contract = $worker->contracts()['workflow_commands']['ordinary'];
-        self::assertSame([$name], $contract[$kind.'s']);
+        self::assertSame([$name], $contract[$kind === 'query' ? 'queries' : $kind.'s']);
         self::assertSame($name, $contract[$kind.'_contracts'][0]['name']);
         self::assertSame('value', $contract[$kind.'_contracts'][0]['parameters'][0]['name']);
     }
