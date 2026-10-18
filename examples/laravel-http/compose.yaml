@@ -1,0 +1,90 @@
+name: dw-service-http-example
+
+x-application: &application
+  image: ${EXAMPLE_RUNTIME_IMAGE:-dw-service-http-example:local}
+  build: ./runtime
+  user: "1000:1000"
+  working_dir: /app
+  environment: &environment
+    APP_ENV: production
+    APP_DEBUG: "false"
+    APP_KEY: ${APP_KEY:?Set a local application key before starting}
+    EXAMPLE_STORAGE_PATH: /state/storage
+    CACHE_STORE: file
+    SESSION_DRIVER: array
+    LOG_CHANNEL: single
+    COMPOSER_HOME: /tmp/composer
+    DURABLE_WORKFLOW_RUNTIME_URL: ${DURABLE_WORKFLOW_RUNTIME_URL:?Set the runtime origin or complete Cloud runtime URL}
+    DURABLE_WORKFLOW_NAMESPACE: ${DURABLE_WORKFLOW_NAMESPACE:?Set the fixed runtime namespace}
+    DURABLE_WORKFLOW_TASK_QUEUE: service-http-example
+    EXAMPLE_EAGER: ${EXAMPLE_EAGER:-false}
+    EXAMPLE_HISTORY_CAPACITY: ${EXAMPLE_HISTORY_CAPACITY:-100}
+    EXAMPLE_HISTORY_TTL: ${EXAMPLE_HISTORY_TTL:-300}
+  volumes:
+    - .:/app
+    - ${EXAMPLE_STATE_DIRECTORY:-./data}:/state
+
+services:
+  prepare:
+    <<: *application
+    command: >-
+      sh -ec 'mkdir -p /state/storage/framework/cache/data /state/storage/framework/sessions
+      /state/storage/framework/views /state/storage/logs;
+      composer install --no-dev --no-interaction --prefer-dist;
+      test -x rr || php vendor/bin/rr get-binary --filter=2025.1.15 --no-interaction;
+      php artisan octane:install --server=roadrunner --no-interaction;
+      php artisan config:clear;
+      php artisan config:cache'
+    cpus: 1
+    mem_limit: 1g
+    memswap_limit: 1g
+
+  http-app:
+    <<: *application
+    environment:
+      <<: *environment
+      DURABLE_WORKFLOW_CLIENT_TOKEN: ${DURABLE_WORKFLOW_CLIENT_TOKEN:?Set the application client-role credential}
+      EXAMPLE_PROCESS_ROLE: http
+    init: true
+    stop_signal: SIGTERM
+    command: php artisan octane:start --server=roadrunner --rr-config=/app/runtime/roadrunner.yaml --host=0.0.0.0 --rpc-host=127.0.0.1 --port=8000 --workers=4 --max-requests=500
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    cpus: 0.9
+    mem_limit: 640m
+    memswap_limit: 640m
+
+  worker:
+    <<: *application
+    environment:
+      <<: *environment
+      DURABLE_WORKFLOW_WORKER_TOKEN: ${DURABLE_WORKFLOW_WORKER_TOKEN:?Set a separate worker-role credential}
+      EXAMPLE_PROCESS_ROLE: worker
+    init: true
+    stop_signal: SIGTERM
+    command: php artisan durable-workflow:worker
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 65s
+    cpus: 1
+    mem_limit: 320m
+    memswap_limit: 320m
+
+  nginx:
+    image: nginx@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
+    user: "1000:1000"
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    ports:
+      - "127.0.0.1:${EXAMPLE_HTTP_PORT:-8088}:8080"
+    volumes:
+      - ./runtime/nginx-octane.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - http-app
+    restart: unless-stopped
+    cpus: 0.1
+    mem_limit: 64m
+    memswap_limit: 64m
