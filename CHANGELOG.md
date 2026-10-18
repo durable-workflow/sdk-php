@@ -12,7 +12,7 @@ project follows [Semantic Versioning](https://semver.org/).
   before acquiring more work. Task and cancellation authority deadlines retain
   their original bounds.
 
-## [2.5.0-rc.1] - 2026-10-18
+## [2.5.0] - 2026-10-18
 
 ### Added
 
