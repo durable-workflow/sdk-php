@@ -10,17 +10,24 @@ cleanup() {
     docker network rm "$run" >/dev/null 2>&1 || true
 }
 if [[ "${1:-}" == cleanup ]]; then cleanup; exit; fi
+selected=${1:-all}
+[[ "$selected" == all || "$selected" == mixed || "$selected" == reload-latency ]]
 report=$(mktemp -d)
 trap 'cleanup; rm -r -- "$report"' EXIT
 docker network create "$run" >/dev/null
-for mode in clean failure; do
+for mode in clean failure mixed reload-latency; do
+    if [[ "$selected" != all && "$selected" != "$mode" ]]; then continue; fi
     fail=false
+    mixed=false
+    context_delay=0
     expected_exit=0
     if [[ "$mode" == failure ]]; then fail=true; expected_exit=99; fi
+    if [[ "$mode" == mixed ]]; then mixed=true; fi
+    if [[ "$mode" == reload-latency ]]; then context_delay=1800; fi
     docker run --detach --name "$run-http" --network "$run" --network-alias mock \
         --user 1000:1000 --cpus .2 --memory 128m --memory-swap 128m \
         --mount "type=bind,source=$PWD,target=/fixture,readonly" \
-        -e "FAIL_LAST_CONTEXT=$fail" "$node" node /fixture/load-drain-fixture.mjs >/dev/null
+        -e "FAIL_LAST_CONTEXT=$fail" -e "CONTEXT_DELAY_MS=$context_delay" "$node" node /fixture/load-drain-fixture.mjs >/dev/null
     ready=false
     for attempt in $(seq 1 20); do
         if docker exec "$run-http" node -e 'fetch("http://127.0.0.1:8080/test-state").then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))'; then
@@ -35,7 +42,7 @@ for mode in clean failure; do
         --mount "type=bind,source=$PWD,target=/fixture,readonly" \
         -e K6_NO_USAGE_REPORT=true -e EXAMPLE_ORIGIN=http://mock:8080 \
         -e DURABLE_WORKFLOW_NAMESPACE=drain-test -e "EXAMPLE_RUN_PREFIX=drain-$mode" \
-        -e EXAMPLE_DURATION_SECONDS=5 -e EXAMPLE_MIXED=false -e EXAMPLE_SUMMARY_PATH=/tmp/drain-summary.json \
+        -e EXAMPLE_DURATION_SECONDS=5 -e "EXAMPLE_MIXED=$mixed" -e EXAMPLE_SUMMARY_PATH=/tmp/drain-summary.json \
         --entrypoint k6 "$k6" run --quiet /fixture/load.js > "$report/$mode.log" 2>&1
     result=$?
     set -e
@@ -45,10 +52,11 @@ for mode in clean failure; do
     jq -c '{admitted:.metrics.workflow_admitted.values.count,terminal:.metrics.workflow_terminal.values.count,errors:.metrics.run_errors.values.count}' "$report/$mode.json"
     cat "$report/$mode-state.json"
     jq -e --arg mode "$mode" '.metrics.workflow_admitted.values.count==5 and
-        .metrics.workflow_terminal.values.count==5 and .metrics.context_completed.values.count==(if $mode=="clean" then 30 else 29 end) and
-        .metrics.dropped_iterations.values.count==0 and .metrics.run_errors.values.count==(if $mode=="clean" then 0 else 1 end) and
+        .metrics.workflow_terminal.values.count==5 and .metrics.context_completed.values.count==(if $mode=="failure" then 29 else 30 end) and
+        .metrics.dropped_iterations.values.count==0 and .metrics.run_errors.values.count==(if $mode=="failure" then 1 else 0 end) and
         .example.original_observer_seconds==35 and .example.outer_drain_seconds==36' "$report/$mode.json" >/dev/null
-    jq -e '.admitted==5 and .observed==5 and .contexts==30 and .lateAdmissions==0' "$report/$mode-state.json" >/dev/null
+    jq -e --arg mode "$mode" '.admitted==5 and .observed==5 and .contexts==30 and .lateAdmissions==0 and .earlyActions==0 and
+        (if $mode=="mixed" then .activityQueries==4 else .activityQueries==0 end)' "$report/$mode-state.json" >/dev/null
     printf '%s: all five originals observed through the declared drain; k6 exit %s\n' "$mode" "$result"
     docker rm "$run-k6" >/dev/null
     docker stop --time 2 "$run-http" >/dev/null

@@ -30,7 +30,7 @@ const seenPids = new Set();
 export const options = {
     scenarios: {
         context: {executor: 'constant-arrival-rate', rate: 6, timeUnit: '1s', duration: `${seconds}s`,
-            preAllocatedVUs: 8, maxVUs: 8, exec: 'context', gracefulStop: '36s'},
+            preAllocatedVUs: 16, maxVUs: 16, exec: 'context', gracefulStop: '36s'},
         workflows: {executor: 'constant-arrival-rate', rate: 1, timeUnit: '1s', duration: `${seconds}s`,
             preAllocatedVUs: 16, maxVUs: 16, exec: 'workflow', gracefulStop: '36s'},
     },
@@ -120,6 +120,17 @@ function waitStatus(user, id, expected, cutoff) {
     throw new Error('Original 35-second observation expired.');
 }
 
+function waitForActivity(user, id, cutoff) {
+    while (Date.now() < cutoff) {
+        const phase = request(user, `workflows/${id}/query`, 'query', 'POST', undefined, 200, cutoff - Date.now()).json().phase;
+        requireCheck(Date.now() <= cutoff, 'original observer has not expired');
+        requireCheck(['activity', 'waiting'].includes(phase), 'query returns a known activity phase');
+        if (phase === 'waiting') return;
+        sleep(Math.min(0.25, Math.max(0, cutoff - Date.now()) / 1000));
+    }
+    throw new Error('Activity was not committed within the original 35-second observation.');
+}
+
 export function workflow() {
     errors.add(0);
     failed.add(0);
@@ -144,8 +155,7 @@ export function workflow() {
         requireCheck(acceptance.workflow_id === `${user}-${id}` && typeof acceptance.run_id === 'string', 'accepted identity matches');
         if (kind === 'signal' || kind === 'cancel') {
             waitStatus(user, id, 'waiting', cutoff);
-            const phase = request(user, `workflows/${id}/query`, 'query', 'POST', undefined, 200, cutoff - Date.now()).json();
-            requireCheck(phase.phase === 'waiting', 'query observes committed activity');
+            waitForActivity(user, id, cutoff);
             request(user, `workflows/${id}/${kind === 'signal' ? 'signal' : 'cancel'}`,
                 kind === 'signal' ? 'signal' : 'cancel', 'POST', undefined, 204, cutoff - Date.now());
         }

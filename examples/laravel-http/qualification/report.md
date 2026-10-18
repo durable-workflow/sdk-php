@@ -1,6 +1,6 @@
 # Laravel HTTP hosting qualification: interim report
 
-These observations were collected October 16–17, 2026. Each result retains its
+These observations were collected October 16–18, 2026. Each result retains its
 original application profile. The current four-worker candidate is runtime
 source `e81b7c80e8854c7ce97fbd2e95e7ce17c8f10772`; earlier two-worker results
 use `f027697c83e753f708386d3487746c13a9a8c1e5`.
@@ -69,11 +69,40 @@ required for the current recipe and corrected backend.
 The prospective [worker-pool override](../compose.worker-pool.yaml) runs two
 independent Artisan workers at 0.5 CPU/160 MiB each. HTTP and nginx allocations
 are unchanged, keeping the application total at 2 CPUs/1 GiB. Its actual Laravel
-lifecycle, shutdown, cache, recovery and load checks must run on that new
-configuration. Earlier one-worker results do not qualify it.
+lifecycle, cold typed reads, request isolation, eager/lazy resolution and real
+reload controls pass on published Server 2.8.7. A 30-second warmup completes
+30 workflows and 180 context requests with zero errors, drops, repairs or
+retries. Both CLI processes stop cleanly and deregister. Cache, crash, outage
+and complete load acceptance remain pending for this configuration.
 
-Each cell starts with a fresh Server database, namespace, role
-credentials, application storage and processes. OPcache, cached configuration,
+The first two-process mixed soak at `79b0a6f` remains **failed**. It admits all
+300 workflows and completes every activity once, but observes only 239 completed
+and 59 cancelled workflows. Two query assertions abort their observers, leaving
+two runs waiting at the post-run read. Three context requests are dropped.
+All 4,046 HTTP responses have their expected status, with zero repairs, retried
+tasks, OOMs or swapping. Both scheduled reloads replace all four FPM workers.
+The eleven stack roles subsequently exit zero, without automatic restarts or
+remaining registrations.
+
+The driver incorrectly treats run status `waiting` as proof of a committed
+activity. That status can also mean waiting for the activity itself. The revised
+driver waits for this example's explicit query phase within the original
+35-second cutoff, then sends the signal or cancellation. Its context pool also
+increases from eight to sixteen virtual users after the generator reports
+exhausting its reserve during reload. The offered rates, application limits,
+deadlines, drain and zero-error/drop requirements stay unchanged. These are new
+qualification inputs. They do not turn the previous run into a pass.
+
+Constructed HTTP controls reproduce both old-driver failures. The revised
+driver observes all five originals in the mixed phase transition, with no
+signal or cancellation before readiness. A separate 1.8-second context-delay
+control completes all thirty context requests without dropped offers. The
+clean drain control passes, and the injected-error control still fails with
+exit 99 after observing every original. These are driver controls, not a
+successful application soak.
+
+Each cell starts with a fresh Server database, namespace and role-credential
+records, application storage and processes. OPcache, cached configuration,
 the dependency lock, RoadRunner binary and generator stay fixed. RoadRunner
 enables only its HTTP pool and loopback control RPC. It has no jobs pool.
 
@@ -96,7 +125,7 @@ The application allocation totals 2 CPUs and 1 GiB. The backend and tools are
 additional resources, not hidden inside that limit.
 
 Each cell has a 30-second warmup. Measured windows offer six context reads and
-one new one-activity workflow per second for 120 seconds, with eight context and
+one new one-activity workflow per second for 120 seconds, with sixteen context and
 16 workflow virtual users. Each original keeps its 35-second observer,
 600-second run deadline and 900-second execution deadline. The drain limit is
 36 seconds. Independent installed PHP readers verify the exact int64, null and
