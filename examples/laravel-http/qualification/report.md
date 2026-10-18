@@ -101,6 +101,17 @@ clean drain control passes, and the injected-error control still fails with
 exit 99 after observing every original. These are driver controls, not a
 successful application soak.
 
+The sixteen-context-user driver subsequently passes the fresh FPM mixed cohort
+with 300 terminal originals, 1,800 contexts and zero errors, drops or repairs.
+Its separate Octane cohort completes all 300 originals and every response check,
+but drops twelve context offers at reload, so that run stays failed. The generator
+again reports exhausting its reserve; actual context latency reaches 4.002 seconds,
+within the existing ten-second HTTP limit. The next driver reserves 64 context
+users, covering six requests per second through that unchanged limit. Its
+constructed latency control now waits nine seconds. Both profiles need fresh
+load qualification with this common input. No request or workflow deadline,
+offered rate, application allocation or success threshold is increased.
+
 Each cell starts with a fresh Server database, namespace and role-credential
 records, application storage and processes. OPcache, cached configuration,
 the dependency lock, RoadRunner binary and generator stay fixed. RoadRunner
@@ -125,7 +136,7 @@ The application allocation totals 2 CPUs and 1 GiB. The backend and tools are
 additional resources, not hidden inside that limit.
 
 Each cell has a 30-second warmup. Measured windows offer six context reads and
-one new one-activity workflow per second for 120 seconds, with sixteen context and
+one new one-activity workflow per second for 120 seconds, with 64 context and
 16 workflow virtual users. Each original keeps its 35-second observer,
 600-second run deadline and 900-second execution deadline. The drain limit is
 36 seconds. Independent installed PHP readers verify the exact int64, null and

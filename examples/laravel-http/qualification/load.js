@@ -8,6 +8,9 @@ const namespace = __ENV.DURABLE_WORKFLOW_NAMESPACE;
 const prefix = __ENV.EXAMPLE_RUN_PREFIX;
 const seconds = Number(__ENV.EXAMPLE_DURATION_SECONDS || 120);
 const mixed = __ENV.EXAMPLE_MIXED === 'true';
+const requestTimeoutMs = 10000;
+// Deliver the fixed context rate while every still-on-time request is in flight.
+const contextUsers = 6 * (requestTimeoutMs / 1000) + 4;
 if (!namespace || !/^[a-zA-Z0-9_-]{1,30}$/.test(prefix || '') || !Number.isInteger(seconds) || seconds < 5 || seconds > 300) {
     throw new Error('Select a fixed namespace, fresh prefix and a 5–300 second offered window.');
 }
@@ -30,7 +33,7 @@ const seenPids = new Set();
 export const options = {
     scenarios: {
         context: {executor: 'constant-arrival-rate', rate: 6, timeUnit: '1s', duration: `${seconds}s`,
-            preAllocatedVUs: 16, maxVUs: 16, exec: 'context', gracefulStop: '36s'},
+            preAllocatedVUs: contextUsers, maxVUs: contextUsers, exec: 'context', gracefulStop: '36s'},
         workflows: {executor: 'constant-arrival-rate', rate: 1, timeUnit: '1s', duration: `${seconds}s`,
             preAllocatedVUs: 16, maxVUs: 16, exec: 'workflow', gracefulStop: '36s'},
     },
@@ -58,7 +61,7 @@ function header(response, name) {
 
 function request(user, path, name, method = 'GET', body, expected = 200, remainingMs = 10000) {
     if (remainingMs <= 0) throw new Error('Original 35-second observation expired.');
-    const transportLimitMs = name === 'query' ? 30000 : 10000;
+    const transportLimitMs = name === 'query' ? 30000 : requestTimeoutMs;
     const requestId = `${prefix}-${__VU}-${__ITER}-${requestNumber++}`;
     const response = http.request(method, `${origin}/api/${path}`, body === undefined ? null : JSON.stringify(body), {
         headers: {Authorization: `Bearer example-${user}`, Accept: 'application/json',
@@ -180,6 +183,7 @@ export function workflow() {
 
 export function handleSummary(data) {
     data.example = {prefix, namespace, duration_seconds: seconds, context_rate: 6, workflow_rate: 1,
+        context_virtual_users: contextUsers, context_request_timeout_ms: requestTimeoutMs,
         mixed, original_observer_seconds: 35, outer_drain_seconds: 36};
     return {stdout: JSON.stringify(data), [__ENV.EXAMPLE_SUMMARY_PATH || '/proof/summary.json']: JSON.stringify(data)};
 }

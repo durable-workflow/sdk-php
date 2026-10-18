@@ -23,7 +23,7 @@ for mode in clean failure mixed reload-latency; do
     expected_exit=0
     if [[ "$mode" == failure ]]; then fail=true; expected_exit=99; fi
     if [[ "$mode" == mixed ]]; then mixed=true; fi
-    if [[ "$mode" == reload-latency ]]; then context_delay=1800; fi
+    if [[ "$mode" == reload-latency ]]; then context_delay=9000; fi
     docker run --detach --name "$run-http" --network "$run" --network-alias mock \
         --user 1000:1000 --cpus .2 --memory 128m --memory-swap 128m \
         --mount "type=bind,source=$PWD,target=/fixture,readonly" \

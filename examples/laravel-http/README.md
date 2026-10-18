@@ -210,8 +210,10 @@ unchanged identities/deadlines.
 
 `qualification/load.js` uses the open-source k6 constant-arrival-rate executor:
 six authenticated context reads and one new original workflow per second. Run
-the tool separately from the fixed application allocation. Preallocate all eight
-context and sixteen workflow virtual users; a missed offer still fails the run.
+the tool separately from the fixed application allocation. Preallocate 64 context
+and sixteen workflow virtual users; a missed offer still fails the run. The
+context reserve covers six requests per second through their existing ten-second
+transport limit. It does not increase the offered rate or extend a request.
 The request sequence is finite. A generator tick at the window boundary is
 counted separately and cannot admit an extra workflow or context read. A late
 planned offer fails before HTTP admission. Each original has
