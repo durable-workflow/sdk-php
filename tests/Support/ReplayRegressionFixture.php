@@ -238,6 +238,8 @@ final class ReplayRegressionFixture
         $worker = Worker::create($client, 'regression-corpus');
         if ($workflowType === 'golden.attributed-stateful') {
             $worker->register(ReplayRegressionAttributedStatefulWorkflow::class);
+        } elseif ($workflowType === '0') {
+            $worker->register(ReplayRegressionNumericWorkflow::class);
         } else {
             $worker->registerWorkflow($workflowType, self::workflow($workflowType));
         }
@@ -659,7 +661,7 @@ final class ReplayRegressionFixture
     }
 }
 
-final class ReplayRegressionAttributedStatefulWorkflow
+class ReplayRegressionAttributedStatefulWorkflow
 {
     private int $invocation = 0;
 
@@ -672,5 +674,14 @@ final class ReplayRegressionAttributedStatefulWorkflow
             'run_id' => $context->runId,
             'invocation' => ++$this->invocation,
         ];
+    }
+}
+
+final class ReplayRegressionNumericWorkflow extends ReplayRegressionAttributedStatefulWorkflow
+{
+    #[Workflow('0')]
+    public function run(WorkflowContext $context): array
+    {
+        return parent::run($context);
     }
 }
