@@ -317,7 +317,7 @@ final class ReplayRegressionTransport implements Transport
     }
 }
 
-final class ReplayRegressionAttributedStatefulWorkflow
+class ReplayRegressionAttributedStatefulWorkflow
 {
     private int $invocation = 0;
 
@@ -330,6 +330,15 @@ final class ReplayRegressionAttributedStatefulWorkflow
             'run_id' => $context->runId,
             'invocation' => ++$this->invocation,
         ];
+    }
+}
+
+final class ReplayRegressionNumericWorkflow extends ReplayRegressionAttributedStatefulWorkflow
+{
+    #[WorkflowHandler('0')]
+    public function run(WorkflowContext $context): array
+    {
+        return parent::run($context);
     }
 }
 
@@ -493,6 +502,8 @@ final class ReplayRegressionConsumer
         );
         if ($workflowType === 'golden.attributed-stateful') {
             $worker->register(ReplayRegressionAttributedStatefulWorkflow::class);
+        } elseif ($workflowType === '0') {
+            $worker->register(ReplayRegressionNumericWorkflow::class);
         } else {
             $worker->registerWorkflow($workflowType, self::workflow($workflowType));
         }

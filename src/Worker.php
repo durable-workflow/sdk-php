@@ -63,15 +63,15 @@ final class Worker
     private const MAX_TRANSIENT_RETRY_DELAY_SECONDS = 5.0;
     private const TRANSIENT_RETRY_SLEEP_SLICE_SECONDS = 0.1;
 
-    /** @var array<string, HandlerDefinition> */
+    /** @var array<array-key, HandlerDefinition> */
     private array $workflows = [];
-    /** @var array<string, HandlerDefinition> */
+    /** @var array<array-key, HandlerDefinition> */
     private array $activities = [];
-    /** @var array<string, array<string, HandlerDefinition>> */
+    /** @var array<array-key, array<array-key, HandlerDefinition>> */
     private array $queries = [];
-    /** @var array<string, array<string, callable(mixed ...$arguments): mixed>> */
+    /** @var array<array-key, array<array-key, callable(mixed ...$arguments): mixed>> */
     private array $signals = [];
-    /** @var array<string, array<string, HandlerDefinition>> */
+    /** @var array<array-key, array<array-key, HandlerDefinition>> */
     private array $updates = [];
     private bool $shutdownRequested = false;
     private bool $registered = false;
@@ -202,24 +202,24 @@ final class Worker
 
         foreach ($discovered as $handlers) {
             foreach ($handlers->workflows as $name => $handler) {
-                $this->registerWorkflowDefinition($name, $handler);
+                $this->registerWorkflowDefinition((string) $name, $handler);
             }
             foreach ($handlers->activities as $name => $handler) {
-                $this->registerActivityDefinition($name, $handler);
+                $this->registerActivityDefinition((string) $name, $handler);
             }
             foreach ($handlers->queries as $workflowType => $queries) {
                 foreach ($queries as $name => $handler) {
-                    $this->registerQueryDefinition($workflowType, $name, $handler);
+                    $this->registerQueryDefinition((string) $workflowType, (string) $name, $handler);
                 }
             }
             foreach ($handlers->signals as $workflowType => $signals) {
                 foreach ($signals as $name => $handler) {
-                    $this->declareSignal($workflowType, $name, $handler);
+                    $this->declareSignal((string) $workflowType, (string) $name, $handler);
                 }
             }
             foreach ($handlers->updates as $workflowType => $updates) {
                 foreach ($updates as $name => $handler) {
-                    $this->registerUpdateDefinition($workflowType, $name, $handler);
+                    $this->registerUpdateDefinition((string) $workflowType, (string) $name, $handler);
                 }
             }
         }
@@ -515,27 +515,27 @@ final class Worker
     public function validate(): void
     {
         foreach ($this->workflows as $name => $handler) {
-            $this->assertValidDeclarationName($name, 'workflow');
+            $this->assertValidDeclarationName((string) $name, 'workflow');
             $this->assertHandlerContext($handler->contract(), WorkflowContext::class, "workflow {$name}");
         }
         foreach ($this->activities as $name => $handler) {
-            $this->assertValidDeclarationName($name, 'activity');
+            $this->assertValidDeclarationName((string) $name, 'activity');
             $this->assertHandlerContext($handler->contract(), ActivityContext::class, "activity {$name}");
         }
         foreach ($this->queries as $workflowType => $handlers) {
             foreach ($handlers as $name => $handler) {
-                $this->assertValidDeclarationName($name, 'query');
+                $this->assertValidDeclarationName((string) $name, 'query');
                 $this->assertHandlerContext($handler->contract(), QueryContext::class, "query {$workflowType}.{$name}");
             }
         }
         foreach ($this->signals as $workflowType => $handlers) {
             foreach (array_keys($handlers) as $name) {
-                $this->assertValidDeclarationName($name, 'signal');
+                $this->assertValidDeclarationName((string) $name, 'signal');
             }
         }
         foreach ($this->updates as $workflowType => $handlers) {
             foreach ($handlers as $name => $handler) {
-                $this->assertValidDeclarationName($name, 'update');
+                $this->assertValidDeclarationName((string) $name, 'update');
                 $this->assertHandlerContext(
                     $handler->contract(),
                     QueryContext::class,
@@ -551,14 +551,14 @@ final class Worker
      * @return array{
      *     workflows: list<string>,
      *     activities: list<string>,
-     *     workflow_commands: array<string, mixed>
+     *     workflow_commands: array<array-key, mixed>
      * }
      */
     public function contracts(): array
     {
         return [
-            'workflows' => array_keys($this->workflows),
-            'activities' => array_keys($this->activities),
+            'workflows' => $this->declarationNames($this->workflows),
+            'activities' => $this->declarationNames($this->activities),
             'workflow_commands' => $this->workflowCommandContracts(),
         ];
     }
@@ -622,8 +622,8 @@ final class Worker
                 return $this->client->registerWorker(
                     $this->workerId,
                     $this->taskQueue,
-                    array_keys($this->workflows),
-                    array_keys($this->activities),
+                    $this->declarationNames($this->workflows),
+                    $this->declarationNames($this->activities),
                     [
                         'query_tasks',
                         'workflow_updates',
@@ -3562,7 +3562,18 @@ final class Worker
     }
 
     /**
-     * @return array<string, array{
+     * Restore string declaration names after PHP coerces numeric dictionary keys.
+     *
+     * @param array<array-key, mixed> $declarations
+     * @return list<string>
+     */
+    private function declarationNames(array $declarations): array
+    {
+        return array_map('strval', array_keys($declarations));
+    }
+
+    /**
+     * @return array<array-key, array{
      *     queries: list<string>,
      *     query_contracts: list<array{name: string, parameters: list<array{
      *         name: string,
@@ -3602,17 +3613,17 @@ final class Worker
     private function workflowCommandContracts(): array
     {
         $contracts = [];
-        foreach (array_keys($this->workflows) as $workflowType) {
+        foreach ($this->declarationNames($this->workflows) as $workflowType) {
             $queries = $this->queries[$workflowType] ?? [];
             $signals = $this->signals[$workflowType] ?? [];
             $updates = $this->updates[$workflowType] ?? [];
 
             $contracts[$workflowType] = [
-                'queries' => array_keys($queries),
+                'queries' => $this->declarationNames($queries),
                 'query_contracts' => $this->commandHandlerContracts($queries, QueryContext::class),
-                'signals' => array_keys($signals),
+                'signals' => $this->declarationNames($signals),
                 'signal_contracts' => $this->commandHandlerContracts($signals),
-                'updates' => array_keys($updates),
+                'updates' => $this->declarationNames($updates),
                 'update_contracts' => $this->commandHandlerContracts($updates, QueryContext::class),
                 'update_validators' => [],
             ];
@@ -3621,13 +3632,13 @@ final class Worker
         return $contracts;
     }
 
-    /** @return array<string, string> */
+    /** @return array<array-key, string> */
     private function workflowDefinitionFingerprints(): array
     {
         $fingerprints = [];
 
         foreach ($this->workflows as $workflowType => $handler) {
-            $fingerprint = WorkflowDefinitionFingerprint::forHandler($workflowType, $handler);
+            $fingerprint = WorkflowDefinitionFingerprint::forHandler((string) $workflowType, $handler);
 
             if ($fingerprint !== null) {
                 $fingerprints[$workflowType] = $fingerprint;
@@ -3638,7 +3649,7 @@ final class Worker
     }
 
     /**
-     * @param array<string, HandlerDefinition|callable> $handlers
+     * @param array<array-key, HandlerDefinition|callable> $handlers
      * @param class-string|null $contextClass
      * @return list<array{name: string, parameters: list<array{
      *     name: string,
@@ -3686,7 +3697,7 @@ final class Worker
             }
 
             $contracts[] = [
-                'name' => $name,
+                'name' => (string) $name,
                 'parameters' => $parameters,
             ];
         }
@@ -3706,32 +3717,32 @@ final class Worker
         foreach ($discoveries as $discovery) {
             try {
                 foreach ($discovery->workflows as $name => $handler) {
-                    $this->assertUnique($workflows, $name, 'workflow');
+                    $this->assertUnique($workflows, (string) $name, 'workflow');
                     $workflows[$name] = $handler;
                 }
                 foreach ($discovery->activities as $name => $handler) {
-                    $this->assertUnique($activities, $name, 'activity');
+                    $this->assertUnique($activities, (string) $name, 'activity');
                     $activities[$name] = $handler;
                 }
                 foreach ($discovery->queries as $workflowType => $handlers) {
                     $queries[$workflowType] ??= [];
                     foreach ($handlers as $name => $handler) {
-                        $this->assertUnique($queries[$workflowType], $name, 'query');
+                        $this->assertUnique($queries[$workflowType], (string) $name, 'query');
                         $queries[$workflowType][$name] = $handler;
                     }
                 }
                 foreach ($discovery->signals as $workflowType => $handlers) {
                     $signals[$workflowType] ??= [];
                     foreach ($handlers as $name => $handler) {
-                        $this->assertSignalNameIsNotRuntimeReserved($name);
-                        $this->assertUnique($signals[$workflowType], $name, 'signal');
+                        $this->assertSignalNameIsNotRuntimeReserved((string) $name);
+                        $this->assertUnique($signals[$workflowType], (string) $name, 'signal');
                         $signals[$workflowType][$name] = $handler;
                     }
                 }
                 foreach ($discovery->updates as $workflowType => $handlers) {
                     $updates[$workflowType] ??= [];
                     foreach ($handlers as $name => $handler) {
-                        $this->assertUnique($updates[$workflowType], $name, 'update');
+                        $this->assertUnique($updates[$workflowType], (string) $name, 'update');
                         $updates[$workflowType][$name] = $handler;
                     }
                 }
@@ -3852,7 +3863,7 @@ final class Worker
         }
     }
 
-    /** @param array<string, mixed> $registry */
+    /** @param array<array-key, mixed> $registry */
     private function assertUnique(array $registry, string $name, string $kind): void
     {
         if (isset($registry[$name])) {
