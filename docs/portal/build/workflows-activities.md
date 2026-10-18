@@ -67,9 +67,6 @@ fresh-construction correction is not released.
 
 ## Call a registered service
 
-This authoring API is introduced in the PHP SDK 2.3 prerelease. Install it with
-`composer require durable-workflow/sdk:^2.3@RC`.
-
 Use `serviceOperation()` inside a workflow to invoke a Server service endpoint.
 The call pauses until Server records its result. Worker restarts replay the same
 call identity and result without submitting another operation.
@@ -109,6 +106,13 @@ options stable for open runs, or guard changes with workflow version markers.
 Service operations currently run sequentially outside cancellation scopes and
 operation groups. The worker reports `service_operations_unavailable` when the
 connected runtime does not advertise the command.
+
+With cooperative cancellation enabled, a completion-waiting call can deliver
+cancellation at its original service-call boundary. The runtime must advertise
+`nexus_cooperative_cancellation` for the `workflow_run` binding. The caller
+keeps its original cleanup deadline while its owned target finishes cleanup.
+Admission-only calls do not gain this waiting boundary, and returning an
+existing workflow does not grant cancellation ownership over it.
 
 ## Fan out durable work and join it once
 
