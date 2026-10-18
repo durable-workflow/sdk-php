@@ -440,22 +440,25 @@ required constructor arguments are instantiated automatically. Pass any PSR-11
 `ContainerInterface` as the third argument to `Worker::create()` when handlers
 have application dependencies.
 
-Attributed workflow classes have a replay-scoped lifecycle. Registration
-captures a clean handler template, then each workflow task replay, query, and
-update runs on a fresh shallow clone. Mutable properties on the workflow object
-therefore cannot cross workflow IDs, runs, or replay attempts, while
-constructor-injected collaborators retain their configured identity. Keep
-workflow-local mutable state directly on the handler; injected collaborators
-are shared services and must not be used to hold execution-local state.
-Workflow handler classes must remain cloneable.
+Registration retains a workflow handler template. Each attributed workflow task
+replay, query, and update runs on a shallow clone of it. The constructor is not
+rerun, and shallow cloning does not automatically isolate nested objects or referenced properties.
+Mutating constructor-created object state can therefore affect another workflow
+ID, run or replay. This limitation remains open in
+[#16](https://github.com/durable-workflow/sdk-php/issues/16).
+
+Keep workflow-local state in method variables. Create temporary mutable objects
+inside each workflow, query or update invocation. During workflow replay,
+reconstruct durable values through `WorkflowContext`. Injected collaborators retain their configured
+identity and must not hold execution-local state. Workflow handler classes must
+remain cloneable. The proposed fresh-construction API in #111 is not released.
 
 Activity services have worker-scoped lifetimes instead: their resolved instance
 is reused for activity tasks, so they can retain clients and other service
 resources. The explicit `registerWorkflow()`, `registerQuery()`, and
 `registerUpdate()` low-level methods also invoke the supplied callable as-is;
-state captured by such a callable remains owned by the application. Use
-attribute-based workflow registration when the SDK should provide replay-state
-isolation.
+state captured by such a callable remains owned by the application. Neither
+registration style makes shared mutable objects safe workflow-local storage.
 
 Pass a PSR-3 `LoggerInterface` with the named `logger` argument; lifecycle,
 retry, shutdown, and handler failures then use the application's normal logging

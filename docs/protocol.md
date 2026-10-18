@@ -100,13 +100,18 @@ interleaved workflow executions cannot consume one another's execution state.
 Generator-returning workflow handlers are not part of the 2.0 service-mode
 contract.
 
-Attribute-discovered workflow entry points, queries, and updates receive a fresh
+Attribute-discovered workflow entry points, queries, and updates receive a
 shallow clone of the registered workflow handler template for every invocation.
-The template retains constructor-injected collaborators, but mutable properties
-on the workflow handler always begin at their registration-time values. Activity
-handlers are different: the worker invokes the resolved activity service
-instance directly across tasks. Low-level callable registrations likewise keep
-the lifetime and captured state of the callable supplied by the application.
+The SDK does not rerun the constructor. Nested objects and referenced properties can remain
+shared under [PHP's cloning rules](https://www.php.net/manual/en/language.oop5.cloning.php),
+including constructor-created state and injected collaborators. This does not
+provide complete workflow-state isolation. Keep execution-local state in method
+variables and construct temporary objects inside each invocation. The remaining
+handler-lifetime defect is tracked in [#16](https://github.com/durable-workflow/sdk-php/issues/16).
+
+Activity handlers use the resolved activity service instance directly across
+tasks. Low-level callable registrations keep the lifetime and captured state
+of the callable supplied by the application.
 
 The runtime fetches all paginated history before replay. Activity handlers can
 heartbeat and observe cancellation. Query handlers receive immutable committed

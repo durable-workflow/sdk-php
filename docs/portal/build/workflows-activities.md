@@ -51,6 +51,20 @@ $worker->registerWorkflow(
 
 The sequence, type, and details of context operations are durable. Changing them while old histories are still running can raise `NonDeterministicWorkflow`. Deploy replay-compatible code or drain incompatible histories before removing an old branch.
 
+## Keep invocation state local
+
+Create execution-local variables and temporary mutable objects inside the
+workflow method. Workflow replay reconstructs durable values through `WorkflowContext`.
+Apply the same rule to queries and updates.
+
+The released SDK shallow-clones attributed workflow handlers without rerunning
+their constructors. Constructor-created nested objects and referenced
+properties can remain shared across workflows and replay attempts. Do not use
+them, injected services, static properties or captured shared objects for
+execution-local mutable state. This handler-lifetime limitation remains open in
+[#16](https://github.com/durable-workflow/sdk-php/issues/16); the proposed
+fresh-construction correction is not released.
+
 ## Call a registered service
 
 This authoring API is introduced in the PHP SDK 2.3 prerelease. Install it with
