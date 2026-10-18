@@ -12,6 +12,15 @@ project follows [Semantic Versioning](https://semver.org/).
   before acquiring more work. Task and cancellation authority deadlines retain
   their original bounds.
 
+## [2.5.0] - 2026-10-18
+
+### Added
+
+- Replay cooperative cancellation at an original completion-waiting Nexus
+  service call. Cooperative workers advertise support for the owned
+  `workflow_run` binding. Delivery requires a compatible runtime and preserves
+  the original cancellation request and cleanup deadline.
+
 ## [2.4.2] - 2026-10-15
 
 ### Fixed
