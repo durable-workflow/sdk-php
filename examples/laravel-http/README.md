@@ -4,12 +4,13 @@ This application runs with nginx/PHP-FPM or optional Laravel Octane and
 RoadRunner. The [qualification report](qualification/report.md) records the
 tested configuration, resource costs and limits.
 
-Qualification is incomplete. The mixed-load FPM runs failed, including a
-confirmed backend command deadlock tracked in [Workflow #819](https://github.com/durable-workflow/workflow/issues/819).
-This recipe has no production-capacity or performance recommendation yet.
-The published runtime now selected by [the input manifest](qualification/inputs.json)
-includes that library fix. Fresh affected cancellation and signal controls pass.
-Full hosting qualification remains pending; earlier mixed-load results are unchanged.
+Start with FPM for this recipe. Both documented two-CLI-worker profiles pass
+functional/recovery controls, three short comparison pairs, a baseline recheck
+and mixed-load reload soaks on the pinned tuple. Octane improves small context
+reads but shows no consistent application CPU or workflow-latency gain, while
+using about 185 MiB more charged memory. Production capacity remains
+workload-specific. The [report](qualification/report.md) gives the measured
+costs, limits and earlier failed runs.
 
 The application uses the normally published SDK. Durable workflow and activity
 polling runs in the separate `durable-workflow:worker` CLI container. HTTP
@@ -48,7 +49,7 @@ The checkout and state directory must be writable by UID/GID `1000:1000`, used
 by these containers. Start the FPM profile with:
 
 ```bash
-docker compose --env-file /private/example.env -f compose.yaml -f compose.fpm.yaml up --build -d
+docker compose --env-file /private/example.env -f compose.yaml -f compose.fpm.yaml -f compose.worker-pool.yaml up --build -d
 ```
 
 The HTTP container receives only the client token. The CLI container receives
@@ -61,21 +62,20 @@ separate application processes.
 For the optional Octane profile:
 
 ```bash
-docker compose --env-file /private/example.env up --build -d
+docker compose --env-file /private/example.env -f compose.yaml -f compose.worker-pool.yaml up --build -d
 ```
 
-Both modes use four HTTP workers, one durable CLI worker and nginx with the same
+Both commands use four HTTP workers, two durable CLI workers and nginx with the same
 OPcache and cached configuration. The application allocation totals two CPUs
-and 1 GiB with no swap: HTTP 0.9 CPU/640 MiB, CLI 1 CPU/320 MiB, nginx
+and 1 GiB with no swap: HTTP 0.9 CPU/640 MiB, each CLI 0.5 CPU/160 MiB, nginx
 0.1 CPU/64 MiB. Provision and report the separate Server/database allocation.
 These limits are qualification settings, not a general capacity promise.
 
-The prospective two-worker configuration adds `-f compose.worker-pool.yaml` to
-either Compose command. It runs two independent CLI workers at 0.5 CPU/160 MiB
-each, keeping their combined allocation at 1 CPU/320 MiB. Each process has its
-own registration and history cache. A small normal-SDK diagnostic supports
-testing this configuration next; its Laravel lifecycle, mixed-load and paired
-hosting acceptance remain pending. See the report before choosing it.
+The `compose.worker-pool.yaml` override selects the two-worker configuration
+used in the current results. Each process has its own registration and history
+cache. Omitting that override uses the base recipe's one CLI worker at
+1 CPU/320 MiB, preserving the same combined application allocation. Its earlier
+load outcomes are recorded separately. See the report before choosing a profile.
 
 Synchronous query requests occupy HTTP workers while awaiting their result.
 Size the HTTP pool for that waiting time as well as request CPU. The FPM
@@ -148,12 +148,10 @@ manually repair history. After the replacement completes, `after` requires the
 whole original prefix, unchanged deadline fields and exact typed result. Delete
 the temporary checkpoint when the control ends.
 
-One actual [SIGKILL and cold replacement control](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6222923826)
-passes with the same original run, complete history prefix and unchanged
-deadlines. Separate [cache and connection controls](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6223066356)
-cover expiry, capacity eviction and supervised recovery after API connection
-loss. The latter replaces the CLI process three times, so it does not establish
-recovery within one process.
+Actual [two-worker FPM replacement, cache and connection controls](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6243887984)
+preserve the same original runs, complete history prefixes and unchanged
+deadlines. API connection loss replaces the two CLI processes three and six
+times, respectively, so it does not establish recovery within one process.
 
 History-cache defaults remain 100 entries/300 seconds. The existing SDK validates
 capacity and TTL, with a 3600-second TTL ceiling. `EXAMPLE_HISTORY_CAPACITY` and
@@ -183,6 +181,11 @@ php qualification/cache.php checkpoint fresh-outage /private/outage.json
 # The original observation cutoff continues while it is unavailable.
 php qualification/cache.php resume fresh-outage /private/outage.json
 ```
+
+For the two-worker pool's capacity control, checkpoint four fresh originals
+before releasing any of them, then resume those same four. This fills both
+independent caches. The two-original `eviction` command above exercises one
+CLI worker.
 
 Do not run the three profiles together or reuse a checkpoint. The driver does
 not change the CLI's cache settings, stop services, restart workers or provision

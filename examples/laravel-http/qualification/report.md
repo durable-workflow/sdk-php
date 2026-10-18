@@ -1,374 +1,306 @@
-# Laravel HTTP hosting qualification: interim report
+# Laravel HTTP hosting qualification
 
-These observations were collected October 16–18, 2026. Each result retains its
-original application profile. The current four-worker candidate is runtime
-source `e81b7c80e8854c7ce97fbd2e95e7ce17c8f10772`; earlier two-worker results
-use `f027697c83e753f708386d3487746c13a9a8c1e5`.
-The [Composer lock](../composer.lock) and
-[RoadRunner configuration](../runtime/roadrunner.yaml) identify the application
-packages and HTTP pool. The October 16 results use published Server 2.8.6,
-immutable image index `b3c53408`, with Workflow 2.5.22. The [input manifest](inputs.json)
-now selects the next backend cohort; it does not retuple those observations.
-The SDK is installed normally from Composer.
-All 166 installed SDK source/resource/schema files match its released commit.
+This report covers ordinary PHP-FPM and optional Octane/RoadRunner hosting of
+the Laravel service example. HTTP processes submit and inspect operations.
+Independent Artisan CLI workers execute durable instructions against Server.
+HTTP process reuse does not retain workflow Fibers or eliminate replay.
 
-**Qualification is incomplete.** The four-worker FPM mixed runs failed. A
-confirmed backend command deadlock is tracked in
-[Workflow #819](https://github.com/durable-workflow/workflow/issues/819).
-Its compatible library fix is now included in the newly published Server
-selected below. Fresh affected cancellation and signal controls pass; full
-hosting acceptance remains pending.
-No final hosting-capacity or Octane performance recommendation is established.
+Both profiles pass the bounded functional, recovery and load qualification
+below on the published tuple. Start with FPM for this recipe: the comparison
+does not establish a consistent application CPU or workflow-latency gain from
+Octane, which uses more memory. Production capacity remains workload-specific.
 
-## Current published backend
+## Reproducible inputs
 
-The October 17 cohort selects Server 2.8.7 / `964f9e3d`, immutable image index
-`27c08e15`, with normally installed Workflow 2.5.32 / `78075b6f`.
-The application, SDK lock, HTTP pools, workload, original deadlines and backend
-allocations remain unchanged from the last four-CPU API profile. That Server
-release has its own source, image and ordinary upgrade acceptance. It does not
-qualify these HTTP measurements. All earlier failed originals remain failed.
+The October 18 cohort uses normally installed SDK 2.4.2 / `25d796ad`, published
+Server 2.8.7 / `964f9e3d` / immutable image index `27c08e15`, and Workflow
+2.5.32 / `78075b6f`. All 166 installed SDK source/resource/schema files match
+the released commit. The application source is checked before admission.
+The common load-driver revision is `af741d1`; application runtime/configuration
+remains `e81b7c80`. Later report-only edits do not change those measured bytes.
 
-The [fresh functional controls](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6243029697)
-verify all 166 normally installed SDK files and the exact application source.
-FPM passes alternating request identities, namespace refusals, five lifecycle
-originals, four cold typed reads, eager/lazy resolution and real master reloads.
-The initial 30-second warm run completes 30 workflows and 180 context requests
-with zero errors, drops, repairs or retried tasks.
+The application runs PHP 8.3.35. The [Composer lock](../composer.lock) resolves
+Laravel 12.69.3 and Octane 2.21.0. RoadRunner 2025.1.15 has SHA-256
+`c67dd4dc6d14c0120a7f8a2edcb035eddc693db880d349f3be33a38728b89efb`.
+The lock SHA-256 is
+`a41fe273640b8562608a0c1de468826c1e983e817bf2a056c1b20e00142eec34`.
+The [input manifest](inputs.json) pins backend and measurement tools.
+RoadRunner enables its HTTP pool and loopback control RPC, with no jobs pool.
 
-| Independent control | Original outcomes | Stopped cache: hit / miss / eviction / forced cold |
-| --- | --- | --- |
-| TTL 1 second, capacity 100 | One completes with exact history prefix, values and deadlines | 0 / 3 / 1 / 1 |
-| Capacity 1, TTL 300 seconds | Two complete with exact prefixes, values and deadlines | 0 / 6 / 3 / 4 |
-| Ten-second API outage | Same original completes within its original 90-second cutoff | 0 / 1 / 0 / 0, final replacement only |
+Both profiles have four HTTP workers. This cohort uses
+[`compose.worker-pool.yaml`](../compose.worker-pool.yaml) for two independent
+CLI workers, each with its own registration and history cache. The default
+Compose recipe has one CLI worker. Results from this pool must not be claimed
+for the one-worker configuration.
 
-These four originals have sixteen completed first-attempt tasks and zero
-repairs, retries or pending tasks. Actual process settings and loaded Laravel
-configuration are checked before cache admission. The outage causes three
-supervised CLI replacements and leaves one stale registration. It does not
-establish recovery within one process. A separate deliberate CLI SIGKILL also
-passes same-original cold recovery with the eight-event final history and
-unchanged deadlines. Normal stacks deregister fully and stop without OOM or
-automatic restarts; intentional crash/outage results retain their stated limits.
-
-The first intended expiry control accidentally used the default TTL 300 because
-the experiment helper's exported defaults overrode Compose's requested settings.
-Its workflow completed, but its expiry assertion failed. A second setup was
-retired before business admission. After correcting only that helper, the fresh
-cache controls above verify the effective settings before starting new originals.
-Application and vendor bytes are unchanged. The earlier attempts remain
-unqualified for their intended cache settings.
-
-## Method and remaining qualification
-
-Both profiles use nginx, four HTTP workers and one independent Artisan durable
-worker in the current recipe. The completed short comparisons below used two
-HTTP workers. Fresh paired comparisons and both complete mixed soaks are still
-required for the current recipe and corrected backend.
-
-The prospective [worker-pool override](../compose.worker-pool.yaml) runs two
-independent Artisan workers at 0.5 CPU/160 MiB each. HTTP and nginx allocations
-are unchanged, keeping the application total at 2 CPUs/1 GiB. Its actual Laravel
-lifecycle, cold typed reads, request isolation, eager/lazy resolution and real
-reload controls pass on published Server 2.8.7. A 30-second warmup completes
-30 workflows and 180 context requests with zero errors, drops, repairs or
-retries. Both CLI processes stop cleanly and deregister. Cache, crash, outage
-and complete load acceptance remain pending for this configuration.
-
-The first two-process mixed soak at `79b0a6f` remains **failed**. It admits all
-300 workflows and completes every activity once, but observes only 239 completed
-and 59 cancelled workflows. Two query assertions abort their observers, leaving
-two runs waiting at the post-run read. Three context requests are dropped.
-All 4,046 HTTP responses have their expected status, with zero repairs, retried
-tasks, OOMs or swapping. Both scheduled reloads replace all four FPM workers.
-The eleven stack roles subsequently exit zero, without automatic restarts or
-remaining registrations.
-
-The driver incorrectly treats run status `waiting` as proof of a committed
-activity. That status can also mean waiting for the activity itself. The revised
-driver waits for this example's explicit query phase within the original
-35-second cutoff, then sends the signal or cancellation. Its context pool also
-increases from eight to sixteen virtual users after the generator reports
-exhausting its reserve during reload. The offered rates, application limits,
-deadlines, drain and zero-error/drop requirements stay unchanged. These are new
-qualification inputs. They do not turn the previous run into a pass.
-
-Constructed HTTP controls reproduce both old-driver failures. The revised
-driver observes all five originals in the mixed phase transition, with no
-signal or cancellation before readiness. A separate 1.8-second context-delay
-control completes all thirty context requests without dropped offers. The
-clean drain control passes, and the injected-error control still fails with
-exit 99 after observing every original. These are driver controls, not a
-successful application soak.
-
-The sixteen-context-user driver subsequently passes the fresh FPM mixed cohort
-with 300 terminal originals, 1,800 contexts and zero errors, drops or repairs.
-Its separate Octane cohort completes all 300 originals and every response check,
-but drops twelve context offers at reload, so that run stays failed. The generator
-again reports exhausting its reserve; actual context latency reaches 4.002 seconds,
-within the existing ten-second HTTP limit. The next driver reserves 64 context
-users, covering six requests per second through that unchanged limit. Its
-constructed latency control now waits nine seconds. Both profiles need fresh
-load qualification with this common input. No request or workflow deadline,
-offered rate, application allocation or success threshold is increased.
-
-Each cell starts with a fresh Server database, namespace and role-credential
-records, application storage and processes. OPcache, cached configuration,
-the dependency lock, RoadRunner binary and generator stay fixed. RoadRunner
-enables only its HTTP pool and loopback control RPC. It has no jobs pool.
-
-The measurement host ran Linux/amd64 with eight logical CPUs, 16 GiB RAM and no
-swap. Its reported CPU was AMD EPYC Rome. Component limits are:
+The isolated Linux/amd64 host has eight logical CPUs, 16 GiB RAM, AMD EPYC Rome
+and no swap. Application, backend and tools run in separate containers on that
+host. Backend calls use the internal HTTP network. Each cell starts fresh
+application storage, processes, Server database, namespace and role-credential
+records. The application lock,
+OPcache, cached configuration, backend limits and generator remain fixed.
 
 | Component | CPU | Memory, no swap |
 | --- | ---: | ---: |
 | HTTP application | 0.9 | 640 MiB |
-| Durable CLI worker | 1 | 320 MiB |
+| Two durable CLI workers | 0.5 each | 160 MiB each |
 | Application nginx | 0.1 | 64 MiB |
-| Separate Server API | 2 in the earlier pairs, 4 in the October 17 cohort | 1 GiB |
+| Separate Server API | 4 | 1 GiB |
 | Separate MySQL | 1 | 2 GiB |
 | Separate Server queue worker | 0.2 | 384 MiB |
 | Separate Server maintenance | 0.2 | 128 MiB |
 | Separate Redis | 0.1 | 128 MiB |
 | Separate k6 generator | 0.3 | 512 MiB |
 
-The application allocation totals 2 CPUs and 1 GiB. The backend and tools are
-additional resources, not hidden inside that limit.
+The application total is 2 CPUs / 1 GiB. Backend and tool costs are additional.
 
-Each cell has a 30-second warmup. Measured windows offer six context reads and
-one new one-activity workflow per second for 120 seconds, with 64 context and
-16 workflow virtual users. Each original keeps its 35-second observer,
-600-second run deadline and 900-second execution deadline. The drain limit is
-36 seconds. Independent installed PHP readers verify the exact int64, null and
-Unicode values and histories. SQL checks original identities, first-attempt
-tasks, repairs, pending work and microsecond deadline offsets.
+## Method
 
-The comparison plan orders pairs FPM/Octane, Octane/FPM, FPM/Octane, followed by
-a fresh FPM drift check. Each profile also requires a fresh 300-second mixed
-soak. Its five-original
-cycle contains two short workflows, one timer, one queried/signalled workflow
-and one queried/cancelled workflow. Two real HTTP reloads are requested at
-120 and 240 seconds. Their actual times and replacement worker PIDs are read
-back. Automatic HTTP recycling remains enabled at 500 requests per worker.
+The fixed schedule offers six authenticated context reads and one original
+one-activity workflow per second. Each cell warms up for 30 seconds. Measured
+windows last 120 seconds. Mixed soaks last 300 seconds and cycle two short
+workflows, one timer, one queried/signalled and one queried/cancelled original.
+Real HTTP reloads occur at 120 and 240 seconds during a soak. The actual
+replacement PIDs are checked. Both profiles configure a 500-request recycle limit.
 
-## How to read the measurements
+The driver reserves 64 context VUs and 16 workflow VUs. The context reserve
+covers six offers per second through the existing ten-second transport cap.
+Query requests may take at most 30 seconds, capped by the original observer's
+remaining time. Each original keeps a 35-second observer, 600-second run
+deadline and 900-second execution deadline. The outer drain is 36 seconds.
+No failed or late original is replaced by a new admission.
 
-Context, submission and status timings are separate HTTP operations. Workflow
-latency is observed by polling at 250 ms intervals. It includes backend work
-and that polling delay. Application CPU per terminal workflow includes the
-fixed context workload, variable status polls, nginx and the CLI worker. It is
-not callback CPU or a measure of durable replay savings.
+Independent installed PHP readers verify the exact bigint, null and Unicode
+results and original histories. SQL verifies identities, activity counts,
+first attempts, repairs, pending tasks and microsecond deadline offsets.
+Dropped offers, request/check failures, unfinished originals, OOM, swapping or
+unexpected restarts fail acceptance. Normal cells must deregister fully.
 
-The sampler remains active through drain and verification. The tables' CPU
-deltas cover offered load and its actual drain; the independent post-run
-verification is separate. CPU and throttling use cgroup counters. Process RSS may count shared
-pages more than once. Charged cgroup memory is reported separately. Sampled
-peaks can miss short spikes; cgroup lifetime peaks also include warmup.
-Individual process reads can disappear during recycling and are marked
-unavailable rather than counted as measured zeroes.
+The repeated comparison orders FPM/Octane, Octane/FPM and FPM/Octane, followed
+by a fresh FPM drift cell. All use the same inputs. Successful short windows
+cannot substitute for a mixed soak or recovery test.
 
-Backend access counters measure produced response-body bytes. Workflow poll
-envelopes contain inline history and protocol metadata, so those counts are
-not pure history bytes. Produced bytes can exceed delivered bytes after an
-aborted response. Cache diagnostics are read from the actual stopped worker
-and include that cell's prerequisites, warmup and measured window.
+### Interpreting resource measurements
 
-## Published-package controls
+Context, submission and status timings are separate HTTP operations.
+Workflow latency includes the 250 ms status-poll interval and backend work.
+Application CPU includes the fixed context workload, variable status polls,
+nginx and CLI workers. CPU per completed workflow amortizes that whole workload;
+it does not isolate callback CPU or measure replay savings.
 
-These controls ran on `f027697c` with the earlier two-worker HTTP profile.
-Their linked receipts retain that scope. The changed HTTP pool and backend
-still require their affected controls before final acceptance.
+Sampling covers every application/backend/tool role through drain and
+verification. CPU deltas cover offered load and its actual drain; independent
+post-run verification is separate. Cgroup counters measure CPU/throttling and
+charged memory. Process RSS can double-count shared pages. Sampled peaks may
+miss short spikes; cgroup lifetime peaks also include warmup. Disappearing
+process reads are unavailable, not measured zeroes.
 
-The [lifecycle and cold-replacement receipt](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6222923826)
-covers alternating users, request headers and logs, auth/namespace refusals,
-five lifecycle originals, exact typed reads, eager/lazy SDK resolution and
-HTTP reloads. An actual CLI SIGKILL followed by a fresh worker completes the
-same original with its six-event prefix preserved in the final eight events,
-one activity, five first-attempt tasks, zero repairs and unchanged deadlines.
+Backend counters measure produced response-body bytes, including protocol
+metadata and inline histories. They are not pure history bytes and may exceed
+delivered bytes after an aborted response. Stopped worker cache diagnostics
+include that cell's prerequisites, warmup and measured window. Zero cache hits
+must be reported as zero.
 
-The [cache and connection receipt](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6223066356)
-records these independent controls:
+## Functional controls
 
-| Control | Result | Actual stopped cache counters: hit / miss / eviction / forced cold |
-| --- | --- | --- |
-| TTL 1 second, capacity 100 | One original completes with its full prefix | 0 / 3 / 2 / 0 |
-| Capacity 1, TTL 300 seconds | Two originals complete with their full prefixes | 0 / 6 / 3 / 4 |
-| Actual 10-second API outage | Same original completes within its original 90-second cutoff | 0 / 1 / 0 / 0, final replacement only |
+Request identity, namespace/auth refusal, optional headers and logs, lazy/eager
+SDK resolution, real reloads, five lifecycle originals and four cold typed
+reads pass in the reported source cohorts. The HTTP credential and worker
+credential are separate. Each process keeps one fixed authority.
 
-All four cache/outage originals preserve typed results and exact deadlines,
-with 16 completed first-attempt tasks and zero repairs. The outage produces an
-actual cURL error 56 and three automatic CLI supervisor restarts. It does not
-prove recovery within one process. The intentional kill and outage leave one
-killed registration each. Their original cleanup wrappers fail the overly
-strict zero-registration predicate; that wrapper result remains unsuccessful.
-The task resources are removed. Ordinary measured cells retain the stricter
-zero-registration and zero-restart checks.
+The [FPM cache/recovery controls](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6243887984)
+and [independent Octane controls](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6244222635)
+use the published tuple above. Cache columns
+are actual stopped counters: hit / miss / eviction / forced cold.
 
-Earlier load, controller and older-package observations remain separate
-[failed or scoped reference outcomes](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6222599030).
-They are not substituted for the final published tuple's measurements.
+| Control | Originals / first-attempt tasks per profile | FPM counters | Octane counters |
+| --- | --- | --- | --- |
+| Capacity 100, TTL 1 second | 1 / 4 | 0 / 3 / 1 / 1 | 0 / 3 / 1 / 1 |
+| Capacity 1, TTL 300 seconds | 4 / 16 | 0 / 12 / 7 / 8 | 0 / 12 / 9 / 8 |
 
-## Results
+All preserve the entire original prefix, typed result and exact deadlines with
+zero repairs, retries or pending work. Cache settings are read from both
+running processes before admission. The four-original eviction test populates
+two independent caches before releasing any original. The existing two-original
+`cache.php eviction` command remains the single-worker control.
 
-Fresh repetitions and reload soaks are required after the corrected package is
-published and qualified in its normal Server consumer. Earlier results keep
-their original application/backend identities and outcomes.
+Killing both CLI workers in each profile preserves the same original through
+cold replacement: eight final events, one activity and five first-attempt
+tasks. Intentional SIGKILL exits are 137 without OOM. The original two killed
+registrations remain explicit; replacement workers deregister normally.
 
-### Published 2.8.7 four-worker FPM run
+Stopping each isolated API for ten seconds produces actual transport errors.
+The original completes with four first-attempt tasks. FPM's workers restart
+three and six times; Octane's restart three times each. This proves supervised
+process replacement, not same-process recovery. Only the exact original
+failed-deregistration IDs are permitted to remain. All final stack roles exit
+zero without OOM, with actual restart counts checked individually.
 
-The October 17 mixed run uses the published backend above, unchanged application
-runtime `e81b7c80`, four HTTP workers and the four-CPU API allocation. It **fails**:
+## Current load results
 
-| Observation | Result |
-| --- | ---: |
-| Admitted originals | 265 of 300 required |
-| Observed completed / cancelled | 201 / 51 |
-| Completed context requests | 1,743 of 1,800 required |
-| Dropped offers | 92 |
-| Canonical repairs | 82 |
-| Canonical completed / cancelled / waiting | 210 / 51 / 4 |
+### Three alternating short pairs
 
-Both real master reloads replace all four HTTP workers. All 51 observed
-cancellation requests and 51 signal requests return their expected 204, and
-102 query replies pass their committed-activity checks. The earlier cancellation
-deadlock is not observed in this run. That scoped result does not qualify the
-load target or establish a cause for the remaining backlog and repairs.
+All six paired cells and the final FPM drift cell pass: 120 offered/admitted/completed workflows, 720
+context reads and 360 completed first-attempt tasks each. Errors, dropped
+offers, repairs, retries and pending work are zero. Independent typed/history
+reads and exact original deadlines pass. Every stack shuts down normally with
+zero registrations. Each row below is a separate fresh cell in execution order.
+Latencies are p50 / p95 / p99 in milliseconds.
 
-The original driver also has a separate failure: two iterations start outside
-the offered window, fail its boundary assertions and trigger immediate threshold
-abort at about 302 seconds. Thirteen observers are interrupted before the declared
-36-second drain finishes. The independent audit then correctly refuses an
-unfinished signal original. Those transport interruptions are not attributed to
-a runtime crash. Dropped offers and repairs independently keep this run failed.
+| Cell | Context HTTP | Start HTTP | Status HTTP | Workflow observed |
+| --- | ---: | ---: | ---: | ---: |
+| FPM 1 | 6.85 / 8.50 / 9.75 | 257.71 / 374.55 / 480.31 | 64.13 / 77.07 / 82.55 | 1,281 / 1,614 / 1,682 |
+| Octane 1 | 5.24 / 6.53 / 8.20 | 261.84 / 326.38 / 470.17 | 63.54 / 78.71 / 91.57 | 1,289 / 1,658 / 1,756 |
+| Octane 2 | 5.24 / 6.52 / 8.37 | 262.77 / 373.53 / 545.42 | 62.48 / 74.75 / 81.29 | 1,279 / 1,642 / 1,721 |
+| FPM 2 | 7.11 / 8.84 / 10.70 | 260.24 / 350.59 / 526.64 | 63.49 / 78.45 / 88.24 | 1,273 / 1,624 / 1,674 |
+| FPM 3 | 6.59 / 8.19 / 9.37 | 243.50 / 300.69 / 445.57 | 60.34 / 71.04 / 78.83 | 1,245 / 1,556 / 1,589 |
+| Octane 3 | 4.75 / 5.85 / 6.67 | 239.75 / 304.61 / 417.70 | 56.82 / 68.16 / 76.56 | 1,229 / 1,529 / 1,593 |
+| FPM drift | 6.45 / 7.96 / 8.63 | 241.05 / 319.95 / 446.68 | 58.83 / 68.81 / 73.03 | 1,236 / 1,539 / 1,568 |
 
-A later read finds 82 distinct completed workflow tasks with one repair and one
-attempt each. Sampled repaired tasks waited four to six seconds before their
-first lease. This does not establish why they waited. All 265 activities complete
-once in the recorded canonical audit; original run/execution deadline offsets
-remain exact. The API records 521.84 CPU seconds, without CPU throttling; the
-application records 84.08 CPU seconds. There is no OOM, swap or sampled host CPU
-steal. Every normal role exits 0 without automatic restarts, all registrations
-are removed, and the stack is retired.
+Memory columns are mean / sampled peak MiB. CPU excludes the separately
+measured generator. The application and backend include all nine service roles.
 
-The prospective driver correction refuses late admissions without inventing
-replacement offers and evaluates failures after the original observers drain.
-The 35-second per-original observer, 36-second drain, rates, VU limits and all
-success thresholds remain unchanged. This original is not rerun or relabeled.
-Fresh load acceptance remains required after the correction and diagnosis.
+| Cell | App CPU seconds / per completed workflow | App + backend CPU seconds | App RSS MiB | App charged MiB | App + backend RSS MiB | App + backend charged MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| FPM 1 | 16.84 / 0.140 | 293.84 | 318.17 / 323.60 | 138.80 / 144.38 | 1,370.09 / 1,450.57 | 874.32 / 923.47 |
+| Octane 1 | 17.10 / 0.143 | 299.83 | 498.30 / 502.68 | 324.09 / 329.16 | 1,545.67 / 1,585.48 | 1,061.92 / 1,106.83 |
+| Octane 2 | 16.91 / 0.141 | 297.81 | 497.76 / 501.94 | 323.64 / 328.27 | 1,542.86 / 1,598.89 | 1,057.78 / 1,109.04 |
+| FPM 2 | 17.18 / 0.143 | 294.15 | 318.18 / 323.05 | 138.42 / 143.66 | 1,360.24 / 1,403.87 | 869.44 / 911.87 |
+| FPM 3 | 16.23 / 0.135 | 281.01 | 319.68 / 324.63 | 138.58 / 143.96 | 1,365.63 / 1,463.71 | 873.66 / 927.04 |
+| Octane 3 | 15.72 / 0.131 | 280.14 | 494.94 / 498.59 | 322.41 / 326.48 | 1,543.15 / 1,628.75 | 1,055.40 / 1,105.88 |
+| FPM drift | 15.94 / 0.133 | 278.12 | 318.38 / 324.00 | 138.68 / 144.69 | 1,306.73 / 1,399.14 | 871.40 / 933.98 |
 
-The synthetic [drain regression](check-load-drain.sh) exercises the actual k6
-driver against an HTTP fixture, not a workflow runtime. Five originals each
-remain pending for four seconds during a five-second offered window. A separate
-case injects one HTTP failure at the last context request. The old driver aborts
-with only two terminal observations; the corrected driver observes all five and
-still returns k6's failure exit 99. Its clean case observes all five and exits 0.
-CI runs both cases without credentials or a real backend. Run locally with Docker
-and jq using `LOAD_DRAIN_RUN=unique-drain-test bash qualification/check-load-drain.sh`
-from the example directory. This check does not qualify load, durable execution
-or a higher capacity.
+Three-cell mean application CPU is 16.75 seconds for FPM and 16.58 seconds for
+Octane, a 1.05% difference. Individual pair directions differ. Charged application
+memory averages 138.60 versus 323.38 MiB, an additional 184.78 MiB for Octane.
+The final FPM baseline uses 5.34% less application CPU than the first FPM cell,
+and its observed workflow p95 is 4.61% lower. That drift is larger than the
+cross-profile mean CPU difference. No consistent CPU or execution gain is
+established. Octane's context p95 is 1.97–2.34 ms lower in the paired cells.
 
-### Published-SDK claim diagnostic
+Measured short windows run from October 18 at 01:24:22 through 01:51:04 UTC,
+including actual drains. Each cell's runtime and raw samples are deleted after
+audit. The temporary host and its task access key are deleted at 01:51:48 UTC.
 
-A separate local diagnostic uses normal SDK 2.4.2 / `25d796ad` with all 166
-source/resource/schema files verified, the published 2.8.7 backend and the same
-pure SDK workflow/activity definitions as this application. It exercises eight
-fresh short, timer, signal/query and cancellation originals per configuration.
-It does not run Laravel HTTP, offered load or a performance comparison. The
-shared four-CPU host has existing swap and is not reserved for measurements.
+### Component and transport costs
 
-| Functional observation | One CLI process | Two CLI processes |
+Each entry below is mean CPU seconds / mean throttled seconds / maximum sampled
+charged MiB across that profile's three short cells. Per-component peaks occur
+at different times and must not be summed as a concurrent peak.
+
+| Component | FPM | Octane |
 | --- | ---: | ---: |
-| Combined SDK limit | 0.5 CPU / 320 MiB | 0.5 CPU / 320 MiB |
-| Completed / cancelled originals | 7 / 1 | 7 / 1 |
-| Completed / cancelled tasks | 30 / 1 | 30 / 1 |
-| Completed activities | 8 | 8 |
-| Repairs / retried tasks / final registrations | 0 / 0 / 0 | 0 / 0 / 0 |
-| Maximum observed ready-to-first-lease interval | 5.402 seconds | 2.009 seconds |
-| Longest of three actual queries | 5.451 seconds | 2.046 seconds |
+| HTTP application | 11.57 / 0.00 / 43.96 | 11.48 / 0.00 / 228.05 |
+| nginx | 0.98 / 0.01 / 2.66 | 0.94 / 0.00 / 2.84 |
+| CLI worker 1 | 2.10 / 0.00 / 48.84 | 2.06 / 0.00 / 49.62 |
+| CLI worker 2 | 2.11 / 0.00 / 49.70 | 2.09 / 0.00 / 49.65 |
+| Backend MySQL | 69.30 / 0.30 / 610.10 | 70.39 / 0.40 / 611.89 |
+| Backend Redis | 7.42 / 14.41 / 6.91 | 7.50 / 14.70 / 7.04 |
+| Backend API | 184.27 / 0.00 / 100.40 | 186.16 / 0.00 / 100.33 |
+| Backend queue worker | 0.88 / 0.52 / 49.72 | 0.92 / 0.62 / 49.91 |
+| Backend maintenance | 11.04 / 45.17 / 46.71 | 11.05 / 45.49 / 45.46 |
+| Separate k6 generator | 4.08 / 1.20 / 45.16 | 4.10 / 1.21 / 45.65 |
 
-Both batches retain their original 35-second observers, exact typed results and
-600/900-second deadlines. Each process stops normally without OOM or automatic
-restart. Guzzle's ordinary request/statistics hooks record only allowlisted
-poll identities, paths, timing and response metadata. Vendor bytes are unchanged.
+Complete service snapshots are at most 3.97 seconds apart with zero unavailable
+service samples. Maximum sampled host steal is 2% for FPM and 4% for Octane,
+with no swap. Backend throttling is recorded above rather than attributed to
+HTTP hosting.
 
-In the one-process original, the worker spends 13.478 seconds in actual HTTP
-requests during the approximately 13.6-second active interval. Its workflow
-poll replies during queued work take at most 0.470 seconds. The initial held
-query poll returns `task_queue_changed`; subsequent sweeps lease workflow tasks.
-The 5.451-second query observes `workflow_task_pending` until its own workflow's
-pending resume completes, then receives the expected answer. These observations
-support trying independent worker concurrency. They do not identify the cause
-of the earlier mixed-run repairs, prove a missing wakeup, or establish a gain
-or capacity. The two-process batch is fresh evidence, not a rescue of the first.
+The following are three-cell means of actual backend requests / produced
+response-body MiB. Poll counts include empty polls. These envelopes contain
+metadata and inline histories; the byte totals do not isolate history payloads.
 
-The next hosting qualification uses the prospective pool override, the corrected
-driver and fresh application processes. Original rates, budgets and success
-thresholds stay fixed. Full hosting acceptance remains open.
-
-### Four-worker FPM mixed runs
-
-Both runs use runtime source `e81b7c80`, the published backend in the manifest
-and the unchanged 300-second mixed workload. The second run increases only the
-Server API allocation from two to four CPUs, with its memory still 1 GiB.
-
-| Observation | Two-CPU API | Four-CPU API |
+| Backend operation | FPM requests / MiB | Octane requests / MiB |
 | --- | ---: | ---: |
-| Admitted original workflows | 233 | 105 |
-| Observed completions | 174 | 76 |
-| Observed cancellations | 44 | 18 |
-| Context responses | 1,728 | 727 |
-| Dropped offers | 140 | 61 |
-| Observer errors | 1 | 1 |
-| Repairs on canonical readback | 118 | 35 |
-| Result | Failed | Failed |
+| Workflow-task poll | 666.67 / 17.08 | 664.00 / 17.02 |
+| Activity-task poll | 668.67 / 15.60 | 666.00 / 15.54 |
+| Query-task poll | 668.67 / 15.54 | 666.00 / 15.48 |
+| Other successful GETs | 616.33 / 71.78 | 627.67 / 71.82 |
+| Other successful POSTs, 200 | 646.00 / 15.13 | 646.00 / 15.13 |
+| Original admission POSTs, 201 | 120.00 / 0.15 | 120.00 / 0.15 |
+| Health | 12.00 / 0.06 | 12.00 / 0.06 |
 
-The [two-CPU API run](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6223818842)
-passes both real master reloads and all HTTP requests, but fails the offered
-workload and zero-repair criteria. Later canonical readback has 185 completed,
-44 cancelled and four waiting originals. The API records 514.73 CPU seconds
-over 302.99 elapsed seconds, including 38.32 seconds throttled. This is one
-observed resource limit, not a proven explanation for every missed criterion.
+Stopped CLI cache totals over prerequisites, warmup and the three short cells
+are FPM **0 hits / 936 misses / 59 evictions / 471 forced cold replays**, and
+Octane **0 / 936 / 64 / 471**. No history-cache hit or replay saving is
+demonstrated by these runs. The 100-entry/300-second defaults remain unchanged.
 
-The separate four-CPU API run stops at a real cancellation HTTP 500. MySQL's
-actual error 1213 lock graph shows signal and cancellation transactions for
-different runs acquiring task/failure index locks in a cycle. MySQL rolls back
-cancellation completely. Its original remains waiting with the same six-event
-prefix and no failure record. Later aggregate readback has 82 completed,
-18 cancelled and five waiting originals. Workflow #819 owns the reproduction,
-compatible package correction and affected published consumer.
+### Mixed reload soaks
 
-Increasing API CPU is not an established fix, and neither run qualifies the
-four-worker recipe. Their resources and failed originals were retired after
-the immediate diagnosis. The narrow failure description remains in the owning
-issue. No Octane mixed run or fresh four-worker paired comparison is claimed.
+Both fresh 64-context-VU mixed cohorts pass on the same inputs. Each admits all
+300 offered originals, observes 240 completions and 60 cancellations, and
+completes all 1,800 contexts. All response/history checks pass. Independent
+typed reads and SQL find 300 activities completed once, 1,080 completed
+first-attempt tasks, 60 cancelled tasks and zero repairs, retries or pending
+work. The sixty unclaimed tasks are cancelled terminal tasks, not backlog.
+Original 600/900-second deadline offsets remain exact.
 
-### Earlier two-worker profile
+| Profile | Application CPU seconds | Charged memory mean / peak MiB | Context HTTP p95 ms | Observed workflow p95 ms | Timer due-to-claim range ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| FPM | 53.51 | 150.10 / 162.93 | 8.92 | 3,257 | 170–1,491 |
+| Octane | 56.18 | 333.59 / 375.79 | 10.70 | 5,821 | 197–2,811 |
 
-The earlier source `f027697c` completed three short-window pairs and an FPM
-drift check. The [paired receipt](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6223479757)
-records these measured windows, each with 120 completed workflows and 720
-context reads per profile:
+Both scheduled reloads replace all four HTTP workers in each profile. All
+eleven stack roles subsequently exit zero without OOM or automatic restarts;
+registrations return to zero. There is no swapping. Maximum sampled host CPU
+steal is 2% for FPM and 1% for Octane. Runtime, databases and raw samples are
+deleted after audit. These are bounded soaks and do not establish long-term
+capacity or a general speedup.
 
-| Pair order | FPM app CPU seconds | Octane app CPU seconds | FPM / Octane observed workflow p95 ms |
-| --- | ---: | ---: | ---: |
-| FPM, Octane | 18.089 | 15.774 | 3,312 / 2,515 |
-| Octane, FPM | 18.528 | 14.809 | 3,146 / 1,554 |
-| FPM, Octane | 14.843 | 14.791 | 1,583 / 1,555 |
+The [16-context-VU FPM cohort](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6243824493)
+passes its exact scope: 300 admitted/terminal originals, 240 completed and
+60 cancelled, 1,800 contexts, zero errors/drops/repairs/retries/pending work.
+Both reloads replace all four workers. Original histories, typed values and
+deadlines pass. All eleven roles exit zero without OOM/restarts and
+registrations return to zero.
 
-The third pair's application CPU differs by only 0.35%. The receipt records
-mean charged application memory across these pairs of 88.82 MiB for FPM and
-191.57 MiB for Octane. These limited observations do not establish a consistent
-speedup or durable execution gain. FPM remains the ordinary starting profile.
+Its [separate Octane original](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6243983972)
+is **failed**: all 300 workflows and response/history checks pass, but twelve
+context offers are dropped at reload. k6 reports exhausting sixteen context
+VUs; actual context latency reaches 4.002 seconds within the ten-second limit.
+The current 64-VU reserve is a new common measurement input. The unchanged
+16-VU driver fails a constructed nine-second context-delay control; all four
+corrected driver controls pass, with injected HTTP failure retaining exit 99.
+No application defect or gain is inferred from generator exhaustion.
 
-Its first FPM mixed soak [failed](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6223653640):
-100 admitted originals, 70 observed completions, 18 observed cancellations,
-457 context responses, 282 dropped iterations and two HTTP 502s. Independent
-nginx logs show connection resets at the first FPM master reload. Subsequent
-canonical readback has 78 completed, 18 cancelled and four waiting originals,
-with 16 repairs. No OOM or automatic process restart occurred.
+## Earlier failures and scoped observations
 
-That failed outcome is unchanged. Its short-window results do not qualify the
-four-worker recipe or establish mixed-traffic capacity. The prospective recipe
-keeps the same CPU/memory allocation and workload, increases both HTTP pools
-and gives FPM a bounded in-flight request grace period. New measurements are
-required for the changed profile.
+Earlier originals remain failed or scoped as recorded in their owning links.
+They are not rerun in place or substituted for current results.
+
+- The first Octane pool expiry control completes its original with an actual
+  eviction, exact history/deadlines and zero repairs, but its helper wrongly
+  requires a forced cold replay after expiry. Actual counters are 0 hits,
+  3 misses, 1 eviction and 0 forced cold replays. The documented expiry rule
+  permits that zero. The corrected helper and a separate fresh original pass;
+  the failed control stays failed. Capacity still requires forced cold replay.
+- [First two-CLI-worker mixed run](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6243742751):
+  all 300 admissions, but only 239 completions/59 cancellations observed and
+  three context drops. The driver confused generic waiting with a committed
+  activity. The corrected driver waits for the example's explicit query phase
+  within the original cutoff. Old and corrected synthetic controls establish
+  that driver correction; the failed application run remains failed.
+- [Earlier published 2.8.7 one-worker mixed run](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6243209312):
+  265 admissions, 252 observed terminal outcomes, 92 dropped offers and 82
+  repairs. Driver threshold abort also interrupted thirteen observers before
+  drain. Later diagnosis does not establish a cause for every delay or repair.
+- [Earlier four-HTTP-worker runs](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6223818842):
+  insufficient offers/repairs in one cell and an actual MySQL cancellation
+  deadlock in another. [Workflow #819](https://github.com/durable-workflow/workflow/issues/819#issuecomment-6243219869)
+  delivers that specific correction through normal source and published HTTP
+  consumers. This does not qualify the earlier load results or prove a common
+  cause for other observations.
+- [Earlier two-HTTP-worker short pairs](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6223479757)
+  finish 120 workflows and 720 contexts per cell, but one pair differs by only
+  0.35% application CPU. The associated [mixed soak fails](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6223653640)
+  with reload connection resets and unfinished work. Those old profiles do not
+  establish a consistent gain or qualify the current four-worker recipe.
+- [Published-SDK one/two-process diagnostics](https://github.com/durable-workflow/sdk-php/pull/169#issuecomment-6243209312)
+  support testing independent concurrency with exact typed histories and no
+  repairs in their eight-original batches. They are functional observations
+  on a shared host, not a performance comparison.
+
+Completed cell databases, histories, raw samples and transport are deleted
+after immediate readback. This readable report and owning GitHub results retain
+the useful conclusions. Temporary dependency/build state and the isolated host
+are retired when the qualification phase ends.
