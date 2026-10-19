@@ -102,6 +102,19 @@ final class Replayer
         foreach ($steps as $step) {
             $stepsBySequence[$step['sequence']] = $step;
         }
+        // A committed cancellation is durable authority even without an opened wait.
+        /** @var list<CancellationDelivery|null> $cancellationBoundaries */
+        $cancellationBoundaries = [
+            $cancellation->delivery,
+            ...array_column($scopeDeliveries, 'boundary'),
+            ...array_column($committedScopes->preparations ?? [], 'boundary'),
+        ];
+        $cancelledConditionSequences = [];
+        foreach ($cancellationBoundaries as $conditionCancellation) {
+            if ($conditionCancellation?->callKind === 'condition') {
+                $cancelledConditionSequences[$conditionCancellation->sequence] = true;
+            }
+        }
         $selectionResolutionOrders = [];
         $selectionResolutions = $this->selectionResolutions($history, $selectionResolutionOrders);
         $selectionCancellationOrders = [];
@@ -153,7 +166,7 @@ final class Replayer
         $consumedScopeDeliveries = [];
 
         while (!$execution->isTerminated()) {
-            if ($suspended instanceof WorkflowCommand
+            if ($suspended instanceof WorkflowCommand && !isset($cancelledConditionSequences[$nextSequence])
                 && ($conditionResult = $this->unrecordedConditionResult($suspended, $steps[$stepCursor] ?? null)) !== null) {
                 $suspended = $execution->resume($conditionResult);
                 continue;

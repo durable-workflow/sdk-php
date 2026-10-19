@@ -20,6 +20,12 @@ durable cursor resumes after replay, worker replacement, and continue-as-new.
 
 Use `WorkflowContext::waitCondition()` when progress depends on workflow state rather than an external activity. Its deterministic predicate is re-evaluated when committed signals or updates produce another workflow task. A stable key identifies the wait across replay, and the optional timeout returns `false` instead of requiring an application timer loop.
 
+Choose a distinct stable key for each logical wait, and preserve its predicate
+and timeout across replay. An already true condition, or a false condition with
+`timeout: 0`, returns without opening a new server wait. Those immediate returns
+do not consume a later recorded operation. A recorded wait result or canonical
+cancellation decision still governs the original call.
+
 ```php
 $approved = $context->waitCondition(
     static fn (): bool => $context->signals('approve') !== [],
