@@ -153,7 +153,7 @@ final class WorkflowCommand
         ], static fn (mixed $value): bool => $value !== null), conditionPredicate: $predicate);
     }
 
-    /** @internal Condition predicates are evaluated by the replayer after durable history matching. */
+    /** @internal The replayer evaluates predicates only when no recorded outcome decides the wait. */
     public function conditionSatisfied(): bool
     {
         if ($this->type !== 'open_condition_wait' || $this->conditionPredicate === null) {

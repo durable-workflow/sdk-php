@@ -1,0 +1,37 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-immediate-condition-between-recorded-activities",
+  "protocol_version": "1.13",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "golden.immediate-condition",
+    "input": []
+  },
+  "history": [
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "golden.first",
+        "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwQW"}
+      }
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "golden.second",
+        "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwQi"}
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "complete_workflow",
+        "result": {"first": 11, "satisfied": true, "second": 17}
+      }
+    ]
+  }
+}
