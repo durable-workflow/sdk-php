@@ -6,6 +6,7 @@ namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -145,6 +146,127 @@ final class ImmediateConditionReplayTest extends TestCase
         $this->expectException(NonDeterministicWorkflow::class);
         $this->expectExceptionMessage('Recorded activity detail changed from original to changed.');
         (new Replayer($codec))->replay($workflow, [self::completedActivity($codec, 1, 'original', 17)], [], 'php-workers');
+    }
+
+    /** @return iterable<string, array{bool, ?int}> */
+    public static function canonicalConditions(): iterable
+    {
+        foreach (self::immediateConditions() as $name => $arguments) {
+            yield $name => [$arguments[0], $arguments[1]];
+        }
+    }
+
+    #[DataProvider('canonicalConditions')]
+    public function testCanonicalConditionCancellationWithoutOpenedWaitStillWins(bool $ready, ?int $timeout): void
+    {
+        $codec = new AvroPayloadCodec();
+        $evaluations = 0;
+        $workflow = static function (WorkflowContext $context) use ($ready, $timeout, &$evaluations): string {
+            try {
+                $context->waitCondition(static function () use ($ready, &$evaluations): bool {
+                    ++$evaluations;
+
+                    return $ready;
+                }, key: 'ready', timeout: $timeout);
+            } catch (WorkflowCancelled $cancelled) {
+                return (string) $cancelled->requestId;
+            }
+
+            return 'not cancelled';
+        };
+        $result = (new Replayer($codec))->replay($workflow, self::rootCancellation('condition'), [], 'php-workers', ['run_id' => 'run-1']);
+
+        self::assertSame('request-1', $codec->decodeEnvelope($result->commands[0]['result']));
+        self::assertSame(0, $evaluations);
+    }
+
+    #[DataProvider('canonicalConditions')]
+    public function testUnrecordedConditionBeforeCanonicalTimerDoesNotConsumeCancellation(bool $ready, ?int $timeout): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context) use ($ready, $timeout): string {
+            $context->waitCondition(static fn (): bool => $ready, key: 'immediate', timeout: $timeout);
+            try {
+                $context->sleep(10);
+            } catch (WorkflowCancelled $cancelled) {
+                return (string) $cancelled->requestId;
+            }
+
+            return 'not cancelled';
+        };
+        $result = (new Replayer($codec))->replay($workflow, self::rootCancellation('timer'), [], 'php-workers', ['run_id' => 'run-1']);
+
+        self::assertSame('request-1', $codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    /** @return iterable<string, array{bool, ?int, bool}> */
+    public static function scopedCanonicalConditions(): iterable
+    {
+        foreach (self::canonicalConditions() as $name => $arguments) {
+            yield 'committed '.$name => [...$arguments, false];
+            yield 'prepared '.$name => [...$arguments, true];
+        }
+    }
+
+    #[DataProvider('scopedCanonicalConditions')]
+    public function testCanonicalScopedConditionWithoutOpenedWaitIsNotElided(bool $ready, ?int $timeout, bool $prepared): void
+    {
+        $codec = new AvroPayloadCodec();
+        $fixture = json_decode((string) file_get_contents(__DIR__.'/fixtures/committed-scope-delivery.json'), true, flags: JSON_THROW_ON_ERROR)['unshielded'];
+        foreach ($fixture['history'] as &$event) {
+            if (in_array($event['event_type'], ['CancellationScopeDeliveryPrepared', 'CancellationScopeDelivered'], true)) {
+                $event['payload']['call_kind'] = 'condition';
+            }
+        }
+        unset($event);
+        if ($prepared) {
+            $fixture['history'] = array_values(array_filter($fixture['history'], static fn (array $event): bool => $event['event_type'] !== 'CancellationScopeDelivered'));
+        }
+        $evaluations = 0;
+        $workflow = static function (WorkflowContext $context) use ($ready, $timeout, &$evaluations): string {
+            return $context->cancellationScope(static function () use ($context, $ready, $timeout, &$evaluations): string {
+                return $context->cancellationScope(static function () use ($context, $ready, $timeout, &$evaluations): string {
+                    try {
+                        $context->waitCondition(static function () use ($ready, &$evaluations): bool {
+                            ++$evaluations;
+
+                            return $ready;
+                        }, key: 'ready', timeout: $timeout);
+                    } catch (WorkflowCancelled $cancelled) {
+                        return (string) $cancelled->requestId;
+                    }
+
+                    return 'not cancelled';
+                });
+            });
+        };
+        $result = (new Replayer($codec))->replay($workflow, $fixture['history'], [], 'php-workers', $fixture['task'],
+            allowCancellationScopeAuthoring: true, replayCommittedCancellationScopes: true, prepareCancellationScopeDelivery: $prepared);
+
+        if ($prepared) {
+            self::assertSame([], $result->commands);
+            self::assertSame('condition', $result->cancellationScopeDelivery?->boundary->callKind);
+            self::assertSame(3, $result->cancellationScopeDelivery?->boundary->sequence);
+        } else {
+            $request = array_values(array_filter($fixture['history'], static fn (array $event): bool => $event['event_type'] === 'CancellationScopeRequested'))[0];
+            $last = $result->commands[array_key_last($result->commands)];
+            self::assertSame('complete_workflow', $last['type']);
+            self::assertSame($request['payload']['request_id'], $codec->decodeEnvelope($last['result']));
+        }
+        self::assertSame(0, $evaluations);
+    }
+
+    /** @return list<array<string, mixed>> */
+    private static function rootCancellation(string $kind): array
+    {
+        return [
+            ['event_type' => 'CooperativeCancellationRequested', 'recorded_at' => '2026-10-01T00:00:00Z', 'payload' => [
+                'workflow_run_id' => 'run-1', 'workflow_command_id' => 'request-1', 'cleanup_deadline_at' => '2026-10-01T00:01:00Z',
+            ]],
+            ['event_type' => 'CooperativeCancellationDelivered', 'payload' => [
+                'workflow_run_id' => 'run-1', 'workflow_command_id' => 'request-1', 'sequence' => 1, 'call_kind' => $kind, 'sequence_span' => 1,
+            ]],
+        ];
     }
 
     /** @return array<string, mixed> */
