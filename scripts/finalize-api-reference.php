@@ -67,7 +67,7 @@ foreach ($iterator as $file) {
 
     $path = $file->getPathname();
     $relative = str_replace('\\', '/', substr($path, strlen($buildDirectory) + 1));
-    $canonicalPath = preg_replace('#(?:^|/)index\.html$#', '$1', $relative) ?? $relative;
+    $canonicalPath = preg_replace('#(^|/)index\.html$#', '$1', $relative) ?? $relative;
     $canonicalPath = '/api/'.ltrim($canonicalPath, '/');
     $canonical = 'https://php.durable-workflow.com'.htmlspecialchars($canonicalPath, ENT_QUOTES | ENT_HTML5);
     $metadata = <<<HTML
