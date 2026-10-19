@@ -153,6 +153,11 @@ final class Replayer
         $consumedScopeDeliveries = [];
 
         while (!$execution->isTerminated()) {
+            if ($suspended instanceof WorkflowCommand
+                && ($conditionResult = $this->unrecordedConditionResult($suspended, $steps[$stepCursor] ?? null)) !== null) {
+                $suspended = $execution->resume($conditionResult);
+                continue;
+            }
             if (!$cancellationConsumed && $cancellation->delivery?->sequence === $nextSequence
                 && !$this->isRootCancellationBoundary($suspended, $cancellation->delivery, $stepsBySequence, $context)) {
                 throw new NonDeterministicWorkflow('Committed root cancellation cannot replace a scoped operation.', $nextSequence,
@@ -777,16 +782,6 @@ final class Replayer
                 }
                 continue;
             }
-            if ($suspended->type === 'open_condition_wait') {
-                if ($suspended->conditionSatisfied()) {
-                    $suspended = $execution->resume(true);
-                    continue;
-                }
-                if (($suspended->attributes['timeout_seconds'] ?? null) === 0) {
-                    $suspended = $execution->resume(false);
-                    continue;
-                }
-            }
             if (($encodingFailure = $this->appendWorkflowCommand(
                 $commands,
                 $suspended,
@@ -831,6 +826,27 @@ final class Replayer
         }
 
         return $this->result($commands, $context);
+    }
+
+    /** @param array<string, mixed>|null $step */
+    private function unrecordedConditionResult(WorkflowCommand $command, ?array $step): ?bool
+    {
+        if ($command->type !== 'open_condition_wait') {
+            return null;
+        }
+        if ($step !== null && $step['shape'] === 'condition_wait'
+            && $step['condition_key'] === $this->stringValue($command->attributes['condition_key'] ?? null)) {
+            return null;
+        }
+
+        // Immediate sequential conditions have no durable step. Leave the next
+        // history entry and sequence untouched, including cancellation boundaries.
+        // A recorded wait still owns its original identity and resolved outcome.
+        if ($command->conditionSatisfied()) {
+            return true;
+        }
+
+        return ($command->attributes['timeout_seconds'] ?? null) === 0 ? false : null;
     }
 
     /** @param list<array<string, mixed>> $history */

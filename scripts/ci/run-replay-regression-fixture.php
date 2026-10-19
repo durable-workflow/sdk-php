@@ -628,6 +628,13 @@ final class ReplayRegressionConsumer
 
                 return $result;
             },
+            'golden.immediate-condition' => static function (WorkflowContext $context): array {
+                $first = $context->activity('golden.first');
+                $satisfied = $context->waitCondition(static fn (): bool => true, key: 'already-ready');
+                $second = $context->activity('golden.second');
+
+                return ['first' => $first, 'satisfied' => $satisfied, 'second' => $second];
+            },
             'golden.timer' => static function (WorkflowContext $context, mixed $seconds): string {
                 $context->sleep((float) $seconds);
 
