@@ -831,11 +831,9 @@ final class Replayer
     /** @param array<string, mixed>|null $step */
     private function unrecordedConditionResult(WorkflowCommand $command, ?array $step): ?bool
     {
-        if ($command->type !== 'open_condition_wait') {
-            return null;
-        }
-        if ($step !== null && $step['shape'] === 'condition_wait'
-            && $step['condition_key'] === $this->stringValue($command->attributes['condition_key'] ?? null)) {
+        if ($command->type !== 'open_condition_wait'
+            || ($step !== null && $step['shape'] === 'condition_wait'
+                && $step['condition_key'] === $this->stringValue($command->attributes['condition_key'] ?? null))) {
             return null;
         }
 
