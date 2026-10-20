@@ -245,6 +245,8 @@ final class ReplayRegressionFixture
             $worker->register(ReplayRegressionAttributedStatefulWorkflow::class);
         } elseif ($workflowType === '0') {
             $worker->register(ReplayRegressionNumericWorkflow::class);
+        } elseif ($workflowType === 'golden.attributed-nested-state') {
+            $worker->register(ReplayRegressionAttributedNestedWorkflow::class);
         } else {
             $worker->registerWorkflow($workflowType, self::workflow($workflowType));
         }
@@ -711,5 +713,25 @@ final class ReplayRegressionNumericWorkflow extends ReplayRegressionAttributedSt
     public function run(WorkflowContext $context): array
     {
         return parent::run($context);
+    }
+}
+
+final class ReplayRegressionAttributedNestedWorkflow
+{
+    private readonly object $state;
+
+    public function __construct()
+    {
+        $this->state = (object) ['invocation' => 0];
+    }
+
+    #[Workflow('golden.attributed-nested-state')]
+    public function run(WorkflowContext $context): array
+    {
+        return [
+            'workflow_id' => $context->workflowId,
+            'run_id' => $context->runId,
+            'invocation' => ++$this->state->invocation,
+        ];
     }
 }

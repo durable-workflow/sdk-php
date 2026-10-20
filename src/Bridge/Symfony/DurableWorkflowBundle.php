@@ -10,6 +10,7 @@ use DurableWorkflow\Attribute\Signal;
 use DurableWorkflow\Attribute\Update;
 use DurableWorkflow\Attribute\Workflow;
 use DurableWorkflow\Bridge\Symfony\DependencyInjection\DurableWorkflowExtension;
+use DurableWorkflow\Bridge\Symfony\DependencyInjection\WorkflowLifetimePass;
 use Symfony\Component\DependencyInjection\ChildDefinition;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\HttpKernel\Bundle\Bundle;
@@ -20,6 +21,7 @@ final class DurableWorkflowBundle extends Bundle
     public function build(ContainerBuilder $container): void
     {
         parent::build($container);
+        $container->addCompilerPass(new WorkflowLifetimePass());
 
         foreach ([Workflow::class, Activity::class, Query::class, Signal::class, Update::class] as $attribute) {
             $container->registerAttributeForAutoconfiguration(
