@@ -7,8 +7,11 @@ namespace DurableWorkflow;
 /** Workflow interactions shared by live and in-memory handles. */
 interface WorkflowHandleInterface
 {
-    /** @param list<mixed> $arguments */
-    public function signal(string $name, array $arguments = []): void;
+    /**
+     * @param list<mixed> $arguments
+     * @param string|null $requestId Caller command key reused on retries; generated when null.
+     */
+    public function signal(string $name, array $arguments = [], ?string $requestId = null): void;
 
     /**
      * @param list<mixed> $arguments

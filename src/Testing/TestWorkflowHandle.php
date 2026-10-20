@@ -18,7 +18,7 @@ final class TestWorkflowHandle implements WorkflowHandleInterface
     }
 
     /** @param list<mixed> $arguments */
-    public function signal(string $name, array $arguments = []): void
+    public function signal(string $name, array $arguments = [], ?string $requestId = null): void
     {
         $this->client->signal($this->workflowId, $name, $arguments);
     }
