@@ -269,6 +269,7 @@ final class CommandRequestIdTest extends TestCase
     public function testPublishedCustomHandleImplementationsStillLoadAndDeliverSignals(): void
     {
         $handle = new class implements WorkflowHandleInterface {
+            /** @var list<array{string, list<mixed>}> */
             public array $signals = [];
 
             public function signal(string $name, array $arguments = []): void
