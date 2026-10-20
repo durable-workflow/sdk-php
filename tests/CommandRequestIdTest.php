@@ -227,7 +227,7 @@ final class CommandRequestIdTest extends TestCase
         $transport = new FakeTransport([[]]);
         $client = new Client('https://server.example', transport: $transport);
 
-        foreach (['', str_repeat('k', 256)] as $invalid) {
+        foreach (['', str_repeat('k', 256), str_repeat('é', 256), "\xFF"] as $invalid) {
             foreach (['signal', 'update'] as $command) {
                 try {
                     $command === 'signal'
@@ -235,12 +235,17 @@ final class CommandRequestIdTest extends TestCase
                         : $client->updateWorkflow('order-1', 'rename', [], requestId: $invalid);
                     self::fail("A {$command} must reject an invalid request ID.");
                 } catch (InvalidArgumentException $exception) {
-                    self::assertSame(ucfirst($command).' request IDs must be from 1 to 255 bytes.', $exception->getMessage());
+                    self::assertSame(ucfirst($command).' request IDs must be from 1 to 255 Unicode characters.', $exception->getMessage());
                 }
             }
         }
         self::assertSame([], $transport->requests);
+    }
 
+    public function testTheMaximumAsciiKeyIsAccepted(): void
+    {
+        $transport = new FakeTransport([[]]);
+        $client = new Client('https://server.example', transport: $transport);
         $limit = str_repeat('k', 255);
         $client->signalWorkflow('order-1', 'approve', [], null, $limit);
         self::assertSame($limit, $transport->requests[0]['body']['request_id']);

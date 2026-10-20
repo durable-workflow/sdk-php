@@ -720,7 +720,7 @@ final class Client implements WorkflowClientInterface
     /**
      * Send a signal and return the Server receipt.
      *
-     * `$requestId` is the caller command key (1 to 255 opaque bytes). Omit it
+     * `$requestId` is the caller command key (1 to 255 Unicode characters). Omit it
      * to generate `sdk-php-signal-<hex>` once per call. The receipt always
      * carries `request_id`; retrying with the same key and intent returns the
      * retained receipt (`retained: true`) instead of a second signal.
@@ -802,7 +802,7 @@ final class Client implements WorkflowClientInterface
     /**
      * Send an update and return the Server receipt.
      *
-     * `$requestId` is the caller command key (1 to 255 opaque bytes). Omit it
+     * `$requestId` is the caller command key (1 to 255 Unicode characters). Omit it
      * to generate `sdk-php-update-<hex>` once per call. The receipt always
      * carries `request_id`; retrying with the same key and intent returns the
      * retained receipt (`retained: true`) instead of a second update.
@@ -2686,8 +2686,9 @@ final class Client implements WorkflowClientInterface
         if ($requestId === null) {
             return $this->requestId('sdk-php-'.$command);
         }
-        if ($requestId === '' || strlen($requestId) > 255) {
-            throw new InvalidArgumentException(ucfirst($command).' request IDs must be from 1 to 255 bytes.');
+        $characters = preg_match_all('/./us', $requestId);
+        if ($characters === false || $characters < 1 || $characters > 255) {
+            throw new InvalidArgumentException(ucfirst($command).' request IDs must be from 1 to 255 Unicode characters.');
         }
 
         return $requestId;
