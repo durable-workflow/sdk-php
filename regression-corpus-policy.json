@@ -39,6 +39,12 @@
           "glob": "src/Worker/Replayer.php"
         },
         {
+          "glob": "src/Worker/WorkflowEntryArguments.php"
+        },
+        {
+          "glob": "src/Exception/WorkflowEntryArgumentsMismatch.php"
+        },
+        {
           "glob": "src/Worker/WorkflowCommand.php"
         },
         {

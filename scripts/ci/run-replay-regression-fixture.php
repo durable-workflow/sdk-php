@@ -12,6 +12,7 @@ use DurableWorkflow\Exception\ChildWorkflowFailed;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Exception\WorkflowCancelled;
+use DurableWorkflow\Exception\WorkflowEntryArgumentsMismatch;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker;
@@ -206,6 +207,17 @@ final class ReplayRegressionTransport implements Transport
             $failure = $body['failure'] ?? null;
             if (is_array($failure) && ($failure['type'] ?? null) === 'WorkflowTaskWaitingForHistory') {
                 $this->completedCommands[] = [];
+
+                return ['failed' => true];
+            }
+            if (is_array($failure) && ($failure['type'] ?? null) === WorkflowEntryArgumentsMismatch::class
+                && ($failure['reason'] ?? null) === 'workflow_entry_arguments_mismatch'
+                && !array_key_exists('sequence', $failure)) {
+                $this->completedCommands[] = [[
+                    'type' => 'replay_error',
+                    'reason' => 'workflow_entry_arguments_mismatch',
+                    'sequence' => null,
+                ]];
 
                 return ['failed' => true];
             }
@@ -605,6 +617,7 @@ final class ReplayRegressionConsumer
     private static function workflow(string $workflowType): callable
     {
         return match ($workflowType) {
+            'golden.entry-arguments-required' => static fn (WorkflowContext $context, int $amount, int $required): int => $amount + $required,
             'golden.finally-disposal' => static function (WorkflowContext $context): void {
                 try {
                     $context->sleep(1);

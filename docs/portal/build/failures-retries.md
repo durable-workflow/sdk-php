@@ -18,6 +18,7 @@ next:
 | `ServerException` | The runtime rejected or failed an operation. | Inspect status, reason, and details. |
 | `ActivityFailed` | A recorded activity reached a failed terminal attempt. | Catch in workflow code only when compensation is deterministic. |
 | `NonDeterministicWorkflow` | Code no longer matches committed history. | Restore compatible code; do not blindly retry. |
+| `WorkflowEntryArgumentsMismatch` | Recorded start input cannot bind to the entry method, before its body runs. The workflow task is refused and the run remains recoverable. | Restore a compatible entry method, inspect the task and use run-scoped repair. |
 | `WorkflowFailed` | The execution closed as failed. | Surface the recorded failure to the caller. |
 | `WorkflowTimedOut` | A Server deadline closed the run. | Start a new workflow only if business policy permits. |
 | `WorkflowCancelled` | The run closed as Cancelled, after terminal cancellation or successful cooperative cleanup. | Inspect the cancellation lifecycle and cleanup outcome. |

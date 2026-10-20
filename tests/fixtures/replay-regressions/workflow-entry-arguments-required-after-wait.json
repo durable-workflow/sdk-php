@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-workflow-entry-arguments-required-after-wait",
+  "protocol_version": "1.18",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.entry-arguments-required", "input": [7]},
+  "history": [
+    {"sequence": 3, "event_type": "ConditionWaitOpened", "payload": {"sequence": 1, "condition_wait_id": "original-condition-wait", "condition_key": "ready"}}
+  ],
+  "expected": {"type": "replay_error", "reason": "workflow_entry_arguments_mismatch"}
+}
