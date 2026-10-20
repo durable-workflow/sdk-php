@@ -28,6 +28,9 @@
         "psr/log": "^1.1|^2.0|^3.0"
     },
     "require-dev": {
+        "monolog/monolog": "^2.9|^3.0",
+        "open-telemetry/api": "1.10.1",
+        "open-telemetry/sdk": "^1.15",
         "phpdocumentor/phpdocumentor": "^3.7",
         "phpstan/phpstan": "^2.0",
         "phpunit/phpunit": "^10.5|^11.0"
@@ -35,8 +38,12 @@
     "suggest": {
         "ext-pcntl": "Required by framework console workers for graceful SIGINT and SIGTERM handling.",
         "laravel/framework": "Enables the auto-discovered Laravel 9 through 13 service-mode bridge.",
+        "open-telemetry/api": "Optional worker tracing with the application's provider; requires API 1.10.1 or later.",
         "symfony/framework-bundle": "Enables the Symfony 6.4, 7, and 8 service-mode bundle.",
         "symfony/console": "Required with symfony/framework-bundle to run the Symfony 6.4, 7, and 8 worker command."
+    },
+    "conflict": {
+        "open-telemetry/api": "<1.10.1"
     },
     "autoload": {
         "psr-4": {

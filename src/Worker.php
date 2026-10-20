@@ -47,6 +47,7 @@ use DurableWorkflow\Worker\WorkerSession;
 use DurableWorkflow\Worker\WorkerSessionOptions;
 use DurableWorkflow\Worker\WorkflowCommand;
 use DurableWorkflow\Transport\RequestBudget;
+use DurableWorkflow\Telemetry\ExecutionTelemetry;
 use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
@@ -134,6 +135,7 @@ final class Worker
         /** Unfrozen source opt-in for scalar/all-group scope delivery and committed scope replay. */
         private readonly bool $enableCancellationScopes = false,
         private readonly bool $requireQueryTaskAuthority = false,
+        private readonly ?ExecutionTelemetry $telemetry = null,
     ) {
         if ($enableCancellationScopes && !$enableCooperativeCancellation) {
             throw new \InvalidArgumentException('Cancellation scopes require the cooperative worker opt-in.');
@@ -1156,6 +1158,18 @@ final class Worker
 
     /** @param array<string, mixed> $task */
     private function executePolledTask(string $taskKind, array $task): void
+    {
+        if ($this->telemetry === null) {
+            $this->executeTask($taskKind, $task);
+
+            return;
+        }
+        $this->telemetry->task($taskKind, $task, $this->client->namespace, $this->taskQueue,
+            fn () => $this->executeTask($taskKind, $task));
+    }
+
+    /** @param array<string, mixed> $task */
+    private function executeTask(string $taskKind, array $task): void
     {
         try {
             $this->assertSupportedTaskPayloadCodec($task);
@@ -2189,12 +2203,13 @@ final class Worker
             },
             function (RequestBudget $budget): void { $this->heartbeatIfDue($budget); },
         );
-        $callback = function (\Closure $heartbeat) use ($handler, $attempt, $activityType, $arguments): mixed {
+        $callback = function (\Closure $heartbeat) use ($handler, $attempt, $activityType, $arguments, $task): mixed {
             if ($handler === null) {
                 throw new InvalidLocalActivityReport('No local activity handler is registered for '.$activityType.'.');
             }
-            return $handler(new ActivityContext($this->client, $attempt->taskId, $attempt->attemptId,
-                $attempt->leaseOwner, $activityType, $attempt->attemptNumber, localHeartbeat: $heartbeat), ...$arguments);
+            return $this->invokeActivity($handler, new ActivityContext($this->client, $attempt->taskId, $attempt->attemptId,
+                $attempt->leaseOwner, $activityType, $attempt->attemptNumber, localHeartbeat: $heartbeat), $arguments,
+                ['activity_id' => $attempt->executionId] + ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), true);
         };
 
         return ['runner' => $runner, 'callback' => $callback];
@@ -2389,7 +2404,8 @@ final class Worker
                         $callbackContext = new ActivityContext($this->client, $taskId, $attemptId, $leaseOwner,
                             $activityType, (int) ($task['attempt_number'] ?? 1), localHeartbeat: $heartbeat);
 
-                        return $handler($callbackContext, ...$arguments);
+                        return $this->invokeActivity($handler, $callbackContext, $arguments,
+                            ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue));
                     },
                     function (array $details) use ($taskId, $attemptId, $leaseOwner): array {
                         try {
@@ -2418,7 +2434,8 @@ final class Worker
                 );
                 $check(true);
             } else {
-                $result = $handler($context, ...$arguments);
+                $result = $this->invokeActivity($handler, $context, $arguments,
+                    ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue));
             }
             $this->retryStorageAdmission(
                 'activity_complete',
@@ -3075,11 +3092,11 @@ final class Worker
                         ),
                     ];
                 };
-                $callback = fn (\Closure $heartbeat): mixed => $handler(new ActivityContext(
+                $callback = fn (\Closure $heartbeat): mixed => $this->invokeActivity($handler, new ActivityContext(
                     $this->client, (string) ($task['task_id'] ?? ''), $attemptId,
                     (string) ($task['lease_owner'] ?? $this->workerId), $activityType, $attemptNumber,
                     localHeartbeat: $heartbeat,
-                ), ...$arguments);
+                ), $arguments, ['activity_id' => null] + ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), true);
                 if ($this->enableCooperativeCancellation) {
                     $nextRenewal = 0.0;
                     $check = function (bool $force) use ($task, &$nextRenewal, $attemptStartedAt,
@@ -3791,6 +3808,7 @@ final class Worker
 
     private function handlerFailure(string $kind, string $identity, Throwable $exception): void
     {
+        ExecutionTelemetry::failure($exception);
         $context = [
             'worker_id' => $this->workerId,
             'handler_kind' => $kind,
@@ -3802,6 +3820,22 @@ final class Worker
         }
 
         $this->diagnostic('worker.handler_failed', $context, 'error');
+    }
+
+    /** @param callable(ActivityContext, mixed ...$arguments): mixed $handler
+     *  @param list<mixed> $arguments
+     *  @param array<string, mixed> $fields
+     */
+    private function invokeActivity(callable $handler, ActivityContext $context, array $arguments, array $fields, bool $local = false): mixed
+    {
+        if ($this->telemetry === null) {
+            return $handler($context, ...$arguments);
+        }
+        $fields['activity_type'] = $context->activityType;
+        $fields['activity_attempt_id'] = $context->activityAttemptId;
+        $fields['activity_attempt_number'] = $context->attemptNumber;
+
+        return $this->telemetry->activity($fields, fn () => $handler($context, ...$arguments), $local);
     }
 
     /** @return array<string, mixed> */

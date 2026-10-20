@@ -12,6 +12,7 @@ use DurableWorkflow\Exception\DurableOperationCancelled;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Exception\WorkflowFiberDiscarded;
+use DurableWorkflow\Telemetry\ExecutionTelemetry;
 use Closure;
 use Fiber;
 use LogicException;
@@ -125,7 +126,7 @@ final class Replayer
         $allowScopeAuthoring = $allowCancellationScopeAuthoring
             && ($cancellation->request === null || $replayCommittedCancellationScopes);
         $context = null;
-        $execution = new Fiber(function () use ($handler, $history, $input, $task, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, $allowScopedPreparedLocalActivities, &$context): mixed {
+        $execution = new Fiber(ExecutionTelemetry::bind(function () use ($handler, $history, $input, $task, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, $allowScopedPreparedLocalActivities, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -155,7 +156,7 @@ final class Replayer
                 // No executor observes a return from a force-closed Fiber.
                 return null;
             }
-        });
+        }));
 
         $stepCursor = 0;
         $commands = [];
