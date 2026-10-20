@@ -13,6 +13,7 @@ use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\CooperativeActivityExecutor;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
+use DurableWorkflow\Worker\WorkflowFactory;
 use Fiber;
 use Monolog\Handler\TestHandler;
 use Monolog\Logger;
@@ -138,6 +139,57 @@ final class ExecutionTelemetryTest extends TestCase
         self::assertSame([], ExecutionTelemetry::current());
         self::assertCount(1, $exporter->getSpans());
         self::assertSame('durable.workflow.task', $exporter->getSpans()[0]->getName());
+    }
+
+    public function testFreshWorkflowFactoriesResolveInsideEachActualTaskContext(): void
+    {
+        [$telemetry, , $exporter] = $this->instrumentation();
+        $polls = 0;
+        $transport = new FakeTransport(handler: static function (string $method, string $uri, array $headers, ?array $body) use (&$polls): ?array {
+            if (str_ends_with($uri, '/workflow-tasks/poll')) {
+                ++$polls;
+
+                return ['task' => ['task_id' => 'workflow-task-'.$polls, 'workflow_id' => 'workflow-'.$polls,
+                    'run_id' => 'run-'.$polls, 'workflow_type' => 'telemetry.fresh-workflow',
+                    'workflow_task_attempt' => 1, 'payload_codec' => 'avro', 'history_events' => []],
+                    'poll_status' => 'leased'];
+            }
+            if (str_ends_with($uri, '/activity-tasks/poll') || str_ends_with($uri, '/query-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'empty'];
+            }
+            if (str_ends_with($uri, '/complete')) {
+                return ['recorded' => true];
+            }
+            if (str_ends_with($uri, '/heartbeat')) {
+                return ['renewed' => true, 'task_id' => 'workflow-task-'.$polls,
+                    'lease_owner' => $body['lease_owner'], 'workflow_task_attempt' => $body['workflow_task_attempt']];
+            }
+            if (str_ends_with($uri, '/fail')) {
+                throw new \LogicException('Unexpected workflow failure: '.($body['failure']['message'] ?? 'missing failure message'));
+            }
+            throw new \LogicException('Unexpected request '.$method.' '.$uri);
+        });
+        $constructions = [];
+        $shared = new \stdClass();
+        $worker = Worker::create(new Client('https://server.example', transport: $transport), 'orders', telemetry: $telemetry)
+            ->register(new WorkflowFactory(static function () use (&$constructions, $shared): TelemetryFreshWorkflow {
+                $constructions[] = ExecutionTelemetry::current();
+
+                return new TelemetryFreshWorkflow($shared);
+            }));
+        self::assertTrue($worker->tick(0));
+        self::assertTrue($worker->tick(0));
+        $scoped = array_values(array_filter($constructions, static fn (array $fields): bool => isset($fields['workflow_run_id'])));
+        self::assertSame(['run-1', 'run-2'], array_column($scoped, 'workflow_run_id'));
+        $completions = array_values(array_filter($transport->requests,
+            static fn (array $request): bool => str_ends_with($request['uri'], '/complete')));
+        self::assertCount(2, $completions);
+        $codec = (new Client('https://server.example'))->payloadCodec();
+        foreach ($completions as $completion) {
+            self::assertSame(1, $codec->decodeEnvelope($completion['body']['commands'][0]['result']));
+        }
+        self::assertCount(2, $exporter->getSpans());
+        self::assertSame([], ExecutionTelemetry::current());
     }
 
     public function testPrivacyAndOriginalExceptionIdentity(): void
@@ -384,5 +436,20 @@ final class ExecutionTelemetryTest extends TestCase
         $provider = new TracerProvider(new SimpleSpanProcessor($exporter));
 
         return [new ExecutionTelemetry($provider), $provider, $exporter];
+    }
+}
+
+final class TelemetryFreshWorkflow
+{
+    private int $calls = 0;
+
+    public function __construct(public readonly object $shared)
+    {
+    }
+
+    #[\DurableWorkflow\Attribute\Workflow('telemetry.fresh-workflow')]
+    public function run(WorkflowContext $context): int
+    {
+        return ++$this->calls;
     }
 }
