@@ -4,6 +4,7 @@
   "id": "remote-activity-unknown-retry-field",
   "protocol_version": "1",
   "bindings": ["php"],
+  "history": [{"event_type": "WorkflowStarted", "payload": {}}],
   "workflow": {
     "type": "golden.invalid-activity-options",
     "input": [{"retry_policy": {"maximum_attempts": 5}}]

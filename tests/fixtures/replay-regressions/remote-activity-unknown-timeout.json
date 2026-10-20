@@ -4,6 +4,7 @@
   "id": "remote-activity-unknown-timeout",
   "protocol_version": "1",
   "bindings": ["php"],
+  "history": [{"event_type": "WorkflowStarted", "payload": {}}],
   "workflow": {
     "type": "golden.invalid-activity-options",
     "input": [{"start_to_close_timeout_seconds": 30}]
