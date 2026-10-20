@@ -333,6 +333,13 @@ final class ReplayRegressionFixture
                     $context->activity('cleanup');
                 }
             },
+            'golden.invalid-activity-options' => static function (WorkflowContext $context, array $options): mixed {
+                try {
+                    return $context->activity('golden.greet', [], $options);
+                } catch (\InvalidArgumentException $error) {
+                    return $error->getMessage();
+                }
+            },
             'golden.single-activity' => static function (
                 WorkflowContext $context,
                 mixed $name,

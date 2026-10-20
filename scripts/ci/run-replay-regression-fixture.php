@@ -616,6 +616,13 @@ final class ReplayRegressionConsumer
                 return $context->serviceOperation('billing', 'invoices', 'create', ['invoice_id' => 42],
                     ['idempotency_key' => 'call-key'])->responsePayload;
             },
+            'golden.invalid-activity-options' => static function (WorkflowContext $context, array $options): mixed {
+                try {
+                    return $context->activity('golden.greet', [], $options);
+                } catch (\InvalidArgumentException $error) {
+                    return $error->getMessage();
+                }
+            },
             'golden.single-activity' => static function (
                 WorkflowContext $context,
                 mixed $name,
