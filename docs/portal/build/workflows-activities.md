@@ -69,14 +69,39 @@ Create execution-local variables and temporary mutable objects inside the
 workflow method. Workflow replay reconstructs durable values through `WorkflowContext`.
 Apply the same rule to queries and updates.
 
-The released SDK shallow-clones attributed workflow handlers without rerunning
-their constructors. Constructor-created nested objects and referenced
-properties can remain shared across workflows and replay attempts. Do not use
-them, injected services, static properties or captured shared objects for
-execution-local mutable state. The limitation is tracked in
-[#16](https://github.com/durable-workflow/sdk-php/issues/16). The proposed
-[fresh-construction correction](https://github.com/durable-workflow/sdk-php/pull/111)
-is not released.
+Attributed workflow handlers also receive a new instance for every task replay,
+query and update. Create nested execution-local objects inside the constructor
+or factory. Injected services retain their configured identities and must not
+hold execution-local mutable state. Static properties and objects captured
+outside a factory remain shared.
+
+Constructors and factories run repeatedly. Keep them free of external side
+effects; perform those effects in activities.
+
+### Migrate workflow registration from PHP SDK 2
+
+Register the workflow class when the SDK or container can construct it. Replace
+prebuilt workflow objects with an explicit construction recipe when dependencies
+need custom wiring:
+
+```php
+use DurableWorkflow\Worker\WorkflowFactory;
+
+$worker->register(new WorkflowFactory(
+    static fn (): OrderWorkflow => new OrderWorkflow($sharedClient),
+));
+```
+
+PSR-11 workflow bindings must return a new workflow on every resolution. Keep
+collaborators such as API clients shared where the application requires it.
+Laravel workflow bindings must be transient. Symfony's autoconfigured workflow
+services become non-shared while their collaborators keep their configured
+lifetimes. Activities and the low-level callable API retain their existing
+lifetimes. Reused factory instances fail registration; a factory that becomes
+invalid after startup produces a recoverable replay error.
+
+The upgrade does not rewrite committed history. Preserve the workflow's recorded
+command sequence and verify representative existing histories before deployment.
 
 ## Call a registered service
 

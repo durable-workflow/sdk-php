@@ -6,8 +6,23 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-20
+
+### Changed
+
+- Construct a fresh attributed workflow handler for every execution, replay,
+  query and update. Register workflow classes or an explicit `WorkflowFactory`
+  instead of prebuilt workflow objects. PSR-11 workflow bindings must be
+  transient; Laravel and Symfony retain shared injected collaborator identities.
+- Run workflow constructors and factories during replay. Keep external side
+  effects in activities. Activity services and low-level callable lifetimes
+  retain their application-owned behavior.
+
 ### Fixed
 
+- Isolate constructor-created nested mutable state across workflow IDs, runs
+  and replay attempts. Reject reused or changing factory results before polling
+  and report later construction failures as recoverable replay errors.
 - Retry expired idle worker I/O budgets with backoff and restore registration
   before acquiring more work. Task and cancellation authority deadlines retain
   their original bounds.

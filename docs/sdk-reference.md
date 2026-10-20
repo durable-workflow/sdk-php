@@ -434,24 +434,50 @@ Worker::create($client, 'php-workers')
     ->run();
 ```
 
-`register()` resolves class names once and validates every attributed method
+`register()` resolves class names and validates every attributed method
 before registration or polling. With no container, concrete classes with no
 required constructor arguments are instantiated automatically. Pass any PSR-11
 `ContainerInterface` as the third argument to `Worker::create()` when handlers
 have application dependencies.
 
-Registration retains a workflow handler template. Each attributed workflow task
-replay, query, and update runs on a shallow clone of it. The constructor is not
-rerun, and shallow cloning does not automatically isolate nested objects or referenced properties.
-Mutating constructor-created object state can therefore affect another workflow
-ID, run or replay. This limitation remains open in
-[#16](https://github.com/durable-workflow/sdk-php/issues/16).
+Attributed workflow classes have a replay-scoped lifecycle. Each workflow task
+replay, query, and update constructs a new handler. Constructor-created nested
+state belongs to that invocation, including mutable objects held by readonly
+properties. Constructors and container factories must be free of external side
+effects because construction repeats during replay. Perform side effects in
+activities.
 
-Keep workflow-local state in method variables. Create temporary mutable objects
-inside each workflow, query or update invocation. During workflow replay,
-reconstruct durable values through `WorkflowContext`. Injected collaborators retain their configured
-identity and must not hold execution-local state. Workflow handler classes must
-remain cloneable. The proposed fresh-construction API in #111 is not released.
+With a PSR-11 container, workflow bindings must return a new instance on every
+resolution. Dependencies such as API clients, loggers, and configuration may
+remain shared. Laravel's bridge resolves workflows for each invocation. The
+Symfony bridge makes attributed workflow services non-shared while retaining
+their dependencies' configured lifetimes.
+
+Use `WorkflowFactory` for custom construction or a container that exposes only
+singleton workflow services:
+
+```php
+use DurableWorkflow\Worker\WorkflowFactory;
+
+$sharedClient = $container->get(ApplicationApiClient::class);
+$worker->register(new WorkflowFactory(
+    static fn (): OrderWorkflow => new OrderWorkflow($sharedClient),
+));
+```
+
+Create execution-local state inside the workflow constructor or factory. Do not
+capture a mutable workflow-state object outside the factory and share it among
+the new handlers. Injected services retain their identity and must not hold
+execution-local state.
+
+**Registration migration:** replace `register($workflowObject)` with class
+registration or `register(new WorkflowFactory(fn () => new YourWorkflow($dependencies)))`.
+The SDK cannot infer a configured object's construction recipe or distinguish
+its nested state from shared services. Reused factory results and singleton
+workflow bindings fail validation before polling. A factory that becomes invalid
+after startup produces a recoverable `workflow_instance_factory_invalid` replay
+error instead of a terminal workflow completion or failure. Workflow classes no
+longer need to be cloneable.
 
 Activity services have worker-scoped lifetimes instead: their resolved instance
 is reused for activity tasks, so they can retain clients and other service

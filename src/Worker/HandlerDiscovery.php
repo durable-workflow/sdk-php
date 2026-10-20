@@ -32,7 +32,13 @@ final class HandlerDiscovery
     /** @param class-string|object $service */
     public function discover(string|object $service): DiscoveredHandlers
     {
-        $handler = is_object($service) ? $service : $this->resolver->resolve($service);
+        $factory = null;
+        if ($service instanceof WorkflowFactory) {
+            $factory = $service;
+        } elseif (is_string($service)) {
+            $factory = new WorkflowFactory(fn (): object => $this->resolver->resolve($service));
+        }
+        $handler = $factory === null ? $service : $factory->create();
         $reflection = new ReflectionClass($handler);
         $annotated = [];
         $workflowMethods = [];
@@ -79,16 +85,15 @@ final class HandlerDiscovery
             );
         }
 
-        $workflowPrototype = null;
         if ($workflowMethods !== []) {
-            if (!$reflection->isCloneable()) {
+            if ($factory === null) {
                 throw new InvalidWorkerDefinition(
                     $reflection->getName(),
-                    'Allow the workflow handler object to be cloned so every replay can start from clean instance state.',
+                    'Register the workflow class or a WorkflowFactory that creates a new workflow instance. An existing object cannot describe how to reconstruct its execution-local state and injected dependencies.',
                 );
             }
-
-            $workflowPrototype = clone $handler;
+            // Detect a singleton binding or invalid factory before registering or polling work.
+            $factory->create();
         }
 
         $workflowType = null;
@@ -103,8 +108,9 @@ final class HandlerDiscovery
                 $workflowType = $this->name($attribute->name, $method, 'workflow');
                 $this->assertContext($method, WorkflowContext::class, 'workflow');
                 $workflows[$workflowType] = HandlerDefinition::replaySafe(
-                    $workflowPrototype ?? $handler,
+                    $handler,
                     $method->getName(),
+                    $factory,
                 );
             } elseif ($attribute instanceof Activity) {
                 $name = $this->name($attribute->name ?? $method->getName(), $method, 'activity');
@@ -130,8 +136,9 @@ final class HandlerDiscovery
                 $this->assertContext($method, QueryContext::class, 'query');
                 $this->assertLocalUnique($queries[$workflowType] ?? [], $name, $method, 'query');
                 $queries[$workflowType][$name] = HandlerDefinition::replaySafe(
-                    $workflowPrototype ?? $handler,
+                    $handler,
                     $method->getName(),
+                    $factory,
                 );
             } elseif ($attribute instanceof Signal) {
                 $this->assertNotContextual($method, 'signal');
@@ -141,8 +148,9 @@ final class HandlerDiscovery
                 $this->assertContext($method, QueryContext::class, 'update');
                 $this->assertLocalUnique($updates[$workflowType] ?? [], $name, $method, 'update');
                 $updates[$workflowType][$name] = HandlerDefinition::replaySafe(
-                    $workflowPrototype ?? $handler,
+                    $handler,
                     $method->getName(),
+                    $factory,
                 );
             }
         }

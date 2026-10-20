@@ -6,6 +6,8 @@ require $argv[1];
 require __DIR__.'/history-cache.php';
 
 use DurableWorkflow\Attribute\Activity;
+use DurableWorkflow\Attribute\Query;
+use DurableWorkflow\Attribute\Update;
 use DurableWorkflow\Attribute\Workflow;
 use DurableWorkflow\Auth\Authentication;
 use DurableWorkflow\Bridge\Event\WorkerDiagnosticEvent;
@@ -14,10 +16,14 @@ use DurableWorkflow\Bridge\Symfony\DurableWorkflowBundle;
 use DurableWorkflow\Bridge\Symfony\Testing\InteractsWithDurableWorkflow;
 use DurableWorkflow\Bridge\Symfony\WorkerFactory;
 use DurableWorkflow\Client;
+use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Testing\WorkerTestHarness;
 use DurableWorkflow\Testing\WorkflowClientFake;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\WorkflowContext;
+use DurableWorkflow\Worker\WorkflowFactory;
 use DurableWorkflow\WorkflowClientInterface;
 use Psr\Log\AbstractLogger;
 use Psr\Log\LoggerInterface;
@@ -29,16 +35,40 @@ final class SymfonyGreetingDependency
 {
 }
 
+final class SymfonyWorkflowState
+{
+    public int $invocations = 0;
+}
+
 final class SymfonyGreetingHandler
 {
+    private readonly SymfonyWorkflowState $state;
+    public static ?SymfonyGreetingDependency $expectedDependency = null;
+
     public function __construct(public readonly SymfonyGreetingDependency $dependency)
     {
+        $this->state = new SymfonyWorkflowState();
     }
 
     #[Workflow('symfony.greeting')]
     public function workflow(WorkflowContext $context, string $name): string
     {
+        if (++$this->state->invocations !== 1 || $this->dependency !== self::$expectedDependency) {
+            throw new RuntimeException('Symfony must reconstruct local nested state and retain the shared dependency identity.');
+        }
         return $context->activity('symfony.greet', [$name]);
+    }
+
+    #[Query('state')]
+    public function state(QueryContext $context): int
+    {
+        return $this->state->invocations;
+    }
+
+    #[Update('increment')]
+    public function increment(QueryContext $context): int
+    {
+        return ++$this->state->invocations;
     }
 
     #[Activity('symfony.greet')]
@@ -117,7 +147,7 @@ $events->addListener('worker.shutdown_requested', static function (WorkerDiagnos
     $diagnostics[] = $event->name;
 });
 $container = new ContainerBuilder();
-$container->register(SymfonyGreetingDependency::class, SymfonyGreetingDependency::class);
+$container->register(SymfonyGreetingDependency::class, SymfonyGreetingDependency::class)->setPublic(true);
 $container->register(LoggerInterface::class)->setSynthetic(true)->setPublic(true);
 $container->register(EventDispatcherInterface::class)->setSynthetic(true)->setPublic(true);
 $bundle = new DurableWorkflowBundle();
@@ -139,6 +169,7 @@ $container->register(SymfonyGreetingHandler::class, SymfonyGreetingHandler::clas
 $container->compile();
 $container->set(LoggerInterface::class, $logger);
 $container->set(EventDispatcherInterface::class, $events);
+SymfonyGreetingHandler::$expectedDependency = $container->get(SymfonyGreetingDependency::class);
 
 $bundleExtension = $bundle->getContainerExtension();
 if (!$bundleExtension instanceof DurableWorkflowExtension || !trait_exists(InteractsWithDurableWorkflow::class)) {
@@ -185,11 +216,12 @@ $cacheMetrics = verifyConfiguredHistoryCache(static function (Transport $transpo
         'task_queue' => 'symfony-workers',
         'worker' => ['sticky_cache' => ['capacity' => 1, 'ttl_seconds' => 37]],
     ]);
+    $dependency = new SymfonyGreetingDependency();
 
     return (new WorkerFactory(
         $configuration,
         $configuration->workerClient($transport),
-        [new SymfonyGreetingHandler(new SymfonyGreetingDependency())],
+        [new WorkflowFactory(static fn (): SymfonyGreetingHandler => new SymfonyGreetingHandler($dependency))],
         events: $cacheEvents,
     ))->make();
 });
@@ -200,6 +232,23 @@ if ($worker->contracts()['workflows'] !== ['symfony.greeting']
     || $worker->contracts()['activities'] !== ['symfony.greet']
 ) {
     throw new RuntimeException('Symfony autowired handlers were not registered.');
+}
+$harness = new WorkerTestHarness($worker);
+$codec = new AvroPayloadCodec();
+$history = [
+    ['event_type' => 'ActivityScheduled', 'payload' => ['sequence' => 1, 'activity_type' => 'symfony.greet']],
+    ['event_type' => 'ActivityCompleted', 'payload' => ['sequence' => 1, 'activity_type' => 'symfony.greet', 'result' => $codec->envelope('hello, Ada')]],
+];
+foreach (['workflow-a', 'workflow-b', 'workflow-a'] as $id) {
+    $result = $harness->runWorkflow('symfony.greeting', ['Ada'], $history, ['workflow_id' => $id, 'run_id' => $id.'-run']);
+    if ($codec->decodeEnvelope($result->commands[0]['result'] ?? null) !== 'hello, Ada') {
+        throw new RuntimeException('Symfony replay did not preserve the recorded result across workflow instances.');
+    }
+}
+if ($harness->runQuery('symfony.greeting', 'state') !== 0
+    || $harness->runUpdate('symfony.greeting', 'increment') !== 1
+    || $harness->runQuery('symfony.greeting', 'state') !== 0) {
+    throw new RuntimeException('Symfony queries and updates shared workflow execution state.');
 }
 $worker->requestShutdown();
 if ($diagnostics !== ['worker.shutdown_requested']

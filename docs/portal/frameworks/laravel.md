@@ -267,7 +267,11 @@ Register both classes in the published configuration:
 ```
 
 An empty handler list is a startup error. The worker resolves every configured
-class through the Laravel container before polling. Dependencies read by a
+class through the Laravel container before polling. Each workflow replay,
+query and update resolves a fresh workflow instance. Use transient workflow
+bindings, such as `bind()`, rather than `singleton()` or `instance()`.
+Injected collaborators may retain their configured shared lifetime. Workflow
+constructors must be free of external side effects. Dependencies read by a
 workflow must be deterministic and stable across replay; put database, network,
 clock, and other side-effecting dependencies in activities.
 

@@ -18,11 +18,18 @@ injection, commands, logging, and tests.
 ## Install
 
 ```bash
-composer require durable-workflow/sdk:^2.0
+composer require durable-workflow/sdk
 ```
 
 The SDK requires PHP 8.1 or newer. It uses the official `apache/avro` package
 for portable payloads and accepts any PSR-18 HTTP client.
+
+Upgrading from PHP SDK 2 requires a workflow registration migration. Register
+workflow classes or a `WorkflowFactory` that constructs a fresh handler instead
+of passing prebuilt workflow objects. Workflow container bindings must be
+transient, while injected collaborators may remain shared. Constructors run
+during replay and must be free of external side effects. See the
+[registration migration guide](https://php.durable-workflow.com/build/workflows-activities/#migrate-workflow-registration-from-php-sdk-2).
 
 ## Choose Your Path
 
