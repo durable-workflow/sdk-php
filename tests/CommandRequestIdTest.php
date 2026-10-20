@@ -245,4 +245,14 @@ final class CommandRequestIdTest extends TestCase
         $client->signalWorkflow('order-1', 'approve', [], null, $limit);
         self::assertSame($limit, $transport->requests[0]['body']['request_id']);
     }
+
+    public function testThePublishedServerUnicodeKeyBoundaryIsPreserved(): void
+    {
+        $key = str_repeat('é', 255);
+        $transport = new FakeTransport([[], []]);
+        $client = new Client('https://server.example', transport: $transport);
+        $client->signalWorkflow('order-1', 'approve', [], requestId: $key);
+        $client->updateWorkflowReceipt('order-1', 'approve', [], requestId: $key);
+        self::assertSame([$key, $key], array_column(array_column($transport->requests, 'body'), 'request_id'));
+    }
 }
