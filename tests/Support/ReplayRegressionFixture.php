@@ -12,6 +12,7 @@ use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Exception\ChildWorkflowFailed;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
+use DurableWorkflow\Exception\WorkflowEntryArgumentsMismatch;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Testing\WorkerTestHarness;
 use DurableWorkflow\Worker;
@@ -175,12 +176,12 @@ final class ReplayRegressionFixture
                 'message' => $exception->getMessage(),
                 'exception_type' => $exception::class,
             ]];
-        } catch (NonDeterministicWorkflow $exception) {
+        } catch (NonDeterministicWorkflow|WorkflowEntryArgumentsMismatch $exception) {
             $commands = [[
                 'type' => 'replay_error',
                 'message' => $exception->getMessage(),
                 'reason' => $exception->reason,
-                'sequence' => $exception->sequence,
+                'sequence' => $exception instanceof NonDeterministicWorkflow ? $exception->sequence : null,
             ]];
         } catch (\Throwable $exception) {
             $commands = [[
@@ -322,6 +323,7 @@ final class ReplayRegressionFixture
     private static function workflow(string $workflowType): callable
     {
         return match ($workflowType) {
+            'golden.entry-arguments-required' => static fn (WorkflowContext $context, int $amount, int $required): int => $amount + $required,
             'golden.nexus-caller' => static function (WorkflowContext $context): mixed {
                 return $context->serviceOperation('billing', 'invoices', 'create', ['invoice_id' => 42],
                     ['idempotency_key' => 'call-key'])->responsePayload;

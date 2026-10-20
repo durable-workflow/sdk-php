@@ -50,9 +50,7 @@ Do not use the SDK repository's `main` branch as a production Composer source. I
 
 Start new workers before draining the old pool. Keep old and new builds registered only when both can replay the histories routed to that queue. If a change is not replay-compatible, use a new task queue or a worker build-routing plan rather than hoping restarts choose the right code.
 
-## Readiness and shutdown
-
-### Preserve workflow entry arguments
+## Preserve workflow entry arguments
 
 Recorded start input must still bind to the deployed workflow entry method.
 Adding a required parameter or changing its type can prevent the method from
@@ -66,6 +64,8 @@ operation to resume the same run. Inspect the refused task before repairing it;
 repeated incompatible deployments do not fix its input. A compatible optional
 parameter is allowed. A `TypeError` thrown after valid entry binding remains an
 application failure, rather than being relabelled as a deployment mismatch.
+
+## Readiness and shutdown
 
 Runtime readiness, worker admission, and process liveness are different signals:
 
