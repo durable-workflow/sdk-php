@@ -88,6 +88,12 @@ final class FulfillOrderWorkflow
 
 Add an autowired activity service with `#[Activity('orders.reserve')]`. The Bundle tags both services during container compilation, and the worker resolves their ordinary constructor dependencies. Use the explicit `handlers` list only for classes outside Symfony's autoconfigured imports.
 
+Attributed workflow services are non-shared. Every workflow replay, query and
+update constructs a fresh handler while injected collaborators keep their
+configured lifetimes. Keep workflow constructors free of external side effects.
+When constructing `WorkerFactory` manually, supply a `WorkflowFactory` for a
+workflow with custom dependencies instead of passing a prebuilt workflow object.
+
 Autowired workflow services use the same ordered barrier for concurrent work:
 
 ```php
