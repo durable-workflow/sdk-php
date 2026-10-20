@@ -30,6 +30,7 @@ use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
 use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
 use OpenTelemetry\SDK\Trace\TracerProvider;
 use PHPUnit\Framework\TestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 
 final class ExecutionTelemetryTest extends TestCase
@@ -173,7 +174,8 @@ final class ExecutionTelemetryTest extends TestCase
         self::assertSame(2, $calls);
     }
 
-    public function testSequentialWorkerAttemptsKeepLogicalIdentityAndWireOutcomes(): void
+    #[DataProvider('workerSurfaces')]
+    public function testSequentialWorkerAttemptsKeepLogicalIdentityAndWireOutcomes(bool $factory): void
     {
         [$telemetry, , $exporter] = $this->instrumentation();
         $polls = 0;
@@ -193,8 +195,9 @@ final class ExecutionTelemetryTest extends TestCase
             throw new \LogicException('Unexpected request '.$method.' '.$uri);
         });
         $seen = [];
-        $worker = new Worker(new Client('https://server.example', namespace: 'tenant-a', transport: $transport),
-            'orders', workerId: 'worker-1', clock: static fn (): float => 0, telemetry: $telemetry);
+        $client = new Client('https://server.example', namespace: 'tenant-a', transport: $transport);
+        $worker = $factory ? Worker::create($client, 'orders', telemetry: $telemetry)
+            : new Worker($client, 'orders', workerId: 'worker-1', clock: static fn (): float => 0, telemetry: $telemetry);
         $worker->registerActivity('orders.charge', static function (ActivityContext $context) use (&$seen): string {
             $seen[] = ExecutionTelemetry::current();
             if ($context->attemptNumber === 1) {
@@ -222,6 +225,12 @@ final class ExecutionTelemetryTest extends TestCase
         self::assertSame('attempt-1', $outcomes[0]['body']['activity_attempt_id']);
         self::assertSame('attempt-2', $outcomes[1]['body']['activity_attempt_id']);
         self::assertCount(4, $exporter->getSpans());
+    }
+
+    public static function workerSurfaces(): iterable
+    {
+        yield 'constructor' => [false];
+        yield 'class-oriented factory' => [true];
     }
 
     public function testOptionalApiAndMonologCanBothBeAbsent(): void

@@ -7,6 +7,7 @@ namespace DurableWorkflow\Bridge\Laravel;
 use DurableWorkflow\Bridge\Event\WorkerDiagnosticEvent;
 use DurableWorkflow\Bridge\ServiceConfiguration;
 use DurableWorkflow\Client;
+use DurableWorkflow\Telemetry\ExecutionTelemetry;
 use DurableWorkflow\Worker;
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Contracts\Events\Dispatcher;
@@ -23,6 +24,7 @@ final class WorkerFactory
         private readonly LoggerInterface $logger,
         private readonly ?Dispatcher $events = null,
         private readonly string $credentialRole = 'worker',
+        private readonly ?ExecutionTelemetry $telemetry = null,
     ) {
         if (!in_array($this->credentialRole, ['worker', 'shared'], true)) {
             throw new InvalidArgumentException('The Laravel worker credential role must be worker or shared.');
@@ -62,6 +64,7 @@ final class WorkerFactory
             },
             stickyCacheCapacity: $this->configuration->stickyCacheCapacity,
             stickyCacheTtlSeconds: $this->configuration->stickyCacheTtlSeconds,
+            telemetry: $this->telemetry,
         );
 
         $handlers = [];

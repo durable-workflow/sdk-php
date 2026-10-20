@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 require $argv[1];
 require __DIR__.'/history-cache.php';
+require __DIR__.'/execution-telemetry.php';
 
 use DurableWorkflow\Attribute\Activity;
 use DurableWorkflow\Attribute\Workflow;
@@ -258,6 +259,14 @@ if (($clientAuthentication->headers(false)['Authorization'] ?? null) !== 'Bearer
     throw new RuntimeException('Laravel provider did not preserve role-specific client credentials.');
 }
 $worker = $factory->make();
+verifyFrameworkExecutionTelemetry(static function (Client $client, ?\DurableWorkflow\Telemetry\ExecutionTelemetry $telemetry) use ($app): \DurableWorkflow\Worker {
+    $configuration = new \DurableWorkflow\Bridge\ServiceConfiguration('https://framework.invalid', 'framework-namespace',
+        'framework-queue', [FrameworkTelemetryHandler::class]);
+
+    return (new WorkerFactory($app, $configuration, $client, new LaravelBridgeLogger(), telemetry: $telemetry))->make();
+}, static function (\Monolog\Logger $logger): void {
+    (new \DurableWorkflow\Bridge\Laravel\LogContext())(new \Illuminate\Log\Logger($logger));
+});
 $cacheStoppedContext = null;
 $cacheEvents = new Dispatcher($app);
 $cacheEvents->listen(WorkerDiagnosticEvent::class, static function (WorkerDiagnosticEvent $event) use (&$cacheStoppedContext): void {

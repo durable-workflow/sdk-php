@@ -78,6 +78,8 @@ final class DurableWorkflowServiceProvider extends ServiceProvider
                 $logger,
                 $events,
                 ProcessCredentialResolver::workerCredentialRole(),
+                $app->bound(\DurableWorkflow\Telemetry\ExecutionTelemetry::class)
+                    ? $app->make(\DurableWorkflow\Telemetry\ExecutionTelemetry::class) : null,
             );
         });
     }

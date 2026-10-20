@@ -181,6 +181,7 @@ final class Worker
         int $stickyCacheCapacity = 100,
         int $stickyCacheTtlSeconds = 300,
         bool $requireQueryTaskAuthority = false,
+        ?ExecutionTelemetry $telemetry = null,
     ): self {
         return new self(
             $client,
@@ -191,6 +192,7 @@ final class Worker
             stickyCacheCapacity: $stickyCacheCapacity,
             stickyCacheTtlSeconds: $stickyCacheTtlSeconds,
             requireQueryTaskAuthority: $requireQueryTaskAuthority,
+            telemetry: $telemetry,
         );
     }
 

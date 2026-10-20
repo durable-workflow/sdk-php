@@ -57,6 +57,7 @@ final class DurableWorkflowExtension extends Extension
                 new TaggedIteratorArgument(self::HANDLER_TAG),
                 new Reference(LoggerInterface::class, ContainerBuilder::NULL_ON_INVALID_REFERENCE),
                 new Reference(EventDispatcherInterface::class, ContainerBuilder::NULL_ON_INVALID_REFERENCE),
+                new Reference(\DurableWorkflow\Telemetry\ExecutionTelemetry::class, ContainerBuilder::NULL_ON_INVALID_REFERENCE),
             ])
             ->setPublic(true);
         $container->register(WorkerCommand::class, WorkerCommand::class)
