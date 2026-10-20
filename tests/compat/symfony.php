@@ -23,6 +23,7 @@ use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\WorkflowContext;
+use DurableWorkflow\Worker\WorkflowFactory;
 use DurableWorkflow\WorkflowClientInterface;
 use Psr\Log\AbstractLogger;
 use Psr\Log\LoggerInterface;
@@ -215,11 +216,12 @@ $cacheMetrics = verifyConfiguredHistoryCache(static function (Transport $transpo
         'task_queue' => 'symfony-workers',
         'worker' => ['sticky_cache' => ['capacity' => 1, 'ttl_seconds' => 37]],
     ]);
+    $dependency = new SymfonyGreetingDependency();
 
     return (new WorkerFactory(
         $configuration,
         $configuration->workerClient($transport),
-        [new SymfonyGreetingHandler(new SymfonyGreetingDependency())],
+        [new WorkflowFactory(static fn (): SymfonyGreetingHandler => new SymfonyGreetingHandler($dependency))],
         events: $cacheEvents,
     ))->make();
 });
