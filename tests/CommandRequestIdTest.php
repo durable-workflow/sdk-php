@@ -10,7 +10,10 @@ use DurableWorkflow\Exception\SignalFailed;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Exception\UpdateFailed;
 use DurableWorkflow\Tests\Support\FakeTransport;
+use DurableWorkflow\WorkflowHandleInterface;
 use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\PreserveGlobalState;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 
 /** The caller command key (`request_id`) that makes signal and update retries safe. */
@@ -259,5 +262,41 @@ final class CommandRequestIdTest extends TestCase
         $client->signalWorkflow('order-1', 'approve', [], requestId: $key);
         $client->updateWorkflowReceipt('order-1', 'approve', [], requestId: $key);
         self::assertSame([$key, $key], array_column(array_column($transport->requests, 'body'), 'request_id'));
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testPublishedCustomHandleImplementationsStillLoadAndDeliverSignals(): void
+    {
+        $handle = new class implements WorkflowHandleInterface {
+            public array $signals = [];
+
+            public function signal(string $name, array $arguments = []): void
+            {
+                $this->signals[] = [$name, $arguments];
+            }
+
+            public function appendMessage(string $streamName, string $messageId, array $arguments = []): array
+            {
+                return [];
+            }
+
+            public function query(string $name, array $arguments = []): mixed
+            {
+                return null;
+            }
+
+            public function update(string $name, array $arguments = [], string $waitFor = 'completed', ?int $waitTimeoutSeconds = null, ?string $requestId = null): mixed
+            {
+                return null;
+            }
+
+            public function result(float $timeoutSeconds = 30.0, float $pollIntervalSeconds = 0.5): mixed
+            {
+                return null;
+            }
+        };
+        $handle->signal('approve', ['Київ']);
+        self::assertSame([['approve', ['Київ']]], $handle->signals);
     }
 }
