@@ -61,29 +61,37 @@ final class WorkflowEntryArguments
     /** @param ReflectionClass<object>|null $scope */
     private static function matches(ReflectionType $type, mixed $value, ?ReflectionClass $scope): bool
     {
-        if ($value === null && $type->allowsNull()) {
-            return true;
-        }
-        if ($type instanceof ReflectionUnionType) {
-            foreach ($type->getTypes() as $member) {
-                if (self::matches($member, $value, $scope)) {
-                    return true;
-                }
+        return match (true) {
+            $value === null && $type->allowsNull() => true,
+            $type instanceof ReflectionUnionType => self::matchesUnion($type, $value, $scope),
+            $type instanceof ReflectionIntersectionType => self::matchesIntersection($type, $value, $scope),
+            $type instanceof ReflectionNamedType => self::matchesNamed($type, $value, $scope),
+            default => false,
+        };
+    }
+
+    /** @param ReflectionClass<object>|null $scope */
+    private static function matchesUnion(ReflectionUnionType $type, mixed $value, ?ReflectionClass $scope): bool
+    {
+        foreach ($type->getTypes() as $member) {
+            if (self::matches($member, $value, $scope)) {
+                return true;
             }
-
-            return false;
         }
-        if ($type instanceof ReflectionIntersectionType) {
-            foreach ($type->getTypes() as $member) {
-                if (!self::matches($member, $value, $scope)) {
-                    return false;
-                }
+
+        return false;
+    }
+
+    /** @param ReflectionClass<object>|null $scope */
+    private static function matchesIntersection(ReflectionIntersectionType $type, mixed $value, ?ReflectionClass $scope): bool
+    {
+        foreach ($type->getTypes() as $member) {
+            if (!self::matches($member, $value, $scope)) {
+                return false;
             }
-
-            return true;
         }
 
-        return $type instanceof ReflectionNamedType && self::matchesNamed($type, $value, $scope);
+        return true;
     }
 
     /** @param ReflectionClass<object>|null $scope */
