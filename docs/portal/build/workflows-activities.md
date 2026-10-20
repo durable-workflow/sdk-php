@@ -67,9 +67,10 @@ The released SDK shallow-clones attributed workflow handlers without rerunning
 their constructors. Constructor-created nested objects and referenced
 properties can remain shared across workflows and replay attempts. Do not use
 them, injected services, static properties or captured shared objects for
-execution-local mutable state. This handler-lifetime limitation remains open in
-[#16](https://github.com/durable-workflow/sdk-php/issues/16); the proposed
-fresh-construction correction is not released.
+execution-local mutable state. The limitation is tracked in
+[#16](https://github.com/durable-workflow/sdk-php/issues/16). The proposed
+[fresh-construction correction](https://github.com/durable-workflow/sdk-php/pull/111)
+is not released.
 
 ## Call a registered service
 
