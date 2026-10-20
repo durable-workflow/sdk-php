@@ -36,9 +36,9 @@ final class WorkflowHandle implements WorkflowHandleInterface
     }
 
     /** @param list<mixed> $arguments */
-    public function signal(string $name, array $arguments = []): void
+    public function signal(string $name, array $arguments = [], ?string $requestId = null): void
     {
-        $this->client->signalWorkflow($this->workflowId, $name, $arguments);
+        $this->client->signalWorkflow($this->workflowId, $name, $arguments, null, $requestId);
     }
 
     /**
@@ -51,9 +51,9 @@ final class WorkflowHandle implements WorkflowHandleInterface
     }
 
     /** @param list<mixed> $arguments */
-    public function signalSelectedRun(string $name, array $arguments = []): void
+    public function signalSelectedRun(string $name, array $arguments = [], ?string $requestId = null): void
     {
-        $this->client->signalWorkflow($this->workflowId, $name, $arguments, $this->requireSelectedRun());
+        $this->client->signalWorkflow($this->workflowId, $name, $arguments, $this->requireSelectedRun(), $requestId);
     }
 
     /** @param list<mixed> $arguments */

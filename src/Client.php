@@ -718,6 +718,13 @@ final class Client implements WorkflowClientInterface
     }
 
     /**
+     * Send a signal and return the Server receipt.
+     *
+     * `$requestId` is the caller command key (1 to 255 Unicode characters). Omit it
+     * to generate `sdk-php-signal-<hex>` once per call. The receipt always
+     * carries `request_id`; retrying with the same key and intent returns the
+     * retained receipt (`retained: true`) instead of a second signal.
+     *
      * @param list<mixed> $arguments
      * @return array<string, mixed>
      */
@@ -726,10 +733,16 @@ final class Client implements WorkflowClientInterface
         string $signalName,
         array $arguments = [],
         ?string $runId = null,
+        ?string $requestId = null,
     ): array {
+        $requestId = $this->commandRequestId('signal', $requestId);
         $path = $this->workflowOperationPath($workflowId, $runId, 'signal/'.$this->segment($signalName));
+        $response = $this->control('POST', $path, [
+            'input' => $this->codec->envelope($arguments),
+            'request_id' => $requestId,
+        ], 'signal', $requestId);
 
-        return $this->control('POST', $path, ['input' => $this->codec->envelope($arguments)], 'signal');
+        return $response + ['request_id' => $requestId];
     }
 
     /**
@@ -765,7 +778,13 @@ final class Client implements WorkflowClientInterface
         return $this->resultFromResponse($response);
     }
 
-    /** @param list<mixed> $arguments */
+    /**
+     * Send an update and return its decoded result, or the receipt while the
+     * update is still pending. Use updateWorkflowReceipt() to read the receipt
+     * with its `request_id` after a completed update.
+     *
+     * @param list<mixed> $arguments
+     */
     public function updateWorkflow(
         string $workflowId,
         string $updateName,
@@ -775,15 +794,41 @@ final class Client implements WorkflowClientInterface
         ?string $requestId = null,
         ?string $runId = null,
     ): mixed {
+        return $this->resultFromResponse($this->updateWorkflowReceipt(
+            $workflowId, $updateName, $arguments, $waitFor, $waitTimeoutSeconds, $requestId, $runId,
+        ));
+    }
+
+    /**
+     * Send an update and return the Server receipt.
+     *
+     * `$requestId` is the caller command key (1 to 255 Unicode characters). Omit it
+     * to generate `sdk-php-update-<hex>` once per call. The receipt always
+     * carries `request_id`; retrying with the same key and intent returns the
+     * retained receipt (`retained: true`) instead of a second update.
+     *
+     * @param list<mixed> $arguments
+     * @return array<string, mixed>
+     */
+    public function updateWorkflowReceipt(
+        string $workflowId,
+        string $updateName,
+        array $arguments = [],
+        string $waitFor = 'completed',
+        ?int $waitTimeoutSeconds = null,
+        ?string $requestId = null,
+        ?string $runId = null,
+    ): array {
+        $requestId = $this->commandRequestId('update', $requestId);
         $path = $this->workflowOperationPath($workflowId, $runId, 'update/'.$this->segment($updateName));
         $response = $this->control('POST', $path, $this->withoutNulls([
             'input' => $this->codec->envelope($arguments),
             'wait_for' => $waitFor,
             'wait_timeout_seconds' => $waitTimeoutSeconds,
             'request_id' => $requestId,
-        ]), 'update');
+        ]), 'update', $requestId);
 
-        return $this->resultFromResponse($response);
+        return $response + ['request_id' => $requestId];
     }
 
     /** @return array<string, mixed> */
@@ -2186,9 +2231,14 @@ final class Client implements WorkflowClientInterface
      * @param array<string, mixed>|null $body
      * @return array<string, mixed>
      */
-    private function control(string $method, string $path, ?array $body = null, ?string $operation = null): array
-    {
-        return $this->request($method, $path, false, $body, $operation);
+    private function control(
+        string $method,
+        string $path,
+        ?array $body = null,
+        ?string $operation = null,
+        ?string $requestId = null,
+    ): array {
+        return $this->request($method, $path, false, $body, $operation, requestId: $requestId);
     }
 
     /**
@@ -2384,6 +2434,7 @@ final class Client implements WorkflowClientInterface
         ?string $operation = null,
         ?RequestBudget $budget = null,
         ?\Closure $payloadPaths = null,
+        ?string $requestId = null,
     ): array {
         $headers = $this->requestHeaders($worker);
         try {
@@ -2432,10 +2483,10 @@ final class Client implements WorkflowClientInterface
                 throw new QueryFailed($message, $status, $reason, $details, $exception);
             }
             if ($operation === 'update') {
-                throw new UpdateFailed($message, $status, $reason, $details, $exception);
+                throw new UpdateFailed($message, $status, $reason, $details, $exception, $requestId);
             }
             if ($operation === 'signal') {
-                throw new SignalFailed($message, $status, $reason, $details, $exception);
+                throw new SignalFailed($message, $status, $reason, $details, $exception, $requestId);
             }
 
             throw new ServerException($message, $status, $reason, $details, $exception);
@@ -2627,6 +2678,20 @@ final class Client implements WorkflowClientInterface
     private function requestId(string $prefix): string
     {
         return $prefix.'-'.bin2hex(random_bytes(16));
+    }
+
+    /** The caller command key for a signal or update: validated when supplied, otherwise generated once per call. */
+    private function commandRequestId(string $command, ?string $requestId): string
+    {
+        if ($requestId === null) {
+            return $this->requestId('sdk-php-'.$command);
+        }
+        $characters = preg_match_all('/./us', $requestId);
+        if ($characters === false || $characters < 1 || $characters > 255) {
+            throw new InvalidArgumentException(ucfirst($command).' request IDs must be from 1 to 255 Unicode characters.');
+        }
+
+        return $requestId;
     }
 
     /**
