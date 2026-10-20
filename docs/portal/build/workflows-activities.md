@@ -59,7 +59,7 @@ Remote activity options are `connection`, `queue`, `retry_policy`,
 `start_to_close_timeout`, `schedule_to_start_timeout`, `schedule_to_close_timeout`,
 `heartbeat_timeout`, `worker_session` and `cancellation_policy`. Unknown option
 or retry-policy field names fail locally with `InvalidArgumentException`.
-See [failures and retries](failures-retries.md) for the retry policy fields.
+See [failures and retries](/build/failures-retries/) for the retry policy fields.
 
 The sequence, type, and details of context operations are durable. Changing them while old histories are still running can raise `NonDeterministicWorkflow`. Deploy replay-compatible code or drain incompatible histories before removing an old branch.
 
