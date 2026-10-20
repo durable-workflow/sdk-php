@@ -7,9 +7,11 @@ namespace DurableWorkflow\Telemetry;
 use Closure;
 use Composer\InstalledVersions;
 use Fiber;
+use OpenTelemetry\API\Baggage\Propagation\BaggagePropagator;
 use OpenTelemetry\API\Globals;
 use OpenTelemetry\API\Instrumentation\Configurator;
 use OpenTelemetry\API\Trace\NoopTracerProvider;
+use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
 use OpenTelemetry\API\Trace\Span;
 use OpenTelemetry\API\Trace\SpanInterface;
 use OpenTelemetry\API\Trace\SpanKind;
@@ -38,6 +40,8 @@ final class ExecutionTelemetry
     private readonly int $ownerPid;
     private readonly ?TracerProviderInterface $provider;
     private readonly ?ContextInterface $applicationContext;
+    private ?int $childProviderPid = null;
+    private ?TracerProviderInterface $childProvider = null;
 
     /**
      * A cooperative callback must create its own provider after fork. Use a
@@ -45,11 +49,13 @@ final class ExecutionTelemetry
      * Without a factory, child tracing is disabled rather than reusing sockets.
      *
      * @param (Closure(): TracerProviderInterface)|null $childProviderFactory
+     * @param list<string> $baggageAllowlist
      */
     public function __construct(
         ?TracerProviderInterface $tracerProvider = null,
         private readonly bool $enabled = true,
         private readonly ?Closure $childProviderFactory = null,
+        private readonly array $baggageAllowlist = [],
     ) {
         $this->ownerPid = getmypid();
         $provider = null;
@@ -70,6 +76,15 @@ final class ExecutionTelemetry
         $this->applicationContext = $applicationContext;
     }
 
+    /** Capture the actual caller before HTTP transport, using the app's propagators.
+     * @return array<string, mixed>|null
+     */
+    public function capture(): ?array
+    {
+        return $this->enabled && $this->provider !== null
+            ? TraceCarrier::capture($this->baggageAllowlist) : null;
+    }
+
     /**
      * Uses only existing poll identities. Durable wire carriers are not adopted here.
      *
@@ -84,6 +99,29 @@ final class ExecutionTelemetry
         }
 
         return $this->run('durable.'.$kind.'.task', $fields, $operation);
+    }
+
+    /** @internal Call only after the existing claim/receipt gates have passed.
+     * @param array<string, mixed> $task
+     * @return Closure(): void
+     */
+    public function enterTask(string $kind, array $task, string $namespace, string $queue): Closure
+    {
+        $fields = self::taskFields($task, $namespace, $queue);
+        if ($kind !== 'activity') {
+            unset($fields['activity_id'], $fields['activity_type'], $fields['activity_attempt_id'], $fields['activity_attempt_number']);
+        }
+        $opened = $this->open('durable.'.$kind.'.task', $fields, false, $task);
+        $closed = false;
+
+        return static function () use ($opened, &$closed): void {
+            if ($opened !== null && !$closed) {
+                $closed = true;
+                [$scope, $span, $shield] = $opened;
+                self::close($scope, $span);
+                self::close($shield, null);
+            }
+        };
     }
 
     /** @param array<string, mixed> $fields */
@@ -185,8 +223,30 @@ final class ExecutionTelemetry
     /** @param array<string, mixed> $attributes */
     private function run(string $name, array $attributes, callable $operation, bool $inherit = false): mixed
     {
-        if (!$this->enabled || $this->provider === null || $this->applicationContext === null) {
+        $opened = $this->open($name, $attributes, $inherit);
+        if ($opened === null) {
             return $operation();
+        }
+        [$scope, $span, $childShield] = $opened;
+        try {
+            return $operation();
+        } catch (Throwable $failure) {
+            self::failure($failure);
+            throw $failure;
+        } finally {
+            self::close($scope, $span);
+            self::close($childShield, null);
+        }
+    }
+
+    /** @param array<string, mixed> $attributes
+     * @param array<string, mixed>|null $wireTask
+     * @return array{?ScopeInterface, ?SpanInterface, ?ScopeInterface}|null
+     */
+    private function open(string $name, array $attributes, bool $inherit, ?array $wireTask = null): ?array
+    {
+        if (!$this->enabled || $this->provider === null || $this->applicationContext === null) {
+            return null;
         }
         $span = null;
         $scope = null;
@@ -203,14 +263,8 @@ final class ExecutionTelemetry
                     ->storeInContext($this->applicationContext);
                 $childShield = $safe->activate();
                 self::enterFiber();
-                $provider = new NoopTracerProvider();
-                if ($this->childProviderFactory !== null) {
-                    try {
-                        $provider = ($this->childProviderFactory)();
-                    } catch (Throwable) {
-                        $parent = $safe;
-                    }
-                } else {
+                $provider = $this->childTracerProvider();
+                if ($provider instanceof NoopTracerProvider) {
                     $parent = $safe;
                 }
                 $parent = Configurator::create()->withTracerProvider($provider)
@@ -221,31 +275,71 @@ final class ExecutionTelemetry
             $fields = self::fields($attributes);
             $version = InstalledVersions::isInstalled('durable-workflow/sdk')
                 ? InstalledVersions::getPrettyVersion('durable-workflow/sdk') : null;
-            $span = $provider->getTracer('durable-workflow/sdk', $version)->spanBuilder($name)
+            $builder = $provider->getTracer('durable-workflow/sdk', $version)->spanBuilder($name)
                 ->setSpanKind($inherit ? SpanKind::KIND_INTERNAL : SpanKind::KIND_CONSUMER)
-                ->setParent($parent)->setAttributes($fields)->startSpan();
+                ->setAttributes($fields);
+            if ($wireTask !== null) {
+                $origin = TraceCarrier::normalize($wireTask['observability_context'] ?? null, $this->baggageAllowlist, $diagnostic);
+                if ($origin !== null) {
+                    $parent = TraceContextPropagator::getInstance()->extract($origin['carrier'], context: $parent);
+                    $parent = BaggagePropagator::getInstance()->extract($origin['carrier'], context: $parent);
+                }
+                if ($diagnostic !== null) {
+                    $builder->setAttribute('durable.observability_context', $diagnostic);
+                }
+                $taskId = $wireTask['task_id'] ?? $wireTask['query_task_id'] ?? null;
+                $taskId = is_string($taskId) ? $taskId : '';
+                $dispatch = TraceCarrier::dispatch($wireTask['dispatch_observability_context'] ?? null, $taskId, $diagnostic);
+                if ($dispatch !== null) {
+                    $linked = TraceContextPropagator::getInstance()->extract($dispatch['carrier'], context: Context::getRoot());
+                    $builder->addLink(Span::fromContext($linked)->getContext(), ['durable.link.type' => 'dispatch', 'task_id' => $taskId]);
+                }
+                if ($diagnostic !== null) {
+                    $builder->setAttribute('durable.dispatch_context', $diagnostic);
+                }
+                $runId = $wireTask['run_id'] ?? null;
+                $namespace = $attributes['namespace'] ?? null;
+                $links = TraceLinks::normalize($wireTask['observability_links'] ?? null, $taskId,
+                    is_string($runId) ? $runId : '', is_string($namespace) ? $namespace : '', $diagnostic);
+                foreach ($links as $entry) {
+                    $linked = TraceContextPropagator::getInstance()->extract($entry['context']['carrier'], context: Context::getRoot());
+                    $linkFields = array_diff_key($entry, ['kind' => true, 'context' => true]);
+                    // A nullable producer task stays absent; it is never fabricated.
+                    $linkFields = array_filter($linkFields, static fn (mixed $value): bool => $value !== null);
+                    $builder->addLink(Span::fromContext($linked)->getContext(), ['durable.link.type' => $entry['kind']] + $linkFields);
+                }
+                if ($diagnostic !== null) {
+                    $builder->setAttribute('durable.observability_links', $diagnostic);
+                }
+            }
+            $span = $builder->setParent($parent)->startSpan();
             self::$key ??= Context::createKey('durable-workflow.sdk.correlation');
             $scope = $span->storeInContext($parent)->with(self::$key, $fields)->activate();
             self::enterFiber();
         } catch (Throwable) {
             self::close($scope, $span);
+            // Keep a child's no-op shield active through callback fallback.
+            return $childShield === null ? null : [null, null, $childShield];
+        }
 
-            try {
-                return $operation();
-            } finally {
-                self::close($childShield, null);
+        return [$scope, $span, $childShield];
+    }
+
+    private function childTracerProvider(): TracerProviderInterface
+    {
+        if ($this->childProviderPid !== getmypid()) {
+            $this->childProviderPid = getmypid();
+            $this->childProvider = new NoopTracerProvider();
+            if ($this->childProviderFactory !== null) {
+                try {
+                    $this->childProvider = ($this->childProviderFactory)();
+                } catch (Throwable) {
+                    // One failed setup stays no-op for this process.
+                }
             }
         }
 
-        try {
-            return $operation();
-        } catch (Throwable $failure) {
-            self::failure($failure);
-            throw $failure;
-        } finally {
-            self::close($scope, $span);
-            self::close($childShield, null);
-        }
+        return $this->childProvider ?? new NoopTracerProvider();
     }
 
     /** @param array<string, mixed> $attributes

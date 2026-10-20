@@ -46,6 +46,8 @@ use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Transport\RuntimePayloads;
 use DurableWorkflow\Transport\RuntimePayloadUploads;
 use DurableWorkflow\Transport\RequestBudget;
+use DurableWorkflow\Telemetry\ExecutionTelemetry;
+use DurableWorkflow\Telemetry\TraceCarrier;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\CancellationRequest;
@@ -69,6 +71,8 @@ final class Client implements WorkflowClientInterface
     private readonly PayloadCodec $codec;
     private readonly RuntimePayloadUploads $payloadUploads;
     private bool $boundedWorkerRequests = false;
+    private ?ExecutionTelemetry $executionTelemetry = null;
+    private bool $observabilityContextSupported = false;
     /** @var (\Closure(string, array<string, mixed>|null, array<string, mixed>, RequestBudget|null): (?\Closure))|null */
     private ?\Closure $workerPayloadObserver = null;
 
@@ -125,6 +129,21 @@ final class Client implements WorkflowClientInterface
     public function payloadCodec(): PayloadCodec
     {
         return $this->codec;
+    }
+
+    /** Configure tracing before explicit cluster discovery and business I/O. */
+    public function withTelemetry(ExecutionTelemetry $telemetry): self
+    {
+        $copy = clone $this;
+        $copy->executionTelemetry = $telemetry;
+
+        return $copy;
+    }
+
+    /** @internal Uses actual cached discovery; never performs optional I/O in a business command. */
+    public function observabilityContextAvailable(): bool
+    {
+        return $this->observabilityContextSupported;
     }
 
     /**
@@ -192,9 +211,13 @@ final class Client implements WorkflowClientInterface
 
     public function clusterInfo(bool $includeDiagnostics = false): ClusterInfo
     {
+        $this->observabilityContextSupported = false;
         $path = $includeDiagnostics ? '/cluster/info?include=diagnostics' : '/cluster/info';
 
-        return ClusterInfo::fromArray($this->control('GET', $path));
+        $info = $this->control('GET', $path);
+        $this->observabilityContextSupported = TraceCarrier::supported($info);
+
+        return ClusterInfo::fromArray($info);
     }
 
     /**
@@ -302,7 +325,11 @@ final class Client implements WorkflowClientInterface
     /** Discover ordinary runtime capabilities using the worker credential. */
     public function workerClusterInfo(): ClusterInfo
     {
-        return ClusterInfo::fromArray($this->worker('GET', '/cluster/info'));
+        $this->observabilityContextSupported = false;
+        $info = $this->worker('GET', '/cluster/info');
+        $this->observabilityContextSupported = TraceCarrier::supported($info);
+
+        return ClusterInfo::fromArray($info);
     }
 
     /**
@@ -340,7 +367,7 @@ final class Client implements WorkflowClientInterface
             'fairness_weight' => $fairnessWeight,
             'build_id' => $buildId,
         ]);
-        $response = $this->control('POST', '/workflows', $body);
+        $response = $this->control('POST', '/workflows', $this->withObservabilityContext($body));
 
         return new WorkflowHandle(
             $this,
@@ -737,10 +764,10 @@ final class Client implements WorkflowClientInterface
     ): array {
         $requestId = $this->commandRequestId('signal', $requestId);
         $path = $this->workflowOperationPath($workflowId, $runId, 'signal/'.$this->segment($signalName));
-        $response = $this->control('POST', $path, [
+        $response = $this->control('POST', $path, $this->withObservabilityContext([
             'input' => $this->codec->envelope($arguments),
             'request_id' => $requestId,
-        ], 'signal', $requestId);
+        ]), 'signal', $requestId);
 
         return $response + ['request_id' => $requestId];
     }
@@ -821,12 +848,12 @@ final class Client implements WorkflowClientInterface
     ): array {
         $requestId = $this->commandRequestId('update', $requestId);
         $path = $this->workflowOperationPath($workflowId, $runId, 'update/'.$this->segment($updateName));
-        $response = $this->control('POST', $path, $this->withoutNulls([
+        $response = $this->control('POST', $path, $this->withObservabilityContext($this->withoutNulls([
             'input' => $this->codec->envelope($arguments),
             'wait_for' => $waitFor,
             'wait_timeout_seconds' => $waitTimeoutSeconds,
             'request_id' => $requestId,
-        ]), 'update', $requestId);
+        ])), 'update', $requestId);
 
         return $response + ['request_id' => $requestId];
     }
@@ -837,8 +864,24 @@ final class Client implements WorkflowClientInterface
         return $this->control(
             'POST',
             $this->workflowOperationPath($workflowId, $runId, 'cancel'),
-            $this->withoutNulls(['reason' => $reason]),
+            $this->withObservabilityContext($this->withoutNulls(['reason' => $reason])),
         );
+    }
+
+    /** @param array<string, mixed> $body
+     *  @return array<string, mixed>
+     */
+    private function withObservabilityContext(array $body): array
+    {
+        if (!$this->observabilityContextSupported || $this->executionTelemetry === null) {
+            return $body;
+        }
+        $carrier = $this->executionTelemetry->capture();
+        if ($carrier !== null) {
+            $body['observability_context'] = $carrier;
+        }
+
+        return $body;
     }
 
     /**
@@ -1993,6 +2036,15 @@ final class Client implements WorkflowClientInterface
                 self::WORKFLOW_TASK_WAITING_FOR_HISTORY_MESSAGE,
                 self::WORKFLOW_TASK_WAITING_FOR_HISTORY_TYPE,
             );
+        }
+
+        if ($this->executionTelemetry !== null && $this->observabilityContextSupported) {
+            foreach ($commands as &$command) {
+                if (in_array($command['type'] ?? null, ['start_child_workflow', 'continue_as_new'], true)) {
+                    $command = $this->withObservabilityContext($command);
+                }
+            }
+            unset($command);
         }
 
         return $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/complete', array_filter([
