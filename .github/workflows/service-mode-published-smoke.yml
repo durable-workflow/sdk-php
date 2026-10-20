@@ -268,10 +268,23 @@ jobs:
           fi
 
       - name: Check out only the smoke runner
-        if: inputs.cooperative_server_image != ''
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+
+      - name: Verify PHP 3 workflow instance lifetime from the installed package
+        env:
+          SDK_VERSION: ${{ inputs.sdk_version }}
+          LIFETIME_RUNTIME_URL: ${{ env.DURABLE_WORKFLOW_SERVER_URL }}
+          LIFETIME_NAMESPACE: ${{ env.DURABLE_WORKFLOW_NAMESPACE }}
+        run: |
+          set -euo pipefail
+          if (( ${SDK_VERSION%%.*} < 3 )); then
+            echo 'The fresh workflow instance contract starts with SDK 3.'
+            exit 0
+          fi
+          consumer="$(cat "$RUNNER_TEMP/service-mode-consumer")"
+          php tests/smoke/workflow-lifetime.php "$consumer/vendor/autoload.php"
 
       - name: Verify published cooperative discovery with a scoped worker token
         if: inputs.cooperative_server_image != ''
