@@ -52,6 +52,21 @@ Start new workers before draining the old pool. Keep old and new builds register
 
 ## Readiness and shutdown
 
+### Preserve workflow entry arguments
+
+Recorded start input must still bind to the deployed workflow entry method.
+Adding a required parameter or changing its type can prevent the method from
+starting, before a version branch inside it can run. The worker reports
+`WorkflowEntryArgumentsMismatch` as a nonterminal workflow-task replay refusal,
+with reason `workflow_entry_arguments_mismatch`. It leaves the original run,
+input, history and deadlines intact.
+
+Restore a compatible entry method and use the runtime's run-scoped repair
+operation to resume the same run. Inspect the refused task before repairing it;
+repeated incompatible deployments do not fix its input. A compatible optional
+parameter is allowed. A `TypeError` thrown after valid entry binding remains an
+application failure, rather than being relabelled as a deployment mismatch.
+
 Runtime readiness, worker admission, and process liveness are different signals:
 
 - Server/Cloud readiness proves the runtime can use its configured backing services.

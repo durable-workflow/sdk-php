@@ -6,6 +6,7 @@ namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Client;
 use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Exception\WorkflowEntryArgumentsMismatch;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\HandlerDefinition;
@@ -16,6 +17,7 @@ use PHPUnit\Framework\TestCase;
 
 final class WorkflowEntryBindingTest extends TestCase
 {
+    /** @param list<mixed> $input */
     #[DataProvider('incompatibleEntries')]
     public function testInputBindingRefusesBeforeEnteringApplication(callable $handler, array $input): void
     {
@@ -29,6 +31,7 @@ final class WorkflowEntryBindingTest extends TestCase
         }
     }
 
+    /** @return iterable<string, array{callable, list<mixed>}> */
     public static function incompatibleEntries(): iterable
     {
         yield 'required input missing' => [static fn (WorkflowContext $ctx, int $amount, int $required): int => $required, [7]];
@@ -38,9 +41,11 @@ final class WorkflowEntryBindingTest extends TestCase
         yield 'union mismatch' => [static fn (WorkflowContext $ctx, int|bool $amount): mixed => $amount, ['private-recorded-value']];
         yield 'intersection mismatch' => [static fn (WorkflowContext $ctx, \Countable&\Iterator $amount): object => $amount, [new \stdClass()]];
         yield 'variadic element mismatch' => [static fn (WorkflowContext $ctx, int ...$amounts): array => $amounts, [7, 'private-recorded-value']];
+        yield 'variadic context also receives recorded values' => [static fn (WorkflowContext ...$contexts): int => count($contexts), [7]];
         yield 'discovered contract is not variadic wrapper' => [HandlerDefinition::shared(static fn (WorkflowContext $ctx, int $amount, int $required): int => $required), [7]];
     }
 
+    /** @param list<mixed> $input */
     #[DataProvider('compatibleEntries')]
     public function testCompatiblePhpInvocationKeepsRecordedTypes(callable $handler, array $input, mixed $expected): void
     {
@@ -50,6 +55,7 @@ final class WorkflowEntryBindingTest extends TestCase
         self::assertSame($expected, $codec->decodeEnvelope($result->commands[0]['result']));
     }
 
+    /** @return iterable<string, array{callable, list<mixed>, mixed}> */
     public static function compatibleEntries(): iterable
     {
         yield 'optional addition' => [static fn (WorkflowContext $ctx, int $amount, ?int $extra = null): int => $amount, [7], 7];
@@ -82,6 +88,18 @@ final class WorkflowEntryBindingTest extends TestCase
         self::assertSame([], array_filter($requests, static fn (array $row): bool => str_ends_with($row['uri'], '/task-original/fail')));
     }
 
+    public function testValidBoundBodyThrowingInternalExceptionIsStillBusinessFailure(): void
+    {
+        $requests = $this->executeWorker(static function (WorkflowContext $ctx, int $amount): never {
+            throw new WorkflowEntryArgumentsMismatch('application', 'body-controlled-error');
+        });
+        $complete = array_values(array_filter($requests, static fn (array $row): bool => str_ends_with($row['uri'], '/task-original/complete')));
+        self::assertCount(1, $complete);
+        self::assertSame('fail_workflow', $complete[0]['body']['commands'][0]['type']);
+        self::assertSame([], array_filter($requests, static fn (array $row): bool => str_ends_with($row['uri'], '/task-original/fail')));
+    }
+
+    /** @return list<array{method: string, uri: string, headers: array<string, string>, body: array<string, mixed>|null}> */
     private function executeWorker(callable $handler): array
     {
         $codec = new AvroPayloadCodec();

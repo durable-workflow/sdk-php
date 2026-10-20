@@ -10,6 +10,7 @@ use DurableWorkflow\Exception\InvalidLocalActivityReport;
 use DurableWorkflow\Exception\InvalidWorkerDefinition;
 use DurableWorkflow\Exception\LocalActivityTimedOut;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Exception\WorkflowEntryArgumentsMismatch;
 use DurableWorkflow\Exception\SagaCompensationFailed;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
@@ -40,6 +41,7 @@ use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkflowClaimDeferred;
 use DurableWorkflow\Worker\WorkflowClaimRevoked;
 use DurableWorkflow\Worker\WorkflowContext;
+use DurableWorkflow\Worker\WorkflowEntryArguments;
 use DurableWorkflow\Worker\StickyWorkflowCache;
 use DurableWorkflow\Worker\WorkerSession;
 use DurableWorkflow\Worker\WorkerSessionOptions;
@@ -1294,6 +1296,9 @@ final class Worker
                     throw new \RuntimeException("No workflow handler is registered for {$workflowType}.");
                 }
                 $input = $this->decodeArguments($task['arguments'] ?? $task['input'] ?? null);
+                // Keep pre-entry refusal outside the application-error boundary.
+                // A valid-bound body throwing the same exception is still a body failure.
+                WorkflowEntryArguments::validate($handler, $input, $workflowType);
                 try {
                     $replay = $this->replayWorkflowClaim(
                         $handler,
@@ -1374,7 +1379,7 @@ final class Worker
                         $attempt,
                         'PHP workflow task execution failed: '.$failure->getMessage(),
                         $failure::class,
-                        $failure instanceof NonDeterministicWorkflow ? $failure->reason : null,
+                        $failure instanceof NonDeterministicWorkflow || $failure instanceof WorkflowEntryArgumentsMismatch ? $failure->reason : null,
                         $failure instanceof NonDeterministicWorkflow ? $failure->sequence : null,
                     );
                 },

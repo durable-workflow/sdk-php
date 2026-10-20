@@ -65,6 +65,7 @@ final class Replayer
         if ($allowScopedPreparedLocalActivities && (!$prepareLocalActivities || !$prepareCancellationScopeDelivery)) {
             throw new LogicException('Scoped local callbacks require prepared admission and canonical scope delivery.');
         }
+        WorkflowEntryArguments::validate($handler, $input, (string) ($task['workflow_type'] ?? ''));
         $hasScopes = $this->assertCancellationScopeReplaySupported($history, $allowCancellationScopeAuthoring, $task, $replayCommittedCancellationScopes);
         $scopes = new CancellationScopeHistory($hasScopes ? $history : [], (string) ($task['run_id'] ?? ''));
         // Unfrozen source profile, enabled only by the Worker's explicit scope opt-in.
