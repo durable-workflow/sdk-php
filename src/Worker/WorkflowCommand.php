@@ -25,13 +25,24 @@ final class WorkflowCommand
     private const MAX_LOCAL_ACTIVITY_ATTEMPTS = 100;
     private const MAX_LOCAL_ACTIVITY_EXCEPTION_TYPE_BYTES = 255;
     private const LOCAL_ACTIVITY_IDENTITY_FIELDS = ['activity_type', 'arguments_value', 'execution_mode'];
+    private const REMOTE_ACTIVITY_OPTION_FIELDS = [
+        'connection',
+        'queue',
+        'retry_policy',
+        'start_to_close_timeout',
+        'schedule_to_start_timeout',
+        'schedule_to_close_timeout',
+        'heartbeat_timeout',
+        'worker_session',
+        'cancellation_policy',
+    ];
     private const LOCAL_ACTIVITY_OPTION_FIELDS = [
         'retry_policy',
         'start_to_close_timeout',
         'schedule_to_close_timeout',
         'heartbeat_timeout',
     ];
-    private const LOCAL_ACTIVITY_RETRY_POLICY_FIELDS = [
+    private const ACTIVITY_RETRY_POLICY_FIELDS = [
         'max_attempts',
         'backoff_seconds',
         'non_retryable_error_types',
@@ -75,6 +86,10 @@ final class WorkflowCommand
      */
     public static function canonicalRemoteActivityOptions(array $options): array
     {
+        self::assertRemoteActivityFields($options, self::REMOTE_ACTIVITY_OPTION_FIELDS, 'options');
+        if (is_array($options['retry_policy'] ?? null)) {
+            self::assertRemoteActivityFields($options['retry_policy'], self::ACTIVITY_RETRY_POLICY_FIELDS, 'retry_policy');
+        }
         if (!array_key_exists('cancellation_policy', $options)) {
             return $options;
         }
@@ -92,6 +107,20 @@ final class WorkflowCommand
         $options['cancellation_policy'] = $policy;
 
         return $options;
+    }
+
+    /**
+     * @param array<string, mixed> $values
+     * @param list<string> $allowed
+     */
+    private static function assertRemoteActivityFields(array $values, array $allowed, string $subject): void
+    {
+        foreach (array_keys($values) as $field) {
+            if (!in_array($field, $allowed, true)) {
+                $verb = $subject === 'options' ? 'do' : 'does';
+                throw new InvalidArgumentException("Remote activity {$subject} {$verb} not accept the {$field} field.");
+            }
+        }
     }
 
     public static function timer(int $seconds): self
@@ -312,7 +341,7 @@ final class WorkflowCommand
             throw new InvalidArgumentException('Local activity retry_policy must be an object when provided.');
         }
         foreach ($retryPolicy as $field => $_value) {
-            if (!is_string($field) || !in_array($field, self::LOCAL_ACTIVITY_RETRY_POLICY_FIELDS, true)) {
+            if (!is_string($field) || !in_array($field, self::ACTIVITY_RETRY_POLICY_FIELDS, true)) {
                 $name = is_string($field) ? $field : get_debug_type($field);
 
                 throw new InvalidArgumentException("Local activity retry_policy does not accept the {$name} field.");

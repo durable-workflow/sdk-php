@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "remote-activity-unknown-retry-field",
+  "protocol_version": "1",
+  "bindings": ["php"],
+  "history": [{"event_type": "WorkflowStarted", "payload": {}}],
+  "workflow": {
+    "type": "golden.invalid-activity-options",
+    "input": [{"retry_policy": {"maximum_attempts": 5}}]
+  },
+  "expected": {
+    "command_sequence": [{
+      "type": "complete_workflow",
+      "result": "Remote activity retry_policy does not accept the maximum_attempts field."
+    }]
+  }
+}

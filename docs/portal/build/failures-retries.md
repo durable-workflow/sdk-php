@@ -32,17 +32,25 @@ $receipt = $context->activity(
     'payments.capture',
     [$orderId, $amount],
     [
-        'start_to_close_timeout_seconds' => 30,
+        'start_to_close_timeout' => 30,
         'retry_policy' => [
-            'maximum_attempts' => 5,
-            'initial_interval_seconds' => 1,
-            'maximum_interval_seconds' => 20,
+            'max_attempts' => 5,
+            'backoff_seconds' => [1, 2, 4, 8],
         ],
     ],
 );
 ```
 
+`max_attempts` includes the first attempt. This example permits four retries,
+with the listed delays in seconds. Unsupported option or retry-policy field
+names throw `InvalidArgumentException` before an activity command is submitted.
+
 Use the order or activity identity as the payment provider's idempotency key. A retry policy cannot repair a non-idempotent downstream API.
+
+Older SDKs forwarded unsupported names and the runtime applied its defaults.
+Correcting those names changes the durable activity policy. For existing runs,
+keep the previously recorded policy in a replay-compatible version branch, or
+finish those runs before deploying the changed policy.
 
 ## Durable cleanup
 
