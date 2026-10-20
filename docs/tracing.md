@@ -2,7 +2,7 @@
 
 This integration adds scoped worker spans and log correlation. Service-mode durable trace propagation remains part of [Workflow #773](https://github.com/durable-workflow/workflow/issues/773). Current Server poll responses do not carry the durable admission trace, so separate tasks and retries start separate traces. Installing OpenTelemetry does not enable cross-process tracing.
 
-Install the optional API and your preferred OpenTelemetry SDK/exporter. API 1.10.1 is the minimum supported API. Configure application providers, propagators, sampling, buffering, exporter timeouts and shutdown before constructing the worker integration. The SDK does not install a provider, force a sampling decision or flush a provider per task.
+Install the optional API and your preferred OpenTelemetry SDK/exporter. API 1.10.1 is the minimum supported API within the 1.x line. Configure application providers, propagators, sampling, buffering, exporter timeouts and shutdown before constructing the worker integration. The SDK does not install a provider, force a sampling decision or flush a provider per task.
 
 ```php
 use DurableWorkflow\Telemetry\ExecutionTelemetry;
