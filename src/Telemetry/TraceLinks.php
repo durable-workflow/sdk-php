@@ -66,16 +66,8 @@ final class TraceLinks
             || array_diff(array_keys($value), [...$required, ...$optional, 'kind', 'context']) !== []) {
             return null;
         }
-        foreach ([...$required, ...array_intersect($optional, array_keys($value))] as $key) {
-            if ($key === 'sequence') {
-                if (!is_int($value[$key]) || $value[$key] < 1) {
-                    return null;
-                }
-            } elseif ($key !== 'child_task_id' || $value[$key] !== null) {
-                if (!TraceCarrier::identity($value[$key])) {
-                    return null;
-                }
-            }
+        if (!self::validIdentities($value, $required, $optional)) {
+            return null;
         }
         if (!is_array($value['context'] ?? null) || !is_array($value['context']['carrier'] ?? null)
             || count($value['context']['carrier']) > 2
@@ -86,4 +78,24 @@ final class TraceLinks
 
         return $context === null ? null : array_replace($value, ['context' => $context]);
     }
+    /** @param array<string, mixed> $value
+     *  @param list<string> $required
+     *  @param list<string> $optional
+     */
+    private static function validIdentities(array $value, array $required, array $optional): bool
+    {
+        foreach ([...$required, ...array_intersect($optional, array_keys($value))] as $key) {
+            if ($key === 'sequence') {
+                if (!is_int($value[$key]) || $value[$key] < 1) {
+                    return false;
+                }
+            } elseif ($key !== 'child_task_id' || $value[$key] !== null) {
+                if (!TraceCarrier::identity($value[$key])) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
 }

@@ -87,35 +87,16 @@ final class TraceCarrier
         if (count($headers) > 3 || !isset($headers['traceparent']) || array_diff(array_keys($headers), array_keys(self::LIMITS)) !== []) {
             return null;
         }
-        foreach ($headers as $key => $header) {
-            if (!is_string($header) || strlen($header) > self::LIMITS[$key]) {
-                return null;
-            }
+        if (!self::validHeaderValues($headers)) {
+            return null;
         }
         try {
             if (strlen(json_encode($value, JSON_THROW_ON_ERROR)) > 4096) {
                 return null;
             }
-            $context = TraceContextPropagator::getInstance()->extract($headers, context: Context::getRoot());
-            if (!Span::fromContext($context)->getContext()->isValid()) {
+            $normalized = self::normalizeHeaders($headers, $allowlist);
+            if ($normalized === null) {
                 return null;
-            }
-            $normalized = [];
-            TraceContextPropagator::getInstance()->inject($normalized, context: $context);
-            if ($allowlist !== [] && isset($headers['baggage'])) {
-                $baggage = BaggagePropagator::getInstance()->extract($headers, context: Context::getRoot());
-                $builder = Baggage::getBuilder();
-                $count = 0;
-                foreach (Baggage::fromContext($baggage)->getAll() as $key => $entry) {
-                    if (!in_array($key, $allowlist, true)) {
-                        continue;
-                    }
-                    if (++$count > 32) {
-                        return null;
-                    }
-                    $builder->set($key, $entry->getValue(), $entry->getMetadata());
-                }
-                BaggagePropagator::getInstance()->inject($normalized, context: $builder->build()->storeInContext(Context::getRoot()));
             }
             $result = ['schema' => self::SCHEMA, 'version' => 1, 'carrier' => $normalized];
             if (strlen($normalized['baggage'] ?? '') > 2048 || strlen(json_encode($result, JSON_THROW_ON_ERROR)) > 4096) {
@@ -127,6 +108,58 @@ final class TraceCarrier
         } catch (Throwable) {
             return null;
         }
+    }
+
+    /** @param array<string, mixed> $headers
+     *  @phpstan-assert-if-true array<string, string> $headers
+     */
+    private static function validHeaderValues(array $headers): bool
+    {
+        foreach ($headers as $key => $header) {
+            if (!is_string($header) || strlen($header) > self::LIMITS[$key]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** @param array<string, string> $headers
+     *  @param list<string> $allowlist
+     *  @return array<string, string>|null
+     */
+    private static function normalizeHeaders(array $headers, array $allowlist): ?array
+    {
+        $context = TraceContextPropagator::getInstance()->extract($headers, context: Context::getRoot());
+        if (!Span::fromContext($context)->getContext()->isValid()) {
+            return null;
+        }
+        $normalized = [];
+        TraceContextPropagator::getInstance()->inject($normalized, context: $context);
+        if ($allowlist !== [] && isset($headers['baggage'])) {
+            self::allowlistedBaggage($headers, $allowlist, $normalized);
+        }
+        return $normalized;
+    }
+
+    /** @param array<string, string> $headers
+     *  @param list<string> $allowlist
+     *  @param array<string, string> $normalized
+     */
+    private static function allowlistedBaggage(array $headers, array $allowlist, array &$normalized): void
+    {
+        $baggage = BaggagePropagator::getInstance()->extract($headers, context: Context::getRoot());
+        $builder = Baggage::getBuilder();
+        $count = 0;
+        foreach (Baggage::fromContext($baggage)->getAll() as $key => $entry) {
+            if (!in_array($key, $allowlist, true)) {
+                continue;
+            }
+            if (++$count > 32) {
+                throw new \LengthException('Baggage entry limit exceeded.');
+            }
+            $builder->set($key, $entry->getValue(), $entry->getMetadata());
+        }
+        BaggagePropagator::getInstance()->inject($normalized, context: $builder->build()->storeInContext(Context::getRoot()));
     }
 
     /** @return array<string, mixed>|null */

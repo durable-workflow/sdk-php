@@ -14,6 +14,7 @@ use OpenTelemetry\API\Trace\NoopTracerProvider;
 use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
 use OpenTelemetry\API\Trace\Span;
 use OpenTelemetry\API\Trace\SpanInterface;
+use OpenTelemetry\API\Trace\SpanBuilderInterface;
 use OpenTelemetry\API\Trace\SpanKind;
 use OpenTelemetry\API\Trace\StatusCode;
 use OpenTelemetry\API\Trace\TracerProviderInterface;
@@ -27,6 +28,8 @@ use WeakMap;
 /** Optional execution instrumentation using application-owned OpenTelemetry providers. */
 final class ExecutionTelemetry
 {
+    private const PACKAGE_NAME = 'durable-workflow/sdk';
+
     private const FIELDS = [
         'workflow_instance_id', 'workflow_run_id', 'workflow_type', 'namespace',
         'task_id', 'activity_id', 'activity_type', 'activity_attempt_id',
@@ -273,44 +276,13 @@ final class ExecutionTelemetry
                     ->storeInContext($parent);
             }
             $fields = self::fields($attributes);
-            $version = InstalledVersions::isInstalled('durable-workflow/sdk')
-                ? InstalledVersions::getPrettyVersion('durable-workflow/sdk') : null;
-            $builder = $provider->getTracer('durable-workflow/sdk', $version)->spanBuilder($name)
+            $version = InstalledVersions::isInstalled(self::PACKAGE_NAME)
+                ? InstalledVersions::getPrettyVersion(self::PACKAGE_NAME) : null;
+            $builder = $provider->getTracer(self::PACKAGE_NAME, $version)->spanBuilder($name)
                 ->setSpanKind($inherit ? SpanKind::KIND_INTERNAL : SpanKind::KIND_CONSUMER)
                 ->setAttributes($fields);
             if ($wireTask !== null) {
-                $origin = TraceCarrier::normalize($wireTask['observability_context'] ?? null, $this->baggageAllowlist, $diagnostic);
-                if ($origin !== null) {
-                    $parent = TraceContextPropagator::getInstance()->extract($origin['carrier'], context: $parent);
-                    $parent = BaggagePropagator::getInstance()->extract($origin['carrier'], context: $parent);
-                }
-                if ($diagnostic !== null) {
-                    $builder->setAttribute('durable.observability_context', $diagnostic);
-                }
-                $taskId = $wireTask['task_id'] ?? $wireTask['query_task_id'] ?? null;
-                $taskId = is_string($taskId) ? $taskId : '';
-                $dispatch = TraceCarrier::dispatch($wireTask['dispatch_observability_context'] ?? null, $taskId, $diagnostic);
-                if ($dispatch !== null) {
-                    $linked = TraceContextPropagator::getInstance()->extract($dispatch['carrier'], context: Context::getRoot());
-                    $builder->addLink(Span::fromContext($linked)->getContext(), ['durable.link.type' => 'dispatch', 'task_id' => $taskId]);
-                }
-                if ($diagnostic !== null) {
-                    $builder->setAttribute('durable.dispatch_context', $diagnostic);
-                }
-                $runId = $wireTask['run_id'] ?? null;
-                $namespace = $attributes['namespace'] ?? null;
-                $links = TraceLinks::normalize($wireTask['observability_links'] ?? null, $taskId,
-                    is_string($runId) ? $runId : '', is_string($namespace) ? $namespace : '', $diagnostic);
-                foreach ($links as $entry) {
-                    $linked = TraceContextPropagator::getInstance()->extract($entry['context']['carrier'], context: Context::getRoot());
-                    $linkFields = array_diff_key($entry, ['kind' => true, 'context' => true]);
-                    // A nullable producer task stays absent; it is never fabricated.
-                    $linkFields = array_filter($linkFields, static fn (mixed $value): bool => $value !== null);
-                    $builder->addLink(Span::fromContext($linked)->getContext(), ['durable.link.type' => $entry['kind']] + $linkFields);
-                }
-                if ($diagnostic !== null) {
-                    $builder->setAttribute('durable.observability_links', $diagnostic);
-                }
+                $parent = $this->observeTask($builder, $parent, $wireTask, $attributes);
             }
             $span = $builder->setParent($parent)->startSpan();
             self::$key ??= Context::createKey('durable-workflow.sdk.correlation');
@@ -323,6 +295,60 @@ final class ExecutionTelemetry
         }
 
         return [$scope, $span, $childShield];
+    }
+
+    /** @param array<string, mixed> $wireTask
+     *  @param array<string, mixed> $attributes
+     */
+    private function observeTask(SpanBuilderInterface $builder, ContextInterface $parent, array $wireTask, array $attributes): ContextInterface
+    {
+        $origin = TraceCarrier::normalize($wireTask['observability_context'] ?? null, $this->baggageAllowlist, $diagnostic);
+        if ($origin !== null) {
+            $parent = TraceContextPropagator::getInstance()->extract($origin['carrier'], context: $parent);
+            $parent = BaggagePropagator::getInstance()->extract($origin['carrier'], context: $parent);
+        }
+        if ($diagnostic !== null) {
+            $builder->setAttribute('durable.observability_context', $diagnostic);
+        }
+        $taskId = $wireTask['task_id'] ?? $wireTask['query_task_id'] ?? null;
+        $taskId = is_string($taskId) ? $taskId : '';
+        $this->observeDispatch($builder, $wireTask, $taskId);
+        $this->observeLinks($builder, $wireTask, $attributes, $taskId);
+        return $parent;
+    }
+
+    /** @param array<string, mixed> $wireTask */
+    private function observeDispatch(SpanBuilderInterface $builder, array $wireTask, string $taskId): void
+    {
+        $dispatch = TraceCarrier::dispatch($wireTask['dispatch_observability_context'] ?? null, $taskId, $diagnostic);
+        if ($dispatch !== null) {
+            $linked = TraceContextPropagator::getInstance()->extract($dispatch['carrier'], context: Context::getRoot());
+            $builder->addLink(Span::fromContext($linked)->getContext(), ['durable.link.type' => 'dispatch', 'task_id' => $taskId]);
+        }
+        if ($diagnostic !== null) {
+            $builder->setAttribute('durable.dispatch_context', $diagnostic);
+        }
+    }
+
+    /** @param array<string, mixed> $wireTask
+     *  @param array<string, mixed> $attributes
+     */
+    private function observeLinks(SpanBuilderInterface $builder, array $wireTask, array $attributes, string $taskId): void
+    {
+        $runId = $wireTask['run_id'] ?? null;
+        $namespace = $attributes['namespace'] ?? null;
+        $links = TraceLinks::normalize($wireTask['observability_links'] ?? null, $taskId,
+            is_string($runId) ? $runId : '', is_string($namespace) ? $namespace : '', $diagnostic);
+        foreach ($links as $entry) {
+            $linked = TraceContextPropagator::getInstance()->extract($entry['context']['carrier'], context: Context::getRoot());
+            $linkFields = array_diff_key($entry, ['kind' => true, 'context' => true]);
+            // A nullable producer task stays absent; it is never fabricated.
+            $linkFields = array_filter($linkFields, static fn (mixed $value): bool => $value !== null);
+            $builder->addLink(Span::fromContext($linked)->getContext(), ['durable.link.type' => $entry['kind']] + $linkFields);
+        }
+        if ($diagnostic !== null) {
+            $builder->setAttribute('durable.observability_links', $diagnostic);
+        }
     }
 
     private function childTracerProvider(): TracerProviderInterface
