@@ -91,6 +91,8 @@ Scale a queue by starting more workers with the same registered types and a comp
 
 Do not send a workflow to a queue that has no compatible workflow handler. Inspect `listWorkers()` and `describeTaskQueue()` before assuming a deployment received traffic.
 
+An activity option such as `['queue' => 'payments-v2']` selects the queue of a newly scheduled activity execution. The runtime stores that resolved queue; pending activities, their retries and repaired tasks keep it. Changing a worker's `taskQueue` does not move recorded work, and existing workflow runs keep their own workflow queue. Retain compatible workers on old queues while those dependencies remain. Follow the [recorded-queue transition and diagnostics procedure](https://durable-workflow.com/docs/polyglot/task-matching-dispatch#recorded-activity-queues).
+
 ## Let the managed loop own the protocol
 
 `Worker::run()` registers, negotiates heartbeat cadence, polls workflow/activity/query tasks, renews workflow-task leases, and reports terminal outcomes. Typed transient poll pressure is retried with capped backoff while registration heartbeats and shutdown checks remain responsive.

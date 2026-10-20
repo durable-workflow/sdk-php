@@ -50,6 +50,8 @@ Do not use the SDK repository's `main` branch as a production Composer source. I
 
 Start new workers before draining the old pool. Keep old and new builds registered only when both can replay the histories routed to that queue. If a change is not replay-compatible, use a new task queue or a worker build-routing plan rather than hoping restarts choose the right code.
 
+A new queue is not a migration of existing runs or activities. Previously scheduled activities, delayed retries and repaired tasks retain their recorded queue; passive runs and continuation chains can still need old workers. Deploy the new pool and routing first, then keep compatible old pools available until their dependencies are accounted for and new work no longer creates them. An empty ready-task count or a fresh registration is not proof of safe retirement. Use the [recorded-queue procedure and existing run/queue diagnostics](https://durable-workflow.com/docs/polyglot/task-matching-dispatch#recorded-activity-queues). Repair does not relocate work or extend its original total deadline. [Server #519](https://github.com/durable-workflow/server/issues/519) tracks the separate guarded retirement capability.
+
 ## Preserve workflow entry arguments
 
 Recorded start input must still bind to the deployed workflow entry method.
