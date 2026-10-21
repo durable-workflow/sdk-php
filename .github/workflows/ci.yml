@@ -71,7 +71,7 @@ jobs:
 
   regression-corpus:
     name: Regression corpus
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -98,7 +98,7 @@ jobs:
 
   test:
     name: PHP ${{ matrix.php }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -133,7 +133,7 @@ jobs:
 
   framework-compat:
     name: ${{ matrix.framework }} ${{ matrix.version }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -338,7 +338,7 @@ jobs:
 
   laravel-transition-compat:
     name: Laravel ${{ matrix.source }} to service mode
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -371,7 +371,7 @@ jobs:
 
   load-driver-drain:
     name: Laravel HTTP load-driver drain
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       LOAD_DRAIN_RUN: dw-load-drain-${{ github.run_id }}-${{ github.run_attempt }}
@@ -386,7 +386,7 @@ jobs:
         run: bash examples/laravel-http/qualification/check-load-drain.sh cleanup
 
   analyse:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -399,7 +399,7 @@ jobs:
       - run: composer analyse
 
   docs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -441,7 +441,7 @@ jobs:
             --root-dir .
             README.md docs/*.md
   package-smoke:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
