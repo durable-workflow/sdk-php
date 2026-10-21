@@ -6,6 +6,21 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-21
+
+### Added
+
+- Optional execution spans and Monolog correlation for workflow/query tasks
+  and real activity attempts. Applications own providers, exporters, sampling
+  and bounded shutdown. Default installations do not require OpenTelemetry.
+- Bounded W3C caller propagation when Server discovery advertises the optional
+  observability capability. Run origins parent tasks; real dispatch, command
+  and outcome contexts become links after existing authority checks. Baggage
+  defaults empty and is excluded from links.
+- Fiber scope restoration and fresh child-provider configuration for
+  supervised callbacks. Replay does not emit activity attempts for recorded
+  results. Existing request IDs and business arguments remain unchanged.
+
 ## [3.0.0] - 2026-10-20
 
 ### Changed

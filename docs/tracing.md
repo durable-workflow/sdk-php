@@ -1,6 +1,6 @@
 # Optional worker execution context
 
-This integration adds scoped worker spans and log correlation. It also supports the optional service trace-context contract when the connected Server explicitly advertises it. Current published Server support is unavailable, so separate tasks and retries start separate traces. End-to-end qualification remains part of [Workflow #773](https://github.com/durable-workflow/workflow/issues/773). Installing OpenTelemetry does not enable cross-process tracing.
+This integration adds scoped worker spans and log correlation. It also supports the optional service trace-context contract when the connected Server explicitly advertises it. Servers without that capability use independent task traces. Use the configured Server/SDK tuple qualified in [Workflow #773](https://github.com/durable-workflow/workflow/issues/773). Installing OpenTelemetry alone does not enable cross-process propagation.
 
 Install the optional API and your preferred OpenTelemetry SDK/exporter. API 1.10.1 is the minimum supported API within the 1.x line. Configure application providers, propagators, sampling, buffering, exporter timeouts and shutdown before constructing the worker integration. The SDK does not install a provider, force a sampling decision or flush a provider per task.
 
@@ -32,7 +32,7 @@ When available, start, signal, update and cancellation requests capture the call
 
 Workers read optional metadata after the existing original claim and authority gates. A valid run origin becomes the task's parent. A task-bound dispatch context and validated command or outcome observations become links, without replacing the run parent. Child terminal events may omit their producer task ID. The SDK never fabricates one. Existing Servers continue to use independent task spans.
 
-Official W3C propagators validate trace headers. Baggage is dropped unless its key appears in the `baggageAllowlist` constructor option, and links never carry baggage. Context and link envelopes are bounded to 4096 bytes, with at most 32 links. Invalid metadata is ignored; span diagnostics contain only `discarded` or `filtered`. These source controls do not claim that any published Server persists or delivers the new fields.
+Official W3C propagators validate trace headers. Baggage is dropped unless its key appears in the `baggageAllowlist` constructor option, and links never carry baggage. Context and link envelopes are bounded to 4096 bytes, with at most 32 links. Invalid metadata is ignored; span diagnostics contain only `discarded` or `filtered`. The optional capability and published-tuple qualification determine Server propagation support.
 
 ## Cooperative callback processes
 
