@@ -16,6 +16,7 @@ use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\ActivityLeaseProcess;
+use DurableWorkflow\Worker\ActivityLeaseMaintenanceException;
 use DurableWorkflow\Worker\ActivityExecutionFailure;
 use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\CancellationHistory;
@@ -385,12 +386,7 @@ final class Worker
             }
             $this->registered = true;
             $this->lastHeartbeatAt = $this->now();
-            if ($this->activityLeaseRenewalSupported && $this->activities !== []) {
-                if (!ActivityLeaseProcess::available()) {
-                    throw new \RuntimeException('Automatic activity lease maintenance requires PHP CLI proc_open.');
-                }
-                $this->client->activityLeaseProcessConfiguration();
-            }
+            $this->prepareActivityLeaseMaintenance();
             $this->diagnostic('worker.registered', [
                 'worker_id' => $this->workerId,
                 'task_queue' => $this->taskQueue,
@@ -1524,7 +1520,7 @@ final class Worker
                 }
                 $this->activityLeaseProcess = new ActivityLeaseProcess($this->client, $task, $this->workerId,
                     $this->taskQueue, $response['server_time'] ?? null, hrtime(true) / 1e9,
-                    $this->registered, $this->heartbeatIntervalSeconds);
+                    ['registered' => $this->registered, 'heartbeat_interval' => $this->heartbeatIntervalSeconds]);
                 $this->unbindActivityLease = $this->client->bindActivityLease($this->activityLeaseProcess);
 
                 $process = $this->activityLeaseProcess;
@@ -3564,6 +3560,17 @@ final class Worker
         }
 
         $this->heartbeat($budget);
+    }
+
+    private function prepareActivityLeaseMaintenance(): void
+    {
+        if (!$this->activityLeaseRenewalSupported || $this->activities === []) {
+            return;
+        }
+        if (!ActivityLeaseProcess::available()) {
+            throw new ActivityLeaseMaintenanceException('Automatic activity lease maintenance requires PHP CLI proc_open.');
+        }
+        $this->client->activityLeaseProcessConfiguration();
     }
 
     private function stopActivityLease(): void

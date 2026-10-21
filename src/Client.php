@@ -67,6 +67,7 @@ final class Client implements WorkflowClientInterface
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_MESSAGE = 'Workflow task waiting for scheduled history.';
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_TYPE = 'WorkflowTaskWaitingForHistory';
     private const ACTIVITY_TASK_PATH = '/worker/activity-tasks/';
+    private const CLUSTER_INFO_PATH = '/cluster/info';
 
     private readonly string $baseUri;
     private readonly ?Authentication $authentication;
@@ -273,7 +274,7 @@ final class Client implements WorkflowClientInterface
     public function clusterInfo(bool $includeDiagnostics = false): ClusterInfo
     {
         $this->observabilityContextSupported = false;
-        $path = $includeDiagnostics ? '/cluster/info?include=diagnostics' : '/cluster/info';
+        $path = $includeDiagnostics ? self::CLUSTER_INFO_PATH.'?include=diagnostics' : self::CLUSTER_INFO_PATH;
 
         $info = $this->control('GET', $path);
         $this->observabilityContextSupported = TraceCarrier::supported($info);
@@ -387,7 +388,7 @@ final class Client implements WorkflowClientInterface
     public function workerClusterInfo(): ClusterInfo
     {
         $this->observabilityContextSupported = false;
-        $info = $this->worker('GET', '/cluster/info');
+        $info = $this->worker('GET', self::CLUSTER_INFO_PATH);
         $this->observabilityContextSupported = TraceCarrier::supported($info);
 
         return ClusterInfo::fromArray($info);
@@ -2253,7 +2254,7 @@ final class Client implements WorkflowClientInterface
         $budget->restrictRequestDuration(5);
         $budget->remainingSeconds();
         $client = $this->withBoundedWorkerRequests();
-        $info = $client->worker('GET', '/cluster/info', budget: $budget);
+        $info = $client->worker('GET', self::CLUSTER_INFO_PATH, budget: $budget);
         $protocol = $info['worker_protocol'] ?? null;
         $capabilities = is_array($protocol) ? ($protocol['server_capabilities'] ?? null) : null;
         if (!is_array($capabilities) || ($capabilities['activity_lease_renewal'] ?? null) !== true) {
@@ -2399,7 +2400,7 @@ final class Client implements WorkflowClientInterface
         $lease = $this->activityLeaseBinding->current();
         $governed = $lease !== null && $lease->governs($path);
         if ($governed) {
-            $lease->checkRequest($path, $body);
+            $lease->checkRequest($body);
             $budget ??= $lease->budget();
         }
         if ($budget !== null && !$this->boundedWorkerRequests && !$governed) {
@@ -2620,7 +2621,7 @@ final class Client implements WorkflowClientInterface
                 // Uploading an external result is not publication authority.
                 // Check again before its final Worker POST and bound the send
                 // by the latest acknowledged grant, not an old cached lease.
-                $activityLease->checkRequest($path, $body);
+                $activityLease->checkRequest($body);
                 $budget?->restrictAuthorityDeadline($activityLease->publicationDeadline());
             }
             if ($worker && $this->boundedWorkerRequests) {

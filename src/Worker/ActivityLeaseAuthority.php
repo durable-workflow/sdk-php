@@ -43,49 +43,11 @@ final class ActivityLeaseAuthority
     ) {
         $this->clock = $clock ?? static fn (): float => hrtime(true) / 1e9;
         try {
-            foreach (['task_id', 'workflow_id', 'run_id', 'activity_execution_id', 'activity_attempt_id',
-                'lease_owner', 'task_queue'] as $key) {
-                if (!is_string($task[$key] ?? null) || trim($task[$key]) === '' || strlen($task[$key]) > 255) {
-                    throw new \UnexpectedValueException('The delivery lacks its original '.$key.'.');
-                }
-            }
-            if ($task['lease_owner'] !== $owner || $task['task_queue'] !== $queue
-                || ($task['namespace'] ?? $namespace) !== $namespace
-                || !is_int($task['attempt_number'] ?? null) || $task['attempt_number'] < 1
-                || !is_finite($capturedAt) || $capturedAt < 0 || $capturedAt > ($this->clock)()) {
-                throw new \UnexpectedValueException('The delivery does not belong to this Worker.');
-            }
-            $this->identity = ['task_id' => $task['task_id'], 'workflow_task_id' => $task['task_id'],
-                'workflow_instance_id' => $task['workflow_id'], 'workflow_run_id' => $task['run_id'],
-                'activity_execution_id' => $task['activity_execution_id'],
-                'activity_attempt_id' => $task['activity_attempt_id'], 'attempt_number' => $task['attempt_number'],
-                'lease_owner' => $owner];
+            $this->identity = $this->originalIdentity($task, $namespace, $owner, $queue);
             $this->serverTime = self::timestamp($serverTime);
             $this->leaseExpiry = self::timestamp($task['lease_expires_at'] ?? null);
             $this->leaseUntil = $capturedAt + self::duration($this->leaseExpiry, $this->serverTime);
-            $deadlines = $task['deadlines'] ?? [];
-            if (!is_array($deadlines)) {
-                throw new \UnexpectedValueException('Invalid activity deadlines.');
-            }
-            $bounds = [];
-            foreach (['start_to_close', 'schedule_to_close', 'run', 'execution'] as $key) {
-                if (isset($deadlines[$key])) {
-                    $bounds[] = $capturedAt + self::timestamp($deadlines[$key]) - $this->serverTime;
-                }
-            }
-            $this->businessUntil = $bounds === [] ? null : min($bounds);
-            $policy = $task['retry_policy'] ?? null;
-            $interval = is_array($policy) ? ($policy['heartbeat_timeout'] ?? null) : null;
-            $this->heartbeatInterval = is_int($interval) && $interval > 0 ? $interval : null;
-            $this->heartbeatDeadline = isset($deadlines['heartbeat']) ? self::timestamp($deadlines['heartbeat']) : null;
-            if ($this->heartbeatDeadline !== null && ($this->heartbeatInterval === null
-                || $this->heartbeatDeadline - $this->serverTime > $this->heartbeatInterval)) {
-                throw new \UnexpectedValueException('Missing original heartbeat policy.');
-            }
-            $this->heartbeatUntil = $this->heartbeatDeadline === null ? null
-                : $capturedAt + $this->heartbeatDeadline - $this->serverTime;
-            $this->heartbeatTime = $this->heartbeatDeadline === null ? null
-                : $this->heartbeatDeadline - $this->heartbeatInterval;
+            $this->captureDeadlines($task);
             $this->session = isset($task['worker_session'])
                 ? new ActivityLeaseSession($task['worker_session'], $namespace, $owner, $this->serverTime, $capturedAt)
                 : null;
@@ -93,6 +55,59 @@ final class ActivityLeaseAuthority
             throw new WorkflowClaimRevoked('invalid_activity_claim', 'Activity delivery lacks valid original authority.', previous: $error);
         }
         $this->remaining();
+    }
+
+    /** @param array<string, mixed> $task
+     * @return array<string, string|int>
+     */
+    private function originalIdentity(array $task, string $namespace, string $owner, string $queue): array
+    {
+        foreach (['task_id', 'workflow_id', 'run_id', 'activity_execution_id', 'activity_attempt_id',
+            'lease_owner', 'task_queue'] as $key) {
+            if (!is_string($task[$key] ?? null) || trim($task[$key]) === '' || strlen($task[$key]) > 255) {
+                throw new \UnexpectedValueException('The delivery lacks its original '.$key.'.');
+            }
+        }
+        if ($task['lease_owner'] !== $owner || $task['task_queue'] !== $queue
+            || ($task['namespace'] ?? $namespace) !== $namespace
+            || !is_int($task['attempt_number'] ?? null) || $task['attempt_number'] < 1
+            || !is_finite($this->capturedAt) || $this->capturedAt < 0 || $this->capturedAt > ($this->clock)()) {
+            throw new \UnexpectedValueException('The delivery does not belong to this Worker.');
+        }
+
+        return ['task_id' => $task['task_id'], 'workflow_task_id' => $task['task_id'],
+            'workflow_instance_id' => $task['workflow_id'], 'workflow_run_id' => $task['run_id'],
+            'activity_execution_id' => $task['activity_execution_id'],
+            'activity_attempt_id' => $task['activity_attempt_id'], 'attempt_number' => $task['attempt_number'],
+            'lease_owner' => $owner];
+    }
+
+    /** @param array<string, mixed> $task */
+    private function captureDeadlines(array $task): void
+    {
+        $deadlines = $task['deadlines'] ?? [];
+        if (!is_array($deadlines)) {
+            throw new \UnexpectedValueException('Invalid activity deadlines.');
+        }
+        $bounds = [];
+        foreach (['start_to_close', 'schedule_to_close', 'run', 'execution'] as $key) {
+            if (isset($deadlines[$key])) {
+                $bounds[] = $this->capturedAt + self::timestamp($deadlines[$key]) - $this->serverTime;
+            }
+        }
+        $this->businessUntil = $bounds === [] ? null : min($bounds);
+        $policy = $task['retry_policy'] ?? null;
+        $interval = is_array($policy) ? ($policy['heartbeat_timeout'] ?? null) : null;
+        $this->heartbeatInterval = is_int($interval) && $interval > 0 ? $interval : null;
+        $this->heartbeatDeadline = isset($deadlines['heartbeat']) ? self::timestamp($deadlines['heartbeat']) : null;
+        if ($this->heartbeatDeadline !== null && ($this->heartbeatInterval === null
+            || $this->heartbeatDeadline - $this->serverTime > $this->heartbeatInterval)) {
+            throw new \UnexpectedValueException('Missing original heartbeat policy.');
+        }
+        $this->heartbeatUntil = $this->heartbeatDeadline === null ? null
+            : $this->capturedAt + $this->heartbeatDeadline - $this->serverTime;
+        $this->heartbeatTime = $this->heartbeatDeadline === null ? null
+            : $this->heartbeatDeadline - $this->heartbeatInterval;
     }
 
     public function remaining(): float
@@ -128,15 +143,7 @@ final class ActivityLeaseAuthority
         $this->remainingAt($received);
         try {
             $this->assertRoundTrip($started, $received);
-            foreach ($this->identity as $key => $value) {
-                if (($reply[$key] ?? null) !== $value) {
-                    throw new \UnexpectedValueException('Activity renewal changed '.$key.'.');
-                }
-            }
-            if (($reply['lease_renewed'] ?? null) !== true || ($reply['heartbeat_recorded'] ?? null) !== false) {
-                throw new \UnexpectedValueException('Runtime renewal did not acknowledge a metadata-only grant.');
-            }
-            $this->assertContinuation($reply);
+            $this->assertRenewalIdentity($reply);
             $server = self::timestamp($reply['server_time'] ?? null);
             $expiry = self::timestamp($reply['lease_expires_at'] ?? null);
             $until = $started + self::duration($expiry, $server);
@@ -159,12 +166,7 @@ final class ActivityLeaseAuthority
                 throw new \UnexpectedValueException('Replayed activity renewal.');
             }
             $this->observeProgress($reply, $server, $started);
-            if ($this->session !== null) {
-                if (!is_array($reply['worker_session'] ?? null)) {
-                    throw new \UnexpectedValueException('Required session grant is missing from renewal.');
-                }
-                $this->session->acknowledge($reply['worker_session'], $server, $started);
-            }
+            $this->acknowledgeRequiredSession($reply, $server, $started);
             $this->leaseUntil = max($this->leaseUntil, $until);
             $this->serverTime = $server;
             $this->leaseExpiry = $expiry;
@@ -173,6 +175,32 @@ final class ActivityLeaseAuthority
             $this->lose('invalid_activity_renewal', $error);
         }
         $this->remaining();
+    }
+
+    /** @param array<string, mixed> $reply */
+    private function assertRenewalIdentity(array $reply): void
+    {
+        foreach ($this->identity as $key => $value) {
+            if (($reply[$key] ?? null) !== $value) {
+                throw new \UnexpectedValueException('Activity renewal changed '.$key.'.');
+            }
+        }
+        if (($reply['lease_renewed'] ?? null) !== true || ($reply['heartbeat_recorded'] ?? null) !== false) {
+            throw new \UnexpectedValueException('Runtime renewal did not acknowledge a metadata-only grant.');
+        }
+        $this->assertContinuation($reply);
+    }
+
+    /** @param array<string, mixed> $reply */
+    private function acknowledgeRequiredSession(array $reply, float $server, float $started): void
+    {
+        if ($this->session === null) {
+            return;
+        }
+        if (!is_array($reply['worker_session'] ?? null)) {
+            throw new \UnexpectedValueException('Required session grant is missing from renewal.');
+        }
+        $this->session->acknowledge($reply['worker_session'], $server, $started);
     }
 
     /**

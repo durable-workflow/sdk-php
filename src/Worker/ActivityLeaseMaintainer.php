@@ -103,37 +103,13 @@ final class ActivityLeaseMaintainer
     private function loop(): void
     {
         while (!feof(STDIN) && $this->parentPresent()) {
-            $now = hrtime(true) / 1e9;
-            $reply = null;
-            $started = $now;
-            if ($this->lostReason === null && $now >= $this->nextRenewal) {
-                try {
-                    $reply = $this->requestRenewal();
-                } catch (Throwable $error) {
-                    $this->recordMaintenanceError($error);
-                }
-            }
+            $started = hrtime(true) / 1e9;
+            $reply = $this->renewWhenDue($started);
             // Actual parent progress can overtake the in-flight runtime reply.
             // Drain those receipts before evaluating the old heartbeat ceiling.
             $commands = $this->readCommands();
-            foreach ($commands as $command) {
-                if (($command['operation'] ?? null) === 'progress' && $this->lostReason === null) {
-                    try {
-                        $this->authority->acknowledgeProgress($command['reply'],
-                            $command['started'], $command['received']);
-                    } catch (Throwable $error) {
-                        $this->recordMaintenanceError($error);
-                    }
-                }
-            }
-            if ($reply !== null && $this->lostReason === null) {
-                try {
-                    $this->authority->acknowledge($reply, $started);
-                    $this->scheduleRenewal();
-                } catch (Throwable $error) {
-                    $this->recordMaintenanceError($error);
-                }
-            }
+            $this->applyProgressCommands($commands);
+            $this->applyRenewal($reply, $started);
             foreach ($commands as $command) {
                 if (!in_array($command['operation'] ?? null, ['check', 'progress'], true)) {
                     $this->lostReason = 'activity_maintenance_invalid_command';
@@ -141,6 +117,50 @@ final class ActivityLeaseMaintainer
                 $this->respond($command);
             }
             usleep(10000);
+        }
+    }
+
+    /** @return array<string, mixed>|null */
+    private function renewWhenDue(float $started): ?array
+    {
+        if ($this->lostReason !== null || $started < $this->nextRenewal) {
+            return null;
+        }
+        try {
+            return $this->requestRenewal();
+        } catch (Throwable $error) {
+            $this->recordMaintenanceError($error);
+
+            return null;
+        }
+    }
+
+    /** @param list<array<string, mixed>> $commands */
+    private function applyProgressCommands(array $commands): void
+    {
+        foreach ($commands as $command) {
+            if (($command['operation'] ?? null) !== 'progress' || $this->lostReason !== null) {
+                continue;
+            }
+            try {
+                $this->authority->acknowledgeProgress($command['reply'], $command['started'], $command['received']);
+            } catch (Throwable $error) {
+                $this->recordMaintenanceError($error);
+            }
+        }
+    }
+
+    /** @param array<string, mixed>|null $reply */
+    private function applyRenewal(?array $reply, float $started): void
+    {
+        if ($reply === null || $this->lostReason !== null) {
+            return;
+        }
+        try {
+            $this->authority->acknowledge($reply, $started);
+            $this->scheduleRenewal();
+        } catch (Throwable $error) {
+            $this->recordMaintenanceError($error);
         }
     }
 
@@ -243,7 +263,7 @@ final class ActivityLeaseMaintainer
     {
         $line = json_encode($message, JSON_THROW_ON_ERROR)."\n";
         if (fwrite(STDOUT, $line) !== strlen($line)) {
-            throw new \RuntimeException('Original activity process is unavailable.');
+            throw new ActivityLeaseMaintenanceException('Original activity process is unavailable.');
         }
         fflush(STDOUT);
     }

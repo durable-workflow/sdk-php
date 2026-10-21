@@ -87,6 +87,19 @@ final class ActivityLeaseSession
             || !is_bool($value['create_if_missing']) || !is_bool($value['allow_reacquire_after_failure'])) {
             throw new \UnexpectedValueException('Malformed original session options.');
         }
+        self::validateDurationsAndRequirements($value);
+
+        $options = [];
+        foreach ([...$required, 'queue', 'requirements'] as $key) {
+            $options[$key] = $value[$key] ?? null;
+        }
+
+        return $options;
+    }
+
+    /** @param array<string, mixed> $value */
+    private static function validateDurationsAndRequirements(array $value): void
+    {
         foreach (['lease_seconds', 'ttl_seconds', 'max_concurrent_activities'] as $key) {
             if (!is_int($value[$key]) || $value[$key] < 1) {
                 throw new \UnexpectedValueException('Invalid session duration or concurrency.');
@@ -97,12 +110,5 @@ final class ActivityLeaseSession
                 throw new \UnexpectedValueException('Invalid session requirement.');
             }
         }
-
-        $options = [];
-        foreach ([...$required, 'queue', 'requirements'] as $key) {
-            $options[$key] = $value[$key] ?? null;
-        }
-
-        return $options;
     }
 }

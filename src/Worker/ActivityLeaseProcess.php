@@ -31,9 +31,11 @@ final class ActivityLeaseProcess
     /** @var array<string, string|int> */
     private readonly array $identity;
 
-    /** @param array<string, mixed> $task */
+    /** @param array<string, mixed> $task
+     * @param array{registered: bool, heartbeat_interval: int} $presence
+     */
     public function __construct(Client $client, array $task, string $owner, string $queue,
-        mixed $serverTime, float $captured, bool $registered, int $heartbeatInterval)
+        mixed $serverTime, float $captured, array $presence)
     {
         $this->parentPid = getmypid();
         $authority = new ActivityLeaseAuthority($task, $client->namespace, $owner, $queue, $serverTime, $captured);
@@ -41,7 +43,7 @@ final class ActivityLeaseProcess
         $this->until = hrtime(true) / 1e9 + $authority->remaining();
         $this->fixedUntil = $authority->fixedBound();
         if (!self::available()) {
-            throw new \RuntimeException('Automatic activity lease maintenance requires PHP CLI proc_open.');
+            throw new ActivityLeaseMaintenanceException('Automatic activity lease maintenance requires PHP CLI proc_open.');
         }
         $configuration = $client->activityLeaseProcessConfiguration();
         $autoload = null;
@@ -52,7 +54,7 @@ final class ActivityLeaseProcess
             }
         }
         if ($autoload === null) {
-            throw new \RuntimeException('Activity maintenance requires this SDK\'s Composer autoloader.');
+            throw new ActivityLeaseMaintenanceException('Activity maintenance requires this SDK\'s Composer autoloader.');
         }
         $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'],
             2 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'w']];
@@ -60,7 +62,7 @@ final class ActivityLeaseProcess
             __DIR__.'/activity-lease-maintainer.php', $autoload],
             $descriptors, $this->pipes, options: ['bypass_shell' => true]);
         if (!is_resource($this->process)) {
-            throw new \RuntimeException('Could not start independent activity lease maintenance.');
+            throw new ActivityLeaseMaintenanceException('Could not start independent activity lease maintenance.');
         }
         foreach ($this->pipes as $pipe) {
             stream_set_blocking($pipe, false);
@@ -71,7 +73,7 @@ final class ActivityLeaseProcess
                     'attempt_number', 'lease_owner', 'task_queue', 'namespace', 'lease_expires_at',
                     'deadlines', 'retry_policy', 'worker_session'])),
                 'server_time' => $serverTime, 'captured_at' => $captured, 'owner' => $owner, 'queue' => $queue,
-                'parent_pid' => getmypid(), 'registered' => $registered, 'heartbeat_interval' => $heartbeatInterval]);
+                'parent_pid' => getmypid()] + $presence);
         } catch (Throwable $error) {
             $this->stop();
             throw $error;
@@ -86,7 +88,7 @@ final class ActivityLeaseProcess
     }
 
     /** @param array<string, mixed>|null $body */
-    public function checkRequest(string $path, ?array $body): void
+    public function checkRequest(?array $body): void
     {
         if (($body['activity_attempt_id'] ?? null) !== $this->identity['activity_attempt_id']
             || ($body['lease_owner'] ?? null) !== $this->identity['lease_owner']) {
@@ -146,17 +148,11 @@ final class ActivityLeaseProcess
             return;
         }
         if (is_resource($this->process)) {
-            $until = hrtime(true) / 1e9 + 0.25;
-            while ($this->running() && hrtime(true) / 1e9 < $until) {
-                usleep(5000);
-            }
+            $this->waitForStop();
             if ($this->running()) {
                 // This stops maintenance only. It is never callback-stop proof.
                 proc_terminate($this->process);
-                $until = hrtime(true) / 1e9 + 0.25;
-                while ($this->running() && hrtime(true) / 1e9 < $until) {
-                    usleep(5000);
-                }
+                $this->waitForStop();
                 if ($this->running()) {
                     proc_terminate($this->process, 9);
                 }
@@ -164,6 +160,14 @@ final class ActivityLeaseProcess
             proc_close($this->process);
         }
         $this->process = null;
+    }
+
+    private function waitForStop(): void
+    {
+        $until = hrtime(true) / 1e9 + 0.25;
+        while ($this->running() && hrtime(true) / 1e9 < $until) {
+            usleep(5000);
+        }
     }
 
     /** @phpstan-impure Process status changes independently of this PHP process. */
@@ -200,44 +204,59 @@ final class ActivityLeaseProcess
             $this->refuse('activity_maintenance_message_too_large');
         }
         try {
-            $offset = 0;
-            while ($offset < strlen($line)) {
-                $written = fwrite($this->pipes[0], substr($line, $offset));
-                if ($written === false || hrtime(true) / 1e9 >= $deadline) {
-                    $this->refuse('activity_maintenance_unavailable');
-                }
-                $offset += $written;
-                if ($written === 0) {
-                    usleep(1000);
-                }
-            }
-            while (!str_contains($this->buffer, "\n")) {
-                $part = stream_get_contents($this->pipes[1], 65537 - strlen($this->buffer));
-                if ($part === false || feof($this->pipes[1]) || strlen($this->buffer) + strlen($part) > 65536
-                    || hrtime(true) / 1e9 >= $deadline) {
-                    $this->refuse('activity_maintenance_unavailable');
-                }
-                $this->buffer .= $part;
-                usleep(1000);
-            }
-            [$raw, $this->buffer] = explode("\n", $this->buffer, 2);
-            $reply = json_decode($raw, true, 32, JSON_THROW_ON_ERROR);
-            $now = hrtime(true) / 1e9;
-            if (!is_array($reply) || ($reply['id'] ?? null) !== $id || ($reply['can_continue'] ?? null) !== true
-                || !is_numeric($reply['until'] ?? null) || !is_numeric($reply['monotonic'] ?? null)
-                || $reply['monotonic'] < $started || $reply['monotonic'] > $now
-                || $reply['until'] <= $now || $now >= $deadline) {
-                $reason = is_array($reply) && is_string($reply['reason'] ?? null)
-                    ? $reply['reason'] : 'activity_maintenance_unconfirmed';
-                $this->refuse($reason);
-            }
-            $this->until = (float) $reply['until'];
+            $this->writeMessage($line, $deadline);
+            $this->acceptReply($this->readReply($deadline), $id, $started, $deadline);
         } catch (WorkflowClaimRevoked $error) {
             throw $error;
         } catch (Throwable $error) {
             $this->lostReason = 'activity_maintenance_unavailable';
             throw new WorkflowClaimRevoked($this->lostReason, 'Independent activity maintenance became unavailable.', previous: $error);
         }
+    }
+
+    private function writeMessage(string $line, float $deadline): void
+    {
+        $offset = 0;
+        while ($offset < strlen($line)) {
+            $written = fwrite($this->pipes[0], substr($line, $offset));
+            if ($written === false || hrtime(true) / 1e9 >= $deadline) {
+                $this->refuse('activity_maintenance_unavailable');
+            }
+            $offset += $written;
+            if ($written === 0) {
+                usleep(1000);
+            }
+        }
+    }
+
+    private function readReply(float $deadline): mixed
+    {
+        while (!str_contains($this->buffer, "\n")) {
+            $part = stream_get_contents($this->pipes[1], 65537 - strlen($this->buffer));
+            if ($part === false || feof($this->pipes[1]) || strlen($this->buffer) + strlen($part) > 65536
+                || hrtime(true) / 1e9 >= $deadline) {
+                $this->refuse('activity_maintenance_unavailable');
+            }
+            $this->buffer .= $part;
+            usleep(1000);
+        }
+        [$raw, $this->buffer] = explode("\n", $this->buffer, 2);
+
+        return json_decode($raw, true, 32, JSON_THROW_ON_ERROR);
+    }
+
+    private function acceptReply(mixed $reply, int $id, float $started, float $deadline): void
+    {
+        $now = hrtime(true) / 1e9;
+        if (!is_array($reply) || ($reply['id'] ?? null) !== $id || ($reply['can_continue'] ?? null) !== true
+            || !is_numeric($reply['until'] ?? null) || !is_numeric($reply['monotonic'] ?? null)
+            || $reply['monotonic'] < $started || $reply['monotonic'] > $now
+            || $reply['until'] <= $now || $now >= $deadline) {
+            $reason = is_array($reply) && is_string($reply['reason'] ?? null)
+                ? $reply['reason'] : 'activity_maintenance_unconfirmed';
+            $this->refuse($reason);
+        }
+        $this->until = (float) $reply['until'];
     }
 
     private function refuse(string $reason): never
