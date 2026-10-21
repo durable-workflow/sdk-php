@@ -4,8 +4,8 @@ title: Troubleshooting
 description: Diagnose Durable Workflow PHP connection, authentication, worker, queue, replay, timeout, and version problems by observable symptom.
 lead: Start at the failing boundary and keep the runtime response. A worker process, registered worker, admitted task, durable history event, and terminal result are separate checkpoints.
 previous:
-  label: Graceful shutdown
-  url: /operate/graceful-shutdown/
+  label: Execution tracing
+  url: /operate/tracing/
 next:
   label: PHP SDK home
   url: /
