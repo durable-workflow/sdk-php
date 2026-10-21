@@ -133,6 +133,8 @@ common failure diagnostics.
 - Replay testing, in-memory client fakes, Laravel and Symfony test helpers
 - Stable workflow handles and machine-readable runtime diagnostics
 
+Configure optional [execution tracing and log correlation](https://php.durable-workflow.com/operate/tracing/) with your application-owned OpenTelemetry provider. Durable caller propagation requires the connected Server to advertise the supported capability.
+
 See the [complete SDK reference](docs/sdk-reference.md) for control-plane APIs,
 worker configuration, Message Streams, framework setup, and testing examples.
 The generated [API reference](https://php.durable-workflow.com/api/) documents

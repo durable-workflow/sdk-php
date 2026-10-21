@@ -7,8 +7,8 @@ previous:
   label: Authentication
   url: /operate/authentication/
 next:
-  label: Troubleshooting
-  url: /operate/troubleshooting/
+  label: Execution tracing
+  url: /operate/tracing/
 ---
 ## Use the managed signal path
 

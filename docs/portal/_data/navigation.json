@@ -31,6 +31,7 @@
       {"label": "Deployment", "url": "/operate/deployment/"},
       {"label": "Authentication", "url": "/operate/authentication/"},
       {"label": "Graceful shutdown", "url": "/operate/graceful-shutdown/"},
+      {"label": "Execution tracing", "url": "/operate/tracing/"},
       {"label": "Troubleshooting", "url": "/operate/troubleshooting/"}
     ]
   }
