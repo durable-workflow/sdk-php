@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-21
+
 ### Added
 
 - Optional, bounded metadata-only activity lease renewal against runtimes that
@@ -612,7 +614,8 @@ project follows [Semantic Versioning](https://semver.org/).
   cancellation, and graceful shutdown.
 - Generated API reference and supported PHP-version CI.
 
-[Unreleased]: https://github.com/durable-workflow/sdk-php/compare/0.1.16...HEAD
+[Unreleased]: https://github.com/durable-workflow/sdk-php/compare/3.2.0...HEAD
+[3.2.0]: https://github.com/durable-workflow/sdk-php/compare/3.1.0...3.2.0
 [0.1.12]: https://github.com/durable-workflow/sdk-php/compare/0.1.11...0.1.12
 [0.1.11]: https://github.com/durable-workflow/sdk-php/compare/0.1.10...0.1.11
 [0.1.10]: https://github.com/durable-workflow/sdk-php/compare/0.1.9...0.1.10
