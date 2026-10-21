@@ -37,6 +37,15 @@ final class RequestBudget
         $this->deadline = min($this->deadline, $this->authorityDeadline);
     }
 
+    /** Cap a sub-operation without replacing the caller's original I/O or authority clock. */
+    public function restrictRequestDuration(int $seconds): void
+    {
+        if ($seconds < 1 || $seconds > 65) {
+            throw new \InvalidArgumentException('A worker request budget must be from 1 through 65 seconds.');
+        }
+        $this->deadline = min($this->deadline, hrtime(true) / 1e9 + $seconds);
+    }
+
     /** Use the original clock mapping, including for authority learned during I/O. */
     public function restrictWallAuthorityDeadline(DateTimeImmutable $deadline): void
     {

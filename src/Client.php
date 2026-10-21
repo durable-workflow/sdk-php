@@ -56,6 +56,8 @@ use DurableWorkflow\Worker\CancellationScopeOpenReceipt;
 use DurableWorkflow\Worker\CancellationScopeDeliveryReceipt;
 use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkerSessionOptions;
+use DurableWorkflow\Worker\ActivityLeaseBinding;
+use DurableWorkflow\Worker\ActivityLeaseProcess;
 use InvalidArgumentException;
 
 /** Synchronous control-plane and worker-plane client for the standalone server. */
@@ -64,6 +66,8 @@ final class Client implements WorkflowClientInterface
     private const EXTERNAL_PAYLOAD_REFERENCE_SCHEMA = 'durable-workflow.v2.external-payload-reference.v1';
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_MESSAGE = 'Workflow task waiting for scheduled history.';
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_TYPE = 'WorkflowTaskWaitingForHistory';
+    private const ACTIVITY_TASK_PATH = '/worker/activity-tasks/';
+    private const CLUSTER_INFO_PATH = '/cluster/info';
 
     private readonly string $baseUri;
     private readonly ?Authentication $authentication;
@@ -71,6 +75,8 @@ final class Client implements WorkflowClientInterface
     private readonly PayloadCodec $codec;
     private readonly RuntimePayloadUploads $payloadUploads;
     private bool $boundedWorkerRequests = false;
+    private ActivityLeaseBinding $activityLeaseBinding;
+    private ?string $activityLeaseBootstrap = null;
     private ?ExecutionTelemetry $executionTelemetry = null;
     private bool $observabilityContextSupported = false;
     /** @var (\Closure(string, array<string, mixed>|null, array<string, mixed>, RequestBudget|null): (?\Closure))|null */
@@ -124,11 +130,60 @@ final class Client implements WorkflowClientInterface
         $this->transport = $transport ?? new Psr18Transport();
         $this->codec = $codec ?? new AvroPayloadCodec();
         $this->payloadUploads = new RuntimePayloadUploads($this->transport, $this->baseUri);
+        $this->activityLeaseBinding = new ActivityLeaseBinding();
     }
 
     public function payloadCodec(): PayloadCodec
     {
         return $this->codec;
+    }
+
+    /**
+     * Recreate custom authentication and HTTP configuration in the independent
+     * lease-maintenance process. The trusted PHP file must return a Client with
+     * this same runtime URI, namespace and protocol. It never runs user activity code.
+     */
+    public function withActivityLeaseBootstrap(string $path): self
+    {
+        $resolved = realpath($path);
+        if ($resolved === false || !is_file($resolved) || !is_readable($resolved)) {
+            throw new InvalidArgumentException('Activity lease bootstrap must be a readable PHP file.');
+        }
+        $copy = clone $this;
+        $copy->activityLeaseBootstrap = $resolved;
+
+        return $copy;
+    }
+
+    /** @internal Credentials travel only over the private helper input pipe.
+     * @return array<string, mixed>
+     */
+    public function activityLeaseProcessConfiguration(): array
+    {
+        $configuration = ['base_uri' => $this->baseUri, 'namespace' => $this->namespace,
+            'worker_protocol' => $this->workerProtocolVersion, 'bootstrap' => $this->activityLeaseBootstrap];
+        if ($this->activityLeaseBootstrap !== null) {
+            return $configuration;
+        }
+        if (!$this->transport instanceof Psr18Transport || !$this->transport->supportsDefaultActivityLeaseProcess()
+            || ($this->authentication !== null && !$this->authentication instanceof TokenAuthentication
+                && !$this->authentication instanceof \DurableWorkflow\Auth\StaticHeadersAuthentication)) {
+            throw new InvalidArgumentException('Independent activity maintenance requires withActivityLeaseBootstrap() for custom authentication or HTTP clients; their TLS and transport settings cannot be discarded.');
+        }
+
+        return $configuration + ['worker_headers' => $this->authentication?->headers(true) ?? []];
+    }
+
+    /** @internal Bootstrap validation never makes a control-plane request. */
+    public function activityLeaseEndpoint(): string
+    {
+        return $this->baseUri;
+    }
+
+    /** @internal Bind only the current execution context, including cloned Clients. */
+    public function bindActivityLease(ActivityLeaseProcess $process): \Closure
+    {
+        return $this->activityLeaseBinding->enter($process);
     }
 
     /** Configure tracing before explicit cluster discovery and business I/O. */
@@ -193,14 +248,21 @@ final class Client implements WorkflowClientInterface
     /** Return a new client with the same transport, authentication, and codec for another namespace. */
     public function withNamespace(string $namespace): self
     {
-        return new self(
+        $copy = new self(
             $this->baseUri,
             $this->authentication,
             $namespace,
             $this->transport,
             $this->codec,
             maxExternalPayloadBytes: $this->maxExternalPayloadBytes,
+            workerProtocolVersion: $this->workerProtocolVersion,
         );
+        $copy->activityLeaseBootstrap = $this->activityLeaseBootstrap;
+        if ($namespace === $this->namespace) {
+            $copy->activityLeaseBinding = $this->activityLeaseBinding;
+        }
+
+        return $copy;
     }
 
     /** @return array<string, mixed> */
@@ -212,7 +274,7 @@ final class Client implements WorkflowClientInterface
     public function clusterInfo(bool $includeDiagnostics = false): ClusterInfo
     {
         $this->observabilityContextSupported = false;
-        $path = $includeDiagnostics ? '/cluster/info?include=diagnostics' : '/cluster/info';
+        $path = $includeDiagnostics ? self::CLUSTER_INFO_PATH.'?include=diagnostics' : self::CLUSTER_INFO_PATH;
 
         $info = $this->control('GET', $path);
         $this->observabilityContextSupported = TraceCarrier::supported($info);
@@ -326,7 +388,7 @@ final class Client implements WorkflowClientInterface
     public function workerClusterInfo(): ClusterInfo
     {
         $this->observabilityContextSupported = false;
-        $info = $this->worker('GET', '/cluster/info');
+        $info = $this->worker('GET', self::CLUSTER_INFO_PATH);
         $this->observabilityContextSupported = TraceCarrier::supported($info);
 
         return ClusterInfo::fromArray($info);
@@ -1565,7 +1627,8 @@ final class Client implements WorkflowClientInterface
      * @param array<string, int> $taskSlots
      * @return array<string, mixed>
      */
-    public function heartbeatWorker(string $workerId, array $taskSlots = [], ?RequestBudget $budget = null): array
+    public function heartbeatWorker(string $workerId, array $taskSlots = [], ?RequestBudget $budget = null,
+        ?int $processId = null): array
     {
         if ($budget !== null && !$this->boundedWorkerRequests) {
             throw new \LogicException('A worker authority budget requires bounded worker requests.');
@@ -1574,7 +1637,7 @@ final class Client implements WorkflowClientInterface
             'worker_id' => $workerId,
             'task_slots' => $taskSlots ?: null,
             'process_metrics' => [
-                'process_id' => getmypid(),
+                'process_id' => $processId ?? getmypid(),
                 'process_uptime_seconds' => 0,
             ],
         ]), budget: $budget);
@@ -2120,7 +2183,7 @@ final class Client implements WorkflowClientInterface
         string $leaseOwner,
         mixed $result,
     ): array {
-        return $this->worker('POST', '/worker/activity-tasks/'.$this->segment($taskId).'/complete', [
+        return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/complete', [
             'activity_attempt_id' => $activityAttemptId,
             'lease_owner' => $leaseOwner,
             'result' => $this->codec->envelope($result),
@@ -2140,7 +2203,7 @@ final class Client implements WorkflowClientInterface
         bool $nonRetryable = false,
         ?array $details = null,
     ): array {
-        return $this->worker('POST', '/worker/activity-tasks/'.$this->segment($taskId).'/fail', [
+        return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/fail', [
             'activity_attempt_id' => $activityAttemptId,
             'lease_owner' => $leaseOwner,
             'failure' => $this->withoutNulls([
@@ -2162,11 +2225,46 @@ final class Client implements WorkflowClientInterface
         string $leaseOwner,
         array $details = [],
     ): array {
-        return $this->worker('POST', '/worker/activity-tasks/'.$this->segment($taskId).'/heartbeat', [
+        return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/heartbeat', [
             'activity_attempt_id' => $activityAttemptId,
             'lease_owner' => $leaseOwner,
             'details' => $details,
         ]);
+    }
+
+    /**
+     * Renew only the original runtime lease, without recording application progress.
+     * Discovery and transport share at most five seconds and any earlier caller ceiling.
+     * The caller must validate the returned original identity and actual grant before use.
+     *
+     * @return array<string, mixed>
+     */
+    public function renewActivityTaskLease(
+        string $taskId,
+        string $activityAttemptId,
+        string $leaseOwner,
+        ?RequestBudget $budget = null,
+    ): array {
+        foreach ([$taskId, $activityAttemptId, $leaseOwner] as $identity) {
+            if (trim($identity) === '' || strlen($identity) > 255) {
+                throw new InvalidArgumentException('Activity lease renewal requires bounded, nonempty original claim identities.');
+            }
+        }
+        $budget ??= new RequestBudget(5);
+        $budget->restrictRequestDuration(5);
+        $budget->remainingSeconds();
+        $client = $this->withBoundedWorkerRequests();
+        $info = $client->worker('GET', self::CLUSTER_INFO_PATH, budget: $budget);
+        $protocol = $info['worker_protocol'] ?? null;
+        $capabilities = is_array($protocol) ? ($protocol['server_capabilities'] ?? null) : null;
+        if (!is_array($capabilities) || ($capabilities['activity_lease_renewal'] ?? null) !== true) {
+            throw new \LogicException('Runtime must explicitly discover activity_lease_renewal before activity lease maintenance.');
+        }
+
+        return $client->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/renew-lease', [
+            'activity_attempt_id' => $activityAttemptId,
+            'lease_owner' => $leaseOwner,
+        ], $budget);
     }
 
     /** Observe ownership without renewing a lease or recording user progress.
@@ -2178,7 +2276,7 @@ final class Client implements WorkflowClientInterface
             throw new InvalidArgumentException('Activity attempt observation requires worker protocol 1.20.');
         }
 
-        return $this->worker('POST', '/worker/activity-tasks/'.$this->segment($taskId).'/status', [
+        return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/status', [
             'activity_attempt_id' => $activityAttemptId,
             'lease_owner' => $leaseOwner,
         ], $budget);
@@ -2203,7 +2301,7 @@ final class Client implements WorkflowClientInterface
             }
         }
 
-        return $this->worker('POST', '/worker/activity-tasks/'.$this->segment($taskId).'/acknowledge-cancellation', [
+        return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/acknowledge-cancellation', [
             'activity_attempt_id' => $activityAttemptId,
             'lease_owner' => $leaseOwner,
             'request_id' => $requestId,
@@ -2299,7 +2397,13 @@ final class Client implements WorkflowClientInterface
      */
     private function worker(string $method, string $path, ?array $body = null, ?RequestBudget $budget = null): array
     {
-        if ($budget !== null && !$this->boundedWorkerRequests) {
+        $lease = $this->activityLeaseBinding->current();
+        $governed = $lease !== null && $lease->governs($path);
+        if ($governed) {
+            $lease->checkRequest($body);
+            $budget ??= $lease->budget();
+        }
+        if ($budget !== null && !$this->boundedWorkerRequests && !$governed) {
             throw new \LogicException('An activity receipt budget requires bounded worker requests.');
         }
         if ($method === 'POST'
@@ -2312,7 +2416,22 @@ final class Client implements WorkflowClientInterface
             $this->assertWorkflowCommandPayloads($commands);
         }
 
-        return $this->request($method, $path, true, $body, budget: $budget);
+        $started = hrtime(true) / 1e9;
+        $requestClient = $governed ? $this->withBoundedWorkerRequests() : $this;
+        try {
+            $response = $requestClient->request($method, $path, true, $body, budget: $budget);
+        } catch (ServerException $error) {
+            if ($governed && str_ends_with($path, '/heartbeat')
+                && ($error->details['can_continue'] ?? null) === false) {
+                $lease->progress($error->details, $started, hrtime(true) / 1e9);
+            }
+            throw $error;
+        }
+        if ($governed && str_ends_with($path, '/heartbeat')) {
+            $lease->progress($response, $started, hrtime(true) / 1e9);
+        }
+
+        return $response;
     }
 
     /** @param list<mixed> $commands */
@@ -2496,6 +2615,14 @@ final class Client implements WorkflowClientInterface
             $budget ??= $worker && $this->boundedWorkerRequests ? new RequestBudget($pollSeconds + 5) : null;
             if ($body !== null) {
                 $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers, $budget);
+            }
+            $activityLease = $worker ? $this->activityLeaseBinding->current() : null;
+            if ($activityLease !== null && $activityLease->governs($path)) {
+                // Uploading an external result is not publication authority.
+                // Check again before its final Worker POST and bound the send
+                // by the latest acknowledged grant, not an old cached lease.
+                $activityLease->checkRequest($body);
+                $budget?->restrictAuthorityDeadline($activityLease->publicationDeadline());
             }
             if ($worker && $this->boundedWorkerRequests) {
                 if (!$this->transport instanceof BoundedTransport || !$this->transport->supportsBoundedRequests()) {

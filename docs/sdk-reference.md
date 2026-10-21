@@ -546,6 +546,58 @@ task kind, consecutive attempt, selected delay, and typed server exception.
 Authentication failures, malformed responses, and generic server errors remain
 fatal.
 
+## Activity runtime lease maintenance
+
+The managed Worker starts a separate PHP CLI maintenance process when the
+runtime registration advertises `activity_lease_renewal`. It renews only the
+original activity attempt and reports the Worker slots as busy. Ordinary
+activity code still runs in the original Worker process, including captured
+memory, dependency-injected services and application-owned connections.
+
+Maintenance carries the original namespace, queue, task, run, execution,
+attempt and owner. It cannot extend recorded activity/workflow deadlines,
+change an attempt or reset the original TTL of a required worker session.
+Actual application heartbeats can advance only their recorded progress
+interval. Runtime pings do not record progress or add heartbeat history events.
+An activity with a heartbeat timeout must still call `$context->heartbeat()`.
+
+The helper exits when its owning process dies or its private input closes.
+Server recovery then uses the last acknowledged lease and recorded retry
+policy. Ordinary inline PHP callbacks cannot be forcibly stopped safely by
+this helper. If authority is lost, the managed Worker and its captured Client
+reject late completion/failure publication even when application code catches
+an earlier refusal. External side effects still need application idempotency.
+
+PHP CLI must permit `proc_open`. The default HTTP transport and static worker
+credentials need no extra setup. Custom PSR-18 clients, middleware, TLS/CA
+configuration or dynamic authentication require a trusted bootstrap file that
+returns a fresh Client for the same runtime URI, namespace and protocol:
+
+```php
+// lease-client.php: recreate the same HTTP/auth settings used by the Worker.
+return new DurableWorkflow\Client(
+    getenv('DURABLE_WORKFLOW_SERVER'),
+    namespace: 'orders',
+    workerToken: getenv('DURABLE_WORKFLOW_WORKER_TOKEN'),
+    transport: new DurableWorkflow\Transport\Psr18Transport(
+        new GuzzleHttp\Client(['verify' => getenv('COMPANY_CA_BUNDLE')]),
+    ),
+);
+```
+
+Configure the original Client before constructing the Worker:
+
+```php
+$client = $client->withActivityLeaseBootstrap(__DIR__.'/lease-client.php');
+```
+
+The file runs in the helper, so create new transport/authentication objects
+there. Do not return inherited database or HTTP handles. Worker credentials
+and claim metadata travel over the private input pipe, not command arguments.
+The SDK refuses custom configurations without this bootstrap rather than
+silently replacing their TLS, proxy or authentication behavior. Runtimes that
+do not advertise the capability retain their existing lease behavior.
+
 ## Receive repeated input with Message Streams
 
 Inbound Message Streams deliver repeated, ordered application input to a stable

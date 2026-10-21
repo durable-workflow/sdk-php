@@ -6,6 +6,21 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Optional, bounded metadata-only activity lease renewal against runtimes that
+  explicitly advertise it, without a new worker protocol floor.
+- Automatic lease and Worker-presence maintenance in an independent PHP CLI
+  helper while ordinary activity callbacks retain their inline execution and
+  application-owned service identities. Custom HTTP/authentication setups can
+  provide an explicit fresh-process Client bootstrap.
+
+### Fixed
+
+- Fence late activity outcomes after original lease, business, progress or
+  required session authority is lost. Maintenance cannot fabricate application
+  heartbeats, restore an expired attempt or reset an original session TTL.
+
 ## [3.1.0] - 2026-10-21
 
 ### Added

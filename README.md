@@ -140,6 +140,24 @@ worker configuration, Message Streams, framework setup, and testing examples.
 The generated [API reference](https://php.durable-workflow.com/api/) documents
 every public class and method.
 
+## Activity runtime leases
+
+When the runtime advertises `activity_lease_renewal`, the managed Worker keeps
+an activity's runtime lease and Worker presence alive independently of a blocking
+callback. Ordinary callbacks keep running inline with their original injected
+services and captured memory. This requires PHP CLI with `proc_open` enabled.
+
+Runtime maintenance does not record application progress or extend an activity,
+heartbeat, workflow or worker-session TTL deadline. Continue calling
+`ActivityContext::heartbeat()` when an activity has a heartbeat timeout.
+After authority is lost, the Worker discards late outcomes. It cannot undo
+external side effects or forcibly stop ordinary inline application code.
+
+The default HTTP transport and static worker credentials work automatically.
+Custom HTTP clients or dynamic authentication require
+[`withActivityLeaseBootstrap()`](docs/sdk-reference.md#activity-runtime-lease-maintenance)
+so the independent process recreates their actual TLS and authentication settings.
+
 ## Cooperative cancellation release candidate
 
 Cooperative requests let workflow code perform bounded, replayable cleanup.
