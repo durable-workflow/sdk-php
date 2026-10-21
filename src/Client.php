@@ -2169,6 +2169,41 @@ final class Client implements WorkflowClientInterface
         ]);
     }
 
+    /**
+     * Renew only the original runtime lease, without recording application progress.
+     * Discovery and transport share at most five seconds and any earlier caller ceiling.
+     * The caller must validate the returned original identity and actual grant before use.
+     *
+     * @return array<string, mixed>
+     */
+    public function renewActivityTaskLease(
+        string $taskId,
+        string $activityAttemptId,
+        string $leaseOwner,
+        ?RequestBudget $budget = null,
+    ): array {
+        foreach ([$taskId, $activityAttemptId, $leaseOwner] as $identity) {
+            if (trim($identity) === '' || strlen($identity) > 255) {
+                throw new InvalidArgumentException('Activity lease renewal requires bounded, nonempty original claim identities.');
+            }
+        }
+        $budget ??= new RequestBudget(5);
+        $budget->restrictRequestDuration(5);
+        $budget->remainingSeconds();
+        $client = $this->withBoundedWorkerRequests();
+        $info = $client->worker('GET', '/cluster/info', budget: $budget);
+        $protocol = $info['worker_protocol'] ?? null;
+        $capabilities = is_array($protocol) ? ($protocol['server_capabilities'] ?? null) : null;
+        if (!is_array($capabilities) || ($capabilities['activity_lease_renewal'] ?? null) !== true) {
+            throw new \LogicException('Runtime must explicitly discover activity_lease_renewal before activity lease maintenance.');
+        }
+
+        return $client->worker('POST', '/worker/activity-tasks/'.$this->segment($taskId).'/renew-lease', [
+            'activity_attempt_id' => $activityAttemptId,
+            'lease_owner' => $leaseOwner,
+        ], $budget);
+    }
+
     /** Observe ownership without renewing a lease or recording user progress.
      * @return array<string, mixed>
      */

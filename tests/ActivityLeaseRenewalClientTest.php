@@ -52,13 +52,13 @@ final class ActivityLeaseRenewalClientTest extends TestCase
     }
 
     #[DataProvider('incapableRuntimeProvider')]
-    public function testOnlyAffirmativeCapabilityAllowsRenewal(mixed $capability): void
+    public function testOnlyAffirmativeCapabilityAllowsRenewal(array $discovery): void
     {
         $calls = 0;
-        $http = new GuzzleClient(['handler' => static function () use (&$calls, $capability) {
+        $http = new GuzzleClient(['handler' => static function () use (&$calls, $discovery) {
             ++$calls;
 
-            return Create::promiseFor(new Response(200, [], json_encode(self::discovery($capability), JSON_THROW_ON_ERROR)));
+            return Create::promiseFor(new Response(200, [], json_encode($discovery, JSON_THROW_ON_ERROR)));
         }]);
         $client = new Client('https://server.example', transport: new Psr18Transport($http));
         try {
@@ -72,7 +72,9 @@ final class ActivityLeaseRenewalClientTest extends TestCase
 
     public static function incapableRuntimeProvider(): array
     {
-        return [[false], [null], ['true'], [1], [[]]];
+        return [[self::discovery(false)], [self::discovery(null)], [self::discovery('true')],
+            [self::discovery(1)], [self::discovery([])], [[]], [['worker_protocol' => 'malformed']],
+            [['worker_protocol' => ['server_capabilities' => true]]]];
     }
 
     public function testExistingProtocolWithAffirmativeCapabilityAddsNoNewProtocolFloor(): void
@@ -189,6 +191,27 @@ final class ActivityLeaseRenewalClientTest extends TestCase
             self::fail('A late successful response acquired fresh execution authority.');
         } catch (ServerException $error) {
             self::assertStringContainsString('request time budget expired', $error->getMessage());
+        }
+        self::assertSame(2, $calls);
+    }
+
+    public function testExpiredLeaseRefusalIsRetainedWithoutRetryingAnotherClaim(): void
+    {
+        $calls = 0;
+        $http = new GuzzleClient(['handler' => static function () use (&$calls) {
+            ++$calls;
+
+            return Create::promiseFor($calls === 1
+                ? new Response(200, [], json_encode(self::discovery(true), JSON_THROW_ON_ERROR))
+                : new Response(409, [], '{"reason":"lease_expired","message":"Original lease expired"}'));
+        }]);
+        $client = new Client('https://server.example', transport: new Psr18Transport($http));
+        try {
+            $client->renewActivityTaskLease('task', 'attempt', 'owner');
+            self::fail('An expired lease acquired execution authority.');
+        } catch (ServerException $error) {
+            self::assertSame(409, $error->status);
+            self::assertSame('lease_expired', $error->reason);
         }
         self::assertSame(2, $calls);
     }
