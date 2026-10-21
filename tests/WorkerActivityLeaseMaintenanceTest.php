@@ -16,6 +16,8 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
 {
     /** @var resource|null */
     private $server;
+    /** @var resource|null */
+    private $tlsServer = null;
     private string $directory;
     private string $uri;
 
@@ -50,6 +52,10 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
 
     protected function tearDown(): void
     {
+        if (is_resource($this->tlsServer)) {
+            proc_terminate($this->tlsServer);
+            proc_close($this->tlsServer);
+        }
         if (is_resource($this->server)) {
             proc_terminate($this->server);
             proc_close($this->server);
@@ -246,6 +252,76 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
         self::assertNotEmpty($renewals);
         self::assertSame('retained', $renewals[0]['bootstrap']);
         self::assertCount(1, $this->state()['outcomes']);
+    }
+
+    public function testPrivateCaAndRotatingAuthenticationSurviveTheIndependentBootstrap(): void
+    {
+        if (!extension_loaded('openssl')) {
+            self::markTestSkipped('The actual private-CA control requires OpenSSL.');
+        }
+        $httpUri = $this->uri;
+        $this->uri = $this->privateTlsEndpoint($httpUri);
+        try {
+            (new Client($this->uri, workerToken: 'fixture-worker'))->workerClusterInfo();
+            self::fail('The generated private certificate must not be trusted by default.');
+        } catch (\DurableWorkflow\Exception\ServerException $error) {
+            self::assertInstanceOf(\DurableWorkflow\Exception\TransportException::class, $error->getPrevious());
+            self::assertStringContainsString('certificate', strtolower($error->getMessage()));
+        }
+        self::assertSame([], $this->state()['requests'] ?? [], 'Untrusted TLS must not reach the HTTP fixture.');
+
+        $token = $this->directory.'/worker-token';
+        file_put_contents($token, 'fixture-worker');
+        $bootstrap = $this->directory.'/tls-bootstrap.php';
+        file_put_contents($bootstrap, '<?php return new \\DurableWorkflow\\Client('.var_export($this->uri, true).', '
+            .'authentication: new class implements \\DurableWorkflow\\Auth\\Authentication {'
+            .'public function headers(bool $workerRequest): array { return ["Authorization" => "Bearer ".trim(file_get_contents('
+            .var_export($token, true).'))]; } }, namespace: "tenant", '
+            .'transport: new \\DurableWorkflow\\Transport\\Psr18Transport(new \\GuzzleHttp\\Client(["verify" => '
+            .var_export($this->directory.'/certificate.pem', true).'])));');
+        $client = (require $bootstrap)->withActivityLeaseBootstrap($bootstrap);
+        $worker = $this->worker(['authentication_file' => $token], $client);
+        $worker->registerActivity('slow', static function (ActivityContext $context) use ($token): int {
+            file_put_contents($token, 'rotated-fixture-worker');
+            usleep(4200000);
+            return 17;
+        });
+        self::assertTrue($worker->tick(0));
+        self::assertCount(1, $this->state()['outcomes'] ?? []);
+        $renewals = array_values(array_filter($this->state()['requests'],
+            static fn (array $request): bool => str_ends_with($request['path'], '/renew-lease')));
+        self::assertGreaterThanOrEqual(3, count($renewals));
+        self::assertSame('Bearer fixture-worker', $renewals[0]['authorization']);
+        self::assertSame('Bearer rotated-fixture-worker', $renewals[count($renewals) - 1]['authorization']);
+    }
+
+    private function privateTlsEndpoint(string $upstream): string
+    {
+        $config = $this->directory.'/openssl.cnf';
+        file_put_contents($config, "[req]\ndistinguished_name=dn\n[dn]\n[v3]\nsubjectAltName=IP:127.0.0.1\nbasicConstraints=critical,CA:TRUE\nextendedKeyUsage=serverAuth\n");
+        $key = openssl_pkey_new(['private_key_bits' => 2048]);
+        self::assertNotFalse($key);
+        $request = openssl_csr_new(['commonName' => '127.0.0.1'], $key, ['config' => $config, 'digest_alg' => 'sha256']);
+        self::assertNotFalse($request);
+        $certificate = openssl_csr_sign($request, null, $key, 1,
+            ['config' => $config, 'x509_extensions' => 'v3', 'digest_alg' => 'sha256']);
+        self::assertNotFalse($certificate);
+        self::assertTrue(openssl_x509_export_to_file($certificate, $this->directory.'/certificate.pem'));
+        self::assertTrue(openssl_pkey_export_to_file($key, $this->directory.'/key.pem'));
+        $ready = $this->directory.'/tls-ready';
+        $this->tlsServer = proc_open([PHP_BINARY, __DIR__.'/Support/activity-lease-tls.php',
+            $this->directory.'/certificate.pem', $this->directory.'/key.pem',
+            str_replace('http://', 'tcp://', $upstream), $ready],
+            [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
+        self::assertIsResource($this->tlsServer);
+        $until = microtime(true) + 5;
+        do {
+            if (is_file($ready)) {
+                return 'https://'.file_get_contents($ready);
+            }
+            usleep(10000);
+        } while (microtime(true) < $until);
+        self::fail('The isolated TLS fixture did not start.');
     }
 
     public function testCallbackCannotPublishThroughItsCapturedClonedClientAfterExpiry(): void

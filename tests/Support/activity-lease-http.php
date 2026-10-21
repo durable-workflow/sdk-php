@@ -18,7 +18,8 @@ $state['requests'][] = ['path' => $path, 'body' => $body,
     'bootstrap' => $_SERVER['HTTP_X_MAINTENANCE_BOOTSTRAP'] ?? null];
 $status = 200;
 $response = [];
-if (($_SERVER['HTTP_AUTHORIZATION'] ?? '') !== 'Bearer fixture-worker') {
+$expectedToken = isset($state['authentication_file']) ? trim(file_get_contents($state['authentication_file'])) : 'fixture-worker';
+if (($_SERVER['HTTP_AUTHORIZATION'] ?? '') !== 'Bearer '.$expectedToken) {
     $status = 401;
     $response = ['reason' => 'wrong_credential'];
 } elseif ($path === '/api/cluster/info') {
