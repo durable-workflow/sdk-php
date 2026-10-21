@@ -15,6 +15,7 @@ use DurableWorkflow\Exception\SagaCompensationFailed;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\ActivityLeaseProcess;
 use DurableWorkflow\Worker\ActivityExecutionFailure;
 use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\CancellationHistory;
@@ -101,6 +102,10 @@ final class Worker
     private bool $serviceOperationsSupported = false;
     private bool $queryTaskAuthoritySupported = false;
     private ?QueryTaskAuthority $queryTaskAuthority = null;
+    private bool $activityLeaseRenewalSupported = false;
+    private ?ActivityLeaseProcess $activityLeaseProcess = null;
+    /** @var (\Closure(): void)|null */
+    private ?\Closure $unbindActivityLease = null;
     private ?CancellationRequest $claimCancellation = null;
     private ?string $claimDeliveredCancellationId = null;
     private bool $preparedLocalActivityGroupsSupported = false;
@@ -380,6 +385,12 @@ final class Worker
             }
             $this->registered = true;
             $this->lastHeartbeatAt = $this->now();
+            if ($this->activityLeaseRenewalSupported && $this->activities !== []) {
+                if (!ActivityLeaseProcess::available()) {
+                    throw new \RuntimeException('Automatic activity lease maintenance requires PHP CLI proc_open.');
+                }
+                $this->client->activityLeaseProcessConfiguration();
+            }
             $this->diagnostic('worker.registered', [
                 'worker_id' => $this->workerId,
                 'task_queue' => $this->taskQueue,
@@ -399,6 +410,7 @@ final class Worker
             ], 'error');
             throw $exception;
         } finally {
+            $this->stopActivityLease();
             $this->closeWorkerSessions();
             $this->stickyCache->clear();
             if ($this->registered) {
@@ -433,6 +445,7 @@ final class Worker
             throw new ServerException('The worker registration fencing contract is invalid.', 201,
                 'invalid_worker_registration_fence');
         }
+        $this->activityLeaseRenewalSupported = ($capabilities['activity_lease_renewal'] ?? null) === true;
         $capability = $capabilities['worker_deregistration_fencing'] ?? null;
         if (($capability === null || (is_array($capability) && ($capability['supported'] ?? null) === false))
             && $token === null) {
@@ -884,6 +897,9 @@ final class Worker
 
                 return $poll($requestId, $timeoutSeconds);
             } catch (WorkflowClaimRevoked $exception) {
+                if ($taskKind === 'activity') {
+                    $this->stopActivityLease();
+                }
                 if ($taskKind === 'query') {
                     $this->queryTaskAuthority = null;
                 }
@@ -896,6 +912,9 @@ final class Worker
 
                 return ['task' => null, 'poll_status' => 'empty'];
             } catch (ServerException $exception) {
+                if ($taskKind === 'activity') {
+                    $this->stopActivityLease();
+                }
                 $databaseUnavailable = $this->isTransientDatabaseFailure(
                     $exception,
                     "poll_{$taskKind}_task",
@@ -940,6 +959,11 @@ final class Worker
                     // other task kinds a turn instead of retrying only this one.
                     return $this->shutdownRequested ? null : $exception->details;
                 }
+            } catch (Throwable $exception) {
+                if ($taskKind === 'activity') {
+                    $this->stopActivityLease();
+                }
+                throw $exception;
             }
         }
 
@@ -1162,13 +1186,19 @@ final class Worker
     /** @param array<string, mixed> $task */
     private function executePolledTask(string $taskKind, array $task): void
     {
-        if ($this->telemetry === null || $this->client->observabilityContextAvailable()) {
-            $this->executeTask($taskKind, $task);
+        try {
+            if ($this->telemetry === null || $this->client->observabilityContextAvailable()) {
+                $this->executeTask($taskKind, $task);
 
-            return;
+                return;
+            }
+            $this->telemetry->task($taskKind, $task, $this->client->namespace, $this->taskQueue,
+                fn () => $this->executeTask($taskKind, $task));
+        } finally {
+            if ($taskKind === 'activity') {
+                $this->stopActivityLease();
+            }
         }
-        $this->telemetry->task($taskKind, $task, $this->client->namespace, $this->taskQueue,
-            fn () => $this->executeTask($taskKind, $task));
     }
 
     /** @param array<string, mixed> $task */
@@ -1488,6 +1518,19 @@ final class Worker
             // progress and cannot renew an activity or query execution budget.
             $task = $response['task'];
             $activity = $path === '/worker/activity-tasks/poll';
+            if ($activity && $this->activityLeaseRenewalSupported) {
+                if ($this->activityLeaseProcess !== null) {
+                    throw new WorkflowClaimRevoked('activity_supervisor_conflict', 'A previous activity supervisor is still active.');
+                }
+                $this->activityLeaseProcess = new ActivityLeaseProcess($this->client, $task, $this->workerId,
+                    $this->taskQueue, $response['server_time'] ?? null, hrtime(true) / 1e9,
+                    $this->registered, $this->heartbeatIntervalSeconds);
+                $this->unbindActivityLease = $this->client->bindActivityLease($this->activityLeaseProcess);
+
+                $process = $this->activityLeaseProcess;
+
+                return static fn () => $process->check();
+            }
             $queryAuthority = null;
             if (!$activity) {
                 $this->queryTaskAuthority = $queryAuthority = $this->queryAuthorityForTask($task);
@@ -2396,6 +2439,7 @@ final class Worker
                 ),
             );
             $arguments = $this->decodeArguments($task['arguments'] ?? null);
+            $this->activityLeaseProcess?->check();
             if ($this->enableCooperativeCancellation) {
                 $nextObservation = 0.0;
                 $check = function (bool $force) use ($task, &$nextObservation): void {
@@ -2458,12 +2502,21 @@ final class Worker
             if ($exception instanceof ServerException && $this->discardClosedActivityAttempt($task, $exception)) {
                 return;
             }
-            if ($this->enableCooperativeCancellation && $exception instanceof WorkflowClaimAborted) {
+            if ($this->activityLeaseProcess !== null && !$exception instanceof WorkflowClaimRevoked) {
+                try {
+                    $this->activityLeaseProcess->check();
+                } catch (WorkflowClaimRevoked $revoked) {
+                    $exception = $revoked;
+                }
+            }
+            if ($exception instanceof WorkflowClaimRevoked
+                || ($this->enableCooperativeCancellation && $exception instanceof WorkflowClaimAborted)) {
                 if ($callbackStopped) {
                     $this->acknowledgeStoppedRemoteActivity($taskId, $attemptId, $leaseOwner);
                 }
                 $this->diagnostic('worker.claim_aborted', [
                     'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
+                    'reason' => $exception instanceof WorkflowClaimRevoked ? $exception->reason : null,
                     'task_kind' => 'activity', 'message' => $exception->getMessage(),
                 ], 'warning');
 
@@ -3502,7 +3555,7 @@ final class Worker
 
     private function heartbeatIfDue(?RequestBudget $budget = null): void
     {
-        if (!$this->registered || $this->shutdownRequested) {
+        if (!$this->registered || $this->shutdownRequested || $this->activityLeaseProcess !== null) {
             return;
         }
 
@@ -3511,6 +3564,16 @@ final class Worker
         }
 
         $this->heartbeat($budget);
+    }
+
+    private function stopActivityLease(): void
+    {
+        if ($this->unbindActivityLease !== null) {
+            ($this->unbindActivityLease)();
+            $this->unbindActivityLease = null;
+        }
+        $this->activityLeaseProcess?->stop();
+        $this->activityLeaseProcess = null;
     }
 
     private function heartbeat(?RequestBudget $budget = null): void

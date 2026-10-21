@@ -27,6 +27,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     private readonly ClientInterface $client;
     private readonly RequestFactoryInterface $requestFactory;
     private readonly StreamFactoryInterface $streamFactory;
+    private readonly bool $defaultProcessConfiguration;
 
     public function __construct(
         ?ClientInterface $client = null,
@@ -38,6 +39,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             throw new \InvalidArgumentException('Supervised payload transfers require a timeout from 1 through 900 seconds.');
         }
         $factory = new HttpFactory();
+        $this->defaultProcessConfiguration = $client === null && $requestFactory === null && $streamFactory === null;
         $this->client = $client ?? new GuzzleClient(['http_errors' => false]);
         $this->requestFactory = $requestFactory ?? $factory;
         $this->streamFactory = $streamFactory ?? $factory;
@@ -56,6 +58,12 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     public function supportsBoundedRequests(): bool
     {
         return $this->client instanceof GuzzleClient && extension_loaded('curl');
+    }
+
+    /** @internal Custom HTTP clients require an application bootstrap in a fresh process. */
+    public function supportsDefaultActivityLeaseProcess(): bool
+    {
+        return $this->defaultProcessConfiguration && $this->supportsBoundedRequests();
     }
 
     public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
