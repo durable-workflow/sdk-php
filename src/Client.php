@@ -46,6 +46,8 @@ use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Transport\RuntimePayloads;
 use DurableWorkflow\Transport\RuntimePayloadUploads;
 use DurableWorkflow\Transport\RequestBudget;
+use DurableWorkflow\Telemetry\ExecutionTelemetry;
+use DurableWorkflow\Telemetry\TraceCarrier;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\CancellationRequest;
@@ -69,6 +71,8 @@ final class Client implements WorkflowClientInterface
     private readonly PayloadCodec $codec;
     private readonly RuntimePayloadUploads $payloadUploads;
     private bool $boundedWorkerRequests = false;
+    private ?ExecutionTelemetry $executionTelemetry = null;
+    private bool $observabilityContextSupported = false;
     /** @var (\Closure(string, array<string, mixed>|null, array<string, mixed>, RequestBudget|null): (?\Closure))|null */
     private ?\Closure $workerPayloadObserver = null;
 
@@ -125,6 +129,21 @@ final class Client implements WorkflowClientInterface
     public function payloadCodec(): PayloadCodec
     {
         return $this->codec;
+    }
+
+    /** Configure tracing before explicit cluster discovery and business I/O. */
+    public function withTelemetry(ExecutionTelemetry $telemetry): self
+    {
+        $copy = clone $this;
+        $copy->executionTelemetry = $telemetry;
+
+        return $copy;
+    }
+
+    /** @internal Uses actual cached discovery; never performs optional I/O in a business command. */
+    public function observabilityContextAvailable(): bool
+    {
+        return $this->observabilityContextSupported;
     }
 
     /**
@@ -192,9 +211,13 @@ final class Client implements WorkflowClientInterface
 
     public function clusterInfo(bool $includeDiagnostics = false): ClusterInfo
     {
+        $this->observabilityContextSupported = false;
         $path = $includeDiagnostics ? '/cluster/info?include=diagnostics' : '/cluster/info';
 
-        return ClusterInfo::fromArray($this->control('GET', $path));
+        $info = $this->control('GET', $path);
+        $this->observabilityContextSupported = TraceCarrier::supported($info);
+
+        return ClusterInfo::fromArray($info);
     }
 
     /**
@@ -302,7 +325,11 @@ final class Client implements WorkflowClientInterface
     /** Discover ordinary runtime capabilities using the worker credential. */
     public function workerClusterInfo(): ClusterInfo
     {
-        return ClusterInfo::fromArray($this->worker('GET', '/cluster/info'));
+        $this->observabilityContextSupported = false;
+        $info = $this->worker('GET', '/cluster/info');
+        $this->observabilityContextSupported = TraceCarrier::supported($info);
+
+        return ClusterInfo::fromArray($info);
     }
 
     /**
@@ -340,7 +367,7 @@ final class Client implements WorkflowClientInterface
             'fairness_weight' => $fairnessWeight,
             'build_id' => $buildId,
         ]);
-        $response = $this->control('POST', '/workflows', $body);
+        $response = $this->control('POST', '/workflows', $this->withObservabilityContext($body));
 
         return new WorkflowHandle(
             $this,
@@ -718,6 +745,13 @@ final class Client implements WorkflowClientInterface
     }
 
     /**
+     * Send a signal and return the Server receipt.
+     *
+     * `$requestId` is the caller command key (1 to 255 Unicode characters). Omit it
+     * to generate `sdk-php-signal-<hex>` once per call. The receipt always
+     * carries `request_id`; retrying with the same key and intent returns the
+     * retained receipt (`retained: true`) instead of a second signal.
+     *
      * @param list<mixed> $arguments
      * @return array<string, mixed>
      */
@@ -726,10 +760,16 @@ final class Client implements WorkflowClientInterface
         string $signalName,
         array $arguments = [],
         ?string $runId = null,
+        ?string $requestId = null,
     ): array {
+        $requestId = $this->commandRequestId('signal', $requestId);
         $path = $this->workflowOperationPath($workflowId, $runId, 'signal/'.$this->segment($signalName));
+        $response = $this->control('POST', $path, $this->withObservabilityContext([
+            'input' => $this->codec->envelope($arguments),
+            'request_id' => $requestId,
+        ]), 'signal', $requestId);
 
-        return $this->control('POST', $path, ['input' => $this->codec->envelope($arguments)], 'signal');
+        return $response + ['request_id' => $requestId];
     }
 
     /**
@@ -765,7 +805,13 @@ final class Client implements WorkflowClientInterface
         return $this->resultFromResponse($response);
     }
 
-    /** @param list<mixed> $arguments */
+    /**
+     * Send an update and return its decoded result, or the receipt while the
+     * update is still pending. Use updateWorkflowReceipt() to read the receipt
+     * with its `request_id` after a completed update.
+     *
+     * @param list<mixed> $arguments
+     */
     public function updateWorkflow(
         string $workflowId,
         string $updateName,
@@ -775,15 +821,41 @@ final class Client implements WorkflowClientInterface
         ?string $requestId = null,
         ?string $runId = null,
     ): mixed {
+        return $this->resultFromResponse($this->updateWorkflowReceipt(
+            $workflowId, $updateName, $arguments, $waitFor, $waitTimeoutSeconds, $requestId, $runId,
+        ));
+    }
+
+    /**
+     * Send an update and return the Server receipt.
+     *
+     * `$requestId` is the caller command key (1 to 255 Unicode characters). Omit it
+     * to generate `sdk-php-update-<hex>` once per call. The receipt always
+     * carries `request_id`; retrying with the same key and intent returns the
+     * retained receipt (`retained: true`) instead of a second update.
+     *
+     * @param list<mixed> $arguments
+     * @return array<string, mixed>
+     */
+    public function updateWorkflowReceipt(
+        string $workflowId,
+        string $updateName,
+        array $arguments = [],
+        string $waitFor = 'completed',
+        ?int $waitTimeoutSeconds = null,
+        ?string $requestId = null,
+        ?string $runId = null,
+    ): array {
+        $requestId = $this->commandRequestId('update', $requestId);
         $path = $this->workflowOperationPath($workflowId, $runId, 'update/'.$this->segment($updateName));
-        $response = $this->control('POST', $path, $this->withoutNulls([
+        $response = $this->control('POST', $path, $this->withObservabilityContext($this->withoutNulls([
             'input' => $this->codec->envelope($arguments),
             'wait_for' => $waitFor,
             'wait_timeout_seconds' => $waitTimeoutSeconds,
             'request_id' => $requestId,
-        ]), 'update');
+        ])), 'update', $requestId);
 
-        return $this->resultFromResponse($response);
+        return $response + ['request_id' => $requestId];
     }
 
     /** @return array<string, mixed> */
@@ -792,8 +864,24 @@ final class Client implements WorkflowClientInterface
         return $this->control(
             'POST',
             $this->workflowOperationPath($workflowId, $runId, 'cancel'),
-            $this->withoutNulls(['reason' => $reason]),
+            $this->withObservabilityContext($this->withoutNulls(['reason' => $reason])),
         );
+    }
+
+    /** @param array<string, mixed> $body
+     *  @return array<string, mixed>
+     */
+    private function withObservabilityContext(array $body): array
+    {
+        if (!$this->observabilityContextSupported || $this->executionTelemetry === null) {
+            return $body;
+        }
+        $carrier = $this->executionTelemetry->capture();
+        if ($carrier !== null) {
+            $body['observability_context'] = $carrier;
+        }
+
+        return $body;
     }
 
     /**
@@ -1950,6 +2038,15 @@ final class Client implements WorkflowClientInterface
             );
         }
 
+        if ($this->executionTelemetry !== null && $this->observabilityContextSupported) {
+            foreach ($commands as &$command) {
+                if (in_array($command['type'] ?? null, ['start_child_workflow', 'continue_as_new'], true)) {
+                    $command = $this->withObservabilityContext($command);
+                }
+            }
+            unset($command);
+        }
+
         return $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/complete', array_filter([
             'lease_owner' => $leaseOwner,
             'workflow_task_attempt' => $attempt,
@@ -2186,9 +2283,14 @@ final class Client implements WorkflowClientInterface
      * @param array<string, mixed>|null $body
      * @return array<string, mixed>
      */
-    private function control(string $method, string $path, ?array $body = null, ?string $operation = null): array
-    {
-        return $this->request($method, $path, false, $body, $operation);
+    private function control(
+        string $method,
+        string $path,
+        ?array $body = null,
+        ?string $operation = null,
+        ?string $requestId = null,
+    ): array {
+        return $this->request($method, $path, false, $body, $operation, requestId: $requestId);
     }
 
     /**
@@ -2384,6 +2486,7 @@ final class Client implements WorkflowClientInterface
         ?string $operation = null,
         ?RequestBudget $budget = null,
         ?\Closure $payloadPaths = null,
+        ?string $requestId = null,
     ): array {
         $headers = $this->requestHeaders($worker);
         try {
@@ -2432,10 +2535,10 @@ final class Client implements WorkflowClientInterface
                 throw new QueryFailed($message, $status, $reason, $details, $exception);
             }
             if ($operation === 'update') {
-                throw new UpdateFailed($message, $status, $reason, $details, $exception);
+                throw new UpdateFailed($message, $status, $reason, $details, $exception, $requestId);
             }
             if ($operation === 'signal') {
-                throw new SignalFailed($message, $status, $reason, $details, $exception);
+                throw new SignalFailed($message, $status, $reason, $details, $exception, $requestId);
             }
 
             throw new ServerException($message, $status, $reason, $details, $exception);
@@ -2627,6 +2730,20 @@ final class Client implements WorkflowClientInterface
     private function requestId(string $prefix): string
     {
         return $prefix.'-'.bin2hex(random_bytes(16));
+    }
+
+    /** The caller command key for a signal or update: validated when supplied, otherwise generated once per call. */
+    private function commandRequestId(string $command, ?string $requestId): string
+    {
+        if ($requestId === null) {
+            return $this->requestId('sdk-php-'.$command);
+        }
+        $characters = preg_match_all('/./us', $requestId);
+        if ($characters === false || $characters < 1 || $characters > 255) {
+            throw new InvalidArgumentException(ucfirst($command).' request IDs must be from 1 to 255 Unicode characters.');
+        }
+
+        return $requestId;
     }
 
     /**

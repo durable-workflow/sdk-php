@@ -293,7 +293,7 @@ jobs:
             composer require durable-workflow/sdk:@dev "${framework_packages[@]}" \
               --no-interaction --prefer-dist --with-all-dependencies
           fi
-          composer require --dev phpstan/phpstan:^2.0 --no-interaction --prefer-dist
+          composer require --dev phpstan/phpstan:^2.0 'monolog/monolog:^2.9|^3.0' --no-interaction --prefer-dist
       - name: Install SDK into a fresh Laravel application for cached role isolation
         if: matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4'
         run: |
@@ -329,12 +329,32 @@ jobs:
             bridge_path=src/Bridge/Symfony
             compatibility_scripts=("tests/compat/${COMPAT_SCRIPT}")
           fi
-          compatibility_scripts+=(tests/compat/history-cache.php)
+          compatibility_scripts+=(tests/compat/history-cache.php tests/compat/execution-telemetry.php)
           "$consumer/vendor/bin/phpstan" analyse -c phpstan-framework.neon \
             --autoload-file="$consumer/vendor/autoload.php" \
             src/Bridge/FrameworkRuntimeException.php \
             src/Bridge/ServiceConfiguration.php src/Bridge/Event \
             "$bridge_path" "${compatibility_scripts[@]}"
+      - name: Exercise optional tracing in framework workers
+        if: >-
+          (matrix.framework == 'Laravel' && matrix.version == '9' && matrix.php == '8.1') ||
+          (matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4') ||
+          (matrix.framework == 'Symfony' && matrix.version == '6.4')
+        env:
+          COMPAT_SCRIPT: ${{ matrix.script }}
+          FRAMEWORK_VERSION: ${{ matrix.version }}
+          DURABLE_WORKFLOW_TEST_TRACING: '1'
+        run: |
+          consumer="$(cat "$RUNNER_TEMP/framework-consumer")"
+          monolog='monolog/monolog:^3.0'
+          if [ "$COMPAT_SCRIPT" = laravel.php ] && [ "$FRAMEWORK_VERSION" = 9 ]; then
+            monolog='monolog/monolog:^2.9'
+          fi
+          composer --working-dir="$consumer" require --dev open-telemetry/api:1.10.1 "$monolog" \
+            --no-interaction --prefer-dist --no-progress
+          DURABLE_WORKFLOW_CLIENT_TOKEN=client-secret \
+            DURABLE_WORKFLOW_WORKER_TOKEN=worker-secret \
+            php "tests/compat/${COMPAT_SCRIPT}" "$consumer/vendor/autoload.php"
 
   laravel-transition-compat:
     name: Laravel ${{ matrix.source }} to service mode

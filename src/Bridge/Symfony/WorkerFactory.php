@@ -7,6 +7,7 @@ namespace DurableWorkflow\Bridge\Symfony;
 use DurableWorkflow\Bridge\Event\WorkerDiagnosticEvent;
 use DurableWorkflow\Bridge\ServiceConfiguration;
 use DurableWorkflow\Client;
+use DurableWorkflow\Telemetry\ExecutionTelemetry;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\WorkflowFactory;
 use Psr\Log\LoggerInterface;
@@ -26,6 +27,7 @@ final class WorkerFactory
         private readonly ServiceProviderInterface|iterable $handlers,
         private readonly ?LoggerInterface $logger = null,
         private readonly ?EventDispatcherInterface $events = null,
+        private readonly ?ExecutionTelemetry $telemetry = null,
     ) {
     }
 
@@ -41,6 +43,7 @@ final class WorkerFactory
             },
             stickyCacheCapacity: $this->configuration->stickyCacheCapacity,
             stickyCacheTtlSeconds: $this->configuration->stickyCacheTtlSeconds,
+            telemetry: $this->telemetry,
         );
 
         $handlers = [];

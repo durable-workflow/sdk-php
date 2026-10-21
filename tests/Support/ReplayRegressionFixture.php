@@ -122,7 +122,7 @@ final class ReplayRegressionFixture
             }
             : null;
         try {
-            $result = (new Replayer($codec))->replay(
+            $execute = static fn () => (new Replayer($codec))->replay(
                 self::workflow($workflowType),
                 $history,
                 $input,
@@ -134,6 +134,10 @@ final class ReplayRegressionFixture
                 allowCancellationScopeAuthoring: $scopedCleanup,
                 replayCommittedCancellationScopes: $scopedCleanup,
             );
+            $result = $workflowType === 'golden.telemetry-context'
+                ? (new \DurableWorkflow\Telemetry\ExecutionTelemetry())->task('workflow', $task,
+                    'default', 'regression-corpus', $execute)
+                : $execute();
             gc_collect_cycles();
             $commands = array_map(
                 static fn (array $command): array => self::decodeEnvelopes($command, $codec),
@@ -325,6 +329,14 @@ final class ReplayRegressionFixture
     private static function workflow(string $workflowType): callable
     {
         return match ($workflowType) {
+            'golden.telemetry-context' => static function (WorkflowContext $context): array {
+                $result = $context->activity('golden.greet', ['Ada']);
+                $fields = \DurableWorkflow\Telemetry\ExecutionTelemetry::current();
+
+                return ['correlated' => ($fields['workflow_instance_id'] ?? null) === $context->workflowId
+                    && ($fields['workflow_run_id'] ?? null) === $context->runId,
+                    'namespace' => $fields['namespace'] ?? null, 'result' => $result];
+            },
             'golden.entry-arguments-required' => static fn (WorkflowContext $context, int $amount, int $required): int => $amount + $required,
             'golden.nexus-caller' => static function (WorkflowContext $context): mixed {
                 return $context->serviceOperation('billing', 'invoices', 'create', ['invoice_id' => 42],

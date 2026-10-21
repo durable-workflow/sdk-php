@@ -532,6 +532,11 @@ final class ReplayRegressionConsumer
                 }
             },
         );
+        if ($workflowType === 'golden.telemetry-context') {
+            $worker = new Worker(new Client('https://replay.invalid', transport: $transport, codec: $codec),
+                'regression-corpus', workerId: 'regression-consumer', clock: static fn (): float => 0,
+                telemetry: new \DurableWorkflow\Telemetry\ExecutionTelemetry());
+        }
         if ($workflowType === 'golden.attributed-stateful') {
             $worker->register(ReplayRegressionAttributedStatefulWorkflow::class);
         } elseif ($workflowType === '0') {
@@ -639,6 +644,14 @@ final class ReplayRegressionConsumer
     private static function workflow(string $workflowType): callable
     {
         return match ($workflowType) {
+            'golden.telemetry-context' => static function (WorkflowContext $context): array {
+                $result = $context->activity('golden.greet', ['Ada']);
+                $fields = \DurableWorkflow\Telemetry\ExecutionTelemetry::current();
+
+                return ['correlated' => ($fields['workflow_instance_id'] ?? null) === $context->workflowId
+                    && ($fields['workflow_run_id'] ?? null) === $context->runId,
+                    'namespace' => $fields['namespace'] ?? null, 'result' => $result];
+            },
             'golden.entry-arguments-required' => static fn (WorkflowContext $context, int $amount, int $required): int => $amount + $required,
             'golden.finally-disposal' => static function (WorkflowContext $context): void {
                 try {

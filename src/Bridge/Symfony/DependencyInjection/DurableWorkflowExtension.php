@@ -69,6 +69,7 @@ final class DurableWorkflowExtension extends Extension
                 new ServiceLocatorArgument(new TaggedIteratorArgument(self::HANDLER_TAG, needsIndexes: true)),
                 new Reference(LoggerInterface::class, ContainerBuilder::NULL_ON_INVALID_REFERENCE),
                 new Reference(EventDispatcherInterface::class, ContainerBuilder::NULL_ON_INVALID_REFERENCE),
+                new Reference(\DurableWorkflow\Telemetry\ExecutionTelemetry::class, ContainerBuilder::NULL_ON_INVALID_REFERENCE),
             ])
             ->setPublic(true);
         $container->register(WorkerCommand::class, WorkerCommand::class)

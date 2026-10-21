@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 require $argv[1];
 require __DIR__.'/history-cache.php';
+require __DIR__.'/execution-telemetry.php';
 
 use DurableWorkflow\Attribute\Activity;
 use DurableWorkflow\Attribute\Query;
@@ -205,6 +206,12 @@ if (($controlAuthentication->headers(false)['Authorization'] ?? null) !== 'Beare
     throw new RuntimeException('Symfony extension did not preserve role-specific client credentials.');
 }
 $worker = $factory->make();
+verifyFrameworkExecutionTelemetry(static function (Client $client, ?\DurableWorkflow\Telemetry\ExecutionTelemetry $telemetry): \DurableWorkflow\Worker {
+    $configuration = new \DurableWorkflow\Bridge\ServiceConfiguration('https://framework.invalid', 'framework-namespace',
+        'framework-queue', [FrameworkTelemetryHandler::class]);
+
+    return (new WorkerFactory($configuration, $client, [new FrameworkTelemetryHandler()], telemetry: $telemetry))->make();
+});
 $cacheStoppedContext = null;
 $cacheEvents = new EventDispatcher();
 $cacheEvents->addListener('worker.stopped', static function (WorkerDiagnosticEvent $event) use (&$cacheStoppedContext): void {

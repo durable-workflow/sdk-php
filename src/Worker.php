@@ -47,6 +47,7 @@ use DurableWorkflow\Worker\WorkerSession;
 use DurableWorkflow\Worker\WorkerSessionOptions;
 use DurableWorkflow\Worker\WorkflowCommand;
 use DurableWorkflow\Transport\RequestBudget;
+use DurableWorkflow\Telemetry\ExecutionTelemetry;
 use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
@@ -134,6 +135,7 @@ final class Worker
         /** Unfrozen source opt-in for scalar/all-group scope delivery and committed scope replay. */
         private readonly bool $enableCancellationScopes = false,
         private readonly bool $requireQueryTaskAuthority = false,
+        private readonly ?ExecutionTelemetry $telemetry = null,
     ) {
         if ($enableCancellationScopes && !$enableCooperativeCancellation) {
             throw new \InvalidArgumentException('Cancellation scopes require the cooperative worker opt-in.');
@@ -147,7 +149,8 @@ final class Worker
         if ($enableCooperativeCancellation && !CooperativeActivityExecutor::available()) {
             throw new \InvalidArgumentException('Cooperative workers require Unix CLI with pcntl and posix.');
         }
-        $workerClient = $enableCooperativeCancellation ? $client->withBoundedWorkerRequests() : $client;
+        $workerClient = $telemetry === null ? $client : $client->withTelemetry($telemetry);
+        $workerClient = $enableCooperativeCancellation ? $workerClient->withBoundedWorkerRequests() : $workerClient;
         $this->client = $workerClient->withWorkerPayloadObserver($this->workerPayloadProgress(...));
         $this->workerId = $workerId ?? 'php-worker-'.bin2hex(random_bytes(8));
         $this->heartbeatIntervalSeconds = $this->validHeartbeatInterval($heartbeatIntervalSeconds)
@@ -179,6 +182,7 @@ final class Worker
         int $stickyCacheCapacity = 100,
         int $stickyCacheTtlSeconds = 300,
         bool $requireQueryTaskAuthority = false,
+        ?ExecutionTelemetry $telemetry = null,
     ): self {
         return new self(
             $client,
@@ -189,6 +193,7 @@ final class Worker
             stickyCacheCapacity: $stickyCacheCapacity,
             stickyCacheTtlSeconds: $stickyCacheTtlSeconds,
             requireQueryTaskAuthority: $requireQueryTaskAuthority,
+            telemetry: $telemetry,
         );
     }
 
@@ -1157,6 +1162,18 @@ final class Worker
     /** @param array<string, mixed> $task */
     private function executePolledTask(string $taskKind, array $task): void
     {
+        if ($this->telemetry === null || $this->client->observabilityContextAvailable()) {
+            $this->executeTask($taskKind, $task);
+
+            return;
+        }
+        $this->telemetry->task($taskKind, $task, $this->client->namespace, $this->taskQueue,
+            fn () => $this->executeTask($taskKind, $task));
+    }
+
+    /** @param array<string, mixed> $task */
+    private function executeTask(string $taskKind, array $task): void
+    {
         try {
             $this->assertSupportedTaskPayloadCodec($task);
         } catch (CodecException $exception) {
@@ -1272,6 +1289,7 @@ final class Worker
     /** @param array<string, mixed> $task */
     private function executeWorkflowTask(array $task): void
     {
+        $traceScope = null;
         $this->claimCancellation = null;
         $this->claimDeliveredCancellationId = null;
         $taskId = (string) ($task['task_id'] ?? '');
@@ -1286,6 +1304,9 @@ final class Worker
             $history = $this->completeHistory($task, $leaseOwner, $attempt);
             if (!$this->renewWorkflowTaskLease($taskId, $leaseOwner, $attempt)) {
                 return;
+            }
+            if ($this->client->observabilityContextAvailable()) {
+                $traceScope = $this->telemetry?->enterTask('workflow', $task, $this->client->namespace, $this->taskQueue);
             }
             $workflowType = (string) ($task['workflow_type'] ?? '');
             $updateId = isset($task['workflow_update_id']) ? (string) $task['workflow_update_id'] : null;
@@ -1387,6 +1408,7 @@ final class Worker
                 $attempt,
             );
         } finally {
+            $traceScope?->__invoke();
             $this->claimCancellation = null;
             $this->claimDeliveredCancellationId = null;
         }
@@ -2189,12 +2211,13 @@ final class Worker
             },
             function (RequestBudget $budget): void { $this->heartbeatIfDue($budget); },
         );
-        $callback = function (\Closure $heartbeat) use ($handler, $attempt, $activityType, $arguments): mixed {
+        $callback = function (\Closure $heartbeat) use ($handler, $attempt, $activityType, $arguments, $task): mixed {
             if ($handler === null) {
                 throw new InvalidLocalActivityReport('No local activity handler is registered for '.$activityType.'.');
             }
-            return $handler(new ActivityContext($this->client, $attempt->taskId, $attempt->attemptId,
-                $attempt->leaseOwner, $activityType, $attempt->attemptNumber, localHeartbeat: $heartbeat), ...$arguments);
+            return $this->invokeActivity($handler, new ActivityContext($this->client, $attempt->taskId, $attempt->attemptId,
+                $attempt->leaseOwner, $activityType, $attempt->attemptNumber, localHeartbeat: $heartbeat), $arguments,
+                ['activity_id' => $attempt->executionId] + ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), true);
         };
 
         return ['runner' => $runner, 'callback' => $callback];
@@ -2389,7 +2412,8 @@ final class Worker
                         $callbackContext = new ActivityContext($this->client, $taskId, $attemptId, $leaseOwner,
                             $activityType, (int) ($task['attempt_number'] ?? 1), localHeartbeat: $heartbeat);
 
-                        return $handler($callbackContext, ...$arguments);
+                        return $this->invokeActivity($handler, $callbackContext, $arguments,
+                            ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), authorizedTask: $task);
                     },
                     function (array $details) use ($taskId, $attemptId, $leaseOwner): array {
                         try {
@@ -2418,7 +2442,8 @@ final class Worker
                 );
                 $check(true);
             } else {
-                $result = $handler($context, ...$arguments);
+                $result = $this->invokeActivity($handler, $context, $arguments,
+                    ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), authorizedTask: $task);
             }
             $this->retryStorageAdmission(
                 'activity_complete',
@@ -2625,6 +2650,7 @@ final class Worker
     /** @param array<string, mixed> $task */
     private function executeQueryTask(array $task): void
     {
+        $traceScope = null;
         $taskId = (string) ($task['query_task_id'] ?? $task['task_id'] ?? '');
         $attempt = (int) ($task['query_task_attempt'] ?? 1);
         $leaseOwner = (string) ($task['lease_owner'] ?? $this->workerId);
@@ -2636,6 +2662,9 @@ final class Worker
                 throw new WorkflowClaimRevoked('query_claim_changed', 'Loaded query identity differs from its original claim.');
             }
             $authority?->confirm();
+            if ($this->client->observabilityContextAvailable()) {
+                $traceScope = $this->telemetry?->enterTask('query', $task, $this->client->namespace, $this->taskQueue);
+            }
             $workflowType = (string) ($task['workflow_type'] ?? '');
             $queryName = (string) ($task['query_name'] ?? '');
             $handler = $this->queries[$workflowType][$queryName] ?? null;
@@ -2679,6 +2708,7 @@ final class Worker
                 },
             );
         } finally {
+            $traceScope?->__invoke();
             $this->queryTaskAuthority = null;
         }
     }
@@ -3075,11 +3105,11 @@ final class Worker
                         ),
                     ];
                 };
-                $callback = fn (\Closure $heartbeat): mixed => $handler(new ActivityContext(
+                $callback = fn (\Closure $heartbeat): mixed => $this->invokeActivity($handler, new ActivityContext(
                     $this->client, (string) ($task['task_id'] ?? ''), $attemptId,
                     (string) ($task['lease_owner'] ?? $this->workerId), $activityType, $attemptNumber,
                     localHeartbeat: $heartbeat,
-                ), ...$arguments);
+                ), $arguments, ['activity_id' => null] + ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), true);
                 if ($this->enableCooperativeCancellation) {
                     $nextRenewal = 0.0;
                     $check = function (bool $force) use ($task, &$nextRenewal, $attemptStartedAt,
@@ -3791,6 +3821,7 @@ final class Worker
 
     private function handlerFailure(string $kind, string $identity, Throwable $exception): void
     {
+        ExecutionTelemetry::failure($exception);
         $context = [
             'worker_id' => $this->workerId,
             'handler_kind' => $kind,
@@ -3802,6 +3833,29 @@ final class Worker
         }
 
         $this->diagnostic('worker.handler_failed', $context, 'error');
+    }
+
+    /** @param callable(ActivityContext, mixed ...$arguments): mixed $handler
+     *  @param list<mixed> $arguments
+     *  @param array<string, mixed> $fields
+     *  @param array<string, mixed>|null $authorizedTask
+     */
+    private function invokeActivity(callable $handler, ActivityContext $context, array $arguments, array $fields, bool $local = false, ?array $authorizedTask = null): mixed
+    {
+        if ($this->telemetry === null) {
+            return $handler($context, ...$arguments);
+        }
+        $fields['activity_type'] = $context->activityType;
+        $fields['activity_attempt_id'] = $context->activityAttemptId;
+        $fields['activity_attempt_number'] = $context->attemptNumber;
+
+        $scope = !$local && $authorizedTask !== null && $this->client->observabilityContextAvailable()
+            ? $this->telemetry->enterTask('activity', $authorizedTask, $this->client->namespace, $this->taskQueue) : null;
+        try {
+            return $this->telemetry->activity($fields, fn () => $handler($context, ...$arguments), $local);
+        } finally {
+            $scope?->__invoke();
+        }
     }
 
     /** @return array<string, mixed> */
