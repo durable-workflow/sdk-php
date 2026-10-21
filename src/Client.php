@@ -1626,7 +1626,8 @@ final class Client implements WorkflowClientInterface
      * @param array<string, int> $taskSlots
      * @return array<string, mixed>
      */
-    public function heartbeatWorker(string $workerId, array $taskSlots = [], ?RequestBudget $budget = null): array
+    public function heartbeatWorker(string $workerId, array $taskSlots = [], ?RequestBudget $budget = null,
+        ?int $processId = null): array
     {
         if ($budget !== null && !$this->boundedWorkerRequests) {
             throw new \LogicException('A worker authority budget requires bounded worker requests.');
@@ -1635,7 +1636,7 @@ final class Client implements WorkflowClientInterface
             'worker_id' => $workerId,
             'task_slots' => $taskSlots ?: null,
             'process_metrics' => [
-                'process_id' => getmypid(),
+                'process_id' => $processId ?? getmypid(),
                 'process_uptime_seconds' => 0,
             ],
         ]), budget: $budget);
@@ -2416,7 +2417,15 @@ final class Client implements WorkflowClientInterface
 
         $started = hrtime(true) / 1e9;
         $requestClient = $governed ? $this->withBoundedWorkerRequests() : $this;
-        $response = $requestClient->request($method, $path, true, $body, budget: $budget);
+        try {
+            $response = $requestClient->request($method, $path, true, $body, budget: $budget);
+        } catch (ServerException $error) {
+            if ($governed && str_ends_with($path, '/heartbeat')
+                && ($error->details['can_continue'] ?? null) === false) {
+                $lease->progress($error->details, $started, hrtime(true) / 1e9);
+            }
+            throw $error;
+        }
         if ($governed && str_ends_with($path, '/heartbeat')) {
             $lease->progress($response, $started, hrtime(true) / 1e9);
         }
@@ -2605,6 +2614,14 @@ final class Client implements WorkflowClientInterface
             $budget ??= $worker && $this->boundedWorkerRequests ? new RequestBudget($pollSeconds + 5) : null;
             if ($body !== null) {
                 $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers, $budget);
+            }
+            $activityLease = $worker ? $this->activityLeaseBinding->current() : null;
+            if ($activityLease !== null && $activityLease->governs($path)) {
+                // Uploading an external result is not publication authority.
+                // Check again before its final Worker POST and bound the send
+                // by the latest acknowledged grant, not an old cached lease.
+                $activityLease->checkRequest($path, $body);
+                $budget?->restrictAuthorityDeadline($activityLease->publicationDeadline());
             }
             if ($worker && $this->boundedWorkerRequests) {
                 if (!$this->transport instanceof BoundedTransport || !$this->transport->supportsBoundedRequests()) {

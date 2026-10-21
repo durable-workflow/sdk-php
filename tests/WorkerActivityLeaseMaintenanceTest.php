@@ -84,6 +84,7 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
         self::assertNotEmpty($presence);
         self::assertSame(['workflow_available' => 0, 'activity_available' => 0, 'session_available' => 0],
             $presence[0]['body']['task_slots']);
+        self::assertSame($parent, $presence[0]['body']['process_metrics']['process_id']);
         foreach ($state['requests'] as $request) {
             self::assertSame('Bearer fixture-worker', $request['authorization']);
             self::assertSame('tenant', $request['namespace']);
@@ -158,6 +159,25 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
         self::assertSame(1, $calls);
         self::assertGreaterThanOrEqual(2, $this->state()['renewals']);
         self::assertSame([], $this->state()['outcomes'] ?? []);
+    }
+
+    public function testCaughtHeartbeatHttpRefusalCannotRestoreCompletionAuthority(): void
+    {
+        $worker = $this->worker(['deny_heartbeat' => true]);
+        $caught = false;
+        $worker->registerActivity('slow', static function (ActivityContext $context) use (&$caught): string {
+            try {
+                $context->heartbeat();
+            } catch (\Throwable) {
+                $caught = true;
+            }
+            return 'must not publish';
+        });
+        self::assertTrue($worker->tick(0));
+        self::assertTrue($caught);
+        self::assertSame([], $this->state()['outcomes'] ?? []);
+        self::assertSame([], array_values(array_filter($this->state()['requests'],
+            static fn (array $request): bool => str_ends_with($request['path'], '/complete') || str_ends_with($request['path'], '/fail'))));
     }
 
     public function testCustomHttpConfigurationMustNotSilentlyBecomeDefaultTransport(): void

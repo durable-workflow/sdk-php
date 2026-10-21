@@ -24,6 +24,7 @@ final class ActivityLeaseProcess
     private string $buffer = '';
     private int $sequence = 0;
     private int $parentPid = 0;
+    private float $lastTransferCheck = 0;
     private ?string $lostReason = null;
     private float $until;
     private readonly float $fixedUntil;
@@ -55,7 +56,8 @@ final class ActivityLeaseProcess
         }
         $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'],
             2 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'w']];
-        $this->process = proc_open([PHP_BINARY, __DIR__.'/activity-lease-maintainer.php', $autoload],
+        $this->process = proc_open([PHP_BINARY, '-d', 'auto_prepend_file=', '-d', 'auto_append_file=',
+            __DIR__.'/activity-lease-maintainer.php', $autoload],
             $descriptors, $this->pipes, options: ['bypass_shell' => true]);
         if (!is_resource($this->process)) {
             throw new \RuntimeException('Could not start independent activity lease maintenance.');
@@ -100,7 +102,26 @@ final class ActivityLeaseProcess
 
     public function budget(): RequestBudget
     {
-        return new RequestBudget(30, min($this->until, $this->fixedUntil));
+        return new RequestBudget(30, is_finite($this->fixedUntil) ? $this->fixedUntil : null);
+    }
+
+    public function publicationDeadline(): float
+    {
+        return min($this->until, $this->fixedUntil);
+    }
+
+    public function checkTransfer(): void
+    {
+        $now = hrtime(true) / 1e9;
+        if ($now >= $this->fixedUntil) {
+            $this->refuse('activity_execution_budget_expired');
+        }
+        // Streaming checks bound staleness without an IPC round trip per chunk.
+        // Callback dispatch and terminal POSTs always obtain fresh proof.
+        if ($this->lostReason !== null || $now >= $this->until || $now - $this->lastTransferCheck >= 1) {
+            $this->check();
+            $this->lastTransferCheck = $now;
+        }
     }
 
     /** @param array<string, mixed> $reply */

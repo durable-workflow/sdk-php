@@ -10,7 +10,7 @@ use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Transport\RequestBudget;
 use Throwable;
 
-/** @internal Private metadata-only helper. Never loads or invokes an activity. */
+/** @internal Private metadata-only helper. Never dispatches an activity callback. */
 final class ActivityLeaseMaintainer
 {
     private string $buffer = '';
@@ -160,7 +160,8 @@ final class ActivityLeaseMaintainer
         $identity = $this->authority->identity();
         if (($this->start['registered'] ?? false) === true && hrtime(true) / 1e9 >= $this->nextPresence) {
             $ack = $this->client->heartbeatWorker((string) $identity['lease_owner'],
-                ['workflow_available' => 0, 'activity_available' => 0, 'session_available' => 0], $this->budget());
+                ['workflow_available' => 0, 'activity_available' => 0, 'session_available' => 0], $this->budget(),
+                $this->start['parent_pid']);
             if (($ack['worker_id'] ?? null) !== $identity['lease_owner'] || ($ack['acknowledged'] ?? null) !== true) {
                 throw new WorkflowClaimRevoked('activity_worker_unconfirmed', 'Original Worker presence was not acknowledged.');
             }

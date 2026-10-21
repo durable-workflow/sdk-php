@@ -1529,7 +1529,7 @@ final class Worker
 
                 $process = $this->activityLeaseProcess;
 
-                return static fn () => $process->check();
+                return static fn () => $process->checkTransfer();
             }
             $queryAuthority = null;
             if (!$activity) {

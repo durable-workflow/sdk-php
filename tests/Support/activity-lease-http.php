@@ -48,6 +48,7 @@ if (($_SERVER['HTTP_AUTHORIZATION'] ?? '') !== 'Bearer fixture-worker') {
 } elseif (str_ends_with($path, '/renew-lease') || str_ends_with($path, '/heartbeat')) {
     $heartbeat = str_ends_with($path, '/heartbeat');
     $live = $now < $state['expiry'] && !($state['closed'] ?? false)
+        && !($heartbeat && ($state['deny_heartbeat'] ?? false))
         && ($state['business_at'] === null || $now < $state['business_at'])
         && (!isset($state['heartbeat_seconds']) || $now < $state['progress_at'] + $state['heartbeat_seconds']);
     if ($live) {
