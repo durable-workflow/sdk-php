@@ -37,7 +37,16 @@ while (($peer = @stream_socket_accept($server, 5)) !== false) {
         $prefix = '';
     } else {
         $uri = parse_url($parts[1]);
-        $address = $uri['host'].':'.($uri['port'] ?? 80);
+        $address = isset($uri['host']) ? $uri['host'].':'.($uri['port'] ?? 80) : '';
+        // PHP's HTTP stream wrapper can forward origin-form through a proxy.
+        // This fixture accepts its Host header as a real forward proxy does.
+        if ($address === '') {
+            foreach ($headers as $header) {
+                if (str_starts_with(strtolower($header), 'host:')) {
+                    $address = trim(substr($header, 5));
+                }
+            }
+        }
         $prefix = $parts[0].' '.($uri['path'] ?? '/').(isset($uri['query']) ? '?'.$uri['query'] : '')." HTTP/1.1\r\n";
         foreach ($headers as $header) {
             if (!str_starts_with(strtolower($header), 'proxy-')) {

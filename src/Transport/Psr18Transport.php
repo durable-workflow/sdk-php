@@ -107,20 +107,8 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             $request = $this->createJsonRequest($method, $uri, $headers, $body);
             $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout ?? 30,
                 bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout);
-            $rawBody = (string) $response->getBody();
-            if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
-                // An upstream proxy can return HTML or an empty body. Preserve
-                // its status without interpreting it as a successful protocol reply.
-                $decoded = json_decode($rawBody, true);
-                throw TransportException::fromResponse($response->getStatusCode(), is_array($decoded) ? $decoded : null, $rawBody);
-            }
 
-            $decoded = $rawBody === '' ? null : json_decode($rawBody, true, 512, JSON_THROW_ON_ERROR);
-            if ($decoded !== null && !is_array($decoded)) {
-                throw new TransportException('The server returned a JSON value instead of an object or array.');
-            }
-
-            return $decoded;
+            return $this->decodeJsonResponse($response);
         } catch (TransportException $exception) {
             throw $exception;
         } catch (JsonException $exception) {
@@ -131,6 +119,25 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             }
             throw new TransportException('HTTP request failed: '.$exception->getMessage(), previous: $exception);
         }
+    }
+
+    /** @return array<string, mixed>|list<mixed>|null */
+    private function decodeJsonResponse(ResponseInterface $response): ?array
+    {
+        $rawBody = (string) $response->getBody();
+        if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
+            // An upstream proxy can return HTML or an empty body. Preserve
+            // its status without interpreting it as a successful protocol reply.
+            $decoded = json_decode($rawBody, true);
+            throw TransportException::fromResponse($response->getStatusCode(), is_array($decoded) ? $decoded : null, $rawBody);
+        }
+
+        $decoded = $rawBody === '' ? null : json_decode($rawBody, true, 512, JSON_THROW_ON_ERROR);
+        if ($decoded !== null && !is_array($decoded)) {
+            throw new TransportException('The server returned a JSON value instead of an object or array.');
+        }
+
+        return $decoded;
     }
 
     /**

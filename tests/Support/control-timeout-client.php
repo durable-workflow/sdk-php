@@ -42,6 +42,15 @@ try {
     }
     echo json_encode(['outcome' => 'response', 'elapsed' => (hrtime(true) - $started) / 1e9], JSON_THROW_ON_ERROR)."\n";
 } catch (DurableWorkflow\Exception\ServerException $error) {
+    $contexts = [];
+    if ($profile === 'published_baseline') {
+        for ($cause = $error->getPrevious(); $cause !== null; $cause = $cause->getPrevious()) {
+            if ($cause instanceof GuzzleHttp\Exception\RequestException || $cause instanceof GuzzleHttp\Exception\ConnectException) {
+                $contexts[] = $cause->getHandlerContext();
+            }
+        }
+    }
     echo json_encode(['outcome' => 'error', 'type' => $error::class, 'status' => $error->status,
-        'reason' => $error->reason, 'message' => $error->getMessage(), 'elapsed' => (hrtime(true) - $started) / 1e9], JSON_THROW_ON_ERROR)."\n";
+        'reason' => $error->reason, 'message' => $error->getMessage(), 'elapsed' => (hrtime(true) - $started) / 1e9,
+        'handler_contexts' => $contexts], JSON_THROW_ON_ERROR)."\n";
 }
