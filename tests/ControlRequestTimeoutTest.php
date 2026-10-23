@@ -269,7 +269,7 @@ final class ControlRequestTimeoutTest extends TestCase
     public static function framingCases(): iterable
     {
         foreach ([false, true] as $native) {
-            foreach (['chunked', 'gzip', 'interim', 'truncated_length', 'truncated_chunked'] as $mode) {
+            foreach (['chunked', 'chunked_bare', 'gzip', 'interim', 'truncated_length', 'truncated_chunked'] as $mode) {
                 yield $mode.' native='.(int) $native => [$mode, $native, !str_starts_with($mode, 'truncated')];
             }
         }

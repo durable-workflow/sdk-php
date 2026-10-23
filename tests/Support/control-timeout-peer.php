@@ -69,7 +69,7 @@ while (microtime(true) < $until) {
     }
     $status = $replyMode === 'redirect' ? '302 Found' : '200 OK';
     $wirePayload = $replyMode === 'gzip' ? gzencode($payload) : $payload;
-    $chunked = in_array($replyMode, ['chunked', 'truncated_chunked'], true);
+    $chunked = in_array($replyMode, ['chunked', 'chunked_bare', 'truncated_chunked'], true);
     $replyHeaders = "HTTP/1.1 {$status}\r\nContent-Type: application/json\r\n"
         .($chunked ? "Transfer-Encoding: chunked\r\n" : 'Content-Length: '.(strlen($wirePayload) + ($replyMode === 'truncated_length' ? 10 : 0))."\r\n")
         .($replyMode === 'gzip' ? "Content-Encoding: gzip\r\n" : '')
@@ -79,7 +79,7 @@ while (microtime(true) < $until) {
     }
     if ($chunked) {
         $wirePayload = dechex(strlen($payload))."\r\n".$payload."\r\n"
-            .($replyMode === 'chunked' ? "0\r\nX-Fixture-Trailer: complete\r\n\r\n" : '');
+            .($replyMode === 'chunked' ? "0\r\nX-Fixture-Trailer: complete\r\n\r\n" : ($replyMode === 'chunked_bare' ? "0\r\n\r\n" : ''));
     }
     if ($replyMode === 'slow_headers') {
         foreach (str_split($replyHeaders) as $byte) {

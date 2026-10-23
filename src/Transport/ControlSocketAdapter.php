@@ -7,6 +7,8 @@ namespace DurableWorkflow\Transport;
 /** @internal Shares one library deadline across CONNECT, TLS and the origin response. */
 final class ControlSocketAdapter extends \HTTP_Request2_Adapter_Socket
 {
+    private bool $terminalChunkDecoded = false;
+
     public function __construct(private readonly float $deadline, private readonly float $seconds) {}
 
     protected function connect(): bool
@@ -47,13 +49,26 @@ final class ControlSocketAdapter extends \HTTP_Request2_Adapter_Socket
     }
     protected function readResponse(): \HTTP_Request2_Response
     {
+        $this->terminalChunkDecoded = false;
         $response = parent::readResponse();
-        if (strtolower((string) $response->getHeader('transfer-encoding')) === 'chunked' && $this->socket->eof()) {
+        $hasBody = $response->getStatus() >= 200 && !in_array($response->getStatus(), [204, 304], true)
+            && !in_array($this->request->getMethod(), [\HTTP_Request2::METHOD_HEAD, \HTTP_Request2::METHOD_CONNECT], true);
+        if ($hasBody && strtolower((string) $response->getHeader('transfer-encoding')) === 'chunked' && !$this->terminalChunkDecoded) {
             throw new \HTTP_Request2_MessageException('The chunked HTTP response ended before its terminal chunk.',
                 \HTTP_Request2_Exception::DECODE_ERROR);
         }
 
         return $response;
+    }
+
+    protected function readChunked($bufferSize): string
+    {
+        $data = parent::readChunked($bufferSize);
+        if ($data === '' && $this->chunkLength === 0) {
+            $this->terminalChunkDecoded = true;
+        }
+
+        return $data;
     }
 
 }
