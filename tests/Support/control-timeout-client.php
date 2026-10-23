@@ -32,7 +32,7 @@ try {
         default => throw new InvalidArgumentException('Unknown control fixture operation.'),
     };
     if ($profile === 'dynamic') {
-        $client->withNamespace('billing')->listWorkflows(['workflow_type' => 'case/空间?']);
+        $client->withNamespace('billing')->listWorkflows(workflowType: 'case/空间?');
     }
     echo json_encode(['outcome' => 'response', 'elapsed' => (hrtime(true) - $started) / 1e9], JSON_THROW_ON_ERROR)."\n";
 } catch (DurableWorkflow\Exception\ServerException $error) {
