@@ -79,15 +79,15 @@ $diagnostics = [];
 $profileDeadline = INF;
 $expired = false;
 $stack = HandlerStack::create();
-$stack->push(static function (callable $next) use (&$active, &$http, &$claims, &$completed, &$worker, &$profileDeadline, &$expired, $runs): Closure {
+$stack->push(static function (callable $next) use (&$active, &$http, &$claims, &$completed, &$worker, &$effects, &$profileDeadline, &$expired, $namespace, $runs): Closure {
     return static function (RequestInterface $request, array $options) use (
-    $next, &$active, &$http, &$claims, &$completed, &$worker, &$profileDeadline, &$expired, $runs,
+    $next, &$active, &$http, &$claims, &$completed, &$worker, &$effects, &$profileDeadline, &$expired, $namespace, $runs,
 ) {
     $started = hrtime(true);
     $sent = $active;
 
     return $next($request, $options)->then(static function (ResponseInterface $response) use (
-        $request, $started, $sent, &$http, &$claims, &$completed, &$worker, &$profileDeadline, &$expired, $runs,
+        $request, $started, $sent, &$http, &$claims, &$completed, &$worker, &$effects, &$profileDeadline, &$expired, $namespace, $runs,
     ): ResponseInterface {
         if (!$sent) {
             return $response;
@@ -122,6 +122,12 @@ $stack->push(static function (callable $next) use (&$active, &$http, &$claims, &
                 'workflow_id' => $task['workflow_id'] ?? null, 'run_id' => $task['run_id'] ?? null];
             $entry['leased_at'] = $task['leased_at'] ?? null;
             $entry['available_at'] = $task['available_at'] ?? null;
+            if (getenv('DW_PROFILE_PROGRESS') === '1' && count($claims) % 10 === 0) {
+                fwrite(STDERR, json_encode(['event' => 'profile_progress', 'namespace' => $namespace,
+                    'claims' => count($claims), 'effects' => count($effects),
+                    'memory_bytes' => memory_get_usage(true), 'peak_memory_bytes' => memory_get_peak_usage(true)],
+                    JSON_THROW_ON_ERROR)."\n");
+            }
         }
         $http[$category][] = $entry;
         if ($response->getStatusCode() >= 200 && $response->getStatusCode() < 300
@@ -200,7 +206,8 @@ try {
     for ($index = 0; $index < $runs; ++$index) {
         $key = 'run-'.$suffix.'-'.$index;
         $handles[$key] = $control->startWorkflow('qualification.profile.replay', $key, $queue,
-            [$key, $cycles, $timerSeconds]);
+            [$key, $cycles, $timerSeconds], executionTimeoutSeconds: max(3600, $trialSeconds + 300),
+            runTimeoutSeconds: $trialSeconds + 300);
         $actual = $control->describeWorkflow($handles[$key]->workflowId, $handles[$key]->selectedRunId);
         if (($actual->raw['compatibility'] ?? null) !== $buildId) {
             throw new RuntimeException('Published deployment routing did not commit the requested compatibility identity.');
@@ -213,10 +220,16 @@ try {
 }
 $receipt = ['sdk_version' => InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
     'sdk_reference' => InstalledVersions::getReference('durable-workflow/sdk'), 'server_version' => $serverVersion,
+    'guzzle_version' => InstalledVersions::getPrettyVersion('guzzlehttp/guzzle'),
+    'psr_message_version' => InstalledVersions::getPrettyVersion('psr/http-message'),
+    'harness_sha256' => hash_file('sha256', __FILE__),
+    'lease_bootstrap_sha256' => hash_file('sha256', __DIR__.'/service-profile-lease-bootstrap.php'),
     'php_version' => PHP_VERSION, 'namespace' => $namespace, 'worker_id' => $workerId, 'build_id' => $buildId,
     'deployment_promotion' => $promotion,
     'cycles_per_run' => $cycles, 'concurrent_runs' => $runs, 'timer_seconds' => $timerSeconds,
     'trial_limit_seconds' => $trialSeconds,
+    'workload_run_timeout_seconds' => $trialSeconds + 300,
+    'worker_php_memory_limit' => ini_get('memory_limit'),
     'worker_memory_limit_bytes' => profileCgroupValue('memory.max'),
     'worker_cpu_limit' => profileCgroupValue('cpu.max')];
 $started = hrtime(true);

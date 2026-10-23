@@ -34,6 +34,17 @@ Guzzle client independently bounds each request. This is a diagnostic resource
 limit, not a lifecycle or cancellation policy for application workflows.
 `DW_PROFILE_TRIAL_SECONDS` selects30–1800 seconds for a separately recorded
 trial; an expired trial remains an incomplete result.
+Fresh workload runs receive that allowance plus300 seconds as their explicit
+business run timeout, with an execution timeout of at least3600 seconds.
+Transport deadlines remain separate. Earlier trials used the ordinary600-second
+run timeout; preserve those failed/unfinished results rather than extending
+their original deadlines. The receipt records PHP's memory limit and exact
+harness/bootstrap hashes as well as the outer cgroup budgets.
+
+`DW_PROFILE_PROGRESS=1` writes a small heap/call-count observation to stderr
+every ten claimed tasks. Retain stdout and stderr separately. Keep a bounded
+container log and inspect the exited container before retiring it when a long
+trial fails to produce a terminal receipt.
 
 The independent activity maintainer uses the accompanying explicit bootstrap,
 with matching endpoint, namespace, disposable credentials and HTTP settings.
