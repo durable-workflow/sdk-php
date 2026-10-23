@@ -8,12 +8,17 @@ require_once $argv[1];
 $http = new class implements Psr\Http\Client\ClientInterface {
     /** @var list<Psr\Http\Message\RequestInterface> */
     public array $requests = [];
+    public ?int $requestLimit = null;
 
     public function sendRequest(Psr\Http\Message\RequestInterface $request): Psr\Http\Message\ResponseInterface
     {
         $this->requests[] = $request;
 
-        return new GuzzleHttp\Psr7\Response(200, ['Content-Type' => 'application/json'], '{}');
+        $body = $this->requestLimit === null ? '{}' : json_encode(
+            ['limits' => ['max_payload_bytes' => $this->requestLimit]], JSON_THROW_ON_ERROR,
+        );
+
+        return new GuzzleHttp\Psr7\Response(200, ['Content-Type' => 'application/json'], $body);
     }
 };
 $client = new DurableWorkflow\Client('https://recording.invalid',
@@ -45,6 +50,18 @@ foreach (['start', 'schedule'] as $operation) {
         'wire_whole_float' => str_contains($wire, '"whole":1.0'),
         'wire_negative_zero' => str_contains($wire, '"negative_zero":-0.0')];
 }
+$http->requests = [];
+$http->requestLimit = 2500;
+$client = new DurableWorkflow\Client('https://recording.invalid',
+    transport: new DurableWorkflow\Transport\Psr18Transport(client: $http));
+$rejected = false;
+try {
+    $client->startWorkflow('numeric-kind', 'numeric-kind', 'numeric-kind', [],
+        memo: ['values' => array_fill(0, 800, 1.0)]);
+} catch (DurableWorkflow\Exception\ExternalPayloadException $exception) {
+    $rejected = $exception->status === 413 && $exception->reason === 'payload_too_large';
+}
+$results['request_budget'] = ['rejected_before_upload_or_start' => $rejected && count($http->requests) === 1];
 $pass = !in_array(false, array_merge(...array_values($results)), true);
 echo json_encode(['outcome' => $pass ? 'pass' : 'fail',
     'sdk_version' => Composer\InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
