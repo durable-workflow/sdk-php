@@ -16,7 +16,7 @@ final class FailureText
         if (!$forceMarker && $bytes <= $limit && preg_match('//u', $original) === 1) {
             return ['value' => $original, 'changed' => false, 'original_bytes' => $bytes, 'retained_bytes' => $bytes];
         }
-        $marker = "\n[truncated failure report; original {$field} {$bytes} bytes]";
+        $marker = self::marker($original, $field);
         $available = $limit - strlen($marker);
         if ($available < 0) {
             throw new FailureReportRefused($limit);
@@ -29,7 +29,7 @@ final class FailureText
         }
         if (preg_match('//u', $candidate) !== 1) {
             // Repair only the bounded prefix, never allocate an escaped copy of
-            // an arbitrarily large original just to retain its first64KiB.
+            // an arbitrarily large original just to retain its first 64 KiB.
             $candidate = json_decode(json_encode($prefix,
                 JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_UNICODE), true, flags: JSON_THROW_ON_ERROR);
             $candidate = substr($candidate, 0, $available);
@@ -41,4 +41,15 @@ final class FailureText
         return ['value' => $candidate.$marker, 'changed' => true,
             'original_bytes' => $bytes, 'retained_bytes' => strlen($candidate)];
     }
+    public static function minimumBytes(string $original, string $field): int
+    {
+        return strlen(self::marker($original, $field));
+    }
+
+    private static function marker(string $original, string $field): string
+    {
+        $bytes = strlen($original);
+        return "\n[truncated failure report; original {$field} {$bytes} bytes]";
+    }
+
 }

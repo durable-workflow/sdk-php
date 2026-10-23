@@ -142,6 +142,23 @@ final class FailureReportTest extends TestCase
         self::assertArrayNotHasKey('details', $body['failure']);
     }
 
+    public function testSmallTransportBudgetRetainsMarkersInsteadOfAnArbitraryContentFloor(): void
+    {
+        foreach (['activity', 'workflow'] as $kind) {
+            $transport = new FakeTransport([[]]);
+            $client = (new Client('http://recording.invalid', transport: $transport))->withFailureReportLimit(512);
+            $large = str_repeat('m', 3 * 1024 * 1024);
+            if ($kind === 'activity') {
+                $client->failActivityTask('task', 'attempt', 'owner', $large, stackTrace: $large);
+            } else {
+                $client->failWorkflowTask('task', 'owner', 1, $large, stackTrace: $large);
+            }
+            self::assertCount(1, $transport->requests);
+            self::assertLessThanOrEqual(512, JsonDocument::size($transport->requests[0]['body']));
+            self::assertStringContainsString('[truncated failure report;', $transport->requests[0]['body']['failure']['message']);
+        }
+    }
+
     public function testKnownTransportLimitIsRespectedAndImpossibleIdentityRefusesBeforeSend(): void
     {
         $transport = new class implements Transport, RequestSizeLimitTransport {

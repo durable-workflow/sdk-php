@@ -39,7 +39,7 @@ $http = new class implements Psr\Http\Client\ClientInterface {
             $this->reports[] = ['path' => $path, 'encoded_bytes' => strlen($wire), 'http_status' => $response->getStatusCode(),
                 'lease_owner' => $data['lease_owner'] ?? null, 'activity_attempt_id' => $data['activity_attempt_id'] ?? null,
                 'workflow_task_attempt' => $data['workflow_task_attempt'] ?? null,
-                'type' => $failure['type'] ?? $failure['exception_type'] ?? null,
+                'type' => isset($data['failure']) ? ($failure['type'] ?? null) : ($failure['exception_type'] ?? null),
                 'message_bytes' => strlen($failure['message']),
                 'marked' => str_contains($failure['message'], '[truncated failure report;'),
                 'stack_bytes' => strlen($failure['stack_trace'] ?? $failure['exception']['stack_trace'] ?? ''),
@@ -61,6 +61,10 @@ $worker = new Worker($client, $queue, workerId: $workerId, stickyCacheCapacity: 
 $worker->registerWorkflow('qualification.failure', static function (WorkflowContext $context, string $kind): array {
     if ($kind === 'terminal') {
         throw new FailureDeliveryQualificationException(str_repeat('t', 3 * 1024 * 1024));
+    }
+    if ($kind === 'retry') {
+        return ['activity_value' => $context->activity('qualification.failure.activity', [],
+            ['retry_policy' => ['max_attempts' => 2, 'backoff_seconds' => [1]]])];
     }
     if ($kind === 'workflow-task') {
         return ['fresh_turn' => true];
@@ -88,19 +92,20 @@ register_shutdown_function(static function () use (&$result, $http): void {
     }
 });
 $large = str_repeat('m', 3 * 1024 * 1024);
-foreach (['message', 'stack', 'combined', 'escaped', 'details', 'small'] as $kind) {
+foreach (['message', 'stack', 'combined', 'escaped', 'details', 'lower-limit', 'small'] as $kind) {
     $handle = $control->startWorkflow('qualification.failure', $namespace.'-'.$kind, $queue, [$kind], runTimeoutSeconds: 120);
     $worker->tick(0);
     $task = $client->pollActivityTask($activityWorkerId, $queue, 0);
     requireDelivery(is_array($task), 'The activity was not leased for '.$kind);
-    $message = in_array($kind, ['message', 'combined'], true) ? $large : 'original message';
-    $stack = in_array($kind, ['stack', 'combined'], true) ? $large : null;
+    $message = in_array($kind, ['message', 'combined', 'lower-limit'], true) ? $large : 'original message';
+    $stack = in_array($kind, ['stack', 'combined', 'lower-limit'], true) ? $large : null;
     if ($kind === 'escaped') {
         $message = $stack = str_repeat("\0\"\\雪🦀", 300000);
     }
     $details = $kind === 'details' ? ['nested' => ['cause' => $large]] : ['whole' => 1.0, 'zero' => -0.0];
     $type = 'OriginalFailure.'.$kind;
-    $client->failActivityTask($task['task_id'], $task['activity_attempt_id'] ?? $task['attempt_id'], $task['lease_owner'],
+    $reporter = $kind === 'lower-limit' ? $client->withFailureReportLimit(4096) : $client;
+    $reporter->failActivityTask($task['task_id'], $task['activity_attempt_id'] ?? $task['attempt_id'], $task['lease_owner'],
         $message, $type, true, $details, $stack);
     $worker->tick(0);
     $output = $handle->resultOfSelectedRun(15, 0.05);
@@ -114,6 +119,35 @@ foreach (['message', 'stack', 'combined', 'escaped', 'details', 'small'] as $kin
         'task_id' => $task['task_id'], 'attempt_id' => $task['activity_attempt_id'] ?? $task['attempt_id'],
         'lease_owner' => $task['lease_owner'], 'output' => $output, 'event_counts' => $counts];
 }
+$handle = $control->startWorkflow('qualification.failure', $namespace.'-retry', $queue, ['retry'], runTimeoutSeconds: 120);
+$worker->tick(0);
+$original = $client->pollActivityTask($activityWorkerId, $queue, 0);
+requireDelivery(is_array($original), 'Retry control original attempt was not leased.');
+$retryStarted = hrtime(true);
+$client->failActivityTask($original['task_id'], $original['activity_attempt_id'] ?? $original['attempt_id'],
+    $original['lease_owner'], $large, 'OriginalRetryableFailure', false);
+$deadline = microtime(true) + 15;
+do {
+    $retry = $client->pollActivityTask($activityWorkerId, $queue, 0);
+    if ($retry !== null) { break; }
+    usleep(50000);
+} while (microtime(true) < $deadline);
+requireDelivery(is_array($retry), 'Authored retry was not made available.');
+$originalAttempt = $original['activity_attempt_id'] ?? $original['attempt_id'];
+$retryAttempt = $retry['activity_attempt_id'] ?? $retry['attempt_id'];
+requireDelivery($retryAttempt !== $originalAttempt, 'The failed attempt was reused as publication authority.');
+$client->completeActivityTask($retry['task_id'], $retryAttempt, $retry['lease_owner'], 42);
+$worker->tick(0);
+$output = $handle->resultOfSelectedRun(15, 0.05);
+requireDelivery($output === ['activity_value' => 42], 'The original workflow did not receive the legitimate retry result.');
+$history = $control->workflowHistory($handle->workflowId, $handle->selectedRunId, 100);
+$events = $history['events'] ?? $history['history_events'] ?? [];
+$scheduled = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityScheduled'));
+$result['scenarios']['retry'] = ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId,
+    'original_task_id' => $original['task_id'], 'original_attempt_id' => $originalAttempt,
+    'retry_task_id' => $retry['task_id'], 'retry_attempt_id' => $retryAttempt,
+    'retry_elapsed_seconds' => (hrtime(true) - $retryStarted) / 1e9,
+    'scheduled_payload' => $scheduled[0]['payload'] ?? null, 'output' => $output];
 $handle = $control->startWorkflow('qualification.failure', $namespace.'-workflow-task', $queue, ['workflow-task'], runTimeoutSeconds: 120);
 $task = $client->pollWorkflowTask($workerId, $queue, 0);
 requireDelivery(is_array($task), 'Original workflow task not leased.');

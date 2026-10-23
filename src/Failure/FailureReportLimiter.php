@@ -14,7 +14,7 @@ final class FailureReportLimiter
 {
     private const METADATA = ['details', 'diagnostics', 'runtime_diagnostics', 'validation_errors'];
 
-    public function __construct(private readonly FailureReportLimits $limits, private readonly Transport $transport)
+    public function __construct(private readonly FailureReportLimits $limits, private readonly ?Transport $transport = null)
     {
     }
 
@@ -46,14 +46,32 @@ final class FailureReportLimiter
                 $limit = min($limit, $known);
             }
         }
+        return $this->bound($body, $endpoint ? ($matches[1] === 'activity' ? 'diagnostics' : 'stack_trace') : null,
+            $commands, $limit, strlen($path));
+    }
+
+    /** @internal The callback IPC carries the same bounded report before HTTP admission.
+     * @param array<string, mixed> $body
+     * @return array<string, mixed>
+     */
+    public function activityEnvelope(array $body): array
+    {
+        return $this->bound($body, 'diagnostics', false, $this->limits->requestBytes, 0);
+    }
+
+    /** @param array<string, mixed> $body
+     * @return array<string, mixed>
+     */
+    private function bound(array $body, ?string $carrier, bool $commands, int $limit, int $pathBytes): array
+    {
         $messageLimit = FailureReportLimits::MESSAGE_BYTES;
         $stackLimit = FailureReportLimits::STACK_BYTES;
         $dropMetadata = false;
         for ($pass = 0; $pass < 16; ++$pass) {
             $candidate = $body;
-            if ($endpoint) {
+            if ($carrier !== null) {
                 $candidate['failure'] = $this->report($body['failure'], $messageLimit, $stackLimit,
-                    $dropMetadata, $matches[1] === 'activity' ? 'diagnostics' : 'stack_trace');
+                    $dropMetadata, $carrier);
             }
             if ($commands) {
                 foreach ($body['commands'] as $index => $command) {
@@ -63,7 +81,7 @@ final class FailureReportLimiter
                 }
             }
             try {
-                if (JsonDocument::size($candidate) + strlen($path) <= $limit) {
+                if (JsonDocument::size($candidate) + $pathBytes <= $limit) {
                     return $candidate;
                 }
             } catch (\JsonException $error) {
@@ -72,8 +90,8 @@ final class FailureReportLimiter
             if (!$dropMetadata) {
                 $dropMetadata = true;
             } else {
-                $messageLimit = max(96, intdiv($messageLimit, 2));
-                $stackLimit = max(512, intdiv($stackLimit, 2));
+                $messageLimit = intdiv($messageLimit, 2);
+                $stackLimit = intdiv($stackLimit, 2);
             }
         }
 
@@ -87,8 +105,8 @@ final class FailureReportLimiter
     private function report(array $original, int $messageLimit, int $stackLimit, bool $dropMetadata, string $carrier, array $additionalChanges = []): array
     {
         $report = $original;
-        $message = FailureText::bound((string) ($original['message'] ?? ''), $messageLimit, 'message');
-        $stack = FailureText::bound((string) ($original['stack_trace'] ?? ''), $stackLimit, 'stack_trace');
+        $message = $this->text((string) ($original['message'] ?? ''), $messageLimit, 'message');
+        $stack = $this->text((string) ($original['stack_trace'] ?? ''), $stackLimit, 'stack_trace');
         $changes = $additionalChanges;
         foreach (['message' => $message, 'stack_trace' => $stack] as $field => $text) {
             if ($text['changed']) {
@@ -111,7 +129,8 @@ final class FailureReportLimiter
         if ($changes === []) {
             return $report;
         }
-        $message = FailureText::bound((string) ($original['message'] ?? ''), $messageLimit, 'message', true);
+        $changes = $this->priorChanges($original) + $changes;
+        $message = $this->text((string) ($original['message'] ?? ''), $messageLimit, 'message', true);
         $report['message'] = $message['value'];
         if ($carrier === 'diagnostics') {
             $diagnostics = ['truncation' => ['fields' => $changes]];
@@ -127,11 +146,38 @@ final class FailureReportLimiter
             // This endpoint admits a stack string, but no diagnostics field.
             $suffix = "\n[truncation diagnostics]\n".JsonDocument::encode(['fields' => $changes]);
             $available = $stackLimit - strlen($suffix);
-            $stack = FailureText::bound((string) ($original['stack_trace'] ?? ''), $available, 'stack_trace');
+            $stack = $this->text((string) ($original['stack_trace'] ?? ''), $available, 'stack_trace');
             $report['stack_trace'] = $stack['value'].$suffix;
         }
 
         return $report;
+    }
+
+    /** @return array{value: string, changed: bool, original_bytes: int, retained_bytes: int} */
+    private function text(string $original, int $limit, string $field, bool $forceMarker = false): array
+    {
+        return FailureText::bound($original, max($limit, FailureText::minimumBytes($original, $field)), $field, $forceMarker);
+    }
+
+    /** Preserve bounded original-size provenance when an IPC report is narrowed again.
+     * @param array<string, mixed> $original
+     * @return array<string, mixed>
+     */
+    private function priorChanges(array $original): array
+    {
+        $fields = $original['diagnostics']['truncation']['fields'] ?? [];
+        if (!is_array($fields)) {
+            return [];
+        }
+        $result = [];
+        foreach (['message', 'stack_trace', 'exception.message', ...self::METADATA] as $field) {
+            $entry = $fields[$field] ?? null;
+            $bytes = is_array($entry) ? ($entry['original_bytes'] ?? null) : null;
+            if (is_int($bytes) && $bytes >= 0) {
+                $result[$field] = ['original_bytes' => $bytes];
+            }
+        }
+        return $result;
     }
 
     /** @param array<string, mixed> $report
@@ -158,11 +204,11 @@ final class FailureReportLimiter
     {
         if (($command['type'] ?? null) === 'fail_update') {
             $originalMessage = (string) ($command['message'] ?? '');
-            $bounded = FailureText::bound($originalMessage, $messageLimit, 'message');
+            $bounded = $this->text($originalMessage, $messageLimit, 'message');
             $command['message'] = $bounded['value'];
             if ($bounded['changed']) {
                 $suffix = "\n[truncation diagnostics]\n".JsonDocument::encode(['original_message_bytes' => strlen($originalMessage)]);
-                $command['message'] = FailureText::bound($originalMessage,
+                $command['message'] = $this->text($originalMessage,
                     $messageLimit - strlen($suffix), 'message', true)['value'].$suffix;
             }
 
@@ -181,7 +227,7 @@ final class FailureReportLimiter
             $report['details'] = $extra;
         }
         $innerMessage = array_key_exists('message', $exception)
-            ? FailureText::bound((string) $exception['message'], $messageLimit, 'exception.message') : null;
+            ? $this->text((string) $exception['message'], $messageLimit, 'exception.message') : null;
         $additionalChanges = $innerMessage !== null && $innerMessage['changed']
             ? ['exception.message' => ['original_bytes' => $innerMessage['original_bytes']]] : [];
         $bounded = $this->report($report, $messageLimit, $stackLimit, $dropMetadata, 'diagnostics', $additionalChanges);

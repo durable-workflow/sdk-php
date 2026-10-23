@@ -572,6 +572,34 @@ final class CooperativeActivityExecutorTest extends TestCase
         }
     }
 
+    public function testOversizedFailureIsIndependentOfTheBusinessPayloadFrameBudget(): void
+    {
+        try {
+            (new CooperativeActivityExecutor(new AvroPayloadCodec(), maxPayloadBytes: 1024))->execute(
+                static function (): never { throw new RuntimeException(str_repeat('m', 3 * 1024 * 1024)); },
+                static fn (array $details): mixed => null,
+                static function (): void {},
+            );
+            self::fail('Callback failure was accepted as success.');
+        } catch (ActivityExecutionFailure $error) {
+            self::assertSame(RuntimeException::class, $error->originalType);
+            self::assertFalse($error->duringEncoding);
+            self::assertFalse($error->cancelled);
+            self::assertFalse($error->invalidReport);
+            self::assertStringContainsString('[truncated failure report;', $error->getMessage());
+            self::assertLessThanOrEqual(65536, strlen($error->getMessage()));
+            self::assertStringContainsString('CooperativeActivityExecutorTest.php', $error->originalStackTrace);
+            self::assertSame(3145728, $error->originalDiagnostics['truncation']['fields']['message']['original_bytes']);
+            $bounded = (new \DurableWorkflow\Failure\FailureReportLimiter(
+                new \DurableWorkflow\Failure\FailureReportLimits(4096)))->activityEnvelope([
+                    'failure' => ['message' => $error->getMessage(), 'type' => $error->originalType,
+                        'stack_trace' => $error->originalStackTrace, 'diagnostics' => $error->originalDiagnostics],
+                ]);
+            self::assertLessThanOrEqual(4096, \DurableWorkflow\Transport\JsonDocument::size($bounded));
+            self::assertSame(3145728, $bounded['failure']['diagnostics']['truncation']['fields']['message']['original_bytes']);
+        }
+    }
+
     public function testResultEncodingFailureIsDistinctFromCallbackFailure(): void
     {
         try {

@@ -107,3 +107,44 @@ A client-side wait timeout is not proof that the workflow failed; describe the h
 Do not paper over `NonDeterministicWorkflow` with process retries. Compare the deployed build with the history's worker routing, restore the old command sequence, and roll forward with a replay-compatible change. Keep a replay corpus for long-lived workflow histories in [testing](/build/testing/).
 
 <div class="outcome"><strong>Retry question</strong><p>Before adding a retry, identify the durable request ID, the side effect's idempotency boundary, and what evidence proves the prior attempt did not already succeed.</p></div>
+
+## Bound failure diagnostics
+
+Failure reporting keeps diagnostic content within finite defaults:
+
+| Content | Default budget |
+| --- | --- |
+| UTF-8 message, including its marker | 64 KiB |
+| Stack trace, including diagnostic markers | 128 KiB |
+| Serialized details and diagnostics together | 64 KiB |
+| Complete encoded failure request, including JSON escaping and identity | 1 MiB |
+
+Oversized content produces a visible `[truncated failure report; ...]` message
+marker and bounded diagnostics with original sizes and omitted fields. The SDK
+retains a complete valid Avro details envelope or explicitly omits it. It never
+slices Avro or base64 bytes. Small reports keep their message and details.
+
+The original failure type, retry decision, authored retry delays and claimed
+attempt identity remain unchanged. Diagnostic limits are separate from business
+payload and worker request timeout budgets. Cooperative callbacks also bound
+failure diagnostics before sending them to their owning worker.
+
+For a transport with a smaller request budget, narrow the client limit:
+
+```php
+$client = $client->withFailureReportLimit(128 * 1024);
+```
+
+An injected transport can expose a lower known body budget through
+`RequestSizeLimitTransport`. The lower limit applies after markers and JSON
+escaping are included. If required identity or fixed request content cannot fit,
+`FailureReportRefused` reports `failure_report_refused` locally. Treat this as a
+reporting refusal requiring configuration or identity repair, rather than a new
+application failure or permission to publish under a different attempt.
+
+Activity failures use existing diagnostic fields. Workflow-task failures use
+the existing stack string for structured truncation information. The published
+Server qualification records task failures and grants a legitimate retry turn,
+but that runtime does not append a workflow-task failure event to workflow
+history or persist its stack diagnostics. That visibility work remains tracked
+in [shared issue 225](https://github.com/durable-workflow/.github/issues/225).

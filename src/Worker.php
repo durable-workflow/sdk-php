@@ -2540,7 +2540,8 @@ final class Worker
                         $failure->getMessage(),
                         $failure instanceof ActivityExecutionFailure ? $failure->originalType : $failure::class,
                         $failure instanceof ActivityCancelled || ($failure instanceof ActivityExecutionFailure && $failure->cancelled),
-                        stackTrace: $failure->getTraceAsString(),
+                        stackTrace: $failure instanceof ActivityExecutionFailure ? $failure->originalStackTrace : $failure->getTraceAsString(),
+                        diagnostics: $failure instanceof ActivityExecutionFailure ? $failure->originalDiagnostics : null,
                     );
                 },
             );
