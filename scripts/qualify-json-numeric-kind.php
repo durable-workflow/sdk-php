@@ -62,7 +62,10 @@ try {
     $rejected = $exception->status === 413 && $exception->reason === 'payload_too_large';
 }
 $results['request_budget'] = ['rejected_before_upload_or_start' => $rejected && count($http->requests) === 1];
-$pass = !in_array(false, array_merge(...array_values($results)), true);
+$pass = true;
+foreach ($results as $checks) {
+    $pass = $pass && !in_array(false, $checks, true);
+}
 echo json_encode(['outcome' => $pass ? 'pass' : 'fail',
     'sdk_version' => Composer\InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
     'sdk_reference' => Composer\InstalledVersions::getReference('durable-workflow/sdk'),
