@@ -11,6 +11,7 @@ final class ServiceOperationOptions
      * @param array<string, mixed>|null $labels
      * @param array<string, mixed>|null $memo
      * @param array<string, mixed>|null $searchAttributes
+     * @param string|null $targetNamespace Target for a durable workflow call; client calls use Client::namespace.
      */
     public function __construct(
         public readonly ?string $modeOverride = null,
@@ -29,7 +30,11 @@ final class ServiceOperationOptions
         public readonly ?array $memo = null,
         public readonly ?array $searchAttributes = null,
         public readonly ?string $duplicateStartPolicy = null,
+        public readonly ?string $targetNamespace = null,
     ) {
+        if ($targetNamespace !== null && trim($targetNamespace) === '') {
+            throw new \InvalidArgumentException('Service operation targetNamespace must not be empty.');
+        }
     }
 
     /** @return array<string, mixed> */
@@ -52,6 +57,7 @@ final class ServiceOperationOptions
             'memo' => $this->memo,
             'search_attributes' => $this->searchAttributes,
             'duplicate_start_policy' => $this->duplicateStartPolicy,
+            'namespace' => $this->targetNamespace,
         ], static fn (mixed $value): bool => $value !== null);
     }
 }

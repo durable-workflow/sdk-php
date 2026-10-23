@@ -95,10 +95,9 @@ final class ServiceOperationOptionsTest extends TestCase
     #[DataProvider('callerAuthorityFields')]
     public function testTargetSelectionDoesNotGrantCallerAuthority(string $field): void
     {
-        $result = self::replay(new ServiceOperationOptions(...['targetNamespace' => 'billing', $field => 'forged']));
-        self::assertInstanceOf(InvalidArgumentException::class, $result->terminalFailure);
-        self::assertStringContainsString('Caller authority is assigned by Server.', $result->terminalFailure->getMessage());
-        self::assertSame([], $result->commands);
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Caller authority is assigned by Server.');
+        self::replay(new ServiceOperationOptions(...['targetNamespace' => 'billing', $field => 'forged']));
     }
 
     public static function callerAuthorityFields(): iterable

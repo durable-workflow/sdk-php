@@ -111,13 +111,15 @@ call identity and result without submitting another operation.
 
 ```php
 use DurableWorkflow\Exception\ServiceOperationFailed;
+use DurableWorkflow\Model\ServiceOperationOptions;
 use DurableWorkflow\Worker\WorkflowContext;
 
 function invoice(WorkflowContext $context, int $invoiceId): mixed
 {
     try {
         $call = $context->serviceOperation('billing', 'invoices', 'create',
-            ['invoice_id' => $invoiceId], ['wait_timeout_seconds' => 30]);
+            ['invoice_id' => $invoiceId],
+            new ServiceOperationOptions(waitTimeoutSeconds: 30, targetNamespace: 'billing'));
 
         return $call->responsePayload;
     } catch (ServiceOperationFailed $failure) {
@@ -129,8 +131,11 @@ function invoice(WorkflowContext $context, int $invoiceId): mixed
 
 Register this handler with `registerWorkflow()` as usual. The endpoint, service
 and operation must already exist, and the worker credential must have permission
-to call them. `namespace` selects the target namespace. Server assigns the caller
-identity from the leased run.
+to call them. `targetNamespace` selects the target namespace and serializes to
+the same `namespace` field as array options. Omit it to use the caller's namespace.
+Empty targets are invalid. Server assigns caller identity from the leased run;
+target selection does not grant caller authority. For direct client service calls,
+construct the `Client` in the target namespace instead of using this workflow option.
 
 The default options are `mode_override=sync` and `wait_for=completed`. Use
 `wait_for=accepted` or `mode_override=async` to receive the original admission
