@@ -52,6 +52,7 @@ $suffix = bin2hex(random_bytes(6));
 $namespace = 'php-profile-'.$suffix;
 $queue = 'profile-'.$suffix;
 $workerId = 'profile-worker-'.$suffix;
+$buildId = getenv('DW_PROFILE_BUILD_ID') ?: null;
 $admin = new Client($argv[2], controlToken: 'claimed-task-admin');
 $admin->createNamespace($namespace);
 $serverVersion = $admin->clusterInfo()->version;
@@ -63,19 +64,25 @@ $claims = [];
 $completed = [];
 $effects = [];
 $diagnostics = [];
+$profileDeadline = INF;
+$expired = false;
 $stack = HandlerStack::create();
-$stack->push(static function (callable $next) use (&$active, &$http, &$claims, &$completed, &$worker, $runs): Closure {
+$stack->push(static function (callable $next) use (&$active, &$http, &$claims, &$completed, &$worker, &$profileDeadline, &$expired, $runs): Closure {
     return static function (RequestInterface $request, array $options) use (
-    $next, &$active, &$http, &$claims, &$completed, &$worker, $runs,
+    $next, &$active, &$http, &$claims, &$completed, &$worker, &$profileDeadline, &$expired, $runs,
 ) {
     $started = hrtime(true);
     $sent = $active;
 
     return $next($request, $options)->then(static function (ResponseInterface $response) use (
-        $request, $started, $sent, &$http, &$claims, &$completed, &$worker, $runs,
+        $request, $started, $sent, &$http, &$claims, &$completed, &$worker, &$profileDeadline, &$expired, $runs,
     ): ResponseInterface {
         if (!$sent) {
             return $response;
+        }
+        if (microtime(true) > $profileDeadline) {
+            $expired = true;
+            $worker?->requestShutdown();
         }
         $path = $request->getUri()->getPath();
         $category = match (true) {
@@ -142,9 +149,9 @@ $handles = [];
 for ($index = 0; $index < $runs; ++$index) {
     $key = 'run-'.$suffix.'-'.$index;
     $handles[$key] = $control->startWorkflow('qualification.profile.replay', $key, $queue,
-        [$key, $cycles, $timerSeconds]);
+        [$key, $cycles, $timerSeconds], buildId: $buildId);
 }
-$worker = new Worker($client, $queue, $workerId, buildId: 'sdk-3.4.1-profile-v1',
+$worker = new Worker($client, $queue, $workerId, buildId: $buildId,
     diagnosticListener: static function (string $event, array $context) use (&$diagnostics, &$worker): void {
         if (isset($context['exception'])) {
             $diagnostics[] = ['event' => $event, 'exception' => $context['exception']::class,
@@ -161,16 +168,20 @@ $worker->registerActivity('qualification.profile.echo', static function (Activit
 });
 $receipt = ['sdk_version' => InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
     'sdk_reference' => InstalledVersions::getReference('durable-workflow/sdk'), 'server_version' => $serverVersion,
-    'php_version' => PHP_VERSION, 'namespace' => $namespace, 'worker_id' => $workerId,
+    'php_version' => PHP_VERSION, 'namespace' => $namespace, 'worker_id' => $workerId, 'build_id' => $buildId,
     'cycles_per_run' => $cycles, 'concurrent_runs' => $runs, 'timer_seconds' => $timerSeconds,
     'worker_memory_limit_bytes' => trim((string) @file_get_contents('/sys/fs/cgroup/memory.max')),
     'worker_cpu_limit' => trim((string) @file_get_contents('/sys/fs/cgroup/cpu.max'))];
 $started = hrtime(true);
 $cpu = profileCpuSeconds();
+$profileDeadline = microtime(true) + 600;
 $active = true;
 try {
     $worker->run(1);
-    $receipt['outcome'] = 'measured';
+    $receipt['outcome'] = $expired ? 'profile_error' : 'measured';
+    if ($expired) {
+        $receipt['error'] = ['type' => 'profile_deadline', 'message' => 'The bounded 600-second profiling trial did not drain.'];
+    }
 } catch (Throwable $exception) {
     $receipt['outcome'] = 'profile_error';
     $receipt['error'] = ['type' => $exception::class, 'message' => $exception->getMessage()];
@@ -179,6 +190,8 @@ try {
     $receipt['worker_wall_seconds'] = (hrtime(true) - $started) / 1e9;
     $receipt['worker_cpu_seconds'] = profileCpuSeconds() - $cpu;
     $receipt['worker_maxrss_kib'] = getrusage()['ru_maxrss'];
+    $receipt['worker_cgroup_peak_bytes'] = trim((string) @file_get_contents('/sys/fs/cgroup/memory.peak'));
+    $receipt['worker_cgroup_memory_events'] = trim((string) @file_get_contents('/sys/fs/cgroup/memory.events'));
     $receipt['child_process_usage'] = getrusage(1);
     $receipt['sticky_cache'] = $worker->stickyCacheMetrics();
     $receipt['completion_count'] = count($completed);
@@ -207,6 +220,21 @@ if ($receipt['outcome'] === 'measured') {
                 array_push($history, ...($page['events'] ?? $page['history_events'] ?? []));
                 $token = $page['next_page_token'] ?? null;
             } while ($token !== null);
+            $queueWaits = [];
+            $seenTasks = [];
+            $timers = [];
+            foreach ($history as $event) {
+                $eventTask = $event['payload']['task'] ?? null;
+                if (is_array($eventTask) && !isset($seenTasks[$eventTask['id'] ?? ''])
+                    && isset($eventTask['available_at'], $eventTask['leased_at'])) {
+                    $seenTasks[$eventTask['id']] = true;
+                    $queueWaits[] = (float) (new DateTimeImmutable($eventTask['leased_at']))->format('U.u')
+                        - (float) (new DateTimeImmutable($eventTask['available_at']))->format('U.u');
+                }
+                if (str_starts_with($event['event_type'], 'Timer')) {
+                    $timers[] = $event;
+                }
+            }
             $samples = [];
             $cpuSamples = [];
             for ($pass = 0; $pass < 3; ++$pass) {
@@ -225,7 +253,31 @@ if ($receipt['outcome'] === 'measured') {
             $receipt['runs'][] = ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId,
                 'event_count' => count($history), 'event_types' => array_count_values(array_column($history, 'event_type')),
                 'history_sha256' => hash('sha256', json_encode($history, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION)),
+                'canonical_queue_wait_seconds' => profileDistribution($queueWaits), 'timers' => $timers,
                 'isolated_replay_wall_seconds' => $samples, 'isolated_replay_cpu_seconds' => $cpuSamples];
+            foreach ([10, 100, 1000] as $eventCount) {
+                if (count($history) < $eventCount) {
+                    continue;
+                }
+                $prefix = array_slice($history, 0, $eventCount);
+                $baseline = null;
+                $prefixSamples = [];
+                for ($pass = 0; $pass < 3; ++$pass) {
+                    $before = profileCpuSeconds();
+                    $replay = (new Replayer($control->payloadCodec()))->replay($handler, $prefix,
+                        [$key, $cycles, $timerSeconds], $queue);
+                    $prefixSamples[] = profileCpuSeconds() - $before;
+                    $commands = json_encode($replay->commands, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION);
+                    if ($replay->terminalFailure !== null || ($baseline !== null && $baseline !== $commands)) {
+                        throw new RuntimeException('Cold prefix replay changed its commands or failed.');
+                    }
+                    $baseline = $commands;
+                }
+                $receipt['prefix_replays'][] = ['workflow_id' => $handle->workflowId, 'event_count' => $eventCount,
+                    'history_sha256' => hash('sha256', json_encode($prefix, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION)),
+                    'cpu_seconds' => $prefixSamples, 'command_types' => array_column($replay->commands, 'type'),
+                    'commands_sha256' => hash('sha256', (string) $baseline)];
+            }
         }
         if ($receipt['completion_count'] !== $runs || $receipt['effect_count'] !== $runs * $cycles
             || $receipt['duplicate_effect_count'] !== 0 || $diagnostics !== []) {
@@ -236,6 +288,7 @@ if ($receipt['outcome'] === 'measured') {
         $receipt['error'] = ['type' => $exception::class, 'message' => $exception->getMessage()];
     }
 }
+$receipt['final_maxrss_kib'] = getrusage()['ru_maxrss'];
 echo json_encode($receipt, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION
     | JSON_THROW_ON_ERROR)."\n";
 exit($receipt['outcome'] === 'measured' ? 0 : 1);
