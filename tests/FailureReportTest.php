@@ -57,7 +57,7 @@ final class FailureReportTest extends TestCase
         $failure = $body['failure'];
         self::assertSame('OriginalFailure', $failure['type']);
         self::assertTrue($failure['non_retryable']);
-        self::assertLessThanOrEqual(65536, strlen($failure['message']));
+        self::assertLessThanOrEqual(63488, strlen($failure['message']));
         self::assertLessThanOrEqual(131072, strlen($failure['stack_trace'] ?? ''));
         self::assertSame(1, preg_match('//u', $failure['message']));
         $metadata = array_intersect_key($failure, array_flip(['details', 'diagnostics', 'runtime_diagnostics']));

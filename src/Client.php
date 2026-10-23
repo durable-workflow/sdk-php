@@ -12,6 +12,7 @@ use DurableWorkflow\Exception\CodecException;
 use DurableWorkflow\Exception\FailureReportRefused;
 use DurableWorkflow\Failure\FailureReportLimiter;
 use DurableWorkflow\Failure\FailureReportLimits;
+use DurableWorkflow\Failure\LocalFailureReports;
 use DurableWorkflow\Exception\QueryFailed;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\SignalFailed;
@@ -149,6 +150,15 @@ final class Client implements WorkflowClientInterface
         $copy->failureReports = new FailureReportLimiter(new FailureReportLimits($requestBytes), $this->transport);
 
         return $copy;
+    }
+
+    /** @internal Freeze local diagnostic values before workflow code branches on them.
+     * @param array<string, mixed> $outcome
+     * @return array<string, mixed>
+     */
+    public function normalizeLocalFailure(array $outcome): array
+    {
+        return LocalFailureReports::bound($outcome, $this->failureReports->effectiveLimit());
     }
 
     public function payloadCodec(): PayloadCodec
@@ -2640,7 +2650,7 @@ final class Client implements WorkflowClientInterface
             $pollSeconds = $poll ? max(0, min(60, $body['timeout_seconds'])) : 0;
             $budget ??= $worker && $this->boundedWorkerRequests ? new RequestBudget($pollSeconds + 5) : null;
             if ($body !== null) {
-                $body = $this->failureReports->request($path, $body);
+                $body = $this->failureReports->request($path, $body, false);
                 $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers, $budget);
                 $body = $this->failureReports->request($path, $body);
             }

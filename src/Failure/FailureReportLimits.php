@@ -7,7 +7,7 @@ namespace DurableWorkflow\Failure;
 /** SDK failure-report budgets; these do not change the Server's request limit. */
 final class FailureReportLimits
 {
-    public const MESSAGE_BYTES = 65536;
+    public const MESSAGE_BYTES = 63488;
     public const STACK_BYTES = 131072;
     public const METADATA_BYTES = 65536;
     public const REQUEST_BYTES = 1048576;

@@ -587,7 +587,7 @@ final class CooperativeActivityExecutorTest extends TestCase
             self::assertFalse($error->cancelled);
             self::assertFalse($error->invalidReport);
             self::assertStringContainsString('[truncated failure report;', $error->getMessage());
-            self::assertLessThanOrEqual(65536, strlen($error->getMessage()));
+            self::assertLessThanOrEqual(63488, strlen($error->getMessage()));
             self::assertStringContainsString('CooperativeActivityExecutorTest.php', $error->originalStackTrace);
             self::assertSame(3145728, $error->originalDiagnostics['truncation']['fields']['message']['original_bytes']);
             $bounded = (new \DurableWorkflow\Failure\FailureReportLimiter(

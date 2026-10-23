@@ -21,14 +21,18 @@ final class FailureReportLimiter
     /** @param array<string, mixed> $body
      * @return array<string, mixed>
      */
-    public function request(string $path, array $body): array
+    public function request(string $path, array $body, bool $enforceRequestLimit = true): array
     {
+        if (preg_match('~^/worker/workflow-tasks/[^/]+/local-activities/[^/]+/outcome$~D', $path) === 1
+            && is_array($body['report'] ?? null) && is_string($body['report']['message'] ?? null)) {
+            return $this->preparedOutcome($path, $body);
+        }
         $endpoint = preg_match('~^/worker/(activity|workflow|query)-tasks/[^/]+/fail$~D', $path, $matches) === 1
             && is_array($body['failure'] ?? null);
         $commands = preg_match('~^/worker/workflow-tasks/[^/]+/complete$~D', $path) === 1
             && is_array($body['commands'] ?? null)
             && array_filter($body['commands'], static fn (mixed $command): bool => is_array($command)
-                && in_array($command['type'] ?? null, ['fail_workflow', 'fail_update'], true)) !== [];
+                && in_array($command['type'] ?? null, ['fail_workflow', 'fail_update', 'record_local_activity'], true)) !== [];
         if (!$endpoint && !$commands) {
             return $body;
         }
@@ -36,10 +40,27 @@ final class FailureReportLimiter
             'activity' => 'diagnostics',
             default => 'stack_trace',
         } : null;
-        return $this->bound($body, $carrier, $commands, $this->effectiveLimit(), strlen($path));
+        return $this->bound($body, $carrier, $commands, $this->effectiveLimit(), strlen($path), $enforceRequestLimit);
     }
 
-    private function effectiveLimit(): int
+    /** @param array<string, mixed> $body
+     * @return array<string, mixed>
+     */
+    private function preparedOutcome(string $path, array $body): array
+    {
+        $limit = $this->effectiveLimit();
+        $fixed = $body;
+        $fixed['report'] = [];
+        $available = $limit - JsonDocument::size($fixed) - strlen($path);
+        if ($available < 1) {
+            throw new FailureReportRefused($limit);
+        }
+        $body['report'] = LocalFailureReports::bound($body['report'], $available);
+        return $body;
+    }
+
+    /** @internal Known body budget shared with pre-observation local normalization. */
+    public function effectiveLimit(): int
     {
         $limit = $this->limits->requestBytes;
         if (!$this->transport instanceof RequestSizeLimitTransport) {
@@ -68,7 +89,7 @@ final class FailureReportLimiter
     /** @param array<string, mixed> $body
      * @return array<string, mixed>
      */
-    private function bound(array $body, ?string $carrier, bool $commands, int $limit, int $pathBytes): array
+    private function bound(array $body, ?string $carrier, bool $commands, int $limit, int $pathBytes, bool $enforceRequestLimit = true): array
     {
         $messageLimit = FailureReportLimits::MESSAGE_BYTES;
         $stackLimit = FailureReportLimits::STACK_BYTES;
@@ -83,7 +104,8 @@ final class FailureReportLimiter
                 $candidate['commands'] = $this->commands($body['commands'], $messageLimit, $stackLimit, $dropMetadata);
             }
             try {
-                if (JsonDocument::size($candidate) + $pathBytes <= $limit) {
+                $bytes = JsonDocument::size($candidate);
+                if (!$enforceRequestLimit || $bytes + $pathBytes <= $limit) {
                     return $candidate;
                 }
             } catch (\JsonException $error) {

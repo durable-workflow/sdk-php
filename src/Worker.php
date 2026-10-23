@@ -3245,9 +3245,9 @@ final class Worker
                     'heartbeats' => $heartbeats,
                 ];
 
-                return ['outcome' => 'completed', 'result' => $result, 'attempts' => $attempts];
+                return $this->client->normalizeLocalFailure(['outcome' => 'completed', 'result' => $result, 'attempts' => $attempts]);
             } catch (Throwable $exception) {
-                if ($exception instanceof WorkflowClaimAborted) {
+                if ($exception instanceof WorkflowClaimAborted || $exception instanceof FailureReportRefused) {
                     throw $exception;
                 }
                 if ($exception instanceof ServerException && $exception->isStorageAdmissionFailure()) {
@@ -3336,14 +3336,14 @@ final class Worker
                     continue;
                 }
 
-                return [
+                return $this->client->normalizeLocalFailure([
                     'outcome' => $cancelled ? 'cancelled' : ($timedOut ? 'timed_out' : 'failed'),
                     'message' => $message,
                     'exception_type' => $type,
                     'non_retryable' => $isNonRetryable,
                     ...($timeoutKind === null ? [] : ['timeout_kind' => $timeoutKind]),
                     'attempts' => $attempts,
-                ];
+                ]);
             }
         }
 
@@ -3950,6 +3950,9 @@ final class Worker
         ?string $failedActivityExecutionId = null,
     ): array
     {
+        if ($exception instanceof FailureReportRefused) {
+            throw $exception;
+        }
         $command = [
             'type' => 'fail_workflow',
             'message' => $exception->getMessage(),

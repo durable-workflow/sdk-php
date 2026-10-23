@@ -74,7 +74,7 @@ $queue = $namespace;
 $workerId = $namespace.'-workflow';
 $activityWorkerId = $namespace.'-activity';
 $worker = new Worker($client, $queue, workerId: $workerId, stickyCacheCapacity: 1);
-$worker->registerWorkflow('qualification.failure', static function (WorkflowContext $context, string $kind): array {
+$workflowHandler = static function (WorkflowContext $context, string $kind): array {
     if ($kind === 'terminal') {
         throw new FailureDeliveryQualificationException(str_repeat('t', 3 * 1024 * 1024));
     }
@@ -86,13 +86,22 @@ $worker->registerWorkflow('qualification.failure', static function (WorkflowCont
         return ['fresh_turn' => true];
     }
     try {
+        if ($kind === 'local-failure') {
+            $context->localActivity('qualification.failure.local', [], ['retry_policy' => ['max_attempts' => 1]]);
+        } else {
         $context->activity($kind === 'cooperative-worker' ? 'qualification.failure.managed' : 'qualification.failure.activity',
             [], ['retry_policy' => ['max_attempts' => 1]]);
+        }
         throw new FailureDeliveryQualificationException('The activity unexpectedly succeeded.');
     } catch (ActivityFailed $failure) {
         return ['type' => $failure->failureType, 'marked' => str_contains($failure->getMessage(), FAILURE_DELIVERY_MARKER),
-            'message_bytes' => strlen($failure->getMessage()), 'non_retryable' => $failure->nonRetryable];
+            'message_bytes' => strlen($failure->getMessage()), 'message_sha256' => hash('sha256', $failure->getMessage()),
+            'non_retryable' => $failure->nonRetryable];
     }
+};
+$worker->registerWorkflow('qualification.failure', $workflowHandler);
+$worker->registerActivity('qualification.failure.local', static function (DurableWorkflow\Worker\ActivityContext $_context): never {
+    throw new FailureDeliveryQualificationException(str_repeat('雪', 1024 * 1024));
 });
 $client->registerWorker($workerId, $queue, ['qualification.failure'], [], ['sticky_execution', 'typed_search_attributes'],
     workflowCommandContracts: $worker->contracts()['workflow_commands']);
@@ -137,6 +146,24 @@ foreach (['message', 'stack', 'combined', 'escaped', 'details', 'lower-limit', '
         'task_id' => $task['task_id'], 'attempt_id' => $task['activity_attempt_id'] ?? $task['attempt_id'],
         'lease_owner' => $task['lease_owner'], 'output' => $output, 'event_counts' => $counts];
 }
+$handle = $control->startWorkflow('qualification.failure', $namespace.'-local', $queue, ['local-failure'], runTimeoutSeconds: 120);
+$worker->tick(0);
+$output = $handle->resultOfSelectedRun(15, 0.05);
+$history = $control->workflowHistory($handle->workflowId, $handle->selectedRunId, 100);
+$events = $history['events'] ?? $history['history_events'] ?? [];
+$failed = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityFailed'));
+requireDelivery(count($failed) === 1, 'Local failure was not persisted once.');
+$message = $failed[0]['payload']['message'] ?? '';
+requireDelivery($output['message_sha256'] === hash('sha256', $message), 'Initial local branch saw a different failure from persisted history.');
+requireDelivery($output['type'] === FailureDeliveryQualificationException::class && $output['marked'] === true,
+    'Original local failure type or marker changed.');
+$cold = (new DurableWorkflow\Worker\Replayer($client->payloadCodec()))->replay($workflowHandler, $events, ['local-failure'], $queue,
+    localActivityExecutor: static function (): never { throw new FailureDeliveryQualificationException('Cold replay repeated a local callback.'); });
+requireDelivery($cold->terminalFailure === null && count($cold->commands) === 1, 'Local cold replay did not complete normally.');
+requireDelivery($client->payloadCodec()->decodeEnvelope($cold->commands[0]['result']) === $output,
+    'Cold workflow branch saw a different local failure.');
+$result['scenarios']['local-failure'] = ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId,
+    'output' => $output, 'initial_equals_persisted_equals_cold' => true];
 $stack = GuzzleHttp\HandlerStack::create();
 $stack->push(static function (callable $next) use ($http): Closure {
     return static function (Psr\Http\Message\RequestInterface $request, array $options) use ($next, $http) {

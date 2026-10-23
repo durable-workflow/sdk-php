@@ -10,13 +10,13 @@ use DurableWorkflow\Exception\FailureReportRefused;
 final class FailureText
 {
     /** @return array{value: string, changed: bool, original_bytes: int, retained_bytes: int} */
-    public static function bound(string $original, int $limit, string $field, bool $forceMarker = false): array
+    public static function bound(string $original, int $limit, string $field, bool $forceMarker = false, ?int $originalBytes = null): array
     {
         $bytes = strlen($original);
         if (!$forceMarker && $bytes <= $limit && preg_match('//u', $original) === 1) {
             return ['value' => $original, 'changed' => false, 'original_bytes' => $bytes, 'retained_bytes' => $bytes];
         }
-        $marker = self::marker($original, $field);
+        $marker = self::marker($original, $field, $originalBytes);
         $available = $limit - strlen($marker);
         if ($available < 0) {
             throw new FailureReportRefused($limit);
@@ -46,9 +46,9 @@ final class FailureText
         return strlen(self::marker($original, $field));
     }
 
-    private static function marker(string $original, string $field): string
+    private static function marker(string $original, string $field, ?int $originalBytes = null): string
     {
-        $bytes = strlen($original);
+        $bytes = $originalBytes ?? strlen($original);
         return "\n[truncated failure report; original {$field} {$bytes} bytes]";
     }
 

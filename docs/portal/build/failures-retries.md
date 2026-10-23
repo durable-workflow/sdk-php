@@ -114,10 +114,14 @@ Failure reporting keeps diagnostic content within finite defaults:
 
 | Content | Default budget |
 | --- | --- |
-| UTF-8 message, including its marker | 64 KiB |
+| UTF-8 message, including its marker | 62 KiB |
 | Stack trace, including diagnostic markers | 128 KiB |
 | Serialized details and diagnostics together | 64 KiB |
 | Complete encoded failure request, including JSON escaping and identity | 1 MiB |
+
+The message budget reserves 2 KiB below the original 64 KiB ceiling for
+published runtime summaries. It does not repair the separate runtime summary
+byte-bound defect tracked in shared issue 225.
 
 Oversized content produces a visible `[truncated failure report; ...]` message
 marker and bounded diagnostics with original sizes and omitted fields. The SDK
