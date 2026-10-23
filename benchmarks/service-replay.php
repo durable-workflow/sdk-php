@@ -197,6 +197,7 @@ try {
         // Use the actual deployment control before ordinary workflow submission.
         $promotion = (new Psr18Transport())->send('POST', rtrim($argv[2], '/').'/api/task-queues/'
             .rawurlencode($queue).'/build-ids/promote', ['Authorization' => 'Bearer claimed-task-client',
+                'Accept' => 'application/json', 'Content-Type' => 'application/json',
                 'X-Namespace' => $namespace, 'X-Durable-Workflow-Control-Plane-Version' => '2'],
             ['build_id' => $buildId]);
     }
