@@ -2653,7 +2653,7 @@ final class Client implements WorkflowClientInterface
             if ($body !== null) {
                 $body = $this->failureReports->request($path, $body, false);
                 $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers, $budget,
-                    $this->failureReports->limitForRequest($path, $body));
+                    $this->failureReports);
                 $body = $this->failureReports->request($path, $body);
             }
             $activityLease = $worker ? $this->activityLeaseBinding->current() : null;

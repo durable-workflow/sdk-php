@@ -7,6 +7,7 @@ namespace DurableWorkflow\Transport;
 use DurableWorkflow\Exception\ExternalPayloadException;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Version;
+use DurableWorkflow\Failure\FailureReportLimiter;
 
 /** Namespace-scoped discovery and request-local, content-addressed uploads. */
 final class RuntimePayloadUploads
@@ -40,26 +41,17 @@ final class RuntimePayloadUploads
      * @param array<string, string> $headers
      * @return array<string, mixed>
      */
-    public function request(array $body, string $method, string $path, bool $worker, array $headers, ?RequestBudget $budget = null, ?int $requestBytesLimit = null): array
+    public function request(array $body, string $method, string $path, bool $worker, array $headers, ?RequestBudget $budget = null, ?FailureReportLimiter $failureReports = null): array
     {
         if (!$this->transport instanceof PayloadUploadTransport || !in_array(strtoupper($method), ['POST', 'PUT', 'PATCH'], true)) {
             return $body;
         }
         $slots = $this->paths($body, explode('?', $path)[0], $worker);
-        $payloads = [];
-        foreach ($slots as $segments) {
-            $value = $this->get($body, $segments);
-            if (is_array($value) && array_key_exists('external_payload', $value)) {
-                if (count($value) !== 2 || ($value['codec'] ?? null) !== 'avro') {
-                    throw new ExternalPayloadException('Invalid runtime payload envelope.', 422, 'external_payload_unsupported');
-                }
-                RuntimePayloads::validateReference($value['external_payload']);
-            }
-            $blob = is_string($value) ? $value : (is_array($value) && count($value) === 2
-                && ($value['codec'] ?? null) === 'avro' ? ($value['blob'] ?? null) : null);
-            if (is_string($blob)) {
-                $payloads[] = ['path' => $segments, 'blob' => $blob];
-            }
+        $payloads = $this->payloads($body, $slots);
+        $requestBytesLimit = $failureReports?->limitForRequest($path, $body);
+        if ($requestBytesLimit !== null && $failureReports !== null) {
+            $body = $this->failureMetadata($body, $payloads, $path, $failureReports);
+            $payloads = $this->payloads($body, $slots);
         }
         if ($payloads === []) {
             return $body;
@@ -409,6 +401,70 @@ final class RuntimePayloadUploads
         $this->replace($body, $payload['path'], $reference);
 
         return $reference;
+    }
+
+    /** @param array<string, mixed> $body
+     * @param list<list<int|string>> $slots
+     * @return list<array{path: list<int|string>, blob: string}>
+     */
+    private function payloads(array $body, array $slots): array
+    {
+        $payloads = [];
+        foreach ($slots as $segments) {
+            $value = $this->get($body, $segments);
+            if (is_array($value) && array_key_exists('external_payload', $value)) {
+                if (count($value) !== 2 || ($value['codec'] ?? null) !== 'avro') {
+                    throw new ExternalPayloadException('Invalid runtime payload envelope.', 422, 'external_payload_unsupported');
+                }
+                RuntimePayloads::validateReference($value['external_payload']);
+            }
+            $blob = is_string($value) ? $value : (is_array($value) && count($value) === 2
+                && ($value['codec'] ?? null) === 'avro' ? ($value['blob'] ?? null) : null);
+            if (is_string($blob)) {
+                $payloads[] = ['path' => $segments, 'blob' => $blob];
+            }
+        }
+        return $payloads;
+    }
+
+    /** Bound diagnostic text against complete metadata before planning ordinary uploads.
+     * @param array<string, mixed> $body
+     * @param list<array{path: list<int|string>, blob: string}> $payloads
+     * @return array<string, mixed>
+     */
+    private function failureMetadata(array $body, array $payloads, string $path, FailureReportLimiter $reports): array
+    {
+        $metadata = $body;
+        $large = [];
+        foreach ($payloads as $payload) {
+            if (strlen($payload['blob']) > 1024 && ($payload['path'][0] ?? null) !== 'failure') {
+                $large[] = $payload['path'];
+                $reference = ['schema' => RuntimePayloads::SCHEMA, 'reference_id' => 'ep_00000000000000000000000000',
+                    'codec' => 'avro', 'size_bytes' => strlen($payload['blob']), 'sha256' => hash('sha256', $payload['blob'])];
+                $this->put($metadata, $payload['path'], ['codec' => 'avro', 'external_payload' => $reference]);
+            }
+        }
+        $metadata = $reports->request($path, $metadata);
+        foreach ($large as $segments) {
+            $value = $this->get($metadata, $segments);
+            if (is_array($value) && isset($value['external_payload'])) {
+                $this->put($metadata, $segments, $this->get($body, $segments));
+            }
+        }
+        return $metadata;
+    }
+
+    /** @param array<string, mixed> $body
+     * @param list<int|string> $segments
+     */
+    private function put(array &$body, array $segments, mixed $value): void
+    {
+        $target = &$body;
+        $last = array_pop($segments);
+        foreach ($segments as $key) {
+            $target = &$target[$key];
+        }
+        $target[$last] = $value;
     }
 
     /** @param array<string, mixed> $body

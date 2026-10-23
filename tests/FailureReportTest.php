@@ -34,14 +34,21 @@ final class FailureReportTest extends TestCase
             }
         };
         $client = new Client('https://recording.invalid', transport: new Psr18Transport(client: $http));
+        if (in_array($scenario, ['lower-limit', 'lower-details'], true)) {
+            $client = $client->withFailureReportLimit(4096);
+        }
         $large = str_repeat('m', 3 * 1024 * 1024);
-        $message = in_array($scenario, ['message', 'combined'], true) ? $large : 'original message';
-        $stack = in_array($scenario, ['stack', 'combined'], true) ? $large : null;
+        $message = in_array($scenario, ['message', 'combined', 'lower-limit'], true) ? $large : 'original message';
+        $stack = in_array($scenario, ['stack', 'combined', 'lower-limit'], true) ? $large : null;
         if ($scenario === 'escaped') {
             $message = str_repeat("\0\"\\雪🦀", 300000);
             $stack = str_repeat("\0\"\\雪🦀", 300000);
         }
-        $details = $scenario === 'details' ? ['nested' => ['cause' => $large]] : ['whole' => 1.0, 'zero' => -0.0];
+        $details = match ($scenario) {
+            'details' => ['nested' => ['cause' => $large]],
+            'lower-details' => ['text' => str_repeat('d', 45000)],
+            default => ['whole' => 1.0, 'zero' => -0.0],
+        };
         $client->failActivityTask('original-task', 'original-attempt', 'original-owner', $message,
             'OriginalFailure', true, $details, $stack, ['authored_retry_delay' => 12.5]);
         $reports = array_values(array_filter($http->requests,
@@ -49,7 +56,7 @@ final class FailureReportTest extends TestCase
         self::assertCount(1, $reports);
         $request = $reports[0];
         $wire = (string) $request->getBody();
-        self::assertLessThanOrEqual(1048576, strlen($wire));
+        self::assertLessThanOrEqual(in_array($scenario, ['lower-limit', 'lower-details'], true) ? 4096 : 1048576, strlen($wire));
         self::assertSame('/api/worker/activity-tasks/original-task/fail', $request->getUri()->getPath());
         $body = json_decode($wire, true, flags: JSON_THROW_ON_ERROR);
         self::assertSame('original-attempt', $body['activity_attempt_id']);
@@ -69,10 +76,10 @@ final class FailureReportTest extends TestCase
             self::assertStringContainsString('[truncated failure report;', $failure['message']);
             self::assertNotEmpty($failure['diagnostics']['truncation']['fields']);
         }
-        if ($scenario === 'details') {
+        if (in_array($scenario, ['details', 'lower-details'], true)) {
             self::assertArrayNotHasKey('details', $failure);
             self::assertTrue($failure['diagnostics']['truncation']['fields']['details']['omitted']);
-        } else {
+        } elseif ($scenario !== 'lower-limit') {
             self::assertSame($client->payloadCodec()->envelope($details), $failure['details']);
             self::assertSame($details, $client->payloadCodec()->decodeEnvelope($failure['details']));
         }
@@ -80,7 +87,7 @@ final class FailureReportTest extends TestCase
 
     public static function largeReports(): iterable
     {
-        foreach (['message', 'stack', 'combined', 'escaped', 'details', 'small'] as $case) {
+        foreach (['message', 'stack', 'combined', 'escaped', 'details', 'lower-limit', 'lower-details', 'small'] as $case) {
             yield $case => [$case];
         }
     }
