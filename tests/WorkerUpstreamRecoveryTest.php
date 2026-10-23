@@ -240,11 +240,12 @@ final class WorkerUpstreamRecoveryTest extends TestCase
     }
 
     #[DataProvider('upstreamStatuses')]
-    public function testUncertainCompletionDoesNotRepeatTheActivityOrAcknowledgement(int $status): void
+    public function testUncertainCompletionRetriesTheAcknowledgementWithoutRepeatingTheActivity(int $status): void
     {
         $requests = [];
+        $completionBodies = [];
         $executions = 0;
-        $client = self::client(static function (RequestInterface $request) use (&$requests, $status): ResponseInterface {
+        $client = self::client(static function (RequestInterface $request) use (&$requests, &$completionBodies, $status): ResponseInterface {
             $path = $request->getUri()->getPath();
             $requests[] = $path;
             if (str_ends_with($path, '/activity-tasks/poll')) {
@@ -257,7 +258,10 @@ final class WorkerUpstreamRecoveryTest extends TestCase
                 ]]);
             }
             if (str_ends_with($path, '/activity-tasks/activity-1/complete')) {
-                return new Response($status, [], '<html>Response lost</html>');
+                $completionBodies[] = (string) $request->getBody();
+                return count($completionBodies) === 1
+                    ? new Response($status, [], '<html>Response lost</html>')
+                    : self::json(['recorded' => true, 'outcome' => 'completed']);
             }
 
             return self::json(['task' => null, 'poll_status' => 'empty']);
@@ -269,19 +273,17 @@ final class WorkerUpstreamRecoveryTest extends TestCase
             return 'hello';
         });
 
-        try {
-            $worker->tick(0);
-            self::fail('An ambiguous acknowledgement must be surfaced, not repeated.');
-        } catch (ServerException $exception) {
-            self::assertSame($status, $exception->status);
-            self::assertTrue($exception->isTransientUpstreamFailure());
-        }
+        self::assertTrue($worker->tick(0));
         self::assertSame(1, $executions);
+        self::assertCount(2, $completionBodies);
+        self::assertSame($completionBodies[0], $completionBodies[1]);
         self::assertSame([
             '/api/worker/workflow-tasks/poll',
             '/api/worker/activity-tasks/poll',
             '/api/cluster/info',
             '/api/worker/activity-tasks/activity-1/complete',
+            '/api/worker/activity-tasks/activity-1/complete',
+            '/api/worker/query-tasks/poll',
         ], $requests);
     }
 

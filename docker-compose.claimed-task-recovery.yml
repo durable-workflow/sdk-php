@@ -1,0 +1,58 @@
+services:
+  bootstrap:
+    image: &runtime ${DW_PUBLISHED_SERVER_IMAGE:?Select an immutable published Server image}
+    command: [server-bootstrap]
+    environment: &environment
+      DB_CONNECTION: sqlite
+      CACHE_STORE: file
+      QUEUE_CONNECTION: sync
+      DW_SERVER_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      DW_OPERATOR_TOKEN: claimed-task-client
+      DW_WORKER_TOKEN: claimed-task-worker
+      DW_ADMIN_TOKEN: claimed-task-admin
+      DW_TASK_DISPATCH_MODE: poll
+      DW_WORKER_POLL_TIMEOUT: 1
+    volumes: &state
+      - database:/app/database
+      - payloads:/app/storage/app
+
+  server:
+    image: *runtime
+    environment: *environment
+    volumes: *state
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://localhost:8080/api/ready]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  target:
+    extends: server
+
+  proxy:
+    image: ${DW_HAPROXY_IMAGE:?Select an immutable HAProxy image}
+    volumes:
+      - ./tests/Support/claimed-task-proxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./tests/Support/claimed-task-proxy/routes.map:/usr/local/etc/haproxy/routes.map:ro
+    depends_on:
+      server:
+        condition: service_healthy
+      target:
+        condition: service_healthy
+
+  qualify:
+    image: *runtime
+    init: true
+    entrypoint: php
+    command: [/sdk/scripts/qualify-claimed-task-recovery.php, /consumer/vendor/autoload.php, http://proxy:8080, tcp://proxy:9999]
+    volumes:
+      - .:/sdk:ro
+      - ${DW_SDK_CONSUMER_PATH:?Select a normal Composer consumer}:/consumer:ro
+    profiles: [qualification]
+
+volumes:
+  database:
+  payloads:
