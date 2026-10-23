@@ -6,6 +6,20 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-10-23
+
+### Added
+
+- A configurable total HTTP request deadline for ordinary control calls, with a
+  60-second default and typed `request_timeout` failures. Set
+  `Client(requestTimeoutSeconds:)` or the framework `request_timeout_seconds`
+  setting. A timed-out mutation is not automatically resubmitted.
+- A mature socket-client adapter for control calls without cURL, preserving
+  PHP 8.1, HTTP-only installations without OpenSSL, proxy routing, certificate
+  and hostname verification, and authentication. Incomplete HTTP transfers fail
+  before their JSON can be accepted. Injected clients retain their own policies;
+  worker polling, lease/heartbeat and payload-transfer budgets stay separate.
+
 ## [3.3.0] - 2026-10-23
 
 ### Added

@@ -93,6 +93,7 @@ final class Client implements WorkflowClientInterface
         ?string $workerToken = null,
         public readonly int $maxExternalPayloadBytes = 67108864,
         public readonly string $workerProtocolVersion = Version::WORKER_PROTOCOL,
+        ?float $requestTimeoutSeconds = null,
     ) {
         if (trim($baseUri) === '') {
             throw new InvalidArgumentException('The Durable Workflow server URI cannot be empty.');
@@ -127,7 +128,10 @@ final class Client implements WorkflowClientInterface
             ?? (($token !== null || $controlToken !== null || $workerToken !== null)
                 ? new TokenAuthentication($token, $controlToken, $workerToken)
                 : null);
-        $this->transport = $transport ?? new Psr18Transport();
+        if ($transport !== null && $requestTimeoutSeconds !== null) {
+            throw new InvalidArgumentException('Configure request timeouts on the injected transport instead of passing requestTimeoutSeconds.');
+        }
+        $this->transport = $transport ?? new Psr18Transport(requestTimeoutSeconds: $requestTimeoutSeconds);
         $this->codec = $codec ?? new AvroPayloadCodec();
         $this->payloadUploads = new RuntimePayloadUploads($this->transport, $this->baseUri);
         $this->activityLeaseBinding = new ActivityLeaseBinding();
@@ -171,7 +175,8 @@ final class Client implements WorkflowClientInterface
             throw new InvalidArgumentException('Independent activity maintenance requires withActivityLeaseBootstrap() for custom authentication or HTTP clients; their TLS and transport settings cannot be discarded.');
         }
 
-        return $configuration + ['worker_headers' => $this->authentication?->headers(true) ?? []];
+        return $configuration + ['worker_headers' => $this->authentication?->headers(true) ?? [],
+            'request_timeout_seconds' => $this->transport->defaultRequestTimeoutSeconds()];
     }
 
     /** @internal Bootstrap validation never makes a control-plane request. */

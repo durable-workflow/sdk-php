@@ -19,6 +19,9 @@ return [
 
     'poll_timeout_seconds' => 5,
 
+    // Null uses the SDK's 60-second control-request budget. Worker/payload I/O is separate.
+    'request_timeout_seconds' => env('DURABLE_WORKFLOW_REQUEST_TIMEOUT_SECONDS'),
+
     'worker' => [
         // Process-local durable history only; misses/expiry still replay authoritative history.
         'sticky_cache' => [

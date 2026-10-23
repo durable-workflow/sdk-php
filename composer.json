@@ -21,6 +21,7 @@
         "composer-runtime-api": "^2.0",
         "ext-json": "*",
         "guzzlehttp/guzzle": "^7.8|^8.0",
+        "pear/http_request2": "^2.8",
         "psr/container": "^1.1|^2.0",
         "psr/http-client": "^1.0",
         "psr/http-factory": "^1.0",
@@ -43,7 +44,9 @@
         "symfony/console": "Required with symfony/framework-bundle to run the Symfony 6.4, 7, and 8 worker command."
     },
     "conflict": {
-        "open-telemetry/api": "<1.10.1 || >=2.0"
+        "open-telemetry/api": "<1.10.1 || >=2.0",
+        "pear/net_url2": "<2.2.3",
+        "pear/pear_exception": "<1.0.2"
     },
     "autoload": {
         "psr-4": {
@@ -65,6 +68,7 @@
             "npm run build:docs"
         ],
         "check-boundary": "bash scripts/check-dependency-boundary.sh",
+        "check-http-only-platform": "bash scripts/check-http-only-platform.sh",
         "check-release-identity": "scripts/check-release-identity.sh"
     },
     "config": {
@@ -89,7 +93,7 @@
             }
         },
         "durable-workflow": {
-            "product-train": "3.3.0",
+            "product-train": "3.4.0",
             "supported-server-versions": "2.5.0",
             "worker-protocol-version": "1.20",
             "control-plane-version": "2",

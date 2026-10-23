@@ -96,8 +96,14 @@ final class ActivityLeaseMaintainer
             }
         }
 
+        $requestTimeout = $configuration['request_timeout_seconds'] ?? null;
+        if ($requestTimeout !== null && !is_int($requestTimeout) && !is_float($requestTimeout)) {
+            throw new \UnexpectedValueException('Malformed original control request timeout.');
+        }
+
         return new Client($configuration['base_uri'], new StaticHeadersAuthentication($headers),
-            namespace: $configuration['namespace'], workerProtocolVersion: $configuration['worker_protocol']);
+            namespace: $configuration['namespace'], workerProtocolVersion: $configuration['worker_protocol'],
+            requestTimeoutSeconds: $requestTimeout);
     }
 
     private function loop(): void

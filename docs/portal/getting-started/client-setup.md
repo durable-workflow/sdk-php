@@ -12,7 +12,7 @@ next:
 ---
 ## Install and construct
 
-Install from the supported stable 2.0 line shown throughout this portal:
+Install the supported stable SDK release shown throughout this portal:
 
 ```bash
 {{ release.composerCommand }}
@@ -67,6 +67,69 @@ The workflow ID is the stable instance identity. The run ID identifies one execu
 ## Inject a PSR transport when you need one
 
 Guzzle is included as the default transport. To reuse your application's PSR-18 client and PSR-17 factories, construct `Psr18Transport` and pass it as `transport:`. Authentication still belongs in an `Authentication` implementation; do not bury rotating role credentials in a generic HTTP middleware stack.
+
+## Bound ordinary HTTP requests
+
+The SDK-owned transport applies a **60-second total deadline to each ordinary
+control HTTP request**, including connection, TLS, response headers and the
+complete response body. Set a positive number of seconds, with millisecond
+precision, when constructing the client:
+
+```php
+$client = new Client(
+    'https://runtime.example',
+    controlToken: $token,
+    requestTimeoutSeconds: 5.0,
+);
+```
+
+A timeout raises `ServerException` with `status` zero and `reason`
+`request_timeout`. A signal or update retains its existing exception subtype.
+The SDK makes one attempt: a timeout does not prove that a mutation was rejected.
+Inspect the original workflow ID or command outcome before deciding whether to
+send another mutation. Do not automatically retry a start, signal or update
+because the response timed out.
+
+This is a per-request limit. Discovery, an external-payload transfer and a later
+mutation can be separate HTTP requests. It does not change worker long polls,
+lease/heartbeat requests, payload-transfer deadlines, workflow execution timeouts
+or `WorkflowHandle::result()`'s caller wait. `withNamespace()` preserves the
+configured transport and deadline.
+
+The owned transport uses Guzzle with cURL, or a Guzzle adapter using the mature
+HTTP_Request2 socket client without cURL. PHP 8.1 and JSON remain the installation requirements. HTTP-only consumers
+do not need OpenSSL. HTTPS needs the runtime's existing TLS support; certificates
+and hostnames are verified. Both paths disable redirects and automatic retries,
+and obtain authentication headers for each request.
+
+The native adapter sends HTTP/1.1 with `Connection: close` and reads the complete
+response before returning. It shares the deadline across a CONNECT tunnel and its
+TLS handshake, and rejects incomplete HTTP transfers. It preserves Guzzle's `HTTP_PROXY`, `HTTPS_PROXY` and
+`NO_PROXY` selection, including HTTP forwarding and HTTPS through an HTTP CONNECT
+proxy. HTTPS-scheme proxies remain unsupported without cURL, matching Guzzle's
+native stream handler. A configured proxy is never bypassed to avoid an error.
+
+An injected `Transport` or PSR-18 HTTP client keeps its own connection, private-CA,
+proxy and timeout policy. Configure its total deadline on that client. Passing
+`requestTimeoutSeconds` together with an injected client/transport is rejected
+instead of replacing its configuration. For example:
+
+```php
+$http = new \GuzzleHttp\Client([
+    'verify' => '/etc/company/runtime-ca.pem',
+    'timeout' => 5.0,
+]);
+$client = new Client(
+    'https://runtime.internal',
+    transport: new \DurableWorkflow\Transport\Psr18Transport($http),
+    authentication: $rotatingCredentials,
+);
+```
+
+Guzzle 7's native stream handler measures idle time and does not supply a total
+slow-body deadline. Use cURL or another HTTP client with a verified total deadline
+when injecting Guzzle 7. The SDK does not alter an injected client's TLS or proxy
+settings to impose a different timeout.
 
 ## Runtime-owned external payloads
 

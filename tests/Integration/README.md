@@ -233,3 +233,27 @@ available to record canonical cancellation while a callback blocks. They cover
 user/no-user heartbeats, cold workflow replacement, SIGTERM/SIGKILL and late
 publication fencing. Active remote-attempt reclaim and exact published-tuple
 qualification remain required before release.
+
+## Installed control-request deadline acceptance
+
+`tests/ControlRequestTimeoutTest.php` runs real local HTTP/TLS peers and proxies,
+including stalled headers/body, slowly arriving responses, delayed CONNECT plus
+stalled TLS, typed mutation errors, certificate/hostname refusal, injected private
+CA, rotating credentials, URL encoding, worker/payload budget separation and
+complete/incomplete response framing. It exercises cURL and the owned PHP socket
+adapter. Fixtures use random loopback ports and retire their own processes/files.
+
+Run it normally for source qualification. To make its HTTP clients load a fresh
+normal Composer consumer instead, run from the source checkout with:
+
+```bash
+SDK_CONTROL_ACCEPTANCE_AUTOLOAD=/path/to/consumer/vendor/autoload.php \
+  vendor/bin/phpunit tests/ControlRequestTimeoutTest.php
+```
+
+The parent test environment needs OpenSSL for its TLS fixtures and proc_open for
+isolated peers. The HTTP-only child control disables TLS functions; that test-only
+fixture requirement does not add an SDK runtime platform requirement. Also resolve
+the consumer with Composer platform PHP8.1, ext-curl=false and ext-openssl=false to
+verify installation compatibility. Keep source component evidence separate from
+normally installed published-package acceptance.

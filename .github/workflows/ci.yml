@@ -132,6 +132,9 @@ jobs:
         if: matrix.php == '8.3'
         run: composer benchmark-avro-value
       - run: composer check-boundary
+      - name: Preserve the HTTP-only PHP 8.1 platform
+        if: matrix.php == '8.1'
+        run: composer check-http-only-platform
 
   framework-compat:
     name: ${{ matrix.framework }} ${{ matrix.version }}

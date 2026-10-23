@@ -19,25 +19,39 @@ use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\StreamFactoryInterface;
 use Psr\Http\Message\StreamInterface;
+use GuzzleHttp\HandlerStack;
 use Throwable;
 
 /** Default PSR-18 JSON and bounded runtime-payload transport. */
 final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUploadTransport, BoundedTransport, BoundedProgressPayloadTransport
 {
+    public const DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0;
+
     private readonly ClientInterface $client;
     private readonly RequestFactoryInterface $requestFactory;
     private readonly StreamFactoryInterface $streamFactory;
     private readonly bool $defaultProcessConfiguration;
+    private readonly ?float $requestTimeoutSeconds;
+    private ?GuzzleClient $nativeControlClient = null;
 
     public function __construct(
         ?ClientInterface $client = null,
         ?RequestFactoryInterface $requestFactory = null,
         ?StreamFactoryInterface $streamFactory = null,
         private readonly int $payloadTransferTimeoutSeconds = 30,
+        ?float $requestTimeoutSeconds = null,
     ) {
         if ($payloadTransferTimeoutSeconds < 1 || $payloadTransferTimeoutSeconds > 900) {
             throw new \InvalidArgumentException('Supervised payload transfers require a timeout from 1 through 900 seconds.');
         }
+        if ($client !== null && $requestTimeoutSeconds !== null) {
+            throw new \InvalidArgumentException('Configure timeouts on the injected HTTP client instead of passing requestTimeoutSeconds.');
+        }
+        if ($requestTimeoutSeconds !== null && (!is_finite($requestTimeoutSeconds)
+            || $requestTimeoutSeconds < 0.001 || $requestTimeoutSeconds > intdiv(PHP_INT_MAX, 1000))) {
+            throw new \InvalidArgumentException('requestTimeoutSeconds must be a finite positive duration with millisecond precision.');
+        }
+        $this->requestTimeoutSeconds = $client === null ? ($requestTimeoutSeconds ?? self::DEFAULT_REQUEST_TIMEOUT_SECONDS) : null;
         $factory = new HttpFactory();
         $this->defaultProcessConfiguration = $client === null && $requestFactory === null && $streamFactory === null;
         $this->client = $client ?? new GuzzleClient(['http_errors' => false]);
@@ -66,6 +80,12 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         return $this->defaultProcessConfiguration && $this->supportsBoundedRequests();
     }
 
+    /** @internal Preserve the owned HTTP policy when recreating a maintenance Client. */
+    public function defaultRequestTimeoutSeconds(): ?float
+    {
+        return $this->requestTimeoutSeconds;
+    }
+
     public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
     {
         if (!$this->supportsBoundedRequests() || $timeoutSeconds < 1 || $timeoutSeconds > 65) {
@@ -82,37 +102,88 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
      */
     private function sendJson(string $method, string $uri, array $headers, ?array $body, ?int $timeoutSeconds = null): ?array
     {
+        $controlTimeout = $timeoutSeconds === null && $this->isControlRequest($headers) ? $this->requestTimeoutSeconds : null;
         try {
-            $request = $this->requestFactory->createRequest(strtoupper($method), $uri);
-            foreach ($headers as $name => $value) {
-                $request = $request->withHeader($name, $value);
-            }
-            if ($body !== null) {
-                $json = json_encode($body, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-                $request = $request->withBody($this->streamFactory->createStream($json));
-            }
-            $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? 30, bounded: $timeoutSeconds !== null);
-            $rawBody = (string) $response->getBody();
-            if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
-                // An upstream proxy can return HTML or an empty body. Preserve
-                // its status without interpreting it as a successful protocol reply.
-                $decoded = json_decode($rawBody, true);
-                throw TransportException::fromResponse($response->getStatusCode(), is_array($decoded) ? $decoded : null, $rawBody);
-            }
+            $request = $this->createJsonRequest($method, $uri, $headers, $body);
+            $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout ?? 30,
+                bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout);
 
-            $decoded = $rawBody === '' ? null : json_decode($rawBody, true, 512, JSON_THROW_ON_ERROR);
-            if ($decoded !== null && !is_array($decoded)) {
-                throw new TransportException('The server returned a JSON value instead of an object or array.');
-            }
-
-            return $decoded;
+            return $this->decodeJsonResponse($response);
         } catch (TransportException $exception) {
             throw $exception;
         } catch (JsonException $exception) {
             throw new TransportException('The server returned invalid JSON: '.$exception->getMessage(), previous: $exception);
         } catch (Throwable $exception) {
+            if ($controlTimeout !== null && $this->isTimeout($exception)) {
+                throw $this->controlTimeoutFailure($exception, $controlTimeout);
+            }
             throw new TransportException('HTTP request failed: '.$exception->getMessage(), previous: $exception);
         }
+    }
+
+    /** @return array<string, mixed>|list<mixed>|null */
+    private function decodeJsonResponse(ResponseInterface $response): ?array
+    {
+        $rawBody = (string) $response->getBody();
+        if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
+            // An upstream proxy can return HTML or an empty body. Preserve
+            // its status without interpreting it as a successful protocol reply.
+            $decoded = json_decode($rawBody, true);
+            throw TransportException::fromResponse($response->getStatusCode(), is_array($decoded) ? $decoded : null, $rawBody);
+        }
+
+        $decoded = $rawBody === '' ? null : json_decode($rawBody, true, 512, JSON_THROW_ON_ERROR);
+        if ($decoded !== null && !is_array($decoded)) {
+            throw new TransportException('The server returned a JSON value instead of an object or array.');
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * @param array<string, string> $headers
+     * @param array<string, mixed>|null $body
+     */
+    private function createJsonRequest(string $method, string $uri, array $headers, ?array $body): RequestInterface
+    {
+        $request = $this->requestFactory->createRequest(strtoupper($method), $uri);
+        foreach ($headers as $name => $value) {
+            $request = $request->withHeader($name, $value);
+        }
+        if ($body !== null) {
+            $json = json_encode($body, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            $request = $request->withBody($this->streamFactory->createStream($json));
+        }
+
+        return $request;
+    }
+
+    /** @param array<string, string> $headers */
+    private function isControlRequest(array $headers): bool
+    {
+        $names = array_change_key_case($headers, CASE_LOWER);
+
+        return isset($names['x-durable-workflow-control-plane-version'])
+            || !isset($names['x-durable-workflow-protocol-version']);
+    }
+
+    private function isTimeout(Throwable $exception): bool
+    {
+        do {
+            if ($exception instanceof \HTTP_Request2_Exception && $exception->getCode() === \HTTP_Request2_Exception::TIMEOUT) {
+                return true;
+            }
+            $exception = $exception->getPrevious();
+        } while ($exception !== null);
+
+        return false;
+    }
+
+    private function controlTimeoutFailure(Throwable $exception, float $seconds): TransportException
+    {
+        return new TransportException('The control-plane HTTP request timed out.',
+            response: ['reason' => 'request_timeout', 'timeout_seconds' => $seconds],
+            previous: $exception, transientConnectionFailure: true);
     }
 
     public function fetchPayload(string $uri, array $headers, int $maxBytes): string
@@ -311,42 +382,83 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         }
     }
 
-    private function sendRequest(RequestInterface $request, bool $stream = false, int $timeoutSeconds = 30, bool $bounded = false, ?StreamInterface $sink = null, ?\Closure $progress = null): ResponseInterface
+    private function nativeControlHttpClient(): GuzzleClient
+    {
+        if (!$this->client instanceof GuzzleClient) {
+            throw new \LogicException('Only the owned Guzzle client can select its native control handler.');
+        }
+
+        return $this->nativeControlClient ??= new GuzzleClient([
+            'handler' => HandlerStack::create(new ControlSocketHandler()),
+        ] + $this->client->getConfig());
+    }
+
+    private function sendRequest(RequestInterface $request, bool $stream = false, int|float $timeoutSeconds = 30, bool $bounded = false, ?StreamInterface $sink = null, ?\Closure $progress = null, ?float $controlTimeout = null): ResponseInterface
     {
         $connectionFailure = false;
+        $timedOut = false;
         try {
-            if ($this->client instanceof GuzzleClient) {
-                $onStats = $this->client->getConfig('on_stats');
+            $http = $controlTimeout !== null && !function_exists('curl_exec') && !function_exists('curl_multi_exec')
+                ? $this->nativeControlHttpClient() : $this->client;
+            if ($http instanceof GuzzleClient) {
+                $onStats = $http->getConfig('on_stats');
 
-                return $this->client->send($request, [
-                    'synchronous' => true,
-                    'http_errors' => false,
-                    'allow_redirects' => false,
-                    ...($bounded ? ['stream' => false] : ($stream ? ['stream' => true] : [])),
-                    ...($sink !== null ? ['stream' => false, 'sink' => $sink] : []),
-                    ...($progress !== null ? ['progress' => $progress] : []),
-                    ...($stream || $bounded ? ['timeout' => $timeoutSeconds, 'read_timeout' => $timeoutSeconds,
-                        'connect_timeout' => $timeoutSeconds] : []),
-                    'on_stats' => static function (TransferStats $stats) use (&$connectionFailure, $onStats): void {
-                        // Guzzle 8 no longer attaches cURL errno to exceptions.
-                        // Accept only DNS/connect/timeout/closed-connection errors,
-                        // never TLS, invalid options, or an unclassified PSR error.
-                        $connectionFailure = !$stats->hasResponse()
-                            && in_array($stats->getHandlerErrorData(), [5, 6, 7, 28, 52, 55, 56], true);
-                        if (is_callable($onStats)) {
-                            $onStats($stats);
-                        }
-                    },
-                ]);
+                $options = $this->guzzleRequestOptions($stream, $timeoutSeconds, $bounded, $sink, $progress);
+                $options['on_stats'] = static function (TransferStats $stats) use (&$connectionFailure, &$timedOut, $onStats): void {
+                    // Guzzle 8 no longer attaches cURL errno to exceptions.
+                    // Accept only DNS/connect/timeout/closed-connection errors,
+                    // never TLS, invalid options, or an unclassified PSR error.
+                    $connectionFailure = !$stats->hasResponse()
+                        && in_array($stats->getHandlerErrorData(), [5, 6, 7, 28, 52, 55, 56], true);
+                    $timedOut = $stats->getHandlerErrorData() === 28;
+                    if (is_callable($onStats)) {
+                        $onStats($stats);
+                    }
+                };
+
+                return $http->send($request, $options);
             }
 
             return $this->client->sendRequest($request);
         } catch (Throwable $exception) {
-            throw new TransportException(
-                'HTTP request failed: '.$exception->getMessage(),
-                previous: $exception,
-                transientConnectionFailure: $connectionFailure && $exception instanceof NetworkExceptionInterface,
-            );
+            throw $this->requestFailure($exception, $controlTimeout, $timedOut, $connectionFailure);
         }
+    }
+
+    /** @return array<string, mixed> */
+    private function guzzleRequestOptions(bool $stream, int|float $timeoutSeconds, bool $bounded, ?StreamInterface $sink, ?\Closure $progress): array
+    {
+        $options = ['synchronous' => true, 'http_errors' => false, 'allow_redirects' => false];
+        if ($bounded || $sink !== null) {
+            $options['stream'] = false;
+        } elseif ($stream) {
+            $options['stream'] = true;
+        }
+        if ($sink !== null) {
+            $options['sink'] = $sink;
+        }
+        if ($progress !== null) {
+            $options['progress'] = $progress;
+        }
+        if ($stream || $bounded) {
+            $options += ['timeout' => $timeoutSeconds, 'read_timeout' => $timeoutSeconds, 'connect_timeout' => $timeoutSeconds];
+        }
+
+        return $options;
+    }
+
+    private function requestFailure(Throwable $exception, ?float $controlTimeout, bool $timedOut, bool $connectionFailure): TransportException
+    {
+        if ($controlTimeout !== null) {
+            if ($exception instanceof TransportException) {
+                return $exception;
+            }
+            if ($timedOut || $this->isTimeout($exception)) {
+                return $this->controlTimeoutFailure($exception, $controlTimeout);
+            }
+        }
+
+        return new TransportException('HTTP request failed: '.$exception->getMessage(), previous: $exception,
+            transientConnectionFailure: $connectionFailure && $exception instanceof NetworkExceptionInterface);
     }
 }

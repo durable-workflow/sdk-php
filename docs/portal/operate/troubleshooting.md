@@ -19,6 +19,7 @@ next:
 | Worker cannot register or poll | Worker token, queue, protocol discovery | Use the worker-role credential and a supported runtime. |
 | Workflow remains pending | Worker visibility and registered workflow type | Start a compatible worker on the exact task queue. |
 | Activity remains scheduled | Registered activity type and capacity | Deploy the handler or split an overloaded queue. |
+| `request_timeout` with status zero | Ordinary control HTTP deadline | Inspect the original operation outcome; a lost response does not authorize repeating a mutation. Configure the [HTTP request deadline](/getting-started/client-setup/#bound-ordinary-http-requests) for the application. |
 | Result wait times out | Describe the workflow and inspect history | Distinguish client wait timeout from workflow terminal timeout. |
 | `NonDeterministicWorkflow` | Deployed build and committed command sequence | Restore replay-compatible code or route old histories correctly. |
 | Worker exits after a poll | Typed poll status and reason | Treat draining/stopped/stale registration as lifecycle, not empty work. |
