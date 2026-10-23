@@ -150,7 +150,7 @@ $managedId = $namespace.'-cooperative';
 $managedClient = new Client($url, namespace: $namespace, workerToken: 'claimed-task-worker',
     transport: new DurableWorkflow\Transport\Psr18Transport(client: new GuzzleHttp\Client(['handler' => $stack, 'http_errors' => false])));
 $managedWorker = new Worker($managedClient, $queue, workerId: $managedId, enableCooperativeCancellation: true);
-$managedWorker->registerActivity('qualification.failure.managed', static function (): never {
+$managedWorker->registerActivity('qualification.failure.managed', static function (DurableWorkflow\Worker\ActivityContext $_context): never {
     throw new FailureDeliveryQualificationException(str_repeat('m', 3 * 1024 * 1024));
 });
 $managedClient->registerWorker($managedId, $queue, [], ['qualification.failure.managed'], ['cooperative_cancellation']);
