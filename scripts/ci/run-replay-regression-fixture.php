@@ -555,36 +555,7 @@ final class ReplayRegressionConsumer
             );
         }
         $localActivityInvocations = 0;
-        if (in_array($workflowType, ['golden.local-activity-terminal-failure', 'golden.local-activity-recovered'], true)) {
-            $worker->registerActivity(
-                $workflowType === 'golden.local-activity-recovered' ? 'golden.local-receipt' : 'golden.local-failure',
-                static function (ActivityContext $_context) use (&$localActivityInvocations): never {
-                    ++$localActivityInvocations;
-
-                    throw new RuntimeException('Cold replay repeated the recorded local activity side effect.');
-                },
-            );
-        }
-        if ($workflowType === self::BOUNDED_LOCAL_FAILURE) {
-            $worker->registerActivity(self::BOUNDED_LOCAL_FAILURE,
-                static function (ActivityContext $context) use (&$localActivityInvocations): never {
-                    if ($context->activityType !== self::BOUNDED_LOCAL_FAILURE) {
-                        throw new RuntimeException('Unexpected bounded-local activity context.');
-                    }
-                    ++$localActivityInvocations;
-                    throw new RuntimeException(str_repeat('雪', 1024 * 1024));
-                });
-        }
-        if ($workflowType === 'golden.activity-completion-backend-loss') {
-            $worker->registerActivity(
-                'golden.backend-recovery',
-                static function (ActivityContext $_context) use (&$localActivityInvocations): string {
-                    ++$localActivityInvocations;
-
-                    return 'activity-after-backend-recovery';
-                },
-            );
-        }
+        self::registerLocalActivities($worker, $workflowType, $localActivityInvocations);
         foreach ($tasks as $_task) {
             $worker->tick(0);
             gc_collect_cycles();
@@ -649,6 +620,40 @@ final class ReplayRegressionConsumer
             throw new RuntimeException("{$identity}.expected must be a non-empty object.");
         }
         self::assertMatches($expected, $observed, "{$identity}.expected");
+    }
+
+    private static function registerLocalActivities(Worker $worker, string $workflowType, int &$localActivityInvocations): void
+    {
+        if (in_array($workflowType, ['golden.local-activity-terminal-failure', 'golden.local-activity-recovered'], true)) {
+            $worker->registerActivity(
+                $workflowType === 'golden.local-activity-recovered' ? 'golden.local-receipt' : 'golden.local-failure',
+                static function (ActivityContext $_context) use (&$localActivityInvocations): never {
+                    ++$localActivityInvocations;
+
+                    throw new RuntimeException('Cold replay repeated the recorded local activity side effect.');
+                },
+            );
+        }
+        if ($workflowType === self::BOUNDED_LOCAL_FAILURE) {
+            $worker->registerActivity(self::BOUNDED_LOCAL_FAILURE,
+                static function (ActivityContext $context) use (&$localActivityInvocations): never {
+                    if ($context->activityType !== self::BOUNDED_LOCAL_FAILURE) {
+                        throw new UnexpectedValueException('Unexpected bounded-local activity context.');
+                    }
+                    ++$localActivityInvocations;
+                    throw new RuntimeException(str_repeat('雪', 1024 * 1024));
+                });
+        }
+        if ($workflowType === 'golden.activity-completion-backend-loss') {
+            $worker->registerActivity(
+                'golden.backend-recovery',
+                static function (ActivityContext $_context) use (&$localActivityInvocations): string {
+                    ++$localActivityInvocations;
+
+                    return 'activity-after-backend-recovery';
+                },
+            );
+        }
     }
 
     /** @return callable(WorkflowContext, mixed ...$input): mixed */

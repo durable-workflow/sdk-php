@@ -9,7 +9,11 @@ use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Version;
 use DurableWorkflow\Failure\FailureReportLimiter;
 
-/** Namespace-scoped discovery and request-local, content-addressed uploads. */
+/** Namespace-scoped discovery and request-local, content-addressed uploads.
+ * @phpstan-type PayloadSlot array{path: list<int|string>, blob: string}
+ * @phpstan-type UploadPolicy array{threshold_bytes: int, max_bytes: int, request_bytes: int, timeout_seconds: int, status: string, completion_context?: bool, prepared_completion_context?: bool, scope_completion_context?: bool}
+ * @phpstan-type UploadRequest array{headers: array<string, string>, path: string, worker: bool, budget: RequestBudget|null}
+ */
 final class RuntimePayloadUploads
 {
     private const COMPLETION_SCHEMA = 'durable-workflow.v2.payload-completion-context.v1';
@@ -57,8 +61,23 @@ final class RuntimePayloadUploads
             return $body;
         }
 
+        $policy = $this->requestPolicy($body, $path, $worker, $headers, $budget);
+        if ($requestBytesLimit !== null) {
+            $policy['request_bytes'] = min($policy['request_bytes'], $requestBytesLimit);
+        }
+        $selected = $this->plan($body, $payloads, $policy);
+        return $this->uploadSelected($body, $payloads, $selected, $policy,
+            ['headers' => $headers, 'path' => $path, 'worker' => $worker, 'budget' => $budget]);
+    }
+
+    /** @param array<string, mixed> $body
+     * @param array<string, string> $headers
+     * @return UploadPolicy
+     */
+    private function requestPolicy(array $body, string $path, bool $worker, array $headers, ?RequestBudget $budget): array
+    {
         try {
-            $policy = $this->policy($headers, $worker, $budget);
+            return $this->policy($headers, $worker, $budget);
         } catch (TransportException $exception) {
             $discovery = $exception->response;
             if ($worker
@@ -95,9 +114,15 @@ final class RuntimePayloadUploads
 
             throw $exception;
         }
-        if ($requestBytesLimit !== null) {
-            $policy['request_bytes'] = min($policy['request_bytes'], $requestBytesLimit);
-        }
+    }
+
+    /** @param array<string, mixed> $body
+     * @param list<PayloadSlot> $payloads
+     * @param UploadPolicy $policy
+     * @return array<int, array<string, mixed>>
+     */
+    private function plan(array &$body, array &$payloads, array $policy): array
+    {
         // Plan the entire request before uploading anything. Several individually
         // inline values can still exceed the ordinary JSON request limit.
         $selected = [];
@@ -125,96 +150,142 @@ final class RuntimePayloadUploads
             throw new ExternalPayloadException('Namespace runtime external payload storage is not available.', 503, 'external_payload_unavailable');
         }
 
-        $uploaded = [];
-        $upload = function (array $uploadHeaders, string $blob) use ($policy, $budget): array {
-            $uri = $this->baseUri.'/api/external-payloads/v1';
-            if ($budget !== null && !$this->transport instanceof BoundedPayloadUploadTransport) {
-                throw new ExternalPayloadException('The cooperative transport must bound payload uploads.', 415, 'external_payload_unsupported');
-            }
-            $deadline = hrtime(true) / 1e9 + $policy['timeout_seconds'];
-            $timeout = $policy['timeout_seconds'];
-            for ($attempt = 0; ; ++$attempt) {
-                try {
-                    if ($budget === null) {
-                        return $this->transport->uploadPayload($uri, $uploadHeaders, $blob, $timeout);
-                    }
-                    $response = $this->transport->uploadPayloadBounded($uri, $uploadHeaders, $blob, min($budget->remainingSeconds(), $timeout));
-                    $budget->remainingSeconds();
+        return $selected;
+    }
 
-                    return $response;
-                } catch (TransportException $exception) {
-                    // A reservation or object can already exist after this refusal.
-                    // Retry only the upload, with identical bytes and completion
-                    // context, once within the original upload/request budget.
-                    $timeout = (int) floor($deadline - hrtime(true) / 1e9);
-                    if ($attempt !== 0 || $exception->status !== 503
-                        || ($exception->response['schema'] ?? null) !== 'durable-workflow.v2.runtime-external-payload-error.v1'
-                        || ($exception->response['reason'] ?? null) !== 'external_payload_unavailable'
-                        || ($exception->response['retryable'] ?? null) !== true
-                        || $timeout < 1) {
-                        throw $exception;
-                    }
-                    $budget?->remainingSeconds();
+    /** @param array<string, string> $uploadHeaders
+     * @param UploadPolicy $policy
+     * @return array<string, mixed>
+     */
+    private function uploadBlob(array $uploadHeaders, string $blob, array $policy, ?RequestBudget $budget): array
+    {
+        $transport = $this->transport;
+        if (!$transport instanceof PayloadUploadTransport) {
+            throw new ExternalPayloadException('The transport must support payload uploads.', 415, 'external_payload_unsupported');
+        }
+        $uri = $this->baseUri.'/api/external-payloads/v1';
+        if ($budget !== null && !$transport instanceof BoundedPayloadUploadTransport) {
+            throw new ExternalPayloadException('The cooperative transport must bound payload uploads.', 415, 'external_payload_unsupported');
+        }
+        $deadline = hrtime(true) / 1e9 + $policy['timeout_seconds'];
+        $timeout = $policy['timeout_seconds'];
+        for ($attempt = 0; ; ++$attempt) {
+            try {
+                if ($budget === null) {
+                    return $transport->uploadPayload($uri, $uploadHeaders, $blob, $timeout);
                 }
+                $response = $transport->uploadPayloadBounded($uri, $uploadHeaders, $blob, min($budget->remainingSeconds(), $timeout));
+                $budget->remainingSeconds();
+
+                return $response;
+            } catch (TransportException $exception) {
+                // A reservation or object can already exist after this refusal.
+                // Retry only the upload, with identical bytes and completion
+                // context, once within the original upload/request budget.
+                $timeout = (int) floor($deadline - hrtime(true) / 1e9);
+                if ($attempt !== 0 || $exception->status !== 503
+                    || ($exception->response['schema'] ?? null) !== 'durable-workflow.v2.runtime-external-payload-error.v1'
+                    || ($exception->response['reason'] ?? null) !== 'external_payload_unavailable'
+                    || ($exception->response['retryable'] ?? null) !== true
+                    || $timeout < 1) {
+                    throw $exception;
+                }
+                $budget?->remainingSeconds();
             }
-        };
+        }
+    }
+
+    /** @param array<string, mixed> $body
+     * @param list<PayloadSlot> $payloads
+     * @param array<int, array<string, mixed>> $selected
+     * @param UploadPolicy $policy
+     * @param UploadRequest $request
+     * @return array<string, mixed>
+     */
+    private function uploadSelected(array $body, array $payloads, array $selected, array $policy, array $request): array
+    {
+        $uploaded = [];
         foreach ($selected as $index => $expected) {
-            $blob = $payloads[$index]['blob'];
             $key = $expected['sha256'].':'.$expected['size_bytes'];
-            if (!isset($uploaded[$key])) {
-                try {
-                    $uploadHeaders = array_replace($headers, [
-                        'Content-Type' => 'application/octet-stream',
-                        'Accept' => 'application/json',
-                        'X-Durable-Workflow-Payload-Codec' => 'avro',
-                        'X-Durable-Workflow-Payload-Size' => (string) strlen($blob),
-                        'X-Durable-Workflow-Payload-SHA256' => $expected['sha256'],
-                    ]);
-                    try {
-                        $response = $upload($uploadHeaders, $blob);
-                    } catch (TransportException $refusal) {
-                        $context = $worker && ($policy['completion_context'] ?? false)
-                            ? $this->completionContext($body, $path, $payloads[$index]['path'],
-                                ($policy['prepared_completion_context'] ?? false)
-                                && ($headers['X-Durable-Workflow-Protocol-Version'] ?? null) === Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL,
-                                ($policy['scope_completion_context'] ?? false)
-                                && ($headers['X-Durable-Workflow-Protocol-Version'] ?? null) === Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL) : null;
-                        if ($context === null || $refusal->status !== 503
-                            || ($refusal->response['reason'] ?? null) !== 'storage_pressure'
-                            || ($refusal->response['storage_state'] ?? null) !== 'draining'
-                            || ($refusal->response['request_admitted'] ?? null) !== false) {
-                            throw $refusal;
-                        }
-                        // One capability-negotiated retry; never turn other pressure
-                        // errors into retries or repeat application activity code.
-                        $uploadHeaders[self::COMPLETION_HEADER] = $context;
-                        $response = $upload($uploadHeaders, $blob);
-                    }
-                } catch (TransportException $exception) {
-                    $reason = $exception->response['reason'] ?? null;
-                    $reason = is_string($reason) ? $reason : match ($exception->status) {
-                        401, 403 => 'external_payload_unauthorized',
-                        413 => 'external_payload_oversized',
-                        415, 422 => 'external_payload_unsupported',
-                        default => 'external_payload_unavailable',
-                    };
-                    throw new ExternalPayloadException('Runtime external payload upload failed.', $exception->status ?? 0,
-                        $reason, $exception->response, $exception);
-                }
-                if (($response['schema'] ?? null) !== 'durable-workflow.v2.runtime-external-payload-upload.v1'
-                    || ($response['transport_version'] ?? null) !== 1) {
-                    throw new ExternalPayloadException('Unsupported runtime upload response.', 422, 'external_payload_unsupported');
-                }
-                $reference = RuntimePayloads::validateReference($response['reference'] ?? null);
-                if ($reference['size_bytes'] !== strlen($blob) || !hash_equals($expected['sha256'], $reference['sha256'])) {
-                    throw new ExternalPayloadException('Runtime upload reference differs from the submitted bytes.', 422, 'external_payload_integrity_mismatch');
-                }
-                $uploaded[$key] = $reference;
-            }
+            $uploaded[$key] ??= $this->uploadReference($body, $payloads[$index], $expected, $policy, $request);
             $this->replace($body, $payloads[$index]['path'], $uploaded[$key]);
         }
-
         return $body;
+    }
+
+    /** @param array<string, mixed> $body
+     * @param PayloadSlot $payload
+     * @param array<string, mixed> $expected
+     * @param UploadPolicy $policy
+     * @param UploadRequest $request
+     * @return array<string, mixed>
+     */
+    private function uploadReference(array $body, array $payload, array $expected, array $policy, array $request): array
+    {
+        $blob = $payload['blob'];
+        $headers = array_replace($request['headers'], [
+            'Content-Type' => 'application/octet-stream', 'Accept' => 'application/json',
+            'X-Durable-Workflow-Payload-Codec' => 'avro', 'X-Durable-Workflow-Payload-Size' => (string) strlen($blob),
+            'X-Durable-Workflow-Payload-SHA256' => $expected['sha256'],
+        ]);
+        try {
+            $response = $this->sendWithCompletionFallback($body, $payload, $headers, $policy, $request);
+        } catch (TransportException $exception) {
+            $reason = $exception->response['reason'] ?? null;
+            $reason = is_string($reason) ? $reason : match ($exception->status) {
+                401, 403 => 'external_payload_unauthorized', 413 => 'external_payload_oversized',
+                415, 422 => 'external_payload_unsupported', default => 'external_payload_unavailable',
+            };
+            throw new ExternalPayloadException('Runtime external payload upload failed.', $exception->status ?? 0,
+                $reason, $exception->response, $exception);
+        }
+        return $this->validateUploadReference($response, $blob, $expected);
+    }
+
+    /** @param array<string, mixed> $body
+     * @param PayloadSlot $payload
+     * @param array<string, string> $headers
+     * @param UploadPolicy $policy
+     * @param UploadRequest $request
+     * @return array<string, mixed>
+     */
+    private function sendWithCompletionFallback(array $body, array $payload, array $headers, array $policy, array $request): array
+    {
+        try {
+            return $this->uploadBlob($headers, $payload['blob'], $policy, $request['budget']);
+        } catch (TransportException $refusal) {
+            $cooperative = ($headers['X-Durable-Workflow-Protocol-Version'] ?? null) === Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL;
+            $context = $request['worker'] && ($policy['completion_context'] ?? false)
+                ? $this->completionContext($body, $request['path'], $payload['path'],
+                    ($policy['prepared_completion_context'] ?? false) && $cooperative,
+                    ($policy['scope_completion_context'] ?? false) && $cooperative) : null;
+            if ($context === null || $refusal->status !== 503
+                || ($refusal->response['reason'] ?? null) !== 'storage_pressure'
+                || ($refusal->response['storage_state'] ?? null) !== 'draining'
+                || ($refusal->response['request_admitted'] ?? null) !== false) {
+                throw $refusal;
+            }
+            // Bind only the original completion after this exact refusal.
+            $headers[self::COMPLETION_HEADER] = $context;
+            return $this->uploadBlob($headers, $payload['blob'], $policy, $request['budget']);
+        }
+    }
+
+    /** @param array<string, mixed> $response
+     * @param array<string, mixed> $expected
+     * @return array<string, mixed>
+     */
+    private function validateUploadReference(array $response, string $blob, array $expected): array
+    {
+        if (($response['schema'] ?? null) !== 'durable-workflow.v2.runtime-external-payload-upload.v1'
+            || ($response['transport_version'] ?? null) !== 1) {
+            throw new ExternalPayloadException('Unsupported runtime upload response.', 422, 'external_payload_unsupported');
+        }
+        $reference = RuntimePayloads::validateReference($response['reference'] ?? null);
+        if ($reference['size_bytes'] !== strlen($blob) || !hash_equals($expected['sha256'], $reference['sha256'])) {
+            throw new ExternalPayloadException('Runtime upload reference differs from the submitted bytes.', 422, 'external_payload_integrity_mismatch');
+        }
+        return $reference;
     }
 
     /** @param array<string, string> $headers
@@ -412,19 +483,28 @@ final class RuntimePayloadUploads
         $payloads = [];
         foreach ($slots as $segments) {
             $value = $this->get($body, $segments);
-            if (is_array($value) && array_key_exists('external_payload', $value)) {
-                if (count($value) !== 2 || ($value['codec'] ?? null) !== 'avro') {
-                    throw new ExternalPayloadException('Invalid runtime payload envelope.', 422, 'external_payload_unsupported');
-                }
-                RuntimePayloads::validateReference($value['external_payload']);
-            }
-            $blob = is_string($value) ? $value : (is_array($value) && count($value) === 2
-                && ($value['codec'] ?? null) === 'avro' ? ($value['blob'] ?? null) : null);
+            $blob = $this->payloadBlob($value);
             if (is_string($blob)) {
                 $payloads[] = ['path' => $segments, 'blob' => $blob];
             }
         }
         return $payloads;
+    }
+
+    private function payloadBlob(mixed $value): ?string
+    {
+        if (is_array($value) && array_key_exists('external_payload', $value)) {
+            if (count($value) !== 2 || ($value['codec'] ?? null) !== 'avro') {
+                throw new ExternalPayloadException('Invalid runtime payload envelope.', 422, 'external_payload_unsupported');
+            }
+            RuntimePayloads::validateReference($value['external_payload']);
+            return null;
+        }
+        if (is_string($value)) {
+            return $value;
+        }
+        return is_array($value) && count($value) === 2 && ($value['codec'] ?? null) === 'avro'
+            && is_string($value['blob'] ?? null) ? $value['blob'] : null;
     }
 
     /** Bound diagnostic text against complete metadata before planning ordinary uploads.

@@ -46,19 +46,15 @@ final class FailureReportLimiter
     /** @param array<string, mixed> $body */
     private function reportKind(string $path, array $body): ?string
     {
-        if (preg_match('~^/worker/workflow-tasks/[^/]+/local-activities/[^/]+/outcome$~D', $path) === 1
-            && is_array($body['report'] ?? null) && is_string($body['report']['message'] ?? null)) {
-            return 'prepared';
-        }
-        if (preg_match('~^/worker/(activity|workflow|query)-tasks/[^/]+/fail$~D', $path) === 1
-            && is_array($body['failure'] ?? null)) {
-            return 'failure';
-        }
-        if (preg_match('~^/worker/workflow-tasks/[^/]+/complete$~D', $path) === 1
-            && is_array($body['commands'] ?? null) && $this->hasFailureCommand($body['commands'])) {
-            return 'commands';
-        }
-        return null;
+        return match (true) {
+            preg_match('~^/worker/workflow-tasks/[^/]+/local-activities/[^/]+/outcome$~D', $path) === 1
+                && is_array($body['report'] ?? null) && is_string($body['report']['message'] ?? null) => 'prepared',
+            preg_match('~^/worker/(activity|workflow|query)-tasks/[^/]+/fail$~D', $path) === 1
+                && is_array($body['failure'] ?? null) => 'failure',
+            preg_match('~^/worker/workflow-tasks/[^/]+/complete$~D', $path) === 1
+                && is_array($body['commands'] ?? null) && $this->hasFailureCommand($body['commands']) => 'commands',
+            default => null,
+        };
     }
 
     /** @param array<array-key, mixed> $commands */
@@ -81,15 +77,10 @@ final class FailureReportLimiter
         if (($command['type'] ?? null) !== 'record_local_activity') {
             return false;
         }
-        if (in_array($command['outcome'] ?? null, ['failed', 'timed_out', 'cancelled'], true)) {
-            return true;
-        }
-        foreach ($command['attempts'] ?? [] as $attempt) {
-            if (is_array($attempt) && in_array($attempt['outcome'] ?? null, ['failed', 'timed_out', 'cancelled'], true)) {
-                return true;
-            }
-        }
-        return false;
+        $attempts = is_array($command['attempts'] ?? null) ? $command['attempts'] : [];
+        return in_array($command['outcome'] ?? null, ['failed', 'timed_out', 'cancelled'], true)
+            || array_filter($attempts, static fn (mixed $attempt): bool => is_array($attempt)
+                && in_array($attempt['outcome'] ?? null, ['failed', 'timed_out', 'cancelled'], true)) !== [];
     }
 
     /** @param array<string, mixed> $body
