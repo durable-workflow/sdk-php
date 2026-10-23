@@ -22,6 +22,23 @@ function requireDelivery(bool $condition, string $message): void
     }
 }
 
+/** Drive the ordinary worker while waiting for the selected run, with a finite fixture budget. */
+function finishFailureWorkflow(Client $control, Worker $worker, DurableWorkflow\WorkflowHandle $handle, ?Worker $activities = null): mixed
+{
+    $deadline = microtime(true) + 30;
+    do {
+        $execution = $control->describeWorkflow($handle->workflowId, $handle->selectedRunId);
+        if ($execution->isTerminal === true || in_array($execution->status,
+            ['completed', 'failed', 'cancelled', 'terminated', 'timed_out'], true)) {
+            return $handle->resultOfSelectedRun(1, 0.05);
+        }
+        $worker->tick(0);
+        $activities?->tick(0);
+        usleep(10000);
+    } while (microtime(true) < $deadline);
+    throw new FailureDeliveryQualificationException('The selected run did not finish within its fixture budget.');
+}
+
 $http = new class implements Psr\Http\Client\ClientInterface {
     public array $reports = [];
     public array $claims = [];
@@ -101,6 +118,7 @@ $workflowHandler = static function (WorkflowContext $context, string $kind): arr
 };
 $worker->registerWorkflow('qualification.failure', $workflowHandler);
 $worker->registerActivity('qualification.failure.local', static function (DurableWorkflow\Worker\ActivityContext $_context): never {
+    requireDelivery($_context->activityType === 'qualification.failure.local', 'Wrong local callback context.');
     throw new FailureDeliveryQualificationException(str_repeat('雪', 1024 * 1024));
 });
 $client->registerWorker($workerId, $queue, ['qualification.failure'], [], ['sticky_execution', 'typed_search_attributes', 'local_activities'],
@@ -135,7 +153,7 @@ foreach (['message', 'stack', 'combined', 'escaped', 'details', 'lower-limit', '
     $reporter->failActivityTask($task['task_id'], $task['activity_attempt_id'] ?? $task['attempt_id'], $task['lease_owner'],
         $message, $type, true, $details, $stack);
     $worker->tick(0);
-    $output = $handle->resultOfSelectedRun(15, 0.05);
+    $output = finishFailureWorkflow($control, $worker, $handle);
     requireDelivery($output['type'] === $type && $output['marked'] === ($kind !== 'small'), 'Original workflow failure mismatch.');
     requireDelivery($output['non_retryable'] === true, 'The non-retryable decision changed.');
     $history = $control->workflowHistory($handle->workflowId, $handle->selectedRunId, 100);
@@ -148,7 +166,7 @@ foreach (['message', 'stack', 'combined', 'escaped', 'details', 'lower-limit', '
 }
 $handle = $control->startWorkflow('qualification.failure', $namespace.'-local', $queue, ['local-failure'], runTimeoutSeconds: 120);
 $worker->tick(0);
-$output = $handle->resultOfSelectedRun(15, 0.05);
+$output = finishFailureWorkflow($control, $worker, $handle);
 $history = $control->workflowHistory($handle->workflowId, $handle->selectedRunId, 100);
 $events = $history['events'] ?? $history['history_events'] ?? [];
 $failed = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityFailed'));
@@ -178,6 +196,7 @@ $managedClient = new Client($url, namespace: $namespace, workerToken: 'claimed-t
     transport: new DurableWorkflow\Transport\Psr18Transport(client: new GuzzleHttp\Client(['handler' => $stack, 'http_errors' => false])));
 $managedWorker = new Worker($managedClient, $queue, workerId: $managedId, enableCooperativeCancellation: true);
 $managedWorker->registerActivity('qualification.failure.managed', static function (DurableWorkflow\Worker\ActivityContext $_context): never {
+    requireDelivery($_context->activityType === 'qualification.failure.managed', 'Wrong isolated callback context.');
     throw new FailureDeliveryQualificationException(str_repeat('m', 3 * 1024 * 1024));
 });
 $managedClient->registerWorker($managedId, $queue, [], ['qualification.failure.managed'], ['cooperative_cancellation']);
@@ -185,7 +204,7 @@ $handle = $control->startWorkflow('qualification.failure', $namespace.'-cooperat
 $worker->tick(0);
 $managedWorker->tick(0);
 $worker->tick(0);
-$output = $handle->resultOfSelectedRun(15, 0.05);
+$output = finishFailureWorkflow($control, $worker, $handle, $managedWorker);
 requireDelivery($output['type'] === FailureDeliveryQualificationException::class && $output['marked'] === true,
     'The original workflow did not receive its isolated callback failure.');
 requireDelivery($output['non_retryable'] === false, 'The callback retry classification changed.');
@@ -216,7 +235,7 @@ $retryAttempt = $retry['activity_attempt_id'] ?? $retry['attempt_id'];
 requireDelivery($retryAttempt !== $originalAttempt, 'The failed attempt was reused as publication authority.');
 $client->completeActivityTask($retry['task_id'], $retryAttempt, $retry['lease_owner'], 42);
 $worker->tick(0);
-$output = $handle->resultOfSelectedRun(15, 0.05);
+$output = finishFailureWorkflow($control, $worker, $handle);
 requireDelivery($output === ['activity_value' => 42], 'The original workflow did not receive the legitimate retry result.');
 $history = $control->workflowHistory($handle->workflowId, $handle->selectedRunId, 100);
 $events = $history['events'] ?? $history['history_events'] ?? [];
@@ -233,7 +252,7 @@ $ack = $client->failWorkflowTask($task['task_id'], $task['lease_owner'], $task['
     'OriginalWorkflowTaskFailure', stackTrace: $large);
 requireDelivery(($ack['recorded'] ?? null) === true, 'Workflow-task failure not recorded.');
 $worker->tick(0);
-$output = $handle->resultOfSelectedRun(15, 0.05);
+$output = finishFailureWorkflow($control, $worker, $handle);
 requireDelivery($output === ['fresh_turn' => true], 'The workflow did not receive its fresh legitimate turn.');
 $history = $control->workflowHistory($handle->workflowId, $handle->selectedRunId, 100);
 $events = $history['events'] ?? $history['history_events'] ?? [];
@@ -248,7 +267,7 @@ $result['scenarios']['workflow-task'] = ['workflow_id' => $handle->workflowId, '
 $handle = $control->startWorkflow('qualification.failure', $namespace.'-terminal', $queue, ['terminal'], runTimeoutSeconds: 120);
 $worker->tick(0);
 try {
-    $handle->resultOfSelectedRun(15, 0.05);
+    finishFailureWorkflow($control, $worker, $handle);
     throw new FailureDeliveryQualificationException('Terminal workflow unexpectedly succeeded.');
 } catch (WorkflowFailed $failure) {
     requireDelivery($failure->failureType === FailureDeliveryQualificationException::class, 'Workflow failure type changed.');
