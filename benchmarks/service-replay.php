@@ -20,6 +20,15 @@ if (count($argv) < 5) {
     exit(2);
 }
 require_once $argv[1];
+$useProfiler = getenv('DW_PROFILE_XHPROF') === '1';
+if ($useProfiler && !function_exists('xhprof_enable')) {
+    throw new RuntimeException('The requested function profiling requires the optional XHProf tool extension.');
+}
+$trialSeconds = filter_var(getenv('DW_PROFILE_TRIAL_SECONDS') ?: '600', FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 30, 'max_range' => 1800]]);
+if ($trialSeconds === false) {
+    throw new InvalidArgumentException('The profiling trial limit must be30–1800 seconds.');
+}
 $cycles = filter_var($argv[3], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 1000]]);
 $runs = filter_var($argv[4], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 16]]);
 $timerSeconds = filter_var($argv[5] ?? '1', FILTER_VALIDATE_INT, ['options' => ['min_range' => 0, 'max_range' => 10]]);
@@ -33,6 +42,13 @@ function profileCpuSeconds(): float
 
     return $usage['ru_utime.tv_sec'] + $usage['ru_utime.tv_usec'] / 1e6
         + $usage['ru_stime.tv_sec'] + $usage['ru_stime.tv_usec'] / 1e6;
+}
+
+function profileCgroupValue(string $name): ?string
+{
+    $path = '/sys/fs/cgroup/'.$name;
+
+    return is_readable($path) ? trim((string) file_get_contents($path)) : null;
 }
 
 /** @param list<float> $samples
@@ -93,7 +109,8 @@ $stack->push(static function (callable $next) use (&$active, &$http, &$claims, &
             default => 'other',
         };
         $body = (string) $response->getBody();
-        $decoded = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+        $decoded = $category === 'poll' || getenv('DW_PROFILE_TRACE') === '1'
+            ? json_decode($body, true, flags: JSON_THROW_ON_ERROR) : null;
         $task = is_array($decoded) ? ($decoded['task'] ?? null) : null;
         if (getenv('DW_PROFILE_TRACE') === '1') {
             fwrite(STDERR, json_encode(['path' => $path, 'status' => $response->getStatusCode(),
@@ -125,6 +142,12 @@ $stack->push(static function (callable $next) use (&$active, &$http, &$claims, &
         }
 
         return $response;
+    }, static function (Throwable $error) use (&$worker, &$expired, &$profileDeadline): never {
+        if (microtime(true) > $profileDeadline) {
+            $expired = true;
+            $worker?->requestShutdown();
+        }
+        throw $error;
     });
     };
 });
@@ -145,12 +168,6 @@ $handler = static function (WorkflowContext $context, string $key, int $count, i
 
     return ['key' => $key, 'sum' => $sum];
 };
-$handles = [];
-for ($index = 0; $index < $runs; ++$index) {
-    $key = 'run-'.$suffix.'-'.$index;
-    $handles[$key] = $control->startWorkflow('qualification.profile.replay', $key, $queue,
-        [$key, $cycles, $timerSeconds], buildId: $buildId);
-}
 $worker = new Worker($client, $queue, $workerId, buildId: $buildId,
     diagnosticListener: static function (string $event, array $context) use (&$diagnostics, &$worker): void {
         if (isset($context['exception'])) {
@@ -166,32 +183,87 @@ $worker->registerActivity('qualification.profile.echo', static function (Activit
 
     return $index;
 });
+$handles = [];
+$promotion = null;
+$setupWorkerId = 'profile-setup-'.$suffix;
+$setupRegistration = null;
+try {
+    if ($buildId !== null) {
+        $contracts = $worker->contracts();
+        $setupRegistration = $client->registerWorker($setupWorkerId, $queue,
+            $contracts['workflows'], $contracts['activities'], buildId: $buildId,
+            workflowCommandContracts: $contracts['workflow_commands']);
+        // A build field in a start body does not pin a published Server run.
+        // Use the actual deployment control before ordinary workflow submission.
+        $promotion = (new Psr18Transport())->send('POST', rtrim($argv[2], '/').'/api/task-queues/'
+            .rawurlencode($queue).'/build-ids/promote', ['Authorization' => 'Bearer claimed-task-client',
+                'X-Namespace' => $namespace, 'X-Durable-Workflow-Control-Plane-Version' => '2'],
+            ['build_id' => $buildId]);
+    }
+    for ($index = 0; $index < $runs; ++$index) {
+        $key = 'run-'.$suffix.'-'.$index;
+        $handles[$key] = $control->startWorkflow('qualification.profile.replay', $key, $queue,
+            [$key, $cycles, $timerSeconds]);
+        $actual = $control->describeWorkflow($handles[$key]->workflowId, $handles[$key]->selectedRunId);
+        if (($actual->raw['compatibility'] ?? null) !== $buildId) {
+            throw new RuntimeException('Published deployment routing did not commit the requested compatibility identity.');
+        }
+    }
+} finally {
+    if ($setupRegistration !== null) {
+        $client->deregisterWorkerRegistration($setupWorkerId, $setupRegistration['registration_token'] ?? null);
+    }
+}
 $receipt = ['sdk_version' => InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
     'sdk_reference' => InstalledVersions::getReference('durable-workflow/sdk'), 'server_version' => $serverVersion,
     'php_version' => PHP_VERSION, 'namespace' => $namespace, 'worker_id' => $workerId, 'build_id' => $buildId,
+    'deployment_promotion' => $promotion,
     'cycles_per_run' => $cycles, 'concurrent_runs' => $runs, 'timer_seconds' => $timerSeconds,
-    'worker_memory_limit_bytes' => trim((string) @file_get_contents('/sys/fs/cgroup/memory.max')),
-    'worker_cpu_limit' => trim((string) @file_get_contents('/sys/fs/cgroup/cpu.max'))];
+    'trial_limit_seconds' => $trialSeconds, 'function_profiler' => $useProfiler ? 'xhprof-'.phpversion('xhprof') : null,
+    'worker_memory_limit_bytes' => profileCgroupValue('memory.max'),
+    'worker_cpu_limit' => profileCgroupValue('cpu.max')];
 $started = hrtime(true);
 $cpu = profileCpuSeconds();
-$profileDeadline = microtime(true) + 600;
+$profileDeadline = microtime(true) + $trialSeconds;
 $active = true;
+if ($useProfiler) {
+    xhprof_enable(XHPROF_FLAGS_NO_BUILTINS | XHPROF_FLAGS_CPU);
+}
 try {
     $worker->run(1);
     $receipt['outcome'] = $expired ? 'profile_error' : 'measured';
     if ($expired) {
-        $receipt['error'] = ['type' => 'profile_deadline', 'message' => 'The bounded 600-second profiling trial did not drain.'];
+        $receipt['error'] = ['type' => 'profile_deadline', 'message' => 'The bounded profiling trial did not drain.'];
     }
 } catch (Throwable $exception) {
     $receipt['outcome'] = 'profile_error';
     $receipt['error'] = ['type' => $exception::class, 'message' => $exception->getMessage()];
 } finally {
+    if ($useProfiler) {
+        $profile = xhprof_disable();
+        $rawProfile = json_encode($profile, JSON_THROW_ON_ERROR);
+        $receipt['function_profile_sha256'] = hash('sha256', $rawProfile);
+        $receipt['function_profile_edges'] = count($profile);
+        $receipt['function_profile_units'] = ['ct' => 'calls', 'wt' => 'microseconds', 'cpu' => 'microseconds'];
+        $profilePath = getenv('DW_PROFILE_XHPROF_OUTPUT');
+        if ($profilePath !== false && file_put_contents($profilePath, $rawProfile."\n") === false) {
+            $receipt['outcome'] = 'profile_error';
+            $receipt['error'] = ['type' => 'profile_write_failed', 'message' => 'The raw function profile could not be retained.'];
+        }
+        foreach ($profile as $edge => $measurements) {
+            $symbols = explode('==>', $edge);
+            $callee = $symbols[count($symbols) - 1];
+            if (preg_match('/(?:Replayer::replay|Worker::(?:executeWorkflowTask|executeActivityTask|completeHistory)|ActivityLeaseProcess::(?:start|stop)|Psr18Transport::sendJson)$/D', $callee) === 1) {
+                $receipt['function_profile'][$edge] = $measurements;
+            }
+        }
+    }
     $active = false;
     $receipt['worker_wall_seconds'] = (hrtime(true) - $started) / 1e9;
     $receipt['worker_cpu_seconds'] = profileCpuSeconds() - $cpu;
     $receipt['worker_maxrss_kib'] = getrusage()['ru_maxrss'];
-    $receipt['worker_cgroup_peak_bytes'] = trim((string) @file_get_contents('/sys/fs/cgroup/memory.peak'));
-    $receipt['worker_cgroup_memory_events'] = trim((string) @file_get_contents('/sys/fs/cgroup/memory.events'));
+    $receipt['worker_cgroup_peak_bytes'] = profileCgroupValue('memory.peak');
+    $receipt['worker_cgroup_memory_events'] = profileCgroupValue('memory.events');
     $receipt['child_process_usage'] = getrusage(1);
     $receipt['sticky_cache'] = $worker->stickyCacheMetrics();
     $receipt['completion_count'] = count($completed);

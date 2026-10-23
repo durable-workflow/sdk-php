@@ -32,12 +32,15 @@ Each trial requests shutdown after all workflow completions. A600-second trial
 deadline requests shutdown after the next HTTP response; the injected mature
 Guzzle client independently bounds each request. This is a diagnostic resource
 limit, not a lifecycle or cancellation policy for application workflows.
+`DW_PROFILE_TRIAL_SECONDS` selects30–1800 seconds for a separately recorded
+trial; an expired trial remains an incomplete result.
 
 The independent activity maintainer uses the accompanying explicit bootstrap,
 with matching endpoint, namespace, disposable credentials and HTTP settings.
 Its child-process CPU and peak RSS are reported separately from parent-process
-CPU/RSS. The worker container's cgroup limit/peak/events cover the aggregate
-process group. Use a memory+swap limit when measuring; inspect OOM events and
+CPU/RSS. The worker container's available cgroup limit/peak/events describe the
+aggregate process group. Unsupported cgroup files are reported as null. Use a
+memory+swap limit when measuring; inspect OOM events and
 unfinished work rather than treating an incomplete run as throughput.
 
 The receipt separates:
@@ -49,6 +52,8 @@ The receipt separates:
   completions, heartbeats and other requests. Poll response bytes include
   inline history and protocol metadata; they are not history bytes alone.
   These observations do not include independent maintainer HTTP requests.
+  HTTP recording adds observer overhead, including decoding poll documents;
+  retain an uninstrumented control before attributing complete CPU costs.
 - Server-clock queue waits from canonical task records and exact timer
   scheduling/firing records. Poll wall time includes network/runtime work and
   must not be labeled queue delay or timer scheduling delay.
@@ -62,8 +67,10 @@ history hashes, package identities and diagnostics are retained in the JSON
 receipt. Generated receipts belong on the owning issue/artifact, not in Git.
 
 Ordinary unversioned routing is the initial control. `DW_PROFILE_BUILD_ID`
-selects an explicit build on both submission and worker registration for a
-separate routing control. Do not compare a stalled named-build trial with a
+registers and promotes a disposable deployment through the published control
+API before submitting ordinary workflows. Run compatibility is read back and
+must match before measurement. A start-body build field is not a substitute
+for deployment promotion. Do not compare a stalled named-build trial with a
 drained unversioned trial as a performance gain. Inspect the runtime's actual
 compatibility identity and cache hit/miss/forced-cold counters; requesting a
 build or enabling a history cache does not prove prefix reuse occurred.
@@ -73,6 +80,15 @@ resource budgets before an investment decision. Function-level replay/task
 CPU attribution, retained-execution comparison, cache-heavy/miss-heavy controls
 and the complete1GiB aggregate-worker study remain separate qualification.
 No live-Fiber feature or full#113 acceptance follows from this harness.
+
+For separate function attribution, the optional
+[XHProf tool](https://www.php.net/manual/en/book.xhprof.php) can be loaded into
+the profiling container. `DW_PROFILE_XHPROF=1` enables parent-process CPU/call
+profiling during the managed worker interval. `DW_PROFILE_XHPROF_OUTPUT`
+selects a writable raw-profile artifact path. The receipt records the tool
+version, raw-profile hash and selected inclusive function edges. Profiled runs
+include instrumentation overhead; keep them separate from unprofiled latency
+and throughput comparisons. No profiler extension becomes an SDK requirement.
 
 Retire only the diagnostic's uniquely named containers, volumes/network and
 consumer after retaining exact source, recipe, results and failed originals.
