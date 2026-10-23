@@ -760,6 +760,45 @@ final class RuntimePayloadUploadTest extends TestCase
         }
     }
 
+    public function testMixedLocalFailureUsesTheExistingUploadPlannerWithoutChangingBusinessPayloads(): void
+    {
+        foreach ([false, true] as $hasFailure) {
+            $policy = self::discovery();
+            $policy['limits']['max_payload_bytes'] = 2097152;
+            $policy['namespace']['external_payload_storage']['threshold_bytes'] = 2097152;
+            $policy['namespace']['external_payload_storage']['transport']['limits']['max_payload_bytes'] = 8388608;
+            [$client, $http] = $this->client(discovery: $policy);
+            $value = ['text' => str_repeat('p', 900000), 'whole' => 1.0, 'zero' => -0.0];
+            $envelope = $client->payloadCodec()->envelope($value);
+            $attempts = [];
+            if ($hasFailure) {
+                $attempts[] = ['attempt_number' => 1, 'outcome' => 'failed', 'message' => 'bounded failure',
+                    'exception_type' => 'OriginalFailure', 'non_retryable' => false, 'backoff_seconds' => 3, 'heartbeats' => []];
+            }
+            $attempts[] = ['attempt_number' => count($attempts) + 1, 'outcome' => 'completed', 'heartbeats' => []];
+            $client->completeWorkflowTask('original-task', 'original-owner', 7, [
+                ['type' => 'record_local_activity', 'activity_type' => 'business', 'outcome' => 'completed',
+                    'result' => $envelope, 'attempts' => $attempts],
+            ]);
+            $completion = $http->requests[array_key_last($http->requests)];
+            $body = $this->body($completion);
+            self::assertSame('original-owner', $body['lease_owner']);
+            self::assertSame(7, $body['workflow_task_attempt']);
+            self::assertSame($attempts, $body['commands'][0]['attempts']);
+            if ($hasFailure) {
+                self::assertCount(3, $http->requests);
+                self::assertSame($envelope['blob'], (string) $http->requests[1]->getBody());
+                self::assertLessThanOrEqual(1048576, strlen((string) $completion->getBody()));
+                self::assertArrayHasKey('external_payload', $body['commands'][0]['result']);
+                self::assertSame(self::reference($envelope['blob']), $body['commands'][0]['result']['external_payload']);
+            } else {
+                self::assertCount(2, $http->requests);
+                self::assertGreaterThan(1048576, strlen((string) $completion->getBody()));
+                self::assertSame($envelope, $body['commands'][0]['result']);
+            }
+        }
+    }
+
     private function client(?array $discovery = null, bool $workerOnly = false, ?Response $uploadResponse = null, bool $drainUnbound = false, ?Response $retryUploadResponse = null): array
     {
         $http = new class($discovery ?? self::discovery(), $uploadResponse, $drainUnbound, $retryUploadResponse) {

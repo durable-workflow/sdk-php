@@ -9,6 +9,10 @@ use DurableWorkflow\Auth\TokenAuthentication;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\CodecException;
+use DurableWorkflow\Exception\FailureReportRefused;
+use DurableWorkflow\Failure\FailureReportLimiter;
+use DurableWorkflow\Failure\FailureReportLimits;
+use DurableWorkflow\Failure\LocalFailureReports;
 use DurableWorkflow\Exception\QueryFailed;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\SignalFailed;
@@ -74,6 +78,7 @@ final class Client implements WorkflowClientInterface
     private readonly Transport $transport;
     private readonly PayloadCodec $codec;
     private readonly RuntimePayloadUploads $payloadUploads;
+    private FailureReportLimiter $failureReports;
     private bool $boundedWorkerRequests = false;
     private ActivityLeaseBinding $activityLeaseBinding;
     private ?string $activityLeaseBootstrap = null;
@@ -134,7 +139,27 @@ final class Client implements WorkflowClientInterface
         $this->transport = $transport ?? new Psr18Transport(requestTimeoutSeconds: $requestTimeoutSeconds);
         $this->codec = $codec ?? new AvroPayloadCodec();
         $this->payloadUploads = new RuntimePayloadUploads($this->transport, $this->baseUri);
+        $this->failureReports = new FailureReportLimiter(new FailureReportLimits(), $this->transport);
         $this->activityLeaseBinding = new ActivityLeaseBinding();
+    }
+
+    /** Narrow the encoded failure-report request budget for an application transport. */
+    public function withFailureReportLimit(int $requestBytes): self
+    {
+        $copy = clone $this;
+        $copy->failureReports = new FailureReportLimiter(new FailureReportLimits($requestBytes), $this->transport);
+
+        return $copy;
+    }
+
+    /** @internal Freeze local diagnostic values before workflow code branches on them.
+     * @param array<string, mixed> $outcome
+     * @param array{message?: int, attempts?: array<int, int>} $originalSizes
+     * @return array<string, mixed>
+     */
+    public function normalizeLocalFailure(array $outcome, array $originalSizes = []): array
+    {
+        return LocalFailureReports::bound($outcome, $this->failureReports->effectiveLimit(), $originalSizes);
     }
 
     public function payloadCodec(): PayloadCodec
@@ -2134,6 +2159,7 @@ final class Client implements WorkflowClientInterface
         string $failureType = 'PhpWorkflowTaskFailure',
         ?string $reason = null,
         ?int $sequence = null,
+        ?string $stackTrace = null,
     ): array {
         return $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/fail', [
             'lease_owner' => $leaseOwner,
@@ -2143,6 +2169,7 @@ final class Client implements WorkflowClientInterface
                 'type' => $failureType,
                 'reason' => $reason,
                 'sequence' => $sequence,
+                'stack_trace' => $stackTrace,
             ], static fn (mixed $value): bool => $value !== null),
         ]);
     }
@@ -2197,6 +2224,7 @@ final class Client implements WorkflowClientInterface
 
     /**
      * @param array<string, mixed>|null $details
+     * @param array<string, mixed>|null $diagnostics
      * @return array<string, mixed>
      */
     public function failActivityTask(
@@ -2207,6 +2235,8 @@ final class Client implements WorkflowClientInterface
         string $failureType = 'PhpActivityFailure',
         bool $nonRetryable = false,
         ?array $details = null,
+        ?string $stackTrace = null,
+        ?array $diagnostics = null,
     ): array {
         return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/fail', [
             'activity_attempt_id' => $activityAttemptId,
@@ -2216,6 +2246,8 @@ final class Client implements WorkflowClientInterface
                 'type' => $failureType,
                 'non_retryable' => $nonRetryable,
                 'details' => $details !== null ? $this->codec->envelope($details) : null,
+                'stack_trace' => $stackTrace,
+                'diagnostics' => $diagnostics,
             ]),
         ]);
     }
@@ -2619,7 +2651,10 @@ final class Client implements WorkflowClientInterface
             $pollSeconds = $poll ? max(0, min(60, $body['timeout_seconds'])) : 0;
             $budget ??= $worker && $this->boundedWorkerRequests ? new RequestBudget($pollSeconds + 5) : null;
             if ($body !== null) {
-                $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers, $budget);
+                $body = $this->failureReports->request($path, $body, false);
+                $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers, $budget,
+                    $this->failureReports);
+                $body = $this->failureReports->request($path, $body);
             }
             $activityLease = $worker ? $this->activityLeaseBinding->current() : null;
             if ($activityLease !== null && $activityLease->governs($path)) {
@@ -2659,6 +2694,9 @@ final class Client implements WorkflowClientInterface
 
             return $result;
         } catch (TransportException $exception) {
+            if ($exception instanceof FailureReportRefused) {
+                throw $exception;
+            }
             $details = $exception->response;
             $reason = is_array($details) && isset($details['reason']) ? (string) $details['reason'] : null;
             $status = $exception->status ?? 0;

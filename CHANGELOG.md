@@ -6,6 +6,29 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-10-23
+
+### Added
+
+- `Client::withFailureReportLimit()` narrows the complete encoded failure-report
+  budget. Transports may expose a lower known limit. Activity and workflow-task
+  reporting accept optional stack traces, and activity reporting accepts
+  diagnostics, after all existing arguments.
+
+### Fixed
+
+- Bound failure messages to 62 KiB, stacks to 128 KiB, combined details and
+  diagnostics to 64 KiB, and complete encoded reports to 1 MiB by default.
+  Markers and JSON escaping count toward these limits. Oversized details remain
+  whole valid Avro values or are omitted with original-size diagnostics.
+- Preserve original failure types, retry decisions, authored delays and claim
+  identities. Local durable failures normalize before workflow code observes
+  them, so initial execution, persistence and cold replay agree. Cooperative
+  failure IPC has its own diagnostic budget, separate from business payloads.
+- Keep ordinary successful payload budgets unchanged. Mixed failure/result
+  completions use the existing upload planner without changing or slicing the
+  business payload. Unfit required report content refuses explicitly.
+
 ## [3.4.1] - 2026-10-23
 
 ### Fixed
