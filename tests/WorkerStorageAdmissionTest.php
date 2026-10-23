@@ -258,7 +258,7 @@ final class WorkerStorageAdmissionTest extends TestCase
     }
 
     #[DataProvider('terminalAcknowledgements')]
-    public function testUncertainOrInvalidAcknowledgementIsNotBlindlyRetried(TransportException $failure): void
+    public function testUnclassifiedOrInvalidAcknowledgementIsNotBlindlyRetried(TransportException $failure): void
     {
         $now = 0.0;
         $calls = 0;
@@ -272,7 +272,7 @@ final class WorkerStorageAdmissionTest extends TestCase
 
         try {
             $worker->tick(0);
-            self::fail('Only explicit entry rejection authorizes acknowledgement retry.');
+            self::fail('An unclassified failure cannot authorize acknowledgement retry.');
         } catch (ServerException $exception) {
             self::assertSame($failure->status ?? 0, $exception->status);
             self::assertSame(1, $calls);
@@ -283,7 +283,7 @@ final class WorkerStorageAdmissionTest extends TestCase
 
     public static function terminalAcknowledgements(): iterable
     {
-        yield 'ambiguous transport loss' => [new TransportException('Response lost.', transientConnectionFailure: true)];
+        yield 'unclassified transport loss' => [new TransportException('Response lost.')];
         yield 'generic unavailable' => [self::refused(['retryable' => true])];
         yield 'authentication' => [self::refused(self::pressure(), 401)];
         yield 'lease mismatch' => [self::refused(['reason' => 'lease_owner_mismatch'], 409)];
