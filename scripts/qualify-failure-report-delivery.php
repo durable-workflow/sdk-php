@@ -68,6 +68,8 @@ $http = new class implements Psr\Http\Client\ClientInterface {
                 'message_bytes' => strlen($failure['message']),
                 'marked' => str_contains($failure['message'], FAILURE_DELIVERY_MARKER),
                 'stack_bytes' => strlen($failure['stack_trace'] ?? $failure['exception']['stack_trace'] ?? ''),
+                'stack_includes_qualifier' => str_contains($failure['stack_trace'] ?? $failure['exception']['stack_trace'] ?? '', 'qualify-failure-report-delivery.php'),
+                'diagnostics' => $failure['diagnostics'] ?? $failure['exception']['diagnostics'] ?? null,
                 'message_sha256' => hash('sha256', $failure['message']), 'non_retryable' => $failure['non_retryable'] ?? null];
         }
         if (str_ends_with($path, '/poll')) {
@@ -211,11 +213,16 @@ requireDelivery($output['non_retryable'] === false, 'The callback retry classifi
 $history = $control->workflowHistory($handle->workflowId, $handle->selectedRunId, 100);
 $events = $history['events'] ?? $history['history_events'] ?? [];
 $failed = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityFailed'));
-$failureWire = json_encode($failed, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
-requireDelivery(str_contains($failureWire, '3145728') && str_contains($failureWire, 'qualify-failure-report-delivery.php'),
-    'Original callback trace or original-size diagnostics missing from history.');
+$failurePayload = $failed[0]['payload'] ?? [];
+requireDelivery(($failurePayload['exception']['diagnostics']['truncation']['fields']['message']['original_bytes'] ?? null) === 3145728,
+    'Original callback size diagnostics missing from history.');
+$report = $http->reports[array_key_last($http->reports)];
+requireDelivery($report['stack_bytes'] > 0 && $report['stack_includes_qualifier'] === true,
+    'The SDK did not transmit the original isolated callback trace.');
 $result['scenarios']['cooperative-worker'] = ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId,
-    'output' => $output, 'original_callback_trace_and_sizes_in_history' => true];
+    'output' => $output, 'original_size_in_history' => true, 'transmitted_original_stack_bytes' => $report['stack_bytes'],
+    'history_stack_present' => isset($failurePayload['exception']['stack_trace']),
+    'history_stack_visibility' => 'Published runtime omits the transmitted stack from public history; shared225 runtime follow-through remains.'];
 $handle = $control->startWorkflow('qualification.failure', $namespace.'-retry', $queue, ['retry'], runTimeoutSeconds: 120);
 $worker->tick(0);
 $original = $client->pollActivityTask($activityWorkerId, $queue, 0);
