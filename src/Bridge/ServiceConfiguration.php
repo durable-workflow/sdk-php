@@ -26,6 +26,7 @@ final class ServiceConfiguration
         public readonly int $pollTimeoutSeconds = 5,
         public readonly int $stickyCacheCapacity = 100,
         public readonly int $stickyCacheTtlSeconds = 300,
+        public readonly ?float $requestTimeoutSeconds = null,
     ) {
         $this->validate();
     }
@@ -65,6 +66,7 @@ final class ServiceConfiguration
             self::integer($values, 'poll_timeout_seconds', 5),
             self::cacheInteger($stickyCache, 'capacity', 100),
             self::cacheInteger($stickyCache, 'ttl_seconds', 300),
+            self::requestTimeout($values),
         );
     }
 
@@ -89,6 +91,7 @@ final class ServiceConfiguration
             transport: $transport,
             token: $this->token,
             controlToken: $this->controlToken,
+            requestTimeoutSeconds: $this->requestTimeoutSeconds,
         );
     }
 
@@ -172,6 +175,10 @@ final class ServiceConfiguration
         if ($this->pollTimeoutSeconds < 0 || $this->pollTimeoutSeconds > 60) {
             throw new InvalidArgumentException('Durable Workflow poll_timeout_seconds must be between 0 and 60.');
         }
+        if ($this->requestTimeoutSeconds !== null && (!is_finite($this->requestTimeoutSeconds)
+            || $this->requestTimeoutSeconds < 0.001 || $this->requestTimeoutSeconds > intdiv(PHP_INT_MAX, 1000))) {
+            throw new InvalidArgumentException('Durable Workflow request_timeout_seconds must be a finite positive duration with millisecond precision.');
+        }
         if ($this->stickyCacheCapacity < 1) {
             throw new InvalidArgumentException('Durable Workflow worker.sticky_cache.capacity must be a positive integer.');
         }
@@ -214,6 +221,20 @@ final class ServiceConfiguration
         }
 
         return $value;
+    }
+
+    /** @param array<string, mixed> $values */
+    private static function requestTimeout(array $values): ?float
+    {
+        $value = $values['request_timeout_seconds'] ?? null;
+        if ($value === null) {
+            return null;
+        }
+        if ((!is_int($value) && !is_float($value) && !is_string($value)) || !is_numeric($value)) {
+            throw new InvalidArgumentException('Durable Workflow request_timeout_seconds must be a number or null.');
+        }
+
+        return (float) $value;
     }
 
     /** @param array<string, mixed> $values */

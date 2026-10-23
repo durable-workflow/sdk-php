@@ -3,6 +3,15 @@
 Run Composer validation, focused PHPUnit coverage, PHPStan, and the public
 boundary check for changed code.
 
+The production graph remains independent of Laravel, Illuminate, framework
+bundles/containers, Core and Server. The reviewed exception in
+`resources/dependency-boundary.json` permits the standalone HTTP-client component
+and its contract/polyfill support for native control-request deadlines. It does
+not load a Symfony application or container. The check covers declared and
+transitive production packages and retains the reviewed stable HTTP-client
+security floors. Expand that closed exception only with an owning product
+decision and dependency/compatibility tests.
+
 Before publishing a tag, run `RELEASE_TAG=<exact-version> composer check-release-identity`.
 The installed Composer version, `extra.durable-workflow.product-train`, quickstart
 package versions and worker registration must identify that same PHP SDK release.

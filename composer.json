@@ -25,7 +25,8 @@
         "psr/http-client": "^1.0",
         "psr/http-factory": "^1.0",
         "psr/http-message": "^1.1|^2.0",
-        "psr/log": "^1.1|^2.0|^3.0"
+        "psr/log": "^1.1|^2.0|^3.0",
+        "symfony/http-client": "^6.4.48|^7.4.21|^8.0.16"
     },
     "require-dev": {
         "monolog/monolog": "^2.9|^3.0",

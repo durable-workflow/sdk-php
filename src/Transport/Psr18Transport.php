@@ -19,25 +19,41 @@ use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\StreamFactoryInterface;
 use Psr\Http\Message\StreamInterface;
+use Symfony\Component\HttpClient\NativeHttpClient;
+use Symfony\Component\HttpClient\Psr18Client;
+use Symfony\Contracts\HttpClient\Exception\TimeoutExceptionInterface;
 use Throwable;
 
 /** Default PSR-18 JSON and bounded runtime-payload transport. */
 final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUploadTransport, BoundedTransport, BoundedProgressPayloadTransport
 {
+    public const DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0;
+
     private readonly ClientInterface $client;
     private readonly RequestFactoryInterface $requestFactory;
     private readonly StreamFactoryInterface $streamFactory;
     private readonly bool $defaultProcessConfiguration;
+    private readonly ?float $requestTimeoutSeconds;
+    private ?ClientInterface $nativeControlClient = null;
 
     public function __construct(
         ?ClientInterface $client = null,
         ?RequestFactoryInterface $requestFactory = null,
         ?StreamFactoryInterface $streamFactory = null,
         private readonly int $payloadTransferTimeoutSeconds = 30,
+        ?float $requestTimeoutSeconds = null,
     ) {
         if ($payloadTransferTimeoutSeconds < 1 || $payloadTransferTimeoutSeconds > 900) {
             throw new \InvalidArgumentException('Supervised payload transfers require a timeout from 1 through 900 seconds.');
         }
+        if ($client !== null && $requestTimeoutSeconds !== null) {
+            throw new \InvalidArgumentException('Configure timeouts on the injected HTTP client instead of passing requestTimeoutSeconds.');
+        }
+        if ($requestTimeoutSeconds !== null && (!is_finite($requestTimeoutSeconds)
+            || $requestTimeoutSeconds < 0.001 || $requestTimeoutSeconds > intdiv(PHP_INT_MAX, 1000))) {
+            throw new \InvalidArgumentException('requestTimeoutSeconds must be a finite positive duration with millisecond precision.');
+        }
+        $this->requestTimeoutSeconds = $client === null ? ($requestTimeoutSeconds ?? self::DEFAULT_REQUEST_TIMEOUT_SECONDS) : null;
         $factory = new HttpFactory();
         $this->defaultProcessConfiguration = $client === null && $requestFactory === null && $streamFactory === null;
         $this->client = $client ?? new GuzzleClient(['http_errors' => false]);
@@ -66,6 +82,12 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         return $this->defaultProcessConfiguration && $this->supportsBoundedRequests();
     }
 
+    /** @internal Preserve the owned HTTP policy when recreating a maintenance Client. */
+    public function defaultRequestTimeoutSeconds(): ?float
+    {
+        return $this->requestTimeoutSeconds;
+    }
+
     public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
     {
         if (!$this->supportsBoundedRequests() || $timeoutSeconds < 1 || $timeoutSeconds > 65) {
@@ -82,6 +104,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
      */
     private function sendJson(string $method, string $uri, array $headers, ?array $body, ?int $timeoutSeconds = null): ?array
     {
+        $controlTimeout = $timeoutSeconds === null && $this->isControlRequest($headers) ? $this->requestTimeoutSeconds : null;
         try {
             $request = $this->requestFactory->createRequest(strtoupper($method), $uri);
             foreach ($headers as $name => $value) {
@@ -91,7 +114,8 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
                 $json = json_encode($body, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
                 $request = $request->withBody($this->streamFactory->createStream($json));
             }
-            $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? 30, bounded: $timeoutSeconds !== null);
+            $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout ?? 30,
+                bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout);
             $rawBody = (string) $response->getBody();
             if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
                 // An upstream proxy can return HTML or an empty body. Preserve
@@ -111,8 +135,39 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         } catch (JsonException $exception) {
             throw new TransportException('The server returned invalid JSON: '.$exception->getMessage(), previous: $exception);
         } catch (Throwable $exception) {
+            if ($controlTimeout !== null && $this->isTimeout($exception)) {
+                throw $this->controlTimeoutFailure($exception, $controlTimeout);
+            }
             throw new TransportException('HTTP request failed: '.$exception->getMessage(), previous: $exception);
         }
+    }
+
+    /** @param array<string, string> $headers */
+    private function isControlRequest(array $headers): bool
+    {
+        $names = array_change_key_case($headers, CASE_LOWER);
+
+        return isset($names['x-durable-workflow-control-plane-version'])
+            || !isset($names['x-durable-workflow-protocol-version']);
+    }
+
+    private function isTimeout(Throwable $exception): bool
+    {
+        do {
+            if ($exception instanceof TimeoutExceptionInterface) {
+                return true;
+            }
+            $exception = $exception->getPrevious();
+        } while ($exception !== null);
+
+        return false;
+    }
+
+    private function controlTimeoutFailure(Throwable $exception, float $seconds): TransportException
+    {
+        return new TransportException('The control-plane HTTP request timed out.',
+            response: ['reason' => 'request_timeout', 'timeout_seconds' => $seconds],
+            previous: $exception, transientConnectionFailure: true);
     }
 
     public function fetchPayload(string $uri, array $headers, int $maxBytes): string
@@ -311,10 +366,20 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         }
     }
 
-    private function sendRequest(RequestInterface $request, bool $stream = false, int $timeoutSeconds = 30, bool $bounded = false, ?StreamInterface $sink = null, ?\Closure $progress = null): ResponseInterface
+    private function sendRequest(RequestInterface $request, bool $stream = false, int|float $timeoutSeconds = 30, bool $bounded = false, ?StreamInterface $sink = null, ?\Closure $progress = null, ?float $controlTimeout = null): ResponseInterface
     {
         $connectionFailure = false;
+        $timedOut = false;
         try {
+            if ($controlTimeout !== null && !function_exists('curl_exec') && !function_exists('curl_multi_exec')) {
+                // Guzzle 7's PHP stream timeout is an idle limit. The native
+                // component enforces one total deadline through headers/body.
+                $this->nativeControlClient ??= new Psr18Client(new NativeHttpClient([
+                    'timeout' => $controlTimeout, 'max_duration' => $controlTimeout, 'max_redirects' => 0,
+                ]), new HttpFactory(), $this->streamFactory);
+
+                return $this->nativeControlClient->sendRequest($request);
+            }
             if ($this->client instanceof GuzzleClient) {
                 $onStats = $this->client->getConfig('on_stats');
 
@@ -327,12 +392,13 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
                     ...($progress !== null ? ['progress' => $progress] : []),
                     ...($stream || $bounded ? ['timeout' => $timeoutSeconds, 'read_timeout' => $timeoutSeconds,
                         'connect_timeout' => $timeoutSeconds] : []),
-                    'on_stats' => static function (TransferStats $stats) use (&$connectionFailure, $onStats): void {
+                    'on_stats' => static function (TransferStats $stats) use (&$connectionFailure, &$timedOut, $onStats): void {
                         // Guzzle 8 no longer attaches cURL errno to exceptions.
                         // Accept only DNS/connect/timeout/closed-connection errors,
                         // never TLS, invalid options, or an unclassified PSR error.
                         $connectionFailure = !$stats->hasResponse()
                             && in_array($stats->getHandlerErrorData(), [5, 6, 7, 28, 52, 55, 56], true);
+                        $timedOut = $stats->getHandlerErrorData() === 28;
                         if (is_callable($onStats)) {
                             $onStats($stats);
                         }
@@ -342,6 +408,9 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
 
             return $this->client->sendRequest($request);
         } catch (Throwable $exception) {
+            if ($controlTimeout !== null && ($timedOut || $this->isTimeout($exception))) {
+                throw $this->controlTimeoutFailure($exception, $controlTimeout);
+            }
             throw new TransportException(
                 'HTTP request failed: '.$exception->getMessage(),
                 previous: $exception,

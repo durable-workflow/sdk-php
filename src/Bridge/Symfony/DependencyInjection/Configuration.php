@@ -35,6 +35,8 @@ final class Configuration implements ConfigurationInterface
         $children->scalarNode('namespace')->defaultValue('default')->cannotBeEmpty();
         $children->scalarNode('task_queue')->defaultValue('php-workers')->cannotBeEmpty();
         $children->integerNode('poll_timeout_seconds')->defaultValue(5)->min(0)->max(60);
+        $children->floatNode('request_timeout_seconds')->defaultNull()->min(0.001)
+            ->info('Application Client control-request budget; null uses the SDK default. Worker and payload I/O are separate.');
 
         $worker = $children->arrayNode('worker')->addDefaultsIfNotSet();
         $stickyCache = $worker->children()->arrayNode('sticky_cache')->addDefaultsIfNotSet();
