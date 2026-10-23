@@ -2213,6 +2213,7 @@ final class Client implements WorkflowClientInterface
 
     /**
      * @param array<string, mixed>|null $details
+     * @param array<string, mixed>|null $diagnostics
      * @return array<string, mixed>
      */
     public function failActivityTask(

@@ -6,6 +6,7 @@ namespace DurableWorkflow;
 
 use DurableWorkflow\Exception\ActivityCancelled;
 use DurableWorkflow\Exception\CodecException;
+use DurableWorkflow\Exception\FailureReportRefused;
 use DurableWorkflow\Exception\InvalidLocalActivityReport;
 use DurableWorkflow\Exception\InvalidWorkerDefinition;
 use DurableWorkflow\Exception\LocalActivityTimedOut;
@@ -2802,6 +2803,9 @@ final class Worker
         callable $failureAcknowledgement,
         ?int $workflowTaskAttempt = null,
     ): void {
+        if ($taskFailure instanceof FailureReportRefused) {
+            throw $taskFailure;
+        }
         if ($this->isTaskAuthorityLost($taskKind, $taskId, $taskFailure, $workflowTaskAttempt)) {
             if ($taskKind === 'workflow' && $taskFailure instanceof ServerException
                 && ($taskFailure->details['task_status'] ?? null) === 'ready') {

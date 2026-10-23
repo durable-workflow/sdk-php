@@ -81,6 +81,7 @@ final class FailureReportLimiter
     }
 
     /** @param array<string, mixed> $original
+     * @param array<string, mixed> $additionalChanges
      * @return array<string, mixed>
      */
     private function report(array $original, int $messageLimit, int $stackLimit, bool $dropMetadata, string $carrier, array $additionalChanges = []): array

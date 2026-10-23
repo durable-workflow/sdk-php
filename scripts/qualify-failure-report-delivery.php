@@ -1,0 +1,152 @@
+<?php
+
+declare(strict_types=1);
+
+use DurableWorkflow\Client;
+use DurableWorkflow\Exception\ActivityFailed;
+use DurableWorkflow\Exception\WorkflowFailed;
+use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\WorkflowContext;
+
+[$script, $autoload, $url] = $argv;
+require_once $autoload;
+
+final class FailureDeliveryQualificationException extends RuntimeException {}
+
+function requireDelivery(bool $condition, string $message): void
+{
+    if (!$condition) {
+        throw new FailureDeliveryQualificationException($message);
+    }
+}
+
+$http = new class implements Psr\Http\Client\ClientInterface {
+    public array $reports = [];
+    private GuzzleHttp\Client $client;
+    public function __construct() { $this->client = new GuzzleHttp\Client(['http_errors' => false, 'timeout' => 15]); }
+    public function sendRequest(Psr\Http\Message\RequestInterface $request): Psr\Http\Message\ResponseInterface
+    {
+        $wire = (string) $request->getBody();
+        $data = $wire === '' ? [] : json_decode($wire, true, flags: JSON_THROW_ON_ERROR);
+        $response = $this->client->sendRequest($request);
+        if ($response->getStatusCode() >= 400) {
+            fwrite(STDERR, json_encode(['path' => $request->getUri()->getPath(), 'status' => $response->getStatusCode(),
+                'response' => array_diff_key(json_decode((string) $response->getBody(), true), ['server_capabilities' => true])], JSON_THROW_ON_ERROR)."\n");
+        }
+        $path = $request->getUri()->getPath();
+        if (str_ends_with($path, '/fail') || isset($data['commands'][0]['exception_type'])) {
+            $failure = $data['failure'] ?? $data['commands'][0];
+            $this->reports[] = ['path' => $path, 'encoded_bytes' => strlen($wire), 'http_status' => $response->getStatusCode(),
+                'lease_owner' => $data['lease_owner'] ?? null, 'activity_attempt_id' => $data['activity_attempt_id'] ?? null,
+                'workflow_task_attempt' => $data['workflow_task_attempt'] ?? null,
+                'type' => $failure['type'] ?? $failure['exception_type'] ?? null,
+                'message_bytes' => strlen($failure['message']),
+                'marked' => str_contains($failure['message'], '[truncated failure report;'),
+                'stack_bytes' => strlen($failure['stack_trace'] ?? $failure['exception']['stack_trace'] ?? ''),
+                'message_sha256' => hash('sha256', $failure['message']), 'non_retryable' => $failure['non_retryable'] ?? null];
+        }
+        return $response;
+    }
+};
+$namespace = 'php-failure-'.bin2hex(random_bytes(6));
+$admin = new Client($url, controlToken: 'claimed-task-admin');
+$admin->createNamespace($namespace);
+$control = new Client($url, namespace: $namespace, controlToken: 'claimed-task-client');
+$transport = new DurableWorkflow\Transport\Psr18Transport(client: $http);
+$client = new Client($url, namespace: $namespace, transport: $transport, workerToken: 'claimed-task-worker');
+$queue = $namespace;
+$workerId = $namespace.'-workflow';
+$activityWorkerId = $namespace.'-activity';
+$worker = new Worker($client, $queue, workerId: $workerId, stickyCacheCapacity: 1);
+$worker->registerWorkflow('qualification.failure', static function (WorkflowContext $context, string $kind): array {
+    if ($kind === 'terminal') {
+        throw new FailureDeliveryQualificationException(str_repeat('t', 3 * 1024 * 1024));
+    }
+    if ($kind === 'workflow-task') {
+        return ['fresh_turn' => true];
+    }
+    try {
+        $context->activity('qualification.failure.activity', [], ['retry_policy' => ['max_attempts' => 1]]);
+        throw new FailureDeliveryQualificationException('The activity unexpectedly succeeded.');
+    } catch (ActivityFailed $failure) {
+        return ['type' => $failure->failureType, 'marked' => str_contains($failure->getMessage(), '[truncated failure report;'),
+            'message_bytes' => strlen($failure->getMessage()), 'non_retryable' => $failure->nonRetryable];
+    }
+});
+$client->registerWorker($workerId, $queue, ['qualification.failure'], [], ['sticky_execution', 'typed_search_attributes'],
+    workflowCommandContracts: $worker->contracts()['workflow_commands']);
+$client->registerWorker($activityWorkerId, $queue, [], ['qualification.failure.activity']);
+$result = ['sdk_version' => Composer\InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
+    'sdk_reference' => Composer\InstalledVersions::getReference('durable-workflow/sdk'),
+    'server_version' => $admin->clusterInfo()->version, 'namespace' => $namespace, 'scenarios' => []];
+register_shutdown_function(static function () use (&$result, $http): void {
+    if (!isset($result['pass'])) {
+        $result['reports'] = $http->reports;
+        $result['incomplete'] = true;
+        $result['last_error'] = error_get_last();
+        echo json_encode($result, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)."\n";
+    }
+});
+$large = str_repeat('m', 3 * 1024 * 1024);
+foreach (['message', 'stack', 'combined', 'escaped', 'details', 'small'] as $kind) {
+    $handle = $control->startWorkflow('qualification.failure', $namespace.'-'.$kind, $queue, [$kind], runTimeoutSeconds: 120);
+    $worker->tick(0);
+    $task = $client->pollActivityTask($activityWorkerId, $queue, 0);
+    requireDelivery(is_array($task), 'The activity was not leased for '.$kind);
+    $message = in_array($kind, ['message', 'combined'], true) ? $large : 'original message';
+    $stack = in_array($kind, ['stack', 'combined'], true) ? $large : null;
+    if ($kind === 'escaped') {
+        $message = $stack = str_repeat("\0\"\\雪🦀", 300000);
+    }
+    $details = $kind === 'details' ? ['nested' => ['cause' => $large]] : ['whole' => 1.0, 'zero' => -0.0];
+    $type = 'OriginalFailure.'.$kind;
+    $client->failActivityTask($task['task_id'], $task['activity_attempt_id'] ?? $task['attempt_id'], $task['lease_owner'],
+        $message, $type, true, $details, $stack);
+    $worker->tick(0);
+    $output = $handle->resultOfSelectedRun(15, 0.05);
+    requireDelivery($output['type'] === $type && $output['marked'] === ($kind !== 'small'), 'Original workflow failure mismatch.');
+    requireDelivery($output['non_retryable'] === true, 'The non-retryable decision changed.');
+    $history = $control->workflowHistory($handle->workflowId, $handle->selectedRunId, 100);
+    $events = $history['events'] ?? $history['history_events'] ?? [];
+    $counts = array_count_values(array_column($events, 'event_type'));
+    requireDelivery(($counts['ActivityFailed'] ?? 0) === 1 && ($counts['WorkflowCompleted'] ?? 0) === 1, 'Failure history missing.');
+    $result['scenarios'][$kind] = ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId,
+        'task_id' => $task['task_id'], 'attempt_id' => $task['activity_attempt_id'] ?? $task['attempt_id'],
+        'lease_owner' => $task['lease_owner'], 'output' => $output, 'event_counts' => $counts];
+}
+$handle = $control->startWorkflow('qualification.failure', $namespace.'-workflow-task', $queue, ['workflow-task'], runTimeoutSeconds: 120);
+$task = $client->pollWorkflowTask($workerId, $queue, 0);
+requireDelivery(is_array($task), 'Original workflow task not leased.');
+$ack = $client->failWorkflowTask($task['task_id'], $task['lease_owner'], $task['workflow_task_attempt'], $large,
+    'OriginalWorkflowTaskFailure', stackTrace: $large);
+requireDelivery(($ack['recorded'] ?? null) === true, 'Workflow-task failure not recorded.');
+$worker->tick(0);
+$output = $handle->resultOfSelectedRun(15, 0.05);
+requireDelivery($output === ['fresh_turn' => true], 'The workflow did not receive its fresh legitimate turn.');
+$history = $control->workflowHistory($handle->workflowId, $handle->selectedRunId, 100);
+$events = $history['events'] ?? $history['history_events'] ?? [];
+
+$failureEvents = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'WorkflowTaskFailed'));
+// The published runtime stores task failure separately and emits no history event.
+requireDelivery(($ack['next_task_id'] ?? null) !== $task['task_id'], 'Failed claim identity was reused as retry authority.');
+$result['scenarios']['workflow-task'] = ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId,
+    'original_task_id' => $task['task_id'], 'lease_owner' => $task['lease_owner'], 'attempt' => $task['workflow_task_attempt'],
+    'ack' => $ack, 'history_failure_events' => count($failureEvents), 'fresh_turn_result' => $output,
+    'history_visibility' => 'Published runtime emits no WorkflowTaskFailed history event; parent225 runtime follow-through remains.'];
+$handle = $control->startWorkflow('qualification.failure', $namespace.'-terminal', $queue, ['terminal'], runTimeoutSeconds: 120);
+$worker->tick(0);
+try {
+    $handle->resultOfSelectedRun(15, 0.05);
+    throw new FailureDeliveryQualificationException('Terminal workflow unexpectedly succeeded.');
+} catch (WorkflowFailed $failure) {
+    requireDelivery($failure->failureType === FailureDeliveryQualificationException::class, 'Workflow failure type changed.');
+    requireDelivery(str_contains($failure->getMessage(), '[truncated failure report;'), 'Terminal workflow marker missing.');
+    $result['scenarios']['terminal'] = ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId,
+        'failure_type' => $failure->failureType, 'marked_message' => true, 'message_bytes' => strlen($failure->getMessage())];
+}
+foreach ($http->reports as $report) {
+    requireDelivery($report['encoded_bytes'] <= 1048576 && $report['http_status'] === 200, 'Encoded/reporting HTTP boundary failed.');
+}
+$result['reports'] = $http->reports;
+$result['pass'] = true;
+echo json_encode($result, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)."\n";

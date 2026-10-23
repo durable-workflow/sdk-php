@@ -10,7 +10,8 @@ $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $error, STREAM_SERVE
 if ($server === false) {
     exit(1);
 }
-file_put_contents($directory.'/address', stream_socket_get_name($server, false));
+file_put_contents($directory.'/address.tmp', stream_socket_get_name($server, false));
+rename($directory.'/address.tmp', $directory.'/address');
 $until = microtime(true) + 30;
 while (microtime(true) < $until) {
     $peer = @stream_socket_accept($server, 1);
