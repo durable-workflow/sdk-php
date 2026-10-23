@@ -32,22 +32,28 @@ final class FailureReportLimiter
         if (!$endpoint && !$commands) {
             return $body;
         }
+        $carrier = $endpoint ? match ($matches[1]) {
+            'activity' => 'diagnostics',
+            default => 'stack_trace',
+        } : null;
+        return $this->bound($body, $carrier, $commands, $this->effectiveLimit(), strlen($path));
+    }
+
+    private function effectiveLimit(): int
+    {
         $limit = $this->limits->requestBytes;
-        if ($this->transport instanceof RequestSizeLimitTransport) {
-            try {
-                $known = $this->transport->maximumRequestBytes();
-            } catch (\Throwable $error) {
-                throw new FailureReportRefused($limit, $error);
-            }
-            if ($known !== null) {
-                if ($known < 1) {
-                    throw new FailureReportRefused($limit);
-                }
-                $limit = min($limit, $known);
-            }
+        if (!$this->transport instanceof RequestSizeLimitTransport) {
+            return $limit;
         }
-        return $this->bound($body, $endpoint ? ($matches[1] === 'activity' ? 'diagnostics' : 'stack_trace') : null,
-            $commands, $limit, strlen($path));
+        try {
+            $known = $this->transport->maximumRequestBytes();
+        } catch (\Throwable $error) {
+            throw new FailureReportRefused($limit, $error);
+        }
+        if ($known !== null && $known < 1) {
+            throw new FailureReportRefused($limit);
+        }
+        return $known === null ? $limit : min($limit, $known);
     }
 
     /** @internal The callback IPC carries the same bounded report before HTTP admission.
@@ -74,11 +80,7 @@ final class FailureReportLimiter
                     $dropMetadata, $carrier);
             }
             if ($commands) {
-                foreach ($body['commands'] as $index => $command) {
-                    if (is_array($command) && in_array($command['type'] ?? null, ['fail_workflow', 'fail_update'], true)) {
-                        $candidate['commands'][$index] = $this->command($command, $messageLimit, $stackLimit, $dropMetadata);
-                    }
-                }
+                $candidate['commands'] = $this->commands($body['commands'], $messageLimit, $stackLimit, $dropMetadata);
             }
             try {
                 if (JsonDocument::size($candidate) + $pathBytes <= $limit) {
@@ -197,22 +199,26 @@ final class FailureReportLimiter
         }
     }
 
+    /** @param array<array-key, mixed> $commands
+     * @return array<array-key, mixed>
+     */
+    private function commands(array $commands, int $messageLimit, int $stackLimit, bool $dropMetadata): array
+    {
+        foreach ($commands as $index => $command) {
+            if (is_array($command) && in_array($command['type'] ?? null, ['fail_workflow', 'fail_update'], true)) {
+                $commands[$index] = $this->command($command, $messageLimit, $stackLimit, $dropMetadata);
+            }
+        }
+        return $commands;
+    }
+
     /** @param array<string, mixed> $command
      * @return array<string, mixed>
      */
     private function command(array $command, int $messageLimit, int $stackLimit, bool $dropMetadata): array
     {
         if (($command['type'] ?? null) === 'fail_update') {
-            $originalMessage = (string) ($command['message'] ?? '');
-            $bounded = $this->text($originalMessage, $messageLimit, 'message');
-            $command['message'] = $bounded['value'];
-            if ($bounded['changed']) {
-                $suffix = "\n[truncation diagnostics]\n".JsonDocument::encode(['original_message_bytes' => strlen($originalMessage)]);
-                $command['message'] = $this->text($originalMessage,
-                    $messageLimit - strlen($suffix), 'message', true)['value'].$suffix;
-            }
-
-            return $command;
+            return $this->updateCommand($command, $messageLimit);
         }
         $exception = is_array($command['exception'] ?? null) ? $command['exception'] : [];
         $fixed = array_intersect_key($exception, array_flip(['class', 'type', 'code', 'line']));
@@ -247,4 +253,20 @@ final class FailureReportLimiter
 
         return $command;
     }
+    /** @param array<string, mixed> $command
+     * @return array<string, mixed>
+     */
+    private function updateCommand(array $command, int $messageLimit): array
+    {
+        $originalMessage = (string) ($command['message'] ?? '');
+        $bounded = $this->text($originalMessage, $messageLimit, 'message');
+        $command['message'] = $bounded['value'];
+        if ($bounded['changed']) {
+            $suffix = "\n[truncation diagnostics]\n".JsonDocument::encode(['original_message_bytes' => strlen($originalMessage)]);
+            $command['message'] = $this->text($originalMessage,
+                $messageLimit - strlen($suffix), 'message', true)['value'].$suffix;
+        }
+        return $command;
+    }
+
 }

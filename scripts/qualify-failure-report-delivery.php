@@ -13,6 +13,8 @@ require_once $autoload;
 
 final class FailureDeliveryQualificationException extends RuntimeException {}
 
+const FAILURE_DELIVERY_MARKER = '[truncated failure report;';
+
 function requireDelivery(bool $condition, string $message): void
 {
     if (!$condition) {
@@ -22,13 +24,19 @@ function requireDelivery(bool $condition, string $message): void
 
 $http = new class implements Psr\Http\Client\ClientInterface {
     public array $reports = [];
+    public array $claims = [];
     private GuzzleHttp\Client $client;
     public function __construct() { $this->client = new GuzzleHttp\Client(['http_errors' => false, 'timeout' => 15]); }
     public function sendRequest(Psr\Http\Message\RequestInterface $request): Psr\Http\Message\ResponseInterface
     {
+        $response = $this->client->sendRequest($request);
+        $this->observe($request, $response);
+        return $response;
+    }
+    public function observe(Psr\Http\Message\RequestInterface $request, Psr\Http\Message\ResponseInterface $response): void
+    {
         $wire = (string) $request->getBody();
         $data = $wire === '' ? [] : json_decode($wire, true, flags: JSON_THROW_ON_ERROR);
-        $response = $this->client->sendRequest($request);
         if ($response->getStatusCode() >= 400) {
             fwrite(STDERR, json_encode(['path' => $request->getUri()->getPath(), 'status' => $response->getStatusCode(),
                 'response' => array_diff_key(json_decode((string) $response->getBody(), true), ['server_capabilities' => true])], JSON_THROW_ON_ERROR)."\n");
@@ -41,11 +49,19 @@ $http = new class implements Psr\Http\Client\ClientInterface {
                 'workflow_task_attempt' => $data['workflow_task_attempt'] ?? null,
                 'type' => isset($data['failure']) ? ($failure['type'] ?? null) : ($failure['exception_type'] ?? null),
                 'message_bytes' => strlen($failure['message']),
-                'marked' => str_contains($failure['message'], '[truncated failure report;'),
+                'marked' => str_contains($failure['message'], FAILURE_DELIVERY_MARKER),
                 'stack_bytes' => strlen($failure['stack_trace'] ?? $failure['exception']['stack_trace'] ?? ''),
                 'message_sha256' => hash('sha256', $failure['message']), 'non_retryable' => $failure['non_retryable'] ?? null];
         }
-        return $response;
+        if (str_ends_with($path, '/poll')) {
+            $reply = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+            $task = $reply['task'] ?? null;
+            if (is_array($task)) {
+                $this->claims[] = array_intersect_key($task, array_flip([
+                    'task_id', 'lease_owner', 'workflow_task_attempt', 'activity_attempt_id', 'attempt_id', 'workflow_id', 'run_id',
+                ]));
+            }
+        }
     }
 };
 $namespace = 'php-failure-'.bin2hex(random_bytes(6));
@@ -70,10 +86,11 @@ $worker->registerWorkflow('qualification.failure', static function (WorkflowCont
         return ['fresh_turn' => true];
     }
     try {
-        $context->activity('qualification.failure.activity', [], ['retry_policy' => ['max_attempts' => 1]]);
+        $context->activity($kind === 'cooperative-worker' ? 'qualification.failure.managed' : 'qualification.failure.activity',
+            [], ['retry_policy' => ['max_attempts' => 1]]);
         throw new FailureDeliveryQualificationException('The activity unexpectedly succeeded.');
     } catch (ActivityFailed $failure) {
-        return ['type' => $failure->failureType, 'marked' => str_contains($failure->getMessage(), '[truncated failure report;'),
+        return ['type' => $failure->failureType, 'marked' => str_contains($failure->getMessage(), FAILURE_DELIVERY_MARKER),
             'message_bytes' => strlen($failure->getMessage()), 'non_retryable' => $failure->nonRetryable];
     }
 });
@@ -86,6 +103,7 @@ $result = ['sdk_version' => Composer\InstalledVersions::getPrettyVersion('durabl
 register_shutdown_function(static function () use (&$result, $http): void {
     if (!isset($result['pass'])) {
         $result['reports'] = $http->reports;
+        $result['claims'] = $http->claims;
         $result['incomplete'] = true;
         $result['last_error'] = error_get_last();
         echo json_encode($result, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)."\n";
@@ -119,6 +137,39 @@ foreach (['message', 'stack', 'combined', 'escaped', 'details', 'lower-limit', '
         'task_id' => $task['task_id'], 'attempt_id' => $task['activity_attempt_id'] ?? $task['attempt_id'],
         'lease_owner' => $task['lease_owner'], 'output' => $output, 'event_counts' => $counts];
 }
+$stack = GuzzleHttp\HandlerStack::create();
+$stack->push(static function (callable $next) use ($http): Closure {
+    return static function (Psr\Http\Message\RequestInterface $request, array $options) use ($next, $http) {
+        return $next($request, $options)->then(static function (Psr\Http\Message\ResponseInterface $response) use ($request, $http) {
+            $http->observe($request, $response);
+            return $response;
+        });
+    };
+});
+$managedId = $namespace.'-cooperative';
+$managedClient = new Client($url, namespace: $namespace, workerToken: 'claimed-task-worker',
+    transport: new DurableWorkflow\Transport\Psr18Transport(client: new GuzzleHttp\Client(['handler' => $stack, 'http_errors' => false])));
+$managedWorker = new Worker($managedClient, $queue, workerId: $managedId, enableCooperativeCancellation: true);
+$managedWorker->registerActivity('qualification.failure.managed', static function (): never {
+    throw new FailureDeliveryQualificationException(str_repeat('m', 3 * 1024 * 1024));
+});
+$managedClient->registerWorker($managedId, $queue, [], ['qualification.failure.managed'], ['cooperative_cancellation']);
+$handle = $control->startWorkflow('qualification.failure', $namespace.'-cooperative-worker', $queue, ['cooperative-worker'], runTimeoutSeconds: 120);
+$worker->tick(0);
+$managedWorker->tick(0);
+$worker->tick(0);
+$output = $handle->resultOfSelectedRun(15, 0.05);
+requireDelivery($output['type'] === FailureDeliveryQualificationException::class && $output['marked'] === true,
+    'The original workflow did not receive its isolated callback failure.');
+requireDelivery($output['non_retryable'] === false, 'The callback retry classification changed.');
+$history = $control->workflowHistory($handle->workflowId, $handle->selectedRunId, 100);
+$events = $history['events'] ?? $history['history_events'] ?? [];
+$failed = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityFailed'));
+$failureWire = json_encode($failed, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+requireDelivery(str_contains($failureWire, '3145728') && str_contains($failureWire, 'qualify-failure-report-delivery.php'),
+    'Original callback trace or original-size diagnostics missing from history.');
+$result['scenarios']['cooperative-worker'] = ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId,
+    'output' => $output, 'original_callback_trace_and_sizes_in_history' => true];
 $handle = $control->startWorkflow('qualification.failure', $namespace.'-retry', $queue, ['retry'], runTimeoutSeconds: 120);
 $worker->tick(0);
 $original = $client->pollActivityTask($activityWorkerId, $queue, 0);
@@ -174,7 +225,7 @@ try {
     throw new FailureDeliveryQualificationException('Terminal workflow unexpectedly succeeded.');
 } catch (WorkflowFailed $failure) {
     requireDelivery($failure->failureType === FailureDeliveryQualificationException::class, 'Workflow failure type changed.');
-    requireDelivery(str_contains($failure->getMessage(), '[truncated failure report;'), 'Terminal workflow marker missing.');
+    requireDelivery(str_contains($failure->getMessage(), FAILURE_DELIVERY_MARKER), 'Terminal workflow marker missing.');
     $result['scenarios']['terminal'] = ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId,
         'failure_type' => $failure->failureType, 'marked_message' => true, 'message_bytes' => strlen($failure->getMessage())];
 }
@@ -182,5 +233,6 @@ foreach ($http->reports as $report) {
     requireDelivery($report['encoded_bytes'] <= 1048576 && $report['http_status'] === 200, 'Encoded/reporting HTTP boundary failed.');
 }
 $result['reports'] = $http->reports;
+$result['claims'] = $http->claims;
 $result['pass'] = true;
 echo json_encode($result, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)."\n";
