@@ -97,7 +97,8 @@ final class WorkerClaimedTaskTransportRecoveryTest extends TestCase
                 $target = '/api/worker/'.$kind.'-tasks/'.$kind.'-1/'
                     .($operation === 'workflow_heartbeat' ? 'heartbeat' : 'complete');
                 self::assertCount(1, array_filter($state['requests'], static fn (array $r): bool => $r['path'] === $target));
-                self::assertSame($operation === 'workflow_heartbeat' ? 0 : 1, $calls);
+                $expectedCalls = $operation === 'workflow_heartbeat' ? 0 : 1;
+                self::assertSame($expectedCalls, $calls);
                 self::assertSame([], $state['outcomes']);
                 self::assertSame([], array_filter($state['requests'], static fn (array $r): bool => str_ends_with($r['path'], '/fail')));
             });
