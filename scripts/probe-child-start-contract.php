@@ -106,12 +106,9 @@ try {
         $replay = (new Replayer($client->payloadCodec()))->replay($handler, $history, [], $parentQueue, $parentTask);
         $cold[] = ['commands' => $replay->commands, 'terminal_failure' => $replay->terminalFailure?->getMessage()];
     }
-    // A signal is only a queue-health control, not an implementation of start-only semantics.
+    // Child resolution below is the positive queue control. Do not manufacture
+    // a parent turn with a timer, signal, visibility query or stale claim.
     $progressTask = $followup;
-    if ($progressTask === null) {
-        $result['signal_ack'] = $client->signalWorkflow($handle->workflowId, 'qualification.probe-progress');
-        $progressTask = childProbePoll($worker, $parentWorker, $parentQueue, 'after_signal_control', $polls);
-    }
     if ($childTask === null) {
         throw new RuntimeException('The child task was unavailable.');
     }
@@ -177,7 +174,6 @@ try {
         'child_task' => $childTask === null ? null : ['task_id' => $childTask['task_id'],
             'workflow_id' => $childTask['workflow_id'], 'run_id' => $childTask['run_id']],
         'cold_pending_replays' => $cold, 'event_counts_before_child_completion' => array_count_values(array_column($history, 'event_type')),
-        'signal_progress_task_id' => $progressTask['task_id'] ?? null,
         'continued_child_start' => $continuedStarts[1], 'continued_child_task_id' => $childNextTask['task_id'],
         'parent_final_task_id' => $parentFinalTask['task_id'], 'typed_result_preserved' => true,
         'event_counts_after_child_completion' => array_count_values(array_column($resolvedHistory, 'event_type'))];
