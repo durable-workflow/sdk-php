@@ -45,7 +45,7 @@ try {
     $contexts = [];
     if ($profile === 'published_baseline') {
         for ($cause = $error->getPrevious(); $cause !== null; $cause = $cause->getPrevious()) {
-            if ($cause instanceof GuzzleHttp\Exception\RequestException || $cause instanceof GuzzleHttp\Exception\ConnectException) {
+            if (method_exists($cause, 'getHandlerContext')) {
                 $contexts[] = $cause->getHandlerContext();
             }
         }
