@@ -4,8 +4,9 @@ Run Composer validation, focused PHPUnit coverage, PHPStan, and the public
 boundary check for changed code.
 
 The production graph remains independent of Laravel, Illuminate, framework
-bundles/containers, Core and Server. The standalone Amp HTTP client supplies a
-total request deadline without cURL; it does not load a framework. Its reviewed
+bundles/containers, Core and Server. The owned native Guzzle handler uses React socket/proxy/deadline components,
+Guzzle request serialization and Requests response parsing. It does not load a
+framework or require OpenSSL for HTTP-only applications. Their reviewed
 stable floor and the existing neutral Symfony contracts/polyfills are listed in
 `resources/dependency-boundary.json`. The boundary check covers declared and
 transitive production packages. Change that closed support list or dependency

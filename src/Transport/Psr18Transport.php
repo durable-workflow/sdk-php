@@ -19,16 +19,8 @@ use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\StreamFactoryInterface;
 use Psr\Http\Message\StreamInterface;
-use Amp\Http\Client\Connection\DefaultConnectionFactory;
-use Amp\Http\Client\Connection\UnlimitedConnectionPool;
-use Amp\Http\Client\HttpClient as AmpHttpClient;
-use Amp\Http\Client\HttpClientBuilder;
-use Amp\Http\Client\Request as AmpRequest;
-use Amp\Http\Client\TimeoutException;
-use Amp\Http\Tunnel\Http1TunnelConnector;
-use Amp\Http\Tunnel\Https1TunnelConnector;
-use Amp\Socket\ClientTlsContext;
-use Amp\TimeoutCancellation;
+use GuzzleHttp\HandlerStack;
+use React\Promise\Timer\TimeoutException;
 use Throwable;
 
 /** Default PSR-18 JSON and bounded runtime-payload transport. */
@@ -41,7 +33,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     private readonly StreamFactoryInterface $streamFactory;
     private readonly bool $defaultProcessConfiguration;
     private readonly ?float $requestTimeoutSeconds;
-    private ?AmpHttpClient $nativeControlClient = null;
+    private ?GuzzleClient $nativeControlClient = null;
 
     public function __construct(
         ?ClientInterface $client = null,
@@ -373,99 +365,15 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         }
     }
 
-    private function sendNativeControlRequest(RequestInterface $request, float $seconds): ResponseInterface
+    private function nativeControlHttpClient(): GuzzleClient
     {
-        // Guzzle 7's stream timeout measures inactivity. Amp's cancellable
-        // socket client bounds DNS, connection, headers and the complete body.
-        // Neither a failed mutation nor a redirect authorizes another request.
-        $client = $this->nativeControlHttpClient($request);
-        $nativeRequest = new AmpRequest((string) $request->getUri(), $request->getMethod(), (string) $request->getBody());
-        $nativeRequest->setHeaders($request->withoutHeader('Proxy-Authorization')->getHeaders());
-        $nativeRequest->setTransferTimeout($seconds);
-        $nativeRequest->setInactivityTimeout(0);
-        $nativeRequest->setBodySizeLimit(0);
-        $nativeRequest->setHeaderSizeLimit(0);
-        $nativeRequest->setProtocolVersions(['1.1']);
-        $nativeRequest->setTcpConnectTimeout($seconds);
-        $nativeRequest->setTlsHandshakeTimeout($seconds);
-        $cancellation = new TimeoutCancellation($seconds);
-        $response = null;
-        try {
-            $response = $client->request($nativeRequest, $cancellation);
-            $body = $response->getBody()->buffer($cancellation);
-
-            return new \GuzzleHttp\Psr7\Response($response->getStatus(), $response->getHeaders(), $body,
-                $response->getProtocolVersion(), $response->getReason());
-        } catch (Throwable $exception) {
-            if ($cancellation->isRequested() || $this->isTimeout($exception)) {
-                throw $this->controlTimeoutFailure($exception, $seconds);
-            }
-            throw $exception;
-        } finally {
-            $response?->getBody()->close();
-        }
-    }
-
-    private function nativeControlHttpClient(RequestInterface $request): AmpHttpClient
-    {
-        $proxy = $this->nativeControlProxy($request);
-        $builder = (new HttpClientBuilder())->retry(0)->followRedirects(0);
-        if ($proxy === null || $proxy === '') {
-            return $this->nativeControlClient ??= $builder->build();
+        if (!$this->client instanceof GuzzleClient) {
+            throw new \LogicException('Only the owned Guzzle client can select its native control handler.');
         }
 
-        // Use the same mature tunnel component as Symfony's Amp adapter. The
-        // CONNECT request excludes origin credentials; origin requests exclude
-        // proxy credentials. TLS verifies both hostnames for an HTTPS proxy.
-        try {
-            $proxyUri = new \GuzzleHttp\Psr7\Uri(str_contains($proxy, '://') ? $proxy : 'http://'.$proxy);
-        } catch (\InvalidArgumentException) {
-            throw new \InvalidArgumentException('The HTTP proxy URL is invalid.');
-        }
-        if (!in_array($proxyUri->getScheme(), ['http', 'https'], true) || $proxyUri->getHost() === '') {
-            throw new \InvalidArgumentException('Native control requests require an HTTP or HTTPS proxy.');
-        }
-        $authorization = $request->getHeader('Proxy-Authorization');
-        if (count($authorization) > 1) {
-            throw new \InvalidArgumentException('A proxy request accepts one Proxy-Authorization value.');
-        }
-        $headers = $authorization !== [] ? ['Proxy-Authorization' => $authorization[0]]
-            : ($proxyUri->getUserInfo() !== '' ? ['Proxy-Authorization' => 'Basic '.base64_encode(rawurldecode($proxyUri->getUserInfo()))] : []);
-        $address = $proxyUri->getHost().':'.($proxyUri->getPort() ?? ($proxyUri->getScheme() === 'https' ? 443 : 80));
-        $connector = $proxyUri->getScheme() === 'https'
-            ? new Https1TunnelConnector($address, new ClientTlsContext($proxyUri->getHost()), $headers)
-            : new Http1TunnelConnector($address, $headers);
-
-        return $builder->usingPool(new UnlimitedConnectionPool(new DefaultConnectionFactory($connector)))->build();
-    }
-
-    private function nativeControlProxy(RequestInterface $request): ?string
-    {
-        $proxy = $this->client instanceof GuzzleClient ? $this->client->getConfig('proxy') : null;
-        if (class_exists(\GuzzleHttp\ProxyOptions::class)) {
-            return \GuzzleHttp\ProxyOptions::resolve($request->getUri(), $proxy)->getProxy();
-        }
-        if (is_array($proxy)) {
-            $noProxy = $proxy['no'] ?? [];
-            // Guzzle 8 moved this API to ProxyOptions. Keep Guzzle 7's
-            // URI-aware matcher where available and its older host matcher.
-            /** @var class-string $legacyUtility */
-            $legacyUtility = \GuzzleHttp\Utils::class;
-            $matchUri = [$legacyUtility, 'isUriInNoProxy'];
-            $matchHost = [$legacyUtility, 'isHostInNoProxy'];
-            if (!is_callable($matchHost)) {
-                throw new \LogicException('The installed Guzzle lacks its legacy proxy matcher.');
-            }
-            $bypass = is_callable($matchUri)
-                ? $matchUri($request->getUri(), $noProxy)
-                : $matchHost($request->getUri()->getHost(), $noProxy);
-            $proxy = $bypass ? null : ($proxy[$request->getUri()->getScheme()] ?? null);
-        }
-        if ($proxy !== null && !is_string($proxy)) {
-            throw new \InvalidArgumentException('The HTTP proxy must be a string or a scheme-specific array.');
-        }
-
-        return $proxy;
+        return $this->nativeControlClient ??= new GuzzleClient([
+            'handler' => HandlerStack::create(new ControlSocketHandler()),
+        ] + $this->client->getConfig());
     }
 
     private function sendRequest(RequestInterface $request, bool $stream = false, int|float $timeoutSeconds = 30, bool $bounded = false, ?StreamInterface $sink = null, ?\Closure $progress = null, ?float $controlTimeout = null): ResponseInterface
@@ -473,13 +381,12 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         $connectionFailure = false;
         $timedOut = false;
         try {
-            if ($controlTimeout !== null && !function_exists('curl_exec') && !function_exists('curl_multi_exec')) {
-                return $this->sendNativeControlRequest($request, $controlTimeout);
-            }
-            if ($this->client instanceof GuzzleClient) {
-                $onStats = $this->client->getConfig('on_stats');
+            $http = $controlTimeout !== null && !function_exists('curl_exec') && !function_exists('curl_multi_exec')
+                ? $this->nativeControlHttpClient() : $this->client;
+            if ($http instanceof GuzzleClient) {
+                $onStats = $http->getConfig('on_stats');
 
-                return $this->client->send($request, [
+                return $http->send($request, [
                     'synchronous' => true,
                     'http_errors' => false,
                     'allow_redirects' => false,

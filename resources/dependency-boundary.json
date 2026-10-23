@@ -14,15 +14,31 @@
     "symfony/service-contracts"
   ],
   "required_constraints": {
-    "amphp/http-client": "^5.3.6",
-    "amphp/http-tunnel": "^2.0"
+    "clue/http-proxy-react": "^1.10",
+    "react/event-loop": "^1.6",
+    "react/promise-stream": "^1.7",
+    "react/promise-timer": "^1.11",
+    "react/socket": "^1.17",
+    "rmccue/requests": "^2.0.21"
   },
   "minimum_stable_versions": {
-    "amphp/http-client": {
-      "5": "5.3.6"
+    "clue/http-proxy-react": {
+      "1": "1.10.0"
     },
-    "amphp/http-tunnel": {
-      "2": "2.0.0"
+    "react/event-loop": {
+      "1": "1.6.0"
+    },
+    "react/promise-stream": {
+      "1": "1.7.0"
+    },
+    "react/promise-timer": {
+      "1": "1.11.0"
+    },
+    "react/socket": {
+      "1": "1.17.0"
+    },
+    "rmccue/requests": {
+      "2": "2.0.21"
     }
   }
 }

@@ -96,10 +96,18 @@ lease/heartbeat requests, payload-transfer deadlines, workflow execution timeout
 or `WorkflowHandle::result()`'s caller wait. `withNamespace()` preserves the
 configured transport and deadline.
 
-The owned transport uses Guzzle with cURL, or the standalone Amp HTTP client
-without cURL. PHP 8.1 and OpenSSL are required; no framework is needed. Both
-paths verify TLS certificates and hostnames and disable redirects and automatic
-retries. Authentication headers are obtained for each request.
+The owned transport uses Guzzle with cURL, or a Guzzle adapter using mature
+React socket/proxy/deadline components and Requests response parsing without
+cURL. PHP 8.1 and JSON remain the installation requirements. HTTP-only consumers
+do not need OpenSSL. HTTPS needs the runtime's existing TLS support; certificates
+and hostnames are verified. Both paths disable redirects and automatic retries,
+and obtain authentication headers for each request.
+
+The native adapter sends HTTP/1.1 with `Connection: close` and reads the complete
+response before returning. It preserves Guzzle's `HTTP_PROXY`, `HTTPS_PROXY` and
+`NO_PROXY` selection, including HTTP forwarding and HTTPS through an HTTP CONNECT
+proxy. HTTPS-scheme proxies remain unsupported without cURL, matching Guzzle's
+native stream handler. A configured proxy is never bypassed to avoid an error.
 
 An injected `Transport` or PSR-18 HTTP client keeps its own connection, private-CA,
 proxy and timeout policy. Configure its total deadline on that client. Passing

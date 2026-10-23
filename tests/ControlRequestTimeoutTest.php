@@ -202,13 +202,13 @@ final class ControlRequestTimeoutTest extends TestCase
                 $url = str_replace('127.0.0.1', 'localhost', $url);
                 $result = $this->runClient($directory, $url, $native, caFile: $caFile,
                     environment: ['HTTP_PROXY' => $proxyUrl, 'HTTPS_PROXY' => $proxyUrl, 'NO_PROXY' => '']);
-                if ($tlsProxy && !$native) {
+                if ($tlsProxy) {
                     // Preserve libcurl's separate proxy trust policy. A private
                     // proxy CA is not implicitly trusted by this origin CA.
                     self::assertSame('error', $result['outcome']);
                     self::assertNull($result['reason']);
                     self::assertFileDoesNotExist($directory.'/requests');
-                    $bypassed = $this->runClient($directory, $url, false, caFile: $caFile,
+                    $bypassed = $this->runClient($directory, $url, $native, caFile: $caFile,
                         environment: ['HTTP_PROXY' => 'http://127.0.0.1:1', 'HTTPS_PROXY' => 'http://127.0.0.1:1', 'NO_PROXY' => 'localhost']);
                     self::assertSame('response', $bypassed['outcome'], json_encode($bypassed));
 
@@ -222,7 +222,7 @@ final class ControlRequestTimeoutTest extends TestCase
                 self::assertArrayNotHasKey('proxy-authorization', $origin['headers']);
                 $rawProxy = file_get_contents($directory.'/proxy-requests');
                 self::assertStringContainsString('Basic '.base64_encode('proxy-user:proxy-secret'), $rawProxy);
-                if ($tlsOrigin || $native) {
+                if ($tlsOrigin) {
                     self::assertStringNotContainsString('rotated-1', $rawProxy);
                 }
 

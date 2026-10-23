@@ -31,8 +31,15 @@ final class DependencyBoundaryPolicyTest extends TestCase
 
     public static function inventories(): iterable
     {
-        $require = ['php' => '^8.1', 'amphp/http-client' => '^5.3.6', 'amphp/http-tunnel' => '^2.0'];
-        $installed = [['name' => 'amphp/http-client', 'version' => 'v5.3.6'], ['name' => 'amphp/http-tunnel', 'version' => 'v2.0.0']];
+        $require = json_decode(file_get_contents(dirname(__DIR__).'/resources/dependency-boundary.json'), true,
+            flags: JSON_THROW_ON_ERROR)['required_constraints'] + ['php' => '^8.1'];
+        $installed = [];
+        foreach ($require as $name => $constraint) {
+            if ($name !== 'php') {
+                $version = substr($constraint, 1);
+                $installed[] = ['name' => $name, 'version' => substr_count($version, '.') === 1 ? $version.'.0' : $version];
+            }
+        }
         yield 'standalone HTTP component' => [$require, $installed, true];
         yield 'neutral support contracts' => [$require, [...$installed,
             ['name' => 'symfony/deprecation-contracts', 'version' => 'v3.6.0']], true];
@@ -42,10 +49,12 @@ final class DependencyBoundaryPolicyTest extends TestCase
             yield 'declared '.$forbidden => [$require + [$forbidden => '^1.0'], $installed, false];
         }
         yield 'missing inventory' => [$require, [], false];
-        yield 'malformed inventory package' => [$require, [['name' => 'amphp/http-client']], false];
-        yield 'old floor in manifest' => [array_replace($require, ['amphp/http-client' => '^5.0']), $installed, false];
-        foreach (['v5.3.5', 'v4.6.0', 'v6.0.0', 'dev-main', 'v5.3.7-rc.1'] as $version) {
-            yield 'unreviewed version '.$version => [$require, [['name' => 'amphp/http-client', 'version' => $version], $installed[1]], false];
+        yield 'malformed inventory package' => [$require, [['name' => 'rmccue/requests']], false];
+        yield 'old floor in manifest' => [array_replace($require, ['rmccue/requests' => '^2.0']), $installed, false];
+        foreach (['v2.0.20', 'v1.8.0', 'v3.0.0', 'dev-main', 'v2.0.22-rc.1'] as $version) {
+            $inventory = $installed;
+            $inventory[array_key_last($inventory)]['version'] = $version;
+            yield 'unreviewed version '.$version => [$require, $inventory, false];
         }
     }
 }
