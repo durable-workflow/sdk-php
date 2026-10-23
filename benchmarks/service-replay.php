@@ -88,6 +88,12 @@ $stack->push(static function (callable $next) use (&$active, &$http, &$claims, &
         $body = (string) $response->getBody();
         $decoded = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
         $task = is_array($decoded) ? ($decoded['task'] ?? null) : null;
+        if (getenv('DW_PROFILE_TRACE') === '1') {
+            fwrite(STDERR, json_encode(['path' => $path, 'status' => $response->getStatusCode(),
+                'poll_status' => $decoded['poll_status'] ?? null, 'reason' => $decoded['reason'] ?? null,
+                'task_id' => $task['task_id'] ?? null, 'commands' => str_ends_with($path, '/complete')
+                    ? json_decode((string) $request->getBody(), true)['commands'] ?? null : null], JSON_THROW_ON_ERROR)."\n");
+        }
         $entry = ['seconds' => (hrtime(true) - $started) / 1e9, 'bytes' => strlen($body),
             'status' => $response->getStatusCode()];
         if (is_array($task)) {
@@ -118,6 +124,9 @@ $stack->push(static function (callable $next) use (&$active, &$http, &$claims, &
 $transport = new Psr18Transport(new GuzzleHttp\Client(['handler' => $stack, 'http_errors' => false,
     'timeout' => 65, 'connect_timeout' => 5]));
 $client = new Client($argv[2], namespace: $namespace, workerToken: 'claimed-task-worker', transport: $transport);
+putenv('DW_PROFILE_URL='.$argv[2]);
+putenv('DW_PROFILE_NAMESPACE='.$namespace);
+$client = $client->withActivityLeaseBootstrap(__DIR__.'/service-profile-lease-bootstrap.php');
 $handler = static function (WorkflowContext $context, string $key, int $count, int $timer): array {
     $sum = 0;
     for ($index = 0; $index < $count; ++$index) {
@@ -136,10 +145,11 @@ for ($index = 0; $index < $runs; ++$index) {
         [$key, $cycles, $timerSeconds]);
 }
 $worker = new Worker($client, $queue, $workerId, buildId: 'sdk-3.4.1-profile-v1',
-    diagnosticListener: static function (string $event, array $context) use (&$diagnostics): void {
+    diagnosticListener: static function (string $event, array $context) use (&$diagnostics, &$worker): void {
         if (isset($context['exception'])) {
             $diagnostics[] = ['event' => $event, 'exception' => $context['exception']::class,
                 'message' => $context['exception']->getMessage()];
+            $worker?->requestShutdown();
         }
     });
 $worker->registerWorkflow('qualification.profile.replay', $handler);
@@ -169,6 +179,7 @@ try {
     $receipt['worker_wall_seconds'] = (hrtime(true) - $started) / 1e9;
     $receipt['worker_cpu_seconds'] = profileCpuSeconds() - $cpu;
     $receipt['worker_maxrss_kib'] = getrusage()['ru_maxrss'];
+    $receipt['child_process_usage'] = getrusage(1);
     $receipt['sticky_cache'] = $worker->stickyCacheMetrics();
     $receipt['completion_count'] = count($completed);
     $receipt['effect_count'] = count($effects);
@@ -186,7 +197,7 @@ if ($receipt['outcome'] === 'measured') {
         foreach ($handles as $key => $handle) {
             $execution = $control->describeWorkflow($handle->workflowId, $handle->selectedRunId);
             $expected = ['key' => $key, 'sum' => intdiv($cycles * ($cycles - 1), 2)];
-            if ($execution->status !== 'completed' || $execution->result !== $expected) {
+            if ($execution->status !== 'completed' || $execution->output !== $expected) {
                 throw new RuntimeException('A workflow did not complete with the exact expected result.');
             }
             $history = [];
