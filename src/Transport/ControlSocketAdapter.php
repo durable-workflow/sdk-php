@@ -7,6 +7,7 @@ namespace DurableWorkflow\Transport;
 /** @internal Shares one library deadline across CONNECT, TLS and the origin response. */
 final class ControlSocketAdapter extends \HTTP_Request2_Adapter_Socket
 {
+    // The handler creates a fresh adapter for each request.
     private bool $terminalChunkDecoded = false;
 
     public function __construct(private readonly float $deadline, private readonly float $seconds) {}
@@ -61,7 +62,6 @@ final class ControlSocketAdapter extends \HTTP_Request2_Adapter_Socket
     }
     protected function readResponse(): \HTTP_Request2_Response
     {
-        $this->terminalChunkDecoded = false;
         $response = parent::readResponse();
         $hasBody = $response->getStatus() >= 200 && !in_array($response->getStatus(), [204, 304], true)
             && !in_array($this->request->getMethod(), [\HTTP_Request2::METHOD_HEAD, \HTTP_Request2::METHOD_CONNECT], true);
