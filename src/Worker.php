@@ -1293,6 +1293,7 @@ final class Worker
                         (int) ($task['workflow_task_attempt'] ?? 1),
                         'PHP workflow task execution failed: '.$failure->getMessage(),
                         $failure::class,
+                        stackTrace: $failure->getTraceAsString(),
                     );
                 },
                 'activity' => function (Throwable $failure) use ($taskId, $leaseOwner, $task): void {
@@ -1303,6 +1304,7 @@ final class Worker
                         $failure->getMessage(),
                         $failure::class,
                         nonRetryable: true,
+                        stackTrace: $failure->getTraceAsString(),
                     );
                 },
                 'query' => function (Throwable $failure) use ($taskId, $leaseOwner, $task): void {
@@ -1435,6 +1437,7 @@ final class Worker
                         $failure::class,
                         $failure instanceof NonDeterministicWorkflow || $failure instanceof WorkflowEntryArgumentsMismatch ? $failure->reason : null,
                         $failure instanceof NonDeterministicWorkflow ? $failure->sequence : null,
+                        $failure->getTraceAsString(),
                     );
                 },
                 $attempt,
@@ -2536,6 +2539,7 @@ final class Worker
                         $failure->getMessage(),
                         $failure instanceof ActivityExecutionFailure ? $failure->originalType : $failure::class,
                         $failure instanceof ActivityCancelled || ($failure instanceof ActivityExecutionFailure && $failure->cancelled),
+                        stackTrace: $failure->getTraceAsString(),
                     );
                 },
             );
@@ -3945,20 +3949,11 @@ final class Worker
             'type' => 'fail_workflow',
             'message' => $exception->getMessage(),
             'exception_type' => $exception::class,
+            'exception' => ['stack_trace' => $exception->getTraceAsString()],
         ];
         if ($failedActivitySequence !== null && $failedActivityExecutionId !== null) {
             $command['failed_step_sequence'] = $failedActivitySequence;
             $command['failed_activity_execution_id'] = $failedActivityExecutionId;
-        }
-
-        try {
-            json_encode($command, JSON_THROW_ON_ERROR);
-        } catch (\JsonException) {
-            $command = [
-                'type' => 'fail_workflow',
-                'message' => 'Workflow failure metadata could not be encoded for the HTTP JSON wire boundary.',
-                'exception_type' => \RuntimeException::class,
-            ];
         }
 
         return $command;

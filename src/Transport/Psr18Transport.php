@@ -151,8 +151,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             $request = $request->withHeader($name, $value);
         }
         if ($body !== null) {
-            $json = json_encode($body, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION
-                | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            $json = JsonDocument::encode($body);
             $request = $request->withBody($this->streamFactory->createStream($json));
         }
 
