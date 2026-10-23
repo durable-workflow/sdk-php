@@ -13,16 +13,17 @@ final class LocalFailureReports
     private const DIAGNOSTICS = "\n[truncation diagnostics]\n";
 
     /** @param array<string, mixed> $outcome
+     * @param array{message?: int, attempts?: array<int, int>} $originalSizes
      * @return array<string, mixed>
      */
-    public static function bound(array $outcome, int $requestLimit = FailureReportLimits::REQUEST_BYTES): array
+    public static function bound(array $outcome, int $requestLimit = FailureReportLimits::REQUEST_BYTES, array $originalSizes = []): array
     {
         $messageLimit = FailureReportLimits::MESSAGE_BYTES;
         for ($pass = 0; $pass < 18; ++$pass) {
-            $bounded = self::fragment($outcome, $messageLimit);
+            $bounded = self::fragment($outcome, $messageLimit, $originalSizes['message'] ?? null);
             foreach ($outcome['attempts'] ?? [] as $index => $attempt) {
                 if (is_array($attempt)) {
-                    $bounded['attempts'][$index] = self::fragment($attempt, $messageLimit);
+                    $bounded['attempts'][$index] = self::fragment($attempt, $messageLimit, $originalSizes['attempts'][$index] ?? null);
                 }
             }
             // A successful result keeps its independent business-payload policy.
@@ -43,17 +44,15 @@ final class LocalFailureReports
     /** @param array<string, mixed> $fragment
      * @return array<string, mixed>
      */
-    private static function fragment(array $fragment, int $limit): array
+    private static function fragment(array $fragment, int $limit, ?int $sourceBytes = null): array
     {
         if (!is_string($fragment['message'] ?? null)) {
             return $fragment;
         }
         $message = trim($fragment['message']);
         $fragment['message'] = $message;
-        $originalBytes = self::originalBytes($message);
-        $existingDiagnostics = str_contains($message, self::DIAGNOSTICS);
-        if (strlen($message) <= $limit && preg_match('//u', $message) === 1
-            && ($originalBytes === strlen($message) || $existingDiagnostics)) {
+        $originalBytes = max(strlen($message), $sourceBytes ?? 0);
+        if (strlen($message) <= $limit && preg_match('//u', $message) === 1 && $originalBytes === strlen($message)) {
             return $fragment;
         }
         $suffix = self::DIAGNOSTICS.JsonDocument::encode(['message' => ['original_bytes' => $originalBytes]]);
@@ -63,23 +62,4 @@ final class LocalFailureReports
         return $fragment;
     }
 
-    private static function originalBytes(string $message): int
-    {
-        $position = strrpos($message, self::DIAGNOSTICS);
-        if ($position !== false) {
-            try {
-                $value = json_decode(substr($message, $position + strlen(self::DIAGNOSTICS)), true, flags: JSON_THROW_ON_ERROR);
-                $bytes = is_array($value) ? ($value['message']['original_bytes'] ?? null) : null;
-                if (is_int($bytes) && $bytes >= 0) {
-                    return $bytes;
-                }
-            } catch (\JsonException) {
-                // Caller text resembling a marker remains ordinary text.
-            }
-        }
-        if (preg_match('/\n\[truncated failure report; original message ([0-9]+) bytes\]$/D', $message, $matches) === 1) {
-            return (int) $matches[1];
-        }
-        return strlen($message);
-    }
 }

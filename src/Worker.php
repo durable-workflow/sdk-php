@@ -3047,6 +3047,7 @@ final class Worker
         $heartbeatTimeout = $options['heartbeat_timeout'] ?? null;
         $executionStartedAt = $this->now();
         $attempts = [];
+        $localFailureSizes = [];
         $totalHeartbeatCount = 0;
 
         for ($attemptNumber = 1; $attemptNumber <= $maxAttempts; ++$attemptNumber) {
@@ -3245,7 +3246,7 @@ final class Worker
                     'heartbeats' => $heartbeats,
                 ];
 
-                return $this->client->normalizeLocalFailure(['outcome' => 'completed', 'result' => $result, 'attempts' => $attempts]);
+                return $this->client->normalizeLocalFailure(['outcome' => 'completed', 'result' => $result, 'attempts' => $attempts], $localFailureSizes);
             } catch (Throwable $exception) {
                 if ($exception instanceof WorkflowClaimAborted || $exception instanceof FailureReportRefused) {
                     throw $exception;
@@ -3303,6 +3304,10 @@ final class Worker
                 if ($message === '') {
                     $message = "Local activity failed with {$type}.";
                 }
+                $sourceBytes = $exception instanceof ActivityExecutionFailure
+                    ? ($exception->originalDiagnostics['truncation']['fields']['message']['original_bytes'] ?? null) : null;
+                $localFailureSizes['attempts'][$attemptNumber - 1] = is_int($sourceBytes)
+                    ? max($sourceBytes, strlen($message)) : strlen($message);
                 $attempt = [
                     'attempt_id' => $attemptId,
                     'attempt_number' => $attemptNumber,
@@ -3336,6 +3341,7 @@ final class Worker
                     continue;
                 }
 
+                $localFailureSizes['message'] = $localFailureSizes['attempts'][$attemptNumber - 1];
                 return $this->client->normalizeLocalFailure([
                     'outcome' => $cancelled ? 'cancelled' : ($timedOut ? 'timed_out' : 'failed'),
                     'message' => $message,
@@ -3343,7 +3349,7 @@ final class Worker
                     'non_retryable' => $isNonRetryable,
                     ...($timeoutKind === null ? [] : ['timeout_kind' => $timeoutKind]),
                     'attempts' => $attempts,
-                ]);
+                ], $localFailureSizes);
             }
         }
 

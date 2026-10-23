@@ -59,6 +59,23 @@ final class LocalFailureReportTest extends TestCase
         self::assertSame(1, $calls);
     }
 
+    public function testCallerTextResemblingADiagnosticMarkerStaysOrdinarySmallText(): void
+    {
+        $message = "caller literal\n[truncated failure report; original message 0 bytes]";
+        $outcome = ['outcome' => 'failed', 'message' => $message, 'exception_type' => 'OriginalFailure', 'non_retryable' => false];
+        self::assertSame($outcome, LocalFailureReports::bound($outcome));
+        $outcome['message'] .= "\n[truncation diagnostics]\n{\"message\":{\"original_bytes\":0}}";
+        self::assertSame($outcome, LocalFailureReports::bound($outcome));
+    }
+
+    public function testOnlyExplicitCallbackProvenanceCarriesAnEarlierOriginalSize(): void
+    {
+        $outcome = ['outcome' => 'failed', 'message' => 'already bounded', 'exception_type' => 'OriginalFailure', 'non_retryable' => false];
+        $bounded = LocalFailureReports::bound($outcome, originalSizes: ['message' => 3145728]);
+        self::assertStringContainsString('3145728', $bounded['message']);
+        self::assertSame($bounded, LocalFailureReports::bound($bounded));
+    }
+
     public function testAggregateAttemptMessagesFitBeforeObservationWithoutChangingRetries(): void
     {
         $message = str_repeat("\0雪", 1000000);

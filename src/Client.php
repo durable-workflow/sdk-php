@@ -154,11 +154,12 @@ final class Client implements WorkflowClientInterface
 
     /** @internal Freeze local diagnostic values before workflow code branches on them.
      * @param array<string, mixed> $outcome
+     * @param array{message?: int, attempts?: array<int, int>} $originalSizes
      * @return array<string, mixed>
      */
-    public function normalizeLocalFailure(array $outcome): array
+    public function normalizeLocalFailure(array $outcome, array $originalSizes = []): array
     {
-        return LocalFailureReports::bound($outcome, $this->failureReports->effectiveLimit());
+        return LocalFailureReports::bound($outcome, $this->failureReports->effectiveLimit(), $originalSizes);
     }
 
     public function payloadCodec(): PayloadCodec
