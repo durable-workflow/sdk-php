@@ -49,7 +49,7 @@ final class RuntimePayloadUploads
         $slots = $this->paths($body, explode('?', $path)[0], $worker);
         $payloads = $this->payloads($body, $slots);
         $requestBytesLimit = $failureReports?->limitForRequest($path, $body);
-        if ($requestBytesLimit !== null && $failureReports !== null) {
+        if ($requestBytesLimit !== null) {
             $body = $this->failureMetadata($body, $payloads, $path, $failureReports);
             $payloads = $this->payloads($body, $slots);
         }
