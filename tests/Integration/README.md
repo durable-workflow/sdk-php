@@ -34,6 +34,29 @@ issue or PR. Remove the task containers, volumes and consumer after recording
 the result. Do not reuse this topology for production or point it at a shared
 runtime.
 
+# Typed service target namespace
+
+`scripts/qualify-service-namespace.php` runs a PHP caller and target in two fresh
+namespaces against a disposable published token-auth Server. It installs a
+catalog operation through the admin API, calls it with typed `targetNamespace`
+options and checks int64/Unicode/null results, original caller authority, target
+binding, one admission, one terminal service delivery and one workflow completion.
+It uses the fixture credentials from `docker-compose.claimed-task-recovery.yml`.
+
+After starting that isolated topology as described in the claimed-task recovery
+section, run this script in a PHP CLI environment connected to its network:
+
+```sh
+php scripts/qualify-service-namespace.php /consumer/vendor/autoload.php http://server:8080
+```
+
+Use an ordinary Composer-installed SDK for published-package acceptance. Record
+its exact version/reference, the runner commit, published Server digest and
+scenario result on the SDK issue. The script stops its two worker processes and
+removes their temporary files. The namespaces and catalog are disposable data in
+the isolated runtime, removed with its task volumes. Do not run it on a shared
+runtime or use production credentials.
+
 # Runtime External Payload Restart
 
 `runtime-external-payloads.php` is a manual integration test against an isolated

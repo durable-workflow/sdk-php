@@ -2787,6 +2787,10 @@ final class Client implements WorkflowClientInterface
     /** @return array<string, mixed> */
     private function serviceOperationBody(mixed $arguments, ?ServiceOperationOptions $options): array
     {
+        if ($options?->targetNamespace !== null) {
+            throw new InvalidArgumentException('For direct service calls, use a Client in the target namespace. '
+                .'ServiceOperationOptions::targetNamespace selects durable workflow call targets.');
+        }
         $body = $options?->toArray() ?? [];
         if ($arguments !== null) {
             $body['arguments'] = $this->codec->encode($arguments);

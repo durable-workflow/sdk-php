@@ -363,6 +363,12 @@ read the next page. See the protocol guide for the paging and error contract.
 waits for completion by default, and returns a `ServiceOperationDescription`.
 Arguments use the official Apache Avro payload codec.
 
+`ServiceOperationOptions::targetNamespace` selects the target of a durable
+`WorkflowContext::serviceOperation()` call. Direct client calls select their
+target through `$client->withNamespace('billing')`. They refuse that workflow
+option because Server would otherwise ignore the body field and use the
+client's namespace.
+
 ## Run a remote PHP worker
 
 The preferred service-mode API discovers handler contracts from ordinary PHP
