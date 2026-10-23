@@ -6,6 +6,16 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-10-23
+
+### Added
+
+- Typed `ServiceOperationOptions::targetNamespace` selection for durable
+  workflow service calls, equivalent to the existing `namespace` array option.
+  Constructor arguments, caller authority, waiting defaults and replay identity
+  remain compatible. Direct service clients select their namespace with
+  `Client::withNamespace()` and explicitly refuse this workflow option.
+
 ## [3.2.1] - 2026-10-23
 
 ### Fixed
@@ -623,7 +633,8 @@ project follows [Semantic Versioning](https://semver.org/).
   cancellation, and graceful shutdown.
 - Generated API reference and supported PHP-version CI.
 
-[Unreleased]: https://github.com/durable-workflow/sdk-php/compare/3.2.1...HEAD
+[Unreleased]: https://github.com/durable-workflow/sdk-php/compare/3.3.0...HEAD
+[3.3.0]: https://github.com/durable-workflow/sdk-php/compare/3.2.1...3.3.0
 [3.2.1]: https://github.com/durable-workflow/sdk-php/compare/3.2.0...3.2.1
 [3.2.0]: https://github.com/durable-workflow/sdk-php/compare/3.1.0...3.2.0
 [0.1.12]: https://github.com/durable-workflow/sdk-php/compare/0.1.11...0.1.12
