@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 // A source-free recording PSR-18 boundary; no runtime or reader coercion.
-require $argv[1];
+require_once $argv[1];
 
 $http = new class implements Psr\Http\Client\ClientInterface {
     /** @var list<Psr\Http\Message\RequestInterface> */
