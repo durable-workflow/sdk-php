@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.4.1] - 2026-10-23
+
+### Fixed
+
+- Preserve whole-float numeric kinds and the sign of zero in outbound HTTP
+  JSON, including nested workflow/schedule memo and search attributes. Integer
+  metadata and Avro business payloads retain their existing representation.
+
 ## [3.4.0] - 2026-10-23
 
 ### Added
