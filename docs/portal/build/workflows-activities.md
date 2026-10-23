@@ -135,7 +135,7 @@ to call them. `targetNamespace` selects the target namespace and serializes to
 the same `namespace` field as array options. Omit it to use the caller's namespace.
 Empty targets are invalid. Server assigns caller identity from the leased run;
 target selection does not grant caller authority. For direct client service calls,
-construct the `Client` in the target namespace instead of using this workflow option.
+use `$client->withNamespace('billing')` instead of this workflow option.
 
 The default options are `mode_override=sync` and `wait_for=completed`. Use
 `wait_for=accepted` or `mode_override=async` to receive the original admission
