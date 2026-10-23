@@ -68,6 +68,7 @@
             "npm run build:docs"
         ],
         "check-boundary": "bash scripts/check-dependency-boundary.sh",
+        "check-http-only-platform": "bash scripts/check-http-only-platform.sh",
         "check-release-identity": "scripts/check-release-identity.sh"
     },
     "config": {

@@ -1,7 +1,9 @@
 # Contributing
 
 Run Composer validation, focused PHPUnit coverage, PHPStan, and the public
-boundary check for changed code.
+boundary check for changed code. Run `composer check-http-only-platform` for
+HTTP-client dependency changes; it resolves PHP8.1/Guzzle7/PSR-message1 with
+cURL and OpenSSL disabled and exercises a real HTTP call without TLS functions.
 
 The production graph remains independent of Laravel, Illuminate, framework
 bundles/containers, Core and Server. The owned native Guzzle handler delegates
