@@ -18,20 +18,15 @@
     "require": {
         "php": "^8.1",
         "apache/avro": "^1.12",
-        "clue/http-proxy-react": "^1.10",
         "composer-runtime-api": "^2.0",
         "ext-json": "*",
         "guzzlehttp/guzzle": "^7.8|^8.0",
+        "pear/http_request2": "^2.8",
         "psr/container": "^1.1|^2.0",
         "psr/http-client": "^1.0",
         "psr/http-factory": "^1.0",
         "psr/http-message": "^1.1|^2.0",
-        "psr/log": "^1.1|^2.0|^3.0",
-        "react/event-loop": "^1.6",
-        "react/promise-stream": "^1.7",
-        "react/promise-timer": "^1.11",
-        "react/socket": "^1.17",
-        "rmccue/requests": "^2.0.21"
+        "psr/log": "^1.1|^2.0|^3.0"
     },
     "require-dev": {
         "monolog/monolog": "^2.9|^3.0",
@@ -49,7 +44,9 @@
         "symfony/console": "Required with symfony/framework-bundle to run the Symfony 6.4, 7, and 8 worker command."
     },
     "conflict": {
-        "open-telemetry/api": "<1.10.1 || >=2.0"
+        "open-telemetry/api": "<1.10.1 || >=2.0",
+        "pear/net_url2": "<2.2.3",
+        "pear/pear_exception": "<1.0.2"
     },
     "autoload": {
         "psr-4": {

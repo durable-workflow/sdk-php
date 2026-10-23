@@ -29,6 +29,9 @@ while (($peer = @stream_socket_accept($server, 5)) !== false) {
     }
     file_put_contents($directory.'/proxy-requests', json_encode(['method' => $parts[0], 'target' => $parts[1],
         'headers' => $headers], JSON_THROW_ON_ERROR)."\n", FILE_APPEND);
+    if (is_file($directory.'/proxy-delay')) {
+        usleep((int) ((float) file_get_contents($directory.'/proxy-delay') * 1_000_000));
+    }
     if ($parts[0] === 'CONNECT') {
         $address = $parts[1];
         $prefix = '';

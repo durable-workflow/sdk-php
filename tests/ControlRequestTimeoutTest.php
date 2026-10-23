@@ -35,6 +35,11 @@ final class ControlRequestTimeoutTest extends TestCase
                 self::assertSame('error', $result['outcome']);
                 self::assertSame(0, $result['status']);
                 self::assertSame('request_timeout', $result['reason']);
+                self::assertSame(match ($operation) {
+                    'signal' => \DurableWorkflow\Exception\SignalFailed::class,
+                    'update' => \DurableWorkflow\Exception\UpdateFailed::class,
+                    default => ServerException::class,
+                }, $result['type']);
                 self::assertGreaterThanOrEqual(0.15, $result['elapsed']);
                 self::assertLessThan(1.0, $result['elapsed']);
                 self::assertSame('', file_get_contents($directory.'/stderr'));
@@ -97,7 +102,7 @@ final class ControlRequestTimeoutTest extends TestCase
     public function testDynamicCredentialsAndNamespaceAreEvaluatedForEachRealRequest(bool $native): void
     {
         $this->withPeer('echo', function (string $url, string $directory) use ($native): void {
-            $result = $this->runClient($directory, $url, $native, 'dynamic');
+            $result = $this->runClient($directory, $url.'/tenant/prefix', $native, 'dynamic');
             self::assertSame('response', $result['outcome']);
             $requests = array_map(static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR),
                 file($directory.'/requests', FILE_IGNORE_NEW_LINES));
@@ -105,6 +110,8 @@ final class ControlRequestTimeoutTest extends TestCase
             self::assertSame('Bearer rotated-1', $requests[0]['headers']['authorization']);
             self::assertSame('Bearer rotated-2', $requests[1]['headers']['authorization']);
             self::assertSame('billing', $requests[1]['headers']['x-namespace']);
+            self::assertSame('/tenant/prefix/api/workflows', $requests[0]['path']);
+            self::assertSame('/tenant/prefix/api/workflows?workflow_type='.rawurlencode('case/空间?'), $requests[1]['path']);
         });
     }
 
@@ -214,7 +221,7 @@ final class ControlRequestTimeoutTest extends TestCase
 
                     return;
                 }
-                self::assertSame('response', $result['outcome'], json_encode($result));
+                self::assertSame('response', $result['outcome'], json_encode($result).(file_get_contents($directory.'/proxy-requests') ?: ''));
                 $requests = file($directory.'/requests', FILE_IGNORE_NEW_LINES);
                 self::assertCount(1, $requests);
                 $origin = json_decode($requests[0], true, flags: JSON_THROW_ON_ERROR);
@@ -246,6 +253,88 @@ final class ControlRequestTimeoutTest extends TestCase
         }
     }
 
+    #[DataProvider('framingCases')]
+    public function testMatureClientHandlesActualResponseFraming(string $mode, bool $native, bool $complete): void
+    {
+        $this->withPeer($mode, function (string $url, string $directory) use ($native, $complete): void {
+            $result = $this->runClient($directory, $url, $native);
+            self::assertSame($complete ? 'response' : 'error', $result['outcome'], json_encode($result));
+            if (!$complete) {
+                self::assertSame(0, $result['status']);
+                self::assertNull($result['reason']);
+            }
+        });
+    }
+
+    public static function framingCases(): iterable
+    {
+        foreach ([false, true] as $native) {
+            foreach (['chunked', 'gzip', 'interim', 'truncated_length', 'truncated_chunked'] as $mode) {
+                yield $mode.' native='.(int) $native => [$mode, $native, !str_starts_with($mode, 'truncated')];
+            }
+        }
+    }
+
+    #[DataProvider('httpHandlers')]
+    public function testStalledTlsHandshakeUsesTheSameDeadline(bool $native): void
+    {
+        $this->withPeer('stall_tls', function (string $url, string $directory) use ($native): void {
+            $result = $this->runClient($directory, str_replace('127.0.0.1', 'localhost', $url), $native,
+                caFile: $directory.'/cert.pem');
+            self::assertSame('error', $result['outcome']);
+            self::assertSame('request_timeout', $result['reason'], json_encode($result));
+            self::assertGreaterThanOrEqual(0.4, $result['elapsed']);
+            self::assertLessThan(1.0, $result['elapsed']);
+        }, tls: true);
+    }
+
+    public function testNativeProxyTlsHandshakeCannotStartAnotherTimeoutAllowance(): void
+    {
+        $this->withPeer('stall_tls', function (string $url, string $directory): void {
+            file_put_contents($directory.'/proxy-delay', '0.3');
+            $proxy = proc_open([PHP_BINARY, __DIR__.'/Support/control-timeout-proxy.php', $directory],
+                [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
+            self::assertIsResource($proxy);
+            try {
+                $until = microtime(true) + 2;
+                while (!is_file($directory.'/proxy-address') && microtime(true) < $until) {
+                    usleep(10000);
+                }
+                self::assertFileExists($directory.'/proxy-address');
+                $result = $this->runClient($directory, str_replace('127.0.0.1', 'localhost', $url), true,
+                    caFile: $directory.'/cert.pem', environment: [
+                        'HTTPS_PROXY' => 'http://'.trim(file_get_contents($directory.'/proxy-address')), 'NO_PROXY' => '',
+                    ]);
+                self::assertSame('error', $result['outcome']);
+                self::assertSame('request_timeout', $result['reason'], json_encode($result));
+                self::assertGreaterThanOrEqual(0.4, $result['elapsed']);
+                self::assertLessThan(0.75, $result['elapsed']);
+            } finally {
+                proc_terminate($proxy, 9);
+                proc_close($proxy);
+            }
+        }, tls: true);
+    }
+
+    public function testHttpOnlyConsumerNeedsNoTlsFunctions(): void
+    {
+        $this->withPeer('echo', function (string $url, string $directory): void {
+            $result = $this->runClient($directory, $url, true, 'http_only');
+            self::assertSame('response', $result['outcome'], json_encode($result));
+        });
+    }
+
+    #[DataProvider('httpHandlers')]
+    public function testUriBasicAuthenticationStillReachesTheOrigin(bool $native): void
+    {
+        $this->withPeer('echo', function (string $url, string $directory) use ($native): void {
+            $result = $this->runClient($directory, $url, $native, 'uri_basic');
+            self::assertSame('response', $result['outcome'], json_encode($result));
+            $request = json_decode(file($directory.'/requests')[0], true, flags: JSON_THROW_ON_ERROR);
+            self::assertSame('Basic '.base64_encode('uri-user:uri-pass'), $request['headers']['authorization']);
+        });
+    }
+
     public static function httpHandlers(): iterable
     {
         yield 'cURL' => [false];
@@ -257,6 +346,9 @@ final class ControlRequestTimeoutTest extends TestCase
         $command = [PHP_BINARY];
         if ($native) {
             array_push($command, '-d', 'disable_functions=curl_exec,curl_multi_exec');
+        }
+        if ($profile === 'http_only') {
+            array_push($command, '-d', 'disable_functions=curl_exec,curl_multi_exec,stream_socket_enable_crypto,openssl_x509_parse,openssl_get_cert_locations,openssl_verify');
         }
         if ($caFile !== '' && $profile !== 'injected') {
             array_push($command, '-d', 'openssl.cafile='.$caFile);

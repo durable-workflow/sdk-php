@@ -4,13 +4,14 @@ Run Composer validation, focused PHPUnit coverage, PHPStan, and the public
 boundary check for changed code.
 
 The production graph remains independent of Laravel, Illuminate, framework
-bundles/containers, Core and Server. The owned native Guzzle handler uses React socket/proxy/deadline components,
-Guzzle request serialization and Requests response parsing. It does not load a
-framework or require OpenSSL for HTTP-only applications. Their reviewed
-stable floor and the existing neutral Symfony contracts/polyfills are listed in
+bundles/containers, Core and Server. The owned native Guzzle handler delegates
+HTTP serialization, framing and total socket deadlines to HTTP_Request2. Its
+OpenSSL dependency is optional, preserving HTTP-only installations. Thin adapters
+share one deadline across CONNECT/TLS and reject incomplete-transfer warnings.
+The reviewed stable floors and neutral Symfony contracts/polyfills are listed in
 `resources/dependency-boundary.json`. The boundary check covers declared and
 transitive production packages. Change that closed support list or dependency
-floor only with an owning product decision and compatibility/security tests.
+floor with an owning product decision and compatibility/security tests.
 
 Before publishing a tag, run `RELEASE_TAG=<exact-version> composer check-release-identity`.
 The installed Composer version, `extra.durable-workflow.product-train`, quickstart

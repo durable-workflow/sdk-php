@@ -18,6 +18,11 @@ while (microtime(true) < $until) {
         continue;
     }
     stream_set_timeout($peer, 3);
+    if ($mode === 'stall_tls') {
+        sleep(5);
+        fclose($peer);
+        continue;
+    }
     if ($certificate !== '' && @stream_socket_enable_crypto($peer, true, STREAM_CRYPTO_METHOD_TLS_SERVER) !== true) {
         fclose($peer);
         continue;
@@ -63,8 +68,19 @@ while (microtime(true) < $until) {
         usleep(250000);
     }
     $status = $replyMode === 'redirect' ? '302 Found' : '200 OK';
-    $replyHeaders = "HTTP/1.1 {$status}\r\nContent-Type: application/json\r\nContent-Length: ".strlen($payload)
-        ."\r\nConnection: close\r\n".($replyMode === 'redirect' ? "Location: /unexpected-redirect\r\n" : '')."\r\n";
+    $wirePayload = $replyMode === 'gzip' ? gzencode($payload) : $payload;
+    $chunked = in_array($replyMode, ['chunked', 'truncated_chunked'], true);
+    $replyHeaders = "HTTP/1.1 {$status}\r\nContent-Type: application/json\r\n"
+        .($chunked ? "Transfer-Encoding: chunked\r\n" : 'Content-Length: '.(strlen($wirePayload) + ($replyMode === 'truncated_length' ? 10 : 0))."\r\n")
+        .($replyMode === 'gzip' ? "Content-Encoding: gzip\r\n" : '')
+        ."Connection: close\r\n".($replyMode === 'redirect' ? "Location: /unexpected-redirect\r\n" : '')."\r\n";
+    if ($replyMode === 'interim') {
+        @fwrite($peer, "HTTP/1.1 100 Continue\r\n\r\n");
+    }
+    if ($chunked) {
+        $wirePayload = dechex(strlen($payload))."\r\n".$payload."\r\n"
+            .($replyMode === 'chunked' ? "0\r\nX-Fixture-Trailer: complete\r\n\r\n" : '');
+    }
     if ($replyMode === 'slow_headers') {
         foreach (str_split($replyHeaders) as $byte) {
             if (@fwrite($peer, $byte) === false) {
@@ -85,7 +101,7 @@ while (microtime(true) < $until) {
             usleep(100000);
         }
     } else {
-        @fwrite($peer, $payload);
+        @fwrite($peer, $wirePayload);
     }
     fclose($peer);
 }

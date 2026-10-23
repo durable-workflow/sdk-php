@@ -15,6 +15,11 @@ foreach ($policy['required_constraints'] as $name => $constraint) {
         $failures[] = "{$name} must retain reviewed compatibility and security floors {$constraint}.";
     }
 }
+foreach ($policy['required_conflicts'] as $name => $constraint) {
+    if (($manifest['conflict'][$name] ?? null) !== $constraint) {
+        $failures[] = "{$name} must retain its reviewed stable floor {$constraint}.";
+    }
+}
 $packages = [];
 $installedNames = [];
 foreach (array_keys($manifest['require']) as $name) {
@@ -29,7 +34,7 @@ foreach ($installed['installed'] as $package) {
     $packages[$package['name']] = $package['version'];
     $installedNames[] = $package['name'];
 }
-foreach (array_keys($policy['required_constraints']) as $name) {
+foreach (array_keys($policy['minimum_stable_versions']) as $name) {
     if (!in_array($name, $installedNames, true)) {
         $failures[] = "Required production package {$name} is absent from the installed inventory.";
     }

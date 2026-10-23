@@ -14,31 +14,21 @@
     "symfony/service-contracts"
   ],
   "required_constraints": {
-    "clue/http-proxy-react": "^1.10",
-    "react/event-loop": "^1.6",
-    "react/promise-stream": "^1.7",
-    "react/promise-timer": "^1.11",
-    "react/socket": "^1.17",
-    "rmccue/requests": "^2.0.21"
+    "pear/http_request2": "^2.8"
   },
   "minimum_stable_versions": {
-    "clue/http-proxy-react": {
-      "1": "1.10.0"
+    "pear/http_request2": {
+      "2": "2.8.0"
     },
-    "react/event-loop": {
-      "1": "1.6.0"
+    "pear/net_url2": {
+      "2": "2.2.3"
     },
-    "react/promise-stream": {
-      "1": "1.7.0"
-    },
-    "react/promise-timer": {
-      "1": "1.11.0"
-    },
-    "react/socket": {
-      "1": "1.17.0"
-    },
-    "rmccue/requests": {
-      "2": "2.0.21"
+    "pear/pear_exception": {
+      "1": "1.0.2"
     }
+  },
+  "required_conflicts": {
+    "pear/net_url2": "<2.2.3",
+    "pear/pear_exception": "<1.0.2"
   }
 }

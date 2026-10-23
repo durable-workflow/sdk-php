@@ -20,7 +20,6 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\StreamFactoryInterface;
 use Psr\Http\Message\StreamInterface;
 use GuzzleHttp\HandlerStack;
-use React\Promise\Timer\TimeoutException;
 use Throwable;
 
 /** Default PSR-18 JSON and bounded runtime-payload transport. */
@@ -153,7 +152,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     private function isTimeout(Throwable $exception): bool
     {
         do {
-            if ($exception instanceof TimeoutException) {
+            if ($exception instanceof \HTTP_Request2_Exception && $exception->getCode() === \HTTP_Request2_Exception::TIMEOUT) {
                 return true;
             }
             $exception = $exception->getPrevious();
@@ -410,9 +409,10 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             }
 
             return $this->client->sendRequest($request);
-        } catch (TransportException $exception) {
-            throw $exception;
         } catch (Throwable $exception) {
+            if ($controlTimeout !== null && $exception instanceof TransportException) {
+                throw $exception;
+            }
             if ($controlTimeout !== null && ($timedOut || $this->isTimeout($exception))) {
                 throw $this->controlTimeoutFailure($exception, $controlTimeout);
             }

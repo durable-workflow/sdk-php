@@ -16,7 +16,8 @@ $authentication = new class implements DurableWorkflow\Auth\Authentication {
 $transport = $profile === 'injected' ? new DurableWorkflow\Transport\Psr18Transport(
     new GuzzleHttp\Client(['verify' => $caFile, 'timeout' => (float) $seconds]),
 ) : null;
-$client = new DurableWorkflow\Client($url, authentication: $authentication,
+$client = new DurableWorkflow\Client($profile === 'uri_basic' ? str_replace('://', '://uri-user:uri-pass@', $url) : $url,
+    authentication: $profile === 'uri_basic' ? null : $authentication,
     transport: $transport, requestTimeoutSeconds: $transport === null ? (float) $seconds : null);
 $started = hrtime(true);
 try {
@@ -31,7 +32,7 @@ try {
         default => throw new InvalidArgumentException('Unknown control fixture operation.'),
     };
     if ($profile === 'dynamic') {
-        $client->withNamespace('billing')->listWorkflows();
+        $client->withNamespace('billing')->listWorkflows(['workflow_type' => 'case/空间?']);
     }
     echo json_encode(['outcome' => 'response', 'elapsed' => (hrtime(true) - $started) / 1e9], JSON_THROW_ON_ERROR)."\n";
 } catch (DurableWorkflow\Exception\ServerException $error) {
