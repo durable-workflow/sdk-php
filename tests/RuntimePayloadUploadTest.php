@@ -156,6 +156,21 @@ final class RuntimePayloadUploadTest extends TestCase
         self::assertCount(1, $http->requests);
     }
 
+    public function testWholeFloatMetadataCountsItsActualHttpBytesBeforeAnyUpload(): void
+    {
+        $policy = self::discovery();
+        $policy['limits']['max_payload_bytes'] = 2500;
+        [$client, $http] = $this->client($policy);
+        try {
+            $client->startWorkflow('echo', 'one', 'queue', [], memo: ['values' => array_fill(0, 800, 1.0)]);
+            self::fail('Expected whole-float metadata to exceed the actual HTTP byte limit.');
+        } catch (ExternalPayloadException $exception) {
+            self::assertSame(413, $exception->status);
+            self::assertSame('payload_too_large', $exception->reason);
+        }
+        self::assertCount(1, $http->requests);
+    }
+
     public function testExactThresholdRemainsInlineAndOverLimitNeverUploads(): void
     {
         $blob = (new AvroPayloadCodec())->encode(['limit']);
