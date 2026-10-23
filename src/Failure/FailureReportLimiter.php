@@ -245,10 +245,28 @@ final class FailureReportLimiter
         $result = [];
         foreach (['message', 'stack_trace', 'exception.message', ...self::METADATA] as $field) {
             $entry = $fields[$field] ?? null;
-            $bytes = is_array($entry) ? ($entry['original_bytes'] ?? null) : null;
-            if (is_int($bytes) && $bytes >= 0) {
-                $result[$field] = ['original_bytes' => $bytes];
+            $retained = is_array($entry) ? $this->priorField($entry) : [];
+            if ($retained !== []) {
+                $result[$field] = $retained;
             }
+        }
+        return $result;
+    }
+
+    /** @param array<string, mixed> $entry
+     * @return array<string, mixed>
+     */
+    private function priorField(array $entry): array
+    {
+        $result = [];
+        $bytes = $entry['original_bytes'] ?? null;
+        if (is_int($bytes) && $bytes >= 0) {
+            $result['original_bytes'] = $bytes;
+        }
+        if (($entry['omitted'] ?? null) === true) {
+            $result['omitted'] = true;
+            $serialized = $entry['original_serialized_bytes'] ?? null;
+            $result['original_serialized_bytes'] = is_int($serialized) && $serialized >= 0 ? $serialized : null;
         }
         return $result;
     }

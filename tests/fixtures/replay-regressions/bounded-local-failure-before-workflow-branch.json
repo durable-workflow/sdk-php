@@ -1,0 +1,40 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-bounded-local-failure-before-workflow-branch",
+  "protocol_version": "1.18",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.bounded-local-failure",
+    "input": []
+  },
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_type": "golden.bounded-local-failure"
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "record_local_activity",
+        "outcome": "failed",
+        "exception_type": "RuntimeException",
+        "non_retryable": false
+      },
+      {
+        "type": "complete_workflow",
+        "result": {
+          "marked": true,
+          "message_bytes": 63486,
+          "failure_type": "RuntimeException",
+          "non_retryable": false
+        }
+      }
+    ]
+  }
+}

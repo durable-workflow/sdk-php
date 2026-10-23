@@ -25,6 +25,7 @@ use RuntimeException;
 final class ReplayRegressionFixture
 {
     private const FIXTURE_SCHEMA = 'durable-workflow.replay-regression/v1';
+    private const BOUNDED_LOCAL_FAILURE = 'golden.bounded-local-failure';
 
     /** @return list<array<string, mixed>> */
     public static function executeFile(string $path): array
@@ -108,11 +109,17 @@ final class ReplayRegressionFixture
         }
         $localActivityInvocations = 0;
         $localActivityExecutor = in_array($workflowType, [
-            'golden.local-activity-terminal-failure', 'golden.local-activity-recovered', 'golden.prepared-local-cleanup',
+            self::BOUNDED_LOCAL_FAILURE, 'golden.local-activity-terminal-failure', 'golden.local-activity-recovered', 'golden.prepared-local-cleanup',
             'golden.prepared-local-group', 'golden.prepared-local-scoped-cleanup',
         ], true)
-            ? static function () use (&$localActivityInvocations): array {
+            ? static function () use (&$localActivityInvocations, $workflowType): array {
                 ++$localActivityInvocations;
+                if ($workflowType === self::BOUNDED_LOCAL_FAILURE) {
+                    $message = str_repeat('雪', 1024 * 1024);
+                    return ['outcome' => 'failed', 'message' => $message, 'exception_type' => RuntimeException::class,
+                        'non_retryable' => false, 'attempts' => [['attempt_number' => 1, 'outcome' => 'failed',
+                            'message' => $message, 'exception_type' => RuntimeException::class, 'non_retryable' => false, 'heartbeats' => []]]];
+                }
 
                 return [
                     'outcome' => 'completed',
@@ -194,7 +201,11 @@ final class ReplayRegressionFixture
                 'exception_type' => $exception::class,
             ]];
         }
-        if ($localActivityInvocations !== 0) {
+        if ($workflowType === self::BOUNDED_LOCAL_FAILURE) {
+            if ($localActivityInvocations !== 1) {
+                throw new RuntimeException("{$identity} must execute its fresh local failure exactly once.");
+            }
+        } elseif ($localActivityInvocations !== 0) {
             throw new RuntimeException("{$identity} repeated a recorded local activity during cold replay.");
         }
         $declaredCommands = $fixture['command_sequence'] ?? null;
@@ -582,6 +593,16 @@ final class ReplayRegressionFixture
                 ]);
 
                 return ['key' => $selected->key];
+            },
+            self::BOUNDED_LOCAL_FAILURE => static function (WorkflowContext $context): array {
+                try {
+                    $context->localActivity('golden.bounded-local-failure', [], ['retry_policy' => ['max_attempts' => 1]]);
+                    return ['unexpected_success' => true];
+                } catch (ActivityFailed $failure) {
+                    return ['marked' => str_contains($failure->getMessage(), '[truncated failure report;'),
+                        'message_bytes' => strlen($failure->getMessage()), 'failure_type' => $failure->failureType,
+                        'non_retryable' => $failure->nonRetryable];
+                }
             },
             'golden.local-activity-recovered' => static fn (WorkflowContext $context): mixed =>
                 $context->localActivity('golden.local-receipt'),

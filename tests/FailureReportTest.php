@@ -147,6 +147,8 @@ final class FailureReportTest extends TestCase
         self::assertFalse($body['failure']['non_retryable']);
         self::assertStringContainsString('[truncated failure report;', $body['failure']['message']);
         self::assertArrayNotHasKey('details', $body['failure']);
+        self::assertSame(JsonDocument::size($client->payloadCodec()->envelope(['oversized' => str_repeat('d', 100000)])),
+            $body['failure']['diagnostics']['truncation']['fields']['details']['original_serialized_bytes'] ?? null);
     }
 
     public function testSmallTransportBudgetRetainsMarkersInsteadOfAnArbitraryContentFloor(): void

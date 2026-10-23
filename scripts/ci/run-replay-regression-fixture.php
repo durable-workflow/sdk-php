@@ -377,6 +377,7 @@ final class ReplayRegressionAttributedNestedWorkflow
 final class ReplayRegressionConsumer
 {
     private const FIXTURE_SCHEMA = 'durable-workflow.replay-regression/v1';
+    private const BOUNDED_LOCAL_FAILURE = 'golden.bounded-local-failure';
 
     public static function executeFile(string $path): void
     {
@@ -564,6 +565,16 @@ final class ReplayRegressionConsumer
                 },
             );
         }
+        if ($workflowType === self::BOUNDED_LOCAL_FAILURE) {
+            $worker->registerActivity(self::BOUNDED_LOCAL_FAILURE,
+                static function (ActivityContext $context) use (&$localActivityInvocations): never {
+                    if ($context->activityType !== self::BOUNDED_LOCAL_FAILURE) {
+                        throw new RuntimeException('Unexpected bounded-local activity context.');
+                    }
+                    ++$localActivityInvocations;
+                    throw new RuntimeException(str_repeat('雪', 1024 * 1024));
+                });
+        }
         if ($workflowType === 'golden.activity-completion-backend-loss') {
             $worker->registerActivity(
                 'golden.backend-recovery',
@@ -581,7 +592,7 @@ final class ReplayRegressionConsumer
         if ($workflowType === 'golden.workflow-lease-recovery') {
             $worker->tick(0);
         }
-        if ($localActivityInvocations !== ($workflowType === 'golden.activity-completion-backend-loss' ? 1 : 0)) {
+        if ($localActivityInvocations !== (in_array($workflowType, ['golden.activity-completion-backend-loss', self::BOUNDED_LOCAL_FAILURE], true) ? 1 : 0)) {
             throw new RuntimeException("{$identity} repeated a recorded local activity during cold replay.");
         }
 
@@ -871,6 +882,16 @@ final class ReplayRegressionConsumer
                 ]);
 
                 return ['key' => $selected->key];
+            },
+            self::BOUNDED_LOCAL_FAILURE => static function (WorkflowContext $context): array {
+                try {
+                    $context->localActivity('golden.bounded-local-failure', [], ['retry_policy' => ['max_attempts' => 1]]);
+                    return ['unexpected_success' => true];
+                } catch (ActivityFailed $failure) {
+                    return ['marked' => str_contains($failure->getMessage(), '[truncated failure report;'),
+                        'message_bytes' => strlen($failure->getMessage()), 'failure_type' => $failure->failureType,
+                        'non_retryable' => $failure->nonRetryable];
+                }
             },
             'golden.local-activity-recovered' => static fn (WorkflowContext $context): mixed =>
                 $context->localActivity('golden.local-receipt'),
