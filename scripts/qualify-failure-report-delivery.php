@@ -103,7 +103,7 @@ $worker->registerWorkflow('qualification.failure', $workflowHandler);
 $worker->registerActivity('qualification.failure.local', static function (DurableWorkflow\Worker\ActivityContext $_context): never {
     throw new FailureDeliveryQualificationException(str_repeat('雪', 1024 * 1024));
 });
-$client->registerWorker($workerId, $queue, ['qualification.failure'], [], ['sticky_execution', 'typed_search_attributes'],
+$client->registerWorker($workerId, $queue, ['qualification.failure'], [], ['sticky_execution', 'typed_search_attributes', 'local_activities'],
     workflowCommandContracts: $worker->contracts()['workflow_commands']);
 $client->registerWorker($activityWorkerId, $queue, [], ['qualification.failure.activity']);
 $result = ['sdk_version' => Composer\InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
