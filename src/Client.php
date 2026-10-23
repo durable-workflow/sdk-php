@@ -36,6 +36,11 @@ use DurableWorkflow\Model\WorkflowStreamAppendResult;
 use DurableWorkflow\Model\WorkflowStreamDescription;
 use DurableWorkflow\Model\WorkflowStreamItem;
 use DurableWorkflow\Model\WorkflowStreamPage;
+use DurableWorkflow\Metrics\ClientRequestObservation;
+use DurableWorkflow\Metrics\MetricsObserver;
+use DurableWorkflow\Metrics\MetricsRecorder;
+use DurableWorkflow\Metrics\MetricsRoutes;
+use DurableWorkflow\Metrics\NoopMetricsRecorder;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Transport\BoundedTransport;
 use DurableWorkflow\Transport\BoundedPayloadTransport;
@@ -79,6 +84,8 @@ final class Client implements WorkflowClientInterface
     private ?string $activityLeaseBootstrap = null;
     private ?ExecutionTelemetry $executionTelemetry = null;
     private bool $observabilityContextSupported = false;
+    private MetricsObserver $metricsObserver;
+    private ?ClientRequestObservation $metricsRequest = null;
     /** @var (\Closure(string, array<string, mixed>|null, array<string, mixed>, RequestBudget|null): (?\Closure))|null */
     private ?\Closure $workerPayloadObserver = null;
 
@@ -94,6 +101,7 @@ final class Client implements WorkflowClientInterface
         public readonly int $maxExternalPayloadBytes = 67108864,
         public readonly string $workerProtocolVersion = Version::WORKER_PROTOCOL,
         ?float $requestTimeoutSeconds = null,
+        ?MetricsRecorder $metrics = null,
     ) {
         if (trim($baseUri) === '') {
             throw new InvalidArgumentException('The Durable Workflow server URI cannot be empty.');
@@ -135,11 +143,26 @@ final class Client implements WorkflowClientInterface
         $this->codec = $codec ?? new AvroPayloadCodec();
         $this->payloadUploads = new RuntimePayloadUploads($this->transport, $this->baseUri);
         $this->activityLeaseBinding = new ActivityLeaseBinding();
+        $this->metricsObserver = new MetricsObserver($metrics ?? new NoopMetricsRecorder());
     }
 
     public function payloadCodec(): PayloadCodec
     {
         return $this->codec;
+    }
+
+    public function metricsRecorder(): MetricsRecorder
+    {
+        return $this->metricsObserver->recorder;
+    }
+
+    public function withMetrics(MetricsRecorder $metrics): self
+    {
+        $copy = clone $this;
+        $copy->metricsObserver = new MetricsObserver($metrics);
+        $copy->metricsRequest = null;
+
+        return $copy;
     }
 
     /**
@@ -2555,6 +2578,23 @@ final class Client implements WorkflowClientInterface
      */
     private function pollTaskResponse(string $path, array $body): array
     {
+        if (!$this->metricsObserver->enabled()) {
+            return $this->performPollTaskResponse($path, $body);
+        }
+
+        return $this->observeRequest('POST', $path, true, function (ClientRequestObservation $observation) use ($path, $body): array {
+            $copy = clone $this;
+            $copy->metricsRequest = $observation;
+
+            return $copy->performPollTaskResponse($path, $body);
+        });
+    }
+
+    /** @param array<string, mixed> $body
+     * @return array<string, mixed>
+     */
+    private function performPollTaskResponse(string $path, array $body): array
+    {
         $retryTransientFailure = true;
         while (true) {
             try {
@@ -2612,6 +2652,50 @@ final class Client implements WorkflowClientInterface
         ?\Closure $payloadPaths = null,
         ?string $requestId = null,
     ): array {
+        if ($this->metricsRequest !== null || !$this->metricsObserver->enabled()) {
+            return $this->performRequest($method, $path, $worker, $body, $operation, $budget, $payloadPaths, $requestId, $this->metricsRequest);
+        }
+
+        return $this->observeRequest($method, $path, $worker,
+            fn (ClientRequestObservation $observation): array => $this->performRequest(
+                $method, $path, $worker, $body, $operation, $budget, $payloadPaths, $requestId, $observation));
+    }
+
+    /** @param \Closure(ClientRequestObservation): array<string, mixed> $operation
+     * @return array<string, mixed>
+     */
+    private function observeRequest(string $method, string $path, bool $worker, \Closure $operation): array
+    {
+        $observation = new ClientRequestObservation($this->metricsObserver, $method,
+            MetricsRoutes::template($path), $worker ? 'worker' : 'control');
+        try {
+            return $operation($observation);
+        } catch (\Throwable $error) {
+            $observation->failed($error);
+            throw $error;
+        } finally {
+            $observation->finish();
+        }
+    }
+
+    /** @param array<string, mixed>|null $body
+     * @param (\Closure(array<string, mixed>): list<list<int|string>>)|null $payloadPaths
+     * @return array<string, mixed>
+     */
+    private function performRequest(
+        string $method,
+        string $path,
+        bool $worker,
+        ?array $body,
+        ?string $operation,
+        ?RequestBudget $budget,
+        ?\Closure $payloadPaths,
+        ?string $requestId,
+        ?ClientRequestObservation $observation,
+    ): array {
+        if ($observation !== null) {
+            $observation->status = null;
+        }
         $headers = $this->requestHeaders($worker);
         try {
             $callerBudget = $budget;
@@ -2629,13 +2713,17 @@ final class Client implements WorkflowClientInterface
                 $activityLease->checkRequest($body);
                 $budget?->restrictAuthorityDeadline($activityLease->publicationDeadline());
             }
-            if ($worker && $this->boundedWorkerRequests) {
-                if (!$this->transport instanceof BoundedTransport || !$this->transport->supportsBoundedRequests()) {
-                    throw new InvalidArgumentException('The cooperative worker transport no longer supports bounded requests.');
+            try {
+                if ($worker && $this->boundedWorkerRequests) {
+                    if (!$this->transport instanceof BoundedTransport || !$this->transport->supportsBoundedRequests()) {
+                        throw new InvalidArgumentException('The cooperative worker transport no longer supports bounded requests.');
+                    }
+                    $response = $this->transport->sendBounded($method, $this->baseUri.'/api'.$path, $headers, $body, $budget->remainingSeconds());
+                } else {
+                    $response = $this->transport->send($method, $this->baseUri.'/api'.$path, $headers, $body);
                 }
-                $response = $this->transport->sendBounded($method, $this->baseUri.'/api'.$path, $headers, $body, $budget->remainingSeconds());
-            } else {
-                $response = $this->transport->send($method, $this->baseUri.'/api'.$path, $headers, $body);
+            } finally {
+                $observation?->captureStatus($this->transport);
             }
 
             $budget?->remainingSeconds();

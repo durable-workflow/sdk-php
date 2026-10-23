@@ -50,6 +50,8 @@ use DurableWorkflow\Worker\WorkerSessionOptions;
 use DurableWorkflow\Worker\WorkflowCommand;
 use DurableWorkflow\Transport\RequestBudget;
 use DurableWorkflow\Telemetry\ExecutionTelemetry;
+use DurableWorkflow\Metrics\MetricsObserver;
+use DurableWorkflow\Metrics\MetricsRecorder;
 use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
@@ -96,6 +98,7 @@ final class Worker
     private readonly HandlerDiscovery $handlerDiscovery;
     private readonly LoggerInterface $logger;
     private readonly StickyWorkflowCache $stickyCache;
+    private readonly MetricsObserver $metricsObserver;
     /** @var array<string, WorkerSessionOptions> */
     private array $activeWorkerSessions = [];
     /** @var array<string, mixed>|null */
@@ -142,6 +145,7 @@ final class Worker
         private readonly bool $enableCancellationScopes = false,
         private readonly bool $requireQueryTaskAuthority = false,
         private readonly ?ExecutionTelemetry $telemetry = null,
+        ?MetricsRecorder $metrics = null,
     ) {
         if ($enableCancellationScopes && !$enableCooperativeCancellation) {
             throw new \InvalidArgumentException('Cancellation scopes require the cooperative worker opt-in.');
@@ -172,6 +176,7 @@ final class Worker
             ? null
             : \Closure::fromCallable($diagnosticListener);
         $this->stickyCache = new StickyWorkflowCache($stickyCacheCapacity, $stickyCacheTtlSeconds, $this->clock);
+        $this->metricsObserver = new MetricsObserver($metrics ?? $client->metricsRecorder());
     }
 
     /**
@@ -189,6 +194,7 @@ final class Worker
         int $stickyCacheTtlSeconds = 300,
         bool $requireQueryTaskAuthority = false,
         ?ExecutionTelemetry $telemetry = null,
+        ?MetricsRecorder $metrics = null,
     ): self {
         return new self(
             $client,
@@ -200,6 +206,7 @@ final class Worker
             stickyCacheTtlSeconds: $stickyCacheTtlSeconds,
             requireQueryTaskAuthority: $requireQueryTaskAuthority,
             telemetry: $telemetry,
+            metrics: $metrics,
         );
     }
 
@@ -891,7 +898,7 @@ final class Worker
                     return null;
                 }
 
-                return $poll($requestId, $timeoutSeconds);
+                return $this->observePoll($taskKind, fn (): array => $poll($requestId, $timeoutSeconds));
             } catch (WorkflowClaimRevoked $exception) {
                 if ($taskKind === 'activity') {
                     $this->stopActivityLease();
@@ -1122,6 +1129,34 @@ final class Worker
         }
 
         return min(self::MAX_TRANSIENT_RETRY_DELAY_SECONDS, $delaySeconds);
+    }
+
+    /** @param \Closure(): array<string, mixed> $operation
+     * @return array<string, mixed>
+     */
+    private function observePoll(string $taskKind, \Closure $operation): array
+    {
+        if (!$this->metricsObserver->enabled()) {
+            return $operation();
+        }
+        $started = hrtime(true);
+        $outcome = 'error';
+        try {
+            $response = $operation();
+            $outcome = is_array($response['task'] ?? null) ? 'task'
+                : (PollResponse::isTerminal($response) ? 'stopped' : 'empty');
+
+            return $response;
+        } catch (ServerException $error) {
+            if ($error->status === 429
+                || ($error->status === 503 && $error->reason === 'backend_lock_pressure' && PollResponse::isTransientFailure($error))) {
+                $outcome = 'backpressure';
+            }
+            throw $error;
+        } finally {
+            $this->metricsObserver->observe('worker_poll', (hrtime(true) - $started) / 1e9,
+                ['task_kind' => $taskKind, 'task_queue' => $this->taskQueue, 'outcome' => $outcome]);
+        }
     }
 
     private function waitForTransientRetry(float $delaySeconds): void
