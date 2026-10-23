@@ -19,7 +19,20 @@ final class ControlSocketAdapter extends \HTTP_Request2_Adapter_Socket
         }
         $this->request->setConfig(['timeout' => $remaining, 'connect_timeout' => $remaining]);
 
-        $keepAlive = parent::connect();
+        $tunnel = $this->request->getMethod() === \HTTP_Request2::METHOD_CONNECT;
+        $connection = $this->request->getHeaders()['connection'] ?? null;
+        if ($tunnel) {
+            // Open our own socket without adding a Connection: close directive
+            // to the CONNECT request sent to the configured proxy.
+            $this->request->setHeader('Connection', 'close');
+        }
+        try {
+            $keepAlive = parent::connect();
+        } finally {
+            if ($tunnel) {
+                $this->request->setHeader('Connection', $connection);
+            }
+        }
         if (strtolower((string) $this->request->getUrl()->getScheme()) === 'https'
             && $this->request->getMethod() !== \HTTP_Request2::METHOD_CONNECT) {
             $this->request->setHeader('Proxy-Authorization');
@@ -37,7 +50,6 @@ final class ControlSocketAdapter extends \HTTP_Request2_Adapter_Socket
         if (isset($headers['proxy-authorization'])) {
             $connect->setHeader('Proxy-Authorization', $headers['proxy-authorization']);
         }
-        $connect->setHeader('Connection', 'close');
         $response = $connect->send();
         if ($response->getStatus() < 200 || $response->getStatus() >= 300) {
             throw new \HTTP_Request2_ConnectionException('The HTTP CONNECT proxy refused the tunnel: '.$response->getStatus().'.');
