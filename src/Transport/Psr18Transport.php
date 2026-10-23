@@ -104,14 +104,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     {
         $controlTimeout = $timeoutSeconds === null && $this->isControlRequest($headers) ? $this->requestTimeoutSeconds : null;
         try {
-            $request = $this->requestFactory->createRequest(strtoupper($method), $uri);
-            foreach ($headers as $name => $value) {
-                $request = $request->withHeader($name, $value);
-            }
-            if ($body !== null) {
-                $json = json_encode($body, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-                $request = $request->withBody($this->streamFactory->createStream($json));
-            }
+            $request = $this->createJsonRequest($method, $uri, $headers, $body);
             $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout ?? 30,
                 bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout);
             $rawBody = (string) $response->getBody();
@@ -138,6 +131,24 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             }
             throw new TransportException('HTTP request failed: '.$exception->getMessage(), previous: $exception);
         }
+    }
+
+    /**
+     * @param array<string, string> $headers
+     * @param array<string, mixed>|null $body
+     */
+    private function createJsonRequest(string $method, string $uri, array $headers, ?array $body): RequestInterface
+    {
+        $request = $this->requestFactory->createRequest(strtoupper($method), $uri);
+        foreach ($headers as $name => $value) {
+            $request = $request->withHeader($name, $value);
+        }
+        if ($body !== null) {
+            $json = json_encode($body, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            $request = $request->withBody($this->streamFactory->createStream($json));
+        }
+
+        return $request;
     }
 
     /** @param array<string, string> $headers */
@@ -385,42 +396,62 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             if ($http instanceof GuzzleClient) {
                 $onStats = $http->getConfig('on_stats');
 
-                return $http->send($request, [
-                    'synchronous' => true,
-                    'http_errors' => false,
-                    'allow_redirects' => false,
-                    ...($bounded ? ['stream' => false] : ($stream ? ['stream' => true] : [])),
-                    ...($sink !== null ? ['stream' => false, 'sink' => $sink] : []),
-                    ...($progress !== null ? ['progress' => $progress] : []),
-                    ...($stream || $bounded ? ['timeout' => $timeoutSeconds, 'read_timeout' => $timeoutSeconds,
-                        'connect_timeout' => $timeoutSeconds] : []),
-                    'on_stats' => static function (TransferStats $stats) use (&$connectionFailure, &$timedOut, $onStats): void {
-                        // Guzzle 8 no longer attaches cURL errno to exceptions.
-                        // Accept only DNS/connect/timeout/closed-connection errors,
-                        // never TLS, invalid options, or an unclassified PSR error.
-                        $connectionFailure = !$stats->hasResponse()
-                            && in_array($stats->getHandlerErrorData(), [5, 6, 7, 28, 52, 55, 56], true);
-                        $timedOut = $stats->getHandlerErrorData() === 28;
-                        if (is_callable($onStats)) {
-                            $onStats($stats);
-                        }
-                    },
-                ]);
+                $options = $this->guzzleRequestOptions($stream, $timeoutSeconds, $bounded, $sink, $progress);
+                $options['on_stats'] = static function (TransferStats $stats) use (&$connectionFailure, &$timedOut, $onStats): void {
+                    // Guzzle 8 no longer attaches cURL errno to exceptions.
+                    // Accept only DNS/connect/timeout/closed-connection errors,
+                    // never TLS, invalid options, or an unclassified PSR error.
+                    $connectionFailure = !$stats->hasResponse()
+                        && in_array($stats->getHandlerErrorData(), [5, 6, 7, 28, 52, 55, 56], true);
+                    $timedOut = $stats->getHandlerErrorData() === 28;
+                    if (is_callable($onStats)) {
+                        $onStats($stats);
+                    }
+                };
+
+                return $http->send($request, $options);
             }
 
             return $this->client->sendRequest($request);
         } catch (Throwable $exception) {
-            if ($controlTimeout !== null && $exception instanceof TransportException) {
-                throw $exception;
-            }
-            if ($controlTimeout !== null && ($timedOut || $this->isTimeout($exception))) {
-                throw $this->controlTimeoutFailure($exception, $controlTimeout);
-            }
-            throw new TransportException(
-                'HTTP request failed: '.$exception->getMessage(),
-                previous: $exception,
-                transientConnectionFailure: $connectionFailure && $exception instanceof NetworkExceptionInterface,
-            );
+            throw $this->requestFailure($exception, $controlTimeout, $timedOut, $connectionFailure);
         }
+    }
+
+    /** @return array<string, mixed> */
+    private function guzzleRequestOptions(bool $stream, int|float $timeoutSeconds, bool $bounded, ?StreamInterface $sink, ?\Closure $progress): array
+    {
+        $options = ['synchronous' => true, 'http_errors' => false, 'allow_redirects' => false];
+        if ($bounded || $sink !== null) {
+            $options['stream'] = false;
+        } elseif ($stream) {
+            $options['stream'] = true;
+        }
+        if ($sink !== null) {
+            $options['sink'] = $sink;
+        }
+        if ($progress !== null) {
+            $options['progress'] = $progress;
+        }
+        if ($stream || $bounded) {
+            $options += ['timeout' => $timeoutSeconds, 'read_timeout' => $timeoutSeconds, 'connect_timeout' => $timeoutSeconds];
+        }
+
+        return $options;
+    }
+
+    private function requestFailure(Throwable $exception, ?float $controlTimeout, bool $timedOut, bool $connectionFailure): TransportException
+    {
+        if ($controlTimeout !== null) {
+            if ($exception instanceof TransportException) {
+                return $exception;
+            }
+            if ($timedOut || $this->isTimeout($exception)) {
+                return $this->controlTimeoutFailure($exception, $controlTimeout);
+            }
+        }
+
+        return new TransportException('HTTP request failed: '.$exception->getMessage(), previous: $exception,
+            transientConnectionFailure: $connectionFailure && $exception instanceof NetworkExceptionInterface);
     }
 }

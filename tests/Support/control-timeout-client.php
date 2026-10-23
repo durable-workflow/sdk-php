@@ -16,9 +16,15 @@ $authentication = new class implements DurableWorkflow\Auth\Authentication {
 $transport = $profile === 'injected' ? new DurableWorkflow\Transport\Psr18Transport(
     new GuzzleHttp\Client(['verify' => $caFile, 'timeout' => (float) $seconds]),
 ) : null;
-$client = new DurableWorkflow\Client($profile === 'uri_basic' ? str_replace('://', '://uri-user:uri-pass@', $url) : $url,
-    authentication: $profile === 'uri_basic' ? null : $authentication,
-    transport: $transport, requestTimeoutSeconds: $transport === null ? (float) $seconds : null);
+$arguments = [
+    'baseUri' => $profile === 'uri_basic' ? str_replace('://', '://uri-user:uri-pass@', $url) : $url,
+    'authentication' => $profile === 'uri_basic' ? null : $authentication,
+    'transport' => $transport,
+];
+if ($profile !== 'published_baseline') {
+    $arguments['requestTimeoutSeconds'] = $transport === null ? (float) $seconds : null;
+}
+$client = new DurableWorkflow\Client(...$arguments);
 $started = hrtime(true);
 try {
     match ($operation) {

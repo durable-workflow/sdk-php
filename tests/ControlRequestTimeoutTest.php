@@ -210,6 +210,10 @@ final class ControlRequestTimeoutTest extends TestCase
                 $result = $this->runClient($directory, $url, $native, caFile: $caFile,
                     environment: ['HTTP_PROXY' => $proxyUrl, 'HTTPS_PROXY' => $proxyUrl, 'NO_PROXY' => '']);
                 if ($tlsProxy) {
+                    $report = getenv('SDK_PROXY_COMPATIBILITY_REPORT');
+                    if ($native && $report !== false) {
+                        file_put_contents($report, json_encode($result, JSON_THROW_ON_ERROR)."\n", FILE_APPEND);
+                    }
                     // Preserve libcurl's separate proxy trust policy. A private
                     // proxy CA is not implicitly trusted by this origin CA.
                     self::assertSame('error', $result['outcome']);
@@ -343,6 +347,9 @@ final class ControlRequestTimeoutTest extends TestCase
 
     private function runClient(string $directory, string $url, bool $native, string $profile = 'default', string $caFile = '', string $operation = 'list', string $seconds = '0.5', ?array $environment = null): array
     {
+        if ($profile === 'default' && getenv('SDK_CONTROL_PUBLISHED_BASELINE') === '1') {
+            $profile = 'published_baseline';
+        }
         $command = [PHP_BINARY];
         if ($native) {
             array_push($command, '-d', 'disable_functions=curl_exec,curl_multi_exec');
