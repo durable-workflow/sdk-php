@@ -1,0 +1,3 @@
+^/api/worker/workflow-tasks/[^/]+/heartbeat$ healthy
+^/api/worker/workflow-tasks/[^/]+/complete$ healthy
+^/api/worker/activity-tasks/[^/]+/complete$ healthy
