@@ -6,6 +6,15 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-10-23
+
+### Fixed
+
+- Keep workers running after temporary proxy or connection failures during a
+  claimed workflow lease renewal, workflow completion or activity completion.
+  Retries retain the original task fence and computed commands or result, so
+  an uncertain completion does not invoke the handler again.
+
 ## [3.2.0] - 2026-10-21
 
 ### Added
@@ -614,7 +623,8 @@ project follows [Semantic Versioning](https://semver.org/).
   cancellation, and graceful shutdown.
 - Generated API reference and supported PHP-version CI.
 
-[Unreleased]: https://github.com/durable-workflow/sdk-php/compare/3.2.0...HEAD
+[Unreleased]: https://github.com/durable-workflow/sdk-php/compare/3.2.1...HEAD
+[3.2.1]: https://github.com/durable-workflow/sdk-php/compare/3.2.0...3.2.1
 [3.2.0]: https://github.com/durable-workflow/sdk-php/compare/3.1.0...3.2.0
 [0.1.12]: https://github.com/durable-workflow/sdk-php/compare/0.1.11...0.1.12
 [0.1.11]: https://github.com/durable-workflow/sdk-php/compare/0.1.10...0.1.11

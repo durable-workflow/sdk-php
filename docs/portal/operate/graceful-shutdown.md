@@ -57,6 +57,20 @@ worker can notice shutdown promptly.
 
 ## Deregistration retries
 
+While a task is claimed, temporary connection failures and proxy HTTP failures
+such as 502, 503 and 504 retry the original fenced workflow lease renewal or
+completion request. A completion retry reuses the saved workflow commands or
+activity result without invoking the handler again. A lost reply may follow a
+committed outcome, so the Server reconciles the retry using the original task,
+lease owner and attempt. A revoked or expired claim cannot acquire a new fence
+through this retry.
+
+These retries use exponential backoff capped at five seconds. Shutdown stops
+the retry and leaves an unacknowledged outcome for Server recovery. Authentication
+errors, malformed successful replies and explicit nonretryable Server refusals
+remain errors. Client start, signal and update calls are not retried by this
+worker policy.
+
 With a Server that advertises `worker_deregistration_fencing`, the worker captures
 its registration token and uses it when deregistering. Temporary connection or
 database contention can be retried within one ten-second budget covering requests

@@ -1,3 +1,39 @@
+# Claimed-task proxy recovery
+
+`scripts/qualify-claimed-task-recovery.php` checks a normally installed SDK
+through real HAProxy routing to a killed Server node. It covers workflow lease
+renewal, workflow completion and activity completion separately. Each case
+requires one proxy 503, recovery in the original managed worker process,
+completion of later work, typed results and exactly one canonical completion per
+run. The socket-level PHPUnit matrix separately covers 502/503/504 and dropped
+connections both before and after completion commit.
+
+Use an isolated Compose project. Select exact published image digests and a
+directory containing an ordinary Composer installation of the SDK. Do not use
+a path repository or source override for published-package acceptance.
+
+```sh
+export DW_PUBLISHED_SERVER_IMAGE=durableworkflow/server@sha256:<published-digest>
+export DW_HAPROXY_IMAGE=haproxy@sha256:<published-digest>
+export DW_SDK_CONSUMER_PATH=/absolute/path/to/composer-consumer
+export COMPOSE_PROJECT_NAME=php-claimed-task-qualification
+export COMPOSE_FILE=docker-compose.claimed-task-recovery.yml
+docker compose up -d server target proxy
+docker compose kill -s SIGKILL target
+docker compose run --rm --no-deps qualify
+docker compose down -v --remove-orphans
+```
+
+Both nodes must pass readiness before the target is killed. HAProxy deliberately
+retains that node for the selected route until the first retry diagnostic, then
+switches the route to the healthy node. The SDK uses its default HTTP transport.
+The proxy admin socket stays inside the disposable network. No host ports are
+published. Record the runner commit, exact SDK reference and image digests, PHP,
+Avro and Guzzle versions, timestamps, outcome and original failures on the owning
+issue or PR. Remove the task containers, volumes and consumer after recording
+the result. Do not reuse this topology for production or point it at a shared
+runtime.
+
 # Runtime External Payload Restart
 
 `runtime-external-payloads.php` is a manual integration test against an isolated
