@@ -81,14 +81,11 @@ CPU attribution, retained-execution comparison, cache-heavy/miss-heavy controls
 and the complete1GiB aggregate-worker study remain separate qualification.
 No live-Fiber feature or full#113 acceptance follows from this harness.
 
-For separate function attribution, the optional
-[XHProf tool](https://www.php.net/manual/en/book.xhprof.php) can be loaded into
-the profiling container. `DW_PROFILE_XHPROF=1` enables parent-process CPU/call
-profiling during the managed worker interval. `DW_PROFILE_XHPROF_OUTPUT`
-selects a writable raw-profile artifact path. The receipt records the tool
-version, raw-profile hash and selected inclusive function edges. Profiled runs
-include instrumentation overhead; keep them separate from unprofiled latency
-and throughput comparisons. No profiler extension becomes an SDK requirement.
+An experimental XHProf2.3.10 call graph attributed later worker calls to
+suspended Fiber frames. Its original profile is retained on#113 and excluded
+from function CPU attribution. The isolated Replayer measurements use process
+CPU around a completed call with a fixed pure handler. They establish that
+component's cost; complete managed-worker CPU attribution remains separate.
 
 Retire only the diagnostic's uniquely named containers, volumes/network and
 consumer after retaining exact source, recipe, results and failed originals.

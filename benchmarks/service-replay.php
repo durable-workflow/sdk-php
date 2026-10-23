@@ -20,10 +20,6 @@ if (count($argv) < 5) {
     exit(2);
 }
 require_once $argv[1];
-$useProfiler = getenv('DW_PROFILE_XHPROF') === '1';
-if ($useProfiler && !function_exists('xhprof_enable')) {
-    throw new RuntimeException('The requested function profiling requires the optional XHProf tool extension.');
-}
 $trialSeconds = filter_var(getenv('DW_PROFILE_TRIAL_SECONDS') ?: '600', FILTER_VALIDATE_INT,
     ['options' => ['min_range' => 30, 'max_range' => 1800]]);
 if ($trialSeconds === false) {
@@ -220,16 +216,13 @@ $receipt = ['sdk_version' => InstalledVersions::getPrettyVersion('durable-workfl
     'php_version' => PHP_VERSION, 'namespace' => $namespace, 'worker_id' => $workerId, 'build_id' => $buildId,
     'deployment_promotion' => $promotion,
     'cycles_per_run' => $cycles, 'concurrent_runs' => $runs, 'timer_seconds' => $timerSeconds,
-    'trial_limit_seconds' => $trialSeconds, 'function_profiler' => $useProfiler ? 'xhprof-'.phpversion('xhprof') : null,
+    'trial_limit_seconds' => $trialSeconds,
     'worker_memory_limit_bytes' => profileCgroupValue('memory.max'),
     'worker_cpu_limit' => profileCgroupValue('cpu.max')];
 $started = hrtime(true);
 $cpu = profileCpuSeconds();
 $profileDeadline = microtime(true) + $trialSeconds;
 $active = true;
-if ($useProfiler) {
-    xhprof_enable(XHPROF_FLAGS_NO_BUILTINS | XHPROF_FLAGS_CPU);
-}
 try {
     $worker->run(1);
     $receipt['outcome'] = $expired ? 'profile_error' : 'measured';
@@ -240,25 +233,6 @@ try {
     $receipt['outcome'] = 'profile_error';
     $receipt['error'] = ['type' => $exception::class, 'message' => $exception->getMessage()];
 } finally {
-    if ($useProfiler) {
-        $profile = xhprof_disable();
-        $rawProfile = json_encode($profile, JSON_THROW_ON_ERROR);
-        $receipt['function_profile_sha256'] = hash('sha256', $rawProfile);
-        $receipt['function_profile_edges'] = count($profile);
-        $receipt['function_profile_units'] = ['ct' => 'calls', 'wt' => 'microseconds', 'cpu' => 'microseconds'];
-        $profilePath = getenv('DW_PROFILE_XHPROF_OUTPUT');
-        if ($profilePath !== false && file_put_contents($profilePath, $rawProfile."\n") === false) {
-            $receipt['outcome'] = 'profile_error';
-            $receipt['error'] = ['type' => 'profile_write_failed', 'message' => 'The raw function profile could not be retained.'];
-        }
-        foreach ($profile as $edge => $measurements) {
-            $symbols = explode('==>', $edge);
-            $callee = $symbols[count($symbols) - 1];
-            if (preg_match('/(?:Replayer::replay|Worker::(?:executeWorkflowTask|executeActivityTask|completeHistory)|ActivityLeaseProcess::(?:start|stop)|Psr18Transport::sendJson)$/D', $callee) === 1) {
-                $receipt['function_profile'][$edge] = $measurements;
-            }
-        }
-    }
     $active = false;
     $receipt['worker_wall_seconds'] = (hrtime(true) - $started) / 1e9;
     $receipt['worker_cpu_seconds'] = profileCpuSeconds() - $cpu;
