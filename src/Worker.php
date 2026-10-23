@@ -1024,15 +1024,21 @@ final class Worker
                     return null;
                 }
                 $backendUnavailable = $workflowBackendUnavailable || $activityBackendUnavailable;
+                // These requests retain their original lease fence and computed
+                // outcome. An uncertain reply retries the request, never the handler.
+                $claimedTaskTransportFailure = ($workflowTaskLease !== null
+                        || ($operation === 'activity_complete' && $activityTaskLease !== null))
+                    && ($exception->isTransientConnectionFailure() || $exception->isTransientUpstreamFailure());
                 if ((!$exception->isStorageAdmissionFailure() && !$backendUnavailable && !$activityDiscoveryUnavailable
-                    && !$workflowCompletionDeferred)
+                    && !$workflowCompletionDeferred && !$claimedTaskTransportFailure)
                     || $this->shutdownRequested) {
                     if ($workflowCompletionDeferred && $this->shutdownRequested) {
                         throw new WorkflowClaimDeferred('Shutdown stopped the fenced workflow completion retry.');
                     }
                     throw $exception;
                 }
-                $uncertainActivityCompletion = $uncertainActivityCompletion || $activityBackendUnavailable;
+                $uncertainActivityCompletion = $uncertainActivityCompletion || $activityBackendUnavailable
+                    || ($operation === 'activity_complete' && $claimedTaskTransportFailure);
 
                 ++$attempt;
                 $delaySeconds = $this->transientRetryDelay($attempt, $exception->details['retry_after_seconds'] ?? null);

@@ -380,6 +380,8 @@ final class WorkerConnectionRecoveryTest extends TestCase
                 'payload_codec' => 'avro',
             ]],
             self::disconnected(),
+            ['recorded' => true, 'outcome' => 'completed'],
+            ['task' => null, 'poll_status' => 'empty'],
         ]);
         $calls = 0;
         $worker = new Worker(new Client('https://server.example', transport: $transport), 'orders', workerId: 'worker-1');
@@ -389,14 +391,10 @@ final class WorkerConnectionRecoveryTest extends TestCase
             return 'hello';
         });
 
-        try {
-            $worker->tick(0);
-            self::fail('Ambiguous task completion must remain available to the supervisor.');
-        } catch (ServerException $exception) {
-            self::assertTrue($exception->isTransientConnectionFailure());
-        }
+        self::assertTrue($worker->tick(0));
         self::assertSame(1, $calls);
-        self::assertCount(3, $transport->requests);
+        self::assertCount(5, $transport->requests);
+        self::assertSame($transport->requests[2], $transport->requests[3]);
         self::assertStringEndsWith('/activity-tasks/activity-1/complete', $transport->requests[2]['uri']);
     }
 
