@@ -157,7 +157,7 @@ register_shutdown_function(static function () use (&$result, $http, &$maintenanc
     }
 });
 $large = str_repeat('m', 3 * 1024 * 1024);
-foreach (['message', 'stack', 'combined', 'escaped', 'details', 'lower-limit', 'small'] as $kind) {
+foreach (['message', 'stack', 'combined', 'escaped', 'details', 'lower-limit', 'lower-details', 'small'] as $kind) {
     $handle = $control->startWorkflow('qualification.failure', $namespace.'-'.$kind, $queue, [$kind], runTimeoutSeconds: 120);
     $maintain();
     $worker->tick(0);
@@ -168,9 +168,13 @@ foreach (['message', 'stack', 'combined', 'escaped', 'details', 'lower-limit', '
     if ($kind === 'escaped') {
         $message = $stack = str_repeat("\0\"\\雪🦀", 300000);
     }
-    $details = $kind === 'details' ? ['nested' => ['cause' => $large]] : ['whole' => 1.0, 'zero' => -0.0];
+    $details = match ($kind) {
+        'details' => ['nested' => ['cause' => $large]],
+        'lower-details' => ['text' => str_repeat('d', 45000)],
+        default => ['whole' => 1.0, 'zero' => -0.0],
+    };
     $type = 'OriginalFailure.'.$kind;
-    $reporter = $kind === 'lower-limit' ? $client->withFailureReportLimit(4096) : $client;
+    $reporter = in_array($kind, ['lower-limit', 'lower-details'], true) ? $client->withFailureReportLimit(4096) : $client;
     $reporter->failActivityTask($task['task_id'], $task['activity_attempt_id'] ?? $task['attempt_id'], $task['lease_owner'],
         $message, $type, true, $details, $stack);
     $maintain();

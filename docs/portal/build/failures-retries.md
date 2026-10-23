@@ -146,6 +146,17 @@ escaping are included. If required identity or fixed request content cannot fit,
 reporting refusal requiring configuration or identity repair, rather than a new
 application failure or permission to publish under a different attempt.
 
+Successful local records keep their normal business-payload budget. When a
+completion includes both failure diagnostics and a large business result, the
+existing runtime upload protocol preserves the complete Avro payload while
+keeping the final failure request bounded. If fixed content cannot fit and the
+namespace cannot store that payload, reporting refuses explicitly. No partial
+business payload is published.
+
+Local callback failures normalize before workflow code branches on them. The
+first execution, persisted local record and fresh replay use the same bounded
+message, type and retry decision.
+
 Activity failures use existing diagnostic fields. Workflow-task failures use
 the existing stack string for structured truncation information. The published
 Server qualification records task failures and grants a legitimate retry turn,
