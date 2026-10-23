@@ -489,3 +489,13 @@ package against the local Laravel runtime. Service-mode release qualification
 must use published SDK artifacts against both the current standalone Server and
 managed Cloud; source-only or standalone-script execution is not bridge
 evidence.
+
+## Application HTTP request deadline
+
+The service-mode application client uses the SDK's 60-second total HTTP request
+deadline. Set `DURABLE_WORKFLOW_REQUEST_TIMEOUT_SECONDS=5` or
+`request_timeout_seconds` in `config/durable-workflow.php` to choose a positive
+number of seconds. Existing published config files can add that key explicitly.
+Worker polling, lease/heartbeat requests and payload-transfer clocks remain
+separate. See [client setup](/getting-started/client-setup/#bound-ordinary-http-requests)
+for timeout errors, custom transport policy and ambiguous mutation outcomes.

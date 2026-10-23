@@ -42,6 +42,12 @@ durable_workflow:
 
 Use a bare self-hosted Server origin or the complete provisioned Cloud namespace runtime URI. Inject the control token only into application processes and the worker token only into the Console worker. A local Server can instead use one `credentials.token` value sourced from `DURABLE_WORKFLOW_TOKEN`.
 
+Set optional `durable_workflow.request_timeout_seconds: 5.0` for the application
+control client. Omitting it uses the SDK's 60-second total HTTP request deadline.
+Worker polling and payload-transfer clocks remain separate. See [client
+setup](/getting-started/client-setup/#bound-ordinary-http-requests) for timeout
+errors, injected-client policy and ambiguous mutation outcomes.
+
 The Console worker's process-local history cache defaults to 100 histories and
 300 seconds. Optional `worker.sticky_cache.capacity` and
 `worker.sticky_cache.ttl_seconds` settings require positive integers; TTL cannot

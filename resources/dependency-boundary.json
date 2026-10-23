@@ -1,25 +1,24 @@
 {
   "schema": "durable-workflow.sdk-php.dependency-boundary/v1",
   "allowed_symfony_packages": [
-    "symfony/http-client",
-    "symfony/http-client-contracts",
-    "symfony/service-contracts",
+    "symfony/contracts",
     "symfony/deprecation-contracts",
+    "symfony/polyfill-ctype",
+    "symfony/polyfill-mbstring",
     "symfony/polyfill-php80",
     "symfony/polyfill-php81",
     "symfony/polyfill-php82",
     "symfony/polyfill-php83",
     "symfony/polyfill-php84",
-    "symfony/polyfill-php85"
+    "symfony/polyfill-php85",
+    "symfony/service-contracts"
   ],
   "required_constraints": {
-    "symfony/http-client": "^6.4.48|^7.4.21|^8.0.16"
+    "amphp/http-client": "^5.3.6"
   },
   "minimum_stable_versions": {
-    "symfony/http-client": {
-      "6": "6.4.48",
-      "7": "7.4.21",
-      "8": "8.0.16"
+    "amphp/http-client": {
+      "5": "5.3.6"
     }
   }
 }

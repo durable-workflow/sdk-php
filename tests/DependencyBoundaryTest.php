@@ -27,12 +27,15 @@ final class DependencyBoundaryTest extends TestCase
         $forbidden = [
             'laravel/',
             'illuminate/',
-            'symfony/',
             'durable-workflow/workflow',
             'durable-workflow/server',
         ];
 
+        $policy = json_decode((string) file_get_contents(dirname(__DIR__).'/resources/dependency-boundary.json'), true, flags: JSON_THROW_ON_ERROR);
         foreach ($requirements as $requirement) {
+            if (str_starts_with($requirement, 'symfony/')) {
+                self::assertContains($requirement, $policy['allowed_symfony_packages']);
+            }
             foreach ($forbidden as $prefix) {
                 self::assertFalse(str_starts_with(strtolower($requirement), $prefix), "Forbidden dependency {$requirement}");
             }

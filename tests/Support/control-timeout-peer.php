@@ -24,6 +24,10 @@ while (microtime(true) < $until) {
     }
     $line = fgets($peer);
     $parts = explode(' ', $line === false ? '' : $line);
+    if (count($parts) < 2) {
+        fclose($peer);
+        continue;
+    }
     $headers = [];
     while (($line = fgets($peer)) !== false && $line !== "\r\n") {
         $pair = explode(':', trim($line), 2);
@@ -42,22 +46,26 @@ while (microtime(true) < $until) {
     }
     file_put_contents($directory.'/requests', json_encode(['method' => $parts[0], 'path' => $parts[1],
         'headers' => $headers, 'body' => $body], JSON_THROW_ON_ERROR)."\n", FILE_APPEND | LOCK_EX);
+    $replyMode = str_starts_with($parts[1], '/api/cluster/info') ? 'echo' : $mode;
     if (str_starts_with($parts[1], '/api/cluster/info')) {
         $payload = '{"limits":{"max_payload_bytes":1048576}}';
-    } elseif ($mode === 'echo') {
+    } elseif ($replyMode === 'echo') {
         $payload = '{"status":"ok","workflows":[]}';
     } else {
         $payload = '{"workflows":[]}';
     }
-    if ($mode === 'stall' && !str_starts_with($parts[1], '/api/cluster/info')) {
+    if ($replyMode === 'stall' && !str_starts_with($parts[1], '/api/cluster/info')) {
         sleep(5);
         fclose($peer);
         continue;
     }
-    $status = $mode === 'redirect' ? '302 Found' : '200 OK';
+    if ($mode === 'delay') {
+        usleep(250000);
+    }
+    $status = $replyMode === 'redirect' ? '302 Found' : '200 OK';
     $replyHeaders = "HTTP/1.1 {$status}\r\nContent-Type: application/json\r\nContent-Length: ".strlen($payload)
-        ."\r\nConnection: close\r\n".($mode === 'redirect' ? "Location: /unexpected-redirect\r\n" : '')."\r\n";
-    if ($mode === 'slow_headers') {
+        ."\r\nConnection: close\r\n".($replyMode === 'redirect' ? "Location: /unexpected-redirect\r\n" : '')."\r\n";
+    if ($replyMode === 'slow_headers') {
         foreach (str_split($replyHeaders) as $byte) {
             if (@fwrite($peer, $byte) === false) {
                 break;
@@ -68,7 +76,7 @@ while (microtime(true) < $until) {
     } else {
         @fwrite($peer, $replyHeaders);
     }
-    if ($mode === 'slow_body') {
+    if ($replyMode === 'slow_body') {
         foreach (str_split($payload) as $byte) {
             if (@fwrite($peer, $byte) === false) {
                 break;

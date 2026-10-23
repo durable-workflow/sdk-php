@@ -4,13 +4,12 @@ Run Composer validation, focused PHPUnit coverage, PHPStan, and the public
 boundary check for changed code.
 
 The production graph remains independent of Laravel, Illuminate, framework
-bundles/containers, Core and Server. The reviewed exception in
-`resources/dependency-boundary.json` permits the standalone HTTP-client component
-and its contract/polyfill support for native control-request deadlines. It does
-not load a Symfony application or container. The check covers declared and
-transitive production packages and retains the reviewed stable HTTP-client
-security floors. Expand that closed exception only with an owning product
-decision and dependency/compatibility tests.
+bundles/containers, Core and Server. The standalone Amp HTTP client supplies a
+total request deadline without cURL; it does not load a framework. Its reviewed
+stable floor and the existing neutral Symfony contracts/polyfills are listed in
+`resources/dependency-boundary.json`. The boundary check covers declared and
+transitive production packages. Change that closed support list or dependency
+floor only with an owning product decision and compatibility/security tests.
 
 Before publishing a tag, run `RELEASE_TAG=<exact-version> composer check-release-identity`.
 The installed Composer version, `extra.durable-workflow.product-train`, quickstart

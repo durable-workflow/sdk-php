@@ -19,9 +19,11 @@ use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\StreamFactoryInterface;
 use Psr\Http\Message\StreamInterface;
-use Symfony\Component\HttpClient\NativeHttpClient;
-use Symfony\Component\HttpClient\Psr18Client;
-use Symfony\Contracts\HttpClient\Exception\TimeoutExceptionInterface;
+use Amp\Http\Client\HttpClient as AmpHttpClient;
+use Amp\Http\Client\HttpClientBuilder;
+use Amp\Http\Client\Request as AmpRequest;
+use Amp\Http\Client\TimeoutException;
+use Amp\TimeoutCancellation;
 use Throwable;
 
 /** Default PSR-18 JSON and bounded runtime-payload transport. */
@@ -34,7 +36,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     private readonly StreamFactoryInterface $streamFactory;
     private readonly bool $defaultProcessConfiguration;
     private readonly ?float $requestTimeoutSeconds;
-    private ?ClientInterface $nativeControlClient = null;
+    private ?AmpHttpClient $nativeControlClient = null;
 
     public function __construct(
         ?ClientInterface $client = null,
@@ -154,7 +156,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     private function isTimeout(Throwable $exception): bool
     {
         do {
-            if ($exception instanceof TimeoutExceptionInterface) {
+            if ($exception instanceof TimeoutException) {
                 return true;
             }
             $exception = $exception->getPrevious();
@@ -366,19 +368,44 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         }
     }
 
+    private function sendNativeControlRequest(RequestInterface $request, float $seconds): ResponseInterface
+    {
+        // Guzzle 7's stream timeout measures inactivity. Amp's cancellable
+        // socket client bounds DNS, connection, headers and the complete body.
+        // Neither a failed mutation nor a redirect authorizes another request.
+        $this->nativeControlClient ??= (new HttpClientBuilder())->retry(0)->followRedirects(0)->build();
+        $nativeRequest = new AmpRequest((string) $request->getUri(), $request->getMethod(), (string) $request->getBody());
+        $nativeRequest->setHeaders($request->getHeaders());
+        $nativeRequest->setTransferTimeout($seconds);
+        $nativeRequest->setInactivityTimeout(0);
+        $nativeRequest->setBodySizeLimit(0);
+        $nativeRequest->setTcpConnectTimeout($seconds);
+        $nativeRequest->setTlsHandshakeTimeout($seconds);
+        $cancellation = new TimeoutCancellation($seconds);
+        $response = null;
+        try {
+            $response = $this->nativeControlClient->request($nativeRequest, $cancellation);
+            $body = $response->getBody()->buffer($cancellation);
+
+            return new \GuzzleHttp\Psr7\Response($response->getStatus(), $response->getHeaders(), $body,
+                $response->getProtocolVersion(), $response->getReason());
+        } catch (Throwable $exception) {
+            if ($cancellation->isRequested() || $this->isTimeout($exception)) {
+                throw $this->controlTimeoutFailure($exception, $seconds);
+            }
+            throw $exception;
+        } finally {
+            $response?->getBody()->close();
+        }
+    }
+
     private function sendRequest(RequestInterface $request, bool $stream = false, int|float $timeoutSeconds = 30, bool $bounded = false, ?StreamInterface $sink = null, ?\Closure $progress = null, ?float $controlTimeout = null): ResponseInterface
     {
         $connectionFailure = false;
         $timedOut = false;
         try {
             if ($controlTimeout !== null && !function_exists('curl_exec') && !function_exists('curl_multi_exec')) {
-                // Guzzle 7's PHP stream timeout is an idle limit. The native
-                // component enforces one total deadline through headers/body.
-                $this->nativeControlClient ??= new Psr18Client(new NativeHttpClient([
-                    'timeout' => $controlTimeout, 'max_duration' => $controlTimeout, 'max_redirects' => 0,
-                ]), new HttpFactory(), $this->streamFactory);
-
-                return $this->nativeControlClient->sendRequest($request);
+                return $this->sendNativeControlRequest($request, $controlTimeout);
             }
             if ($this->client instanceof GuzzleClient) {
                 $onStats = $this->client->getConfig('on_stats');
@@ -407,6 +434,8 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             }
 
             return $this->client->sendRequest($request);
+        } catch (TransportException $exception) {
+            throw $exception;
         } catch (Throwable $exception) {
             if ($controlTimeout !== null && ($timedOut || $this->isTimeout($exception))) {
                 throw $this->controlTimeoutFailure($exception, $controlTimeout);
