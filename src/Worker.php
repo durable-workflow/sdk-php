@@ -52,6 +52,7 @@ use DurableWorkflow\Transport\RequestBudget;
 use DurableWorkflow\Telemetry\ExecutionTelemetry;
 use DurableWorkflow\Metrics\MetricsObserver;
 use DurableWorkflow\Metrics\MetricsRecorder;
+use DurableWorkflow\Metrics\WorkerTaskObservation;
 use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
@@ -99,6 +100,7 @@ final class Worker
     private readonly LoggerInterface $logger;
     private readonly StickyWorkflowCache $stickyCache;
     private readonly MetricsObserver $metricsObserver;
+    private ?WorkerTaskObservation $taskObservation = null;
     /** @var array<string, WorkerSessionOptions> */
     private array $activeWorkerSessions = [];
     /** @var array<string, mixed>|null */
@@ -1223,6 +1225,28 @@ final class Worker
     /** @param array<string, mixed> $task */
     private function executePolledTask(string $taskKind, array $task): void
     {
+        if (!$this->metricsObserver->enabled()) {
+            $this->dispatchPolledTask($taskKind, $task);
+
+            return;
+        }
+        $previous = $this->taskObservation;
+        $observation = new WorkerTaskObservation($this->metricsObserver, $taskKind, $this->taskQueue);
+        $this->taskObservation = $observation;
+        try {
+            $this->dispatchPolledTask($taskKind, $task);
+        } catch (Throwable $error) {
+            $observation->outcome('error');
+            throw $error;
+        } finally {
+            $observation->finish();
+            $this->taskObservation = $previous;
+        }
+    }
+
+    /** @param array<string, mixed> $task */
+    private function dispatchPolledTask(string $taskKind, array $task): void
+    {
         try {
             if ($this->telemetry === null || $this->client->observabilityContextAvailable()) {
                 $this->executeTask($taskKind, $task);
@@ -1263,6 +1287,7 @@ final class Worker
             if ($taskKind !== 'workflow' || !$this->isTimedOutWorkflowCompletion($task, $exception)) {
                 throw $exception;
             }
+            $this->taskObservation?->outcome('expired');
         }
     }
 
@@ -2834,6 +2859,7 @@ final class Worker
         ?int $workflowTaskAttempt = null,
     ): void {
         if ($this->isTaskAuthorityLost($taskKind, $taskId, $taskFailure, $workflowTaskAttempt)) {
+            $this->taskObservation?->outcome('aborted');
             if ($taskKind === 'workflow' && $taskFailure instanceof ServerException
                 && ($taskFailure->details['task_status'] ?? null) === 'ready') {
                 $this->diagnostic('worker.claim_aborted', ['task_id' => $taskId, 'task_kind' => $taskKind,
@@ -2841,6 +2867,7 @@ final class Worker
             }
             return;
         }
+        $this->taskObservation?->outcome('failed');
         $this->handlerFailure($taskKind, $taskId, $taskFailure);
         if ($taskFailure instanceof ServerException) {
             throw $taskFailure;
@@ -2854,6 +2881,7 @@ final class Worker
             if (!$this->isTaskAuthorityLost($taskKind, $taskId, $acknowledgementFailure, $workflowTaskAttempt)) {
                 throw $acknowledgementFailure;
             }
+            $this->taskObservation?->outcome('aborted');
         }
     }
 
@@ -4028,6 +4056,15 @@ final class Worker
     /** @param array<string, mixed> $context */
     private function diagnostic(string $event, array $context = [], string $level = 'info'): void
     {
+        $outcome = match ($event) {
+            'worker.claim_aborted' => 'aborted',
+            'worker.claim_deferred' => 'deferred',
+            'worker.activity_cancellation_acknowledged' => 'cancelled',
+            default => null,
+        };
+        if ($outcome !== null) {
+            $this->taskObservation?->outcome($outcome);
+        }
         $this->logger->log($level, $event, $context);
         if ($this->diagnosticListener !== null) {
             ($this->diagnosticListener)($event, $context);

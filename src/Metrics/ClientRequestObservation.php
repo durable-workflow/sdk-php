@@ -44,8 +44,12 @@ final class ClientRequestObservation
 
     public function finish(): void
     {
+        $failureType = $this->failure === null ? null : $this->failure::class;
+        if ($this->failure !== null && (new \ReflectionClass($this->failure))->isAnonymous()) {
+            $failureType = get_parent_class($this->failure) ?: 'Throwable';
+        }
         $outcome = ($this->status ?? 0) >= 400 ? 'http_error'
-            : ($this->failure === null ? 'ok' : $this->failure::class);
+            : ($failureType ?? 'ok');
         $this->observer->observe('client_request', (hrtime(true) - $this->started) / 1e9, [
             'method' => strtoupper($this->method), 'route' => $this->route, 'plane' => $this->plane,
             'status_code' => $this->status === null ? 'none' : (string) $this->status, 'outcome' => $outcome,
