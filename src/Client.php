@@ -2651,7 +2651,8 @@ final class Client implements WorkflowClientInterface
             $budget ??= $worker && $this->boundedWorkerRequests ? new RequestBudget($pollSeconds + 5) : null;
             if ($body !== null) {
                 $body = $this->failureReports->request($path, $body, false);
-                $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers, $budget);
+                $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers, $budget,
+                    $this->failureReports->limitForRequest($path, $body));
                 $body = $this->failureReports->request($path, $body);
             }
             $activityLease = $worker ? $this->activityLeaseBinding->current() : null;

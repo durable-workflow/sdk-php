@@ -23,24 +23,73 @@ final class FailureReportLimiter
      */
     public function request(string $path, array $body, bool $enforceRequestLimit = true): array
     {
-        if (preg_match('~^/worker/workflow-tasks/[^/]+/local-activities/[^/]+/outcome$~D', $path) === 1
-            && is_array($body['report'] ?? null) && is_string($body['report']['message'] ?? null)) {
-            return $this->preparedOutcome($path, $body);
-        }
-        $endpoint = preg_match('~^/worker/(activity|workflow|query)-tasks/[^/]+/fail$~D', $path, $matches) === 1
-            && is_array($body['failure'] ?? null);
-        $commands = preg_match('~^/worker/workflow-tasks/[^/]+/complete$~D', $path) === 1
-            && is_array($body['commands'] ?? null)
-            && array_filter($body['commands'], static fn (mixed $command): bool => is_array($command)
-                && in_array($command['type'] ?? null, ['fail_workflow', 'fail_update', 'record_local_activity'], true)) !== [];
-        if (!$endpoint && !$commands) {
+        $kind = $this->reportKind($path, $body);
+        if ($kind === null) {
             return $body;
         }
-        $carrier = $endpoint ? match ($matches[1]) {
-            'activity' => 'diagnostics',
-            default => 'stack_trace',
-        } : null;
-        return $this->bound($body, $carrier, $commands, $this->effectiveLimit(), strlen($path), $enforceRequestLimit);
+        if ($kind === 'prepared') {
+            return $this->preparedOutcome($path, $body);
+        }
+        $carrier = null;
+        if ($kind === 'failure') {
+            $carrier = str_contains($path, '/activity-tasks/') ? 'diagnostics' : 'stack_trace';
+        }
+        return $this->bound($body, $carrier, $kind === 'commands', $this->effectiveLimit(), strlen($path), $enforceRequestLimit);
+    }
+
+    /** @param array<string, mixed> $body */
+    public function limitForRequest(string $path, array $body): ?int
+    {
+        return $this->reportKind($path, $body) === null ? null : max(1, $this->effectiveLimit() - strlen($path));
+    }
+
+    /** @param array<string, mixed> $body */
+    private function reportKind(string $path, array $body): ?string
+    {
+        if (preg_match('~^/worker/workflow-tasks/[^/]+/local-activities/[^/]+/outcome$~D', $path) === 1
+            && is_array($body['report'] ?? null) && is_string($body['report']['message'] ?? null)) {
+            return 'prepared';
+        }
+        if (preg_match('~^/worker/(activity|workflow|query)-tasks/[^/]+/fail$~D', $path) === 1
+            && is_array($body['failure'] ?? null)) {
+            return 'failure';
+        }
+        if (preg_match('~^/worker/workflow-tasks/[^/]+/complete$~D', $path) === 1
+            && is_array($body['commands'] ?? null) && $this->hasFailureCommand($body['commands'])) {
+            return 'commands';
+        }
+        return null;
+    }
+
+    /** @param array<array-key, mixed> $commands */
+    private function hasFailureCommand(array $commands): bool
+    {
+        foreach ($commands as $command) {
+            if (is_array($command) && $this->isFailureCommand($command)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** @param array<string, mixed> $command */
+    private function isFailureCommand(array $command): bool
+    {
+        if (in_array($command['type'] ?? null, ['fail_workflow', 'fail_update'], true)) {
+            return true;
+        }
+        if (($command['type'] ?? null) !== 'record_local_activity') {
+            return false;
+        }
+        if (in_array($command['outcome'] ?? null, ['failed', 'timed_out', 'cancelled'], true)) {
+            return true;
+        }
+        foreach ($command['attempts'] ?? [] as $attempt) {
+            if (is_array($attempt) && in_array($attempt['outcome'] ?? null, ['failed', 'timed_out', 'cancelled'], true)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** @param array<string, mixed> $body

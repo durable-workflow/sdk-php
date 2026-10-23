@@ -196,6 +196,19 @@ final class FailureReportTest extends TestCase
         $limiter->request('/worker/workflow-tasks/task/complete', $body);
     }
 
+    public function testSuccessfulLocalRecordKeepsItsOrdinaryBusinessPayloadBudget(): void
+    {
+        $transport = new FakeTransport([[]]);
+        $client = new Client('http://recording.invalid', transport: $transport);
+        $result = $client->payloadCodec()->envelope(str_repeat('p', 900000));
+        $command = ['type' => 'record_local_activity', 'activity_type' => 'business', 'outcome' => 'completed',
+            'result' => $result, 'attempts' => [['attempt_number' => 1, 'outcome' => 'completed', 'heartbeats' => []]]];
+        $client->completeWorkflowTask('task', 'owner', 1, [$command]);
+        self::assertCount(1, $transport->requests);
+        self::assertGreaterThan(1048576, JsonDocument::size($transport->requests[0]['body']));
+        self::assertSame($result, $transport->requests[0]['body']['commands'][0]['result']);
+    }
+
     public function testInvalidUtf8MessageRepairsBoundedPrefixWithoutChangingType(): void
     {
         $transport = new FakeTransport([[]]);

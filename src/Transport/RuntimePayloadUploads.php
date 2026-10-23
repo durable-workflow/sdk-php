@@ -40,7 +40,7 @@ final class RuntimePayloadUploads
      * @param array<string, string> $headers
      * @return array<string, mixed>
      */
-    public function request(array $body, string $method, string $path, bool $worker, array $headers, ?RequestBudget $budget = null): array
+    public function request(array $body, string $method, string $path, bool $worker, array $headers, ?RequestBudget $budget = null, ?int $requestBytesLimit = null): array
     {
         if (!$this->transport instanceof PayloadUploadTransport || !in_array(strtoupper($method), ['POST', 'PUT', 'PATCH'], true)) {
             return $body;
@@ -102,6 +102,9 @@ final class RuntimePayloadUploads
             }
 
             throw $exception;
+        }
+        if ($requestBytesLimit !== null) {
+            $policy['request_bytes'] = min($policy['request_bytes'], $requestBytesLimit);
         }
         // Plan the entire request before uploading anything. Several individually
         // inline values can still exceed the ordinary JSON request limit.
