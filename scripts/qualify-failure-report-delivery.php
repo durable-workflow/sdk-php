@@ -23,7 +23,7 @@ function requireDelivery(bool $condition, string $message): void
 }
 
 /** Drive the ordinary worker while waiting for the selected run, with a finite fixture budget. */
-function finishFailureWorkflow(Client $control, Worker $worker, DurableWorkflow\WorkflowHandle $handle, ?Worker $activities = null): mixed
+function finishFailureWorkflow(Client $control, Worker $worker, DurableWorkflow\WorkflowHandle $handle, Closure $maintain, ?Worker $activities = null): mixed
 {
     $deadline = microtime(true) + 30;
     do {
@@ -32,6 +32,7 @@ function finishFailureWorkflow(Client $control, Worker $worker, DurableWorkflow\
             ['completed', 'failed', 'cancelled', 'terminated', 'timed_out'], true)) {
             return $handle->resultOfSelectedRun(1, 0.05);
         }
+        $maintain();
         $worker->tick(0);
         $activities?->tick(0);
         usleep(10000);
@@ -126,13 +127,30 @@ $worker->registerActivity('qualification.failure.local', static function (Durabl
 $client->registerWorker($workerId, $queue, ['qualification.failure'], [], ['sticky_execution', 'typed_search_attributes', 'local_activities'],
     workflowCommandContracts: $worker->contracts()['workflow_commands']);
 $client->registerWorker($activityWorkerId, $queue, [], ['qualification.failure.activity']);
+$registeredWorkers = [$workerId => $client, $activityWorkerId => $client];
+$lastHeartbeats = [];
+$maintenance = [];
+$maintain = static function () use (&$registeredWorkers, &$lastHeartbeats, &$maintenance): void {
+    foreach ($registeredWorkers as $identity => $connection) {
+        $now = hrtime(true) / 1e9;
+        if ($now - ($lastHeartbeats[$identity] ?? 0) < 5) {
+            continue;
+        }
+        // tick() deliberately leaves registration lifecycle to its caller.
+        $reply = $connection->heartbeatWorker($identity);
+        $lastHeartbeats[$identity] = $now;
+        $maintenance[] = ['worker_id' => $identity, 'registration_id' => $reply['registration_id'] ?? null,
+            'registration_incarnation' => $reply['registration_incarnation'] ?? null];
+    }
+};
 $result = ['sdk_version' => Composer\InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
     'sdk_reference' => Composer\InstalledVersions::getReference('durable-workflow/sdk'),
     'server_version' => $admin->clusterInfo()->version, 'namespace' => $namespace, 'scenarios' => []];
-register_shutdown_function(static function () use (&$result, $http): void {
+register_shutdown_function(static function () use (&$result, $http, &$maintenance): void {
     if (!isset($result['pass'])) {
         $result['reports'] = $http->reports;
         $result['claims'] = $http->claims;
+        $result['maintenance'] = $maintenance;
         $result['incomplete'] = true;
         $result['last_error'] = error_get_last();
         echo json_encode($result, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)."\n";
@@ -141,6 +159,7 @@ register_shutdown_function(static function () use (&$result, $http): void {
 $large = str_repeat('m', 3 * 1024 * 1024);
 foreach (['message', 'stack', 'combined', 'escaped', 'details', 'lower-limit', 'small'] as $kind) {
     $handle = $control->startWorkflow('qualification.failure', $namespace.'-'.$kind, $queue, [$kind], runTimeoutSeconds: 120);
+    $maintain();
     $worker->tick(0);
     $task = $client->pollActivityTask($activityWorkerId, $queue, 0);
     requireDelivery(is_array($task), 'The activity was not leased for '.$kind);
@@ -154,8 +173,9 @@ foreach (['message', 'stack', 'combined', 'escaped', 'details', 'lower-limit', '
     $reporter = $kind === 'lower-limit' ? $client->withFailureReportLimit(4096) : $client;
     $reporter->failActivityTask($task['task_id'], $task['activity_attempt_id'] ?? $task['attempt_id'], $task['lease_owner'],
         $message, $type, true, $details, $stack);
+    $maintain();
     $worker->tick(0);
-    $output = finishFailureWorkflow($control, $worker, $handle);
+    $output = finishFailureWorkflow($control, $worker, $handle, $maintain);
     requireDelivery($output['type'] === $type && $output['marked'] === ($kind !== 'small'), 'Original workflow failure mismatch.');
     requireDelivery($output['non_retryable'] === true, 'The non-retryable decision changed.');
     $history = $control->workflowHistory($handle->workflowId, $handle->selectedRunId, 100);
@@ -167,8 +187,9 @@ foreach (['message', 'stack', 'combined', 'escaped', 'details', 'lower-limit', '
         'lease_owner' => $task['lease_owner'], 'output' => $output, 'event_counts' => $counts];
 }
 $handle = $control->startWorkflow('qualification.failure', $namespace.'-local', $queue, ['local-failure'], runTimeoutSeconds: 120);
+$maintain();
 $worker->tick(0);
-$output = finishFailureWorkflow($control, $worker, $handle);
+$output = finishFailureWorkflow($control, $worker, $handle, $maintain);
 $history = $control->workflowHistory($handle->workflowId, $handle->selectedRunId, 100);
 $events = $history['events'] ?? $history['history_events'] ?? [];
 $failed = array_values(array_filter($events, static fn (array $event): bool => $event['event_type'] === 'ActivityFailed'));
@@ -202,11 +223,14 @@ $managedWorker->registerActivity('qualification.failure.managed', static functio
     throw new FailureDeliveryQualificationException(str_repeat('m', 3 * 1024 * 1024));
 });
 $managedClient->registerWorker($managedId, $queue, [], ['qualification.failure.managed'], ['cooperative_cancellation']);
+$registeredWorkers[$managedId] = $managedClient;
 $handle = $control->startWorkflow('qualification.failure', $namespace.'-cooperative-worker', $queue, ['cooperative-worker'], runTimeoutSeconds: 120);
+$maintain();
 $worker->tick(0);
 $managedWorker->tick(0);
+$maintain();
 $worker->tick(0);
-$output = finishFailureWorkflow($control, $worker, $handle, $managedWorker);
+$output = finishFailureWorkflow($control, $worker, $handle, $maintain, $managedWorker);
 requireDelivery($output['type'] === FailureDeliveryQualificationException::class && $output['marked'] === true,
     'The original workflow did not receive its isolated callback failure.');
 requireDelivery($output['non_retryable'] === false, 'The callback retry classification changed.');
@@ -224,6 +248,7 @@ $result['scenarios']['cooperative-worker'] = ['workflow_id' => $handle->workflow
     'history_stack_present' => isset($failurePayload['exception']['stack_trace']),
     'history_stack_visibility' => 'Published runtime omits the transmitted stack from public history; shared225 runtime follow-through remains.'];
 $handle = $control->startWorkflow('qualification.failure', $namespace.'-retry', $queue, ['retry'], runTimeoutSeconds: 120);
+$maintain();
 $worker->tick(0);
 $original = $client->pollActivityTask($activityWorkerId, $queue, 0);
 requireDelivery(is_array($original), 'Retry control original attempt was not leased.');
@@ -241,8 +266,9 @@ $originalAttempt = $original['activity_attempt_id'] ?? $original['attempt_id'];
 $retryAttempt = $retry['activity_attempt_id'] ?? $retry['attempt_id'];
 requireDelivery($retryAttempt !== $originalAttempt, 'The failed attempt was reused as publication authority.');
 $client->completeActivityTask($retry['task_id'], $retryAttempt, $retry['lease_owner'], 42);
+$maintain();
 $worker->tick(0);
-$output = finishFailureWorkflow($control, $worker, $handle);
+$output = finishFailureWorkflow($control, $worker, $handle, $maintain);
 requireDelivery($output === ['activity_value' => 42], 'The original workflow did not receive the legitimate retry result.');
 $history = $control->workflowHistory($handle->workflowId, $handle->selectedRunId, 100);
 $events = $history['events'] ?? $history['history_events'] ?? [];
@@ -258,8 +284,9 @@ requireDelivery(is_array($task), 'Original workflow task not leased.');
 $ack = $client->failWorkflowTask($task['task_id'], $task['lease_owner'], $task['workflow_task_attempt'], $large,
     'OriginalWorkflowTaskFailure', stackTrace: $large);
 requireDelivery(($ack['recorded'] ?? null) === true, 'Workflow-task failure not recorded.');
+$maintain();
 $worker->tick(0);
-$output = finishFailureWorkflow($control, $worker, $handle);
+$output = finishFailureWorkflow($control, $worker, $handle, $maintain);
 requireDelivery($output === ['fresh_turn' => true], 'The workflow did not receive its fresh legitimate turn.');
 $history = $control->workflowHistory($handle->workflowId, $handle->selectedRunId, 100);
 $events = $history['events'] ?? $history['history_events'] ?? [];
@@ -272,9 +299,10 @@ $result['scenarios']['workflow-task'] = ['workflow_id' => $handle->workflowId, '
     'ack' => $ack, 'history_failure_events' => count($failureEvents), 'fresh_turn_result' => $output,
     'history_visibility' => 'Published runtime emits no WorkflowTaskFailed history event; parent225 runtime follow-through remains.'];
 $handle = $control->startWorkflow('qualification.failure', $namespace.'-terminal', $queue, ['terminal'], runTimeoutSeconds: 120);
+$maintain();
 $worker->tick(0);
 try {
-    finishFailureWorkflow($control, $worker, $handle);
+    finishFailureWorkflow($control, $worker, $handle, $maintain);
     throw new FailureDeliveryQualificationException('Terminal workflow unexpectedly succeeded.');
 } catch (WorkflowFailed $failure) {
     requireDelivery($failure->failureType === FailureDeliveryQualificationException::class, 'Workflow failure type changed.');
@@ -287,5 +315,6 @@ foreach ($http->reports as $report) {
 }
 $result['reports'] = $http->reports;
 $result['claims'] = $http->claims;
+$result['maintenance'] = $maintenance;
 $result['pass'] = true;
 echo json_encode($result, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)."\n";
