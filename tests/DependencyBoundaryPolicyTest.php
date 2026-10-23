@@ -31,8 +31,8 @@ final class DependencyBoundaryPolicyTest extends TestCase
 
     public static function inventories(): iterable
     {
-        $require = ['php' => '^8.1', 'amphp/http-client' => '^5.3.6'];
-        $installed = [['name' => 'amphp/http-client', 'version' => 'v5.3.6']];
+        $require = ['php' => '^8.1', 'amphp/http-client' => '^5.3.6', 'amphp/http-tunnel' => '^2.0'];
+        $installed = [['name' => 'amphp/http-client', 'version' => 'v5.3.6'], ['name' => 'amphp/http-tunnel', 'version' => 'v2.0.0']];
         yield 'standalone HTTP component' => [$require, $installed, true];
         yield 'neutral support contracts' => [$require, [...$installed,
             ['name' => 'symfony/deprecation-contracts', 'version' => 'v3.6.0']], true];
@@ -43,9 +43,9 @@ final class DependencyBoundaryPolicyTest extends TestCase
         }
         yield 'missing inventory' => [$require, [], false];
         yield 'malformed inventory package' => [$require, [['name' => 'amphp/http-client']], false];
-        yield 'old floor in manifest' => [['amphp/http-client' => '^5.0'], $installed, false];
+        yield 'old floor in manifest' => [array_replace($require, ['amphp/http-client' => '^5.0']), $installed, false];
         foreach (['v5.3.5', 'v4.6.0', 'v6.0.0', 'dev-main', 'v5.3.7-rc.1'] as $version) {
-            yield 'unreviewed version '.$version => [$require, [['name' => 'amphp/http-client', 'version' => $version]], false];
+            yield 'unreviewed version '.$version => [$require, [['name' => 'amphp/http-client', 'version' => $version], $installed[1]], false];
         }
     }
 }

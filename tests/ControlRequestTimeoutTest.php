@@ -179,13 +179,80 @@ final class ControlRequestTimeoutTest extends TestCase
         });
     }
 
+    #[DataProvider('proxyHandlers')]
+    public function testEnvironmentProxyKeepsOriginAndProxyCredentialsSeparate(bool $native, bool $tlsProxy, bool $tlsOrigin): void
+    {
+        $this->withPeer('echo', function (string $url, string $directory) use ($native, $tlsProxy, $tlsOrigin): void {
+            $caFile = $tlsOrigin ? $directory.'/cert.pem' : '';
+            $command = [PHP_BINARY, __DIR__.'/Support/control-timeout-proxy.php', $directory];
+            if ($tlsProxy) {
+                array_push($command, $directory.'/cert.pem', $directory.'/key.pem');
+            }
+            $proxy = proc_open($command, [0 => ['file', '/dev/null', 'r'],
+                1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
+            self::assertIsResource($proxy);
+            try {
+                $until = microtime(true) + 2;
+                while (!is_file($directory.'/proxy-address') && microtime(true) < $until) {
+                    usleep(10000);
+                }
+                self::assertFileExists($directory.'/proxy-address');
+                $address = str_replace('127.0.0.1', 'localhost', trim(file_get_contents($directory.'/proxy-address')));
+                $proxyUrl = ($tlsProxy ? 'https://' : 'http://').'proxy-user:proxy-secret@'.$address;
+                $url = str_replace('127.0.0.1', 'localhost', $url);
+                $result = $this->runClient($directory, $url, $native, caFile: $caFile,
+                    environment: ['HTTP_PROXY' => $proxyUrl, 'HTTPS_PROXY' => $proxyUrl, 'NO_PROXY' => '']);
+                if ($tlsProxy && !$native) {
+                    // Preserve libcurl's separate proxy trust policy. A private
+                    // proxy CA is not implicitly trusted by this origin CA.
+                    self::assertSame('error', $result['outcome']);
+                    self::assertNull($result['reason']);
+                    self::assertFileDoesNotExist($directory.'/requests');
+                    $bypassed = $this->runClient($directory, $url, false, caFile: $caFile,
+                        environment: ['HTTP_PROXY' => 'http://127.0.0.1:1', 'HTTPS_PROXY' => 'http://127.0.0.1:1', 'NO_PROXY' => 'localhost']);
+                    self::assertSame('response', $bypassed['outcome'], json_encode($bypassed));
+
+                    return;
+                }
+                self::assertSame('response', $result['outcome'], json_encode($result));
+                $requests = file($directory.'/requests', FILE_IGNORE_NEW_LINES);
+                self::assertCount(1, $requests);
+                $origin = json_decode($requests[0], true, flags: JSON_THROW_ON_ERROR);
+                self::assertSame('Bearer rotated-1', $origin['headers']['authorization']);
+                self::assertArrayNotHasKey('proxy-authorization', $origin['headers']);
+                $rawProxy = file_get_contents($directory.'/proxy-requests');
+                self::assertStringContainsString('Basic '.base64_encode('proxy-user:proxy-secret'), $rawProxy);
+                if ($tlsOrigin || $native) {
+                    self::assertStringNotContainsString('rotated-1', $rawProxy);
+                }
+
+                $bypassed = $this->runClient($directory, $url, $native, caFile: $caFile,
+                    environment: ['HTTP_PROXY' => 'http://127.0.0.1:1', 'HTTPS_PROXY' => 'http://127.0.0.1:1', 'NO_PROXY' => 'localhost']);
+                self::assertSame('response', $bypassed['outcome'], json_encode($bypassed));
+            } finally {
+                proc_terminate($proxy, 9);
+                proc_close($proxy);
+            }
+        }, tls: $tlsOrigin);
+    }
+
+    public static function proxyHandlers(): iterable
+    {
+        foreach ([false, true] as $native) {
+            yield 'plain origin native='.(int) $native => [$native, false, false];
+            foreach ([false, true] as $tlsProxy) {
+                yield 'native='.(int) $native.' tlsProxy='.(int) $tlsProxy => [$native, $tlsProxy, true];
+            }
+        }
+    }
+
     public static function httpHandlers(): iterable
     {
         yield 'cURL' => [false];
         yield 'without cURL' => [true];
     }
 
-    private function runClient(string $directory, string $url, bool $native, string $profile = 'default', string $caFile = '', string $operation = 'list', string $seconds = '0.5'): array
+    private function runClient(string $directory, string $url, bool $native, string $profile = 'default', string $caFile = '', string $operation = 'list', string $seconds = '0.5', ?array $environment = null): array
     {
         $command = [PHP_BINARY];
         if ($native) {
@@ -197,7 +264,7 @@ final class ControlRequestTimeoutTest extends TestCase
         array_push($command, __DIR__.'/Support/control-timeout-client.php', getenv('SDK_CONTROL_ACCEPTANCE_AUTOLOAD') ?: dirname(__DIR__).'/vendor/autoload.php',
             $url, $operation, $seconds, $profile, $caFile);
         $process = proc_open($command, [0 => ['file', '/dev/null', 'r'],
-            1 => ['file', $directory.'/stdout', 'w'], 2 => ['file', $directory.'/stderr', 'w']], $pipes);
+            1 => ['file', $directory.'/stdout', 'w'], 2 => ['file', $directory.'/stderr', 'w']], $pipes, env_vars: $environment);
         self::assertIsResource($process);
         try {
             $until = microtime(true) + 2;
