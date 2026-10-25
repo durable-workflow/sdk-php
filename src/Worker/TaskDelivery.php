@@ -95,10 +95,10 @@ final class TaskDelivery
             if ($this->definitiveRefusal($exception)) {
                 $this->resolved($key, $selected);
                 $response = $exception->details ?? [];
-                if ($exception->reason === 'worker_registration_lost_authority') {
-                    $this->forget($workerId);
-                } else {
+                if ($exception->reason === 'task_offer_expired') {
                     $response['poll_status'] = 'empty';
+                } else {
+                    $this->forget($workerId);
                 }
 
                 return $response;
@@ -167,7 +167,8 @@ final class TaskDelivery
         return $exception->status === 409 && $response !== null && !array_is_list($response)
             && array_key_exists('task', $response) && $response['task'] === null
             && ($response['reason'] ?? null) === $exception->reason
-            && in_array($exception->reason, ['task_offer_expired', 'worker_registration_lost_authority'], true);
+            && (in_array($exception->reason, ['task_offer_expired', 'worker_registration_lost_authority'], true)
+                || PollResponse::isTerminal($response));
     }
 
     private function resolved(string $key, ?TaskDeliveryAttempt $selected): void

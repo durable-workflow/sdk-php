@@ -128,6 +128,18 @@ final class WorkerTaskDeliveryTest extends TestCase
         self::assertSame($transport->requests[2], $transport->requests[4]);
     }
 
+    public function testAnAuthoritativeWorkerStopIsNotRetriedAsAnUncertainAcceptance(): void
+    {
+        $terminal = ['task' => null, 'poll_status' => 'draining', 'reason' => 'worker_draining'];
+        $transport = new FakeTransport([self::registration(), self::offer('workflow'),
+            new TransportException('Worker is draining.', 409, $terminal)]);
+        $client = new Client('https://server.example', transport: $transport);
+        $client->registerWorker('worker', 'orders', [], []);
+        self::assertSame($terminal, self::poll($client, 'workflow'));
+        self::assertTrue(PollResponse::isTerminal($terminal));
+        self::assertCount(3, $transport->requests);
+    }
+
     public function testReplacementRegistrationDiscardsOnlyTheOldIncarnationsPacket(): void
     {
         $replacement = self::registration();
