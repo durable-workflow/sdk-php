@@ -198,6 +198,16 @@ may have committed a claim before the connection disappeared, so `task=null`
 does not establish that no lease exists. This does not make arbitrary database
 errors or unrelated structured HTTP 500/503 responses retryable.
 
+With negotiated `task_delivery`, worker polls use `/offers`. An offer alone
+grants no execution authority. Positive acceptance includes the original
+registration token and selected offer packet; its request body remains fixed
+through uncertain replies. Managed workers retain this state across client
+clones and honor the normal retry backoff. If using the low-level
+`poll*TaskResponse()` methods, catch `TaskDeliveryUncertain` and retry with its
+`details['poll_request_id']` on the same Client. An ordinary empty response to
+an acceptance does not prove that no claim committed. A confirmed offer expiry
+permits a new poll; lost registration authority stops that worker.
+
 Before replaying or completing a workflow task, the managed worker requires a
 successful lease-renewal response whose task ID, attempt, and lease owner match
 the current claim. A typed `renewed=false`, `retryable=true` response is retried

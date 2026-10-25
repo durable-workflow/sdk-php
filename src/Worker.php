@@ -656,6 +656,7 @@ final class Worker
                         'worker_sessions',
                         'sticky_execution',
                         'cross_kind_poll_wake',
+                        ...($this->client->workerProtocolVersion === '1.20' ? [\DurableWorkflow\Worker\TaskDelivery::CAPABILITY] : []),
                         ...($this->enableCooperativeCancellation ? ['cooperative_cancellation', 'nexus_cooperative_cancellation'] : []),
                         ...($this->enablePreparedLocalActivities ? ['prepared_local_activities'] : []),
                         ...($this->preparedLocalActivityGroupsSupported ? ['prepared_local_activity_groups'] : []),
@@ -929,6 +930,7 @@ final class Worker
                 }
 
                 if (!$exception->isTransientConnectionFailure() && !$exception->isTransientUpstreamFailure()
+                    && !$exception instanceof \DurableWorkflow\Exception\TaskDeliveryUncertain
                     && !PollResponse::isTransientPayloadFailure($exception)
                     && !$databaseUnavailable && !$storageAdmission) {
                     $requestId = 'php-'.$taskKind.'-poll-'.bin2hex(random_bytes(16));

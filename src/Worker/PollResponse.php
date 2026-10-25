@@ -6,6 +6,7 @@ namespace DurableWorkflow\Worker;
 
 use DurableWorkflow\Exception\ExternalPayloadException;
 use DurableWorkflow\Exception\ServerException;
+use DurableWorkflow\Exception\TaskDeliveryUncertain;
 
 /** Classifies full worker poll response envelopes using protocol fields. */
 final class PollResponse
@@ -23,6 +24,7 @@ final class PollResponse
         'worker_heartbeat_stale',
         'worker_draining',
         'worker_stopped',
+        'worker_registration_lost_authority',
     ];
 
     /** @param array<string, mixed> $response */
@@ -42,7 +44,8 @@ final class PollResponse
      */
     public static function isTransientFailure(ServerException $exception): bool
     {
-        if ($exception->isTransientConnectionFailure() || $exception->isTransientUpstreamFailure()
+        if ($exception instanceof TaskDeliveryUncertain
+            || $exception->isTransientConnectionFailure() || $exception->isTransientUpstreamFailure()
             || self::isTransientPayloadFailure($exception)) {
             return true;
         }
