@@ -88,36 +88,18 @@ final class TaskDelivery
             if ($response['task'] === null && !PollResponse::isTerminal($response)) {
                 throw new TaskDeliveryUncertain((string) $body['poll_request_id'], 200);
             }
-            $this->resolved($key, $selected);
-
-            return $response;
         } catch (ServerException $exception) {
-            if ($this->definitiveRefusal($exception)) {
-                $this->resolved($key, $selected);
-                $response = $exception->details ?? [];
-                if ($exception->reason === 'task_offer_expired') {
-                    $response['poll_status'] = 'empty';
-                } else {
-                    $this->forget($workerId);
+            $response = $this->refusedResponse($exception, $workerId);
+            if ($response === null) {
+                if ($this->isUncertain($exception, $selected)) {
+                    throw new TaskDeliveryUncertain((string) $body['poll_request_id'], $exception->status, $exception);
                 }
-
-                return $response;
-            }
-            if ($exception instanceof TaskDeliveryUncertain) {
                 throw $exception;
             }
-            if (($selected !== null && ($exception->status >= 500 || $exception->status === 409 || $exception->status === 429
-                    || $exception->reason === 'invalid_task_delivery_response'
-                    || in_array($exception->status, [0, 404, 405], true)))
-                || ($selected === null && in_array($exception->status, [404, 405], true))) {
-                if (PollResponse::isTransientPayloadFailure($exception)) {
-                    throw $exception;
-                }
-                throw new TaskDeliveryUncertain((string) $body['poll_request_id'], $exception->status, $exception);
-            }
-
-            throw $exception;
         }
+        $this->resolved($key, $selected);
+
+        return $response;
     }
 
     /**
@@ -169,6 +151,31 @@ final class TaskDelivery
             && ($response['reason'] ?? null) === $exception->reason
             && (in_array($exception->reason, ['task_offer_expired', 'worker_registration_lost_authority'], true)
                 || PollResponse::isTerminal($response));
+    }
+
+    /** @return array<string, mixed>|null */
+    private function refusedResponse(ServerException $exception, string $workerId): ?array
+    {
+        if (!$this->definitiveRefusal($exception)) {
+            return null;
+        }
+        $response = $exception->details ?? [];
+        if ($exception->reason === 'task_offer_expired') {
+            $response['poll_status'] = 'empty';
+        } else {
+            $this->forget($workerId);
+        }
+
+        return $response;
+    }
+
+    private function isUncertain(ServerException $exception, ?TaskDeliveryAttempt $selected): bool
+    {
+        return !$exception instanceof TaskDeliveryUncertain && !PollResponse::isTransientPayloadFailure($exception)
+            && (($selected !== null && ($exception->status >= 500 || $exception->status === 409 || $exception->status === 429
+                    || $exception->reason === 'invalid_task_delivery_response'
+                    || in_array($exception->status, [0, 404, 405], true)))
+                || ($selected === null && in_array($exception->status, [404, 405], true)));
     }
 
     private function resolved(string $key, ?TaskDeliveryAttempt $selected): void
