@@ -106,11 +106,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         if ($poll && $timeoutSeconds === null) {
             // cURL's total timeout includes all progress bytes. Opaque PSR-18
             // clients retain ordinary JSON because their deadline is unknown.
-            $timeoutSeconds = max(0, min(60, (int) ($body['timeout_seconds'] ?? 30))) + 5;
-            $configured = $this->client instanceof GuzzleClient ? $this->client->getConfig('timeout') : null;
-            if (is_numeric($configured) && (float) $configured > 0) {
-                $timeoutSeconds = min($timeoutSeconds, (float) $configured);
-            }
+            $timeoutSeconds = $this->pollTimeoutSeconds($body);
         }
         $controlTimeout = $timeoutSeconds === null && $this->isControlRequest($headers) ? $this->requestTimeoutSeconds : null;
         try {
@@ -132,6 +128,16 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             }
             throw new TransportException('HTTP request failed: '.$exception->getMessage(), previous: $exception);
         }
+    }
+
+    /** @param array<string, mixed>|null $body */
+    private function pollTimeoutSeconds(?array $body): int|float
+    {
+        $timeout = max(0, min(60, (int) ($body['timeout_seconds'] ?? 30))) + 5;
+        $configured = $this->client instanceof GuzzleClient ? $this->client->getConfig('timeout') : null;
+
+        return is_numeric($configured) && (float) $configured > 0
+            ? min($timeout, (float) $configured) : $timeout;
     }
 
     /** @return array<string, mixed>|list<mixed>|null */

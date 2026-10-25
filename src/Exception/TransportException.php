@@ -23,6 +23,7 @@ class TransportException extends DurableWorkflowException
 
     /**
      * @param array<string, mixed>|list<mixed>|null $response
+     * @param string $rawBody Retained for compatibility with existing positional and named calls.
      * @param array<string, string> $headers
      */
     public static function fromResponse(int $status, ?array $response, string $rawBody, array $headers = []): self
