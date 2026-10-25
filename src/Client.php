@@ -86,6 +86,8 @@ final class Client implements WorkflowClientInterface
     private bool $observabilityContextSupported = false;
     /** @var (\Closure(string, array<string, mixed>|null, array<string, mixed>, RequestBudget|null): (?\Closure))|null */
     private ?\Closure $workerPayloadObserver = null;
+    /** @var (\Closure(array<string, mixed>): void)|null */
+    private ?\Closure $workerPollCutoffObserver = null;
 
     public function __construct(
         string $baseUri,
@@ -2612,6 +2614,50 @@ final class Client implements WorkflowClientInterface
         }
     }
 
+    /** @internal @param \Closure(array<string, mixed>): void $observer */
+    public function withWorkerPollCutoffObserver(\Closure $observer): self
+    {
+        $copy = clone $this;
+        $copy->workerPollCutoffObserver = $observer;
+
+        return $copy;
+    }
+
+    /**
+     * @param array<string, string> $headers
+     * @param array<string, mixed>|null $body
+     * @return array<string, mixed>|list<mixed>|null
+     */
+    private function sendTransportRequest(string $method, string $path, bool $worker, array $headers, ?array $body, ?RequestBudget $budget): ?array
+    {
+        $startedAt = hrtime(true);
+        try {
+            if ($worker && $this->boundedWorkerRequests) {
+                if (!$this->transport instanceof BoundedTransport || !$this->transport->supportsBoundedRequests()) {
+                    throw new InvalidArgumentException('The cooperative worker transport no longer supports bounded requests.');
+                }
+
+                return $this->transport->sendBounded($method, $this->baseUri.'/api'.$path, $headers, $body, $budget->remainingSeconds());
+            }
+
+            return $this->transport->send($method, $this->baseUri.'/api'.$path, $headers, $body);
+        } catch (TransportException $exception) {
+            $observed = (hrtime(true) - $startedAt) / 1_000_000_000;
+            $wait = $body['timeout_seconds'] ?? 0;
+            $kind = \DurableWorkflow\Transport\PollTransport::taskKind($method, $path);
+            if ($worker && $kind !== null && is_int($wait) && $wait > 0 && $observed < $wait
+                && (in_array($exception->status, [502, 504], true) || $exception->transientConnectionFailure)) {
+                ($this->workerPollCutoffObserver)?->__invoke([
+                    'task_kind' => $kind, 'observed_seconds' => round($observed, 3), 'configured_wait_seconds' => $wait,
+                    'status' => $exception->status,
+                    'remediation' => 'Check proxy idle timeouts and client request budgets against the configured worker poll wait.',
+                ]);
+            }
+
+            throw $exception;
+        }
+    }
+
     /** @return array<string, string> */
     private function requestHeaders(bool $worker): array
     {
@@ -2664,14 +2710,7 @@ final class Client implements WorkflowClientInterface
                 $activityLease->checkRequest($body);
                 $budget?->restrictAuthorityDeadline($activityLease->publicationDeadline());
             }
-            if ($worker && $this->boundedWorkerRequests) {
-                if (!$this->transport instanceof BoundedTransport || !$this->transport->supportsBoundedRequests()) {
-                    throw new InvalidArgumentException('The cooperative worker transport no longer supports bounded requests.');
-                }
-                $response = $this->transport->sendBounded($method, $this->baseUri.'/api'.$path, $headers, $body, $budget->remainingSeconds());
-            } else {
-                $response = $this->transport->send($method, $this->baseUri.'/api'.$path, $headers, $body);
-            }
+            $response = $this->sendTransportRequest($method, $path, $worker, $headers, $body, $budget);
 
             $budget?->remainingSeconds();
             // Control I/O and supervised payload I/O have separate bounds.

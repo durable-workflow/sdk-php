@@ -15,17 +15,23 @@ class TransportException extends DurableWorkflowException
         public readonly ?array $response = null,
         ?Throwable $previous = null,
         public readonly bool $transientConnectionFailure = false,
+        /** @var array<string, string> */
+        public readonly array $headers = [],
     ) {
         parent::__construct($message, $status ?? 0, $previous);
     }
 
-    /** @param array<string, mixed>|list<mixed>|null $response */
-    public static function fromResponse(int $status, ?array $response, string $rawBody): self
+    /**
+     * @param array<string, mixed>|list<mixed>|null $response
+     * @param string $rawBody Retained for compatibility with existing positional and named calls.
+     * @param array<string, string> $headers
+     */
+    public static function fromResponse(int $status, ?array $response, string $rawBody, array $headers = []): self
     {
         $message = is_array($response)
             ? (string) ($response['message'] ?? $response['error'] ?? "Server returned HTTP {$status}.")
             : "Server returned HTTP {$status}.";
 
-        return new self($message, $status, $response);
+        return new self($message, $status, $response, headers: $headers);
     }
 }

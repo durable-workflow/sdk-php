@@ -158,7 +158,8 @@ final class Worker
         }
         $workerClient = $telemetry === null ? $client : $client->withTelemetry($telemetry);
         $workerClient = $enableCooperativeCancellation ? $workerClient->withBoundedWorkerRequests() : $workerClient;
-        $this->client = $workerClient->withWorkerPayloadObserver($this->workerPayloadProgress(...));
+        $this->client = $workerClient->withWorkerPayloadObserver($this->workerPayloadProgress(...))
+            ->withWorkerPollCutoffObserver(fn (array $context) => $this->diagnostic('worker.poll_ended_early', $context, 'warning'));
         $this->workerId = $workerId ?? 'php-worker-'.bin2hex(random_bytes(8));
         $this->heartbeatIntervalSeconds = $this->validHeartbeatInterval($heartbeatIntervalSeconds)
             ?? self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS;
