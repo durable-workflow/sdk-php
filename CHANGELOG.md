@@ -6,6 +6,17 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.5.1] - 2026-10-25
+
+### Fixed
+
+- Negotiate worker poll progress with supporting Servers, preserving terminal
+  status, refusal details and retry headers. Ordinary JSON remains compatible.
+  Progress bytes do not extend the complete cURL request deadline.
+- Report early worker poll connection failures and gateway cutoffs at warning
+  level with observed duration, configured wait and timeout remediation.
+  Retries retain the original poll identity.
+
 ## [3.5.0] - 2026-10-23
 
 ### Added

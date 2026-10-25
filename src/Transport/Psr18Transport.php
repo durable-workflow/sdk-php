@@ -102,13 +102,26 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
      */
     private function sendJson(string $method, string $uri, array $headers, ?array $body, ?int $timeoutSeconds = null): ?array
     {
+        $poll = PollTransport::taskKind($method, $uri) !== null && $this->supportsBoundedRequests();
+        if ($poll && $timeoutSeconds === null) {
+            // cURL's total timeout includes all progress bytes. Opaque PSR-18
+            // clients retain ordinary JSON because their deadline is unknown.
+            $timeoutSeconds = max(0, min(60, (int) ($body['timeout_seconds'] ?? 30))) + 5;
+            $configured = $this->client instanceof GuzzleClient ? $this->client->getConfig('timeout') : null;
+            if (is_numeric($configured) && (float) $configured > 0) {
+                $timeoutSeconds = min($timeoutSeconds, (float) $configured);
+            }
+        }
         $controlTimeout = $timeoutSeconds === null && $this->isControlRequest($headers) ? $this->requestTimeoutSeconds : null;
         try {
             $request = $this->createJsonRequest($method, $uri, $headers, $body);
+            if ($poll) {
+                $request = $request->withHeader('Accept', PollTransport::MEDIA_TYPE.', application/json;q=0.9');
+            }
             $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout ?? 30,
                 bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout);
 
-            return $this->decodeJsonResponse($response);
+            return $this->decodeJsonResponse($response, $poll);
         } catch (TransportException $exception) {
             throw $exception;
         } catch (JsonException $exception) {
@@ -122,14 +135,24 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     }
 
     /** @return array<string, mixed>|list<mixed>|null */
-    private function decodeJsonResponse(ResponseInterface $response): ?array
+    private function decodeJsonResponse(ResponseInterface $response, bool $poll = false): ?array
     {
         $rawBody = (string) $response->getBody();
-        if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
+        $status = $response->getStatusCode();
+        $mediaType = strtolower(trim(explode(';', $response->getHeaderLine('Content-Type'), 2)[0]));
+        if ($poll && $mediaType === PollTransport::MEDIA_TYPE) {
+            $frame = PollTransport::decode($rawBody, $status);
+            if ($frame['status'] >= 300) {
+                throw TransportException::fromResponse($frame['status'], $frame['body'], $rawBody, $frame['headers']);
+            }
+
+            return $frame['body'];
+        }
+        if ($status < 200 || $status >= 300) {
             // An upstream proxy can return HTML or an empty body. Preserve
             // its status without interpreting it as a successful protocol reply.
             $decoded = json_decode($rawBody, true);
-            throw TransportException::fromResponse($response->getStatusCode(), is_array($decoded) ? $decoded : null, $rawBody);
+            throw TransportException::fromResponse($status, is_array($decoded) ? $decoded : null, $rawBody);
         }
 
         $decoded = $rawBody === '' ? null : json_decode($rawBody, true, 512, JSON_THROW_ON_ERROR);
