@@ -280,7 +280,8 @@ heartbeats. Prepared local activities use supervised callback processes.
 
 ## Inspect retry budget and the owning workflow
 
-PHP SDK 3.6.0 adds immutable received metadata to `ActivityContext`.
+PHP SDK 3.6.0 introduced retry metadata on `ActivityContext`. Use 3.6.1 or later
+for the original owning workflow and run IDs from public activity claims.
 `$context->retryInfo` retains the original attempt number and retry policy,
 including unknown fields. `maxAttempts()` returns a positive configured limit
 when available. Use `isUnlimited()` to distinguish an explicit
@@ -340,9 +341,13 @@ function signalOwningRun(
 ```
 
 The client must use the same runtime and namespace with permission to signal.
-The stable request ID deduplicates this business event across retries; it does
-not make other downstream effects execute exactly once. Do not substitute a
-task or attempt ID when an owning workflow identity is unavailable.
+Keep the request ID stable to identify retries of the same business event.
+The published PHP Server 2.11.3 can still record another signal with the same
+key. Signal receipt retention remains tracked in [shared issue 216](https://github.com/durable-workflow/.github/issues/216).
+Make the receiving handler idempotent for the business event and reconcile an
+ambiguous response before retrying. A stable key alone does not establish
+once-only signal admission or external effects. Do not substitute a task or
+attempt ID when an owning workflow identity is unavailable.
 
 ## Use durable commands for workflow time
 
