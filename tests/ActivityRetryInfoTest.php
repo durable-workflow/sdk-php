@@ -69,6 +69,29 @@ final class ActivityRetryInfoTest extends TestCase
         self::assertNull($context->runId);
     }
 
+    public static function originalIdentities(): array
+    {
+        return [
+            'public claim' => [['workflow_id' => '0', 'run_id' => '017'], '0', '017'],
+            'legacy aliases' => [['workflow_instance_id' => 'parent', 'workflow_run_id' => 'parent-run'], 'parent', 'parent-run'],
+            'public takes precedence' => [['workflow_id' => 'original', 'run_id' => 'original-run',
+                'workflow_instance_id' => 'other', 'workflow_run_id' => 'other-run'], 'original', 'original-run'],
+            'public null remains unknown' => [['workflow_id' => null, 'run_id' => null,
+                'workflow_instance_id' => 'other', 'workflow_run_id' => 'other-run'], null, null],
+            'invalid identity remains unknown' => [['workflow_id' => 42, 'run_id' => ''], null, null],
+            'partially missing identity' => [['workflow_id' => 'original'], 'original', null],
+        ];
+    }
+
+    #[DataProvider('originalIdentities')]
+    public function testOriginalIdentityUsesThePublicClaimWithoutRetargeting(array $metadata, ?string $workflowId, ?string $runId): void
+    {
+        $context = new ActivityContext(new Client('https://server.example'), 'task', 'attempt', 'owner', 'activity', 1,
+            taskMetadata: $metadata);
+        self::assertSame($workflowId, $context->workflowId);
+        self::assertSame($runId, $context->runId);
+    }
+
     public function testInlineLocalActivityRetainsParentIdentityWithoutInventingRetryPolicy(): void
     {
         $completion = null;
@@ -114,7 +137,7 @@ final class ActivityRetryInfoTest extends TestCase
     {
         return [
             'bounded' => [['retry_policy' => ['max_attempts' => 3, 'future' => [true, null]], 'attempt_number' => 3,
-                'workflow_instance_id' => '0', 'workflow_run_id' => '017'], true, true],
+                'workflow_id' => '0', 'run_id' => '017'], true, true],
             'absent legacy' => [[], false, null],
             'explicit root null' => [['retry_policy' => null], true, null],
             'unlimited' => [['retry_policy' => ['max_attempts' => null]], true, false],
@@ -158,7 +181,7 @@ final class ActivityRetryInfoTest extends TestCase
         self::assertSame($provided, $result['provided']);
         self::assertSame($metadata['retry_policy'] ?? null, $result['policy']);
         self::assertSame($last, $result['last']);
-        self::assertSame($metadata['workflow_instance_id'] ?? null, $result['workflow_id']);
-        self::assertSame($metadata['workflow_run_id'] ?? null, $result['run_id']);
+        self::assertSame($metadata['workflow_id'] ?? null, $result['workflow_id']);
+        self::assertSame($metadata['run_id'] ?? null, $result['run_id']);
     }
 }

@@ -12,9 +12,9 @@ use Closure;
 final class ActivityContext
 {
     public readonly ActivityRetryInfo $retryInfo;
-    /** Owning workflow_instance_id from the claim, or known parent local task. */
+    /** Original workflow_id from the public claim, or known parent local task. */
     public readonly ?string $workflowId;
-    /** Original owning workflow_run_id; unavailable legacy identity stays null. */
+    /** Original run_id from the public claim; unavailable legacy identity stays null. */
     public readonly ?string $runId;
 
     /**
@@ -33,8 +33,12 @@ final class ActivityContext
         array $taskMetadata = [],
     ) {
         $this->retryInfo = ActivityRetryInfo::fromTask($attemptNumber, $taskMetadata);
-        $this->workflowId = self::receivedIdentity($taskMetadata['workflow_instance_id'] ?? null);
-        $this->runId = self::receivedIdentity($taskMetadata['workflow_run_id'] ?? null);
+        // Public claim keys take precedence, including explicit null. Retain the
+        // internal-name aliases used by local parents and 3.6.0 constructor callers.
+        $this->workflowId = self::receivedIdentity(array_key_exists('workflow_id', $taskMetadata)
+            ? $taskMetadata['workflow_id'] : ($taskMetadata['workflow_instance_id'] ?? null));
+        $this->runId = self::receivedIdentity(array_key_exists('run_id', $taskMetadata)
+            ? $taskMetadata['run_id'] : ($taskMetadata['workflow_run_id'] ?? null));
     }
 
     private static function receivedIdentity(mixed $value): ?string
