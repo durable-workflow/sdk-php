@@ -295,7 +295,7 @@ final class CooperativeRemoteActivityTest extends TestCase
     public function testReceivedRetryAndWorkflowIdentityReachTheSupervisedCallback(): void
     {
         foreach ([[], ['attempt_number' => 3, 'retry_policy' => ['max_attempts' => 3, 'future' => [true]],
-            'workflow_instance_id' => 'workflow', 'workflow_run_id' => 'original-run']] as $metadata) {
+            'workflow_id' => 'workflow', 'run_id' => 'original-run']] as $metadata) {
             $transport = new RemoteOwnerTransport();
             $transport->taskMetadata = $metadata;
             $pids = [];
@@ -316,8 +316,8 @@ final class CooperativeRemoteActivityTest extends TestCase
             self::assertSame($metadata['retry_policy'] ?? null, $result['policy']);
             self::assertSame($metadata !== [], $result['provided']);
             self::assertSame($metadata === [] ? null : true, $result['last']);
-            self::assertSame($metadata['workflow_instance_id'] ?? null, $result['workflow_id']);
-            self::assertSame($metadata['workflow_run_id'] ?? null, $result['run_id']);
+            self::assertSame($metadata['workflow_id'] ?? null, $result['workflow_id']);
+            self::assertSame($metadata['run_id'] ?? null, $result['run_id']);
         }
     }
 
