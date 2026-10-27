@@ -2266,7 +2266,8 @@ final class Worker
                 throw new InvalidLocalActivityReport('No local activity handler is registered for '.$activityType.'.');
             }
             return $this->invokeActivity($handler, new ActivityContext($this->client, $attempt->taskId, $attempt->attemptId,
-                $attempt->leaseOwner, $activityType, $attempt->attemptNumber, localHeartbeat: $heartbeat), $arguments,
+                $attempt->leaseOwner, $activityType, $attempt->attemptNumber, localHeartbeat: $heartbeat,
+                taskMetadata: ['workflow_instance_id' => $task['workflow_id'] ?? null, 'workflow_run_id' => $task['run_id'] ?? null]), $arguments,
                 ['activity_id' => $attempt->executionId] + ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), true);
         };
 
@@ -2444,6 +2445,7 @@ final class Worker
                     'activity_heartbeat',
                     fn (): array => $this->client->heartbeatActivityTask($taskId, $attemptId, $leaseOwner, $details),
                 ),
+                taskMetadata: $task,
             );
             $arguments = $this->decodeArguments($task['arguments'] ?? null);
             $this->activityLeaseProcess?->check();
@@ -2461,7 +2463,8 @@ final class Worker
                 $result = (new CooperativeActivityExecutor($this->client->payloadCodec()))->execute(
                     function (\Closure $heartbeat) use ($handler, $taskId, $attemptId, $leaseOwner, $activityType, $task, $arguments): mixed {
                         $callbackContext = new ActivityContext($this->client, $taskId, $attemptId, $leaseOwner,
-                            $activityType, (int) ($task['attempt_number'] ?? 1), localHeartbeat: $heartbeat);
+                            $activityType, (int) ($task['attempt_number'] ?? 1), localHeartbeat: $heartbeat,
+                            taskMetadata: $task);
 
                         return $this->invokeActivity($handler, $callbackContext, $arguments,
                             ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), authorizedTask: $task);
@@ -3175,6 +3178,7 @@ final class Worker
                     $this->client, (string) ($task['task_id'] ?? ''), $attemptId,
                     (string) ($task['lease_owner'] ?? $this->workerId), $activityType, $attemptNumber,
                     localHeartbeat: $heartbeat,
+                    taskMetadata: ['workflow_instance_id' => $task['workflow_id'] ?? null, 'workflow_run_id' => $task['run_id'] ?? null],
                 ), $arguments, ['activity_id' => null] + ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), true);
                 if ($this->enableCooperativeCancellation) {
                     $nextRenewal = 0.0;

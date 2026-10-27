@@ -39,6 +39,25 @@ final class PreparedLocalActivityWorkerTest extends TestCase
         }
     }
 
+    public function test_prepared_activity_retains_parent_ids_with_unknown_server_retry_snapshot(): void
+    {
+        $transport = new PreparedWorkerTransport();
+        $transport->stopAuxiliaryPolls = true;
+        $worker = $this->worker($transport);
+        $worker->registerWorkflow('prepared', static fn (WorkflowContext $context): mixed => $context->localActivity('effect'));
+        $worker->registerActivity('effect', static fn (ActivityContext $context): array => [
+            'workflow_id' => $context->workflowId, 'run_id' => $context->runId,
+            'provided' => $context->retryInfo->policyProvided, 'last' => $context->retryInfo->isLastConfiguredAttempt(),
+        ]);
+        $worker->run(0);
+        self::assertSame([], $transport->failures);
+        self::assertCount(1, $transport->operations('outcome'));
+        $command = $transport->completions[0]['commands'][0];
+        self::assertSame('complete_workflow', $command['type']);
+        self::assertSame(['workflow_id' => 'workflow', 'run_id' => 'run', 'provided' => false, 'last' => null],
+            (new AvroPayloadCodec())->decodeEnvelope($command['result']));
+    }
+
     public function test_managed_worker_checkpoints_once_and_executes_more_than_three_admitted_calls(): void
     {
         $transport = new PreparedWorkerTransport();

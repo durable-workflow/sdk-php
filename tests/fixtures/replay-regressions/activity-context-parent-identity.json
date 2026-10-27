@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-activity-context-parent-identity",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.local-activity-context", "input": []},
+  "history": [{"event_type": "WorkflowStarted", "payload": {"workflow_type": "golden.local-activity-context"}}],
+  "workflow_tasks": [{"workflow_id": "original-parent", "run_id": "original-parent-run"}],
+  "expected": {
+    "workflow_tasks": [{
+      "command_sequence": [
+        {"type": "record_local_activity", "result": {
+          "workflow_id": "original-parent", "run_id": "original-parent-run",
+          "policy_provided": false, "last_configured_attempt": null
+        }},
+        {"type": "complete_workflow", "result": {
+          "workflow_id": "original-parent", "run_id": "original-parent-run",
+          "policy_provided": false, "last_configured_attempt": null
+        }}
+      ]
+    }]
+  }
+}
