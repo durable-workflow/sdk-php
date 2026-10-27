@@ -278,6 +278,72 @@ Workers that opt into [cooperative cancellation](https://durable-workflow.com/do
 supervise callbacks and observe cancellation independently of application
 heartbeats. Prepared local activities use supervised callback processes.
 
+## Inspect retry budget and the owning workflow
+
+PHP SDK 3.6.0 adds immutable received metadata to `ActivityContext`.
+`$context->retryInfo` retains the original attempt number and retry policy,
+including unknown fields. `maxAttempts()` returns a positive configured limit
+when available. Use `isUnlimited()` to distinguish an explicit
+`max_attempts: null` policy from an unknown limit. `policyProvided` distinguishes
+an omitted snapshot from a received legacy null; `policy()` preserves either
+received value without filling in defaults.
+
+`isLastConfiguredAttempt()` returns `true` at or beyond a bounded final attempt,
+`false` for a remaining budget or explicit unlimited policy, and `null` when
+the policy or attempt is unknown. Keep the unknown case separate:
+
+```php
+function logConfiguredFinalAttempt(
+    \DurableWorkflow\Worker\ActivityContext $context,
+    \Psr\Log\LoggerInterface $logger,
+): void {
+    if ($context->retryInfo->isLastConfiguredAttempt() === true) {
+        $logger->warning('Activity reached its final configured attempt', [
+            'attempt' => $context->retryInfo->attemptNumber,
+            'max_attempts' => $context->retryInfo->maxAttempts(),
+        ]);
+    }
+}
+```
+
+A remaining budget does not promise another execution. Non-retryable failures,
+cancellation, workflow closure and elapsed deadlines can end execution earlier.
+Local activities and Server-free activity tests have no received Server retry
+snapshot and report an unknown policy.
+
+`workflowId` and `runId` contain the received owning workflow instance and run
+IDs. Local activities retain the parent workflow task's IDs when available.
+Older claims and Server-free tests can leave either ID null. To signal the
+original owning run, use both IDs and an application event identity that stays
+stable across activity retries:
+
+```php
+function signalOwningRun(
+    \DurableWorkflow\Client $client,
+    \DurableWorkflow\Worker\ActivityContext $context,
+    string $orderId,
+): array {
+    if ($context->workflowId === null || $context->runId === null) {
+        throw new \RuntimeException('Owning workflow IDs are unavailable; supply explicit IDs for this older claim.');
+    }
+
+    $eventIdentity = json_encode([$context->workflowId, $context->runId, $orderId], JSON_THROW_ON_ERROR);
+
+    return $client->signalWorkflow(
+        $context->workflowId,
+        'order_activity_completed',
+        [$orderId],
+        runId: $context->runId,
+        requestId: 'order-activity-completed:'.hash('sha256', $eventIdentity),
+    );
+}
+```
+
+The client must use the same runtime and namespace with permission to signal.
+The stable request ID deduplicates this business event across retries; it does
+not make other downstream effects execute exactly once. Do not substitute a
+task or attempt ID when an owning workflow identity is unavailable.
+
 ## Use durable commands for workflow time
 
 The context provides these replay-aware commands:

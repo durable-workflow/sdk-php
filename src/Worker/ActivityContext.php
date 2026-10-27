@@ -11,7 +11,16 @@ use Closure;
 /** Activity attempt metadata and heartbeat/cancellation support. */
 final class ActivityContext
 {
-    /** @param (Closure(array<array-key, mixed>): array<string, mixed>)|null $heartbeatRequest */
+    public readonly ActivityRetryInfo $retryInfo;
+    /** Owning workflow_instance_id from the claim, or known parent local task. */
+    public readonly ?string $workflowId;
+    /** Original owning workflow_run_id; unavailable legacy identity stays null. */
+    public readonly ?string $runId;
+
+    /**
+     * @param (Closure(array<array-key, mixed>): array<string, mixed>)|null $heartbeatRequest
+     * @param array<string, mixed> $taskMetadata Received claim metadata; omitted for Server-free tests.
+     */
     public function __construct(
         private readonly Client $client,
         public readonly string $taskId,
@@ -21,7 +30,16 @@ final class ActivityContext
         public readonly int $attemptNumber,
         private readonly ?Closure $localHeartbeat = null,
         private readonly ?Closure $heartbeatRequest = null,
+        array $taskMetadata = [],
     ) {
+        $this->retryInfo = ActivityRetryInfo::fromTask($attemptNumber, $taskMetadata);
+        $this->workflowId = self::receivedIdentity($taskMetadata['workflow_instance_id'] ?? null);
+        $this->runId = self::receivedIdentity($taskMetadata['workflow_run_id'] ?? null);
+    }
+
+    private static function receivedIdentity(mixed $value): ?string
+    {
+        return is_string($value) && $value !== '' ? $value : null;
     }
 
     /** @param array<array-key, mixed> $details */
