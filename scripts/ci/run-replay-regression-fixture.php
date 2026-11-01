@@ -563,7 +563,7 @@ final class ReplayRegressionConsumer
         if ($workflowType === 'golden.workflow-lease-recovery') {
             $worker->tick(0);
         }
-        if ($localActivityInvocations !== (in_array($workflowType, ['golden.activity-completion-backend-loss', self::BOUNDED_LOCAL_FAILURE], true) ? 1 : 0)) {
+        if ($localActivityInvocations !== (in_array($workflowType, ['golden.activity-completion-backend-loss', self::BOUNDED_LOCAL_FAILURE, 'golden.local-activity-context'], true) ? 1 : 0)) {
             throw new RuntimeException("{$identity} repeated a recorded local activity during cold replay.");
         }
 
@@ -642,6 +642,16 @@ final class ReplayRegressionConsumer
                     }
                     ++$localActivityInvocations;
                     throw new RuntimeException(str_repeat('雪', 1024 * 1024));
+                });
+        }
+        if ($workflowType === 'golden.local-activity-context') {
+            $worker->registerActivity('golden.context',
+                static function (ActivityContext $context) use (&$localActivityInvocations): array {
+                    ++$localActivityInvocations;
+
+                    return ['workflow_id' => $context->workflowId ?? null, 'run_id' => $context->runId ?? null,
+                        'policy_provided' => $context->retryInfo->policyProvided ?? null,
+                        'last_configured_attempt' => isset($context->retryInfo) ? $context->retryInfo->isLastConfiguredAttempt() : null];
                 });
         }
         if ($workflowType === 'golden.activity-completion-backend-loss') {
@@ -898,6 +908,7 @@ final class ReplayRegressionConsumer
                         'non_retryable' => $failure->nonRetryable];
                 }
             },
+            'golden.local-activity-context' => static fn (WorkflowContext $context): mixed => $context->localActivity('golden.context'),
             'golden.local-activity-recovered' => static fn (WorkflowContext $context): mixed =>
                 $context->localActivity('golden.local-receipt'),
             'golden.local-activity-terminal-failure' => static function (WorkflowContext $context): never {

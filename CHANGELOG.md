@@ -6,6 +6,19 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-10-27
+
+### Added
+
+- Activity contexts retain an immutable received retry snapshot and original
+  attempt number through ordinary and supervised callbacks. Bounded final-attempt
+  checks preserve absent/legacy/invalid policies as unknown and distinguish an
+  explicit unlimited policy without filling defaults or discarding future fields.
+- Nullable owning `workflowId` and `runId` let activities signal their original
+  run. Local activities retain known parent IDs; older claims and Server-free
+  tests preserve unavailable identity. Guides show retry checks and a run-pinned
+  self-signal with a stable application event identity.
+
 ## [3.5.1] - 2026-10-25
 
 ### Fixed

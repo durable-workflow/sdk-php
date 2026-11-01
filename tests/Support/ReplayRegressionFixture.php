@@ -16,6 +16,7 @@ use DurableWorkflow\Exception\WorkflowEntryArgumentsMismatch;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Testing\WorkerTestHarness;
 use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\DurableOperationHandle;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\Saga;
@@ -83,6 +84,10 @@ final class ReplayRegressionFixture
         if ($workflowTasks !== null) {
             if (!is_array($workflowTasks) || !array_is_list($workflowTasks) || $workflowTasks === []) {
                 throw new RuntimeException("{$identity}.workflow_tasks must be a non-empty list.");
+            }
+
+            if ($workflowType === 'golden.local-activity-context') {
+                return self::executeLocalActivityContext($identity, $input, $history, $workflowTasks, $fixture);
             }
 
             return self::executeWorkflowTasks(
@@ -642,6 +647,60 @@ final class ReplayRegressionFixture
 
             return ['winner' => $selected->key];
         };
+    }
+
+    /**
+     * @param list<mixed> $input
+     * @param list<array<string, mixed>> $history
+     * @param list<array<string, mixed>> $workflowTasks
+     * @param array<string, mixed> $fixture
+     * @return list<array<string, mixed>>
+     */
+    private static function executeLocalActivityContext(string $identity, array $input, array $history, array $workflowTasks, array $fixture): array
+    {
+        if (count($workflowTasks) !== 1) {
+            throw new RuntimeException('The local context reproducer requires one original workflow task.');
+        }
+        $codec = new AvroPayloadCodec();
+        $parent = $workflowTasks[0];
+        $polled = false;
+        $commands = null;
+        $transport = new FakeTransport(handler: static function (string $method, string $uri, array $headers, ?array $body) use ($parent, $input, $history, $codec, &$polled, &$commands): array {
+            if (str_ends_with($uri, '/worker/register')) {
+                return ['registered' => true];
+            }
+            if (str_ends_with($uri, '/workflow-tasks/poll')) {
+                if ($polled) { return ['task' => null]; }
+                $polled = true;
+
+                return ['task' => $parent + ['task_id' => 'context-task', 'workflow_task_attempt' => 1, 'lease_owner' => 'context-worker',
+                    'workflow_type' => 'golden.local-activity-context', 'payload_codec' => 'avro',
+                    'arguments' => $codec->envelope($input), 'history_events' => $history]];
+            }
+            if (str_ends_with($uri, '/workflow-tasks/context-task/heartbeat')) {
+                return ['task_id' => 'context-task', 'workflow_task_attempt' => 1, 'lease_owner' => 'context-worker', 'renewed' => true];
+            }
+            if (str_ends_with($uri, '/workflow-tasks/context-task/complete')) {
+                $commands = $body['commands'] ?? null;
+                return ['completed' => true];
+            }
+            if (str_ends_with($uri, '/poll')) { return ['task' => null]; }
+            throw new RuntimeException('Unexpected local context fixture request: '.$method.' '.$uri);
+        });
+        $worker = new Worker(new Client('https://replay.invalid', transport: $transport, codec: $codec), 'regression-corpus', workerId: 'context-worker');
+        $worker->registerWorkflow('golden.local-activity-context', static fn (WorkflowContext $context): mixed => $context->localActivity('golden.context'));
+        $worker->registerActivity('golden.context', static fn (ActivityContext $context): array => [
+            'workflow_id' => $context->workflowId ?? null, 'run_id' => $context->runId ?? null,
+            'policy_provided' => $context->retryInfo->policyProvided ?? null,
+            'last_configured_attempt' => isset($context->retryInfo) ? $context->retryInfo->isLastConfiguredAttempt() : null,
+        ]);
+        $worker->tick(0);
+        if (!is_array($commands)) { throw new RuntimeException('Local context fixture did not complete its workflow task.'); }
+        $observed = [['workflow_id' => $parent['workflow_id'], 'run_id' => $parent['run_id'],
+            'command_sequence' => array_map(static fn (array $command): array => self::decodeEnvelopes($command, $codec), $commands)]];
+        self::assertMatches($fixture['expected'], ['workflow_tasks' => $observed], "{$identity}.expected");
+
+        return $observed;
     }
 
     /** @return array<string, mixed> */
