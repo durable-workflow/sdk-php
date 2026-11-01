@@ -21,6 +21,8 @@ final class TaskDelivery
     private array $registrations = [];
     /** @var array<string, TaskDeliveryAttempt> */
     private array $pending = [];
+    /** @var array<string, true> */
+    private array $accepting = [];
 
     /**
      * @param list<string> $capabilities
@@ -70,36 +72,44 @@ final class TaskDelivery
             return null;
         }
         $key = hash('sha256', json_encode([$path, $workerId, $body['task_queue'], $body['poll_request_id']], JSON_THROW_ON_ERROR));
-        $selected = $this->pending[$key] ?? null;
-        try {
-            if ($selected === null) {
-                $wirePath = substr($path, 0, -5).'/offers';
-                $body['registration_token'] = $registration['token'];
-                $response = $send($wirePath, $body, null);
-                if (!array_key_exists('task_offer', $response)) {
-                    return $response;
-                }
-                $candidate = TaskDeliveryAttempt::fromResponse($wirePath, $body, $response,
-                    (string) PollTransport::taskKind('POST', $path));
-                // Concurrent callers for one logical poll select only its first packet.
-                $selected = $this->pending[$key] ??= $candidate;
-            }
-            $response = $send($selected->path, $selected->requestBody(), $selected);
-            if ($response['task'] === null && !PollResponse::isTerminal($response)) {
-                throw new TaskDeliveryUncertain((string) $body['poll_request_id'], 200);
-            }
-        } catch (ServerException $exception) {
-            $response = $this->refusedResponse($exception, $workerId);
-            if ($response === null) {
-                if ($this->isUncertain($exception, $selected)) {
-                    throw new TaskDeliveryUncertain((string) $body['poll_request_id'], $exception->status, $exception);
-                }
-                throw $exception;
-            }
+        if (isset($this->accepting[$key])) {
+            return ['task' => null];
         }
-        $this->resolved($key, $selected);
+        // Hold ownership across both requests, including a suspended offer read.
+        $this->accepting[$key] = true;
+        try {
+            $selected = $this->pending[$key] ?? null;
+            try {
+                if ($selected === null) {
+                    $wirePath = substr($path, 0, -5).'/offers';
+                    $body['registration_token'] = $registration['token'];
+                    $response = $send($wirePath, $body, null);
+                    if (!array_key_exists('task_offer', $response)) {
+                        return $response;
+                    }
+                    $candidate = TaskDeliveryAttempt::fromResponse($wirePath, $body, $response,
+                        (string) PollTransport::taskKind('POST', $path));
+                    $selected = $this->pending[$key] ??= $candidate;
+                }
+                $response = $send($selected->path, $selected->requestBody(), $selected);
+                if ($response['task'] === null && !PollResponse::isTerminal($response)) {
+                    throw new TaskDeliveryUncertain((string) $body['poll_request_id'], 200);
+                }
+            } catch (ServerException $exception) {
+                $response = $this->refusedResponse($exception, $workerId);
+                if ($response === null) {
+                    if ($this->isUncertain($exception, $selected)) {
+                        throw new TaskDeliveryUncertain((string) $body['poll_request_id'], $exception->status, $exception);
+                    }
+                    throw $exception;
+                }
+            }
+            $this->resolved($key, $selected);
 
-        return $response;
+            return $response;
+        } finally {
+            unset($this->accepting[$key]);
+        }
     }
 
     /**

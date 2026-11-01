@@ -86,6 +86,112 @@ final class WorkerTaskDeliveryTest extends TestCase
         yield 'wrong owner' => [['task' => ['task_id' => 'task', 'lease_owner' => 'other']]];
     }
 
+    #[DataProvider('overlappingPolls')]
+    public function testOverlappingPollsHaveOnlyOneAcceptanceOwner(string $kind, bool $clone, string $pauseAt): void
+    {
+        $offers = $acceptances = 0;
+        $transport = new FakeTransport(handler: static function (string $method, string $uri, array $headers, ?array $body) use ($kind, $pauseAt, &$offers, &$acceptances): array {
+            if (str_ends_with($uri, '/worker/register')) { return self::registration(); }
+            if (isset($body['task_offer_token'])) {
+                if (++$acceptances === 1 && $pauseAt === 'accept') { \Fiber::suspend('accept'); }
+                return self::claimed($kind);
+            }
+            if (++$offers === 1 && $pauseAt === 'offer') { \Fiber::suspend('offer'); }
+            return self::offer($kind);
+        });
+        $client = new Client('https://server.example', transport: $transport);
+        $client->registerWorker('worker', 'orders', [], []);
+        $other = $clone ? clone $client : $client;
+        $owner = new \Fiber(static fn (): array => self::poll($client, $kind));
+        self::assertSame($pauseAt, $owner->start());
+        $contender = new \Fiber(static fn (): array => self::poll($other, $kind));
+        $contender->start();
+        self::assertTrue($contender->isTerminated());
+        $owner->resume();
+        self::assertSame(self::claimed($kind), $owner->getReturn());
+        self::assertSame(['task' => null], $contender->getReturn());
+        self::assertSame(1, $offers);
+        self::assertSame(1, $acceptances);
+    }
+
+    #[DataProvider('overlappingClients')]
+    public function testUncertainAcceptanceOwnerReleasesTheGateWithoutReplacingItsPacket(string $kind, bool $clone): void
+    {
+        $offers = $acceptances = 0;
+        $transport = new FakeTransport(handler: static function (string $method, string $uri, array $headers, ?array $body) use ($kind, &$offers, &$acceptances): array {
+            if (str_ends_with($uri, '/worker/register')) { return self::registration(); }
+            if (!isset($body['task_offer_token'])) { return self::offer($kind, 'packet-'.++$offers); }
+            if (++$acceptances === 1) {
+                \Fiber::suspend('accept');
+                throw new TransportException('Gateway timeout.', 504);
+            }
+            return self::claimed($kind);
+        });
+        $client = new Client('https://server.example', transport: $transport);
+        $client->registerWorker('worker', 'orders', [], []);
+        $other = $clone ? clone $client : $client;
+        $owner = new \Fiber(static function () use ($client, $kind): ?TaskDeliveryUncertain {
+            try { self::poll($client, $kind); }
+            catch (TaskDeliveryUncertain $error) { return $error; }
+            return null;
+        });
+        self::assertSame('accept', $owner->start());
+        $contender = new \Fiber(static fn (): array => self::poll($other, $kind));
+        $contender->start();
+        $owner->resume();
+        self::assertInstanceOf(TaskDeliveryUncertain::class, $owner->getReturn());
+        self::assertSame(['task' => null], $contender->getReturn());
+        self::assertSame(self::claimed($kind), self::poll($other, $kind));
+        self::assertSame(1, $offers);
+        self::assertSame(2, $acceptances);
+        self::assertSame($transport->requests[2], $transport->requests[3]);
+    }
+
+    public static function overlappingClients(): iterable
+    {
+        foreach (['workflow', 'activity', 'query'] as $kind) {
+            yield $kind.' same client' => [$kind, false];
+            yield $kind.' clone' => [$kind, true];
+        }
+    }
+
+    #[DataProvider('overlappingClients')]
+    public function testAnAcceptanceOwnerDoesNotBlockAnotherLogicalPoll(string $kind, bool $clone): void
+    {
+        $acceptances = 0;
+        $idField = $kind === 'query' ? 'query_task_id' : 'task_id';
+        $transport = new FakeTransport(handler: static function (string $method, string $uri, array $headers, ?array $body) use ($kind, $idField, &$acceptances): array {
+            if (str_ends_with($uri, '/worker/register')) { return self::registration(); }
+            if (!isset($body['task_offer_token'])) {
+                $response = self::offer($kind);
+                $response['task_offer']['task_id'] = $body['poll_request_id'];
+                return $response;
+            }
+            if (++$acceptances === 1) { \Fiber::suspend('accept'); }
+            $response = self::claimed($kind);
+            $response['task'][$idField] = $body['poll_request_id'];
+            return $response;
+        });
+        $client = new Client('https://server.example', transport: $transport);
+        $client->registerWorker('worker', 'orders', [], []);
+        $other = $clone ? clone $client : $client;
+        $owner = new \Fiber(static fn (): array => self::poll($client, $kind));
+        self::assertSame('accept', $owner->start());
+        self::assertSame('other-poll', self::poll($other, $kind, 'other-poll')['task'][$idField]);
+        $owner->resume();
+        self::assertSame('fixed-poll', $owner->getReturn()['task'][$idField]);
+        self::assertSame(2, $acceptances);
+    }
+
+    public static function overlappingPolls(): iterable
+    {
+        foreach (self::overlappingClients() as $name => $arguments) {
+            foreach (['offer', 'accept'] as $phase) {
+                yield $name.' during '.$phase => [...$arguments, $phase];
+            }
+        }
+    }
+
     public function testAnOlderNodeCannotDowngradeTheNegotiatedEndpoint(): void
     {
         $transport = new FakeTransport([self::registration(), new TransportException('Not found.', 404), ['task' => null]]);
@@ -235,12 +341,12 @@ final class WorkerTaskDeliveryTest extends TestCase
 
     public static function kinds(): array { return [['workflow'], ['activity'], ['query']]; }
 
-    private static function poll(Client $client, string $kind): array
+    private static function poll(Client $client, string $kind, string $pollId = 'fixed-poll'): array
     {
         return match ($kind) {
-            'workflow' => $client->pollWorkflowTaskResponse('worker', 'orders', 4, 'fixed-poll'),
-            'activity' => $client->pollActivityTaskResponse('worker', 'orders', 4, 'fixed-poll'),
-            'query' => $client->pollQueryTaskResponse('worker', 'orders', 4, 'fixed-poll'),
+            'workflow' => $client->pollWorkflowTaskResponse('worker', 'orders', 4, $pollId),
+            'activity' => $client->pollActivityTaskResponse('worker', 'orders', 4, $pollId),
+            'query' => $client->pollQueryTaskResponse('worker', 'orders', 4, $pollId),
         };
     }
 
