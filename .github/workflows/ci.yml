@@ -426,8 +426,9 @@ jobs:
           php-version: '8.3'
           tools: composer:v2
           coverage: none
-      # Reads only the committed manifest and lock; installs nothing.
-      - run: composer validate --strict --no-check-publish --no-interaction
+      # Installs nothing. The example pins exact versions on purpose, so skip
+      # only the constraint-style check; lock freshness stays strict.
+      - run: composer validate --strict --no-check-all --no-check-publish --no-interaction
       - run: composer audit --locked --abandoned=report --no-interaction
 
   analyse:
