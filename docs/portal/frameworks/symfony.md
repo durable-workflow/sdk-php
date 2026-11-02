@@ -44,7 +44,10 @@ Use a bare self-hosted Server origin or the complete provisioned Cloud namespace
 
 Set optional `durable_workflow.request_timeout_seconds: 5.0` for the application
 control client. Omitting it uses the SDK's 60-second total HTTP request deadline.
-Worker polling and payload-transfer clocks remain separate. See [client
+Set optional `durable_workflow.worker_request_timeout_seconds` for the Console
+worker's registration, heartbeat, task completion/failure and deregistration
+requests; omitting it uses a separate 60-second deadline. Worker polling and
+payload-transfer clocks remain separate. See [client
 setup](/getting-started/client-setup/#bound-ordinary-http-requests) for timeout
 errors, injected-client policy and ambiguous mutation outcomes.
 
