@@ -20,6 +20,40 @@ if (count($argv) < 5) {
     exit(2);
 }
 require_once $argv[1];
+
+// Diagnostics never copy command bodies or unbounded exception text: command
+// arguments and results may carry encoded workflow/activity payloads.
+$commandSummary = static function (mixed $commands): ?array {
+    if (!is_array($commands)) {
+        return null;
+    }
+    $types = [];
+    $sizes = [];
+    foreach ($commands as $command) {
+        $type = is_array($command) && is_string($command['type'] ?? null)
+            ? substr($command['type'], 0, 64) : 'unknown';
+        $types[$type] = ($types[$type] ?? 0) + 1;
+        if (count($sizes) < 64) {
+            $sizes[] = strlen(json_encode($command, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION));
+        }
+    }
+    $encoded = json_encode($commands, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION);
+    ksort($types);
+
+    return ['count' => count($commands), 'types' => $types, 'encoded_bytes' => strlen($encoded),
+        'command_encoded_bytes' => $sizes, 'sha256' => hash('sha256', $encoded)];
+};
+$boundedMessage = static function (string $message): array {
+    // Keep at most 240 bytes without splitting a UTF-8 sequence; the receipt
+    // must stay JSON-encodable.
+    $prefix = substr($message, 0, 240);
+    for ($trim = 0; $trim < 4 && preg_match('//u', $prefix) !== 1; $trim++) {
+        $prefix = substr($prefix, 0, -1);
+    }
+
+    return ['message' => preg_match('//u', $prefix) === 1 ? $prefix : null,
+        'message_bytes' => strlen($message), 'message_sha256' => hash('sha256', $message)];
+};
 $trialSeconds = filter_var(getenv('DW_PROFILE_TRIAL_SECONDS') ?: '600', FILTER_VALIDATE_INT,
     ['options' => ['min_range' => 30, 'max_range' => 1800]]);
 if ($trialSeconds === false) {
@@ -79,15 +113,17 @@ $diagnostics = [];
 $profileDeadline = INF;
 $expired = false;
 $stack = HandlerStack::create();
-$stack->push(static function (callable $next) use (&$active, &$http, &$claims, &$completed, &$worker, &$effects, &$profileDeadline, &$expired, $namespace, $runs): Closure {
+$stack->push(static function (callable $next) use (&$active, &$http, &$claims, &$completed, &$worker, &$effects, &$profileDeadline, &$expired, $namespace, $runs, $commandSummary): Closure {
     return static function (RequestInterface $request, array $options) use (
     $next, &$active, &$http, &$claims, &$completed, &$worker, &$effects, &$profileDeadline, &$expired, $namespace, $runs,
+    $commandSummary,
 ) {
     $started = hrtime(true);
     $sent = $active;
 
     return $next($request, $options)->then(static function (ResponseInterface $response) use (
         $request, $started, $sent, &$http, &$claims, &$completed, &$worker, &$effects, &$profileDeadline, &$expired, $namespace, $runs,
+        $commandSummary,
     ): ResponseInterface {
         if (!$sent) {
             return $response;
@@ -112,7 +148,8 @@ $stack->push(static function (callable $next) use (&$active, &$http, &$claims, &
             fwrite(STDERR, json_encode(['path' => $path, 'status' => $response->getStatusCode(),
                 'poll_status' => $decoded['poll_status'] ?? null, 'reason' => $decoded['reason'] ?? null,
                 'task_id' => $task['task_id'] ?? null, 'commands' => str_ends_with($path, '/complete')
-                    ? json_decode((string) $request->getBody(), true)['commands'] ?? null : null], JSON_THROW_ON_ERROR)."\n");
+                    ? $commandSummary(json_decode((string) $request->getBody(), true)['commands'] ?? null) : null],
+                JSON_THROW_ON_ERROR)."\n");
         }
         $entry = ['seconds' => (hrtime(true) - $started) / 1e9, 'bytes' => strlen($body),
             'status' => $response->getStatusCode()];
@@ -171,10 +208,10 @@ $handler = static function (WorkflowContext $context, string $key, int $count, i
     return ['key' => $key, 'sum' => $sum];
 };
 $worker = new Worker($client, $queue, $workerId, buildId: $buildId,
-    diagnosticListener: static function (string $event, array $context) use (&$diagnostics, &$worker): void {
+    diagnosticListener: static function (string $event, array $context) use (&$diagnostics, &$worker, $boundedMessage): void {
         if (isset($context['exception'])) {
-            $diagnostics[] = ['event' => $event, 'exception' => $context['exception']::class,
-                'message' => $context['exception']->getMessage()];
+            $diagnostics[] = ['event' => $event, 'exception' => $context['exception']::class]
+                + $boundedMessage($context['exception']->getMessage());
             $worker?->requestShutdown();
         }
     });
@@ -244,7 +281,7 @@ try {
     }
 } catch (Throwable $exception) {
     $receipt['outcome'] = 'profile_error';
-    $receipt['error'] = ['type' => $exception::class, 'message' => $exception->getMessage()];
+    $receipt['error'] = ['type' => $exception::class] + $boundedMessage($exception->getMessage());
 } finally {
     $active = false;
     $receipt['worker_wall_seconds'] = (hrtime(true) - $started) / 1e9;
@@ -345,7 +382,7 @@ if ($receipt['outcome'] === 'measured') {
         }
     } catch (Throwable $exception) {
         $receipt['outcome'] = 'profile_error';
-        $receipt['error'] = ['type' => $exception::class, 'message' => $exception->getMessage()];
+        $receipt['error'] = ['type' => $exception::class] + $boundedMessage($exception->getMessage());
     }
 }
 $receipt['final_maxrss_kib'] = getrusage()['ru_maxrss'];

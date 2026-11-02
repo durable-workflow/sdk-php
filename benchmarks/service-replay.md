@@ -42,7 +42,13 @@ their original deadlines. The receipt records PHP's memory limit and exact
 harness/bootstrap hashes as well as the outer cgroup budgets.
 
 `DW_PROFILE_PROGRESS=1` writes a small heap/call-count observation to stderr
-every ten claimed tasks. Retain stdout and stderr separately. Keep a bounded
+every ten claimed tasks. `DW_PROFILE_TRACE=1` adds one stderr line per Server
+response with its path, status, poll status/reason and task ID. For workflow-task
+completions it records only the command count, per-type counts, encoded byte
+sizes and a SHA-256 of the encoded commands, never command bodies, because those
+can carry encoded arguments and results. Receipt and diagnostic exception
+messages are cut to 240 bytes and paired with their full length and SHA-256.
+Retain stdout and stderr separately. Keep a bounded
 container log and inspect the exited container before retiring it when a long
 trial fails to produce a terminal receipt.
 
