@@ -5,7 +5,7 @@ path repository or source overlay, against an exact Server image pulled by
 digest. Everything runs in disposable local containers; nothing touches Cloud.
 
 ```sh
-SDK_VERSION=3.6.1 SERVER_IMAGE=ghcr.io/durable-workflow/server-native@sha256:<index> \
+SDK_VERSION=3.6.1 SERVER_IMAGE=ghcr.io/durable-workflow/server@sha256:<index> \
   tests/installed-lifecycle/run.sh <output-dir>
 ```
 

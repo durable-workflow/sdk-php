@@ -8,7 +8,7 @@ set -euo pipefail
 OUT="$(mkdir -p "$1" && cd "$1" && pwd)"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SDK_VERSION="${SDK_VERSION:-3.6.1}"
-SERVER_IMAGE="${SERVER_IMAGE:-ghcr.io/durable-workflow/server-native@sha256:485295819c7739d3e937a2c89b8593532de0d9c2fbc8f2e7aaddb0b45fe4b319}"
+SERVER_IMAGE="${SERVER_IMAGE:-ghcr.io/durable-workflow/server@sha256:485295819c7739d3e937a2c89b8593532de0d9c2fbc8f2e7aaddb0b45fe4b319}"
 COMPOSER_IMAGE="composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee"
 PHP_IMAGE="php:8.4-cli@sha256:7e7413ed31b8c42b31c939cc83b3758b1cd618f7bf3803f5a0c39f98d4adcbee"
 RUN="sdkphp-installed-$(date +%s)-$$"
