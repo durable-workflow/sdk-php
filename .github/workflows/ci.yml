@@ -80,11 +80,20 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: '8.3'
-          tools: composer:v2
+          tools: composer:2.10.3
           coverage: none
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - run: composer install --no-interaction --prefer-dist --no-progress
       - name: Require durable replay and codec evidence
         env:
@@ -108,15 +117,28 @@ jobs:
         php: ['8.1', '8.2', '8.3', '8.4']
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: ${{ matrix.php }}
-          tools: composer:v2
+          tools: composer:2.10.3
           coverage: none
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - run: composer validate --strict
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - run: composer install --no-interaction --prefer-dist
       - name: Lint PHP
         run: find src tests examples -name '*.php' -print0 | xargs -0 -n1 php -l
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - run: |
           mkdir -p build
           composer test -- --log-junit build/phpunit.xml
@@ -128,10 +150,16 @@ jobs:
           path: build/phpunit.xml
           if-no-files-found: error
           retention-days: 90
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Enforce Avro Value regression budget
         if: matrix.php == '8.3'
         run: composer benchmark-avro-value
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - run: composer check-boundary
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Preserve the HTTP-only PHP 8.1 platform
         if: matrix.php == '8.1'
         run: composer check-http-only-platform
@@ -260,11 +288,20 @@ jobs:
             script: symfony.php
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: ${{ matrix.php }}
-          tools: composer:v2
+          tools: composer:2.10.3
           coverage: none
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Install SDK into a clean framework consumer
         env:
           FRAMEWORK_BOOTSTRAP: ${{ matrix.bootstrap }}
@@ -299,6 +336,8 @@ jobs:
               --no-interaction --prefer-dist --with-all-dependencies
           fi
           composer require --dev phpstan/phpstan:^2.0 'monolog/monolog:^2.9|^3.0' --no-interaction --prefer-dist
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Install SDK into a fresh Laravel application for cached role isolation
         if: matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4'
         run: |
@@ -340,6 +379,8 @@ jobs:
             src/Bridge/FrameworkRuntimeException.php \
             src/Bridge/ServiceConfiguration.php src/Bridge/Event \
             "$bridge_path" "${compatibility_scripts[@]}"
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Exercise optional tracing in framework workers
         if: >-
           (matrix.framework == 'Laravel' && matrix.version == '9' && matrix.php == '8.1') ||
@@ -381,11 +422,20 @@ jobs:
             workflow: '^2.0'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: ${{ matrix.php }}
-          tools: composer:v2
+          tools: composer:2.10.3
           coverage: none
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Exercise the established Laravel application transition
         env:
           LARAVEL_REQUIREMENT: ${{ matrix.laravel }}
@@ -415,12 +465,23 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: '8.3'
-          tools: composer:v2
+          tools: composer:2.10.3
           coverage: none
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - run: composer install --no-interaction --prefer-dist
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - run: composer analyse
 
   docs:
@@ -428,19 +489,30 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git,npm
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: '8.3'
-          tools: composer:v2
+          tools: composer:2.10.3
           coverage: none
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
         with:
           node-version: '24'
           cache: npm
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - run: composer install --no-interaction --prefer-dist
       - run: npm ci --ignore-scripts
       - run: npm audit --audit-level=moderate
       - run: npm run check:docs-examples
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - run: composer docs
       - run: npm run check:docs
       - run: php scripts/check-docs-analytics.php build/site
@@ -470,11 +542,20 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: '8.3'
-          tools: composer:v2
+          tools: composer:2.10.3
           coverage: none
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Install into a clean consumer project
         run: |
           consumer="$(mktemp -d)"
@@ -487,6 +568,8 @@ jobs:
           php "$GITHUB_WORKSPACE/scripts/check-registration-identity.php" \
             "$consumer/vendor/autoload.php" \
             source-development
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Verify release identity and reject stale package metadata
         run: |
           release_tag=$(php -r '$manifest = json_decode(file_get_contents("composer.json"), true, flags: JSON_THROW_ON_ERROR); echo $manifest["extra"]["durable-workflow"]["product-train"];')
@@ -512,11 +595,18 @@ jobs:
         with:
           path: sdk-php
           persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git,cargo
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: '8.3'
           extensions: pcntl, posix
-          tools: composer:v2
+          tools: composer:2.10.3
           coverage: none
       - name: Check out the exact public Server source
         env:
@@ -553,6 +643,8 @@ jobs:
             --arg python "$PYTHON_COMMIT" --arg rust "$RUST_COMMIT" --arg cli "$CLI_COMMIT" \
             '{qualification:"source",sdk_commit:$sdk,server_commit:$server,native_source_overlay:($native | if length > 0 then . else null end),python_sdk_commit:($python | if length > 0 then . else null end),rust_sdk_commit:($rust | if length > 0 then . else null end),cli_source_commit:($cli | if length > 0 then . else null end)}' \
             > sdk-php/cooperative-source-provenance.json
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Bind exact CLI inspection source
         if: ${{ inputs.cli_commit != '' }}
         env:
@@ -591,14 +683,6 @@ jobs:
           git -c credential.helper= -C sdk-rust fetch --depth=1 origin "$RUST_COMMIT"
           git -C sdk-rust checkout --detach FETCH_HEAD
           test "$(git -C sdk-rust rev-parse HEAD)" = "$RUST_COMMIT"
-      - name: Install Python for the mixed Source child
-        if: ${{ inputs.python_commit != '' }}
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
-        with:
-          python-version: '3.12'
-      - name: Bootstrap mixed-worker pip trust
-        if: ${{ inputs.python_commit != '' }}
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip
       - name: Install Rust for the mixed Source activity
         if: ${{ inputs.rust_commit != '' }}
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
@@ -620,6 +704,10 @@ jobs:
           printf 'DURABLE_WORKFLOW_POLYGLOT_PYTHON_BINARY=%s\n' "$(command -v python)" >> "$GITHUB_ENV"
           printf 'DURABLE_WORKFLOW_POLYGLOT_RUST_BINARY=%s\n' "$binary" >> "$GITHUB_ENV"
           printf 'DURABLE_WORKFLOW_POLYGLOT_ARTIFACT_DIRECTORY=%s/sdk-php/polyglot-evidence\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          working-directory: sdk-php
       - run: composer install --no-interaction --prefer-dist --no-progress
         working-directory: sdk-php
       - name: Start the isolated MySQL Server stack
