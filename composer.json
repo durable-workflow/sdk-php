@@ -93,8 +93,12 @@
             }
         },
         "durable-workflow": {
-            "product-train": "3.4.1",
+            "product-train": "3.6.2",
             "supported-server-versions": "2.5.0",
+            "supported-server-release-baselines": {
+                "2": "2.5.0",
+                "3": "3.0.0"
+            },
             "worker-protocol-version": "1.20",
             "control-plane-version": "2",
             "durable-selection": true,

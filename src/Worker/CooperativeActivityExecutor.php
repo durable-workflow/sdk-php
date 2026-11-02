@@ -7,6 +7,10 @@ namespace DurableWorkflow\Worker;
 use Closure;
 use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\ActivityCancelled;
+use DurableWorkflow\Exception\FailureReportRefused;
+use DurableWorkflow\Failure\FailureReportLimiter;
+use DurableWorkflow\Failure\FailureReportLimits;
+use DurableWorkflow\Transport\JsonDocument;
 use DurableWorkflow\Exception\InvalidLocalActivityReport;
 use DurableWorkflow\Exception\LocalActivityTimedOut;
 use DurableWorkflow\Exception\ServerException;
@@ -97,7 +101,7 @@ final class CooperativeActivityExecutor
                         throw new WorkflowClaimAborted('Activity IPC closed before a fenced result.');
                     }
                     $buffer .= $chunk;
-                    if (strlen($buffer) > $this->maxFrameBytes + 4) {
+                    if (strlen($buffer) > $this->receiveFrameBytes() + 4) {
                         throw new WorkflowClaimAborted('Activity IPC exceeded its finite frame bound.');
                     }
                     continue;
@@ -131,6 +135,9 @@ final class CooperativeActivityExecutor
                         $check(true);
 
                         return $this->decode($message);
+                    case 'report_refused':
+                        throw new WorkflowClaimAborted('failure_report_refused: the original callback failure cannot be encoded.',
+                            previous: new FailureReportRefused(FailureReportLimits::REQUEST_BYTES));
                     case 'failure':
                         $check(true);
                         if (!is_string($message['message'] ?? null) || !is_string($message['type'] ?? null)
@@ -138,6 +145,8 @@ final class CooperativeActivityExecutor
                             || !is_bool($message['cancelled'] ?? null)
                             || !is_bool($message['invalid_report'] ?? null)
                             || !is_bool($message['storage_admission_failure'] ?? null)
+                            || (isset($message['stack_trace']) && !is_string($message['stack_trace']))
+                            || (isset($message['diagnostics']) && !is_array($message['diagnostics']))
                             || !array_key_exists('timeout_kind', $message)
                             || ($message['timeout_kind'] !== null && !in_array($message['timeout_kind'],
                                 ['heartbeat', 'start_to_close', 'schedule_to_close'], true))) {
@@ -145,7 +154,7 @@ final class CooperativeActivityExecutor
                         }
                         throw new ActivityExecutionFailure($message['message'], $message['type'], $message['encoding'],
                             $message['cancelled'], $message['invalid_report'], $message['timeout_kind'],
-                            $message['storage_admission_failure']);
+                            $message['storage_admission_failure'], $message['stack_trace'] ?? null, $message['diagnostics'] ?? null);
                     default:
                         throw new WorkflowClaimAborted('Activity IPC returned an unexpected message.');
                 }
@@ -257,7 +266,7 @@ final class CooperativeActivityExecutor
                             throw new WorkflowClaimAborted('Group activity IPC closed before a fenced result.');
                         }
                         $process->buffer .= $chunk;
-                        if (strlen($process->buffer) > $this->maxFrameBytes + 4) {
+                        if (strlen($process->buffer) > $this->receiveFrameBytes() + 4) {
                             throw new WorkflowClaimAborted('Group activity IPC exceeded its finite frame bound.');
                         }
                     }
@@ -265,6 +274,10 @@ final class CooperativeActivityExecutor
                         while (($message = $this->takeFrame($process->buffer)) !== null) {
                             $operation = $operations[$index];
                             $kind = $message['kind'];
+                            if ($kind === 'report_refused') {
+                                throw new WorkflowClaimAborted('failure_report_refused: the original callback failure cannot be encoded.',
+                            previous: new FailureReportRefused(FailureReportLimits::REQUEST_BYTES));
+                            }
                             if ($kind === 'started') {
                                 if ($process->callbackPid !== null || !is_int($message['callback_pid'] ?? null) || $message['callback_pid'] < 1) {
                                     throw new WorkflowClaimAborted('Group activity IPC returned an invalid callback PID.');
@@ -365,6 +378,8 @@ final class CooperativeActivityExecutor
         if (!is_string($message['message'] ?? null) || !is_string($message['type'] ?? null)
             || !is_bool($message['encoding'] ?? null) || !is_bool($message['cancelled'] ?? null)
             || !is_bool($message['invalid_report'] ?? null) || !is_bool($message['storage_admission_failure'] ?? null)
+            || (isset($message['stack_trace']) && !is_string($message['stack_trace']))
+            || (isset($message['diagnostics']) && !is_array($message['diagnostics']))
             || !array_key_exists('timeout_kind', $message)
             || ($message['timeout_kind'] !== null && !in_array($message['timeout_kind'],
                 ['heartbeat', 'start_to_close', 'schedule_to_close'], true))) {
@@ -372,7 +387,8 @@ final class CooperativeActivityExecutor
         }
 
         return new ActivityExecutionFailure($message['message'], $message['type'], $message['encoding'],
-            $message['cancelled'], $message['invalid_report'], $message['timeout_kind'], $message['storage_admission_failure']);
+            $message['cancelled'], $message['invalid_report'], $message['timeout_kind'], $message['storage_admission_failure'],
+            $message['stack_trace'] ?? null, $message['diagnostics'] ?? null);
     }
 
     /** @param resource $owner
@@ -493,25 +509,25 @@ final class CooperativeActivityExecutor
             $this->writeFrame($socket, ['kind' => 'result', 'value' => $this->codec->envelope($result)]);
         } catch (Throwable $error) {
             try {
-                $message = $error->getMessage();
-                $type = $error::class;
-                $invalid = $error instanceof InvalidLocalActivityReport;
-                try {
-                    json_encode(['message' => $message, 'type' => $type], JSON_THROW_ON_ERROR);
-                } catch (Throwable) {
-                    $invalid = true;
-                    $message = 'Activity failure metadata could not be encoded for the HTTP JSON wire boundary.';
-                }
-                if (strlen($type) > 255) {
-                    $invalid = true;
-                    $message = 'Activity failure metadata exceeded the published exception type limit.';
-                }
-                $this->writeFrame($socket, ['kind' => 'failure', 'message' => $message,
-                    'type' => $invalid ? InvalidLocalActivityReport::class : $type, 'encoding' => $encoding,
-                    'cancelled' => !$invalid && $error instanceof ActivityCancelled,
+                $invalid = $error instanceof InvalidLocalActivityReport || preg_match('//u', $error->getMessage()) !== 1;
+                $body = (new FailureReportLimiter(new FailureReportLimits()))->activityEnvelope([
+                    'kind' => 'failure',
+                    'failure' => ['message' => $error->getMessage(), 'type' => $error::class,
+                        'stack_trace' => $error->getTraceAsString()],
+                    'encoding' => $encoding, 'cancelled' => !$invalid && $error instanceof ActivityCancelled,
                     'invalid_report' => $invalid,
                     'timeout_kind' => !$invalid && $error instanceof LocalActivityTimedOut ? $error->timeoutKind : null,
-                    'storage_admission_failure' => $error instanceof ServerException && $error->isStorageAdmissionFailure()]);
+                    'storage_admission_failure' => $error instanceof ServerException && $error->isStorageAdmissionFailure(),
+                ]);
+                $failure = $body['failure'];
+                unset($body['failure']);
+                $this->writeFrame($socket, $failure + $body);
+            } catch (FailureReportRefused) {
+                try {
+                    $this->writeFrame($socket, ['kind' => 'report_refused']);
+                } catch (Throwable) {
+                    // The owning worker has abandoned this claim.
+                }
             } catch (Throwable) {
                 // The owning worker has abandoned this claim or the frame is invalid.
             }
@@ -571,8 +587,9 @@ final class CooperativeActivityExecutor
      */
     private function writeFrame($socket, array $message): void
     {
-        $body = json_encode($message, JSON_THROW_ON_ERROR);
-        if (strlen($body) > $this->maxFrameBytes) {
+        $failure = in_array($message['kind'] ?? null, ['failure', 'report_refused'], true);
+        $body = $failure ? JsonDocument::encode($message) : json_encode($message, JSON_THROW_ON_ERROR);
+        if (strlen($body) > ($failure ? FailureReportLimits::REQUEST_BYTES : $this->maxFrameBytes)) {
             throw new WorkflowClaimAborted('Activity IPC exceeded its finite frame bound.');
         }
         $frame = pack('N', strlen($body)).$body;
@@ -611,6 +628,11 @@ final class CooperativeActivityExecutor
         return $message;
     }
 
+    private function receiveFrameBytes(): int
+    {
+        return max($this->maxFrameBytes, FailureReportLimits::REQUEST_BYTES);
+    }
+
     /** @return array<string, mixed>|null */
     private function takeFrame(string &$buffer): ?array
     {
@@ -619,7 +641,7 @@ final class CooperativeActivityExecutor
         }
         $prefix = unpack('Nlength', substr($buffer, 0, 4));
         $length = $prefix['length'] ?? 0;
-        if (!is_int($length) || $length < 1 || $length > $this->maxFrameBytes) {
+        if (!is_int($length) || $length < 1 || $length > $this->receiveFrameBytes()) {
             throw new WorkflowClaimAborted('Activity IPC received an invalid frame length.');
         }
         if (strlen($buffer) < $length + 4) {
@@ -633,6 +655,11 @@ final class CooperativeActivityExecutor
         $buffer = substr($buffer, $length + 4);
         if (!is_array($message) || array_is_list($message) || !is_string($message['kind'] ?? null)) {
             throw new WorkflowClaimAborted('Activity IPC received a malformed message.');
+        }
+
+        $failure = in_array($message['kind'], ['failure', 'report_refused'], true);
+        if ($length > ($failure ? FailureReportLimits::REQUEST_BYTES : $this->maxFrameBytes)) {
+            throw new WorkflowClaimAborted('Activity IPC exceeded its original payload frame bound.');
         }
 
         return $message;

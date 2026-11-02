@@ -6,6 +6,7 @@ namespace DurableWorkflow;
 
 use DurableWorkflow\Exception\ActivityCancelled;
 use DurableWorkflow\Exception\CodecException;
+use DurableWorkflow\Exception\FailureReportRefused;
 use DurableWorkflow\Exception\InvalidLocalActivityReport;
 use DurableWorkflow\Exception\InvalidWorkerDefinition;
 use DurableWorkflow\Exception\LocalActivityTimedOut;
@@ -163,7 +164,8 @@ final class Worker
         }
         $workerClient = $telemetry === null ? $client : $client->withTelemetry($telemetry);
         $workerClient = $enableCooperativeCancellation ? $workerClient->withBoundedWorkerRequests() : $workerClient;
-        $this->client = $workerClient->withWorkerPayloadObserver($this->workerPayloadProgress(...));
+        $this->client = $workerClient->withWorkerPayloadObserver($this->workerPayloadProgress(...))
+            ->withWorkerPollCutoffObserver(fn (array $context) => $this->diagnostic('worker.poll_ended_early', $context, 'warning'));
         $this->workerId = $workerId ?? 'php-worker-'.bin2hex(random_bytes(8));
         $this->heartbeatIntervalSeconds = $this->validHeartbeatInterval($heartbeatIntervalSeconds)
             ?? self::DEFAULT_HEARTBEAT_INTERVAL_SECONDS;
@@ -1358,6 +1360,7 @@ final class Worker
                         (int) ($task['workflow_task_attempt'] ?? 1),
                         'PHP workflow task execution failed: '.$failure->getMessage(),
                         $failure::class,
+                        stackTrace: $failure->getTraceAsString(),
                     );
                 },
                 'activity' => function (Throwable $failure) use ($taskId, $leaseOwner, $task): void {
@@ -1368,6 +1371,7 @@ final class Worker
                         $failure->getMessage(),
                         $failure::class,
                         nonRetryable: true,
+                        stackTrace: $failure->getTraceAsString(),
                     );
                 },
                 'query' => function (Throwable $failure) use ($taskId, $leaseOwner, $task): void {
@@ -1500,6 +1504,7 @@ final class Worker
                         $failure::class,
                         $failure instanceof NonDeterministicWorkflow || $failure instanceof WorkflowEntryArgumentsMismatch ? $failure->reason : null,
                         $failure instanceof NonDeterministicWorkflow ? $failure->sequence : null,
+                        $failure->getTraceAsString(),
                     );
                 },
                 $attempt,
@@ -2326,7 +2331,8 @@ final class Worker
                 throw new InvalidLocalActivityReport('No local activity handler is registered for '.$activityType.'.');
             }
             return $this->invokeActivity($handler, new ActivityContext($this->client, $attempt->taskId, $attempt->attemptId,
-                $attempt->leaseOwner, $activityType, $attempt->attemptNumber, localHeartbeat: $heartbeat), $arguments,
+                $attempt->leaseOwner, $activityType, $attempt->attemptNumber, localHeartbeat: $heartbeat,
+                taskMetadata: ['workflow_instance_id' => $task['workflow_id'] ?? null, 'workflow_run_id' => $task['run_id'] ?? null]), $arguments,
                 ['activity_id' => $attempt->executionId] + ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), true);
         };
 
@@ -2504,6 +2510,7 @@ final class Worker
                     'activity_heartbeat',
                     fn (): array => $this->client->heartbeatActivityTask($taskId, $attemptId, $leaseOwner, $details),
                 ),
+                taskMetadata: $task,
             );
             $arguments = $this->decodeArguments($task['arguments'] ?? null);
             $this->activityLeaseProcess?->check();
@@ -2521,7 +2528,8 @@ final class Worker
                 $result = (new CooperativeActivityExecutor($this->client->payloadCodec()))->execute(
                     function (\Closure $heartbeat) use ($handler, $taskId, $attemptId, $leaseOwner, $activityType, $task, $arguments): mixed {
                         $callbackContext = new ActivityContext($this->client, $taskId, $attemptId, $leaseOwner,
-                            $activityType, (int) ($task['attempt_number'] ?? 1), localHeartbeat: $heartbeat);
+                            $activityType, (int) ($task['attempt_number'] ?? 1), localHeartbeat: $heartbeat,
+                            taskMetadata: $task);
 
                         return $this->invokeActivity($handler, $callbackContext, $arguments,
                             ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), authorizedTask: $task);
@@ -2601,6 +2609,8 @@ final class Worker
                         $failure->getMessage(),
                         $failure instanceof ActivityExecutionFailure ? $failure->originalType : $failure::class,
                         $failure instanceof ActivityCancelled || ($failure instanceof ActivityExecutionFailure && $failure->cancelled),
+                        stackTrace: $failure instanceof ActivityExecutionFailure ? $failure->originalStackTrace : $failure->getTraceAsString(),
+                        diagnostics: $failure instanceof ActivityExecutionFailure ? $failure->originalDiagnostics : null,
                     );
                 },
             );
@@ -2863,6 +2873,9 @@ final class Worker
         callable $failureAcknowledgement,
         ?int $workflowTaskAttempt = null,
     ): void {
+        if ($taskFailure instanceof FailureReportRefused) {
+            throw $taskFailure;
+        }
         if ($this->isTaskAuthorityLost($taskKind, $taskId, $taskFailure, $workflowTaskAttempt)) {
             $this->taskObservation?->outcome('aborted');
             if ($taskKind === 'workflow' && $taskFailure instanceof ServerException
@@ -3106,6 +3119,7 @@ final class Worker
         $heartbeatTimeout = $options['heartbeat_timeout'] ?? null;
         $executionStartedAt = $this->now();
         $attempts = [];
+        $localFailureSizes = [];
         $totalHeartbeatCount = 0;
 
         for ($attemptNumber = 1; $attemptNumber <= $maxAttempts; ++$attemptNumber) {
@@ -3232,6 +3246,7 @@ final class Worker
                     $this->client, (string) ($task['task_id'] ?? ''), $attemptId,
                     (string) ($task['lease_owner'] ?? $this->workerId), $activityType, $attemptNumber,
                     localHeartbeat: $heartbeat,
+                    taskMetadata: ['workflow_instance_id' => $task['workflow_id'] ?? null, 'workflow_run_id' => $task['run_id'] ?? null],
                 ), $arguments, ['activity_id' => null] + ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), true);
                 if ($this->enableCooperativeCancellation) {
                     $nextRenewal = 0.0;
@@ -3304,9 +3319,9 @@ final class Worker
                     'heartbeats' => $heartbeats,
                 ];
 
-                return ['outcome' => 'completed', 'result' => $result, 'attempts' => $attempts];
+                return $this->client->normalizeLocalFailure(['outcome' => 'completed', 'result' => $result, 'attempts' => $attempts], $localFailureSizes);
             } catch (Throwable $exception) {
-                if ($exception instanceof WorkflowClaimAborted) {
+                if ($exception instanceof WorkflowClaimAborted || $exception instanceof FailureReportRefused) {
                     throw $exception;
                 }
                 if ($exception instanceof ServerException && $exception->isStorageAdmissionFailure()) {
@@ -3362,6 +3377,10 @@ final class Worker
                 if ($message === '') {
                     $message = "Local activity failed with {$type}.";
                 }
+                $sourceBytes = $exception instanceof ActivityExecutionFailure
+                    ? ($exception->originalDiagnostics['truncation']['fields']['message']['original_bytes'] ?? null) : null;
+                $localFailureSizes['attempts'][$attemptNumber - 1] = is_int($sourceBytes)
+                    ? max($sourceBytes, strlen($message)) : strlen($message);
                 $attempt = [
                     'attempt_id' => $attemptId,
                     'attempt_number' => $attemptNumber,
@@ -3395,14 +3414,15 @@ final class Worker
                     continue;
                 }
 
-                return [
+                $localFailureSizes['message'] = $localFailureSizes['attempts'][$attemptNumber - 1];
+                return $this->client->normalizeLocalFailure([
                     'outcome' => $cancelled ? 'cancelled' : ($timedOut ? 'timed_out' : 'failed'),
                     'message' => $message,
                     'exception_type' => $type,
                     'non_retryable' => $isNonRetryable,
                     ...($timeoutKind === null ? [] : ['timeout_kind' => $timeoutKind]),
                     'attempts' => $attempts,
-                ];
+                ], $localFailureSizes);
             }
         }
 
@@ -4009,24 +4029,18 @@ final class Worker
         ?string $failedActivityExecutionId = null,
     ): array
     {
+        if ($exception instanceof FailureReportRefused) {
+            throw $exception;
+        }
         $command = [
             'type' => 'fail_workflow',
             'message' => $exception->getMessage(),
             'exception_type' => $exception::class,
+            'exception' => ['stack_trace' => $exception->getTraceAsString()],
         ];
         if ($failedActivitySequence !== null && $failedActivityExecutionId !== null) {
             $command['failed_step_sequence'] = $failedActivitySequence;
             $command['failed_activity_execution_id'] = $failedActivityExecutionId;
-        }
-
-        try {
-            json_encode($command, JSON_THROW_ON_ERROR);
-        } catch (\JsonException) {
-            $command = [
-                'type' => 'fail_workflow',
-                'message' => 'Workflow failure metadata could not be encoded for the HTTP JSON wire boundary.',
-                'exception_type' => \RuntimeException::class,
-            ];
         }
 
         return $command;

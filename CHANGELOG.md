@@ -6,6 +6,61 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.6.2] - 2026-11-02
+
+### Added
+
+- Declare minimum stable Server releases separately for the PHP 2.x and native
+  3.x Server lines. Preserve the existing 2.x metadata for older release readers;
+  worker protocol and capability negotiation remain required.
+
+## [3.6.0] - 2026-10-27
+
+### Added
+
+- Activity contexts retain an immutable received retry snapshot and original
+  attempt number through ordinary and supervised callbacks. Bounded final-attempt
+  checks preserve absent/legacy/invalid policies as unknown and distinguish an
+  explicit unlimited policy without filling defaults or discarding future fields.
+- Nullable owning `workflowId` and `runId` let activities signal their original
+  run. Local activities retain known parent IDs; older claims and Server-free
+  tests preserve unavailable identity. Guides show retry checks and a run-pinned
+  self-signal with a stable application event identity.
+
+## [3.5.1] - 2026-10-25
+
+### Fixed
+
+- Negotiate worker poll progress with supporting Servers, preserving terminal
+  status, refusal details and retry headers. Ordinary JSON remains compatible.
+  Progress bytes do not extend the complete cURL request deadline.
+- Report early worker poll connection failures and gateway cutoffs at warning
+  level with observed duration, configured wait and timeout remediation.
+  Retries retain the original poll identity.
+
+## [3.5.0] - 2026-10-23
+
+### Added
+
+- `Client::withFailureReportLimit()` narrows the complete encoded failure-report
+  budget. Transports may expose a lower known limit. Activity and workflow-task
+  reporting accept optional stack traces, and activity reporting accepts
+  diagnostics, after all existing arguments.
+
+### Fixed
+
+- Bound failure messages to 62 KiB, stacks to 128 KiB, combined details and
+  diagnostics to 64 KiB, and complete encoded reports to 1 MiB by default.
+  Markers and JSON escaping count toward these limits. Oversized details remain
+  whole valid Avro values or are omitted with original-size diagnostics.
+- Preserve original failure types, retry decisions, authored delays and claim
+  identities. Local durable failures normalize before workflow code observes
+  them, so initial execution, persistence and cold replay agree. Cooperative
+  failure IPC has its own diagnostic budget, separate from business payloads.
+- Keep ordinary successful payload budgets unchanged. Mixed failure/result
+  completions use the existing upload planner without changing or slicing the
+  business payload. Unfit required report content refuses explicitly.
+
 ## [3.4.1] - 2026-10-23
 
 ### Fixed

@@ -60,10 +60,17 @@ jobs:
         with:
           ref: ${{ inputs.stable_source || (inputs.stable_tag != '' && format('refs/tags/{0}', inputs.stable_tag)) || github.sha }}
           fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git,npm
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: '8.3'
-          tools: composer:v2
+          tools: composer:2.10.3
           coverage: none
       - name: Resolve the public documentation release channel
         id: release-channel
@@ -103,6 +110,8 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - run: composer install --no-interaction --prefer-dist
       - run: npm ci --ignore-scripts
       - run: npm audit --audit-level=moderate
@@ -116,6 +125,8 @@ jobs:
             --include-fragments
             --root-dir .
             README.md docs/*.md
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Build authored portal and generated API reference
         env:
           CLOUDFLARE_WEB_ANALYTICS_TOKEN: ${{ vars.CLOUDFLARE_WEB_ANALYTICS_TOKEN }}

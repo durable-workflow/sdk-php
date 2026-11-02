@@ -11,6 +11,8 @@ use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\InvalidLocalActivityReport;
 use DurableWorkflow\Exception\ServerException;
+use DurableWorkflow\Exception\FailureReportRefused;
+use DurableWorkflow\Failure\LocalFailureReports;
 use InvalidArgumentException;
 use LogicException;
 use Throwable;
@@ -435,7 +437,7 @@ final class WorkflowCommand
         try {
             $outcome = ($this->localActivity)($activityType, $arguments, $options);
         } catch (Throwable $exception) {
-            if ($exception instanceof WorkflowClaimAborted) {
+            if ($exception instanceof WorkflowClaimAborted || $exception instanceof FailureReportRefused) {
                 throw $exception;
             }
             if ($exception instanceof ServerException && $exception->isStorageAdmissionFailure()) {
@@ -492,6 +494,7 @@ final class WorkflowCommand
             $resultEnvelope = null;
         }
 
+        $outcome = LocalFailureReports::bound($outcome);
         $result = $status === 'completed'
             ? ($outcome['result'] ?? null)
             : new \DurableWorkflow\Exception\ActivityFailed(

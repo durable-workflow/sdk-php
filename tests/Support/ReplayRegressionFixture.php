@@ -16,6 +16,7 @@ use DurableWorkflow\Exception\WorkflowEntryArgumentsMismatch;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Testing\WorkerTestHarness;
 use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\DurableOperationHandle;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\Saga;
@@ -25,6 +26,7 @@ use RuntimeException;
 final class ReplayRegressionFixture
 {
     private const FIXTURE_SCHEMA = 'durable-workflow.replay-regression/v1';
+    private const BOUNDED_LOCAL_FAILURE = 'golden.bounded-local-failure';
 
     /** @return list<array<string, mixed>> */
     public static function executeFile(string $path): array
@@ -84,6 +86,10 @@ final class ReplayRegressionFixture
                 throw new RuntimeException("{$identity}.workflow_tasks must be a non-empty list.");
             }
 
+            if ($workflowType === 'golden.local-activity-context') {
+                return self::executeLocalActivityContext($identity, $input, $history, $workflowTasks, $fixture);
+            }
+
             return self::executeWorkflowTasks(
                 $identity,
                 $workflowType,
@@ -108,11 +114,17 @@ final class ReplayRegressionFixture
         }
         $localActivityInvocations = 0;
         $localActivityExecutor = in_array($workflowType, [
-            'golden.local-activity-terminal-failure', 'golden.local-activity-recovered', 'golden.prepared-local-cleanup',
+            self::BOUNDED_LOCAL_FAILURE, 'golden.local-activity-terminal-failure', 'golden.local-activity-recovered', 'golden.prepared-local-cleanup',
             'golden.prepared-local-group', 'golden.prepared-local-scoped-cleanup',
         ], true)
-            ? static function () use (&$localActivityInvocations): array {
+            ? static function () use (&$localActivityInvocations, $workflowType): array {
                 ++$localActivityInvocations;
+                if ($workflowType === self::BOUNDED_LOCAL_FAILURE) {
+                    $message = str_repeat('雪', 1024 * 1024);
+                    return ['outcome' => 'failed', 'message' => $message, 'exception_type' => RuntimeException::class,
+                        'non_retryable' => false, 'attempts' => [['attempt_number' => 1, 'outcome' => 'failed',
+                            'message' => $message, 'exception_type' => RuntimeException::class, 'non_retryable' => false, 'heartbeats' => []]]];
+                }
 
                 return [
                     'outcome' => 'completed',
@@ -194,7 +206,11 @@ final class ReplayRegressionFixture
                 'exception_type' => $exception::class,
             ]];
         }
-        if ($localActivityInvocations !== 0) {
+        if ($workflowType === self::BOUNDED_LOCAL_FAILURE) {
+            if ($localActivityInvocations !== 1) {
+                throw new RuntimeException("{$identity} must execute its fresh local failure exactly once.");
+            }
+        } elseif ($localActivityInvocations !== 0) {
             throw new RuntimeException("{$identity} repeated a recorded local activity during cold replay.");
         }
         $declaredCommands = $fixture['command_sequence'] ?? null;
@@ -583,6 +599,16 @@ final class ReplayRegressionFixture
 
                 return ['key' => $selected->key];
             },
+            self::BOUNDED_LOCAL_FAILURE => static function (WorkflowContext $context): array {
+                try {
+                    $context->localActivity('golden.bounded-local-failure', [], ['retry_policy' => ['max_attempts' => 1]]);
+                    return ['unexpected_success' => true];
+                } catch (ActivityFailed $failure) {
+                    return ['marked' => str_contains($failure->getMessage(), '[truncated failure report;'),
+                        'message_bytes' => strlen($failure->getMessage()), 'failure_type' => $failure->failureType,
+                        'non_retryable' => $failure->nonRetryable];
+                }
+            },
             'golden.local-activity-recovered' => static fn (WorkflowContext $context): mixed =>
                 $context->localActivity('golden.local-receipt'),
             'golden.local-activity-terminal-failure' => static function (WorkflowContext $context): never {
@@ -621,6 +647,60 @@ final class ReplayRegressionFixture
 
             return ['winner' => $selected->key];
         };
+    }
+
+    /**
+     * @param list<mixed> $input
+     * @param list<array<string, mixed>> $history
+     * @param list<array<string, mixed>> $workflowTasks
+     * @param array<string, mixed> $fixture
+     * @return list<array<string, mixed>>
+     */
+    private static function executeLocalActivityContext(string $identity, array $input, array $history, array $workflowTasks, array $fixture): array
+    {
+        if (count($workflowTasks) !== 1) {
+            throw new RuntimeException('The local context reproducer requires one original workflow task.');
+        }
+        $codec = new AvroPayloadCodec();
+        $parent = $workflowTasks[0];
+        $polled = false;
+        $commands = null;
+        $transport = new FakeTransport(handler: static function (string $method, string $uri, array $headers, ?array $body) use ($parent, $input, $history, $codec, &$polled, &$commands): array {
+            if (str_ends_with($uri, '/worker/register')) {
+                return ['registered' => true];
+            }
+            if (str_ends_with($uri, '/workflow-tasks/poll')) {
+                if ($polled) { return ['task' => null]; }
+                $polled = true;
+
+                return ['task' => $parent + ['task_id' => 'context-task', 'workflow_task_attempt' => 1, 'lease_owner' => 'context-worker',
+                    'workflow_type' => 'golden.local-activity-context', 'payload_codec' => 'avro',
+                    'arguments' => $codec->envelope($input), 'history_events' => $history]];
+            }
+            if (str_ends_with($uri, '/workflow-tasks/context-task/heartbeat')) {
+                return ['task_id' => 'context-task', 'workflow_task_attempt' => 1, 'lease_owner' => 'context-worker', 'renewed' => true];
+            }
+            if (str_ends_with($uri, '/workflow-tasks/context-task/complete')) {
+                $commands = $body['commands'] ?? null;
+                return ['completed' => true];
+            }
+            if (str_ends_with($uri, '/poll')) { return ['task' => null]; }
+            throw new RuntimeException('Unexpected local context fixture request: '.$method.' '.$uri);
+        });
+        $worker = new Worker(new Client('https://replay.invalid', transport: $transport, codec: $codec), 'regression-corpus', workerId: 'context-worker');
+        $worker->registerWorkflow('golden.local-activity-context', static fn (WorkflowContext $context): mixed => $context->localActivity('golden.context'));
+        $worker->registerActivity('golden.context', static fn (ActivityContext $context): array => [
+            'workflow_id' => $context->workflowId ?? null, 'run_id' => $context->runId ?? null,
+            'policy_provided' => $context->retryInfo->policyProvided ?? null,
+            'last_configured_attempt' => isset($context->retryInfo) ? $context->retryInfo->isLastConfiguredAttempt() : null,
+        ]);
+        $worker->tick(0);
+        if (!is_array($commands)) { throw new RuntimeException('Local context fixture did not complete its workflow task.'); }
+        $observed = [['workflow_id' => $parent['workflow_id'], 'run_id' => $parent['run_id'],
+            'command_sequence' => array_map(static fn (array $command): array => self::decodeEnvelopes($command, $codec), $commands)]];
+        self::assertMatches($fixture['expected'], ['workflow_tasks' => $observed], "{$identity}.expected");
+
+        return $observed;
     }
 
     /** @return array<string, mixed> */
