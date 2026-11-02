@@ -1,6 +1,9 @@
 {
   "name": "durable-workflow-sdk-php-docs",
   "private": true,
+  "engines": {
+    "node": "20 || >=22"
+  },
   "scripts": {
     "build:docs": "eleventy --config=.eleventy.cjs",
     "check:docs": "node scripts/check-docs-portal.mjs build/site",
@@ -13,5 +16,10 @@
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
     "playwright": "1.62.1"
+  },
+  "overrides": {
+    "@11ty/recursive-copy": {
+      "minimatch": "11.0.3"
+    }
   }
 }
