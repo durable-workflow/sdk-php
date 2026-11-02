@@ -13,7 +13,7 @@ declare(strict_types=1);
 // templates (or "unknown"), never workflow, run, task or worker IDs. Keep
 // task queue names bounded too, because task_queue is an application label.
 
-require __DIR__.'/bootstrap.php';
+require_once __DIR__.'/bootstrap.php';
 
 use DurableWorkflow\Attribute\Activity;
 use DurableWorkflow\Attribute\Workflow;

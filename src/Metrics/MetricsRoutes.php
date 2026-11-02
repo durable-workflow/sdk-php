@@ -75,28 +75,7 @@ final class MetricsRoutes
             '/worker/register', '/worker/heartbeat', '/worker/registrations/{worker_id}',
             '/worker/registrations/{worker_id}/deregister',
             '/worker/sessions', '/worker/sessions/{session_id}', '/worker/sessions/{session_id}/heartbeat');
-        foreach (['workflow', 'activity', 'query', 'update-validation'] as $kind) {
-            $routes[] = "/worker/{$kind}-tasks/poll";
-        }
-        foreach ([
-            'workflow' => ['complete', 'fail', 'heartbeat', 'history', 'deliver-cancellation'],
-            'activity' => ['complete', 'fail', 'heartbeat', 'status', 'renew-lease', 'acknowledge-cancellation'],
-            'query' => ['complete', 'fail', 'status'],
-            'update-validation' => ['approve', 'reject'],
-        ] as $kind => $actions) {
-            foreach ($actions as $action) {
-                $routes[] = "/worker/{$kind}-tasks/{task_id}/{$action}";
-            }
-        }
-        foreach (['open', 'prepare', 'deliver'] as $action) {
-            $routes[] = "/worker/workflow-tasks/{task_id}/cancellation-scopes/{$action}";
-        }
-        foreach (['checkpoint', 'checkpoint-group', 'prepare', 'recover'] as $action) {
-            $routes[] = "/worker/workflow-tasks/{task_id}/local-activities/{$action}";
-        }
-        foreach (['control', 'heartbeat', 'outcome', 'acknowledge-cancellation'] as $action) {
-            $routes[] = "/worker/workflow-tasks/{task_id}/local-activities/{activity_attempt_id}/{$action}";
-        }
+        array_push($routes, ...self::sharedTaskRoutes());
         array_push($routes, '/workflows', '/workflows/{workflow_id}');
         foreach (['archive', 'cancel', 'repair', 'terminate', 'request-cancellation', 'runs'] as $action) {
             $routes[] = "/workflows/{workflow_id}/{$action}";
@@ -120,6 +99,36 @@ final class MetricsRoutes
         }
         array_push($routes, '/bridge-adapters/webhook/{adapter}',
             '/service-endpoints/{endpoint_name}/services/{service_name}/operations/{operation_name}/execute');
+
+        return $routes;
+    }
+
+    /** @return list<string> Shared worker task routes, in the Python SDK's order. */
+    private static function sharedTaskRoutes(): array
+    {
+        $routes = [];
+        foreach (['workflow', 'activity', 'query', 'update-validation'] as $kind) {
+            $routes[] = "/worker/{$kind}-tasks/poll";
+        }
+        foreach ([
+            'workflow' => ['complete', 'fail', 'heartbeat', 'history', 'deliver-cancellation'],
+            'activity' => ['complete', 'fail', 'heartbeat', 'status', 'renew-lease', 'acknowledge-cancellation'],
+            'query' => ['complete', 'fail', 'status'],
+            'update-validation' => ['approve', 'reject'],
+        ] as $kind => $actions) {
+            foreach ($actions as $action) {
+                $routes[] = "/worker/{$kind}-tasks/{task_id}/{$action}";
+            }
+        }
+        foreach (['open', 'prepare', 'deliver'] as $action) {
+            $routes[] = "/worker/workflow-tasks/{task_id}/cancellation-scopes/{$action}";
+        }
+        foreach (['checkpoint', 'checkpoint-group', 'prepare', 'recover'] as $action) {
+            $routes[] = "/worker/workflow-tasks/{task_id}/local-activities/{$action}";
+        }
+        foreach (['control', 'heartbeat', 'outcome', 'acknowledge-cancellation'] as $action) {
+            $routes[] = "/worker/workflow-tasks/{task_id}/local-activities/{activity_attempt_id}/{$action}";
+        }
 
         return $routes;
     }
