@@ -589,7 +589,7 @@ jobs:
       COMPOSE_PROJECT_NAME: php-cooperative-${{ github.run_id }}-${{ github.run_attempt }}
       DURABLE_WORKFLOW_COOPERATIVE_QUALIFICATION: '1'
       DURABLE_WORKFLOW_AUTH_TOKEN: test-token
-      COMPOSE_FILE: docker-compose.test.yml
+      COMPOSE_FILE: docker-compose.test.yml:docker-compose.composer-trust.yml
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
@@ -629,7 +629,7 @@ jobs:
           git -c credential.helper= -C workflow-package fetch --depth=1 origin "$NATIVE_COMMIT"
           git -C workflow-package checkout --detach FETCH_HEAD
           test "$(git -C workflow-package rev-parse HEAD)" = "$NATIVE_COMMIT"
-          printf 'COMPOSE_FILE=docker-compose.test.yml:docker-compose.child-policy.yml\n' >> "$GITHUB_ENV"
+          printf 'COMPOSE_FILE=docker-compose.test.yml:docker-compose.composer-trust.yml:docker-compose.child-policy.yml\n' >> "$GITHUB_ENV"
           printf 'DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION=1\n' >> "$GITHUB_ENV"
       - name: Record candidate source provenance
         env:
@@ -643,6 +643,44 @@ jobs:
             --arg python "$PYTHON_COMMIT" --arg rust "$RUST_COMMIT" --arg cli "$CLI_COMMIT" \
             '{qualification:"source",sdk_commit:$sdk,server_commit:$server,native_source_overlay:($native | if length > 0 then . else null end),python_sdk_commit:($python | if length > 0 then . else null end),rust_sdk_commit:($rust | if length > 0 then . else null end),cli_source_commit:($cli | if length > 0 then . else null end)}' \
             > sdk-php/cooperative-source-provenance.json
+      - name: Check out the reviewed central Composer verifier
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          repository: durable-workflow/.github
+          ref: 75587fc33ff40c34f32ef777293dad56bb6f48c7
+          path: dwf-composer-trust-source
+          sparse-checkout: .github/actions/verify-composer-trust
+          persist-credentials: false
+      - name: Bind the Server build's Composer trust and exact source
+        env:
+          SERVER_COMMIT: ${{ inputs.server_commit }}
+          VERIFIER_COMMIT: 75587fc33ff40c34f32ef777293dad56bb6f48c7
+        run: |
+          set -euo pipefail
+          # The Composer request inside the exact-source Server build must run the
+          # central verifier itself (#237). A host verifier does not cover it.
+          context="$GITHUB_WORKSPACE/dwf-composer-trust-source/.github/actions/verify-composer-trust"
+          test "$(git -C dwf-composer-trust-source rev-parse HEAD)" = "$VERIFIER_COMMIT"
+          test -f "$context/verify.php"
+          test "$(git -C server rev-parse HEAD)" = "$SERVER_COMMIT"
+          [[ "$DW_CI_CA_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$(sha256sum "$COMPOSER_CAFILE" | cut -d' ' -f1)" = "$DW_CI_CA_SHA256"
+          dockerfile_sha256="$(sha256sum server/Dockerfile | cut -d' ' -f1)"
+          # Refuse a Server source without the trust hook before any build request.
+          if ! grep -Fq 'id=dwf_ci_ca' server/Dockerfile || ! grep -Fq 'dwf_composer_trust' server/Dockerfile; then
+            echo 'The selected Server source has no in-build Composer trust hook (#237).' >&2
+            exit 1
+          fi
+          {
+            printf 'DWF_COMPOSER_TRUST_CONTEXT=%s\n' "$context"
+            printf 'DW_SERVER_SOURCE_COMMIT=%s\n' "$SERVER_COMMIT"
+            printf 'DW_SERVER_DOCKERFILE_SHA256=%s\n' "$dockerfile_sha256"
+          } >> "$GITHUB_ENV"
+          jq --null-input --arg server "$SERVER_COMMIT" --arg dockerfile "$dockerfile_sha256" \
+            --arg verifier "$VERIFIER_COMMIT" --arg verifier_sha256 "$(sha256sum "$context/verify.php" | cut -d' ' -f1)" \
+            --arg ca "$DW_CI_CA_SHA256" \
+            '{server_commit:$server,server_dockerfile_sha256:$dockerfile,composer_verifier_commit:$verifier,composer_verifier_sha256:$verifier_sha256,ci_ca_sha256:$ca}' \
+            > sdk-php/cooperative-build-trust-provenance.json
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Bind exact CLI inspection source
@@ -736,6 +774,7 @@ jobs:
             sdk-php/*-results.xml
             sdk-php/cooperative-scenarios.log
             sdk-php/cooperative-source-provenance.json
+            sdk-php/cooperative-build-trust-provenance.json
             sdk-php/polyglot-build.json
             sdk-php/polyglot-package-provenance.txt
             sdk-php/polyglot-evidence/
