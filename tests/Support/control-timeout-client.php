@@ -21,8 +21,15 @@ $arguments = [
     'authentication' => $profile === 'uri_basic' ? null : $authentication,
     'transport' => $transport,
 ];
+$workerOperation = str_starts_with($operation, 'worker-');
 if ($profile !== 'published_baseline') {
-    $arguments['requestTimeoutSeconds'] = $transport === null ? (float) $seconds : null;
+    // Worker operations get the configured worker deadline and a generous
+    // control deadline, so only the worker budget can bound them. The
+    // worker_default profile keeps the SDK's worker default instead.
+    $arguments['requestTimeoutSeconds'] = $transport === null ? ($workerOperation && $profile !== 'worker_default' ? 30.0 : (float) $seconds) : null;
+    if ($transport === null && $workerOperation && $profile !== 'worker_default') {
+        $arguments['workerRequestTimeoutSeconds'] = (float) $seconds;
+    }
 }
 $client = new DurableWorkflow\Client(...$arguments);
 $started = hrtime(true);
@@ -35,6 +42,15 @@ try {
         'start' => $client->startWorkflow('test.timeout', 'test-timeout', 'test-timeout'),
         'signal' => $client->signalWorkflow('test-timeout', 'test.signal'),
         'update' => $client->updateWorkflow('test-timeout', 'test.update'),
+        'worker-register' => $client->registerWorker('test-worker', 'test-queue', ['test.workflow'], []),
+        'worker-heartbeat' => $client->heartbeatWorker('test-worker'),
+        'worker-activity-heartbeat' => $client->heartbeatActivityTask('test-task', 'test-attempt', 'test-worker'),
+        'worker-complete-workflow' => $client->completeWorkflowTask('test-task', 'test-worker', 1, []),
+        'worker-fail-workflow' => $client->failWorkflowTask('test-task', 'test-worker', 1, 'test failure'),
+        'worker-complete-activity' => $client->completeActivityTask('test-task', 'test-attempt', 'test-worker', 'done'),
+        'worker-fail-activity' => $client->failActivityTask('test-task', 'test-attempt', 'test-worker', 'test failure'),
+        'worker-deregister' => $client->deregisterWorkerRegistration('test-worker'),
+        'worker-poll' => $client->pollActivityTaskResponse('test-worker', 'test-queue', 1),
         default => throw new InvalidArgumentException('Unknown control fixture operation.'),
     };
     if ($profile === 'dynamic') {
