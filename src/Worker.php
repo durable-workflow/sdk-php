@@ -1145,8 +1145,13 @@ final class Worker
         $outcome = 'error';
         try {
             $response = $operation();
-            $outcome = is_array($response['task'] ?? null) ? 'task'
-                : (PollResponse::isTerminal($response) ? 'stopped' : 'empty');
+            if (is_array($response['task'] ?? null)) {
+                $outcome = 'task';
+            } elseif (PollResponse::isTerminal($response)) {
+                $outcome = 'stopped';
+            } else {
+                $outcome = 'empty';
+            }
 
             return $response;
         } catch (ServerException $error) {

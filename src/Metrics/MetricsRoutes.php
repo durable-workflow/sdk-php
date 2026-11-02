@@ -23,17 +23,7 @@ final class MetricsRoutes
     public static function template(string $path): string
     {
         $path = explode('?', $path, 2)[0];
-        if (self::$patterns === null) {
-            self::$patterns = [];
-            foreach (self::TEMPLATES as $template) {
-                $parts = preg_split('/(\{[a-z_]+\})/', $template, flags: PREG_SPLIT_DELIM_CAPTURE);
-                $pattern = '';
-                foreach ($parts === false ? [] : $parts as $part) {
-                    $pattern .= str_starts_with($part, '{') ? '[^/]+' : preg_quote($part, '~');
-                }
-                self::$patterns[$template] = '~^'.$pattern.'$~D';
-            }
-        }
+        self::$patterns ??= self::compile();
         foreach (self::$patterns as $template => $pattern) {
             if (preg_match($pattern, $path) === 1) {
                 return $template;
@@ -41,5 +31,21 @@ final class MetricsRoutes
         }
 
         return 'unknown';
+    }
+
+    /** @return array<string, string> */
+    private static function compile(): array
+    {
+        $patterns = [];
+        foreach (self::TEMPLATES as $template) {
+            $parts = preg_split('/(\{[a-z_]+\})/', $template, flags: PREG_SPLIT_DELIM_CAPTURE);
+            $pattern = '';
+            foreach ($parts === false ? [] : $parts as $part) {
+                $pattern .= str_starts_with($part, '{') ? '[^/]+' : preg_quote($part, '~');
+            }
+            $patterns[$template] = '~^'.$pattern.'$~D';
+        }
+
+        return $patterns;
     }
 }
