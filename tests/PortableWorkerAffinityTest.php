@@ -1530,51 +1530,16 @@ final class PortableWorkerAffinityTest extends TestCase
         self::assertSame(\RuntimeException::class, $replayed[0]['exception_type'] ?? null);
     }
 
-    public function testJsonUnsafeWorkflowFailureIsNormalizedOnInitialExecutionAndColdReplay(): void
+    public function testJsonUnsafeWorkflowFailureTypeExplicitlyRefusesBeforeChangingIdentity(): void
     {
-        $outcome = 'completed_then_json_unsafe_workflow_failed';
         $calls = 0;
         $now = 0.0;
-        $initial = $this->runTerminalLocalActivityWorkflow($outcome, [], $calls, $now);
-
-        self::assertCount(2, $initial);
-        self::assertSame('record_local_activity', $initial[0]['type'] ?? null);
-        self::assertSame('completed', $initial[0]['outcome'] ?? null);
-        self::assertSame('fail_workflow', $initial[1]['type'] ?? null);
-        self::assertSame(
-            'Workflow failure metadata could not be encoded for the HTTP JSON wire boundary.',
-            $initial[1]['message'] ?? null,
-        );
-        self::assertSame(\RuntimeException::class, $initial[1]['exception_type'] ?? null);
-        self::assertJson(json_encode($initial, JSON_THROW_ON_ERROR));
-        self::assertSame(1, $calls);
-
-        $history = [
-            [
-                'event_type' => 'ActivityScheduled',
-                'payload' => [
-                    'sequence' => 1,
-                    'activity_type' => 'terminal-local-activity',
-                    'execution_mode' => 'local',
-                ],
-            ],
-            [
-                'event_type' => 'ActivityCompleted',
-                'payload' => [
-                    'sequence' => 1,
-                    'activity_type' => 'terminal-local-activity',
-                    'execution_mode' => 'local',
-                    'outcome' => 'completed',
-                    'result' => $initial[0]['result'] ?? null,
-                    'attempts' => $initial[0]['attempts'] ?? [],
-                ],
-            ],
-        ];
-        $replayed = $this->runTerminalLocalActivityWorkflow($outcome, $history, $calls, $now);
-
-        self::assertSame(1, $calls, 'Cold replay repeated the completed local activity side effect.');
-        self::assertSame([$initial[1]], $replayed);
-        self::assertJson(json_encode($replayed, JSON_THROW_ON_ERROR));
+        $this->expectException(\DurableWorkflow\Exception\FailureReportRefused::class);
+        try {
+            $this->runTerminalLocalActivityWorkflow('completed_then_json_unsafe_workflow_failed', [], $calls, $now);
+        } finally {
+            self::assertSame(1, $calls);
+        }
     }
 
     public function testTypedWorkerSessionLifecycleIsIdempotentAndSupportsReacquisition(): void

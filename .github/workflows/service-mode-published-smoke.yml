@@ -54,13 +54,22 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: '8.3'
           extensions: pcntl, posix
-          tools: composer:v2
+          tools: composer:2.10.3
           coverage: none
 
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Resolve the immutable published SDK release
         env:
           SDK_VERSION: ${{ inputs.sdk_version }}
@@ -98,6 +107,8 @@ jobs:
           }
           PHP
 
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Install only the published package
         env:
           SDK_VERSION: ${{ inputs.sdk_version }}

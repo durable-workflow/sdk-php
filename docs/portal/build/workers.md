@@ -97,6 +97,21 @@ An activity option such as `['queue' => 'payments-v2']` selects the queue of a n
 
 `Worker::run()` registers, negotiates heartbeat cadence, polls workflow/activity/query tasks, renews workflow-task leases, and reports terminal outcomes. Typed transient poll pressure is retried with capped backoff while registration heartbeats and shutdown checks remain responsive.
 
+### Poll timeouts and early disconnects
+
+With the default cURL transport, supporting Servers send progress during idle
+worker polls. Progress keeps an idle connection active while the complete
+request remains bounded to the requested wait plus five seconds. Ordinary polls
+honor a shorter injected Guzzle timeout. Cooperative polls retain their explicit
+request budget. Older Servers continue returning ordinary JSON. Opaque PSR-18
+clients retain ordinary JSON and their configured policies.
+
+Keep proxy timeouts longer than the configured poll wait. A worker warning
+named `worker.poll_ended_early` reports the observed duration and configured
+wait when a connection failure or gateway cutoff ends a poll early. Inspect
+the proxy and client timeout settings named in its remediation. Configure the
+worker's PSR logger or diagnostic listener to collect these warnings.
+
 ### Large payloads on slower connections
 
 Cooperative workers supervise external payload downloads while bytes arrive and
