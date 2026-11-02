@@ -1,0 +1,63 @@
+{
+  "schema": "durable-workflow.sdk-metrics/v1",
+  "revision": 1,
+  "reference": {
+    "repository": "durable-workflow/sdk-python",
+    "commit": "2da02a7ac8a68a7cd4267e86ef10e0198a309592",
+    "paths": [
+      "src/durable_workflow/metrics.py",
+      "src/durable_workflow/client.py",
+      "src/durable_workflow/worker.py"
+    ]
+  },
+  "metrics": [
+    {
+      "name": "durable_workflow_client_requests",
+      "type": "counter",
+      "unit": "1",
+      "recorder_method": "increment",
+      "scope": "client_request",
+      "tags": ["method", "route", "plane", "status_code", "outcome"]
+    },
+    {
+      "name": "durable_workflow_client_request_duration_seconds",
+      "type": "histogram",
+      "unit": "s",
+      "recorder_method": "record",
+      "scope": "client_request",
+      "tags": ["method", "route", "plane", "status_code", "outcome"]
+    },
+    {
+      "name": "durable_workflow_worker_polls",
+      "type": "counter",
+      "unit": "1",
+      "recorder_method": "increment",
+      "scope": "worker_poll",
+      "tags": ["task_kind", "task_queue", "outcome"]
+    },
+    {
+      "name": "durable_workflow_worker_poll_duration_seconds",
+      "type": "histogram",
+      "unit": "s",
+      "recorder_method": "record",
+      "scope": "worker_poll",
+      "tags": ["task_kind", "task_queue", "outcome"]
+    },
+    {
+      "name": "durable_workflow_worker_tasks",
+      "type": "counter",
+      "unit": "1",
+      "recorder_method": "increment",
+      "scope": "worker_task",
+      "tags": ["task_kind", "task_queue", "outcome"]
+    },
+    {
+      "name": "durable_workflow_worker_task_duration_seconds",
+      "type": "histogram",
+      "unit": "s",
+      "recorder_method": "record",
+      "scope": "worker_task",
+      "tags": ["task_kind", "task_queue", "outcome"]
+    }
+  ]
+}

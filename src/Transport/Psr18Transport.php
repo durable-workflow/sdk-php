@@ -23,7 +23,7 @@ use GuzzleHttp\HandlerStack;
 use Throwable;
 
 /** Default PSR-18 JSON and bounded runtime-payload transport. */
-final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUploadTransport, BoundedTransport, BoundedProgressPayloadTransport
+final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUploadTransport, BoundedTransport, BoundedProgressPayloadTransport, ResponseStatusTransport
 {
     public const DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0;
     /** Worker lifecycle requests (register, heartbeat, complete, fail, deregister); long polls keep their own budget. */
@@ -36,6 +36,12 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     private readonly ?float $requestTimeoutSeconds;
     private readonly ?float $workerRequestTimeoutSeconds;
     private ?GuzzleClient $nativeControlClient = null;
+    private ?int $responseStatus = null;
+
+    public function lastResponseStatus(): ?int
+    {
+        return $this->responseStatus;
+    }
 
     public function __construct(
         ?ClientInterface $client = null,
@@ -115,6 +121,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
      */
     private function sendJson(string $method, string $uri, array $headers, ?array $body, ?int $timeoutSeconds = null): ?array
     {
+        $this->responseStatus = null;
         $poll = PollTransport::taskKind($method, $uri) !== null && $this->supportsBoundedRequests();
         if ($poll && $timeoutSeconds === null) {
             // cURL's total timeout includes all progress bytes. Opaque PSR-18
@@ -136,6 +143,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             }
             $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout ?? 30,
                 bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout, control: $control);
+            $this->responseStatus = $response->getStatusCode();
 
             return $this->decodeJsonResponse($response, $poll);
         } catch (TransportException $exception) {
