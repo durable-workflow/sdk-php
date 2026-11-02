@@ -6,6 +6,21 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-11-02
+
+### Added
+
+- Worker requests other than long polls now have a finite, configurable deadline
+  on SDK-owned transports. These are registration, worker and activity heartbeats,
+  workflow and activity task completion and failure, and deregistration.
+  `workerRequestTimeoutSeconds` (default 60 seconds) is separate from the control
+  `requestTimeoutSeconds`, so neither shortens the other. Laravel and Symfony
+  configure it with `worker_request_timeout_seconds`. Previously a default
+  worker could wait indefinitely on a Server that accepted the connection but
+  never answered. A timeout raises a typed `ServerException` with `reason`
+  `request_timeout`. Task polls keep their own budget, cooperative workers keep
+  their per-operation budgets, and injected transports keep their own policy.
+
 ## [3.6.2] - 2026-11-02
 
 ### Added

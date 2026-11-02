@@ -496,6 +496,8 @@ The service-mode application client uses the SDK's 60-second total HTTP request
 deadline. Set `DURABLE_WORKFLOW_REQUEST_TIMEOUT_SECONDS=5` or
 `request_timeout_seconds` in `config/durable-workflow.php` to choose a positive
 number of seconds. Existing published config files can add that key explicitly.
-Worker polling, lease/heartbeat requests and payload-transfer clocks remain
-separate. See [client setup](/getting-started/client-setup/#bound-ordinary-http-requests)
+Worker registration, heartbeats, task completion/failure and deregistration use
+a separate 60-second deadline. Set it with `DURABLE_WORKFLOW_WORKER_REQUEST_TIMEOUT_SECONDS`
+or `worker_request_timeout_seconds`. Worker polling and payload-transfer clocks
+remain separate. See [client setup](/getting-started/client-setup/#bound-ordinary-http-requests)
 for timeout errors, custom transport policy and ambiguous mutation outcomes.

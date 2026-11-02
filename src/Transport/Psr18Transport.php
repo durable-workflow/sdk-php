@@ -26,12 +26,15 @@ use Throwable;
 final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUploadTransport, BoundedTransport, BoundedProgressPayloadTransport
 {
     public const DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0;
+    /** Worker lifecycle requests (register, heartbeat, complete, fail, deregister); long polls keep their own budget. */
+    public const DEFAULT_WORKER_REQUEST_TIMEOUT_SECONDS = 60.0;
 
     private readonly ClientInterface $client;
     private readonly RequestFactoryInterface $requestFactory;
     private readonly StreamFactoryInterface $streamFactory;
     private readonly bool $defaultProcessConfiguration;
     private readonly ?float $requestTimeoutSeconds;
+    private readonly ?float $workerRequestTimeoutSeconds;
     private ?GuzzleClient $nativeControlClient = null;
 
     public function __construct(
@@ -40,18 +43,22 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         ?StreamFactoryInterface $streamFactory = null,
         private readonly int $payloadTransferTimeoutSeconds = 30,
         ?float $requestTimeoutSeconds = null,
+        ?float $workerRequestTimeoutSeconds = null,
     ) {
         if ($payloadTransferTimeoutSeconds < 1 || $payloadTransferTimeoutSeconds > 900) {
             throw new \InvalidArgumentException('Supervised payload transfers require a timeout from 1 through 900 seconds.');
         }
-        if ($client !== null && $requestTimeoutSeconds !== null) {
-            throw new \InvalidArgumentException('Configure timeouts on the injected HTTP client instead of passing requestTimeoutSeconds.');
-        }
-        if ($requestTimeoutSeconds !== null && (!is_finite($requestTimeoutSeconds)
-            || $requestTimeoutSeconds < 0.001 || $requestTimeoutSeconds > intdiv(PHP_INT_MAX, 1000))) {
-            throw new \InvalidArgumentException('requestTimeoutSeconds must be a finite positive duration with millisecond precision.');
+        foreach (['requestTimeoutSeconds' => $requestTimeoutSeconds, 'workerRequestTimeoutSeconds' => $workerRequestTimeoutSeconds] as $name => $seconds) {
+            if ($client !== null && $seconds !== null) {
+                throw new \InvalidArgumentException("Configure timeouts on the injected HTTP client instead of passing {$name}.");
+            }
+            if ($seconds !== null && (!is_finite($seconds) || $seconds < 0.001 || $seconds > intdiv(PHP_INT_MAX, 1000))) {
+                throw new \InvalidArgumentException("{$name} must be a finite positive duration with millisecond precision.");
+            }
         }
         $this->requestTimeoutSeconds = $client === null ? ($requestTimeoutSeconds ?? self::DEFAULT_REQUEST_TIMEOUT_SECONDS) : null;
+        $this->workerRequestTimeoutSeconds = $client === null
+            ? ($workerRequestTimeoutSeconds ?? self::DEFAULT_WORKER_REQUEST_TIMEOUT_SECONDS) : null;
         $factory = new HttpFactory();
         $this->defaultProcessConfiguration = $client === null && $requestFactory === null && $streamFactory === null;
         $this->client = $client ?? new GuzzleClient(['http_errors' => false]);
@@ -86,6 +93,12 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         return $this->requestTimeoutSeconds;
     }
 
+    /** @internal Preserve the owned worker request policy when recreating a maintenance Client. */
+    public function defaultWorkerRequestTimeoutSeconds(): ?float
+    {
+        return $this->workerRequestTimeoutSeconds;
+    }
+
     public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
     {
         if (!$this->supportsBoundedRequests() || $timeoutSeconds < 1 || $timeoutSeconds > 65) {
@@ -108,14 +121,21 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             // clients retain ordinary JSON because their deadline is unknown.
             $timeoutSeconds = $this->pollTimeoutSeconds($body);
         }
-        $controlTimeout = $timeoutSeconds === null && $this->isControlRequest($headers) ? $this->requestTimeoutSeconds : null;
+        // Owned deadlines: control requests use the control budget; worker
+        // lifecycle requests use their own, so neither shortens the other.
+        // Task polls (by method and reviewed route, with or without cURL) and
+        // caller-bounded requests already carry their own deadline.
+        $control = $this->isControlRequest($headers);
+        $controlTimeout = $timeoutSeconds !== null ? null
+            : ($control ? $this->requestTimeoutSeconds
+                : (PollTransport::taskKind($method, $uri) !== null ? null : $this->workerRequestTimeoutSeconds));
         try {
             $request = $this->createJsonRequest($method, $uri, $headers, $body);
             if ($poll) {
                 $request = $request->withHeader('Accept', PollTransport::MEDIA_TYPE.', application/json;q=0.9');
             }
             $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout ?? 30,
-                bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout);
+                bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout, control: $control);
 
             return $this->decodeJsonResponse($response, $poll);
         } catch (TransportException $exception) {
@@ -124,7 +144,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             throw new TransportException('The server returned invalid JSON: '.$exception->getMessage(), previous: $exception);
         } catch (Throwable $exception) {
             if ($controlTimeout !== null && $this->isTimeout($exception)) {
-                throw $this->controlTimeoutFailure($exception, $controlTimeout);
+                throw $this->controlTimeoutFailure($exception, $controlTimeout, $control);
             }
             throw new TransportException('HTTP request failed: '.$exception->getMessage(), previous: $exception);
         }
@@ -208,9 +228,9 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         return false;
     }
 
-    private function controlTimeoutFailure(Throwable $exception, float $seconds): TransportException
+    private function controlTimeoutFailure(Throwable $exception, float $seconds, bool $control = true): TransportException
     {
-        return new TransportException('The control-plane HTTP request timed out.',
+        return new TransportException($control ? 'The control-plane HTTP request timed out.' : 'The worker HTTP request timed out.',
             response: ['reason' => 'request_timeout', 'timeout_seconds' => $seconds],
             previous: $exception, transientConnectionFailure: true);
     }
@@ -422,7 +442,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         ] + $this->client->getConfig());
     }
 
-    private function sendRequest(RequestInterface $request, bool $stream = false, int|float $timeoutSeconds = 30, bool $bounded = false, ?StreamInterface $sink = null, ?\Closure $progress = null, ?float $controlTimeout = null): ResponseInterface
+    private function sendRequest(RequestInterface $request, bool $stream = false, int|float $timeoutSeconds = 30, bool $bounded = false, ?StreamInterface $sink = null, ?\Closure $progress = null, ?float $controlTimeout = null, bool $control = true): ResponseInterface
     {
         $connectionFailure = false;
         $timedOut = false;
@@ -450,7 +470,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
 
             return $this->client->sendRequest($request);
         } catch (Throwable $exception) {
-            throw $this->requestFailure($exception, $controlTimeout, $timedOut, $connectionFailure);
+            throw $this->requestFailure($exception, $controlTimeout, $timedOut, $connectionFailure, $control);
         }
     }
 
@@ -476,14 +496,17 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         return $options;
     }
 
-    private function requestFailure(Throwable $exception, ?float $controlTimeout, bool $timedOut, bool $connectionFailure): TransportException
+    private function requestFailure(Throwable $exception, ?float $controlTimeout, bool $timedOut, bool $connectionFailure, bool $control = true): TransportException
     {
         if ($controlTimeout !== null) {
             if ($exception instanceof TransportException) {
-                return $exception;
+                // The native handler reports its own deadline; name the worker plane.
+                return !$control && ($exception->response['reason'] ?? null) === 'request_timeout'
+                    ? $this->controlTimeoutFailure($exception->getPrevious() ?? $exception, $controlTimeout, false)
+                    : $exception;
             }
             if ($timedOut || $this->isTimeout($exception)) {
-                return $this->controlTimeoutFailure($exception, $controlTimeout);
+                return $this->controlTimeoutFailure($exception, $controlTimeout, $control);
             }
         }
 

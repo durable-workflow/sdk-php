@@ -101,6 +101,7 @@ final class Client implements WorkflowClientInterface
         public readonly int $maxExternalPayloadBytes = 67108864,
         public readonly string $workerProtocolVersion = Version::WORKER_PROTOCOL,
         ?float $requestTimeoutSeconds = null,
+        ?float $workerRequestTimeoutSeconds = null,
     ) {
         if (trim($baseUri) === '') {
             throw new InvalidArgumentException('The Durable Workflow server URI cannot be empty.');
@@ -138,7 +139,11 @@ final class Client implements WorkflowClientInterface
         if ($transport !== null && $requestTimeoutSeconds !== null) {
             throw new InvalidArgumentException('Configure request timeouts on the injected transport instead of passing requestTimeoutSeconds.');
         }
-        $this->transport = $transport ?? new Psr18Transport(requestTimeoutSeconds: $requestTimeoutSeconds);
+        if ($transport !== null && $workerRequestTimeoutSeconds !== null) {
+            throw new InvalidArgumentException('Configure request timeouts on the injected transport instead of passing workerRequestTimeoutSeconds.');
+        }
+        $this->transport = $transport ?? new Psr18Transport(requestTimeoutSeconds: $requestTimeoutSeconds,
+            workerRequestTimeoutSeconds: $workerRequestTimeoutSeconds);
         $this->codec = $codec ?? new AvroPayloadCodec();
         $this->payloadUploads = new RuntimePayloadUploads($this->transport, $this->baseUri);
         $this->failureReports = new FailureReportLimiter(new FailureReportLimits(), $this->transport);
@@ -203,7 +208,8 @@ final class Client implements WorkflowClientInterface
         }
 
         return $configuration + ['worker_headers' => $this->authentication?->headers(true) ?? [],
-            'request_timeout_seconds' => $this->transport->defaultRequestTimeoutSeconds()];
+            'request_timeout_seconds' => $this->transport->defaultRequestTimeoutSeconds(),
+            'worker_request_timeout_seconds' => $this->transport->defaultWorkerRequestTimeoutSeconds()];
     }
 
     /** @internal Bootstrap validation never makes a control-plane request. */
