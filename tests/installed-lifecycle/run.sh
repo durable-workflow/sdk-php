@@ -65,4 +65,13 @@ docker run -d --name "$RUN-worker" "${common[@]}" "$PHP_IMAGE" php /harness/work
 sleep 3
 docker run --rm --name "$RUN-client" "${common[@]}" "$PHP_IMAGE" php /harness/client.php | tee "$OUT/results.jsonl"
 
+# Optional (OTEL=1): add the OpenTelemetry SDK to the same consumer and check
+# exported SDK metrics against the live Server.
+if [ "${OTEL:-0}" = 1 ]; then
+    docker run --rm --name "$RUN-otel-install" -e COMPOSER_HOME=/tmp/composer-home -v "$OUT/consumer:/consumer" -w /consumer \
+        "$COMPOSER_IMAGE" sh -c 'composer require --no-interaction --no-progress --no-scripts open-telemetry/sdk:^1.15 \
+            && composer show open-telemetry/sdk --format=json > /consumer/otel-sdk-show.json' >> "$OUT/install.log" 2>&1
+    docker run --rm --name "$RUN-otel" "${common[@]}" "$PHP_IMAGE" php /harness/otel-metrics.php | tee -a "$OUT/results.jsonl"
+fi
+
 date -u +%Y-%m-%dT%H:%M:%SZ > "$OUT/ended_at"

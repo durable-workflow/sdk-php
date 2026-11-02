@@ -14,6 +14,7 @@ Scenarios (one JSON line each in `results.jsonl`, outcome `pass`, `product-fail`
 - `lifecycle`: start, activity, query, update, signal, completion with an exact result
 - `cancellation`: a cancelled waiting workflow surfaces `WorkflowCancelled`
 - `typed_failure`: a non-retried activity exception surfaces `WorkflowFailed` carrying its message
+- `otel_metrics` (with `OTEL=1`, SDK 3.8.0+): exports SDK metrics through `OpenTelemetryMetricsRecorder` and the OpenTelemetry SDK in-memory exporter; two workflow IDs give one bounded route series, and no ID appears in any attribute
 
 The output directory also records the runner commit, the Server index and image
 inspection, the installed SDK's `composer show` and dist sha256, start and end
