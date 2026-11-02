@@ -7,8 +7,8 @@ previous:
   label: Graceful shutdown
   url: /operate/graceful-shutdown/
 next:
-  label: Troubleshooting
-  url: /operate/troubleshooting/
+  label: Metrics
+  url: /operate/metrics/
 ---
 This integration adds scoped worker spans and log correlation. It also supports the optional service trace-context contract when the connected Server explicitly advertises it. Servers without that capability use independent task traces. Use the configured Server/SDK tuple qualified in [Workflow #773](https://github.com/durable-workflow/workflow/issues/773). Installing OpenTelemetry alone does not enable cross-process propagation.
 

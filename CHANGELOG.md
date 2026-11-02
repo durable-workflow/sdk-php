@@ -6,6 +6,28 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-11-02
+
+### Added
+
+- Optional SDK metrics that follow the shared cross-SDK contract. Client
+  requests, worker polls and worker tasks each record a counter and a duration
+  histogram through a pluggable `MetricsRecorder`. Pass it as `Client(metrics:)`;
+  a worker inherits it, or takes its own through `Worker::create(metrics:)`.
+  The default `NoopMetricsRecorder` discards observations, and recorder failures
+  never change results, retries, deadlines or task authority.
+- Labels are bounded. Request routes are reviewed templates shared with the
+  Python SDK, and any other path becomes `unknown`. Workflow, run, task,
+  worker and session identifiers, query strings, payloads, credentials and
+  exception messages never become labels. Worker task outcomes describe the
+  worker's processing, separate from workflow terminal state. A forked
+  cooperative child process does not record through the parent's recorder.
+- `InMemoryMetricsRecorder` for tests and diagnostics, and
+  `OpenTelemetryMetricsRecorder` for an application-owned OpenTelemetry meter
+  provider (needs the optional `open-telemetry/api`; no new dependency). The new
+  Metrics guide covers OpenTelemetry export and Prometheus scraping through an
+  OpenTelemetry Collector. See `examples/metrics-opentelemetry.php`.
+
 ## [3.7.0] - 2026-11-02
 
 ### Added
