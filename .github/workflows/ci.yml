@@ -599,6 +599,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Select authenticated dependency trust
+        id: trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
         with:
           clients: pip,python,composer,curl,git,cargo
@@ -643,44 +644,6 @@ jobs:
             --arg python "$PYTHON_COMMIT" --arg rust "$RUST_COMMIT" --arg cli "$CLI_COMMIT" \
             '{qualification:"source",sdk_commit:$sdk,server_commit:$server,native_source_overlay:($native | if length > 0 then . else null end),python_sdk_commit:($python | if length > 0 then . else null end),rust_sdk_commit:($rust | if length > 0 then . else null end),cli_source_commit:($cli | if length > 0 then . else null end)}' \
             > sdk-php/cooperative-source-provenance.json
-      - name: Check out the reviewed central Composer verifier
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-        with:
-          repository: durable-workflow/.github
-          ref: 75587fc33ff40c34f32ef777293dad56bb6f48c7
-          path: dwf-composer-trust-source
-          sparse-checkout: .github/actions/verify-composer-trust
-          persist-credentials: false
-      - name: Bind the Server build's Composer trust and exact source
-        env:
-          SERVER_COMMIT: ${{ inputs.server_commit }}
-          VERIFIER_COMMIT: 75587fc33ff40c34f32ef777293dad56bb6f48c7
-        run: |
-          set -euo pipefail
-          # The Composer request inside the exact-source Server build must run the
-          # central verifier itself (#237). A host verifier does not cover it.
-          context="$GITHUB_WORKSPACE/dwf-composer-trust-source/.github/actions/verify-composer-trust"
-          test "$(git -C dwf-composer-trust-source rev-parse HEAD)" = "$VERIFIER_COMMIT"
-          test -f "$context/verify.php"
-          test "$(git -C server rev-parse HEAD)" = "$SERVER_COMMIT"
-          [[ "$DW_CI_CA_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          test "$(sha256sum "$COMPOSER_CAFILE" | cut -d' ' -f1)" = "$DW_CI_CA_SHA256"
-          dockerfile_sha256="$(sha256sum server/Dockerfile | cut -d' ' -f1)"
-          # Refuse a Server source without the trust hook before any build request.
-          if ! grep -Fq 'id=dwf_ci_ca' server/Dockerfile || ! grep -Fq 'dwf_composer_trust' server/Dockerfile; then
-            echo 'The selected Server source has no in-build Composer trust hook (#237).' >&2
-            exit 1
-          fi
-          {
-            printf 'DWF_COMPOSER_TRUST_CONTEXT=%s\n' "$context"
-            printf 'DW_SERVER_SOURCE_COMMIT=%s\n' "$SERVER_COMMIT"
-            printf 'DW_SERVER_DOCKERFILE_SHA256=%s\n' "$dockerfile_sha256"
-          } >> "$GITHUB_ENV"
-          jq --null-input --arg server "$SERVER_COMMIT" --arg dockerfile "$dockerfile_sha256" \
-            --arg verifier "$VERIFIER_COMMIT" --arg verifier_sha256 "$(sha256sum "$context/verify.php" | cut -d' ' -f1)" \
-            --arg ca "$DW_CI_CA_SHA256" \
-            '{server_commit:$server,server_dockerfile_sha256:$dockerfile,composer_verifier_commit:$verifier,composer_verifier_sha256:$verifier_sha256,ci_ca_sha256:$ca}' \
-            > sdk-php/cooperative-build-trust-provenance.json
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Bind exact CLI inspection source
@@ -748,11 +711,39 @@ jobs:
           working-directory: sdk-php
       - run: composer install --no-interaction --prefer-dist --no-progress
         working-directory: sdk-php
+      # The exact-source Server build runs Composer inside BuildKit, so the
+      # central verifier runs there too (.github#237). This guard binds the
+      # exact source, Dockerfile, CA bundle and merged Compose configuration,
+      # and must stay immediately before the one registered build command.
+      - name: Bind the Server build's container Composer trust
+        id: container-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-container-trust@54cce4c6a814c8137dafbee594a1e0bdcf0ba60c  # clean-trust
+        with:
+          request: sdk-php-cooperative-server
+          source-directory: server
+          source-commit: ${{ inputs.server_commit }}
+          compose-directory: sdk-php
+          ca-file: ${{ steps.trust.outputs.ca-file }}
+          ca-sha256: ${{ steps.trust.outputs.ca-sha256 }}
+          provenance: sdk-php/cooperative-build-trust-provenance.json
       - name: Start the isolated MySQL Server stack
         working-directory: sdk-php
-        run: docker compose up -d --build --wait --wait-timeout 300
+        env:
+          DWF_COMPOSER_TRUST_CONTEXT: ${{ steps.container-trust.outputs.context-directory }}
+          COMPOSER_CAFILE: ${{ steps.container-trust.outputs.ca-file }}
+          DW_CI_CA_SHA256: ${{ steps.container-trust.outputs.ca-sha256 }}
+          DW_SERVER_SOURCE_COMMIT: ${{ steps.container-trust.outputs.source-commit }}
+          DW_SERVER_DOCKERFILE_SHA256: ${{ steps.container-trust.outputs.dockerfile-sha256 }}
+          COMPOSE_FILE: ${{ steps.container-trust.outputs.compose-file }}
+        run: docker compose --env-file /dev/null up -d --build --wait --wait-timeout 300
+      # Later Compose commands only re-read the same configuration; they get the
+      # verified non-secret build identity explicitly rather than from GITHUB_ENV.
       - name: Select and probe the runtime endpoint
         working-directory: sdk-php
+        env:
+          DWF_COMPOSER_TRUST_CONTEXT: ${{ steps.container-trust.outputs.context-directory }}
+          DW_SERVER_SOURCE_COMMIT: ${{ steps.container-trust.outputs.source-commit }}
+          DW_SERVER_DOCKERFILE_SHA256: ${{ steps.container-trust.outputs.dockerfile-sha256 }}
         run: |
           port="$(docker compose port server 8080 | sed 's/.*://')"
           [[ "$port" =~ ^[0-9]+$ ]]
@@ -761,6 +752,10 @@ jobs:
           printf 'DURABLE_WORKFLOW_RUNTIME_URL=%s\n' "$endpoint" >> "$GITHUB_ENV"
       - name: Qualify cooperative worker behavior against the Server
         working-directory: sdk-php
+        env:
+          DWF_COMPOSER_TRUST_CONTEXT: ${{ steps.container-trust.outputs.context-directory }}
+          DW_SERVER_SOURCE_COMMIT: ${{ steps.container-trust.outputs.source-commit }}
+          DW_SERVER_DOCKERFILE_SHA256: ${{ steps.container-trust.outputs.dockerfile-sha256 }}
         run: |
           set -o pipefail
           vendor/bin/phpunit tests/Integration/CooperativeCancellationTest.php --display-warnings --fail-on-warning --log-junit cooperative-results.xml | tee cooperative-scenarios.log
@@ -782,12 +777,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
       - name: Emit bounded Server diagnostics
-        if: failure()
+        if: ${{ failure() && steps.container-trust.outcome == 'success' }}
         working-directory: sdk-php
+        env:
+          DWF_COMPOSER_TRUST_CONTEXT: ${{ steps.container-trust.outputs.context-directory }}
+          DW_SERVER_SOURCE_COMMIT: ${{ steps.container-trust.outputs.source-commit }}
+          DW_SERVER_DOCKERFILE_SHA256: ${{ steps.container-trust.outputs.dockerfile-sha256 }}
         run: docker compose logs --no-color --tail 100 bootstrap server worker repair
       - name: Remove the task stack and images
-        if: always()
+        if: ${{ always() && steps.container-trust.outcome == 'success' }}
         working-directory: sdk-php
+        env:
+          DWF_COMPOSER_TRUST_CONTEXT: ${{ steps.container-trust.outputs.context-directory }}
+          DW_SERVER_SOURCE_COMMIT: ${{ steps.container-trust.outputs.source-commit }}
+          DW_SERVER_DOCKERFILE_SHA256: ${{ steps.container-trust.outputs.dockerfile-sha256 }}
         run: docker compose down -v --rmi local
 
   target-branch-qualification:
