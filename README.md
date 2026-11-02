@@ -11,6 +11,14 @@
 The first-party PHP client and worker SDK for
 [Durable Workflow Cloud](https://cloud.durable-workflow.com/early-access) and
 self-hosted [Durable Workflow Server](https://github.com/durable-workflow/server).
+
+The installed `composer.json` declares `supported-server-release-baselines` under
+`extra.durable-workflow`: each major maps to its minimum stable Server release.
+Readers validate the complete map and refuse missing majors or malformed entries,
+including a floor whose major differs from its key. The legacy
+`supported-server-versions` field remains the 2.x baseline and must agree with the
+map's 2.x entry. Readers without map support retain their existing 2.x behavior.
+Worker protocol and capability negotiation still determine available features.
 Use it from plain PHP, Laravel, or Symfony to run durable workflows outside the
 application process while keeping framework-native configuration, dependency
 injection, commands, logging, and tests.

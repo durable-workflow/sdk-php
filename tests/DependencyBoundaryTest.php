@@ -50,6 +50,17 @@ final class DependencyBoundaryTest extends TestCase
         $versionPattern = '/^[1-9][0-9]*\.[0-9]+\.[0-9]+(?:-(?:alpha|beta|rc)\.[0-9]+)?$/D';
         self::assertMatchesRegularExpression($versionPattern, $metadata['product-train']);
         self::assertMatchesRegularExpression($versionPattern, $metadata['supported-server-versions']);
+        $baselines = $metadata['supported-server-release-baselines'];
+        self::assertIsArray($baselines);
+        self::assertNotEmpty($baselines);
+        foreach ($baselines as $major => $minimum) {
+            self::assertMatchesRegularExpression('/^[1-9][0-9]*$/D', (string) $major);
+            self::assertIsString($minimum);
+            self::assertMatchesRegularExpression('/^[1-9][0-9]*\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/D', $minimum);
+            self::assertSame((string) $major, explode('.', $minimum)[0]);
+        }
+        self::assertSame($metadata['supported-server-versions'], $baselines[2]);
+        self::assertSame('3.0.0', $baselines[3]);
         self::assertSame('1.20', $metadata['worker-protocol-version']);
         self::assertTrue($metadata['durable-selection']);
         self::assertSame('1.19', $metadata['durable-selection-minimum-worker-protocol-version']);
