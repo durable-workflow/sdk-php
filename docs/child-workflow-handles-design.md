@@ -84,6 +84,22 @@ that claim. Reusing it for later commands is refused. Child completion provides
 the positive control: a fresh parent task then arrives and the normal cold
 replayer recovers the continued child's typed result.
 
+Native Server 3.0.1 behaves the same. On 2026-11-02 the unchanged probe ran
+with normally installed SDK 3.6.2 against
+`ghcr.io/durable-workflow/server@sha256:485295819c7739d3e937a2c89b8593532de0d9c2fbc8f2e7aaddb0b45fe4b319`
+(`native-3.0.1`, source `923d45b3`). The parent's task completion commits
+`ChildWorkflowScheduled` and `ChildRunStarted` in the same transaction, with
+`child_call_id`, child instance ID and initial run ID. The acknowledgment lists
+only the child's task in `created_task_ids` and carries no child identity. All
+three parent polls before child completion were empty. In the native source,
+`start_child` creates a task for the child only. Cluster info advertises
+`child_workflows`, `child_workflow_runtime_contract`,
+`child_workflow_retry_policy` and `child_workflow_timeouts`, none of which is
+this capability. As with the published PHP baseline, `child_call_id` stayed
+stable through child continuation while `workflow_link_id` changed, a typed
+result was preserved, cold pending replay produced no commands, and a
+duplicate completion was refused with `already_completed`.
+
 The coordinated runtime implementation must provide a genuine parent turn
 after committing a requested child start, while the child can remain open.
 The new turn must carry committed identity/history and a fresh task claim.
