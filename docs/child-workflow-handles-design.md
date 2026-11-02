@@ -45,6 +45,7 @@ The handle binds to all of:
 
 | Identity | Meaning |
 | --- | --- |
+| Namespace | The exact namespace of the current workflow task and client context; an authority dimension even if `identity()` does not expose it |
 | Parent workflow ID and parent run ID | The authoring execution and authority scope |
 | Parent operation sequence | The original child-call slot in that execution |
 | `child_call_id` | The durable parent-issued child call |
@@ -70,7 +71,10 @@ missing or mismatched committed identity is a typed refusal, not a guessed ID.
 Cold replacement and duplicate delivery reconstruct the handle from history.
 They require no process-local cache, visibility query or external side effect.
 A handle from another parent execution, namespace or parent run cannot be used
-as though it belonged to the current Fiber.
+as though it belonged to the current Fiber. IDs alone never select authority
+across a namespace boundary. Bind the exact namespace when the handle is
+created, require it during cold reconstruction and on every later handle
+operation, and refuse a mismatch with a typed error.
 
 ## Required runtime dependency
 
@@ -132,7 +136,9 @@ then needs focused SDK tests and normal installed acceptance for:
   parent task delivery, with one canonical child start.
 - Typed success and failure, child continuation and retry chains, and explicit
   initial versus terminal run targeting.
-- Namespace isolation, wrong-parent and stale-claim refusal, parent-close
+- Namespace isolation, including a negative control whose parent, call and
+  child identifiers otherwise match but whose namespace differs.
+- Wrong-parent and stale-claim refusal, parent-close
   policies, cancellation authority/deadlines and the agreed parent rollover
   behavior.
 - Compatible sequential, deferred, group and selection APIs.
