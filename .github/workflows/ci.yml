@@ -717,7 +717,7 @@ jobs:
       # and must stay immediately before the one registered build command.
       - name: Bind the Server build's container Composer trust
         id: container-trust
-        uses: durable-workflow/.github/.github/actions/verify-composer-container-trust@54cce4c6a814c8137dafbee594a1e0bdcf0ba60c  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-container-trust@699d09d602fc0353160bdecaa2b23f07ef4c7c21  # clean-trust
         with:
           request: sdk-php-cooperative-server
           source-directory: server
