@@ -123,10 +123,12 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         }
         // Owned deadlines: control requests use the control budget; worker
         // lifecycle requests use their own, so neither shortens the other.
-        // Long polls and caller-bounded requests already carry a deadline.
+        // Task polls (by method and reviewed route, with or without cURL) and
+        // caller-bounded requests already carry their own deadline.
         $control = $this->isControlRequest($headers);
         $controlTimeout = $timeoutSeconds !== null ? null
-            : ($control ? $this->requestTimeoutSeconds : ($this->isWorkerPoll($uri) ? null : $this->workerRequestTimeoutSeconds));
+            : ($control ? $this->requestTimeoutSeconds
+                : (PollTransport::taskKind($method, $uri) !== null ? null : $this->workerRequestTimeoutSeconds));
         try {
             $request = $this->createJsonRequest($method, $uri, $headers, $body);
             if ($poll) {
@@ -212,13 +214,6 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
 
         return isset($names['x-durable-workflow-control-plane-version'])
             || !isset($names['x-durable-workflow-protocol-version']);
-    }
-
-    private function isWorkerPoll(string $uri): bool
-    {
-        $path = parse_url($uri, PHP_URL_PATH);
-
-        return is_string($path) && str_ends_with($path, '/poll');
     }
 
     private function isTimeout(Throwable $exception): bool

@@ -16,7 +16,7 @@ final class ControlRequestTimeoutTest extends TestCase
     /** Every non-poll worker request kind: lifecycle, task outcomes and heartbeats. */
     private const WORKER_OPERATIONS = ['worker-register', 'worker-heartbeat', 'worker-activity-heartbeat',
         'worker-complete-workflow', 'worker-fail-workflow', 'worker-complete-activity', 'worker-fail-activity',
-        'worker-deregister'];
+        'worker-deregister', 'worker-close-session-poll'];
 
     #[DataProvider('stalledRequests')]
     public function testRealControlDeadlineIncludesHeadersAndBodyWithoutRepeatingTheMutation(string $mode, string $operation, bool $native): void
@@ -274,6 +274,26 @@ final class ControlRequestTimeoutTest extends TestCase
             $result = $this->runClient($directory, $url, $native, operation: 'worker-poll', seconds: '0.05');
             self::assertSame('response', $result['outcome'], json_encode($result));
             self::assertGreaterThanOrEqual(0.2, $result['elapsed']);
+        });
+    }
+
+    #[DataProvider('httpHandlers')]
+    public function testOnlyRealTaskPollsAreExemptFromTheWorkerDeadline(bool $native): void
+    {
+        // Same delayed peer and 0.05s worker budget: the real task poll keeps its
+        // wait-based budget, while DELETE .../worker/sessions/poll is not a poll.
+        $this->withPeer('delay', function (string $url, string $directory) use ($native): void {
+            $poll = $this->runClient($directory, $url, $native, operation: 'worker-poll', seconds: '0.05');
+            self::assertSame('response', $poll['outcome'], json_encode($poll));
+            $close = $this->runClient($directory, $url, $native, operation: 'worker-close-session-poll', seconds: '0.05');
+            self::assertSame('error', $close['outcome'], json_encode($close));
+            self::assertSame('request_timeout', $close['reason']);
+            self::assertSame('The worker HTTP request timed out.', $close['message']);
+            self::assertLessThan(0.2, $close['elapsed']);
+            $paths = array_map(static fn (string $line): string => json_decode($line, true, flags: JSON_THROW_ON_ERROR)['method']
+                .' '.json_decode($line, true, flags: JSON_THROW_ON_ERROR)['path'], file($directory.'/requests', FILE_IGNORE_NEW_LINES));
+            self::assertContains('POST /api/worker/activity-tasks/poll', $paths);
+            self::assertContains('DELETE /api/worker/sessions/poll', $paths);
         });
     }
 

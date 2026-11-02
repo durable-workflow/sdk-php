@@ -50,6 +50,8 @@ try {
         'worker-complete-activity' => $client->completeActivityTask('test-task', 'test-attempt', 'test-worker', 'done'),
         'worker-fail-activity' => $client->failActivityTask('test-task', 'test-attempt', 'test-worker', 'test failure'),
         'worker-deregister' => $client->deregisterWorkerRegistration('test-worker'),
+        // A session ID ending in "poll" is not a task poll (DELETE .../worker/sessions/poll).
+        'worker-close-session-poll' => $client->closeWorkerSession('test-worker', 'poll'),
         'worker-poll' => $client->pollActivityTaskResponse('test-worker', 'test-queue', 1),
         default => throw new InvalidArgumentException('Unknown control fixture operation.'),
     };
