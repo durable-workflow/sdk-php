@@ -13,6 +13,11 @@ use PHPUnit\Framework\TestCase;
 
 final class ControlRequestTimeoutTest extends TestCase
 {
+    /** Every non-poll worker request kind: lifecycle, task outcomes and heartbeats. */
+    private const WORKER_OPERATIONS = ['worker-register', 'worker-heartbeat', 'worker-activity-heartbeat',
+        'worker-complete-workflow', 'worker-fail-workflow', 'worker-complete-activity', 'worker-fail-activity',
+        'worker-deregister', 'worker-close-session-poll'];
+
     #[DataProvider('stalledRequests')]
     public function testRealControlDeadlineIncludesHeadersAndBodyWithoutRepeatingTheMutation(string $mode, string $operation, bool $native): void
     {
@@ -40,6 +45,10 @@ final class ControlRequestTimeoutTest extends TestCase
                     'update' => \DurableWorkflow\Exception\UpdateFailed::class,
                     default => ServerException::class,
                 }, $result['type']);
+                if (str_starts_with($operation, 'worker-')) {
+                    // The fixture sets a 30s control budget, so only the worker budget can end this request.
+                    self::assertSame('The worker HTTP request timed out.', $result['message']);
+                }
                 self::assertGreaterThanOrEqual(0.15, $result['elapsed']);
                 self::assertLessThan(1.0, $result['elapsed']);
                 self::assertSame('', file_get_contents($directory.'/stderr'));
@@ -58,7 +67,7 @@ final class ControlRequestTimeoutTest extends TestCase
     {
         foreach ([false, true] as $native) {
             foreach (['stall', 'slow_headers', 'slow_body'] as $mode) {
-                foreach (['list', 'start', 'signal', 'update'] as $operation) {
+                foreach (['list', 'start', 'signal', 'update', ...self::WORKER_OPERATIONS] as $operation) {
                     yield $mode.' '.$operation.' native='.(int) $native => [$mode, $operation, $native];
                 }
             }
@@ -77,6 +86,48 @@ final class ControlRequestTimeoutTest extends TestCase
         foreach ([0.0, -1.0, 0.0001, INF, NAN, (float) PHP_INT_MAX] as $seconds) {
             yield [$seconds];
         }
+    }
+
+    #[DataProvider('invalidTimeouts')]
+    public function testInvalidTimeoutCannotDisableTheWorkerBudget(float $seconds): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        new Client('https://server.example', workerRequestTimeoutSeconds: $seconds);
+    }
+
+    public function testInjectedTransportCannotBeSilentlyRebuiltToApplyAnSdkWorkerTimeout(): void
+    {
+        $transport = new FakeTransport();
+        $this->expectException(\InvalidArgumentException::class);
+        try {
+            new Client('https://server.example', transport: $transport, workerRequestTimeoutSeconds: 1);
+        } finally {
+            self::assertSame([], $transport->requests);
+        }
+    }
+
+    public function testInjectedHttpClientCannotBeSilentlyRebuiltToApplyAnSdkWorkerTimeout(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        new Psr18Transport(new \GuzzleHttp\Client(['verify' => '/private/ca.pem']), workerRequestTimeoutSeconds: 1);
+    }
+
+    public function testDefaultAndConfiguredWorkerBudgetsSurviveNamespaceAndMaintenanceConfiguration(): void
+    {
+        $default = new Client('https://server.example');
+        self::assertSame(60.0, Psr18Transport::DEFAULT_WORKER_REQUEST_TIMEOUT_SECONDS);
+        self::assertSame(60.0, $default->activityLeaseProcessConfiguration()['worker_request_timeout_seconds']);
+        $configured = (new Client('https://server.example', requestTimeoutSeconds: 0.25, workerRequestTimeoutSeconds: 0.75))
+            ->withNamespace('billing');
+        $configuration = $configured->activityLeaseProcessConfiguration();
+        self::assertSame(0.25, $configuration['request_timeout_seconds']);
+        self::assertSame(0.75, $configuration['worker_request_timeout_seconds']);
+
+        // The independent activity-lease process rebuilds its Client with both budgets.
+        $factory = new \ReflectionMethod(\DurableWorkflow\Worker\ActivityLeaseMaintainer::class, 'client');
+        $rebuilt = $factory->invoke(null, $configuration)->activityLeaseProcessConfiguration();
+        self::assertSame(0.25, $rebuilt['request_timeout_seconds']);
+        self::assertSame(0.75, $rebuilt['worker_request_timeout_seconds']);
     }
 
     public function testInjectedTransportCannotBeSilentlyRebuiltToApplyAnSdkTimeout(): void
@@ -166,6 +217,32 @@ final class ControlRequestTimeoutTest extends TestCase
         ]);
         self::assertSame(0.25, $configuration->controlClient()->activityLeaseProcessConfiguration()['request_timeout_seconds']);
         self::assertSame(60.0, $configuration->workerClient()->activityLeaseProcessConfiguration()['request_timeout_seconds']);
+        self::assertSame(60.0, $configuration->workerClient()->activityLeaseProcessConfiguration()['worker_request_timeout_seconds']);
+
+        $worker = \DurableWorkflow\Bridge\ServiceConfiguration::fromArray([
+            'endpoint' => 'https://server.example', 'task_queue' => 'orders', 'worker_request_timeout_seconds' => '12.5',
+        ]);
+        self::assertSame(12.5, $worker->workerRequestTimeoutSeconds);
+        self::assertSame(12.5, $worker->workerClient()->activityLeaseProcessConfiguration()['worker_request_timeout_seconds']);
+        self::assertSame(60.0, $worker->workerClient()->activityLeaseProcessConfiguration()['request_timeout_seconds']);
+    }
+
+    #[DataProvider('invalidFrameworkWorkerTimeouts')]
+    public function testFrameworkConfigurationRefusesAnInvalidWorkerBudget(mixed $value): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('worker_request_timeout_seconds');
+        \DurableWorkflow\Bridge\ServiceConfiguration::fromArray([
+            'endpoint' => 'https://server.example', 'task_queue' => 'orders', 'worker_request_timeout_seconds' => $value,
+        ]);
+    }
+
+    public static function invalidFrameworkWorkerTimeouts(): iterable
+    {
+        yield 'zero' => [0];
+        yield 'negative' => [-5];
+        yield 'text' => ['soon'];
+        yield 'list' => [[1]];
     }
 
     public function testInjectedHttpClientCannotBeSilentlyRebuiltToApplyAnSdkTimeout(): void
@@ -183,6 +260,40 @@ final class ControlRequestTimeoutTest extends TestCase
                 self::assertSame('response', $result['outcome'], json_encode($result));
                 self::assertGreaterThanOrEqual(0.2, $result['elapsed']);
             }
+            // A 0.05s control budget leaves worker requests on the SDK's worker default.
+            $result = $this->runClient($directory, $url, $native, 'worker_default', operation: 'worker-register', seconds: '0.05');
+            self::assertSame('response', $result['outcome'], json_encode($result));
+            self::assertGreaterThanOrEqual(0.2, $result['elapsed']);
+        });
+    }
+
+    #[DataProvider('httpHandlers')]
+    public function testWorkerDeadlineDoesNotShortenLongPolls(bool $native): void
+    {
+        $this->withPeer('delay', function (string $url, string $directory) use ($native): void {
+            $result = $this->runClient($directory, $url, $native, operation: 'worker-poll', seconds: '0.05');
+            self::assertSame('response', $result['outcome'], json_encode($result));
+            self::assertGreaterThanOrEqual(0.2, $result['elapsed']);
+        });
+    }
+
+    #[DataProvider('httpHandlers')]
+    public function testOnlyRealTaskPollsAreExemptFromTheWorkerDeadline(bool $native): void
+    {
+        // Same delayed peer and 0.05s worker budget: the real task poll keeps its
+        // wait-based budget, while DELETE .../worker/sessions/poll is not a poll.
+        $this->withPeer('delay', function (string $url, string $directory) use ($native): void {
+            $poll = $this->runClient($directory, $url, $native, operation: 'worker-poll', seconds: '0.05');
+            self::assertSame('response', $poll['outcome'], json_encode($poll));
+            $close = $this->runClient($directory, $url, $native, operation: 'worker-close-session-poll', seconds: '0.05');
+            self::assertSame('error', $close['outcome'], json_encode($close));
+            self::assertSame('request_timeout', $close['reason']);
+            self::assertSame('The worker HTTP request timed out.', $close['message']);
+            self::assertLessThan(0.2, $close['elapsed']);
+            $paths = array_map(static fn (string $line): string => json_decode($line, true, flags: JSON_THROW_ON_ERROR)['method']
+                .' '.json_decode($line, true, flags: JSON_THROW_ON_ERROR)['path'], file($directory.'/requests', FILE_IGNORE_NEW_LINES));
+            self::assertContains('POST /api/worker/activity-tasks/poll', $paths);
+            self::assertContains('DELETE /api/worker/sessions/poll', $paths);
         });
     }
 

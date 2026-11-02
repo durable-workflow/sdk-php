@@ -27,6 +27,7 @@ final class ServiceConfiguration
         public readonly int $stickyCacheCapacity = 100,
         public readonly int $stickyCacheTtlSeconds = 300,
         public readonly ?float $requestTimeoutSeconds = null,
+        public readonly ?float $workerRequestTimeoutSeconds = null,
     ) {
         $this->validate();
     }
@@ -67,6 +68,7 @@ final class ServiceConfiguration
             self::cacheInteger($stickyCache, 'capacity', 100),
             self::cacheInteger($stickyCache, 'ttl_seconds', 300),
             self::requestTimeout($values),
+            self::requestTimeout($values, 'worker_request_timeout_seconds'),
         );
     }
 
@@ -92,6 +94,7 @@ final class ServiceConfiguration
             token: $this->token,
             controlToken: $this->controlToken,
             requestTimeoutSeconds: $this->requestTimeoutSeconds,
+            workerRequestTimeoutSeconds: $this->workerRequestTimeoutSeconds,
         );
     }
 
@@ -110,6 +113,7 @@ final class ServiceConfiguration
             transport: $transport,
             token: $this->token,
             workerToken: $this->workerToken,
+            workerRequestTimeoutSeconds: $this->workerRequestTimeoutSeconds,
         );
     }
 
@@ -175,9 +179,11 @@ final class ServiceConfiguration
         if ($this->pollTimeoutSeconds < 0 || $this->pollTimeoutSeconds > 60) {
             throw new InvalidArgumentException('Durable Workflow poll_timeout_seconds must be between 0 and 60.');
         }
-        if ($this->requestTimeoutSeconds !== null && (!is_finite($this->requestTimeoutSeconds)
-            || $this->requestTimeoutSeconds < 0.001 || $this->requestTimeoutSeconds > intdiv(PHP_INT_MAX, 1000))) {
-            throw new InvalidArgumentException('Durable Workflow request_timeout_seconds must be a finite positive duration with millisecond precision.');
+        foreach (['request_timeout_seconds' => $this->requestTimeoutSeconds,
+            'worker_request_timeout_seconds' => $this->workerRequestTimeoutSeconds] as $key => $seconds) {
+            if ($seconds !== null && (!is_finite($seconds) || $seconds < 0.001 || $seconds > intdiv(PHP_INT_MAX, 1000))) {
+                throw new InvalidArgumentException("Durable Workflow {$key} must be a finite positive duration with millisecond precision.");
+            }
         }
         if ($this->stickyCacheCapacity < 1) {
             throw new InvalidArgumentException('Durable Workflow worker.sticky_cache.capacity must be a positive integer.');
@@ -224,14 +230,14 @@ final class ServiceConfiguration
     }
 
     /** @param array<string, mixed> $values */
-    private static function requestTimeout(array $values): ?float
+    private static function requestTimeout(array $values, string $key = 'request_timeout_seconds'): ?float
     {
-        $value = $values['request_timeout_seconds'] ?? null;
+        $value = $values[$key] ?? null;
         if ($value === null) {
             return null;
         }
         if ((!is_int($value) && !is_float($value) && !is_string($value)) || !is_numeric($value)) {
-            throw new InvalidArgumentException('Durable Workflow request_timeout_seconds must be a number or null.');
+            throw new InvalidArgumentException("Durable Workflow {$key} must be a number or null.");
         }
 
         return (float) $value;
