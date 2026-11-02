@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.6.2] - 2026-11-02
+
+### Added
+
+- Declare minimum stable Server releases separately for the PHP 2.x and native
+  3.x Server lines. Preserve the existing 2.x metadata for older release readers;
+  worker protocol and capability negotiation remain required.
+
 ## [3.6.0] - 2026-10-27
 
 ### Added
