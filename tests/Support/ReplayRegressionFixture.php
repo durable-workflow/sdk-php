@@ -628,6 +628,12 @@ final class ReplayRegressionFixture
                 $context->activity('golden.lease-receipt'),
             'golden.activity-completion-backend-loss' => static fn (WorkflowContext $context): mixed =>
                 $context->activity('golden.backend-recovery'),
+            'golden.redrive-reused-search-attributes-changed' => static function (WorkflowContext $context, mixed $name): mixed {
+                $context->upsertMemo(['stage' => 'greeting', 'customer' => $name]);
+                $context->upsertSearchAttributes(['Stage' => 'approved']);
+
+                return $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name]);
+            },
             'golden.redrive-reused-markers' => static function (WorkflowContext $context, mixed $name): mixed {
                 $token = $context->sideEffect(static function (): string {
                     ++self::$sideEffectCalls;

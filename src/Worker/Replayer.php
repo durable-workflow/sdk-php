@@ -1563,10 +1563,21 @@ final class Replayer
                     resolutionOrder: $resolutionOrder,
                 );
             } elseif ($type === 'SearchAttributesUpserted') {
+                $attributes = $payload['attributes'] ?? null;
+                if (!is_array($attributes) || $attributes === [] || array_is_list($attributes)) {
+                    throw new NonDeterministicWorkflow(
+                        "SearchAttributesUpserted history at sequence {$sequence} is missing its recorded attributes.",
+                        $sequence,
+                        'non-empty search attribute object',
+                        'missing attributes',
+                        'search_attributes_missing',
+                    );
+                }
                 $steps[$key] = $this->resolvedStep(
                     $sequence,
                     'search_attributes',
                     null,
+                    detail: $this->searchAttributesDetail($attributes),
                     resolutionOrder: $resolutionOrder,
                 );
             } elseif ($type === 'ConditionWaitOpened') {
@@ -2653,6 +2664,9 @@ final class Replayer
             'memo' => $this->codec->encode(
                 WorkflowCommand::canonicalMemoEntries($command->attributes['entries'] ?? []),
             ),
+            'search_attributes' => is_array($command->attributes['attributes'] ?? null)
+                ? $this->searchAttributesDetail($command->attributes['attributes'])
+                : null,
             'condition_wait' => $this->conditionDetail(
                 $this->stringValue($command->attributes['condition_key'] ?? null),
                 $this->stringValue($command->attributes['condition_definition_fingerprint'] ?? null),
@@ -2661,6 +2675,34 @@ final class Replayer
         };
 
         return $value === null ? null : (string) $value;
+    }
+
+    /**
+     * The recorded search-attribute mutation binds replay. The history keeps
+     * the values as Core normalizes an upsert call: strings and list items are
+     * trimmed, an empty string deletes the key, and keys are sorted. The
+     * command is normalized the same way, so equivalent calls still match.
+     *
+     * @param array<array-key, mixed> $attributes
+     */
+    private function searchAttributesDetail(array $attributes): string
+    {
+        $normalized = [];
+        foreach ($attributes as $key => $value) {
+            if (is_string($value)) {
+                $value = trim($value);
+                $value = $value === '' ? null : $value;
+            } elseif (is_array($value) && array_is_list($value)) {
+                $value = array_map(static fn (mixed $item): mixed => is_string($item) ? trim($item) : $item, $value);
+            }
+            $normalized[(string) $key] = $value;
+        }
+        ksort($normalized, SORT_STRING);
+
+        return json_encode(
+            $normalized,
+            JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+        );
     }
 
     /** @param array<string, mixed> $payload */
