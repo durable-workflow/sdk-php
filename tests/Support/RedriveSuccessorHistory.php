@@ -11,9 +11,12 @@ use DateTimeImmutable;
  *
  * Core's DefaultWorkflowControlPlane::redrive() records, in one transaction,
  * a WorkflowStarted carrying the successor identity and the redrive envelope,
- * then the reused prefix from FailedRunRedrivePlan::successorEvents(). Rows
- * the successor records itself come after that prefix, at or after its start,
- * and belong to the successor run.
+ * then the reused prefix from FailedRunRedrivePlan::successorEvents(). Every
+ * reused event carries reused_from_run_id and reused_recorded_at, except the
+ * TimerScheduled that successorEvents() copies, without them and under a new
+ * timer_id, directly before a reused TimerFired of the same timer. Rows the
+ * successor records itself come after that prefix, at or after its start, and
+ * belong to the successor run.
  */
 final class RedriveSuccessorHistory
 {
@@ -120,20 +123,42 @@ final class RedriveSuccessorHistory
                 if ($type !== $reusedEventTypes[$offset]) {
                     return "reused prefix position {$offset} must be {$reusedEventTypes[$offset]}, not {$type}";
                 }
-                foreach (self::REUSE_KEYS as $key) {
-                    if (!self::nonBlank($payload[$key] ?? null)) {
-                        return "reused {$type} must carry a non-blank {$key}";
+                if ($type === 'TimerScheduled') {
+                    // Core copies a fired timer's schedule under a new timer_id
+                    // and without reuse keys; the reused TimerFired that must
+                    // follow it carries them.
+                    $fired = $history[$offset + 2] ?? null;
+                    $firedPayload = is_array($fired['payload'] ?? null) ? $fired['payload'] : [];
+                    if (($reusedEventTypes[$offset + 1] ?? null) !== 'TimerFired'
+                        || ($fired['event_type'] ?? null) !== 'TimerFired'
+                        || !self::nonBlank($payload['timer_id'] ?? null)
+                        || ($firedPayload['timer_id'] ?? null) !== $payload['timer_id']
+                        || ($firedPayload['sequence'] ?? null) !== ($payload['sequence'] ?? null)) {
+                        return 'copied TimerScheduled must be followed by the reused TimerFired of the same timer_id and step';
                     }
-                }
-                if ($payload['reused_from_run_id'] !== $source) {
-                    return "reused {$type} reused_from_run_id must match continued_from_run_id";
+                    foreach (self::REUSE_KEYS as $key) {
+                        if (array_key_exists($key, $payload)) {
+                            return "copied TimerScheduled must not carry {$key}";
+                        }
+                    }
+                } else {
+                    foreach (self::REUSE_KEYS as $key) {
+                        if (!self::nonBlank($payload[$key] ?? null)) {
+                            return "reused {$type} must carry a non-blank {$key}";
+                        }
+                    }
+                    if ($payload['reused_from_run_id'] !== $source) {
+                        return "reused {$type} reused_from_run_id must match continued_from_run_id";
+                    }
                 }
                 if ($recordedAt != $startedAt) {
                     return "reused {$type} is recorded with the successor start";
                 }
-                $sourceAt = self::time($payload['reused_recorded_at']);
-                if ($sourceAt === null || $sourceAt < $replayedStartedAt || $sourceAt >= $startedAt) {
-                    return "reused {$type} reused_recorded_at must fall in the source run";
+                if ($type !== 'TimerScheduled') {
+                    $sourceAt = self::time($payload['reused_recorded_at']);
+                    if ($sourceAt === null || $sourceAt < $replayedStartedAt || $sourceAt >= $startedAt) {
+                        return "reused {$type} reused_recorded_at must fall in the source run";
+                    }
                 }
                 if (array_key_exists('workflow_run_id', $payload) && $payload['workflow_run_id'] !== $source) {
                     return "reused {$type} keeps the source run id";

@@ -683,6 +683,32 @@ final class ReplayRegressionFixture
 
                 return $context->activity('Tests\\Fixtures\\V2\\TestRedriveSecondActivity', [$greeting]);
             },
+            'golden.redrive-successor-markers' => static function (WorkflowContext $context, mixed $name): mixed {
+                $context->sideEffect(static function (): string {
+                    ++self::$sideEffectCalls;
+
+                    return bin2hex(random_bytes(8));
+                });
+                $context->getVersion('redrive-markers', -1, 1);
+                $greeting = $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name]);
+
+                return $context->activity('Tests\\Fixtures\\V2\\TestRedriveSecondActivity', [$greeting]);
+            },
+            'golden.redrive-successor-timer' => static function (WorkflowContext $context, mixed $name, mixed $seconds): mixed {
+                $greeting = $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name]);
+                $context->sleep((int) $seconds);
+
+                return $context->activity('Tests\\Fixtures\\V2\\TestRedriveSecondActivity', [$greeting]);
+            },
+            'golden.redrive-successor-cancellation-clock' => static function (WorkflowContext $context, mixed $name, mixed $seconds): mixed {
+                $greeting = $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name]);
+                $context->sleep((int) $seconds);
+                try {
+                    return $context->activity('Tests\\Fixtures\\V2\\TestRedriveSecondActivity', [$greeting]);
+                } catch (WorkflowCancelled $cancelled) {
+                    return $cancelled->context->remaining();
+                }
+            },
             'golden.redrive-reused-upserts-cancellation-clock' => static function (WorkflowContext $context): float {
                 $context->upsertMemo(['stage' => 'greeting', 'customer' => 'Taylor']);
                 $context->upsertSearchAttributes(['Stage' => 'greeting']);

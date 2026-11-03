@@ -24,6 +24,26 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Correction to 3.8.3: its cancellation-clock fixture
+  (`redrive-reused-cancellation-clock`) was not a valid Workflow 2.19 redrive
+  successor history. It had no redrive `WorkflowStarted` and placed the
+  cancellation before the reused prefix. The 3.8.3 claim that cleanup after a
+  reused activity completion or fired timer no longer loses the redrive delay
+  from its budget is incorrect. In valid redrive histories the reused prefix
+  always precedes the successor's cancellation delivery, so `remaining()` is
+  computed from that delivery and cannot observe a reused event's earlier
+  `reused_recorded_at`. Preferring `reused_recorded_at` changes no observable
+  result and restores no cleanup budget. The runtime code is unchanged.
+  - Reused activity completions, fired timers, side effects and version
+    markers, and a successor cancellation after them, are now qualified with
+    valid successor histories built to Workflow 2.19 (`redrive-successor-*`).
+  - The 3.8.3 markers and timer fixtures also lacked the redrive envelope.
+    The three 3.8.3 fixtures stay in the immutable corpus, byte-identical, but
+    are named as non-qualifying evidence. Every redrive fixture must pass the
+    successor check or be one of those named exceptions.
+  - The successor check accepts the `TimerScheduled` Core copies for a reused
+    fired timer: no reuse keys, a new `timer_id`, and directly followed by the
+    reused `TimerFired` of the same timer and step.
 - Replay now checks the values of a recorded `SearchAttributesUpserted`
   against the workflow's `upsertSearchAttributes()` call, as it already did
   for memo upserts, including an upsert a redrive successor reused from the

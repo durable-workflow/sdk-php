@@ -35,7 +35,12 @@ final class RedriveReusedReplayTest extends TestCase
         'redrive-reused-signal-wait-clock' => ['SignalWaitOpened', 'SignalReceived', 'SignalApplied'],
     ];
 
-    public function testCoreReusedMarkersFixtureReplaysColdToTheSameNextCommand(): void
+    /**
+     * Not redrive successor evidence (#247): this 3.8.3 fixture has an empty
+     * WorkflowStarted. RedriveFixtureRegistry names it non-qualifying; its
+     * replacement is redrive-successor-reused-markers. It still replays.
+     */
+    public function testNonQualifyingMarkersFixtureStillReplays(): void
     {
         $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-markers-clock.json';
         self::assertReusedEvents($path, ['SideEffectRecorded', 'VersionMarkerRecorded']);
@@ -48,7 +53,12 @@ final class RedriveReusedReplayTest extends TestCase
         self::assertSame(['Taylor', '0123456789abcdef', 1], $commands[0]['arguments']);
     }
 
-    public function testCoreReusedTimerFixtureReplaysColdWithoutWaitingOnTheTimer(): void
+    /**
+     * Not redrive successor evidence (#247): this 3.8.3 fixture has a partial
+     * WorkflowStarted. RedriveFixtureRegistry names it non-qualifying; its
+     * replacement is redrive-successor-reused-timer. It still replays.
+     */
+    public function testNonQualifyingTimerFixtureStillReplays(): void
     {
         $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-timer-clock.json';
         self::assertReusedEvents($path, ['ActivityCompleted', 'TimerFired']);
@@ -61,7 +71,17 @@ final class RedriveReusedReplayTest extends TestCase
         self::assertSame(['Hello, Taylor!'], $commands[0]['arguments']);
     }
 
-    public function testReusedStepsAdvanceTheCancellationClockToTheirOriginalTime(): void
+    /**
+     * Not evidence for any clock claim (#247). This 3.8.3 fixture has no
+     * redrive WorkflowStarted and requests and delivers the cancellation
+     * before the reused prefix, an order redrive cannot write: it records
+     * WorkflowStarted and the reused prefix together, so a successor
+     * cancellation always comes after them. Its 18.0 depends on that
+     * impossible order. The fixture is immutable and the product code is
+     * unchanged, so it still replays to 18.0. RedriveSuccessorEvidenceTest
+     * carries the valid replacement, redrive-successor-reused-cancellation-clock.
+     */
+    public function testNonQualifyingCancellationClockFixtureStillReplaysUnchanged(): void
     {
         $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-cancellation-clock.json';
         self::assertReusedEvents($path, ['ActivityCompleted', 'TimerFired']);
@@ -70,8 +90,6 @@ final class RedriveReusedReplayTest extends TestCase
         self::assertCount(1, $tasks);
         $commands = $tasks[0]['command_sequence'];
 
-        // Deadline 00:00:30 less the reused timer's original 00:00:12, not the
-        // 00:05:00 the successor run copied it at, which would leave 0.0.
         self::assertCount(1, $commands);
         self::assertSame('complete_workflow', $commands[0]['type']);
         self::assertSame(18.0, $commands[0]['result']);
