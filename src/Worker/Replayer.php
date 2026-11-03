@@ -1564,7 +1564,7 @@ final class Replayer
                 );
             } elseif ($type === 'SearchAttributesUpserted') {
                 $attributes = $payload['attributes'] ?? null;
-                if (!is_array($attributes) || $attributes === [] || array_is_list($attributes)) {
+                if (!is_array($attributes) || $attributes === []) {
                     throw new NonDeterministicWorkflow(
                         "SearchAttributesUpserted history at sequence {$sequence} is missing its recorded attributes.",
                         $sequence,
@@ -1577,7 +1577,7 @@ final class Replayer
                     $sequence,
                     'search_attributes',
                     null,
-                    detail: $this->searchAttributesDetail($attributes),
+                    detail: $this->searchAttributesDetail($attributes, $sequence, 'recorded'),
                     resolutionOrder: $resolutionOrder,
                 );
             } elseif ($type === 'ConditionWaitOpened') {
@@ -2392,6 +2392,19 @@ final class Replayer
             );
         }
 
+        if ($command->historyShape === 'search_attributes') {
+            $actual = $this->searchAttributesDetail($command->attributes['attributes'] ?? null, $step['sequence'], 'authored');
+            if ($actual !== $step['detail']) {
+                throw new NonDeterministicWorkflow(
+                    'Recorded search attributes changed during replay.',
+                    $step['sequence'],
+                    $step['detail'],
+                    $actual,
+                    'search_attribute_value_mismatch',
+                );
+            }
+        }
+
         $actualDetail = $this->commandDetail($command);
         if ($command->type !== 'open_condition_wait'
             && $step['detail'] !== null
@@ -2664,9 +2677,6 @@ final class Replayer
             'memo' => $this->codec->encode(
                 WorkflowCommand::canonicalMemoEntries($command->attributes['entries'] ?? []),
             ),
-            'search_attributes' => is_array($command->attributes['attributes'] ?? null)
-                ? $this->searchAttributesDetail($command->attributes['attributes'])
-                : null,
             'condition_wait' => $this->conditionDetail(
                 $this->stringValue($command->attributes['condition_key'] ?? null),
                 $this->stringValue($command->attributes['condition_definition_fingerprint'] ?? null),
@@ -2678,31 +2688,72 @@ final class Replayer
     }
 
     /**
-     * The recorded search-attribute mutation binds replay. The history keeps
-     * the values as Core normalizes an upsert call: strings and list items are
-     * trimmed, an empty string deletes the key, and keys are sorted. The
-     * command is normalized the same way, so equivalent calls still match.
+     * The canonical replay identity of a search-attribute upsert's values.
      *
-     * @param array<array-key, mixed> $attributes
+     * History keeps the values as Core's UpsertSearchAttributesCall normalizes
+     * them: a non-empty map with portable string keys; each value null, a
+     * bool, an int, a finite float, a string or a list of strings; strings and
+     * list items trimmed, an empty scalar string as a deletion, keys sorted.
+     * The authored call is normalized the same way, so an equivalent call still
+     * matches. Anything outside that set, recorded or authored, refuses replay
+     * instead of being coerced.
+     *
+     * Recorded attribute_types are not part of this identity: this SDK's
+     * upsert command carries no declared types, and the effective type the
+     * Server records may come from a namespace registration the worker cannot
+     * see. This is value-only binding.
      */
-    private function searchAttributesDetail(array $attributes): string
+    private function searchAttributesDetail(mixed $attributes, int $sequence, string $origin): string
     {
+        $refuse = static function (string $detail) use ($sequence, $origin): never {
+            throw new NonDeterministicWorkflow(
+                "The {$origin} search attributes at sequence {$sequence} are not portable: {$detail}.",
+                $sequence,
+                'a non-empty map of portable keys to null, bool, int, finite float, string or string-list values',
+                $detail,
+                'search_attributes_unportable',
+            );
+        };
+        if (!is_array($attributes) || $attributes === []) {
+            $refuse('expected a non-empty map');
+        }
         $normalized = [];
         foreach ($attributes as $key => $value) {
+            if (!is_string($key) || preg_match('/\A[A-Za-z0-9_.:-]{1,64}\z/', $key) !== 1) {
+                $refuse('key '.json_encode($key).' is not a 1-64 character URL-safe string');
+            }
             if (is_string($value)) {
                 $value = trim($value);
                 $value = $value === '' ? null : $value;
-            } elseif (is_array($value) && array_is_list($value)) {
-                $value = array_map(static fn (mixed $item): mixed => is_string($item) ? trim($item) : $item, $value);
+            } elseif (is_float($value)) {
+                if (!is_finite($value)) {
+                    $refuse("[{$key}] is not a finite number");
+                }
+            } elseif (is_array($value)) {
+                if (!array_is_list($value)) {
+                    $refuse("[{$key}] is a map, not a list");
+                }
+                foreach ($value as $index => $item) {
+                    if (!is_string($item)) {
+                        $refuse("[{$key}] list value {$index} is not a string");
+                    }
+                    $value[$index] = trim($item);
+                }
+            } elseif ($value !== null && !is_bool($value) && !is_int($value)) {
+                $refuse("[{$key}] is a ".get_debug_type($value));
             }
-            $normalized[(string) $key] = $value;
+            $normalized[$key] = $value;
         }
         ksort($normalized, SORT_STRING);
 
-        return json_encode(
-            $normalized,
-            JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
-        );
+        try {
+            return json_encode(
+                $normalized,
+                JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+            );
+        } catch (\JsonException $error) {
+            $refuse('values cannot be encoded: '.$error->getMessage());
+        }
     }
 
     /** @param array<string, mixed> $payload */
