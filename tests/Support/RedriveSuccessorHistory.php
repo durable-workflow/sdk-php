@@ -7,7 +7,7 @@ namespace DurableWorkflow\Tests\Support;
 use DateTimeImmutable;
 
 /**
- * Checks that a fixture history is one Workflow 2.19 redrive can write.
+ * Checks that a replay fixture is a history Workflow 2.19 redrive can write.
  *
  * Core's DefaultWorkflowControlPlane::redrive() records, in one transaction,
  * a WorkflowStarted carrying the successor identity and the redrive envelope,
@@ -17,24 +17,40 @@ use DateTimeImmutable;
  */
 final class RedriveSuccessorHistory
 {
-    private const IDENTITY = ['workflow_instance_id', 'workflow_run_id', 'workflow_command_id', 'workflow_link_id', 'continued_from_run_id'];
+    private const IDENTITY = [
+        'workflow_type', 'workflow_instance_id', 'workflow_run_id', 'workflow_command_id', 'workflow_link_id', 'continued_from_run_id',
+    ];
+
+    private const REUSE_KEYS = ['reused_from_run_id', 'reused_recorded_at'];
+
+    /** Reused events that do not occupy a workflow step of their own. */
+    private const STEPLESS = ['SignalReceived'];
 
     /**
-     * @param list<array<string, mixed>> $history
-     * @param array{workflow_id: string, run_id: string}|null $task
+     * @param array<string, mixed> $fixture a replay-regression fixture with history, workflow and workflow_tasks
+     * @param list<string> $reusedEventTypes the reused prefix, in order, exactly as redrive copies it
      * @return string|null the first violated rule, or null for a valid successor
      */
-    public static function violation(array $history, ?array $task = null): ?string
+    public static function violation(array $fixture, array $reusedEventTypes): ?string
     {
+        $history = is_array($fixture['history'] ?? null) ? $fixture['history'] : [];
+        $task = $fixture['workflow_tasks'][0] ?? null;
+        $workflowType = $fixture['workflow']['type'] ?? null;
+        if ($reusedEventTypes === []) {
+            return 'a redrive successor needs at least one expected reused event type';
+        }
         $started = $history[0] ?? null;
         if (!is_array($started) || ($started['event_type'] ?? null) !== 'WorkflowStarted' || ($started['sequence'] ?? null) !== 1) {
             return 'history must open with WorkflowStarted at sequence 1';
         }
         $start = is_array($started['payload'] ?? null) ? $started['payload'] : [];
         foreach (self::IDENTITY as $field) {
-            if (!is_string($start[$field] ?? null) || $start[$field] === '') {
-                return "WorkflowStarted {$field} must be a non-empty string";
+            if (!self::nonBlank($start[$field] ?? null)) {
+                return "WorkflowStarted {$field} must be a non-blank string";
             }
+        }
+        if ($start['workflow_type'] !== $workflowType) {
+            return 'WorkflowStarted workflow_type must be the fixture workflow type';
         }
         $instance = $start['workflow_instance_id'];
         $run = $start['workflow_run_id'];
@@ -50,13 +66,25 @@ final class RedriveSuccessorHistory
         if ($startedAt === null || $replayedStartedAt === null || $replayedStartedAt >= $startedAt) {
             return 'replayed_started_at must be a valid time before the successor start';
         }
-        if ($task !== null && ($task['workflow_id'] !== $instance || $task['run_id'] !== $run)) {
+        // Core writes both deadlines into the envelope, null when unbounded.
+        foreach (['execution_deadline_at' => $replayedStartedAt, 'run_deadline_at' => $startedAt] as $field => $after) {
+            if (!array_key_exists($field, $start)) {
+                return "WorkflowStarted must carry {$field}";
+            }
+            if ($start[$field] !== null) {
+                $deadline = self::time($start[$field]);
+                if ($deadline === null || $deadline <= $after) {
+                    return "{$field} must be null or a valid time after the ".($field === 'run_deadline_at' ? 'successor' : 'workflow').' start';
+                }
+            }
+        }
+        if (!is_array($task) || ($task['workflow_id'] ?? null) !== $instance || ($task['run_id'] ?? null) !== $run) {
             return 'workflow task must belong to the successor instance and run';
         }
 
-        $inPrefix = true;
         $lastReusedStep = 0;
         $previousAt = $startedAt;
+        $prefixLength = count($reusedEventTypes);
         foreach (array_slice($history, 1) as $offset => $event) {
             $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
             $type = (string) ($event['event_type'] ?? '');
@@ -68,9 +96,14 @@ final class RedriveSuccessorHistory
                 return "history order: {$type} must not predate the event before it";
             }
             $previousAt = $recordedAt;
-            if (array_key_exists('reused_from_run_id', $payload)) {
-                if (!$inPrefix) {
-                    return "reused {$type} must belong to the prefix directly after WorkflowStarted";
+            if ($offset < $prefixLength) {
+                if ($type !== $reusedEventTypes[$offset]) {
+                    return "reused prefix position {$offset} must be {$reusedEventTypes[$offset]}, not {$type}";
+                }
+                foreach (self::REUSE_KEYS as $key) {
+                    if (!self::nonBlank($payload[$key] ?? null)) {
+                        return "reused {$type} must carry a non-blank {$key}";
+                    }
                 }
                 if ($payload['reused_from_run_id'] !== $source) {
                     return "reused {$type} reused_from_run_id must match continued_from_run_id";
@@ -78,7 +111,7 @@ final class RedriveSuccessorHistory
                 if ($recordedAt != $startedAt) {
                     return "reused {$type} is recorded with the successor start";
                 }
-                $sourceAt = self::time($payload['reused_recorded_at'] ?? null);
+                $sourceAt = self::time($payload['reused_recorded_at']);
                 if ($sourceAt === null || $sourceAt < $replayedStartedAt || $sourceAt >= $startedAt) {
                     return "reused {$type} reused_recorded_at must fall in the source run";
                 }
@@ -89,12 +122,16 @@ final class RedriveSuccessorHistory
                     return "reused {$type} must belong to the successor instance";
                 }
                 // SignalReceived has no workflow step of its own; it belongs to its wait.
-                if (is_int($payload['sequence'] ?? null)) {
+                if (!in_array($type, self::STEPLESS, true) && is_int($payload['sequence'] ?? null)) {
                     $lastReusedStep = max($lastReusedStep, $payload['sequence']);
                 }
                 continue;
             }
-            $inPrefix = false;
+            foreach (self::REUSE_KEYS as $key) {
+                if (array_key_exists($key, $payload)) {
+                    return "successor {$type} must not carry {$key} outside the reused prefix";
+                }
+            }
             if (array_key_exists('workflow_run_id', $payload) && $payload['workflow_run_id'] !== $run) {
                 return "successor {$type} must bind to the successor run";
             }
@@ -116,6 +153,9 @@ final class RedriveSuccessorHistory
                 return "successor {$type} must not reuse a reused step sequence";
             }
         }
+        if (count($history) - 1 < $prefixLength) {
+            return 'history ends before the expected reused prefix';
+        }
         if ($lastReusedStep === 0) {
             return 'history has no reused workflow step';
         }
@@ -124,6 +164,11 @@ final class RedriveSuccessorHistory
         }
 
         return null;
+    }
+
+    private static function nonBlank(mixed $value): bool
+    {
+        return is_string($value) && trim($value) !== '';
     }
 
     private static function time(mixed $value): ?DateTimeImmutable
