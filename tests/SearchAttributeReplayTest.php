@@ -210,6 +210,105 @@ final class SearchAttributeReplayTest extends TestCase
         ];
     }
 
+    /**
+     * Each terminal or internal-timeout row claims its owning command's
+     * sequence even when that command's opener is absent. With an upsert at
+     * the same sequence, replay refuses in either order.
+     *
+     * @param array<string, mixed> $row
+     */
+    #[DataProvider('lifecycleRowsWithoutTheirOpener')]
+    public function testALifecycleRowWithoutItsOpenerCannotShareAnUpsertsSequence(array $row, string $upsert, bool $upsertFirst): void
+    {
+        $codec = new AvroPayloadCodec();
+        $upsertEvent = $upsert === 'memo'
+            ? ['event_type' => 'MemoUpserted', 'payload' => ['sequence' => 1, 'entries' => $codec->envelope(['stage' => 'greeting']),
+                'merged' => $codec->envelope(['stage' => 'greeting'])]]
+            : ['event_type' => 'SearchAttributesUpserted', 'payload' => ['sequence' => 1, 'attributes' => ['Stage' => 'greeting'],
+                'merged' => ['Stage' => 'greeting']]];
+        $history = $upsertFirst ? [$upsertEvent, $row] : [$row, $upsertEvent];
+        try {
+            (new Replayer($codec))->replay(
+                static function (WorkflowContext $context) use ($upsert): string {
+                    $upsert === 'memo'
+                        ? $context->upsertMemo(['stage' => 'greeting'])
+                        : $context->upsertSearchAttributes(['Stage' => 'greeting']);
+
+                    return 'done';
+                },
+                $history,
+                [],
+                'search-attribute-replay',
+            );
+            self::fail('A lifecycle row must not share an upsert sequence.');
+        } catch (NonDeterministicWorkflow $exception) {
+            self::assertSame('durable_command_sequence_collision', $exception->reason);
+            self::assertSame(1, $exception->sequence);
+        }
+    }
+
+    /** @return array<string, array{array<string, mixed>, string, bool}> */
+    public static function lifecycleRowsWithoutTheirOpener(): array
+    {
+        $rows = [
+            'TimerCancelled' => ['event_type' => 'TimerCancelled', 'payload' => ['sequence' => 1, 'timer_id' => 'timer-1']],
+            'ConditionWaitCancelled' => ['event_type' => 'ConditionWaitCancelled', 'payload' => ['sequence' => 1, 'condition_wait_id' => 'wait-1']],
+            'ConditionWaitTimedOut' => ['event_type' => 'ConditionWaitTimedOut', 'payload' => ['sequence' => 1, 'condition_wait_id' => 'wait-1']],
+            'condition timeout TimerScheduled' => ['event_type' => 'TimerScheduled', 'payload' => ['sequence' => 1, 'timer_kind' => 'condition_timeout',
+                'condition_wait_id' => 'wait-1', 'delay_seconds' => 5]],
+            'condition timeout TimerFired' => ['event_type' => 'TimerFired', 'payload' => ['sequence' => 1, 'timer_kind' => 'condition_timeout',
+                'condition_wait_id' => 'wait-1']],
+            'signal timeout TimerScheduled' => ['event_type' => 'TimerScheduled', 'payload' => ['sequence' => 1, 'timer_kind' => 'signal_timeout',
+                'signal_wait_id' => 'wait-1', 'delay_seconds' => 5]],
+            'signal timeout TimerFired' => ['event_type' => 'TimerFired', 'payload' => ['sequence' => 1, 'timer_kind' => 'signal_timeout',
+                'signal_wait_id' => 'wait-1']],
+            'SignalWaitTimedOut' => ['event_type' => 'SignalWaitTimedOut', 'payload' => ['sequence' => 1, 'signal_wait_id' => 'wait-1']],
+            'SignalWaitCancelled' => ['event_type' => 'SignalWaitCancelled', 'payload' => ['sequence' => 1, 'signal_wait_id' => 'wait-1']],
+            'ActivityFailed' => ['event_type' => 'ActivityFailed', 'payload' => ['sequence' => 1, 'activity_type' => 'golden.activity', 'message' => 'failed']],
+            'ActivityCancelled' => ['event_type' => 'ActivityCancelled', 'payload' => ['sequence' => 1, 'activity_type' => 'golden.activity']],
+            'ChildRunTerminated' => ['event_type' => 'ChildRunTerminated', 'payload' => ['sequence' => 1, 'workflow_type' => 'golden.child']],
+            'ServiceCallCancelled' => ['event_type' => 'ServiceCallCancelled', 'payload' => ['sequence' => 1]],
+        ];
+        $cases = [];
+        foreach ($rows as $label => $row) {
+            foreach (['search attributes' => 'search_attributes', 'memo' => 'memo'] as $upsertLabel => $upsert) {
+                $cases["{$label} after {$upsertLabel}"] = [$row, $upsert, true];
+                $cases["{$upsertLabel} after {$label}"] = [$row, $upsert, false];
+            }
+        }
+
+        return $cases;
+    }
+
+    /** @param array<string, mixed> $row */
+    #[DataProvider('pointerRows')]
+    public function testARowThatOnlyPointsAtAStepClaimsNoSequence(array $row): void
+    {
+        $result = (new Replayer(new AvroPayloadCodec()))->replay(
+            static function (WorkflowContext $context): string {
+                $context->upsertSearchAttributes(['Stage' => 'greeting']);
+
+                return 'done';
+            },
+            [['event_type' => 'SearchAttributesUpserted', 'payload' => ['sequence' => 1, 'attributes' => ['Stage' => 'greeting'],
+                'merged' => ['Stage' => 'greeting']]], $row],
+            [],
+            'search-attribute-replay',
+        );
+
+        self::assertSame(['complete_workflow'], array_column($result->commands, 'type'));
+    }
+
+    /** @return array<string, array{array<string, mixed>}> */
+    public static function pointerRows(): array
+    {
+        return [
+            'SignalReceived' => [['event_type' => 'SignalReceived', 'payload' => ['sequence' => 1, 'signal_name' => 'approve',
+                'arguments' => (new AvroPayloadCodec())->envelope([])]]],
+            'UpdateAccepted' => [['event_type' => 'UpdateAccepted', 'payload' => ['sequence' => 1, 'update_name' => 'approve']]],
+        ];
+    }
+
     #[DataProvider('unsequencedUpserts')]
     public function testRecordedUpsertMustNameItsOwnSequence(mixed $sequence, bool $present, string $reason): void
     {

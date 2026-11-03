@@ -42,10 +42,13 @@ project follows [Semantic Versioning](https://semver.org/).
   - A recorded upsert without its `attributes` refuses with
     `search_attribute_update_missing`, the reason sdk-rust uses.
   - A second `SearchAttributesUpserted` at one workflow sequence refuses
-    with `duplicate_search_attribute_update`. An upsert sharing a sequence
-    with another durable command, including a signal wait, refuses with
-    `durable_command_sequence_collision`. Before, the later event silently
-    replaced the earlier one.
+    with `duplicate_search_attribute_update`. A memo or search-attribute
+    upsert sharing a sequence with any other durable command refuses with
+    `durable_command_sequence_collision` in either order. An explicit claim
+    map decides which rows claim a sequence, including terminal, cancelled
+    and internal wait-timeout timer rows, even when the command's opener is
+    absent. Before, the later event could silently replace the earlier one
+    or be ignored.
   - A recorded upsert must carry its own positive integer `sequence`.
     Replay no longer synthesizes one: a missing sequence refuses with
     `durable_command_sequence_missing`, and an invalid one with

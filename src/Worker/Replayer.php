@@ -21,8 +21,34 @@ use Throwable;
 /** Re-executes a straight-line workflow Fiber against committed, sequence-ordered history. */
 final class Replayer
 {
-    /** Signal-wait events that claim their workflow sequence. */
-    private const SIGNAL_WAIT_EVENTS = ['SignalWaitOpened', 'SignalApplied', 'SignalWaitTimedOut', 'SignalWaitCancelled'];
+    /**
+     * Every durable history event that claims a workflow sequence, by the
+     * command kind that owns it. A command's lifecycle rows, terminal and
+     * cancelled rows included, share its sequence. Events that only point at
+     * a step (signal receipt, updates, cancellation and scope records) claim
+     * nothing and are not listed. Internal wait-timeout timer rows belong to
+     * their wait; see durableCommandKind(). This is the map sdk-python uses.
+     */
+    private const DURABLE_COMMAND_KINDS = [
+        'ActivityScheduled' => 'activity', 'ActivityStarted' => 'activity', 'ActivityCompleted' => 'activity',
+        'ActivityFailed' => 'activity', 'ActivityTimedOut' => 'activity', 'ActivityCancelled' => 'activity',
+        'TimerScheduled' => 'timer', 'TimerFired' => 'timer', 'TimerCancelled' => 'timer',
+        'ChildWorkflowScheduled' => 'child', 'ChildRunStarted' => 'child', 'ChildRunCompleted' => 'child',
+        'ChildRunFailed' => 'child', 'ChildRunCancelled' => 'child', 'ChildRunTerminated' => 'child',
+        'ConditionWaitOpened' => 'condition', 'ConditionWaitSatisfied' => 'condition',
+        'ConditionWaitTimedOut' => 'condition', 'ConditionWaitCancelled' => 'condition',
+        'SignalWaitOpened' => 'signal', 'SignalApplied' => 'signal',
+        'SignalWaitTimedOut' => 'signal', 'SignalWaitCancelled' => 'signal',
+        'ServiceCallStarted' => 'service_call', 'ServiceCallCompleted' => 'service_call',
+        'ServiceCallFailed' => 'service_call', 'ServiceCallCancelled' => 'service_call',
+        'SideEffectRecorded' => 'side_effect',
+        'VersionMarkerRecorded' => 'version_marker',
+        'MemoUpserted' => 'memo',
+        'SearchAttributesUpserted' => 'search_attributes',
+    ];
+
+    /** An upsert is the only command at its sequence. */
+    private const UPSERT_COMMAND_KINDS = ['memo', 'search_attributes'];
 
     private const MIN_VERSION = -2_147_483_648;
 
@@ -1220,7 +1246,7 @@ final class Replayer
         $versionMarkerSequences = [];
         $versionMarkerChangeIds = [];
         $memoSequences = [];
-        $signalWaitSequences = [];
+        $commandKindsBySequence = [];
         $fallbackSequence = 1_000_000;
         foreach ($history as $resolutionOrder => $event) {
             $type = (string) ($event['event_type'] ?? $event['type'] ?? '');
@@ -1240,29 +1266,25 @@ final class Replayer
                     reason: 'durable_command_sequence_collision');
             }
 
-            // One workflow sequence is one durable command. Only events of the
-            // same command's lifecycle share it (an activity's schedule and
-            // completion, a timer's schedule and fire, a condition or signal
-            // wait's open and resolution, a child's schedule and run outcome).
-            // Events that only refer to a step, such as a cancellation
-            // delivery, claim nothing. The PHP SDK does not author signal
-            // waits, but their events still claim their sequence.
-            $incomingClaim = $incomingShape ?? (in_array($type, self::SIGNAL_WAIT_EVENTS, true) ? 'signal_wait' : null);
-            if ($incomingClaim !== null) {
-                $existingClaim = $steps[$key]['shape'] ?? (isset($signalWaitSequences[$key]) ? 'signal_wait' : null);
-                if ($existingClaim !== null && $existingClaim !== $incomingClaim
-                    && ($existingClaim === 'search_attributes' || $incomingClaim === 'search_attributes')) {
+            // One workflow sequence is one durable command: only rows of the
+            // same command's lifecycle share it. A collision that involves an
+            // upsert is refused in either order, whether or not the replay
+            // parser below would build a step from the other row.
+            $claim = $this->durableCommandKind($type, $payload);
+            if ($claim !== null) {
+                $kinds = $commandKindsBySequence[$key] ?? [];
+                $kinds[$claim] = true;
+                if (count($kinds) > 1 && array_intersect(array_keys($kinds), self::UPSERT_COMMAND_KINDS) !== []) {
+                    $others = implode(', ', array_diff(array_keys($kinds), [$claim]));
                     throw new NonDeterministicWorkflow(
-                        "Workflow sequence {$sequence} contains a {$existingClaim} command and a {$incomingClaim} command.",
+                        "Workflow sequence {$sequence} records {$type} after a {$others} command.",
                         $sequence,
-                        'one durable command shape',
-                        "{$existingClaim} and {$incomingClaim}",
+                        'one durable command per workflow sequence',
+                        "{$others} and {$claim}",
                         'durable_command_sequence_collision',
                     );
                 }
-                if ($incomingClaim === 'signal_wait') {
-                    $signalWaitSequences[$key] = true;
-                }
+                $commandKindsBySequence[$key] = $kinds;
             }
 
             if ($type !== 'CancellationScopeOpened' && isset($scopes->openings[$sequence])
@@ -2921,6 +2943,30 @@ final class Replayer
         }
 
         return $sequence;
+    }
+
+    /**
+     * The command kind that owns a durable history row, or null for a row that
+     * only points at a step. A wait's internal timeout timer belongs to that
+     * wait, not to a workflow timer.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function durableCommandKind(string $type, array $payload): ?string
+    {
+        $kind = self::DURABLE_COMMAND_KINDS[$type] ?? null;
+        if ($kind !== 'timer') {
+            return $kind;
+        }
+        $timerKind = $payload['timer_kind'] ?? null;
+        if ($timerKind === 'condition_timeout' || $this->stringValue($payload['condition_wait_id'] ?? null) !== null) {
+            return 'condition';
+        }
+        if ($timerKind === 'signal_timeout' || $this->stringValue($payload['signal_wait_id'] ?? null) !== null) {
+            return 'signal';
+        }
+
+        return 'timer';
     }
 
     /**
