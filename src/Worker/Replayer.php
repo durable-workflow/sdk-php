@@ -21,6 +21,53 @@ use Throwable;
 /** Re-executes a straight-line workflow Fiber against committed, sequence-ordered history. */
 final class Replayer
 {
+    /**
+     * Every durable history event that claims a workflow sequence, by the
+     * command kind that owns it, following Core's
+     * WorkflowStepHistory::WORKFLOW_STEP_EVENT_TYPES. A command's lifecycle
+     * rows (terminal, retry, heartbeat and cancelled rows included) share its
+     * sequence. Internal wait-timeout timer rows belong to their wait; see
+     * durableCommandKind(). ActivityOutcomeRejected is deliberately absent:
+     * it is a payload-free audit fact that neither resolves an activity nor
+     * consumes a command position. Rows that only point at a step claim
+     * nothing: signal receipt and rejection, updates, message cursors,
+     * selection markers, cancellation requests and scope requests or
+     * preparations. Cancellation deliveries claim their whole span; see
+     * DELIVERY_EVENTS.
+     */
+    private const DURABLE_COMMAND_KINDS = [
+        'ActivityScheduled' => 'activity', 'ActivityStarted' => 'activity', 'ActivityHeartbeatRecorded' => 'activity',
+        'ActivityRetryScheduled' => 'activity', 'ActivityCompleted' => 'activity', 'ActivityFailed' => 'activity',
+        'ActivityCancelled' => 'activity', 'ActivityTimedOut' => 'activity', 'ActivityCancellationAcknowledged' => 'activity',
+        'TimerScheduled' => 'timer', 'TimerFired' => 'timer', 'TimerCancelled' => 'timer',
+        'ChildWorkflowScheduled' => 'child', 'ChildRunStarted' => 'child', 'ChildRunCompleted' => 'child',
+        'ChildRunFailed' => 'child', 'ChildRunCancelled' => 'child', 'ChildRunTerminated' => 'child',
+        'ConditionWaitOpened' => 'condition', 'ConditionWaitSatisfied' => 'condition',
+        'ConditionWaitTimedOut' => 'condition', 'ConditionWaitCancelled' => 'condition',
+        'SignalWaitOpened' => 'signal', 'SignalWaitReceived' => 'signal', 'SignalApplied' => 'signal',
+        'SignalWaitTimedOut' => 'signal', 'SignalWaitCancelled' => 'signal',
+        'ServiceOperationScheduled' => 'service_call', 'ServiceCallStarted' => 'service_call',
+        'ServiceCallCompleted' => 'service_call', 'ServiceCallFailed' => 'service_call',
+        'ServiceCallCancelled' => 'service_call', 'ServiceCallTimedOut' => 'service_call',
+        'SideEffectRecorded' => 'side_effect',
+        'VersionMarkerRecorded' => 'version_marker',
+        'MemoUpserted' => 'memo',
+        'SearchAttributesUpserted' => 'search_attributes',
+        'CancellationScopeOpened' => 'cancellation_scope',
+        'WorkflowContinuedAsNew' => 'continue_as_new',
+    ];
+
+    /**
+     * A delivered cancellation consumes the interrupted call even when that
+     * call was never scheduled, and its sequence_span reserves the whole
+     * interrupted range, sequence .. sequence + span - 1 inclusive (Core
+     * WorkflowStepHistory::nextSequenceFromEvents()).
+     */
+    private const DELIVERY_EVENTS = ['CooperativeCancellationDelivered', 'CancellationScopeDelivered'];
+
+    /** An upsert is the only command at its sequence. */
+    private const UPSERT_COMMAND_KINDS = ['memo', 'search_attributes'];
+
     private const MIN_VERSION = -2_147_483_648;
 
     private const MAX_VERSION = 2_147_483_647;
@@ -1217,6 +1264,9 @@ final class Replayer
         $versionMarkerSequences = [];
         $versionMarkerChangeIds = [];
         $memoSequences = [];
+        $commandKindsBySequence = [];
+        $deliveryRanges = [];
+        $upsertSequences = [];
         $fallbackSequence = 1_000_000;
         foreach ($history as $resolutionOrder => $event) {
             $type = (string) ($event['event_type'] ?? $event['type'] ?? '');
@@ -1224,6 +1274,7 @@ final class Replayer
             $sequence = match ($type) {
                 'VersionMarkerRecorded' => $this->versionMarkerSequence($payload),
                 'MemoUpserted' => $this->memoSequence($payload),
+                'SearchAttributesUpserted' => $this->searchAttributeSequence($payload),
                 default => $this->sequence($payload) ?? $fallbackSequence++,
             };
             $key = (string) $sequence;
@@ -1233,6 +1284,37 @@ final class Replayer
                 && $incomingShape !== null && $incomingShape !== 'service_operation') {
                 throw new NonDeterministicWorkflow('Service call collides with another durable command.', $sequence,
                     reason: 'durable_command_sequence_collision');
+            }
+
+            // One workflow sequence is one durable command: only rows of the
+            // same command's lifecycle share it. A collision that involves an
+            // upsert is refused in either order, whether or not the replay
+            // parser below would build a step from the other row.
+            if (in_array($type, self::DELIVERY_EVENTS, true)) {
+                // A delivery claims its whole span. Compare ranges rather than
+                // expanding them, so a large span costs nothing.
+                [$first, $last] = $this->deliveryRange($type, $payload);
+                foreach ($upsertSequences as $upsertSequence => $upsertKind) {
+                    if ($upsertSequence >= $first && $upsertSequence <= $last) {
+                        $this->refuseUpsertCollision($upsertSequence, $type, $upsertKind, 'cancellation_delivery');
+                    }
+                }
+                $deliveryRanges[] = [$first, $last, $type];
+            } elseif (($claim = $this->durableCommandKind($type, $payload)) !== null) {
+                $kinds = $commandKindsBySequence[$key] ?? [];
+                $kinds[$claim] = true;
+                if (count($kinds) > 1 && array_intersect(array_keys($kinds), self::UPSERT_COMMAND_KINDS) !== []) {
+                    $this->refuseUpsertCollision($sequence, $type, implode(', ', array_diff(array_keys($kinds), [$claim])), $claim);
+                }
+                $commandKindsBySequence[$key] = $kinds;
+                if (in_array($claim, self::UPSERT_COMMAND_KINDS, true)) {
+                    foreach ($deliveryRanges as [$first, $last]) {
+                        if ($sequence >= $first && $sequence <= $last) {
+                            $this->refuseUpsertCollision($sequence, $type, 'cancellation_delivery', $claim);
+                        }
+                    }
+                    $upsertSequences[$sequence] = $claim;
+                }
             }
 
             if ($type !== 'CancellationScopeOpened' && isset($scopes->openings[$sequence])
@@ -1563,12 +1645,44 @@ final class Replayer
                     resolutionOrder: $resolutionOrder,
                 );
             } elseif ($type === 'SearchAttributesUpserted') {
-                $steps[$key] = $this->resolvedStep(
-                    $sequence,
-                    'search_attributes',
-                    null,
-                    resolutionOrder: $resolutionOrder,
-                );
+                if (($steps[$key]['shape'] ?? null) === 'search_attributes') {
+                    throw new NonDeterministicWorkflow(
+                        "Workflow sequence {$sequence} contains more than one SearchAttributesUpserted event.",
+                        $sequence,
+                        'one SearchAttributesUpserted event',
+                        'multiple SearchAttributesUpserted events',
+                        'duplicate_search_attribute_update',
+                    );
+                }
+                if (isset($steps[$key])) {
+                    throw new NonDeterministicWorkflow(
+                        "Workflow sequence {$sequence} contains a search-attribute upsert and another durable command.",
+                        $sequence,
+                        'one durable command shape',
+                        $steps[$key]['shape'].' and search attribute upsert',
+                        'durable_command_sequence_collision',
+                    );
+                }
+                $attributes = $payload['attributes'] ?? null;
+                if (!is_array($attributes) || $attributes === []) {
+                    // The same reason sdk-rust reports for this history.
+                    throw new NonDeterministicWorkflow(
+                        "SearchAttributesUpserted history at sequence {$sequence} is missing its recorded attributes.",
+                        $sequence,
+                        'non-empty search attribute object',
+                        'missing attributes',
+                        'search_attribute_update_missing',
+                    );
+                }
+                $steps[$key] = [
+                    ...$this->resolvedStep(
+                        $sequence,
+                        'search_attributes',
+                        null,
+                        resolutionOrder: $resolutionOrder,
+                    ),
+                    'search_attributes' => $this->canonicalSearchAttributes($attributes, $sequence, 'recorded'),
+                ];
             } elseif ($type === 'ConditionWaitOpened') {
                 $conditionKey = $this->stringValue($payload['condition_key'] ?? null);
                 $conditionDefinitionFingerprint = $this->stringValue(
@@ -2381,6 +2495,21 @@ final class Replayer
             );
         }
 
+        if ($command->historyShape === 'search_attributes') {
+            $authored = $this->canonicalSearchAttributes($command->attributes['attributes'] ?? null, $step['sequence'], 'authored');
+            $difference = self::searchAttributesDifference($step['search_attributes'] ?? [], $authored);
+            if ($difference !== null) {
+                // Diagnostics name the key, never the values.
+                throw new NonDeterministicWorkflow(
+                    "Recorded search attributes changed during replay: {$difference}.",
+                    $step['sequence'],
+                    'the recorded search attributes',
+                    $difference,
+                    'search_attribute_value_mismatch',
+                );
+            }
+        }
+
         $actualDetail = $this->commandDetail($command);
         if ($command->type !== 'open_condition_wait'
             && $step['detail'] !== null
@@ -2663,6 +2792,119 @@ final class Replayer
         return $value === null ? null : (string) $value;
     }
 
+    private const SEARCH_ATTRIBUTE_MAX_STRING_LENGTH = 2048;
+
+    private const SEARCH_ATTRIBUTE_MAX_KEYWORD_LENGTH = 255;
+
+    /**
+     * The canonical replay identity of a search-attribute upsert's values.
+     *
+     * History keeps the values as Core's UpsertSearchAttributesCall normalizes
+     * them: a non-empty map with 1-64 character URL-safe string keys; each
+     * value null, a bool, an int, a finite float, a string of at most 2048
+     * characters or a list of strings of at most 255 characters each; strings
+     * and list items trimmed, an empty scalar string as a deletion, keys
+     * sorted. The authored call is normalized the same way. Anything outside
+     * that set, recorded or authored, refuses replay instead of being coerced.
+     *
+     * Recorded attribute_types are not part of this identity: this SDK's
+     * upsert command carries no declared types, and the effective type the
+     * Server records may come from a namespace registration the worker cannot
+     * see. This is value-only binding.
+     *
+     * @return array<string, null|bool|int|float|string|list<string>>
+     */
+    private function canonicalSearchAttributes(mixed $attributes, int $sequence, string $origin): array
+    {
+        $refuse = static function (string $detail) use ($sequence, $origin): never {
+            throw new NonDeterministicWorkflow(
+                "The {$origin} search attributes at sequence {$sequence} are not portable: {$detail}.",
+                $sequence,
+                'a non-empty map of portable keys to null, bool, int, finite float, string or string-list values',
+                $detail,
+                'search_attributes_unportable',
+            );
+        };
+        if (!is_array($attributes) || $attributes === []) {
+            $refuse('expected a non-empty map');
+        }
+        $normalized = [];
+        foreach ($attributes as $key => $value) {
+            if (!is_string($key) || preg_match('/\A[A-Za-z0-9_.:-]{1,64}\z/', $key) !== 1) {
+                $refuse(is_string($key) ? 'a key is not a 1-64 character URL-safe string' : 'a key is not a string');
+            }
+            if (is_string($value)) {
+                $value = trim($value);
+                $length = self::characterLength($value);
+                if ($length === null || $length > self::SEARCH_ATTRIBUTE_MAX_STRING_LENGTH) {
+                    $refuse("[{$key}] is not a UTF-8 string of at most ".self::SEARCH_ATTRIBUTE_MAX_STRING_LENGTH.' characters');
+                }
+                $value = $value === '' ? null : $value;
+            } elseif (is_float($value)) {
+                if (!is_finite($value)) {
+                    $refuse("[{$key}] is not a finite number");
+                }
+            } elseif (is_array($value)) {
+                if (!array_is_list($value)) {
+                    $refuse("[{$key}] is a map, not a list");
+                }
+                foreach ($value as $index => $item) {
+                    if (!is_string($item)) {
+                        $refuse("[{$key}] list value {$index} is not a string");
+                    }
+                    $item = trim($item);
+                    $length = self::characterLength($item);
+                    if ($length === null || $length > self::SEARCH_ATTRIBUTE_MAX_KEYWORD_LENGTH) {
+                        $refuse("[{$key}] list value {$index} is not a UTF-8 string of at most ".self::SEARCH_ATTRIBUTE_MAX_KEYWORD_LENGTH.' characters');
+                    }
+                    $value[$index] = $item;
+                }
+            } elseif ($value !== null && !is_bool($value) && !is_int($value)) {
+                $refuse("[{$key}] is a ".get_debug_type($value));
+            }
+            $normalized[$key] = $value;
+        }
+        ksort($normalized, SORT_STRING);
+
+        return $normalized;
+    }
+
+    private static function characterLength(string $value): ?int
+    {
+        $length = preg_match_all('/./su', $value);
+
+        return $length === false ? null : $length;
+    }
+
+    /**
+     * Compare two canonical maps structurally and type-strictly, without any
+     * JSON or php.ini dependent formatting. An int and a float are different
+     * values; floats compare numerically, so -0.0 equals 0.0.
+     *
+     * @param array<string, mixed> $recorded
+     * @param array<string, mixed> $authored
+     * @return string|null a payload-free description of the first difference
+     */
+    private static function searchAttributesDifference(array $recorded, array $authored): ?string
+    {
+        if (array_keys($recorded) !== array_keys($authored)) {
+            return 'the key set changed';
+        }
+        foreach ($recorded as $key => $value) {
+            $other = $authored[$key];
+            $same = match (true) {
+                is_float($value) => is_float($other) && $value == $other,
+                is_array($value) => is_array($other) && $value === $other,
+                default => $value === $other,
+            };
+            if (!$same) {
+                return "[{$key}] changed";
+            }
+        }
+
+        return null;
+    }
+
     /** @param array<string, mixed> $payload */
     private function payloadDetail(array $payload, string $shape): ?string
     {
@@ -2727,6 +2969,97 @@ final class Replayer
                 'positive integer sequence',
                 is_scalar($sequence) ? (string) $sequence : get_debug_type($sequence),
                 'memo_sequence_invalid',
+            );
+        }
+
+        return $sequence;
+    }
+
+    /**
+     * The sequences a cancellation delivery reserves: its interrupted call's
+     * sequence through sequence + sequence_span - 1, inclusive, as Core counts
+     * them. A span that is present must be a positive integer.
+     *
+     * @param array<string, mixed> $payload
+     * @return array{int, int}
+     */
+    private function deliveryRange(string $type, array $payload): array
+    {
+        $sequence = $payload['sequence'] ?? null;
+        $span = $payload['sequence_span'] ?? 1;
+        if (!is_int($sequence) || $sequence <= 0 || !is_int($span) || $span <= 0 || $sequence > PHP_INT_MAX - $span) {
+            throw new NonDeterministicWorkflow(
+                "{$type} history must name a positive workflow sequence and span.",
+                is_int($sequence) ? $sequence : null,
+                'positive integer sequence and sequence_span',
+                'invalid delivery position',
+                'durable_command_sequence_invalid',
+            );
+        }
+
+        return [$sequence, $sequence + $span - 1];
+    }
+
+    private function refuseUpsertCollision(int $sequence, string $type, string $existing, string $incoming): never
+    {
+        throw new NonDeterministicWorkflow(
+            "Workflow sequence {$sequence} records {$type} after a {$existing} command.",
+            $sequence,
+            'one durable command per workflow sequence',
+            "{$existing} and {$incoming}",
+            'durable_command_sequence_collision',
+        );
+    }
+
+    /**
+     * The command kind that owns a durable history row, or null for a row that
+     * only points at a step. A wait's internal timeout timer belongs to that
+     * wait, not to a workflow timer.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function durableCommandKind(string $type, array $payload): ?string
+    {
+        $kind = self::DURABLE_COMMAND_KINDS[$type] ?? null;
+        if ($kind !== 'timer') {
+            return $kind;
+        }
+        $timerKind = $payload['timer_kind'] ?? null;
+        if ($timerKind === 'condition_timeout' || $this->stringValue($payload['condition_wait_id'] ?? null) !== null) {
+            return 'condition';
+        }
+        if ($timerKind === 'signal_timeout' || $this->stringValue($payload['signal_wait_id'] ?? null) !== null) {
+            return 'signal';
+        }
+
+        return 'timer';
+    }
+
+    /**
+     * A recorded search-attribute upsert must name its own workflow step;
+     * replay never synthesizes one. The reasons match sdk-rust.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function searchAttributeSequence(array $payload): int
+    {
+        if (!array_key_exists('sequence', $payload) || $payload['sequence'] === null) {
+            throw new NonDeterministicWorkflow(
+                'SearchAttributesUpserted history has no workflow sequence.',
+                null,
+                'positive integer sequence',
+                'missing sequence',
+                'durable_command_sequence_missing',
+            );
+        }
+        $sequence = $payload['sequence'];
+        if (!is_int($sequence) || $sequence <= 0) {
+            throw new NonDeterministicWorkflow(
+                'SearchAttributesUpserted history uses an invalid workflow sequence.',
+                is_int($sequence) ? $sequence : null,
+                'positive integer sequence',
+                is_scalar($sequence) ? (string) $sequence : get_debug_type($sequence),
+                'durable_command_sequence_invalid',
             );
         }
 
