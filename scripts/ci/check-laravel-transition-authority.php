@@ -11,7 +11,8 @@ declare(strict_types=1);
  * package's embedded v2 authority: the same manifest identity, the exact same
  * Laravel and PHP constraints (patched floors included, not only majors), and
  * the same Laravel/PHP cells. Each qualification cell must name the floor that
- * the constraint publishes for its Laravel major.
+ * the constraint publishes for its Laravel major, as its caret support range
+ * and as the exact release it exercises.
  */
 
 /** @return array<string, mixed> */
@@ -78,6 +79,11 @@ function laravelTransitionAuthorityErrors(array $service, array $embedded): arra
         $floor = $floors[$cell['laravel'] ?? ''] ?? null;
         if ($floor === null || ($cell['package'] ?? null) !== 'laravel/framework:'.$floor) {
             $errors[] = sprintf('Laravel %s on PHP %s does not qualify the published floor.',
+                (string) ($cell['laravel'] ?? '?'), (string) ($cell['php'] ?? '?'));
+        }
+        // The cell must exercise exactly that minimum release, not a later one.
+        if ($floor === null || ($cell['exercised_package'] ?? null) !== 'laravel/framework:'.substr($floor, 1)) {
+            $errors[] = sprintf('Laravel %s on PHP %s does not exercise exactly the published floor.',
                 (string) ($cell['laravel'] ?? '?'), (string) ($cell['php'] ?? '?'));
         }
     }

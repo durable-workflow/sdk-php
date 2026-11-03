@@ -176,72 +176,84 @@ jobs:
             version: '10'
             php: '8.1'
             package: 'laravel/framework:^10.50.4'
+            exercised_package: 'laravel/framework:10.50.4'
             bootstrap: existing_supported_lock
             script: laravel.php
           - framework: Laravel
             version: '10'
             php: '8.2'
             package: 'laravel/framework:^10.50.4'
+            exercised_package: 'laravel/framework:10.50.4'
             bootstrap: existing_supported_lock
             script: laravel.php
           - framework: Laravel
             version: '11'
             php: '8.2'
             package: 'laravel/framework:^11.56.1'
+            exercised_package: 'laravel/framework:11.56.1'
             bootstrap: existing_supported_lock
             script: laravel.php
           - framework: Laravel
             version: '12'
             php: '8.2'
             package: 'laravel/framework:^12.69.0'
+            exercised_package: 'laravel/framework:12.69.0'
             bootstrap: fresh_supported_install
             script: laravel.php
           - framework: Laravel
             version: '10'
             php: '8.3'
             package: 'laravel/framework:^10.50.4'
+            exercised_package: 'laravel/framework:10.50.4'
             bootstrap: existing_supported_lock
             script: laravel.php
           - framework: Laravel
             version: '11'
             php: '8.3'
             package: 'laravel/framework:^11.56.1'
+            exercised_package: 'laravel/framework:11.56.1'
             bootstrap: existing_supported_lock
             script: laravel.php
           - framework: Laravel
             version: '12'
             php: '8.3'
             package: 'laravel/framework:^12.69.0'
+            exercised_package: 'laravel/framework:12.69.0'
             bootstrap: fresh_supported_install
             script: laravel.php
           - framework: Laravel
             version: '13'
             php: '8.3'
             package: 'laravel/framework:^13.30.0'
+            exercised_package: 'laravel/framework:13.30.0'
             bootstrap: fresh_supported_install
             script: laravel.php
           - framework: Laravel
             version: '10'
             php: '8.4'
             package: 'laravel/framework:^10.50.4'
+            exercised_package: 'laravel/framework:10.50.4'
             bootstrap: existing_supported_lock
             script: laravel.php
           - framework: Laravel
             version: '11'
             php: '8.4'
             package: 'laravel/framework:^11.56.1'
+            exercised_package: 'laravel/framework:11.56.1'
             bootstrap: existing_supported_lock
             script: laravel.php
           - framework: Laravel
             version: '12'
             php: '8.4'
             package: 'laravel/framework:^12.69.0'
+            exercised_package: 'laravel/framework:12.69.0'
             bootstrap: fresh_supported_install
             script: laravel.php
           - framework: Laravel
             version: '13'
             php: '8.4'
             package: 'laravel/framework:^13.30.0'
+            exercised_package: 'laravel/framework:13.30.0'
             bootstrap: fresh_supported_install
             script: laravel.php
           - framework: Symfony
@@ -282,6 +294,7 @@ jobs:
         env:
           FRAMEWORK_BOOTSTRAP: ${{ matrix.bootstrap }}
           FRAMEWORK_PACKAGE: ${{ matrix.package }}
+          FRAMEWORK_EXERCISED_PACKAGE: ${{ matrix.exercised_package }}
           FRAMEWORK_CONSOLE_PACKAGE: ${{ matrix.console_package }}
           COMPAT_SCRIPT: ${{ matrix.script }}
         run: |
@@ -299,10 +312,15 @@ jobs:
               # the resulting existing lock file.
               bootstrap_arguments+=(--no-blocking)
             fi
-            composer require "$FRAMEWORK_PACKAGE" \
+            # matrix.package is the published caret support range. Install
+            # exactly its minimum release, and prove the SDK does not move it.
+            exercised_version="${FRAMEWORK_EXERCISED_PACKAGE#laravel/framework:}"
+            composer require "$FRAMEWORK_EXERCISED_PACKAGE" \
               --no-interaction --prefer-dist --no-progress "${bootstrap_arguments[@]}"
+            php "$GITHUB_WORKSPACE/scripts/ci/assert-installed-version.php" "$consumer" laravel/framework "$exercised_version"
             composer require durable-workflow/sdk:@dev \
               --no-interaction --prefer-dist --no-progress
+            php "$GITHUB_WORKSPACE/scripts/ci/assert-installed-version.php" "$consumer" laravel/framework "$exercised_version"
           else
             framework_packages=("$FRAMEWORK_PACKAGE")
             if [ -n "$FRAMEWORK_CONSOLE_PACKAGE" ]; then
@@ -312,17 +330,27 @@ jobs:
               --no-interaction --prefer-dist --with-all-dependencies
           fi
           composer require --dev phpstan/phpstan:^2.0 'monolog/monolog:^2.9|^3.0' --no-interaction --prefer-dist
+          if [ "$COMPAT_SCRIPT" = laravel.php ]; then
+            php "$GITHUB_WORKSPACE/scripts/ci/assert-installed-version.php" "$consumer" laravel/framework "$exercised_version"
+          fi
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Install SDK into a fresh Laravel application for cached role isolation
         if: matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4'
+        env:
+          FRAMEWORK_EXERCISED_PACKAGE: ${{ matrix.exercised_package }}
         run: |
           application="$RUNNER_TEMP/laravel-fresh-config-cache"
+          exercised_version="${FRAMEWORK_EXERCISED_PACKAGE#laravel/framework:}"
           composer create-project laravel/laravel:^13.0 "$application" \
             --no-interaction --prefer-dist --no-progress
+          composer --working-dir="$application" require "$FRAMEWORK_EXERCISED_PACKAGE" \
+            --with-all-dependencies --no-interaction --prefer-dist --no-progress
+          php scripts/ci/assert-installed-version.php "$application" laravel/framework "$exercised_version"
           composer --working-dir="$application" config repositories.sdk path "$GITHUB_WORKSPACE"
           composer --working-dir="$application" require durable-workflow/sdk:@dev \
             --no-interaction --prefer-dist --no-progress
+          php scripts/ci/assert-installed-version.php "$application" laravel/framework "$exercised_version"
       - name: Exercise fresh Laravel cached role isolation
         if: matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4'
         run: |
@@ -364,11 +392,16 @@ jobs:
           (matrix.framework == 'Symfony' && matrix.version == '6.4')
         env:
           COMPAT_SCRIPT: ${{ matrix.script }}
+          FRAMEWORK_EXERCISED_PACKAGE: ${{ matrix.exercised_package }}
           DURABLE_WORKFLOW_TEST_TRACING: '1'
         run: |
           consumer="$(cat "$RUNNER_TEMP/framework-consumer")"
           composer --working-dir="$consumer" require --dev open-telemetry/api:1.10.1 'monolog/monolog:^3.0' \
             --no-interaction --prefer-dist --no-progress
+          if [ "$COMPAT_SCRIPT" = laravel.php ]; then
+            php scripts/ci/assert-installed-version.php "$consumer" laravel/framework \
+              "${FRAMEWORK_EXERCISED_PACKAGE#laravel/framework:}"
+          fi
           DURABLE_WORKFLOW_CLIENT_TOKEN=client-secret \
             DURABLE_WORKFLOW_WORKER_TOKEN=worker-secret \
             php "tests/compat/${COMPAT_SCRIPT}" "$consumer/vendor/autoload.php"

@@ -78,6 +78,16 @@ final class LaravelTransitionAuthorityTest extends TestCase
 
             return $contract;
         }, 'Laravel 10 on PHP 8.1 does not qualify the published floor.'];
+        yield 'cell exercises a later release than its floor' => [static function (array $contract): array {
+            $contract['framework']['qualification_matrix'][2]['exercised_package'] = 'laravel/framework:11.57.1';
+
+            return $contract;
+        }, 'Laravel 11 on PHP 8.2 does not exercise exactly the published floor.'];
+        yield 'cell exercises its caret range' => [static function (array $contract): array {
+            $contract['framework']['qualification_matrix'][3]['exercised_package'] = 'laravel/framework:^12.69.0';
+
+            return $contract;
+        }, 'Laravel 12 on PHP 8.2 does not exercise exactly the published floor.'];
         yield 'pre-fix floor' => [static function (array $contract): array {
             $contract['framework']['constraint'] = '^10.50.3|^11.56.1|^12.69.0|^13.30.0';
 

@@ -33,11 +33,12 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["laravel", "php", "package", "bootstrap"],
+            "required": ["laravel", "php", "package", "exercised_package", "bootstrap"],
             "properties": {
               "laravel": {"type": "string", "pattern": "^[0-9]+$"},
               "php": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
               "package": {"type": "string", "pattern": "^laravel/framework:\\^[1-9][0-9]*\\.[0-9]+\\.[0-9]+$"},
+              "exercised_package": {"type": "string", "pattern": "^laravel/framework:[1-9][0-9]*\\.[0-9]+\\.[0-9]+$"},
               "bootstrap": {"enum": ["existing_supported_lock", "fresh_supported_install"]}
             }
           }
