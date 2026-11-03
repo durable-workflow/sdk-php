@@ -6,6 +6,18 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Replay evidence for Workflow 2.19 redrive reuse of `MemoUpserted`,
+  `SearchAttributesUpserted` and an applied signal wait (`SignalWaitOpened`,
+  `SignalReceived`, `SignalApplied`). A cold worker replays Core's successor
+  histories, with the redrive `WorkflowStarted` envelope, using the recorded
+  memo, search attributes and signal value. It does not upsert again or
+  reopen the wait. None of these events is a replay time source in this SDK.
+  Cooperative cancellation `remaining()` starts at a successor delivery,
+  which follows the reused prefix, so retiming a reused event changes no
+  command. No runtime change was needed.
+
 ## [3.8.3] - 2026-11-03
 
 ### Fixed
