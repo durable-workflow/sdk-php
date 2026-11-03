@@ -51,6 +51,22 @@ final class RedriveReusedReplayTest extends TestCase
         self::assertSame(['Hello, Taylor!'], $commands[0]['arguments']);
     }
 
+    public function testReusedStepsAdvanceTheCancellationClockToTheirOriginalTime(): void
+    {
+        $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-cancellation-clock.json';
+        self::assertReusedEvents($path, ['ActivityCompleted', 'TimerFired']);
+
+        $tasks = ReplayRegressionFixture::executeFile($path);
+        self::assertCount(1, $tasks);
+        $commands = $tasks[0]['command_sequence'];
+
+        // Deadline 00:00:30 less the reused timer's original 00:00:12, not the
+        // 00:05:00 the successor run copied it at, which would leave 0.0.
+        self::assertCount(1, $commands);
+        self::assertSame('complete_workflow', $commands[0]['type']);
+        self::assertSame(18.0, $commands[0]['result']);
+    }
+
     public function testReusedSideEffectReturnsTheRecordedValueWithoutRunningAgain(): void
     {
         $calls = 0;
@@ -177,7 +193,7 @@ final class RedriveReusedReplayTest extends TestCase
             }
             self::assertSame(self::SOURCE_RUN, $payload['reused_from_run_id']);
             self::assertIsString($payload['reused_recorded_at'] ?? null);
-            self::assertNotSame($event['recorded_at'], $payload['reused_recorded_at']);
+            self::assertNotSame($event['timestamp'] ?? $event['recorded_at'], $payload['reused_recorded_at']);
             $reused[] = $event['event_type'];
         }
 

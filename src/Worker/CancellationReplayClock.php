@@ -17,7 +17,10 @@ final class CancellationReplayClock
     /** @param array<string, mixed>|null $event */
     public function observe(?array $event): void
     {
-        $value = $event['timestamp'] ?? $event['recorded_at'] ?? null;
+        // A step that redrive reused from an earlier run keeps the time it was
+        // first recorded, as Core's RedriveReplayClock does.
+        $reused = $event['payload']['reused_recorded_at'] ?? null;
+        $value = is_string($reused) ? $reused : ($event['timestamp'] ?? $event['recorded_at'] ?? null);
         $this->available = false;
         if (!is_string($value)
             || preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/', $value) !== 1) {

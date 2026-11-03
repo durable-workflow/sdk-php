@@ -644,6 +644,20 @@ final class ReplayRegressionFixture
 
                 return $context->activity('Tests\\Fixtures\\V2\\TestRedriveSecondActivity', [$greeting]);
             },
+            'golden.redrive-reused-cancellation-clock' => static function (WorkflowContext $context): float {
+                try {
+                    $context->sleep(10);
+                } catch (WorkflowCancelled $cancelled) {
+                    return $context->cancellationShield(static function () use ($context, $cancelled): float {
+                        $context->activity('golden.redrive.cleanup');
+                        $context->sleep(5);
+
+                        return $cancelled->context->remaining();
+                    });
+                }
+
+                return -1.0;
+            },
             default => throw new RuntimeException(
                 "Replay fixture workflow {$workflowType} has no PHP implementation; "
                 .'register its reproducer workflow in ReplayRegressionFixture.',

@@ -57,6 +57,9 @@
           "glob": "src/Worker/StickyWorkflowCache.php"
         },
         {
+          "glob": "src/Worker/CancellationReplayClock.php"
+        },
+        {
           "glob": "src/Worker.php",
           "content_patterns": [
             "function\\s+register\\s*\\("
