@@ -958,6 +958,30 @@ final class ReplayRegressionConsumer
 
                 return -1.0;
             },
+            'golden.redrive-reused-upserts' => static function (WorkflowContext $context, mixed $name): mixed {
+                $context->upsertMemo(['stage' => 'greeting', 'customer' => $name]);
+                $context->upsertSearchAttributes(['Stage' => 'greeting']);
+                $greeting = $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name]);
+
+                return $context->activity('Tests\\Fixtures\\V2\\TestRedriveSecondActivity', [$greeting]);
+            },
+            'golden.redrive-reused-signal-wait' => static function (WorkflowContext $context, mixed $name): mixed {
+                $context->waitCondition(static fn (): bool => $context->signals('approve') !== [], 'approve');
+                $greeting = $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name]);
+
+                return $context->activity('Tests\\Fixtures\\V2\\TestRedriveSecondActivity', [$greeting]);
+            },
+            'golden.redrive-reused-upserts-cancellation-clock' => static function (WorkflowContext $context): float {
+                $context->upsertMemo(['stage' => 'greeting', 'customer' => 'Taylor']);
+                $context->upsertSearchAttributes(['Stage' => 'greeting']);
+                try {
+                    $context->sleep(10);
+                } catch (WorkflowCancelled $cancelled) {
+                    return $cancelled->context->remaining();
+                }
+
+                return -1.0;
+            },
             default => throw new RuntimeException(
                 "Replay fixture workflow {$workflowType} has no PHP implementation in the official consumer.",
             ),

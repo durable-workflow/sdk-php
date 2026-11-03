@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Tests\Support\RedriveSuccessorHistory;
 use DurableWorkflow\Tests\Support\ReplayRegressionFixture;
 use DurableWorkflow\Worker\ReplayResult;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -24,6 +27,13 @@ final class RedriveReusedReplayTest extends TestCase
     private const FIRST_ACTIVITY = 'Tests\\Fixtures\\V2\\TestRedriveFirstActivity';
 
     private const SECOND_ACTIVITY = 'Tests\\Fixtures\\V2\\TestRedriveSecondActivity';
+
+    /** The reused prefix each successor fixture carries, in the order redrive copies it. */
+    private const REUSED_PREFIX = [
+        'redrive-reused-upserts-clock' => ['MemoUpserted', 'SearchAttributesUpserted'],
+        'redrive-reused-upserts-cancellation-clock' => ['MemoUpserted', 'SearchAttributesUpserted'],
+        'redrive-reused-signal-wait-clock' => ['SignalWaitOpened', 'SignalReceived', 'SignalApplied'],
+    ];
 
     public function testCoreReusedMarkersFixtureReplaysColdToTheSameNextCommand(): void
     {
@@ -65,6 +75,365 @@ final class RedriveReusedReplayTest extends TestCase
         self::assertCount(1, $commands);
         self::assertSame('complete_workflow', $commands[0]['type']);
         self::assertSame(18.0, $commands[0]['result']);
+    }
+
+    public function testCoreReusedUpsertsFixtureReplaysColdWithTheRecordedValues(): void
+    {
+        $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-upserts-clock.json';
+        self::assertReusedEvents($path, ['MemoUpserted', 'SearchAttributesUpserted']);
+        self::assertValidSuccessor($path, 3);
+        $events = self::eventsByType($path);
+        $memo = $events['MemoUpserted']['payload'];
+        self::assertSame(['customer' => 'Taylor', 'stage' => 'greeting'], $this->codec()->decodeEnvelope($memo['entries']));
+        self::assertSame(['customer' => 'Taylor', 'stage' => 'greeting'], $this->codec()->decodeEnvelope($memo['merged']));
+        $attributes = $events['SearchAttributesUpserted']['payload'];
+        self::assertSame(['Stage' => 'greeting'], $attributes['attributes']);
+        self::assertSame(['Stage' => 'greeting'], $attributes['merged']);
+
+        $tasks = ReplayRegressionFixture::executeFile($path);
+        self::assertCount(1, $tasks);
+        $commands = $tasks[0]['command_sequence'];
+
+        // Neither upsert is emitted again; replay goes straight to the first activity.
+        self::assertCount(1, $commands);
+        self::assertSame('schedule_activity', $commands[0]['type']);
+        self::assertSame(self::FIRST_ACTIVITY, $commands[0]['activity_type']);
+        self::assertSame(['Taylor'], $commands[0]['arguments']);
+    }
+
+    public function testReusedUpsertsAreNotEmittedAgainAndTheRecordedMemoBindsReplay(): void
+    {
+        $history = self::fixture(__DIR__.'/fixtures/replay-regressions/redrive-reused-upserts-clock.json')['history'];
+        $workflow = static function (string $stage): callable {
+            return static function (WorkflowContext $context, string $name) use ($stage): mixed {
+                $context->upsertMemo(['stage' => $stage, 'customer' => $name]);
+                $context->upsertSearchAttributes(['Stage' => 'greeting']);
+
+                return $context->activity(self::FIRST_ACTIVITY, [$name]);
+            };
+        };
+
+        // Without the reused events the same code upserts both again.
+        $fresh = $this->replay($workflow('greeting'), [$history[0]], ['Taylor']);
+        self::assertSame(['upsert_memo', 'upsert_search_attributes', 'schedule_activity'], array_column($fresh->commands, 'type'));
+
+        $replayed = $this->replay($workflow('greeting'), $history, ['Taylor']);
+        self::assertSame(['schedule_activity'], array_column($replayed->commands, 'type'));
+
+        $this->expectException(NonDeterministicWorkflow::class);
+        $this->replay($workflow('changed'), $history, ['Taylor']);
+    }
+
+    public function testCoreReusedSignalWaitFixtureReplaysColdWithTheRecordedSignal(): void
+    {
+        $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-signal-wait-clock.json';
+        self::assertReusedEvents($path, ['SignalWaitOpened', 'SignalReceived', 'SignalApplied']);
+        self::assertValidSuccessor($path, 2);
+        $events = self::eventsByType($path);
+        self::assertSame(['Grace'], $this->codec()->decode($events['SignalReceived']['payload']['arguments']));
+        self::assertSame('Grace', $this->codec()->decode($events['SignalApplied']['payload']['value']));
+
+        $tasks = ReplayRegressionFixture::executeFile($path);
+        self::assertCount(1, $tasks);
+        $commands = $tasks[0]['command_sequence'];
+
+        // The wait is already satisfied, so no condition wait is opened again.
+        self::assertCount(1, $commands);
+        self::assertSame('schedule_activity', $commands[0]['type']);
+        self::assertSame(self::FIRST_ACTIVITY, $commands[0]['activity_type']);
+        self::assertSame(['Taylor'], $commands[0]['arguments']);
+    }
+
+    public function testReusedSignalWaitDeliversTheRecordedValueWithoutWaitingAgain(): void
+    {
+        $history = self::fixture(__DIR__.'/fixtures/replay-regressions/redrive-reused-signal-wait-clock.json')['history'];
+        $approvedBy = [];
+        $workflow = static function (WorkflowContext $context, string $name) use (&$approvedBy): mixed {
+            $context->waitCondition(static fn (): bool => $context->signals('approve') !== [], 'approve');
+            $approvedBy = $context->signals('approve');
+
+            return $context->activity(self::FIRST_ACTIVITY, [$name]);
+        };
+
+        // Without the reused events the same code opens the wait.
+        $fresh = $this->replay($workflow, [$history[0]], ['Taylor']);
+        self::assertSame(['open_condition_wait'], array_column($fresh->commands, 'type'));
+
+        $replayed = $this->replay($workflow, $history, ['Taylor']);
+        self::assertSame([['Grace']], $approvedBy);
+        self::assertSame(['schedule_activity'], array_column($replayed->commands, 'type'));
+    }
+
+    public function testCancellationAfterReusedUpsertsMeasuresFromItsSuccessorDelivery(): void
+    {
+        $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-upserts-cancellation-clock.json';
+        self::assertReusedEvents($path, ['MemoUpserted', 'SearchAttributesUpserted']);
+        self::assertValidSuccessor($path, 3);
+
+        $tasks = ReplayRegressionFixture::executeFile($path);
+        self::assertCount(1, $tasks);
+        $commands = $tasks[0]['command_sequence'];
+
+        // Redrive writes WorkflowStarted and the reused prefix together, so a
+        // successor cancellation is requested and delivered after it. The clock
+        // starts at that delivery (00:05:02 of a 00:05:31 deadline); the reused
+        // upserts were consumed before it and cannot move it.
+        self::assertCount(1, $commands);
+        self::assertSame('complete_workflow', $commands[0]['type']);
+        self::assertSame(29.0, $commands[0]['result']);
+    }
+
+    /**
+     * Counterfactual: retime one reused event at a time, both its successor
+     * recorded_at and its source reused_recorded_at. A retimed history is not
+     * one redrive writes (reused rows share the successor start); it only
+     * proves that neither time reaches replay. The commands, including the
+     * remaining() result, must not change.
+     */
+    #[DataProvider('reusedEventTypes')]
+    public function testRetimingAReusedUpsertOrSignalWaitEventChangesNothing(string $eventType): void
+    {
+        $fixtures = str_starts_with($eventType, 'Signal')
+            ? ['redrive-reused-signal-wait-clock']
+            : ['redrive-reused-upserts-clock', 'redrive-reused-upserts-cancellation-clock'];
+        foreach ($fixtures as $name) {
+            $fixture = self::fixture(__DIR__."/fixtures/replay-regressions/{$name}.json");
+            $baseline = ReplayRegressionFixture::execute($fixture);
+            foreach (['2026-11-03T00:00:00+00:00', '2026-11-03T00:04:59.999999+00:00'] as $sourceTime) {
+                $retimed = $fixture;
+                $matched = 0;
+                foreach ($retimed['history'] as $index => $event) {
+                    if ($event['event_type'] !== $eventType) {
+                        continue;
+                    }
+                    ++$matched;
+                    $retimed['history'][$index]['recorded_at'] = '2026-11-03T00:05:00.250000+00:00';
+                    $retimed['history'][$index]['payload']['reused_recorded_at'] = $sourceTime;
+                }
+                self::assertSame(1, $matched, "{$name} has one {$eventType}");
+                self::assertSame($baseline, ReplayRegressionFixture::execute($retimed), "{$name} {$eventType} at {$sourceTime}");
+            }
+        }
+    }
+
+    #[DataProvider('wrongResumeSteps')]
+    public function testSuccessorCheckRejectsAWrongResumeStep(string $name, mixed $resume): void
+    {
+        $fixture = self::fixture(__DIR__."/fixtures/replay-regressions/{$name}.json");
+        $fixture['history'][0]['payload']['resume_step_sequence'] = $resume;
+
+        $violation = RedriveSuccessorHistory::violation($fixture, self::REUSED_PREFIX[$name]);
+
+        self::assertNotNull($violation, "{$name} resume_step_sequence ".json_encode($resume));
+        self::assertStringContainsString('resume_step_sequence', $violation);
+    }
+
+    /** @return array<string, array{string, mixed}> */
+    public static function wrongResumeSteps(): array
+    {
+        $cases = [];
+        foreach (['redrive-reused-upserts-clock' => 3, 'redrive-reused-upserts-cancellation-clock' => 3,
+            'redrive-reused-signal-wait-clock' => 2] as $name => $resume) {
+            foreach (['minus one' => $resume - 1, 'plus one' => $resume + 1, 'null' => null, 'string' => (string) $resume] as $label => $value) {
+                $cases["{$name} {$label}"] = [$name, $value];
+            }
+        }
+
+        return $cases;
+    }
+
+    /** @param callable(array<string, mixed>): array<string, mixed> $mutate */
+    #[DataProvider('invalidSuccessors')]
+    public function testSuccessorCheckRejectsAnInvalidShape(string $name, callable $mutate, string $rule): void
+    {
+        $fixture = $mutate(self::fixture(__DIR__."/fixtures/replay-regressions/{$name}.json"));
+
+        $violation = RedriveSuccessorHistory::violation($fixture, self::REUSED_PREFIX[$name]);
+
+        self::assertNotNull($violation);
+        self::assertStringContainsString($rule, $violation);
+    }
+
+    /** @return array<string, array{string, callable(array<string, mixed>): array<string, mixed>, string}> */
+    public static function invalidSuccessors(): array
+    {
+        $cases = [];
+        foreach (['workflow_instance_id', 'workflow_run_id', 'workflow_command_id', 'workflow_link_id', 'continued_from_run_id'] as $field) {
+            $cases["missing {$field}"] = ['redrive-reused-signal-wait-clock', static function (array $fixture) use ($field): array {
+                unset($fixture['history'][0]['payload'][$field]);
+
+                return $fixture;
+            }, $field];
+        }
+
+        foreach (['workflow_type' => 'golden.another-workflow', 'execution_deadline_at' => 'tomorrow', 'run_deadline_at' => '2026-11-03T00:04:00+00:00'] as $field => $value) {
+            $cases["wrong {$field}"] = ['redrive-reused-upserts-cancellation-clock', static function (array $fixture) use ($field, $value): array {
+                $fixture['history'][0]['payload'][$field] = $value;
+
+                return $fixture;
+            }, $field];
+        }
+        foreach (['workflow_type', 'execution_deadline_at', 'run_deadline_at'] as $field) {
+            $cases["missing {$field}"] = ['redrive-reused-upserts-clock', static function (array $fixture) use ($field): array {
+                unset($fixture['history'][0]['payload'][$field]);
+
+                return $fixture;
+            }, $field];
+        }
+        $cases['blank workflow_type'] = ['redrive-reused-signal-wait-clock', static function (array $fixture): array {
+            $fixture['history'][0]['payload']['workflow_type'] = ' ';
+
+            return $fixture;
+        }, 'workflow_type'];
+        $cases['fixture runs another workflow type'] = ['redrive-reused-signal-wait-clock', static function (array $fixture): array {
+            $fixture['workflow']['type'] = 'golden.redrive-reused-upserts';
+
+            return $fixture;
+        }, 'workflow_type'];
+        foreach (self::REUSED_PREFIX as $name => $types) {
+            foreach ($types as $offset => $type) {
+                foreach (['reused_from_run_id', 'reused_recorded_at'] as $key) {
+                    foreach (['missing' => null, 'blank' => '', 'whitespace' => '  '] as $label => $value) {
+                        $cases["{$name} {$type} {$label} {$key}"] = [$name, static function (array $fixture) use ($offset, $key, $value): array {
+                            if ($value === null) {
+                                unset($fixture['history'][$offset + 1]['payload'][$key]);
+                            } else {
+                                $fixture['history'][$offset + 1]['payload'][$key] = $value;
+                            }
+
+                            return $fixture;
+                        }, $key];
+                    }
+                }
+            }
+        }
+
+        return $cases + [
+            'not a redrive' => ['redrive-reused-upserts-clock', static function (array $fixture): array {
+                $fixture['history'][0]['payload']['recovery_kind'] = 'continue_as_new';
+
+                return $fixture;
+            }, 'recovery_kind'],
+            'reused from another run' => ['redrive-reused-signal-wait-clock', static function (array $fixture): array {
+                $fixture['history'][2]['payload']['reused_from_run_id'] = '01JBREDRIVEOTHERRUN0000000';
+
+                return $fixture;
+            }, 'reused_from_run_id'],
+            'reused row after a successor row' => ['redrive-reused-upserts-cancellation-clock', static function (array $fixture): array {
+                $fixture['history'][4]['payload']['reused_from_run_id'] = $fixture['history'][0]['payload']['continued_from_run_id'];
+                $fixture['history'][4]['payload']['reused_recorded_at'] = '2026-11-03T00:00:00+00:00';
+
+                return $fixture;
+            }, 'prefix'],
+            'cancellation before the successor start' => ['redrive-reused-upserts-cancellation-clock', static function (array $fixture): array {
+                $fixture['history'][4]['recorded_at'] = '2026-11-03T00:00:01+00:00';
+
+                return $fixture;
+            }, 'predate'],
+            'cancellation bound to another run' => ['redrive-reused-upserts-cancellation-clock', static function (array $fixture): array {
+                $fixture['history'][5]['payload']['workflow_run_id'] = 'regression-inline';
+
+                return $fixture;
+            }, 'successor run'],
+            'cancellation rooted elsewhere' => ['redrive-reused-upserts-cancellation-clock', static function (array $fixture): array {
+                $fixture['history'][4]['payload']['cancellation']['root_workflow_instance_id'] = 'regression-workflow';
+
+                return $fixture;
+            }, 'root at the successor'],
+            'task for another run' => ['redrive-reused-upserts-clock', static function (array $fixture): array {
+                $fixture['workflow_tasks'][0]['run_id'] = 'regression-inline';
+
+                return $fixture;
+            }, 'workflow task'],
+            'out of order' => ['redrive-reused-upserts-clock', static function (array $fixture): array {
+                $fixture['history'][2]['sequence'] = 5;
+
+                return $fixture;
+            }, 'history order'],
+        ];
+    }
+
+    public function testSignalReceivedDoesNotMoveTheResumeBoundary(): void
+    {
+        $name = 'redrive-reused-signal-wait-clock';
+        $fixture = self::fixture(__DIR__."/fixtures/replay-regressions/{$name}.json");
+        self::assertSame('SignalReceived', $fixture['history'][2]['event_type']);
+        $fixture['history'][2]['payload']['sequence'] = 99;
+
+        // SignalReceived has no step of its own, so resume stays 2.
+        self::assertNull(RedriveSuccessorHistory::violation($fixture, self::REUSED_PREFIX[$name]));
+        $fixture['history'][0]['payload']['resume_step_sequence'] = 100;
+        self::assertStringContainsString('resume_step_sequence', (string) RedriveSuccessorHistory::violation($fixture, self::REUSED_PREFIX[$name]));
+    }
+
+    /** @param callable(array<string, mixed>): array<string, mixed> $mutate */
+    #[DataProvider('impossibleReusedSteps')]
+    public function testSuccessorCheckRejectsAnImpossibleReusedStepPrefix(string $name, callable $mutate, string $rule): void
+    {
+        $fixture = $mutate(self::fixture(__DIR__."/fixtures/replay-regressions/{$name}.json"));
+
+        $violation = RedriveSuccessorHistory::violation($fixture, self::REUSED_PREFIX[$name]);
+
+        self::assertNotNull($violation);
+        self::assertStringContainsString($rule, $violation);
+    }
+
+    /**
+     * Each mutation keeps resume_step_sequence equal to the highest reused
+     * step + 1, so only the step-prefix rule can reject it.
+     *
+     * @return array<string, array{string, callable(array<string, mixed>): array<string, mixed>, string}>
+     */
+    public static function impossibleReusedSteps(): array
+    {
+        return [
+            'missing step' => ['redrive-reused-upserts-clock', static function (array $fixture): array {
+                $fixture['history'][2]['payload']['sequence'] = 3;
+                $fixture['history'][0]['payload']['resume_step_sequence'] = 4;
+
+                return $fixture;
+            }, 'no gap'],
+            'descending step' => ['redrive-reused-upserts-clock', static function (array $fixture): array {
+                $fixture['history'][1]['payload']['sequence'] = 2;
+                $fixture['history'][2]['payload']['sequence'] = 1;
+
+                return $fixture;
+            }, 'must not descend'],
+            'unrelated duplicate step' => ['redrive-reused-upserts-clock', static function (array $fixture): array {
+                $fixture['history'][2]['payload']['sequence'] = 1;
+                $fixture['history'][0]['payload']['resume_step_sequence'] = 2;
+
+                return $fixture;
+            }, 'not part of the same durable step'],
+            'signal applied to another wait' => ['redrive-reused-signal-wait-clock', static function (array $fixture): array {
+                $fixture['history'][3]['payload']['signal_wait_id'] = '01M6H8VWAMNSM12WCT4KJ4OTHR';
+
+                return $fixture;
+            }, 'not part of the same durable step'],
+            'signal wait without a step' => ['redrive-reused-signal-wait-clock', static function (array $fixture): array {
+                unset($fixture['history'][1]['payload']['sequence']);
+
+                return $fixture;
+            }, 'positive workflow step'],
+        ];
+    }
+
+    public function testSuccessorCheckBindsTheExpectedReusedPrefix(): void
+    {
+        $name = 'redrive-reused-upserts-clock';
+        $fixture = self::fixture(__DIR__."/fixtures/replay-regressions/{$name}.json");
+
+        foreach ([['MemoUpserted'], ['SearchAttributesUpserted', 'MemoUpserted'], ['MemoUpserted', 'SearchAttributesUpserted', 'TimerFired'], []] as $expected) {
+            self::assertNotNull(RedriveSuccessorHistory::violation($fixture, $expected), json_encode($expected, JSON_THROW_ON_ERROR));
+        }
+    }
+
+    /** @return array<string, array{string}> */
+    public static function reusedEventTypes(): array
+    {
+        $types = ['MemoUpserted', 'SearchAttributesUpserted', 'SignalWaitOpened', 'SignalReceived', 'SignalApplied'];
+
+        return array_combine($types, array_map(static fn (string $type): array => [$type], $types));
     }
 
     public function testReusedSideEffectReturnsTheRecordedValueWithoutRunningAgain(): void
@@ -180,11 +549,38 @@ final class RedriveReusedReplayTest extends TestCase
         ];
     }
 
-    /** @param list<string> $eventTypes */
-    private static function assertReusedEvents(string $path, array $eventTypes): void
+    /** @return array<string, mixed> */
+    private static function fixture(string $path): array
     {
         $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
         self::assertIsArray($fixture);
+
+        return $fixture;
+    }
+
+    /** @return array<string, array<string, mixed>> */
+    private static function eventsByType(string $path): array
+    {
+        $events = [];
+        foreach (self::fixture($path)['history'] as $event) {
+            self::assertArrayNotHasKey($event['event_type'], $events);
+            $events[$event['event_type']] = $event;
+        }
+
+        return $events;
+    }
+
+    private static function assertValidSuccessor(string $path, int $resumeStepSequence): void
+    {
+        $fixture = self::fixture($path);
+        self::assertSame($resumeStepSequence, $fixture['history'][0]['payload']['resume_step_sequence']);
+        self::assertNull(RedriveSuccessorHistory::violation($fixture, self::REUSED_PREFIX[basename($path, '.json')]));
+    }
+
+    /** @param list<string> $eventTypes */
+    private static function assertReusedEvents(string $path, array $eventTypes): void
+    {
+        $fixture = self::fixture($path);
         $reused = [];
         foreach ($fixture['history'] as $event) {
             $payload = $event['payload'];
@@ -203,10 +599,11 @@ final class RedriveReusedReplayTest extends TestCase
     /**
      * @param callable(WorkflowContext): mixed $workflow
      * @param list<array<string, mixed>> $history
+     * @param list<mixed> $input
      */
-    private function replay(callable $workflow, array $history): ReplayResult
+    private function replay(callable $workflow, array $history, array $input = []): ReplayResult
     {
-        return (new Replayer($this->codec()))->replay($workflow, $history, [], 'redrive-replay', [
+        return (new Replayer($this->codec()))->replay($workflow, $history, $input, 'redrive-replay', [
             'workflow_id' => 'redrive-workflow',
             'run_id' => '01JBREDRIVESUCCESSORRUN000',
         ]);
