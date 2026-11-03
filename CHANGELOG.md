@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.8.3] - 2026-11-03
+
 ### Fixed
 
 - Cooperative cancellation `remaining()` now advances to a redrive-reused

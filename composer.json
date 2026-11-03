@@ -93,7 +93,7 @@
             }
         },
         "durable-workflow": {
-            "product-train": "3.8.2",
+            "product-train": "3.8.3",
             "supported-server-versions": "2.5.0",
             "supported-server-release-baselines": {
                 "2": "2.5.0",
