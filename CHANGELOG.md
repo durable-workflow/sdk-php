@@ -16,6 +16,22 @@ project follows [Semantic Versioning](https://semver.org/).
   mode. The Composer framework metadata, the Laravel adoption contract and its
   qualification matrix, and the CI framework cells now list Laravel 10 through 13.
 
+### Fixed
+
+- Activities with a `heartbeat_timeout` run again on published PHP Server 2.11
+  and native Server 3.0 when activity lease maintenance is active. SDK 3.8.0
+  abandoned these claims. The first runtime renewal reports
+  `last_heartbeat_at: null` until the first application heartbeat
+  (`activity_maintenance_bootstrap_failed`). Accepted heartbeat replies omit
+  `heartbeat_deadline_at` (`invalid_activity_heartbeat`).
+- A renewal that reports no progress grants none. It never moves the recorded
+  progress time, and a stated `heartbeat_deadline_at` can only shorten the
+  claim's heartbeat bound. A heartbeat reply without a deadline advances
+  progress by the original `heartbeat_timeout`, which is the deadline the
+  Server records. Present timestamps must still be canonical UTC, a stated
+  deadline must still match the original interval, and progress later than
+  Server time is still refused.
+
 ## [3.8.0] - 2026-11-02
 
 ### Added

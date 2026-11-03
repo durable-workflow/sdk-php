@@ -157,6 +157,164 @@ final class ActivityLeaseAuthorityTest extends TestCase
         $authority->acknowledgeProgress(self::progress(2, 8, 12), 101);
     }
 
+    /**
+     * Published PHP 2.11.8 and native 3.0.x renew with last_heartbeat_at null
+     * until the first application heartbeat. That grants no progress.
+     */
+    #[DataProvider('releasedRenewalsBeforeProgress')]
+    public function testRenewalWithoutRecordedProgressKeepsTheCapturedHeartbeatBound(array $fields, float $remaining): void
+    {
+        $authority = $this->heartbeatAuthority();
+        $this->now = 102;
+        $authority->acknowledge(self::renewal(2, 20) + $fields, 101);
+        self::assertSame($remaining, $authority->remaining());
+        $this->now = 104;
+        try {
+            $authority->remaining();
+            self::fail('A renewal without application progress extended the heartbeat deadline.');
+        } catch (WorkflowClaimRevoked $error) {
+            self::assertSame('activity_execution_budget_expired', $error->reason);
+        }
+    }
+
+    public static function releasedRenewalsBeforeProgress(): iterable
+    {
+        // The same deadline as the claim, as both released Server families send it.
+        // The control round trip is charged, exactly as for recorded progress.
+        yield 'captured deadline' => [['last_heartbeat_at' => null, 'heartbeat_deadline_at' => self::stamp(4)], 1.0];
+        yield 'later deadline cannot extend' => [['last_heartbeat_at' => null,
+            'heartbeat_deadline_at' => self::stamp(8)], 2.0];
+        yield 'no deadline' => [['last_heartbeat_at' => null, 'heartbeat_deadline_at' => null], 2.0];
+        yield 'absent progress fields' => [[], 2.0];
+    }
+
+    public function testRenewalWithoutRecordedProgressCanShortenTheHeartbeatBound(): void
+    {
+        $authority = $this->heartbeatAuthority();
+        $this->now = 101.5;
+        $authority->acknowledge(self::renewal(2, 20) + ['last_heartbeat_at' => null,
+            'heartbeat_deadline_at' => self::stamp(3)], 101);
+        self::assertSame(0.5, $authority->remaining());
+        $this->now = 102;
+        $this->expectException(WorkflowClaimRevoked::class);
+        $authority->remaining();
+    }
+
+    public function testRenewalWithoutProgressAfterARecordedHeartbeatDoesNotMoveProgress(): void
+    {
+        $authority = $this->heartbeatAuthority();
+        $this->now = 102;
+        $authority->acknowledgeProgress(self::progress(2, 6, 12), 101);
+        self::assertSame(3.0, $authority->remaining());
+        $this->now = 104;
+        $authority->acknowledge(self::renewal(4, 20) + ['last_heartbeat_at' => null], 103);
+        self::assertSame(1.0, $authority->remaining());
+        // The recorded progress instant is unchanged, so its replay is still stale.
+        $authority->acknowledgeProgress(self::progress(2, 6, 12), 103);
+        self::assertSame(1.0, $authority->remaining());
+        // A stated deadline without progress can only shorten the bound, here by the round trip.
+        $authority->acknowledge(self::renewal(5, 20) + ['last_heartbeat_at' => null,
+            'heartbeat_deadline_at' => self::stamp(6)], 103.5);
+        self::assertSame(0.5, $authority->remaining());
+    }
+
+    #[DataProvider('malformedRenewalProgress')]
+    public function testMalformedRenewalProgressIsStillRefused(array $fields): void
+    {
+        $authority = $this->heartbeatAuthority();
+        $this->now = 102;
+        try {
+            $authority->acknowledge(self::renewal(2, 20) + $fields, 101);
+            self::fail('A malformed progress observation renewed the activity.');
+        } catch (WorkflowClaimRevoked $error) {
+            self::assertSame('invalid_activity_renewal', $error->reason);
+        }
+        $this->expectException(WorkflowClaimRevoked::class);
+        $authority->acknowledge(self::renewal(2, 20) + ['last_heartbeat_at' => null], 101);
+    }
+
+    public static function malformedRenewalProgress(): iterable
+    {
+        $deadline = ['heartbeat_deadline_at' => self::stamp(4)];
+        yield 'empty progress' => [['last_heartbeat_at' => ''] + $deadline];
+        yield 'false progress' => [['last_heartbeat_at' => false] + $deadline];
+        yield 'numeric progress' => [['last_heartbeat_at' => 0] + $deadline];
+        yield 'second precision progress' => [['last_heartbeat_at' => '2026-01-01T00:00:00Z'] + $deadline];
+        yield 'invalid calendar progress' => [['last_heartbeat_at' => '2026-02-30T00:00:00.000000Z'] + $deadline];
+        yield 'invalid calendar deadline' => [['last_heartbeat_at' => null,
+            'heartbeat_deadline_at' => '2026-02-30T00:00:00.000000Z']];
+        yield 'offset deadline' => [['last_heartbeat_at' => null,
+            'heartbeat_deadline_at' => '2026-01-01T00:00:04.000000+00:00']];
+        yield 'empty deadline' => [['last_heartbeat_at' => null, 'heartbeat_deadline_at' => '']];
+        yield 'numeric deadline' => [['last_heartbeat_at' => null, 'heartbeat_deadline_at' => 4]];
+        yield 'progress without deadline' => [['last_heartbeat_at' => self::stamp(0)]];
+        yield 'progress after server time' => [['last_heartbeat_at' => self::stamp(3),
+            'heartbeat_deadline_at' => self::stamp(7)]];
+        yield 'changed interval' => [['last_heartbeat_at' => self::stamp(0),
+            'heartbeat_deadline_at' => self::stamp(5)]];
+    }
+
+    #[DataProvider('releasedHeartbeatDeadlines')]
+    public function testHeartbeatWithoutStatedDeadlineAdvancesOnlyTheOriginalInterval(array $reply): void
+    {
+        $authority = $this->heartbeatAuthority();
+        $this->now = 102;
+        $authority->acknowledgeProgress($reply, 101);
+        self::assertSame(3.0, $authority->remaining());
+        // The next released renewal confirms progress + heartbeat_timeout.
+        $this->now = 104;
+        $authority->acknowledge(self::renewal(4, 20) + ['last_heartbeat_at' => self::stamp(2),
+            'heartbeat_deadline_at' => self::stamp(6)], 103);
+        self::assertSame(1.0, $authority->remaining());
+        $this->now = 105;
+        $this->expectException(WorkflowClaimRevoked::class);
+        $authority->remaining();
+    }
+
+    public static function releasedHeartbeatDeadlines(): iterable
+    {
+        $reply = self::progress(2, 6, 12);
+        // Published PHP 2.11.8 and native 3.0.x heartbeat replies have no deadline member.
+        yield 'absent' => [array_diff_key($reply, ['heartbeat_deadline_at' => true])];
+        yield 'null' => [array_replace($reply, ['heartbeat_deadline_at' => null])];
+    }
+
+    #[DataProvider('refusedHeartbeats')]
+    public function testHeartbeatThatChangesItsIntervalOrAuthorityIsStillRefused(array $changes, bool $withoutDeadline): void
+    {
+        $authority = $this->heartbeatAuthority();
+        $reply = array_replace(self::progress(2, 6, 12), $changes);
+        if ($withoutDeadline) {
+            unset($reply['heartbeat_deadline_at']);
+        }
+        $this->now = 102;
+        try {
+            $authority->acknowledgeProgress($reply, 101);
+            self::fail('An invalid heartbeat acknowledgement advanced progress.');
+        } catch (WorkflowClaimRevoked $error) {
+            self::assertSame('invalid_activity_heartbeat', $error->reason);
+        }
+        $this->expectException(WorkflowClaimRevoked::class);
+        $authority->acknowledgeProgress(self::progress(3, 7, 12), 101);
+    }
+
+    public static function refusedHeartbeats(): iterable
+    {
+        yield 'shorter interval' => [['heartbeat_deadline_at' => self::stamp(5)], false];
+        yield 'longer interval' => [['heartbeat_deadline_at' => self::stamp(8)], false];
+        yield 'second precision deadline' => [['heartbeat_deadline_at' => '2026-01-01T00:00:06Z'], false];
+        yield 'empty deadline' => [['heartbeat_deadline_at' => ''], false];
+        yield 'numeric deadline' => [['heartbeat_deadline_at' => 6], false];
+        yield 'not recorded' => [['heartbeat_recorded' => false], true];
+        yield 'missing progress' => [['last_heartbeat_at' => null], true];
+        yield 'malformed progress' => [['last_heartbeat_at' => '2026-01-01T00:00:02Z'], true];
+        yield 'foreign attempt' => [['activity_attempt_id' => 'foreign'], true];
+        yield 'foreign owner' => [['lease_owner' => 'foreign'], true];
+        yield 'cancelled' => [['cancel_requested' => true], true];
+        yield 'refused' => [['can_continue' => false], true];
+        yield 'missing lease' => [['lease_expires_at' => null], true];
+    }
+
     public function testRequiredSessionCanRenewOnlyItsLeaseAndNeverItsOriginalTtl(): void
     {
         $session = self::session();

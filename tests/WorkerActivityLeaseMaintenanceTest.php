@@ -137,9 +137,10 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
         self::assertSame([], $this->state()['outcomes'] ?? []);
     }
 
-    public function testRealApplicationProgressIsRelayedWhileRuntimeMaintenanceContinues(): void
+    #[DataProvider('replyShapes')]
+    public function testRealApplicationProgressIsRelayedWhileRuntimeMaintenanceContinues(bool $released): void
     {
-        $worker = $this->worker(['heartbeat_seconds' => 3]);
+        $worker = $this->worker(['heartbeat_seconds' => 3, 'released_shapes' => $released]);
         $worker->registerActivity('slow', static function (ActivityContext $context): string {
             for ($step = 0; $step < 4; ++$step) {
                 usleep(800000);
@@ -150,6 +151,12 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
         self::assertTrue($worker->tick(0));
         self::assertSame(4, $this->state()['heartbeats']);
         self::assertCount(1, $this->state()['outcomes']);
+        self::assertGreaterThanOrEqual(1, $this->state()['renewals'] ?? 0);
+    }
+
+    public static function replyShapes(): array
+    {
+        return ['complete replies' => [false], 'released Server replies' => [true]];
     }
 
     public function testChangedAttemptProofFencesOutcomeAfterCallbackReturns(): void

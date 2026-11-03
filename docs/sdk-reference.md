@@ -565,6 +565,9 @@ attempt and owner. It cannot extend recorded activity/workflow deadlines,
 change an attempt or reset the original TTL of a required worker session.
 Actual application heartbeats can advance only their recorded progress
 interval. Runtime pings do not record progress or add heartbeat history events.
+A renewal that reports no progress yet never extends the claim's heartbeat
+deadline. A heartbeat reply without `heartbeat_deadline_at` advances it by the
+original `heartbeat_timeout` only.
 An activity with a heartbeat timeout must still call `$context->heartbeat()`.
 
 The helper exits when its owning process dies or its private input closes.
