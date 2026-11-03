@@ -23,29 +23,32 @@ final class Replayer
 {
     /**
      * Every durable history event that claims a workflow sequence, by the
-     * command kind that owns it. A command's lifecycle rows, terminal and
-     * cancelled rows included, share its sequence. Events that only point at
-     * a step (signal receipt, updates, cancellation and scope records) claim
-     * nothing and are not listed. Internal wait-timeout timer rows belong to
-     * their wait; see durableCommandKind(). This is the map sdk-python uses.
+     * command kind that owns it. A command's lifecycle rows, terminal,
+     * retry, heartbeat and cancelled rows included, share its sequence; any
+     * Activity*, ChildRun* or ServiceCall* row belongs to that command (see
+     * durableCommandKind()). Internal wait-timeout timer rows belong to their
+     * wait. Rows that only point at a step claim nothing: signal receipt and
+     * rejection, updates, message cursors, selection markers, cooperative
+     * cancellation and the scope request/delivery records, whose sequence
+     * names the boundary they act on.
      */
     private const DURABLE_COMMAND_KINDS = [
-        'ActivityScheduled' => 'activity', 'ActivityStarted' => 'activity', 'ActivityCompleted' => 'activity',
-        'ActivityFailed' => 'activity', 'ActivityTimedOut' => 'activity', 'ActivityCancelled' => 'activity',
         'TimerScheduled' => 'timer', 'TimerFired' => 'timer', 'TimerCancelled' => 'timer',
-        'ChildWorkflowScheduled' => 'child', 'ChildRunStarted' => 'child', 'ChildRunCompleted' => 'child',
-        'ChildRunFailed' => 'child', 'ChildRunCancelled' => 'child', 'ChildRunTerminated' => 'child',
+        'ChildWorkflowScheduled' => 'child',
         'ConditionWaitOpened' => 'condition', 'ConditionWaitSatisfied' => 'condition',
         'ConditionWaitTimedOut' => 'condition', 'ConditionWaitCancelled' => 'condition',
-        'SignalWaitOpened' => 'signal', 'SignalApplied' => 'signal',
+        'SignalWaitOpened' => 'signal', 'SignalWaitReceived' => 'signal', 'SignalApplied' => 'signal',
         'SignalWaitTimedOut' => 'signal', 'SignalWaitCancelled' => 'signal',
-        'ServiceCallStarted' => 'service_call', 'ServiceCallCompleted' => 'service_call',
-        'ServiceCallFailed' => 'service_call', 'ServiceCallCancelled' => 'service_call',
         'SideEffectRecorded' => 'side_effect',
         'VersionMarkerRecorded' => 'version_marker',
         'MemoUpserted' => 'memo',
         'SearchAttributesUpserted' => 'search_attributes',
+        'CancellationScopeOpened' => 'cancellation_scope',
+        'WorkflowContinuedAsNew' => 'continue_as_new',
     ];
+
+    /** Every row of these command kinds claims its command's sequence. */
+    private const DURABLE_COMMAND_PREFIXES = ['Activity' => 'activity', 'ChildRun' => 'child', 'ServiceCall' => 'service_call'];
 
     /** An upsert is the only command at its sequence. */
     private const UPSERT_COMMAND_KINDS = ['memo', 'search_attributes'];
@@ -2955,6 +2958,15 @@ final class Replayer
     private function durableCommandKind(string $type, array $payload): ?string
     {
         $kind = self::DURABLE_COMMAND_KINDS[$type] ?? null;
+        if ($kind === null) {
+            foreach (self::DURABLE_COMMAND_PREFIXES as $prefix => $prefixKind) {
+                if (str_starts_with($type, $prefix)) {
+                    return $prefixKind;
+                }
+            }
+
+            return null;
+        }
         if ($kind !== 'timer') {
             return $kind;
         }

@@ -45,10 +45,13 @@ project follows [Semantic Versioning](https://semver.org/).
     with `duplicate_search_attribute_update`. A memo or search-attribute
     upsert sharing a sequence with any other durable command refuses with
     `durable_command_sequence_collision` in either order. An explicit claim
-    map decides which rows claim a sequence, including terminal, cancelled
-    and internal wait-timeout timer rows, even when the command's opener is
-    absent. Before, the later event could silently replace the earlier one
-    or be ignored.
+    map decides which rows claim a sequence, even when the command's opener
+    is absent. It covers every activity row (retry, heartbeat, cancellation
+    acknowledgement and outcome rejection included), timer, child, condition
+    and signal-wait rows (including terminal, cancelled and internal timeout
+    timer rows), every service-call row, side effects, version markers,
+    authored cancellation scope openings and continue-as-new. Before, the
+    later event could silently replace the earlier one or be ignored.
   - A recorded upsert must carry its own positive integer `sequence`.
     Replay no longer synthesizes one: a missing sequence refuses with
     `durable_command_sequence_missing`, and an invalid one with

@@ -267,8 +267,34 @@ final class SearchAttributeReplayTest extends TestCase
             'ActivityFailed' => ['event_type' => 'ActivityFailed', 'payload' => ['sequence' => 1, 'activity_type' => 'golden.activity', 'message' => 'failed']],
             'ActivityCancelled' => ['event_type' => 'ActivityCancelled', 'payload' => ['sequence' => 1, 'activity_type' => 'golden.activity']],
             'ChildRunTerminated' => ['event_type' => 'ChildRunTerminated', 'payload' => ['sequence' => 1, 'workflow_type' => 'golden.child']],
-            'ServiceCallCancelled' => ['event_type' => 'ServiceCallCancelled', 'payload' => ['sequence' => 1]],
+            'ServiceCallCancelled' => ['event_type' => 'ServiceCallCancelled', 'payload' => ['sequence' => 1, 'service_call_id' => 'call-1']],
         ];
+        $codec = new AvroPayloadCodec();
+        foreach (['ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'ActivityTimedOut', 'ActivityRetryScheduled',
+            'ActivityHeartbeatRecorded', 'ActivityCancellationAcknowledged', 'ActivityOutcomeRejected'] as $type) {
+            $rows[$type] = ['event_type' => $type, 'payload' => ['sequence' => 1, 'activity_type' => 'golden.activity',
+                'activity_execution_id' => 'activity-1', 'result' => $codec->envelope('done')]];
+        }
+        foreach (['TimerScheduled', 'TimerFired'] as $type) {
+            $rows[$type] = ['event_type' => $type, 'payload' => ['sequence' => 1, 'timer_id' => 'timer-1', 'delay_seconds' => 5]];
+        }
+        foreach (['ChildWorkflowScheduled', 'ChildRunStarted', 'ChildRunCompleted', 'ChildRunFailed', 'ChildRunCancelled'] as $type) {
+            $rows[$type] = ['event_type' => $type, 'payload' => ['sequence' => 1, 'workflow_type' => 'golden.child',
+                'child_workflow_run_id' => 'child-run-1', 'result' => $codec->envelope('done')]];
+        }
+        foreach (['ConditionWaitOpened', 'ConditionWaitSatisfied'] as $type) {
+            $rows[$type] = ['event_type' => $type, 'payload' => ['sequence' => 1, 'condition_wait_id' => 'wait-1', 'condition_key' => 'ready']];
+        }
+        foreach (['SignalWaitOpened', 'SignalWaitReceived', 'SignalApplied'] as $type) {
+            $rows[$type] = ['event_type' => $type, 'payload' => ['sequence' => 1, 'signal_name' => 'approve', 'signal_wait_id' => 'wait-1']];
+        }
+        foreach (['ServiceCallStarted', 'ServiceCallCompleted', 'ServiceCallFailed', 'ServiceCallTimedOut'] as $type) {
+            $rows[$type] = ['event_type' => $type, 'payload' => ['sequence' => 1, 'service_call_id' => 'call-1']];
+        }
+        $rows['SideEffectRecorded'] = ['event_type' => 'SideEffectRecorded', 'payload' => ['sequence' => 1, 'result' => $codec->envelope('x')]];
+        $rows['VersionMarkerRecorded'] = ['event_type' => 'VersionMarkerRecorded', 'payload' => ['sequence' => 1, 'change_id' => 'change',
+            'version' => 1, 'min_supported' => 1, 'max_supported' => 1]];
+        $rows['WorkflowContinuedAsNew'] = ['event_type' => 'WorkflowContinuedAsNew', 'payload' => ['sequence' => 1]];
         $cases = [];
         foreach ($rows as $label => $row) {
             foreach (['search attributes' => 'search_attributes', 'memo' => 'memo'] as $upsertLabel => $upsert) {
@@ -278,6 +304,55 @@ final class SearchAttributeReplayTest extends TestCase
         }
 
         return $cases;
+    }
+
+    /**
+     * An authored cancellation scope opening claims its sequence too. Scope
+     * history needs canonical event ids, sequences and namespace.
+     */
+    #[DataProvider('upsertOrders')]
+    public function testAScopeOpeningCannotShareAnUpsertsSequence(string $upsert, bool $upsertFirst): void
+    {
+        $codec = new AvroPayloadCodec();
+        $upsertPayload = $upsert === 'memo'
+            ? ['sequence' => 1, 'entries' => $codec->envelope(['stage' => 'greeting']), 'merged' => $codec->envelope(['stage' => 'greeting'])]
+            : ['sequence' => 1, 'attributes' => ['Stage' => 'greeting'], 'merged' => ['Stage' => 'greeting']];
+        $upsertEvent = ['event_type' => $upsert === 'memo' ? 'MemoUpserted' : 'SearchAttributesUpserted', 'payload' => $upsertPayload];
+        $scope = ['event_type' => 'CancellationScopeOpened', 'payload' => ['schema' => 'durable-workflow.cancellation-scope/v1',
+            'workflow_run_id' => 'run-1', 'sequence' => 1, 'scope_id' => 'scope-1', 'parent_scope_id' => 'root', 'shield_parent' => false]];
+        $history = [];
+        foreach ($upsertFirst ? [$upsertEvent, $scope] : [$scope, $upsertEvent] as $index => $event) {
+            $history[] = ['id' => "event-{$index}", 'sequence' => $index + 1, 'namespace' => 'default', ...$event];
+        }
+        try {
+            (new Replayer($codec))->replay(
+                static function (WorkflowContext $context): string {
+                    $context->upsertSearchAttributes(['Stage' => 'greeting']);
+
+                    return 'done';
+                },
+                $history,
+                [],
+                'search-attribute-replay',
+                ['run_id' => 'run-1'],
+                allowCancellationScopeAuthoring: true,
+            );
+            self::fail('A scope opening must not share an upsert sequence.');
+        } catch (NonDeterministicWorkflow $exception) {
+            self::assertSame('durable_command_sequence_collision', $exception->reason);
+            self::assertSame(1, $exception->sequence);
+        }
+    }
+
+    /** @return array<string, array{string, bool}> */
+    public static function upsertOrders(): array
+    {
+        return [
+            'scope after search attributes' => ['search_attributes', true],
+            'search attributes after scope' => ['search_attributes', false],
+            'scope after memo' => ['memo', true],
+            'memo after scope' => ['memo', false],
+        ];
     }
 
     /** @param array<string, mixed> $row */
@@ -305,7 +380,10 @@ final class SearchAttributeReplayTest extends TestCase
         return [
             'SignalReceived' => [['event_type' => 'SignalReceived', 'payload' => ['sequence' => 1, 'signal_name' => 'approve',
                 'arguments' => (new AvroPayloadCodec())->envelope([])]]],
+            'SignalRejected' => [['event_type' => 'SignalRejected', 'payload' => ['sequence' => 1, 'signal_name' => 'approve']]],
             'UpdateAccepted' => [['event_type' => 'UpdateAccepted', 'payload' => ['sequence' => 1, 'update_name' => 'approve']]],
+            'UpdateApplied' => [['event_type' => 'UpdateApplied', 'payload' => ['sequence' => 1, 'update_name' => 'approve']]],
+            'MessageCursorAdvanced' => [['event_type' => 'MessageCursorAdvanced', 'payload' => ['sequence' => 1, 'stream' => 'inbox']]],
         ];
     }
 
