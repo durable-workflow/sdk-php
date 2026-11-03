@@ -366,6 +366,58 @@ final class RedriveReusedReplayTest extends TestCase
         self::assertStringContainsString('resume_step_sequence', (string) RedriveSuccessorHistory::violation($fixture, self::REUSED_PREFIX[$name]));
     }
 
+    /** @param callable(array<string, mixed>): array<string, mixed> $mutate */
+    #[DataProvider('impossibleReusedSteps')]
+    public function testSuccessorCheckRejectsAnImpossibleReusedStepPrefix(string $name, callable $mutate, string $rule): void
+    {
+        $fixture = $mutate(self::fixture(__DIR__."/fixtures/replay-regressions/{$name}.json"));
+
+        $violation = RedriveSuccessorHistory::violation($fixture, self::REUSED_PREFIX[$name]);
+
+        self::assertNotNull($violation);
+        self::assertStringContainsString($rule, $violation);
+    }
+
+    /**
+     * Each mutation keeps resume_step_sequence equal to the highest reused
+     * step + 1, so only the step-prefix rule can reject it.
+     *
+     * @return array<string, array{string, callable(array<string, mixed>): array<string, mixed>, string}>
+     */
+    public static function impossibleReusedSteps(): array
+    {
+        return [
+            'missing step' => ['redrive-reused-upserts-clock', static function (array $fixture): array {
+                $fixture['history'][2]['payload']['sequence'] = 3;
+                $fixture['history'][0]['payload']['resume_step_sequence'] = 4;
+
+                return $fixture;
+            }, 'no gap'],
+            'descending step' => ['redrive-reused-upserts-clock', static function (array $fixture): array {
+                $fixture['history'][1]['payload']['sequence'] = 2;
+                $fixture['history'][2]['payload']['sequence'] = 1;
+
+                return $fixture;
+            }, 'must not descend'],
+            'unrelated duplicate step' => ['redrive-reused-upserts-clock', static function (array $fixture): array {
+                $fixture['history'][2]['payload']['sequence'] = 1;
+                $fixture['history'][0]['payload']['resume_step_sequence'] = 2;
+
+                return $fixture;
+            }, 'not part of the same durable step'],
+            'signal applied to another wait' => ['redrive-reused-signal-wait-clock', static function (array $fixture): array {
+                $fixture['history'][3]['payload']['signal_wait_id'] = '01M6H8VWAMNSM12WCT4KJ4OTHR';
+
+                return $fixture;
+            }, 'not part of the same durable step'],
+            'signal wait without a step' => ['redrive-reused-signal-wait-clock', static function (array $fixture): array {
+                unset($fixture['history'][1]['payload']['sequence']);
+
+                return $fixture;
+            }, 'positive workflow step'],
+        ];
+    }
+
     public function testSuccessorCheckBindsTheExpectedReusedPrefix(): void
     {
         $name = 'redrive-reused-upserts-clock';

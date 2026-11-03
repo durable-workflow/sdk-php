@@ -27,6 +27,24 @@ final class RedriveSuccessorHistory
     private const STEPLESS = ['SignalReceived'];
 
     /**
+     * Lifecycle events of one durable step, and the payload field that names
+     * that step. Only events of the same lifecycle may repeat a sequence.
+     * Memo, search-attribute, side-effect and version-marker events are one
+     * event per step.
+     */
+    private const LIFECYCLES = [
+        'SignalWaitOpened' => ['signal_wait', 'signal_wait_id'],
+        'SignalApplied' => ['signal_wait', 'signal_wait_id'],
+        'ActivityScheduled' => ['activity', 'activity_execution_id'],
+        'ActivityStarted' => ['activity', 'activity_execution_id'],
+        'ActivityCompleted' => ['activity', 'activity_execution_id'],
+        'TimerScheduled' => ['timer', 'timer_id'],
+        'TimerFired' => ['timer', 'timer_id'],
+        'ConditionWaitOpened' => ['condition_wait', 'condition_wait_id'],
+        'ConditionWaitSatisfied' => ['condition_wait', 'condition_wait_id'],
+    ];
+
+    /**
      * @param array<string, mixed> $fixture a replay-regression fixture with history, workflow and workflow_tasks
      * @param list<string> $reusedEventTypes the reused prefix, in order, exactly as redrive copies it
      * @return string|null the first violated rule, or null for a valid successor
@@ -83,6 +101,8 @@ final class RedriveSuccessorHistory
         }
 
         $lastReusedStep = 0;
+        $reusedSteps = [];
+        $stepOwner = null;
         $previousAt = $startedAt;
         $prefixLength = count($reusedEventTypes);
         foreach (array_slice($history, 1) as $offset => $event) {
@@ -122,8 +142,23 @@ final class RedriveSuccessorHistory
                     return "reused {$type} must belong to the successor instance";
                 }
                 // SignalReceived has no workflow step of its own; it belongs to its wait.
-                if (!in_array($type, self::STEPLESS, true) && is_int($payload['sequence'] ?? null)) {
-                    $lastReusedStep = max($lastReusedStep, $payload['sequence']);
+                if (!in_array($type, self::STEPLESS, true)) {
+                    $step = $payload['sequence'] ?? null;
+                    if (!is_int($step) || $step < 1) {
+                        return "reused {$type} must name a positive workflow step";
+                    }
+                    if ($step < $lastReusedStep) {
+                        return "reused workflow steps must not descend: {$type} step {$step} follows step {$lastReusedStep}";
+                    }
+                    [$lifecycle, $identityField] = self::LIFECYCLES[$type] ?? [$type, null];
+                    $owner = [$lifecycle, $identityField === null ? null : ($payload[$identityField] ?? null)];
+                    if ($step === $lastReusedStep
+                        && ($identityField === null || $owner[1] === null || $owner !== $stepOwner)) {
+                        return "reused workflow step {$step} is repeated by {$type}, which is not part of the same durable step";
+                    }
+                    $stepOwner = $owner;
+                    $lastReusedStep = $step;
+                    $reusedSteps[$step] = true;
                 }
                 continue;
             }
@@ -158,6 +193,9 @@ final class RedriveSuccessorHistory
         }
         if ($lastReusedStep === 0) {
             return 'history has no reused workflow step';
+        }
+        if (array_keys($reusedSteps) !== range(1, $lastReusedStep)) {
+            return 'reused workflow steps must be exactly 1..'.$lastReusedStep.' with no gap';
         }
         if (($start['resume_step_sequence'] ?? null) !== $lastReusedStep + 1) {
             return 'resume_step_sequence must be the last reused workflow step + 1 ('.($lastReusedStep + 1).')';
