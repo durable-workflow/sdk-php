@@ -26,6 +26,14 @@ Laravel upgrade. Earlier Laravel 10, 11, 12, and 13 releases, and every Laravel
 9 release, are outside the supported service-mode boundary. The SDK does not
 block installing them, so upgrade Laravel before adopting either v2 destination.
 
+Laravel 10 and 11 are past their upstream end of life. Some published
+Laravel advisories affect every release of those majors and have no fixed
+10.x or 11.x release. The SDK keeps them only for bounded 3.8.x transition
+compatibility, matching Workflow 2.17.1, and removes them in the next SDK minor
+([#239](https://github.com/durable-workflow/sdk-php/issues/239)). Move
+applications to a maintained Laravel release (12 or 13) before or with
+adopting service mode.
+
 Do not install the two packages as interchangeable storage adapters. They have
 different authoritative histories, worker lifecycles, queue boundaries,
 backups, and rollback procedures.

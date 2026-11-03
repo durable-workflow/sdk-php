@@ -32,6 +32,14 @@ project follows [Semantic Versioning](https://semver.org/).
 - The SDK still only suggests `laravel/framework`. It adds no Composer
   `conflict` and does not change an application's Laravel resolution.
 
+### Deprecated
+
+- Laravel 10 and 11 are past their upstream end of life, and some published
+  Laravel advisories have no fixed 10.x or 11.x release. They remain in the
+  service-mode support boundary only for bounded 3.8.x transition
+  compatibility, matching Workflow 2.17.1, and will be removed in the next SDK
+  minor (#239). Move to a maintained Laravel release (12 or 13).
+
 ## [3.8.1] - 2026-11-02
 
 ### Changed
