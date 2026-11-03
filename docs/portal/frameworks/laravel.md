@@ -17,9 +17,11 @@ next:
   <div class="choice"><h3>Cloud or Server</h3><p><code>durable-workflow/sdk</code> connects the same Laravel application structure to a separately operated namespace. The Laravel bridge keeps container resolution, configuration, Artisan, logging, events, and testing.</p></div>
 </div>
 
-The service-mode bridge supports Laravel 9, 10, 11, 12, and 13 on the PHP
+The service-mode bridge supports Laravel 10, 11, 12, and 13 on the PHP
 versions supported by the SDK. Those are the same Laravel majors supported by
-embedded v2, so changing state ownership does not force a Laravel upgrade.
+embedded v2 from Workflow 2.17.0, so changing state ownership does not force a
+Laravel upgrade. Laravel 9 has no fixed release for GHSA-f9x3-7vq9-cph6, so
+upgrade a Laravel 9 application before adopting either v2 destination.
 
 Do not install the two packages as interchangeable storage adapters. They have
 different authoritative histories, worker lifecycles, queue boundaries,

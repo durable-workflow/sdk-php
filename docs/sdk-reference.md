@@ -10,7 +10,7 @@ runnable path.
 - **Laravel adoption:** start with the [ownership-first transition
   guide](https://php.durable-workflow.com/frameworks/laravel/) when moving a
   Laravel Workflow v1 application to v2 embedded or service mode, or when
-  moving embedded v2 to service mode. Laravel 9 through 13 are supported on
+  moving embedded v2 to service mode. Laravel 10 through 13 are supported on
   both v2 destinations.
 - **Plain PHP service mode:** follow the quickstart below when a framework-neutral
   application and remote worker connect to Durable Workflow Cloud or a
@@ -618,7 +618,7 @@ and the shipped [client](../examples/message-stream-client.php) and
 
 ## Laravel service mode
 
-Laravel 9 through 13 auto-discover the service provider from the same SDK package.
+Laravel 10 through 13 auto-discover the service provider from the same SDK package.
 Publish the environment-backed configuration, add attributed handler services,
 and start the supervised Artisan command:
 

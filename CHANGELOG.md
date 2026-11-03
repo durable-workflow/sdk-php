@@ -6,6 +6,16 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.8.1] - 2026-11-02
+
+### Changed
+
+- Service-mode Laravel bridge support now starts at Laravel 10, matching
+  Workflow 2.17.0 (GHSA-f9x3-7vq9-cph6). Laravel 9 has no fixed release for
+  that advisory, so upgrade a Laravel 9 application before adopting service
+  mode. The Composer framework metadata, the Laravel adoption contract and its
+  qualification matrix, and the CI framework cells now list Laravel 10 through 13.
+
 ## [3.8.0] - 2026-11-02
 
 ### Added
