@@ -6,6 +6,13 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Cooperative cancellation `remaining()` now advances to a redrive-reused
+  step's original `reused_recorded_at` time instead of the time the successor
+  run copied it, matching Core. Cleanup after a reused activity completion or
+  fired timer no longer loses the redrive delay from its budget.
+
 ## [3.8.2] - 2026-11-03
 
 ### Fixed
