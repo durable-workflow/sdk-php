@@ -32,18 +32,14 @@ final class LaravelAdoptionContractTest extends TestCase
         );
         self::assertSame(
             [
-                ['laravel' => '9', 'php' => '8.1', 'package' => 'laravel/framework:^9.0', 'bootstrap' => 'existing_supported_lock'],
                 ['laravel' => '10', 'php' => '8.1', 'package' => 'laravel/framework:^10.0', 'bootstrap' => 'existing_supported_lock'],
-                ['laravel' => '9', 'php' => '8.2', 'package' => 'laravel/framework:^9.0', 'bootstrap' => 'existing_supported_lock'],
                 ['laravel' => '10', 'php' => '8.2', 'package' => 'laravel/framework:^10.0', 'bootstrap' => 'existing_supported_lock'],
                 ['laravel' => '11', 'php' => '8.2', 'package' => 'laravel/framework:^11.0', 'bootstrap' => 'existing_supported_lock'],
                 ['laravel' => '12', 'php' => '8.2', 'package' => 'laravel/framework:^12.0', 'bootstrap' => 'fresh_supported_install'],
-                ['laravel' => '9', 'php' => '8.3', 'package' => 'laravel/framework:^9.0', 'bootstrap' => 'existing_supported_lock'],
                 ['laravel' => '10', 'php' => '8.3', 'package' => 'laravel/framework:^10.0', 'bootstrap' => 'existing_supported_lock'],
                 ['laravel' => '11', 'php' => '8.3', 'package' => 'laravel/framework:^11.0', 'bootstrap' => 'existing_supported_lock'],
                 ['laravel' => '12', 'php' => '8.3', 'package' => 'laravel/framework:^12.0', 'bootstrap' => 'fresh_supported_install'],
                 ['laravel' => '13', 'php' => '8.3', 'package' => 'laravel/framework:^13.0', 'bootstrap' => 'fresh_supported_install'],
-                ['laravel' => '9', 'php' => '8.4', 'package' => 'laravel/framework:^9.0', 'bootstrap' => 'existing_supported_lock'],
                 ['laravel' => '10', 'php' => '8.4', 'package' => 'laravel/framework:^10.0', 'bootstrap' => 'existing_supported_lock'],
                 ['laravel' => '11', 'php' => '8.4', 'package' => 'laravel/framework:^11.0', 'bootstrap' => 'existing_supported_lock'],
                 ['laravel' => '12', 'php' => '8.4', 'package' => 'laravel/framework:^12.0', 'bootstrap' => 'fresh_supported_install'],

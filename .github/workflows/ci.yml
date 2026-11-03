@@ -173,21 +173,9 @@ jobs:
       matrix:
         include:
           - framework: Laravel
-            version: '9'
-            php: '8.1'
-            package: 'laravel/framework:^9.0'
-            bootstrap: existing_supported_lock
-            script: laravel.php
-          - framework: Laravel
             version: '10'
             php: '8.1'
             package: 'laravel/framework:^10.0'
-            bootstrap: existing_supported_lock
-            script: laravel.php
-          - framework: Laravel
-            version: '9'
-            php: '8.2'
-            package: 'laravel/framework:^9.0'
             bootstrap: existing_supported_lock
             script: laravel.php
           - framework: Laravel
@@ -207,12 +195,6 @@ jobs:
             php: '8.2'
             package: 'laravel/framework:^12.0'
             bootstrap: fresh_supported_install
-            script: laravel.php
-          - framework: Laravel
-            version: '9'
-            php: '8.3'
-            package: 'laravel/framework:^9.0'
-            bootstrap: existing_supported_lock
             script: laravel.php
           - framework: Laravel
             version: '10'
@@ -237,12 +219,6 @@ jobs:
             php: '8.3'
             package: 'laravel/framework:^13.0'
             bootstrap: fresh_supported_install
-            script: laravel.php
-          - framework: Laravel
-            version: '9'
-            php: '8.4'
-            package: 'laravel/framework:^9.0'
-            bootstrap: existing_supported_lock
             script: laravel.php
           - framework: Laravel
             version: '10'
@@ -383,20 +359,15 @@ jobs:
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Exercise optional tracing in framework workers
         if: >-
-          (matrix.framework == 'Laravel' && matrix.version == '9' && matrix.php == '8.1') ||
+          (matrix.framework == 'Laravel' && matrix.version == '10' && matrix.php == '8.1') ||
           (matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4') ||
           (matrix.framework == 'Symfony' && matrix.version == '6.4')
         env:
           COMPAT_SCRIPT: ${{ matrix.script }}
-          FRAMEWORK_VERSION: ${{ matrix.version }}
           DURABLE_WORKFLOW_TEST_TRACING: '1'
         run: |
           consumer="$(cat "$RUNNER_TEMP/framework-consumer")"
-          monolog='monolog/monolog:^3.0'
-          if [ "$COMPAT_SCRIPT" = laravel.php ] && [ "$FRAMEWORK_VERSION" = 9 ]; then
-            monolog='monolog/monolog:^2.9'
-          fi
-          composer --working-dir="$consumer" require --dev open-telemetry/api:1.10.1 "$monolog" \
+          composer --working-dir="$consumer" require --dev open-telemetry/api:1.10.1 'monolog/monolog:^3.0' \
             --no-interaction --prefer-dist --no-progress
           DURABLE_WORKFLOW_CLIENT_TOKEN=client-secret \
             DURABLE_WORKFLOW_WORKER_TOKEN=worker-secret \
