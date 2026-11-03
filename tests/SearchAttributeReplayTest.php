@@ -164,6 +164,12 @@ final class SearchAttributeReplayTest extends TestCase
             'two equal upserts' => [[$upsert('greeting'), $upsert('greeting')], 'duplicate_search_attribute_update'],
             'upsert after another command' => [[$activity, $upsert('greeting')], 'durable_command_sequence_collision'],
             'another command after an upsert' => [[$upsert('greeting'), $activity], 'durable_command_sequence_collision'],
+            'upsert on a signal wait step' => [[['event_type' => 'SignalWaitOpened',
+                'payload' => ['sequence' => 1, 'signal_name' => 'approve', 'signal_wait_id' => 'wait-1']], $upsert('greeting')],
+                'durable_command_sequence_collision'],
+            'signal applied on an upsert step' => [[$upsert('greeting'), ['event_type' => 'SignalApplied',
+                'payload' => ['sequence' => 1, 'signal_name' => 'approve', 'signal_wait_id' => 'wait-1']]],
+                'durable_command_sequence_collision'],
         ];
     }
 
@@ -202,6 +208,64 @@ final class SearchAttributeReplayTest extends TestCase
                 return $history;
             }, 'durable_command_sequence_collision'],
         ];
+    }
+
+    #[DataProvider('unsequencedUpserts')]
+    public function testRecordedUpsertMustNameItsOwnSequence(mixed $sequence, bool $present, string $reason): void
+    {
+        $payload = ['attributes' => ['Stage' => 'greeting'], 'merged' => ['Stage' => 'greeting']];
+        if ($present) {
+            $payload['sequence'] = $sequence;
+        }
+        try {
+            (new Replayer(new AvroPayloadCodec()))->replay(
+                static function (WorkflowContext $context): string {
+                    $context->upsertSearchAttributes(['Stage' => 'greeting']);
+
+                    return 'done';
+                },
+                [['event_type' => 'SearchAttributesUpserted', 'payload' => $payload]],
+                [],
+                'search-attribute-replay',
+            );
+            self::fail('Replay must not synthesize a search-attribute sequence.');
+        } catch (NonDeterministicWorkflow $exception) {
+            self::assertSame($reason, $exception->reason);
+        }
+    }
+
+    /** @return array<string, array{mixed, bool, string}> */
+    public static function unsequencedUpserts(): array
+    {
+        return [
+            'absent' => [null, false, 'durable_command_sequence_missing'],
+            'null' => [null, true, 'durable_command_sequence_missing'],
+            'zero' => [0, true, 'durable_command_sequence_invalid'],
+            'negative' => [-1, true, 'durable_command_sequence_invalid'],
+            'numeric string' => ['1', true, 'durable_command_sequence_invalid'],
+            'float' => [1.0, true, 'durable_command_sequence_invalid'],
+        ];
+    }
+
+    public function testAnUpsertBesideAnotherCommandsLifecycleStillReplays(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $result = (new Replayer($codec))->replay(
+            static function (WorkflowContext $context): mixed {
+                $context->upsertSearchAttributes(['Stage' => 'greeting']);
+
+                return $context->activity('golden.activity');
+            },
+            [
+                ['event_type' => 'SearchAttributesUpserted', 'payload' => ['sequence' => 1, 'attributes' => ['Stage' => 'greeting'], 'merged' => ['Stage' => 'greeting']]],
+                ['event_type' => 'ActivityScheduled', 'payload' => ['sequence' => 2, 'activity_type' => 'golden.activity', 'activity_execution_id' => 'a-1']],
+                ['event_type' => 'ActivityCompleted', 'payload' => ['sequence' => 2, 'activity_type' => 'golden.activity', 'activity_execution_id' => 'a-1', 'result' => $codec->envelope('done')]],
+            ],
+            [],
+            'search-attribute-replay',
+        );
+
+        self::assertSame(['complete_workflow'], array_column($result->commands, 'type'));
     }
 
     public function testRedriveReusedUpsertWithoutAttributesFailsClosed(): void

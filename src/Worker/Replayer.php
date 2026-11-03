@@ -21,6 +21,9 @@ use Throwable;
 /** Re-executes a straight-line workflow Fiber against committed, sequence-ordered history. */
 final class Replayer
 {
+    /** Signal-wait events that claim their workflow sequence. */
+    private const SIGNAL_WAIT_EVENTS = ['SignalWaitOpened', 'SignalApplied', 'SignalWaitTimedOut', 'SignalWaitCancelled'];
+
     private const MIN_VERSION = -2_147_483_648;
 
     private const MAX_VERSION = 2_147_483_647;
@@ -1217,6 +1220,7 @@ final class Replayer
         $versionMarkerSequences = [];
         $versionMarkerChangeIds = [];
         $memoSequences = [];
+        $signalWaitSequences = [];
         $fallbackSequence = 1_000_000;
         foreach ($history as $resolutionOrder => $event) {
             $type = (string) ($event['event_type'] ?? $event['type'] ?? '');
@@ -1224,6 +1228,7 @@ final class Replayer
             $sequence = match ($type) {
                 'VersionMarkerRecorded' => $this->versionMarkerSequence($payload),
                 'MemoUpserted' => $this->memoSequence($payload),
+                'SearchAttributesUpserted' => $this->searchAttributeSequence($payload),
                 default => $this->sequence($payload) ?? $fallbackSequence++,
             };
             $key = (string) $sequence;
@@ -1235,17 +1240,29 @@ final class Replayer
                     reason: 'durable_command_sequence_collision');
             }
 
-            // A search-attribute upsert is one event per step, so no other
-            // durable command may later claim its sequence.
-            if (($steps[$key]['shape'] ?? null) === 'search_attributes'
-                && $incomingShape !== null && $incomingShape !== 'search_attributes') {
-                throw new NonDeterministicWorkflow(
-                    "Workflow sequence {$sequence} contains a search-attribute upsert and another durable command.",
-                    $sequence,
-                    'one durable command shape',
-                    "search attribute upsert and {$incomingShape}",
-                    'durable_command_sequence_collision',
-                );
+            // One workflow sequence is one durable command. Only events of the
+            // same command's lifecycle share it (an activity's schedule and
+            // completion, a timer's schedule and fire, a condition or signal
+            // wait's open and resolution, a child's schedule and run outcome).
+            // Events that only refer to a step, such as a cancellation
+            // delivery, claim nothing. The PHP SDK does not author signal
+            // waits, but their events still claim their sequence.
+            $incomingClaim = $incomingShape ?? (in_array($type, self::SIGNAL_WAIT_EVENTS, true) ? 'signal_wait' : null);
+            if ($incomingClaim !== null) {
+                $existingClaim = $steps[$key]['shape'] ?? (isset($signalWaitSequences[$key]) ? 'signal_wait' : null);
+                if ($existingClaim !== null && $existingClaim !== $incomingClaim
+                    && ($existingClaim === 'search_attributes' || $incomingClaim === 'search_attributes')) {
+                    throw new NonDeterministicWorkflow(
+                        "Workflow sequence {$sequence} contains a {$existingClaim} command and a {$incomingClaim} command.",
+                        $sequence,
+                        'one durable command shape',
+                        "{$existingClaim} and {$incomingClaim}",
+                        'durable_command_sequence_collision',
+                    );
+                }
+                if ($incomingClaim === 'signal_wait') {
+                    $signalWaitSequences[$key] = true;
+                }
             }
 
             if ($type !== 'CancellationScopeOpened' && isset($scopes->openings[$sequence])
@@ -2900,6 +2917,37 @@ final class Replayer
                 'positive integer sequence',
                 is_scalar($sequence) ? (string) $sequence : get_debug_type($sequence),
                 'memo_sequence_invalid',
+            );
+        }
+
+        return $sequence;
+    }
+
+    /**
+     * A recorded search-attribute upsert must name its own workflow step;
+     * replay never synthesizes one. The reasons match sdk-rust.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function searchAttributeSequence(array $payload): int
+    {
+        if (!array_key_exists('sequence', $payload) || $payload['sequence'] === null) {
+            throw new NonDeterministicWorkflow(
+                'SearchAttributesUpserted history has no workflow sequence.',
+                null,
+                'positive integer sequence',
+                'missing sequence',
+                'durable_command_sequence_missing',
+            );
+        }
+        $sequence = $payload['sequence'];
+        if (!is_int($sequence) || $sequence <= 0) {
+            throw new NonDeterministicWorkflow(
+                'SearchAttributesUpserted history uses an invalid workflow sequence.',
+                is_int($sequence) ? $sequence : null,
+                'positive integer sequence',
+                is_scalar($sequence) ? (string) $sequence : get_debug_type($sequence),
+                'durable_command_sequence_invalid',
             );
         }
 

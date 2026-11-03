@@ -43,9 +43,13 @@ project follows [Semantic Versioning](https://semver.org/).
     `search_attribute_update_missing`, the reason sdk-rust uses.
   - A second `SearchAttributesUpserted` at one workflow sequence refuses
     with `duplicate_search_attribute_update`. An upsert sharing a sequence
-    with another durable command refuses with
+    with another durable command, including a signal wait, refuses with
     `durable_command_sequence_collision`. Before, the later event silently
     replaced the earlier one.
+  - A recorded upsert must carry its own positive integer `sequence`.
+    Replay no longer synthesizes one: a missing sequence refuses with
+    `durable_command_sequence_missing`, and an invalid one with
+    `durable_command_sequence_invalid`, as in sdk-rust.
   - Recorded `attribute_types` are not compared: this SDK's command cannot
     declare types, so this is value-only hardening and does not qualify
     typed search-attribute reuse.
