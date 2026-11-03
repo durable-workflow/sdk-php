@@ -379,6 +379,8 @@ final class ReplayRegressionConsumer
     private const FIXTURE_SCHEMA = 'durable-workflow.replay-regression/v1';
     private const BOUNDED_LOCAL_FAILURE = 'golden.bounded-local-failure';
 
+    private static int $sideEffectCalls = 0;
+
     public static function executeFile(string $path): void
     {
         $fixture = json_decode(
@@ -556,6 +558,7 @@ final class ReplayRegressionConsumer
         }
         $localActivityInvocations = 0;
         self::registerLocalActivities($worker, $workflowType, $localActivityInvocations);
+        self::$sideEffectCalls = 0;
         foreach ($tasks as $_task) {
             $worker->tick(0);
             gc_collect_cycles();
@@ -565,6 +568,9 @@ final class ReplayRegressionConsumer
         }
         if ($localActivityInvocations !== (in_array($workflowType, ['golden.activity-completion-backend-loss', self::BOUNDED_LOCAL_FAILURE, 'golden.local-activity-context'], true) ? 1 : 0)) {
             throw new RuntimeException("{$identity} repeated a recorded local activity during cold replay.");
+        }
+        if (self::$sideEffectCalls !== 0) {
+            throw new RuntimeException("{$identity} repeated a recorded side effect during cold replay.");
         }
 
         $taskCommands = array_map(
@@ -922,6 +928,22 @@ final class ReplayRegressionConsumer
                 $context->activity('golden.lease-receipt'),
             'golden.activity-completion-backend-loss' => static fn (WorkflowContext $context): mixed =>
                 $context->activity('golden.backend-recovery'),
+            'golden.redrive-reused-markers' => static function (WorkflowContext $context, mixed $name): mixed {
+                $token = $context->sideEffect(static function (): string {
+                    ++self::$sideEffectCalls;
+
+                    return bin2hex(random_bytes(8));
+                });
+                $version = $context->getVersion('redrive-markers', -1, 1);
+
+                return $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name, $token, $version]);
+            },
+            'golden.redrive-reused-timer' => static function (WorkflowContext $context, mixed $name, mixed $seconds): mixed {
+                $greeting = $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name]);
+                $context->sleep((int) $seconds);
+
+                return $context->activity('Tests\\Fixtures\\V2\\TestRedriveSecondActivity', [$greeting]);
+            },
             default => throw new RuntimeException(
                 "Replay fixture workflow {$workflowType} has no PHP implementation in the official consumer.",
             ),

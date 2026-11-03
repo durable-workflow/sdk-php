@@ -28,6 +28,8 @@ final class ReplayRegressionFixture
     private const FIXTURE_SCHEMA = 'durable-workflow.replay-regression/v1';
     private const BOUNDED_LOCAL_FAILURE = 'golden.bounded-local-failure';
 
+    private static int $sideEffectCalls = 0;
+
     /** @return list<array<string, mixed>> */
     public static function executeFile(string $path): array
     {
@@ -133,6 +135,7 @@ final class ReplayRegressionFixture
                 ];
             }
             : null;
+        self::$sideEffectCalls = 0;
         try {
             $execute = static fn () => (new Replayer($codec))->replay(
                 self::workflow($workflowType),
@@ -212,6 +215,9 @@ final class ReplayRegressionFixture
             }
         } elseif ($localActivityInvocations !== 0) {
             throw new RuntimeException("{$identity} repeated a recorded local activity during cold replay.");
+        }
+        if (self::$sideEffectCalls !== 0) {
+            throw new RuntimeException("{$identity} repeated a recorded side effect during cold replay.");
         }
         $declaredCommands = $fixture['command_sequence'] ?? null;
         if ($declaredCommands !== null) {
@@ -622,6 +628,22 @@ final class ReplayRegressionFixture
                 $context->activity('golden.lease-receipt'),
             'golden.activity-completion-backend-loss' => static fn (WorkflowContext $context): mixed =>
                 $context->activity('golden.backend-recovery'),
+            'golden.redrive-reused-markers' => static function (WorkflowContext $context, mixed $name): mixed {
+                $token = $context->sideEffect(static function (): string {
+                    ++self::$sideEffectCalls;
+
+                    return bin2hex(random_bytes(8));
+                });
+                $version = $context->getVersion('redrive-markers', -1, 1);
+
+                return $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name, $token, $version]);
+            },
+            'golden.redrive-reused-timer' => static function (WorkflowContext $context, mixed $name, mixed $seconds): mixed {
+                $greeting = $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name]);
+                $context->sleep((int) $seconds);
+
+                return $context->activity('Tests\\Fixtures\\V2\\TestRedriveSecondActivity', [$greeting]);
+            },
             default => throw new RuntimeException(
                 "Replay fixture workflow {$workflowType} has no PHP implementation; "
                 .'register its reproducer workflow in ReplayRegressionFixture.',
