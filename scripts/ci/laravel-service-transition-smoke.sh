@@ -378,44 +378,26 @@ if [ "$source_version_after" != "$source_version_before" ]; then
   exit 1
 fi
 
-SOURCE_MODE="$source_mode" php -r '
-  $service = json_decode(
-      file_get_contents("vendor/durable-workflow/sdk/docs/laravel-adoption-contract.json"),
-      true,
-      512,
-      JSON_THROW_ON_ERROR,
-  );
-  $reference = $service["embedded_transition_authority"];
-  if (getenv("SOURCE_MODE") === "embedded_v1") {
-      $source = $service["modes"]["embedded_v1"];
-      if ($source["package"] !== "durable-workflow/workflow" || $source["channel"] !== "^1.0") {
-          throw new RuntimeException("The service adoption contract did not retain the stable Workflow source identity.");
-      }
-      exit(0);
-  }
-  $embedded = json_decode(
-      file_get_contents("vendor/durable-workflow/workflow/".$reference["manifest"]),
-      true,
-      512,
-      JSON_THROW_ON_ERROR,
-  );
-  if ($embedded["schema"] !== $reference["schema"]
-      || $embedded["version"] !== $reference["version"]
-      || $reference["package"] !== "durable-workflow/workflow") {
-      throw new RuntimeException("The service adoption contract did not consume the installed embedded transition authority.");
-  }
-  $embeddedCells = array_map(
-      static fn (array $cell): array => ["laravel" => rtrim($cell["laravel"], ".*"), "php" => $cell["php"]],
-      $embedded["supported_intersection"]["cells"],
-  );
-  $serviceCells = array_map(
-      static fn (array $cell): array => ["laravel" => $cell["laravel"], "php" => $cell["php"]],
-      $service["framework"]["qualification_matrix"],
-  );
-  if ($embeddedCells !== $serviceCells) {
-      throw new RuntimeException("Embedded and service modes publish different Laravel/PHP support cells.");
-  }
-'
+if [ "$source_mode" = embedded_v1 ]; then
+  php -r '
+    $service = json_decode(
+        file_get_contents("vendor/durable-workflow/sdk/docs/laravel-adoption-contract.json"),
+        true,
+        512,
+        JSON_THROW_ON_ERROR,
+    );
+    $source = $service["modes"]["embedded_v1"];
+    if ($source["package"] !== "durable-workflow/workflow" || $source["channel"] !== "^1.0") {
+        throw new RuntimeException("The service adoption contract did not retain the stable Workflow source identity.");
+    }
+  '
+else
+  # The installed embedded authority and the SDK's published service authority
+  # must agree on the exact Laravel and PHP constraints and on every cell.
+  php "$sdk_path/scripts/ci/check-laravel-transition-authority.php" \
+    vendor/durable-workflow/sdk/docs/laravel-adoption-contract.json \
+    vendor/durable-workflow/workflow
+fi
 
 source_state_after_install=$(hash_source_tables)
 if [ "$source_state_after_install" != "$source_state_before" ]; then

@@ -6,6 +6,25 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.8.2] - 2026-11-03
+
+### Fixed
+
+- Service-mode Laravel support now names the patched minimum releases for
+  GHSA-f9x3-7vq9-cph6: Laravel 10.50.4, 11.56.1, 12.69.0 and 13.30.0, and later
+  releases of each major (`^10.50.4|^11.56.1|^12.69.0|^13.30.0`). 3.8.1
+  published major-only ranges (`^10.0|^11.0|^12.0|^13.0`), which included
+  releases from before the TokenGuard fix. Earlier Laravel 10, 11, 12 and 13
+  releases are outside the supported service-mode boundary. The Composer
+  framework metadata and `suggest` text, the Laravel adoption contract and its
+  schema, every qualification cell, and the CI framework inputs now use these
+  floors, matching Workflow 2.17.1's embedded v2 authority.
+- The embedded-v2 to service-mode transition check now compares the exact
+  Laravel and PHP constraints as well as the Laravel/PHP cells, so a future
+  floor drift between the SDK and Workflow fails CI.
+- The SDK still only suggests `laravel/framework`. It adds no Composer
+  `conflict` and does not change an application's Laravel resolution.
+
 ## [3.8.1] - 2026-11-02
 
 ### Changed

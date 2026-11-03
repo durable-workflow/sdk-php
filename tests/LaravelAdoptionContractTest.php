@@ -32,18 +32,18 @@ final class LaravelAdoptionContractTest extends TestCase
         );
         self::assertSame(
             [
-                ['laravel' => '10', 'php' => '8.1', 'package' => 'laravel/framework:^10.0', 'bootstrap' => 'existing_supported_lock'],
-                ['laravel' => '10', 'php' => '8.2', 'package' => 'laravel/framework:^10.0', 'bootstrap' => 'existing_supported_lock'],
-                ['laravel' => '11', 'php' => '8.2', 'package' => 'laravel/framework:^11.0', 'bootstrap' => 'existing_supported_lock'],
-                ['laravel' => '12', 'php' => '8.2', 'package' => 'laravel/framework:^12.0', 'bootstrap' => 'fresh_supported_install'],
-                ['laravel' => '10', 'php' => '8.3', 'package' => 'laravel/framework:^10.0', 'bootstrap' => 'existing_supported_lock'],
-                ['laravel' => '11', 'php' => '8.3', 'package' => 'laravel/framework:^11.0', 'bootstrap' => 'existing_supported_lock'],
-                ['laravel' => '12', 'php' => '8.3', 'package' => 'laravel/framework:^12.0', 'bootstrap' => 'fresh_supported_install'],
-                ['laravel' => '13', 'php' => '8.3', 'package' => 'laravel/framework:^13.0', 'bootstrap' => 'fresh_supported_install'],
-                ['laravel' => '10', 'php' => '8.4', 'package' => 'laravel/framework:^10.0', 'bootstrap' => 'existing_supported_lock'],
-                ['laravel' => '11', 'php' => '8.4', 'package' => 'laravel/framework:^11.0', 'bootstrap' => 'existing_supported_lock'],
-                ['laravel' => '12', 'php' => '8.4', 'package' => 'laravel/framework:^12.0', 'bootstrap' => 'fresh_supported_install'],
-                ['laravel' => '13', 'php' => '8.4', 'package' => 'laravel/framework:^13.0', 'bootstrap' => 'fresh_supported_install'],
+                ['laravel' => '10', 'php' => '8.1', 'package' => 'laravel/framework:^10.50.4', 'bootstrap' => 'existing_supported_lock'],
+                ['laravel' => '10', 'php' => '8.2', 'package' => 'laravel/framework:^10.50.4', 'bootstrap' => 'existing_supported_lock'],
+                ['laravel' => '11', 'php' => '8.2', 'package' => 'laravel/framework:^11.56.1', 'bootstrap' => 'existing_supported_lock'],
+                ['laravel' => '12', 'php' => '8.2', 'package' => 'laravel/framework:^12.69.0', 'bootstrap' => 'fresh_supported_install'],
+                ['laravel' => '10', 'php' => '8.3', 'package' => 'laravel/framework:^10.50.4', 'bootstrap' => 'existing_supported_lock'],
+                ['laravel' => '11', 'php' => '8.3', 'package' => 'laravel/framework:^11.56.1', 'bootstrap' => 'existing_supported_lock'],
+                ['laravel' => '12', 'php' => '8.3', 'package' => 'laravel/framework:^12.69.0', 'bootstrap' => 'fresh_supported_install'],
+                ['laravel' => '13', 'php' => '8.3', 'package' => 'laravel/framework:^13.30.0', 'bootstrap' => 'fresh_supported_install'],
+                ['laravel' => '10', 'php' => '8.4', 'package' => 'laravel/framework:^10.50.4', 'bootstrap' => 'existing_supported_lock'],
+                ['laravel' => '11', 'php' => '8.4', 'package' => 'laravel/framework:^11.56.1', 'bootstrap' => 'existing_supported_lock'],
+                ['laravel' => '12', 'php' => '8.4', 'package' => 'laravel/framework:^12.69.0', 'bootstrap' => 'fresh_supported_install'],
+                ['laravel' => '13', 'php' => '8.4', 'package' => 'laravel/framework:^13.30.0', 'bootstrap' => 'fresh_supported_install'],
             ],
             $this->contract['framework']['qualification_matrix'],
         );
@@ -53,6 +53,53 @@ final class LaravelAdoptionContractTest extends TestCase
             'schema' => 'durable-workflow.laravel-embedded-upgrade.contract',
             'version' => 1,
         ], $this->contract['embedded_transition_authority']);
+    }
+
+    public function testServiceModePublishesThePatchedLaravelFloorsForGhsaF9x37vq9Cph6(): void
+    {
+        // The minimum Laravel releases with the TokenGuard fix, as Workflow 2.17.1 records them.
+        $floors = '^10.50.4|^11.56.1|^12.69.0|^13.30.0';
+        self::assertSame($floors, $this->contract['framework']['constraint']);
+        self::assertSame($floors, $this->composer['extra']['durable-workflow']['frameworks']['laravel']);
+        foreach (['10.50.4', '11.56.1', '12.69.0', '13.30.0'] as $floor) {
+            self::assertStringContainsString($floor, $this->composer['suggest']['laravel/framework']);
+        }
+        self::assertArrayNotHasKey('laravel/framework', $this->composer['conflict'] ?? [],
+            'The positive support boundary must not change an application\'s Laravel resolution.');
+    }
+
+    public function testEveryQualificationCellNamesItsMajorsPublishedFloor(): void
+    {
+        $floors = [];
+        foreach (explode('|', $this->contract['framework']['constraint']) as $range) {
+            self::assertMatchesRegularExpression('/\A\^([1-9][0-9]*)\.[0-9]+\.[0-9]+\z/', $range);
+            $floors[explode('.', substr($range, 1))[0]] = $range;
+        }
+        $majors = [];
+        foreach ($this->contract['framework']['qualification_matrix'] as $cell) {
+            self::assertSame('laravel/framework:'.$floors[$cell['laravel']], $cell['package']);
+            $majors[$cell['laravel']] = true;
+        }
+        self::assertSame(array_keys($floors), array_keys($majors));
+    }
+
+    public function testCiQualifiesExactlyThePublishedLaravelCells(): void
+    {
+        $workflow = (string) file_get_contents(dirname(__DIR__).'/.github/workflows/ci.yml');
+        preg_match_all(
+            "/^ {10}- framework: Laravel\n {12}version: '([0-9]+)'\n {12}php: '([0-9.]+)'\n"
+            ."^ {12}package: '([^']+)'\n {12}bootstrap: ([a-z_]+)\n/m",
+            $workflow,
+            $matches,
+            PREG_SET_ORDER,
+        );
+        self::assertSame(
+            $this->contract['framework']['qualification_matrix'],
+            array_map(static fn (array $match): array => [
+                'laravel' => $match[1], 'php' => $match[2], 'package' => $match[3], 'bootstrap' => $match[4],
+            ], $matches),
+        );
+        self::assertSame(count($matches), substr_count($workflow, "- framework: Laravel\n"));
     }
 
     public function testEverySupportedOwnershipTransitionHasOneExplicitPolicy(): void
