@@ -46,11 +46,14 @@ project follows [Semantic Versioning](https://semver.org/).
     upsert sharing a sequence with any other durable command refuses with
     `durable_command_sequence_collision` in either order. An explicit claim
     map decides which rows claim a sequence, even when the command's opener
-    is absent. It covers every activity row (retry, heartbeat, cancellation
-    acknowledgement and outcome rejection included), timer, child, condition
-    and signal-wait rows (including terminal, cancelled and internal timeout
-    timer rows), every service-call row, side effects, version markers,
-    authored cancellation scope openings and continue-as-new. Before, the
+    is absent. It follows Core's `WorkflowStepHistory`: activity rows
+    (retry, heartbeat and cancellation acknowledgement included, but not
+    the payload-free `ActivityOutcomeRejected` audit row), timer, child,
+    condition and signal-wait rows (including terminal, cancelled and
+    internal timeout timer rows), service-call rows, side effects, version
+    markers, authored cancellation scope openings and continue-as-new. A
+    `CooperativeCancellationDelivered` or `CancellationScopeDelivered`
+    claims every sequence in its `sequence_span`, inclusive. Before, the
     later event could silently replace the earlier one or be ignored.
   - A recorded upsert must carry its own positive integer `sequence`.
     Replay no longer synthesizes one: a missing sequence refuses with

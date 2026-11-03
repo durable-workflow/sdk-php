@@ -271,7 +271,7 @@ final class SearchAttributeReplayTest extends TestCase
         ];
         $codec = new AvroPayloadCodec();
         foreach (['ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'ActivityTimedOut', 'ActivityRetryScheduled',
-            'ActivityHeartbeatRecorded', 'ActivityCancellationAcknowledged', 'ActivityOutcomeRejected'] as $type) {
+            'ActivityHeartbeatRecorded', 'ActivityCancellationAcknowledged'] as $type) {
             $rows[$type] = ['event_type' => $type, 'payload' => ['sequence' => 1, 'activity_type' => 'golden.activity',
                 'activity_execution_id' => 'activity-1', 'result' => $codec->envelope('done')]];
         }
@@ -353,6 +353,236 @@ final class SearchAttributeReplayTest extends TestCase
             'scope after memo' => ['memo', true],
             'memo after scope' => ['memo', false],
         ];
+    }
+
+    /**
+     * ActivityOutcomeRejected is a payload-free audit fact: it neither resolves
+     * an activity nor consumes a command position, with or without a sequence.
+     *
+     * @param array<string, mixed> $payload
+     */
+    #[DataProvider('outcomeRejections')]
+    public function testAnActivityOutcomeRejectionClaimsNoSequence(array $payload, bool $upsertFirst): void
+    {
+        $upsert = ['event_type' => 'SearchAttributesUpserted', 'payload' => ['sequence' => 1, 'attributes' => ['Stage' => 'greeting'],
+            'merged' => ['Stage' => 'greeting']]];
+        $rejection = ['event_type' => 'ActivityOutcomeRejected', 'payload' => $payload];
+        $result = (new Replayer(new AvroPayloadCodec()))->replay(
+            static function (WorkflowContext $context): string {
+                $context->upsertSearchAttributes(['Stage' => 'greeting']);
+
+                return 'done';
+            },
+            $upsertFirst ? [$upsert, $rejection] : [$rejection, $upsert],
+            [],
+            'search-attribute-replay',
+        );
+
+        self::assertSame(['complete_workflow'], array_column($result->commands, 'type'));
+    }
+
+    /** @return array<string, array{array<string, mixed>, bool}> */
+    public static function outcomeRejections(): array
+    {
+        $canonical = ['activity_execution_id' => 'activity-1', 'activity_attempt_id' => 'attempt-1', 'reason' => 'stale_attempt'];
+
+        return [
+            'canonical, after the upsert' => [$canonical, true],
+            'canonical, before the upsert' => [$canonical, false],
+            'with a sequence, after the upsert' => [[...$canonical, 'sequence' => 1], true],
+            'with a sequence, before the upsert' => [[...$canonical, 'sequence' => 1], false],
+        ];
+    }
+
+    /**
+     * A delivered cooperative cancellation consumes the interrupted call even
+     * with no opener, and its sequence_span reserves the whole range,
+     * inclusive. An upsert anywhere in it collides, in either order.
+     */
+    #[DataProvider('deliveryCollisions')]
+    public function testACooperativeDeliveryClaimsItsWholeSpan(int $deliverySequence, int $span, int $upsertSequence, bool $upsertFirst): void
+    {
+        $snapshot = json_decode((string) file_get_contents(__DIR__.'/fixtures/cooperative-cancellation-context.json'), true, flags: JSON_THROW_ON_ERROR);
+        $request = ['event_type' => 'CooperativeCancellationRequested', 'timestamp' => '2026-10-01T00:00:05Z', 'payload' => [
+            'workflow_run_id' => 'run-1', 'workflow_instance_id' => 'child-instance', 'workflow_command_id' => 'request-1',
+            'cleanup_deadline_at' => '2026-10-01T00:00:30.123456Z', 'reason' => 'maintenance', 'cancellation' => $snapshot]];
+        $delivery = ['event_type' => 'CooperativeCancellationDelivered', 'timestamp' => '2026-10-01T00:00:08Z', 'payload' => [
+            'workflow_run_id' => 'run-1', 'workflow_command_id' => 'request-1', 'sequence' => $deliverySequence,
+            'sequence_span' => $span, 'call_kind' => $span > 1 ? 'parallel' : 'timer', 'cancellation' => $snapshot]];
+        $upsert = ['event_type' => 'SearchAttributesUpserted', 'timestamp' => '2026-10-01T00:00:06Z', 'payload' => [
+            'sequence' => $upsertSequence, 'attributes' => ['Stage' => 'greeting'], 'merged' => ['Stage' => 'greeting']]];
+        $history = $upsertFirst ? [$request, $upsert, $delivery] : [$request, $delivery, $upsert];
+
+        $exception = $this->replayRefusal($history, ['run_id' => 'run-1']);
+
+        self::assertSame('durable_command_sequence_collision', $exception->reason);
+        self::assertSame($upsertSequence, $exception->sequence);
+    }
+
+    /** @return array<string, array{int, int, int, bool}> */
+    public static function deliveryCollisions(): array
+    {
+        return [
+            'upsert, then a single delivery' => [1, 1, 1, true],
+            'single delivery, then an upsert' => [1, 1, 1, false],
+            'upsert, then a span over its interior' => [1, 3, 2, true],
+            'span, then an upsert on its interior' => [1, 3, 2, false],
+            'upsert, then a span ending on it' => [1, 3, 3, true],
+            'span, then an upsert on its last member' => [1, 3, 3, false],
+        ];
+    }
+
+    public function testAnUpsertJustPastADeliverySpanIsNotInIt(): void
+    {
+        $snapshot = json_decode((string) file_get_contents(__DIR__.'/fixtures/cooperative-cancellation-context.json'), true, flags: JSON_THROW_ON_ERROR);
+        $history = [
+            ['event_type' => 'CooperativeCancellationRequested', 'timestamp' => '2026-10-01T00:00:05Z', 'payload' => [
+                'workflow_run_id' => 'run-1', 'workflow_instance_id' => 'child-instance', 'workflow_command_id' => 'request-1',
+                'cleanup_deadline_at' => '2026-10-01T00:00:30.123456Z', 'reason' => 'maintenance', 'cancellation' => $snapshot]],
+            ['event_type' => 'CooperativeCancellationDelivered', 'timestamp' => '2026-10-01T00:00:08Z', 'payload' => [
+                'workflow_run_id' => 'run-1', 'workflow_command_id' => 'request-1', 'sequence' => 1, 'sequence_span' => 3,
+                'call_kind' => 'parallel', 'cancellation' => $snapshot]],
+            ['event_type' => 'SearchAttributesUpserted', 'timestamp' => '2026-10-01T00:00:09Z', 'payload' => [
+                'sequence' => 4, 'attributes' => ['Stage' => 'greeting'], 'merged' => ['Stage' => 'greeting']]],
+        ];
+
+        // Step 4 is past the inclusive range 1..3, so whatever replay decides
+        // about the cancelled call, it is not a sequence collision.
+        try {
+            (new Replayer(new AvroPayloadCodec()))->replay(
+                static function (WorkflowContext $context): string {
+                    $context->upsertSearchAttributes(['Stage' => 'greeting']);
+
+                    return 'done';
+                },
+                $history,
+                [],
+                'search-attribute-replay',
+                ['run_id' => 'run-1'],
+            );
+        } catch (NonDeterministicWorkflow $exception) {
+            self::assertNotSame('durable_command_sequence_collision', $exception->reason);
+        }
+        self::addToAssertionCount(1);
+    }
+
+    /** @param callable(array<string, mixed>): array<string, mixed> $mutate */
+    #[DataProvider('reusedDeliveryCollisions')]
+    public function testACooperativeDeliveryCannotShareAReusedUpsertsStep(callable $mutate): void
+    {
+        $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-upserts-cancellation-clock.json';
+        $fixture = $mutate(json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR));
+        $fixture['expected'] = ['workflow_tasks' => [['command_sequence' => [['type' => 'replay_error', 'reason' => 'durable_command_sequence_collision']]]]];
+
+        $tasks = ReplayRegressionFixture::execute($fixture);
+
+        self::assertSame('durable_command_sequence_collision', $tasks[0]['command_sequence'][0]['reason']);
+    }
+
+    /** @return array<string, array{callable(array<string, mixed>): array<string, mixed>}> */
+    public static function reusedDeliveryCollisions(): array
+    {
+        // History rows: 0 start, 1 memo (step 1), 2 search attributes (step 2),
+        // 3 timer (step 3), 4 request, 5 delivery. The timer opener is removed.
+        $withoutOpener = static function (array $fixture, callable $change): array {
+            array_splice($fixture['history'], 3, 1);
+            $fixture['history'] = $change($fixture['history']);
+            foreach ($fixture['history'] as $index => $event) {
+                $fixture['history'][$index]['sequence'] = $index + 1;
+            }
+
+            return $fixture;
+        };
+
+        return [
+            'delivery after the reused upsert, on its step' => [static fn (array $fixture): array => $withoutOpener($fixture, static function (array $history): array {
+                $history[4]['payload']['sequence'] = 2;
+
+                return $history;
+            })],
+            'delivery span over the reused upsert' => [static fn (array $fixture): array => $withoutOpener($fixture, static function (array $history): array {
+                $history[4]['payload']['sequence'] = 1;
+                $history[4]['payload']['sequence_span'] = 3;
+                $history[4]['payload']['call_kind'] = 'parallel';
+
+                return $history;
+            })],
+            'delivery before the reused upsert, on its step' => [static fn (array $fixture): array => $withoutOpener($fixture, static function (array $history): array {
+                $history[4]['payload']['sequence'] = 2;
+                [$request, $delivery] = [$history[3], $history[4]];
+
+                return [$history[0], $request, $delivery, $history[1], $history[2]];
+            })],
+        ];
+    }
+
+    /**
+     * A committed scope delivery claims its position the same way. The
+     * canonical fixture delivers to a timer at step 3 that was never
+     * scheduled. Its span is 1; the scope history validator only accepts a
+     * span that matches a recorded call, so interior-span coverage is proved
+     * with the cooperative delivery above, which shares this claim path.
+     */
+    #[DataProvider('scopeDeliveryCollisions')]
+    public function testAScopeDeliveryCannotShareAnUpsertsSequence(int $upsertSequence, bool $upsertFirst): void
+    {
+        $fixture = json_decode((string) file_get_contents(__DIR__.'/fixtures/committed-scope-delivery.json'), true, flags: JSON_THROW_ON_ERROR)['unshielded'];
+        $history = $fixture['history'];
+        self::assertSame('CancellationScopeDelivered', $history[6]['event_type']);
+        self::assertSame(3, $history[6]['payload']['sequence']);
+        $upsert = ['id' => 'scope-upsert', 'namespace' => $history[0]['namespace'], 'event_type' => 'SearchAttributesUpserted',
+            'timestamp' => $history[6]['timestamp'], 'payload' => ['sequence' => $upsertSequence, 'attributes' => ['Stage' => 'greeting'],
+                'merged' => ['Stage' => 'greeting']]];
+        array_splice($history, $upsertFirst ? 6 : 7, 0, [$upsert]);
+        foreach ($history as $index => $event) {
+            $history[$index]['sequence'] = $index + 1;
+        }
+
+        try {
+            (new Replayer(new AvroPayloadCodec()))->replay(
+                static fn (WorkflowContext $context): string => 'done',
+                $history,
+                [],
+                'php-workers',
+                $fixture['task'],
+                allowCancellationScopeAuthoring: true,
+                replayCommittedCancellationScopes: true,
+            );
+            self::fail('A scope delivery must not share an upsert sequence.');
+        } catch (NonDeterministicWorkflow $exception) {
+            self::assertSame('durable_command_sequence_collision', $exception->reason);
+            self::assertSame($upsertSequence, $exception->sequence);
+        }
+    }
+
+    /** @return array<string, array{int, bool}> */
+    public static function scopeDeliveryCollisions(): array
+    {
+        return [
+            'upsert, then a scope delivery' => [3, true],
+            'scope delivery, then an upsert' => [3, false],
+        ];
+    }
+
+    /** @param list<array<string, mixed>> $history @param array<string, mixed> $task */
+    private function replayRefusal(array $history, array $task): NonDeterministicWorkflow
+    {
+        try {
+            (new Replayer(new AvroPayloadCodec()))->replay(
+                static function (WorkflowContext $context): string {
+                    $context->upsertSearchAttributes(['Stage' => 'greeting']);
+
+                    return 'done';
+                },
+                $history,
+                [],
+                'search-attribute-replay',
+                $task,
+            );
+        } catch (NonDeterministicWorkflow $exception) {
+            return $exception;
+        }
+        self::fail('Replay must refuse this history.');
     }
 
     /** @param array<string, mixed> $row */

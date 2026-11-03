@@ -23,22 +23,32 @@ final class Replayer
 {
     /**
      * Every durable history event that claims a workflow sequence, by the
-     * command kind that owns it. A command's lifecycle rows, terminal,
-     * retry, heartbeat and cancelled rows included, share its sequence; any
-     * Activity*, ChildRun* or ServiceCall* row belongs to that command (see
-     * durableCommandKind()). Internal wait-timeout timer rows belong to their
-     * wait. Rows that only point at a step claim nothing: signal receipt and
-     * rejection, updates, message cursors, selection markers, cooperative
-     * cancellation and the scope request/delivery records, whose sequence
-     * names the boundary they act on.
+     * command kind that owns it, following Core's
+     * WorkflowStepHistory::WORKFLOW_STEP_EVENT_TYPES. A command's lifecycle
+     * rows (terminal, retry, heartbeat and cancelled rows included) share its
+     * sequence. Internal wait-timeout timer rows belong to their wait; see
+     * durableCommandKind(). ActivityOutcomeRejected is deliberately absent:
+     * it is a payload-free audit fact that neither resolves an activity nor
+     * consumes a command position. Rows that only point at a step claim
+     * nothing: signal receipt and rejection, updates, message cursors,
+     * selection markers, cancellation requests and scope requests or
+     * preparations. Cancellation deliveries claim their whole span; see
+     * DELIVERY_EVENTS.
      */
     private const DURABLE_COMMAND_KINDS = [
+        'ActivityScheduled' => 'activity', 'ActivityStarted' => 'activity', 'ActivityHeartbeatRecorded' => 'activity',
+        'ActivityRetryScheduled' => 'activity', 'ActivityCompleted' => 'activity', 'ActivityFailed' => 'activity',
+        'ActivityCancelled' => 'activity', 'ActivityTimedOut' => 'activity', 'ActivityCancellationAcknowledged' => 'activity',
         'TimerScheduled' => 'timer', 'TimerFired' => 'timer', 'TimerCancelled' => 'timer',
-        'ChildWorkflowScheduled' => 'child',
+        'ChildWorkflowScheduled' => 'child', 'ChildRunStarted' => 'child', 'ChildRunCompleted' => 'child',
+        'ChildRunFailed' => 'child', 'ChildRunCancelled' => 'child', 'ChildRunTerminated' => 'child',
         'ConditionWaitOpened' => 'condition', 'ConditionWaitSatisfied' => 'condition',
         'ConditionWaitTimedOut' => 'condition', 'ConditionWaitCancelled' => 'condition',
         'SignalWaitOpened' => 'signal', 'SignalWaitReceived' => 'signal', 'SignalApplied' => 'signal',
         'SignalWaitTimedOut' => 'signal', 'SignalWaitCancelled' => 'signal',
+        'ServiceOperationScheduled' => 'service_call', 'ServiceCallStarted' => 'service_call',
+        'ServiceCallCompleted' => 'service_call', 'ServiceCallFailed' => 'service_call',
+        'ServiceCallCancelled' => 'service_call', 'ServiceCallTimedOut' => 'service_call',
         'SideEffectRecorded' => 'side_effect',
         'VersionMarkerRecorded' => 'version_marker',
         'MemoUpserted' => 'memo',
@@ -47,8 +57,13 @@ final class Replayer
         'WorkflowContinuedAsNew' => 'continue_as_new',
     ];
 
-    /** Every row of these command kinds claims its command's sequence. */
-    private const DURABLE_COMMAND_PREFIXES = ['Activity' => 'activity', 'ChildRun' => 'child', 'ServiceCall' => 'service_call'];
+    /**
+     * A delivered cancellation consumes the interrupted call even when that
+     * call was never scheduled, and its sequence_span reserves the whole
+     * interrupted range, sequence .. sequence + span - 1 inclusive (Core
+     * WorkflowStepHistory::nextSequenceFromEvents()).
+     */
+    private const DELIVERY_EVENTS = ['CooperativeCancellationDelivered', 'CancellationScopeDelivered'];
 
     /** An upsert is the only command at its sequence. */
     private const UPSERT_COMMAND_KINDS = ['memo', 'search_attributes'];
@@ -1250,6 +1265,8 @@ final class Replayer
         $versionMarkerChangeIds = [];
         $memoSequences = [];
         $commandKindsBySequence = [];
+        $deliveryRanges = [];
+        $upsertSequences = [];
         $fallbackSequence = 1_000_000;
         foreach ($history as $resolutionOrder => $event) {
             $type = (string) ($event['event_type'] ?? $event['type'] ?? '');
@@ -1273,21 +1290,31 @@ final class Replayer
             // same command's lifecycle share it. A collision that involves an
             // upsert is refused in either order, whether or not the replay
             // parser below would build a step from the other row.
-            $claim = $this->durableCommandKind($type, $payload);
-            if ($claim !== null) {
+            if (in_array($type, self::DELIVERY_EVENTS, true)) {
+                // A delivery claims its whole span. Compare ranges rather than
+                // expanding them, so a large span costs nothing.
+                [$first, $last] = $this->deliveryRange($type, $payload);
+                foreach ($upsertSequences as $upsertSequence => $upsertKind) {
+                    if ($upsertSequence >= $first && $upsertSequence <= $last) {
+                        $this->refuseUpsertCollision($upsertSequence, $type, $upsertKind, 'cancellation_delivery');
+                    }
+                }
+                $deliveryRanges[] = [$first, $last, $type];
+            } elseif (($claim = $this->durableCommandKind($type, $payload)) !== null) {
                 $kinds = $commandKindsBySequence[$key] ?? [];
                 $kinds[$claim] = true;
                 if (count($kinds) > 1 && array_intersect(array_keys($kinds), self::UPSERT_COMMAND_KINDS) !== []) {
-                    $others = implode(', ', array_diff(array_keys($kinds), [$claim]));
-                    throw new NonDeterministicWorkflow(
-                        "Workflow sequence {$sequence} records {$type} after a {$others} command.",
-                        $sequence,
-                        'one durable command per workflow sequence',
-                        "{$others} and {$claim}",
-                        'durable_command_sequence_collision',
-                    );
+                    $this->refuseUpsertCollision($sequence, $type, implode(', ', array_diff(array_keys($kinds), [$claim])), $claim);
                 }
                 $commandKindsBySequence[$key] = $kinds;
+                if (in_array($claim, self::UPSERT_COMMAND_KINDS, true)) {
+                    foreach ($deliveryRanges as [$first, $last]) {
+                        if ($sequence >= $first && $sequence <= $last) {
+                            $this->refuseUpsertCollision($sequence, $type, 'cancellation_delivery', $claim);
+                        }
+                    }
+                    $upsertSequences[$sequence] = $claim;
+                }
             }
 
             if ($type !== 'CancellationScopeOpened' && isset($scopes->openings[$sequence])
@@ -2949,6 +2976,42 @@ final class Replayer
     }
 
     /**
+     * The sequences a cancellation delivery reserves: its interrupted call's
+     * sequence through sequence + sequence_span - 1, inclusive, as Core counts
+     * them. A span that is present must be a positive integer.
+     *
+     * @param array<string, mixed> $payload
+     * @return array{int, int}
+     */
+    private function deliveryRange(string $type, array $payload): array
+    {
+        $sequence = $payload['sequence'] ?? null;
+        $span = $payload['sequence_span'] ?? 1;
+        if (!is_int($sequence) || $sequence <= 0 || !is_int($span) || $span <= 0 || $sequence > PHP_INT_MAX - $span) {
+            throw new NonDeterministicWorkflow(
+                "{$type} history must name a positive workflow sequence and span.",
+                is_int($sequence) ? $sequence : null,
+                'positive integer sequence and sequence_span',
+                'invalid delivery position',
+                'durable_command_sequence_invalid',
+            );
+        }
+
+        return [$sequence, $sequence + $span - 1];
+    }
+
+    private function refuseUpsertCollision(int $sequence, string $type, string $existing, string $incoming): never
+    {
+        throw new NonDeterministicWorkflow(
+            "Workflow sequence {$sequence} records {$type} after a {$existing} command.",
+            $sequence,
+            'one durable command per workflow sequence',
+            "{$existing} and {$incoming}",
+            'durable_command_sequence_collision',
+        );
+    }
+
+    /**
      * The command kind that owns a durable history row, or null for a row that
      * only points at a step. A wait's internal timeout timer belongs to that
      * wait, not to a workflow timer.
@@ -2958,15 +3021,6 @@ final class Replayer
     private function durableCommandKind(string $type, array $payload): ?string
     {
         $kind = self::DURABLE_COMMAND_KINDS[$type] ?? null;
-        if ($kind === null) {
-            foreach (self::DURABLE_COMMAND_PREFIXES as $prefix => $prefixKind) {
-                if (str_starts_with($type, $prefix)) {
-                    return $prefixKind;
-                }
-            }
-
-            return null;
-        }
         if ($kind !== 'timer') {
             return $kind;
         }
