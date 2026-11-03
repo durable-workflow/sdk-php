@@ -70,6 +70,18 @@ if (($_SERVER['HTTP_AUTHORIZATION'] ?? '') !== 'Bearer '.$expectedToken) {
         'heartbeat_deadline_at' => isset($state['heartbeat_seconds'])
             ? $stamp($state['progress_at'] + $state['heartbeat_seconds']) : null,
         'reason' => $live ? null : 'deadline_elapsed'];
+    if ($state['released_shapes'] ?? false) {
+        // Published PHP 2.11.8 and native 3.0.x: no progress before the first
+        // application heartbeat, and heartbeat replies omit the deadline.
+        if (!isset($state['heartbeats'])) {
+            $response['last_heartbeat_at'] = null;
+        }
+        if ($heartbeat) {
+            $response = array_intersect_key($response, array_flip(['task_id', 'activity_attempt_id', 'lease_owner',
+                'cancel_requested', 'can_continue', 'reason', 'heartbeat_recorded', 'lease_expires_at',
+                'last_heartbeat_at'])) + ['run_closed_reason' => null, 'run_closed_at' => null, 'worker_session' => null];
+        }
+    }
     if (($state['corrupt_after'] ?? PHP_INT_MAX) <= ($state['renewals'] ?? 0)) {
         $response['activity_attempt_id'] = 'foreign-attempt';
     }
