@@ -31,7 +31,7 @@ final class SearchAttributeReplayTest extends TestCase
         $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-search-attributes-changed.json';
         $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
         self::assertSame(3, $fixture['history'][0]['payload']['resume_step_sequence']);
-        self::assertNull(RedriveSuccessorHistory::violation($fixture['history'], $fixture['workflow_tasks'][0]));
+        self::assertNull(RedriveSuccessorHistory::violation($fixture, ['MemoUpserted', 'SearchAttributesUpserted']));
         $reused = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
             $event['event_type'] === 'SearchAttributesUpserted'));
         self::assertCount(1, $reused);
@@ -57,7 +57,11 @@ final class SearchAttributeReplayTest extends TestCase
 
         self::assertSame('search_attribute_value_mismatch', $exception->reason);
         self::assertSame(1, $exception->sequence);
-        self::assertSame('{"Count":2,"Stage":"greeting"}', $exception->expected);
+        // Diagnostics stay payload-free.
+        self::assertSame('the recorded search attributes', $exception->expected);
+        foreach (['greeting', 'approved', 'eu'] as $value) {
+            self::assertStringNotContainsString($value, $exception->getMessage().$exception->actual);
+        }
     }
 
     /** @return array<string, array{array<string, mixed>}> */
@@ -125,11 +129,90 @@ final class SearchAttributeReplayTest extends TestCase
         ];
     }
 
+    public function testRedriveReusedUpsertWithoutAttributesFailsClosed(): void
+    {
+        $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-search-attributes-missing.json';
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        self::assertNull(RedriveSuccessorHistory::violation($fixture, ['MemoUpserted', 'SearchAttributesUpserted']));
+        self::assertArrayNotHasKey('attributes', $fixture['history'][2]['payload']);
+
+        $tasks = ReplayRegressionFixture::executeFile($path);
+
+        self::assertSame('replay_error', $tasks[0]['command_sequence'][0]['type']);
+        self::assertSame('search_attribute_update_missing', $tasks[0]['command_sequence'][0]['reason']);
+        self::assertSame(2, $tasks[0]['command_sequence'][0]['sequence']);
+    }
+
     public function testRecordedUpsertWithoutAttributesFailsClosed(): void
     {
+        // One reason across SDKs: sdk-rust reports search_attribute_update_missing.
         $exception = $this->refusal(['Stage' => 'greeting'], null);
 
-        self::assertSame('search_attributes_missing', $exception->reason);
+        self::assertSame('search_attribute_update_missing', $exception->reason);
+    }
+
+    public function testFloatIdentityDoesNotDependOnSerializePrecision(): void
+    {
+        $previous = ini_get('serialize_precision');
+        ini_set('serialize_precision', '3');
+        try {
+            $exception = $this->refusal(['Ratio' => 1.2344], ['Ratio' => 1.2345]);
+        } finally {
+            ini_set('serialize_precision', (string) $previous);
+        }
+
+        self::assertSame('search_attribute_value_mismatch', $exception->reason);
+        self::assertStringNotContainsString('1.23', $exception->getMessage());
+    }
+
+    public function testSignedZeroMatchesZero(): void
+    {
+        $result = $this->replay(['Ratio' => -0.0], ['Ratio' => 0.0]);
+
+        self::assertSame(['complete_workflow'], array_column($result->commands, 'type'));
+    }
+
+    public function testIntAndFloatAreDifferentValues(): void
+    {
+        self::assertSame('search_attribute_value_mismatch', $this->refusal(['Count' => 2], ['Count' => 2.0])->reason);
+        self::assertSame('search_attribute_value_mismatch', $this->refusal(['Count' => 2.0], ['Count' => 2])->reason);
+    }
+
+    public function testValuesAtCoresLengthBoundsMatch(): void
+    {
+        $text = str_repeat('é', 2048);
+        $keyword = str_repeat('é', 255);
+        $result = $this->replay(['Text' => " {$text} ", 'Tags' => [" {$keyword} "]], ['Text' => $text, 'Tags' => [$keyword]]);
+
+        self::assertSame(['complete_workflow'], array_column($result->commands, 'type'));
+    }
+
+    /**
+     * @param array<string, mixed> $authored
+     * @param array<string, mixed> $recorded
+     */
+    #[DataProvider('overLengthValues')]
+    public function testValuesOverCoresLengthBoundsRefuseReplay(array $authored, array $recorded, string $origin): void
+    {
+        $exception = $this->refusal($authored, $recorded);
+
+        self::assertSame('search_attributes_unportable', $exception->reason);
+        self::assertStringContainsString("The {$origin} search attributes", $exception->getMessage());
+        self::assertStringNotContainsString('é', $exception->getMessage());
+    }
+
+    /** @return array<string, array{array<string, mixed>, array<string, mixed>, string}> */
+    public static function overLengthValues(): array
+    {
+        $text = str_repeat('é', 2049);
+        $keyword = str_repeat('é', 256);
+
+        return [
+            'recorded string over 2048' => [['Text' => $text], ['Text' => $text], 'recorded'],
+            'authored string over 2048' => [['Text' => $text], ['Text' => 'x'], 'authored'],
+            'recorded list item over 255' => [['Tags' => [$keyword]], ['Tags' => [$keyword]], 'recorded'],
+            'authored list item over 255' => [['Tags' => [$keyword]], ['Tags' => ['x']], 'authored'],
+        ];
     }
 
     /**

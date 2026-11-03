@@ -1565,21 +1565,24 @@ final class Replayer
             } elseif ($type === 'SearchAttributesUpserted') {
                 $attributes = $payload['attributes'] ?? null;
                 if (!is_array($attributes) || $attributes === []) {
+                    // The same reason sdk-rust reports for this history.
                     throw new NonDeterministicWorkflow(
                         "SearchAttributesUpserted history at sequence {$sequence} is missing its recorded attributes.",
                         $sequence,
                         'non-empty search attribute object',
                         'missing attributes',
-                        'search_attributes_missing',
+                        'search_attribute_update_missing',
                     );
                 }
-                $steps[$key] = $this->resolvedStep(
-                    $sequence,
-                    'search_attributes',
-                    null,
-                    detail: $this->searchAttributesDetail($attributes, $sequence, 'recorded'),
-                    resolutionOrder: $resolutionOrder,
-                );
+                $steps[$key] = [
+                    ...$this->resolvedStep(
+                        $sequence,
+                        'search_attributes',
+                        null,
+                        resolutionOrder: $resolutionOrder,
+                    ),
+                    'search_attributes' => $this->canonicalSearchAttributes($attributes, $sequence, 'recorded'),
+                ];
             } elseif ($type === 'ConditionWaitOpened') {
                 $conditionKey = $this->stringValue($payload['condition_key'] ?? null);
                 $conditionDefinitionFingerprint = $this->stringValue(
@@ -2393,13 +2396,15 @@ final class Replayer
         }
 
         if ($command->historyShape === 'search_attributes') {
-            $actual = $this->searchAttributesDetail($command->attributes['attributes'] ?? null, $step['sequence'], 'authored');
-            if ($actual !== $step['detail']) {
+            $authored = $this->canonicalSearchAttributes($command->attributes['attributes'] ?? null, $step['sequence'], 'authored');
+            $difference = self::searchAttributesDifference($step['search_attributes'] ?? [], $authored);
+            if ($difference !== null) {
+                // Diagnostics name the key, never the values.
                 throw new NonDeterministicWorkflow(
-                    'Recorded search attributes changed during replay.',
+                    "Recorded search attributes changed during replay: {$difference}.",
                     $step['sequence'],
-                    $step['detail'],
-                    $actual,
+                    'the recorded search attributes',
+                    $difference,
                     'search_attribute_value_mismatch',
                 );
             }
@@ -2687,23 +2692,29 @@ final class Replayer
         return $value === null ? null : (string) $value;
     }
 
+    private const SEARCH_ATTRIBUTE_MAX_STRING_LENGTH = 2048;
+
+    private const SEARCH_ATTRIBUTE_MAX_KEYWORD_LENGTH = 255;
+
     /**
      * The canonical replay identity of a search-attribute upsert's values.
      *
      * History keeps the values as Core's UpsertSearchAttributesCall normalizes
-     * them: a non-empty map with portable string keys; each value null, a
-     * bool, an int, a finite float, a string or a list of strings; strings and
-     * list items trimmed, an empty scalar string as a deletion, keys sorted.
-     * The authored call is normalized the same way, so an equivalent call still
-     * matches. Anything outside that set, recorded or authored, refuses replay
-     * instead of being coerced.
+     * them: a non-empty map with 1-64 character URL-safe string keys; each
+     * value null, a bool, an int, a finite float, a string of at most 2048
+     * characters or a list of strings of at most 255 characters each; strings
+     * and list items trimmed, an empty scalar string as a deletion, keys
+     * sorted. The authored call is normalized the same way. Anything outside
+     * that set, recorded or authored, refuses replay instead of being coerced.
      *
      * Recorded attribute_types are not part of this identity: this SDK's
      * upsert command carries no declared types, and the effective type the
      * Server records may come from a namespace registration the worker cannot
      * see. This is value-only binding.
+     *
+     * @return array<string, null|bool|int|float|string|list<string>>
      */
-    private function searchAttributesDetail(mixed $attributes, int $sequence, string $origin): string
+    private function canonicalSearchAttributes(mixed $attributes, int $sequence, string $origin): array
     {
         $refuse = static function (string $detail) use ($sequence, $origin): never {
             throw new NonDeterministicWorkflow(
@@ -2720,10 +2731,14 @@ final class Replayer
         $normalized = [];
         foreach ($attributes as $key => $value) {
             if (!is_string($key) || preg_match('/\A[A-Za-z0-9_.:-]{1,64}\z/', $key) !== 1) {
-                $refuse('key '.json_encode($key).' is not a 1-64 character URL-safe string');
+                $refuse(is_string($key) ? 'a key is not a 1-64 character URL-safe string' : 'a key is not a string');
             }
             if (is_string($value)) {
                 $value = trim($value);
+                $length = self::characterLength($value);
+                if ($length === null || $length > self::SEARCH_ATTRIBUTE_MAX_STRING_LENGTH) {
+                    $refuse("[{$key}] is not a UTF-8 string of at most ".self::SEARCH_ATTRIBUTE_MAX_STRING_LENGTH.' characters');
+                }
                 $value = $value === '' ? null : $value;
             } elseif (is_float($value)) {
                 if (!is_finite($value)) {
@@ -2737,7 +2752,12 @@ final class Replayer
                     if (!is_string($item)) {
                         $refuse("[{$key}] list value {$index} is not a string");
                     }
-                    $value[$index] = trim($item);
+                    $item = trim($item);
+                    $length = self::characterLength($item);
+                    if ($length === null || $length > self::SEARCH_ATTRIBUTE_MAX_KEYWORD_LENGTH) {
+                        $refuse("[{$key}] list value {$index} is not a UTF-8 string of at most ".self::SEARCH_ATTRIBUTE_MAX_KEYWORD_LENGTH.' characters');
+                    }
+                    $value[$index] = $item;
                 }
             } elseif ($value !== null && !is_bool($value) && !is_int($value)) {
                 $refuse("[{$key}] is a ".get_debug_type($value));
@@ -2746,14 +2766,43 @@ final class Replayer
         }
         ksort($normalized, SORT_STRING);
 
-        try {
-            return json_encode(
-                $normalized,
-                JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
-            );
-        } catch (\JsonException $error) {
-            $refuse('values cannot be encoded: '.$error->getMessage());
+        return $normalized;
+    }
+
+    private static function characterLength(string $value): ?int
+    {
+        $length = preg_match_all('/./su', $value);
+
+        return $length === false ? null : $length;
+    }
+
+    /**
+     * Compare two canonical maps structurally and type-strictly, without any
+     * JSON or php.ini dependent formatting. An int and a float are different
+     * values; floats compare numerically, so -0.0 equals 0.0.
+     *
+     * @param array<string, mixed> $recorded
+     * @param array<string, mixed> $authored
+     * @return string|null a payload-free description of the first difference
+     */
+    private static function searchAttributesDifference(array $recorded, array $authored): ?string
+    {
+        if (array_keys($recorded) !== array_keys($authored)) {
+            return 'the key set changed';
         }
+        foreach ($recorded as $key => $value) {
+            $other = $authored[$key];
+            $same = match (true) {
+                is_float($value) => is_float($other) && $value == $other,
+                is_array($value) => is_array($other) && $value === $other,
+                default => $value === $other,
+            };
+            if (!$same) {
+                return "[{$key}] changed";
+            }
+        }
+
+        return null;
     }
 
     /** @param array<string, mixed> $payload */

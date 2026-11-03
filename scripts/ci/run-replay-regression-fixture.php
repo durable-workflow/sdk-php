@@ -934,6 +934,12 @@ final class ReplayRegressionConsumer
 
                 return $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name]);
             },
+            'golden.redrive-reused-search-attributes-missing' => static function (WorkflowContext $context, mixed $name): mixed {
+                $context->upsertMemo(['stage' => 'greeting', 'customer' => $name]);
+                $context->upsertSearchAttributes(['Stage' => 'greeting']);
+
+                return $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name]);
+            },
             'golden.redrive-reused-markers' => static function (WorkflowContext $context, mixed $name): mixed {
                 $token = $context->sideEffect(static function (): string {
                     ++self::$sideEffectCalls;

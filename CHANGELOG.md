@@ -27,18 +27,23 @@ project follows [Semantic Versioning](https://semver.org/).
 - Replay now checks the values of a recorded `SearchAttributesUpserted`
   against the workflow's `upsertSearchAttributes()` call, as it already did
   for memo upserts, including an upsert a redrive successor reused from the
-  failed run. A changed value, PHP value type or key set raises
-  `NonDeterministicWorkflow` (`search_attribute_value_mismatch`) instead of
-  being accepted. Both sides are compared after Core's upsert
-  normalization (trimmed strings and list items, an empty string as a
-  deletion, sorted keys). Keys and values outside Core's portable set
-  (non-string or non-portable keys, objects, maps, nested or non-string
-  lists, non-finite floats) refuse replay with
-  `search_attributes_unportable`, and a recorded upsert without its
-  `attributes` object refuses with `search_attributes_missing`. Recorded
-  `attribute_types` are not compared: this SDK's command cannot declare
-  types, so this is value-only hardening and does not qualify typed
-  search-attribute reuse.
+  failed run.
+  - A changed value, PHP value type or key set raises
+    `NonDeterministicWorkflow` (`search_attribute_value_mismatch`) instead
+    of being accepted.
+  - Both sides are normalized as Core does (trimmed strings and list items,
+    an empty string as a deletion, sorted keys) and compared structurally
+    and type-strictly. Ints and floats differ, `-0.0` equals `0.0`, and the
+    result does not depend on JSON formatting or `serialize_precision`.
+  - Keys and values outside Core's portable set refuse replay with
+    `search_attributes_unportable`: non-string or non-portable keys,
+    objects, maps, nested or non-string lists, non-finite floats, strings
+    over 2,048 characters and list items over 255.
+  - A recorded upsert without its `attributes` refuses with
+    `search_attribute_update_missing`, the reason sdk-rust uses.
+  - Recorded `attribute_types` are not compared: this SDK's command cannot
+    declare types, so this is value-only hardening and does not qualify
+    typed search-attribute reuse.
 
 ## [3.8.3] - 2026-11-03
 

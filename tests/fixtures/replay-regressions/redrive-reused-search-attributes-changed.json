@@ -19,7 +19,7 @@
       "recorded_at": "2026-11-03T00:05:00+00:00",
       "payload": {
         "workflow_class": "Tests\\Fixtures\\V2\\TestRedriveVisibilityWorkflow",
-        "workflow_type": "golden.redrive-reused-upserts",
+        "workflow_type": "golden.redrive-reused-search-attributes-changed",
         "workflow_instance_id": "regression-corpus-redrive-upserts",
         "workflow_run_id": "regression-corpus-run",
         "workflow_command_id": "01JBREDRIVECOMMAND00000000",
