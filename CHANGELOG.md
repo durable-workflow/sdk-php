@@ -41,6 +41,11 @@ project follows [Semantic Versioning](https://semver.org/).
     over 2,048 characters and list items over 255.
   - A recorded upsert without its `attributes` refuses with
     `search_attribute_update_missing`, the reason sdk-rust uses.
+  - A second `SearchAttributesUpserted` at one workflow sequence refuses
+    with `duplicate_search_attribute_update`. An upsert sharing a sequence
+    with another durable command refuses with
+    `durable_command_sequence_collision`. Before, the later event silently
+    replaced the earlier one.
   - Recorded `attribute_types` are not compared: this SDK's command cannot
     declare types, so this is value-only hardening and does not qualify
     typed search-attribute reuse.

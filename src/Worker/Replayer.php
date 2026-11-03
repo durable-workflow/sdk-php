@@ -1235,6 +1235,19 @@ final class Replayer
                     reason: 'durable_command_sequence_collision');
             }
 
+            // A search-attribute upsert is one event per step, so no other
+            // durable command may later claim its sequence.
+            if (($steps[$key]['shape'] ?? null) === 'search_attributes'
+                && $incomingShape !== null && $incomingShape !== 'search_attributes') {
+                throw new NonDeterministicWorkflow(
+                    "Workflow sequence {$sequence} contains a search-attribute upsert and another durable command.",
+                    $sequence,
+                    'one durable command shape',
+                    "search attribute upsert and {$incomingShape}",
+                    'durable_command_sequence_collision',
+                );
+            }
+
             if ($type !== 'CancellationScopeOpened' && isset($scopes->openings[$sequence])
                 && $this->historyEventShape($type, $payload) !== null) {
                 throw new NonDeterministicWorkflow('Scope opening collides with another durable command.', $sequence,
@@ -1563,6 +1576,24 @@ final class Replayer
                     resolutionOrder: $resolutionOrder,
                 );
             } elseif ($type === 'SearchAttributesUpserted') {
+                if (($steps[$key]['shape'] ?? null) === 'search_attributes') {
+                    throw new NonDeterministicWorkflow(
+                        "Workflow sequence {$sequence} contains more than one SearchAttributesUpserted event.",
+                        $sequence,
+                        'one SearchAttributesUpserted event',
+                        'multiple SearchAttributesUpserted events',
+                        'duplicate_search_attribute_update',
+                    );
+                }
+                if (isset($steps[$key])) {
+                    throw new NonDeterministicWorkflow(
+                        "Workflow sequence {$sequence} contains a search-attribute upsert and another durable command.",
+                        $sequence,
+                        'one durable command shape',
+                        $steps[$key]['shape'].' and search attribute upsert',
+                        'durable_command_sequence_collision',
+                    );
+                }
                 $attributes = $payload['attributes'] ?? null;
                 if (!is_array($attributes) || $attributes === []) {
                     // The same reason sdk-rust reports for this history.

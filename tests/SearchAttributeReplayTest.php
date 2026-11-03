@@ -129,6 +129,81 @@ final class SearchAttributeReplayTest extends TestCase
         ];
     }
 
+    /** @param list<array<string, mixed>> $history */
+    #[DataProvider('collidingHistories')]
+    public function testOneSequenceCannotHoldTwoSearchAttributeUpsertsOrAnotherCommand(array $history, string $reason): void
+    {
+        try {
+            (new Replayer(new AvroPayloadCodec()))->replay(
+                static function (WorkflowContext $context): mixed {
+                    $context->upsertSearchAttributes(['Stage' => 'greeting']);
+
+                    return $context->activity('golden.activity');
+                },
+                $history,
+                [],
+                'search-attribute-replay',
+            );
+            self::fail('A sequence must hold one durable command.');
+        } catch (NonDeterministicWorkflow $exception) {
+            self::assertSame($reason, $exception->reason);
+            self::assertSame(1, $exception->sequence);
+        }
+    }
+
+    /** @return array<string, array{list<array<string, mixed>>, string}> */
+    public static function collidingHistories(): array
+    {
+        $upsert = static fn (string $stage): array => ['event_type' => 'SearchAttributesUpserted',
+            'payload' => ['sequence' => 1, 'attributes' => ['Stage' => $stage], 'merged' => ['Stage' => $stage]]];
+        $activity = ['event_type' => 'ActivityCompleted', 'payload' => ['sequence' => 1, 'activity_type' => 'golden.activity',
+            'result' => (new AvroPayloadCodec())->envelope('done')]];
+
+        return [
+            'two upserts' => [[$upsert('greeting'), $upsert('approved')], 'duplicate_search_attribute_update'],
+            'two equal upserts' => [[$upsert('greeting'), $upsert('greeting')], 'duplicate_search_attribute_update'],
+            'upsert after another command' => [[$activity, $upsert('greeting')], 'durable_command_sequence_collision'],
+            'another command after an upsert' => [[$upsert('greeting'), $activity], 'durable_command_sequence_collision'],
+        ];
+    }
+
+    /** @param callable(list<array<string, mixed>>): list<array<string, mixed>> $mutate */
+    #[DataProvider('collidingRedriveHistories')]
+    public function testReusedSearchAttributeUpsertCannotShareItsStep(callable $mutate, string $reason): void
+    {
+        $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-upserts-clock.json';
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $fixture['history'] = $mutate($fixture['history']);
+        $fixture['expected'] = ['workflow_tasks' => [['command_sequence' => [['type' => 'replay_error', 'reason' => $reason]]]]];
+
+        $tasks = ReplayRegressionFixture::execute($fixture);
+
+        self::assertSame('replay_error', $tasks[0]['command_sequence'][0]['type']);
+        self::assertSame($reason, $tasks[0]['command_sequence'][0]['reason']);
+    }
+
+    /** @return array<string, array{callable(list<array<string, mixed>>): list<array<string, mixed>>, string}> */
+    public static function collidingRedriveHistories(): array
+    {
+        return [
+            'reused upsert recorded twice' => [static function (array $history): array {
+                $copy = $history[2];
+                $copy['payload']['attributes'] = ['Stage' => 'approved'];
+                array_splice($history, 3, 0, [$copy]);
+                foreach ($history as $index => $event) {
+                    $history[$index]['sequence'] = $index + 1;
+                }
+
+                return $history;
+            }, 'duplicate_search_attribute_update'],
+            'reused upsert on the memo step' => [static function (array $history): array {
+                $history[2]['payload']['sequence'] = 1;
+
+                return $history;
+            }, 'durable_command_sequence_collision'],
+        ];
+    }
+
     public function testRedriveReusedUpsertWithoutAttributesFailsClosed(): void
     {
         $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-search-attributes-missing.json';
