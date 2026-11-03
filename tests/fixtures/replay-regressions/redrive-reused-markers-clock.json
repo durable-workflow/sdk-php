@@ -1,0 +1,37 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-redrive-reused-markers-clock",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.redrive-reused-markers", "input": ["Taylor"]},
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}, "recorded_at": "2026-11-03T00:05:00+00:00"},
+    {
+      "sequence": 2, "event_type": "SideEffectRecorded", "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "sequence": 1,
+        "result": "wwHioz3/VYAiNwogMDEyMzQ1Njc4OWFiY2RlZg==",
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      }
+    },
+    {
+      "sequence": 3, "event_type": "VersionMarkerRecorded", "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "sequence": 2, "change_id": "redrive-markers", "version": 1, "min_supported": -1, "max_supported": 1,
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "arguments": ["Taylor", "0123456789abcdef", 1]
+      }
+    ]
+  }
+}
