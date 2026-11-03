@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
   "fixture_schema": "durable-workflow.replay-regression/v1",
   "id": "php-redrive-reused-signal-wait-clock",
-  "protocol_version": "1.0",
+  "protocol_version": "1.20",
   "bindings": [
     "php"
   ],
@@ -18,10 +18,18 @@
       "event_type": "WorkflowStarted",
       "recorded_at": "2026-11-03T00:05:00+00:00",
       "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestRedriveSignalWorkflow",
+        "workflow_type": "golden.redrive-reused-signal-wait",
+        "workflow_instance_id": "regression-corpus-redrive-signal",
+        "workflow_run_id": "regression-corpus-run",
+        "workflow_command_id": "01JBREDRIVECOMMAND00000000",
         "continued_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "resume_step_sequence": 2,
         "recovery_kind": "redrive",
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
         "replayed_started_at": "2026-11-03T00:00:00+00:00",
-        "resume_step_sequence": 3
+        "workflow_link_id": "01JBREDRIVELINK00000000000"
       }
     },
     {
@@ -69,13 +77,23 @@
       }
     }
   ],
+  "workflow_tasks": [
+    {
+      "workflow_id": "regression-corpus-redrive-signal",
+      "run_id": "regression-corpus-run"
+    }
+  ],
   "expected": {
-    "command_sequence": [
+    "workflow_tasks": [
       {
-        "type": "schedule_activity",
-        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
-        "arguments": [
-          "Taylor"
+        "command_sequence": [
+          {
+            "type": "schedule_activity",
+            "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+            "arguments": [
+              "Taylor"
+            ]
+          }
         ]
       }
     ]

@@ -8,15 +8,19 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Replay evidence for Workflow 2.19 redrive reuse of `MemoUpserted`,
-  `SearchAttributesUpserted` and an applied signal wait (`SignalWaitOpened`,
-  `SignalReceived`, `SignalApplied`). A cold worker replays Core's successor
-  histories, with the redrive `WorkflowStarted` envelope, using the recorded
-  memo, search attributes and signal value. It does not upsert again or
-  reopen the wait. None of these events is a replay time source in this SDK.
-  Cooperative cancellation `remaining()` starts at a successor delivery,
-  which follows the reused prefix, so retiming a reused event changes no
-  command. No runtime change was needed.
+- Replay evidence for Workflow 2.19 redrive reuse of `MemoUpserted` and
+  `SearchAttributesUpserted`, and for Core's reused signal-wait events
+  (`SignalWaitOpened`, `SignalReceived`, `SignalApplied`). Each fixture is a
+  redrive successor checked by a shared test validator: `WorkflowStarted`
+  carries the successor identity, link and redrive envelope, with
+  `resume_step_sequence` one past the last reused step; the reused prefix
+  follows it; successor rows come later and bind to the successor run. A
+  cold worker replays them with the recorded values and does not upsert
+  again or reopen the wait. The reused times are not a replay time source
+  here: cooperative cancellation `remaining()` starts at a successor
+  delivery after the prefix. No runtime change was needed. This does not
+  qualify PHP service workers for Core signal waits, which this SDK cannot
+  author.
 
 ## [3.8.3] - 2026-11-03
 

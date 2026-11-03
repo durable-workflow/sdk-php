@@ -16,10 +16,18 @@
       "event_type": "WorkflowStarted",
       "recorded_at": "2026-11-03T00:05:00+00:00",
       "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestRedriveVisibilityWorkflow",
+        "workflow_type": "golden.redrive-reused-upserts",
+        "workflow_instance_id": "regression-corpus-redrive-upserts",
+        "workflow_run_id": "regression-corpus-run",
+        "workflow_command_id": "01JBREDRIVECOMMAND00000000",
         "continued_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "resume_step_sequence": 3,
         "recovery_kind": "redrive",
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
         "replayed_started_at": "2026-11-03T00:00:00+00:00",
-        "resume_step_sequence": 4
+        "workflow_link_id": "01JBREDRIVELINK00000000000"
       }
     },
     {
@@ -73,17 +81,17 @@
     {
       "sequence": 5,
       "event_type": "CooperativeCancellationRequested",
-      "recorded_at": "2026-11-03T00:05:01.000000Z",
+      "recorded_at": "2026-11-03T00:05:01+00:00",
       "payload": {
         "workflow_command_id": "successor-request",
-        "workflow_run_id": "regression-inline",
+        "workflow_run_id": "regression-corpus-run",
         "cleanup_deadline_at": "2026-11-03T00:05:31.000000Z",
         "cancellation": {
           "schema": "durable-workflow.cancellation-context/v1",
           "request_id": "successor-request",
           "root_request_id": "successor-request",
-          "root_workflow_instance_id": "regression-workflow",
-          "root_workflow_run_id": "regression-inline",
+          "root_workflow_instance_id": "regression-corpus-redrive-upserts",
+          "root_workflow_run_id": "regression-corpus-run",
           "parent_request_id": null,
           "reason": null,
           "requester": {
@@ -96,8 +104,8 @@
           "lineage": [
             {
               "request_id": "successor-request",
-              "workflow_instance_id": "regression-workflow",
-              "workflow_run_id": "regression-inline"
+              "workflow_instance_id": "regression-corpus-redrive-upserts",
+              "workflow_run_id": "regression-corpus-run"
             }
           ]
         }
@@ -106,10 +114,10 @@
     {
       "sequence": 6,
       "event_type": "CooperativeCancellationDelivered",
-      "recorded_at": "2026-11-03T00:05:02.000000Z",
+      "recorded_at": "2026-11-03T00:05:02+00:00",
       "payload": {
         "workflow_command_id": "successor-request",
-        "workflow_run_id": "regression-inline",
+        "workflow_run_id": "regression-corpus-run",
         "sequence": 3,
         "call_kind": "timer"
       }
@@ -117,8 +125,8 @@
   ],
   "workflow_tasks": [
     {
-      "workflow_id": "regression-workflow",
-      "run_id": "regression-inline"
+      "workflow_id": "regression-corpus-redrive-upserts",
+      "run_id": "regression-corpus-run"
     }
   ],
   "expected": {
