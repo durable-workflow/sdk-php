@@ -6,7 +6,7 @@ export const PORTAL_ORIGIN = 'https://php.durable-workflow.com';
 // Links to other origins are left to their own sites.
 export function fragmentLinks(html, relativePage) {
   const page = new URL(relativePage, `${PORTAL_ORIGIN}/`);
-  return [...html.matchAll(/\shref="([^"]*#[^"]*)"/g)].flatMap(([, href]) => {
+  return [...html.matchAll(/\shref="([^"#]*#[^"]*)"/g)].flatMap(([, href]) => {
     const url = new URL(href.replaceAll('&amp;', '&'), page);
     if (url.origin !== PORTAL_ORIGIN || url.hash.length < 2) return [];
     return [{href, url, fragment: decodeURIComponent(url.hash.slice(1))}];
