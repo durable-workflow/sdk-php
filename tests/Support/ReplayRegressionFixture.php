@@ -643,6 +643,12 @@ final class ReplayRegressionFixture
 
                 return $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name]);
             },
+            'golden.redrive-reused-search-attribute-types' => static function (WorkflowContext $context, mixed $name): mixed {
+                $context->upsertMemo(['stage' => 'greeting', 'customer' => $name]);
+                $context->upsertSearchAttributes(['Stage' => 'greeting'], ['Stage' => 'keyword']);
+
+                return $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name]);
+            },
             'golden.redrive-reused-search-attributes-missing' => static function (WorkflowContext $context, mixed $name): mixed {
                 $context->upsertMemo(['stage' => 'greeting', 'customer' => $name]);
                 $context->upsertSearchAttributes(['Stage' => 'greeting']);

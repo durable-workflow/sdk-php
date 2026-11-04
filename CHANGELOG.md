@@ -8,6 +8,12 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `WorkflowContext::upsertSearchAttributes()` accepts an optional complete map
+  of canonical type declarations (#244). Explicitly typed calls bind replay to
+  both values and recorded type identity. Existing one-argument calls retain
+  value-only replay, and histories without type metadata retain legacy
+  compatibility. Malformed recorded type identities are refused.
+
 - `WorkflowContext::startChildWorkflow()` starts a child and returns a
   `ChildWorkflowHandle` once the runtime has committed the start (#185). The
   handle's `identity()` gives the child call ID, the child workflow ID and the

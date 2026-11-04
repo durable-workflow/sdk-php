@@ -1857,6 +1857,9 @@ final class Replayer
                         resolutionOrder: $resolutionOrder,
                     ),
                     'search_attributes' => $this->canonicalSearchAttributes($attributes, $sequence, 'recorded'),
+                    'search_attribute_types' => array_key_exists('attribute_types', $payload)
+                        ? $this->recordedSearchAttributeTypes($attributes, $payload['attribute_types'], $sequence)
+                        : null,
                 ];
             } elseif ($type === 'ConditionWaitOpened') {
                 $conditionKey = $this->stringValue($payload['condition_key'] ?? null);
@@ -2699,6 +2702,14 @@ final class Replayer
                     'search_attribute_value_mismatch',
                 );
             }
+            $recordedTypes = $step['search_attribute_types'] ?? null;
+            if ($recordedTypes !== null && array_key_exists('attribute_types', $command->attributes)
+                && $recordedTypes !== $command->attributes['attribute_types']) {
+                throw new NonDeterministicWorkflow(
+                    'Declared search-attribute types changed during replay.',
+                    $step['sequence'], reason: 'search_attribute_type_mismatch',
+                );
+            }
         }
 
         $actualDetail = $this->commandDetail($command);
@@ -2986,6 +2997,21 @@ final class Replayer
     private const SEARCH_ATTRIBUTE_MAX_STRING_LENGTH = 2048;
 
     private const SEARCH_ATTRIBUTE_MAX_KEYWORD_LENGTH = 255;
+
+    /**
+     * @param array<string, mixed> $attributes
+     * @return array<string, string>
+     */
+    private function recordedSearchAttributeTypes(array $attributes, mixed $types, int $sequence): array
+    {
+        try {
+            return SearchAttributeTypes::canonical($attributes, $types);
+        } catch (\InvalidArgumentException $error) {
+            throw new NonDeterministicWorkflow(
+                $error->getMessage(), $sequence, reason: 'search_attribute_types_malformed',
+            );
+        }
+    }
 
     /**
      * The canonical replay identity of a search-attribute upsert's values.
