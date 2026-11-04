@@ -626,7 +626,10 @@ Laravel 10.50.4, 11.56.1, 12.69.0, 13.30.0 and later releases of each major
 auto-discover the service provider from the same SDK package. Earlier releases
 predate the GHSA-f9x3-7vq9-cph6 fix and are outside the supported boundary.
 Publish the environment-backed configuration, add attributed handler services,
-and start the supervised Artisan command:
+and start the supervised Artisan command. The worker process needs `ext-pcntl`;
+the command refuses to start without it so `SIGINT` and `SIGTERM` always drain
+cleanly. Composer only suggests the extension, and the official `php:*-cli`
+images do not include it:
 
 ```bash
 composer require durable-workflow/sdk
