@@ -38,6 +38,59 @@ if (!$approved) {
 }
 ```
 
+### Durations
+
+`sleep()` and `deferTimer()`, the `timeout` of `waitCondition()` and
+`deferCondition()`, the remote and local activity timeout options, the child
+workflow `execution_timeout_seconds` and `run_timeout_seconds` options, and the
+`serviceOperation()` `wait_timeout_seconds` option take a duration in any of
+these forms:
+
+- `int` or `float` seconds, such as `1800`;
+- a string such as `'30 minutes'`, `'1h 30m'`, `'1.5 hours'` or
+  `'1 hour and 30 minutes'`;
+- a `DateInterval` or `CarbonInterval`, such as `new DateInterval('PT30M')` or
+  `CarbonInterval::minutes(30)`.
+
+```php
+use Carbon\CarbonInterval;
+
+$verified = $context->waitCondition(
+    static fn (): bool => $context->signals('verify') !== [],
+    key: 'email-verified',
+    timeout: '30 minutes',
+);
+
+$context->sleep(CarbonInterval::hours(2));
+
+$receipt = $context->activity('payments.capture', [$orderId], [
+    'start_to_close_timeout' => '30 seconds',
+    'schedule_to_close_timeout' => '10 minutes',
+]);
+```
+
+The SDK converts each duration to whole seconds once, rounding up, so
+`'30 minutes'`, `1800`, `new DateInterval('PT30M')` and
+`CarbonInterval::minutes(30)` record identical history. Strings and intervals
+convert exactly as the embedded Laravel package's `timer()` and `await()` do,
+with `CarbonInterval::fromString()` and `totalSeconds`. Carbon uses fixed
+factors, not the calendar: a day is 24 hours, a week 7 days, a month 4 weeks
+and a year 12 months. The result never depends on the current date, time zone
+or daylight-saving changes.
+
+String units are `microseconds`/`µs`, `milliseconds`/`ms`, `seconds`/`s`,
+`minutes`/`m`, `hours`/`h`, `days`/`d`, `weeks`/`w`, `months`/`mo` and
+`years`/`y`, with singular and plural spellings. Unknown units, extra words,
+commas, negative values and ISO 8601 strings throw `InvalidArgumentException`
+naming the parameter and the accepted forms. Pass ISO 8601 durations as
+`new DateInterval('PT30M')`. A zero duration is valid for timers, condition
+waits and `wait_timeout_seconds`. Activity and child-workflow timeouts need at
+least one second.
+
+Keep a timer's duration stable across deployments. Changing `'30 minutes'` to
+`'31 minutes'` while a run is waiting on that timer raises `NonDeterministicWorkflow`
+on replay, just as changing `1800` to `1860` would.
+
 ```php
 $worker->registerWorkflow(
     'orders.process',
@@ -57,7 +110,8 @@ $worker->registerWorkflow(
 
 Remote activity options are `connection`, `queue`, `retry_policy`,
 `start_to_close_timeout`, `schedule_to_start_timeout`, `schedule_to_close_timeout`,
-`heartbeat_timeout`, `worker_session` and `cancellation_policy`. Unknown option
+`heartbeat_timeout`, `worker_session` and `cancellation_policy`. The four
+timeouts accept the [duration forms](#durations) above. Unknown option
 or retry-policy field names fail locally with `InvalidArgumentException`.
 See [failures and retries](/build/failures-retries/) for the retry policy fields.
 

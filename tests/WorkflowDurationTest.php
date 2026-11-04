@@ -1,0 +1,377 @@
+<?php
+
+declare(strict_types=1);
+
+namespace DurableWorkflow\Tests;
+
+use Carbon\Carbon;
+use Carbon\CarbonInterval;
+use DateInterval;
+use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Worker\Replayer;
+use DurableWorkflow\Worker\WorkflowCommand;
+use DurableWorkflow\Worker\WorkflowContext;
+use DurableWorkflow\Worker\WorkflowDuration;
+use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\TestCase;
+
+final class WorkflowDurationTest extends TestCase
+{
+    private string $timezone;
+
+    protected function setUp(): void
+    {
+        $this->timezone = date_default_timezone_get();
+    }
+
+    protected function tearDown(): void
+    {
+        Carbon::setTestNow();
+        date_default_timezone_set($this->timezone);
+    }
+
+    /** @return iterable<string, array{int|float|string|DateInterval}> */
+    public static function thirtyMinutes(): iterable
+    {
+        yield 'int' => [1800];
+        yield 'float' => [1800.0];
+        yield 'fractional float rounds up' => [1799.25];
+        yield 'string' => ['30 minutes'];
+        yield 'short string' => ['30m'];
+        yield 'fractional string' => ['0.5 hours'];
+        yield 'compound string' => ['29 minutes and 60 seconds'];
+        yield 'fractional seconds string rounds up' => ['1799.5 seconds'];
+        yield 'DateInterval' => [new DateInterval('PT30M')];
+        yield 'DateInterval with microseconds rounds up' => [self::withMicroseconds(new DateInterval('PT29M59S'), 0.25)];
+        yield 'CarbonInterval' => [CarbonInterval::minutes(30)];
+        yield 'CarbonInterval from string' => [CarbonInterval::fromString('30 minutes')];
+        yield 'createFromDateString' => [DateInterval::createFromDateString('30 minutes')];
+    }
+
+    #[DataProvider('thirtyMinutes')]
+    public function testSleepRecordsIdenticalTimerCommands(int|float|string|DateInterval $duration): void
+    {
+        $workflow = static function (WorkflowContext $context) use ($duration): void {
+            $context->sleep($duration);
+        };
+
+        self::assertSame(self::commandsFor(static fn (WorkflowContext $context) => $context->sleep(1800)), self::commandsFor($workflow));
+        self::assertSame(1800, self::commandsFor($workflow)[0]['delay_seconds']);
+    }
+
+    #[DataProvider('thirtyMinutes')]
+    public function testDeferTimerInGroupRecordsIdenticalTimerCommands(int|float|string|DateInterval $duration): void
+    {
+        $baseline = self::commandsFor(static fn (WorkflowContext $context) => $context->all([$context->deferTimer(1800)]));
+        $commands = self::commandsFor(static fn (WorkflowContext $context) => $context->all([$context->deferTimer($duration)]));
+
+        self::assertSame($baseline, $commands);
+        self::assertSame(1800, $commands[0]['delay_seconds']);
+    }
+
+    #[DataProvider('thirtyMinutes')]
+    public function testWaitConditionRecordsIdenticalTimeoutCommands(int|float|string|DateInterval $duration): void
+    {
+        $workflow = static fn (int|float|string|DateInterval $timeout) => static fn (WorkflowContext $context): bool => $context->waitCondition(
+            static fn (): bool => $context->signals('verify') !== [],
+            key: 'email-verified',
+            timeout: $timeout,
+        );
+
+        $commands = self::commandsFor($workflow($duration));
+        self::assertSame(self::commandsFor($workflow(1800)), $commands);
+        self::assertSame('open_condition_wait', $commands[0]['type']);
+        self::assertSame(1800, $commands[0]['timeout_seconds']);
+    }
+
+    #[DataProvider('thirtyMinutes')]
+    public function testDeferConditionUsesTheSameTimeout(int|float|string|DateInterval $duration): void
+    {
+        $observed = [];
+        $workflow = static function (WorkflowContext $context) use ($duration, &$observed): void {
+            $observed[] = $context->deferCondition(static fn (): bool => false, 'deferred', $duration)->command->attributes;
+            $observed[] = $context->deferCondition(static fn (): bool => false, 'deferred', 1800)->command->attributes;
+        };
+        self::commandsFor($workflow);
+
+        self::assertSame(1800, $observed[0]['timeout_seconds']);
+        self::assertSame(
+            array_diff_key($observed[1], ['condition_definition_fingerprint' => true]),
+            array_diff_key($observed[0], ['condition_definition_fingerprint' => true]),
+        );
+    }
+
+    #[DataProvider('thirtyMinutes')]
+    public function testRecordedThirtyMinuteTimerReplaysForEveryForm(int|float|string|DateInterval $duration): void
+    {
+        $codec = new AvroPayloadCodec();
+        $history = [
+            ['event_type' => 'TimerScheduled', 'payload' => ['sequence' => 1, 'timer_id' => 'timer:1', 'delay_seconds' => 1800]],
+            ['event_type' => 'TimerFired', 'payload' => ['sequence' => 1, 'timer_id' => 'timer:1', 'delay_seconds' => 1800]],
+        ];
+        $result = (new Replayer($codec))->replay(static function (WorkflowContext $context) use ($duration): string {
+            $context->sleep($duration);
+
+            return 'fired';
+        }, $history, [], 'php-workers');
+
+        self::assertSame(['complete_workflow'], array_column($result->commands, 'type'));
+        self::assertSame('fired', $codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    public function testRecordedTimerRejectsADifferentFriendlyDuration(): void
+    {
+        $history = [
+            ['event_type' => 'TimerScheduled', 'payload' => ['sequence' => 1, 'timer_id' => 'timer:1', 'delay_seconds' => 1800]],
+            ['event_type' => 'TimerFired', 'payload' => ['sequence' => 1, 'timer_id' => 'timer:1', 'delay_seconds' => 1800]],
+        ];
+
+        $this->expectException(NonDeterministicWorkflow::class);
+        (new Replayer(new AvroPayloadCodec()))->replay(
+            static fn (WorkflowContext $context) => $context->sleep('31 minutes'),
+            $history,
+            [],
+            'php-workers',
+        );
+    }
+
+    /**
+     * Activity and child timeout options keep passing int and float values through unchanged.
+     *
+     * @return iterable<string, array{int|string|DateInterval}>
+     */
+    public static function thirtyMinuteOptions(): iterable
+    {
+        foreach (self::thirtyMinutes() as $name => [$duration]) {
+            if (!is_float($duration)) {
+                yield $name => [$duration];
+            }
+        }
+    }
+
+    #[DataProvider('thirtyMinuteOptions')]
+    public function testActivityTimeoutOptionsRecordIdenticalCommands(int|string|DateInterval $duration): void
+    {
+        $options = static fn (int|string|DateInterval $timeout): array => [
+            'start_to_close_timeout' => $timeout,
+            'schedule_to_start_timeout' => $timeout,
+            'schedule_to_close_timeout' => $timeout,
+            'heartbeat_timeout' => $timeout,
+        ];
+
+        $commands = self::commandsFor(static fn (WorkflowContext $context) => $context->activity('send-email', [], $options($duration)));
+        self::assertSame(self::commandsFor(static fn (WorkflowContext $context) => $context->activity('send-email', [], $options(1800))), $commands);
+        foreach (array_keys($options(1800)) as $field) {
+            self::assertSame(1800, $commands[0][$field]);
+        }
+    }
+
+    public function testAbandonAcceptsAFriendlyScheduleToCloseTimeout(): void
+    {
+        $options = WorkflowCommand::canonicalRemoteActivityOptions([
+            'cancellation_policy' => 'abandon',
+            'schedule_to_close_timeout' => '1 hour',
+        ]);
+
+        self::assertSame(3600, $options['schedule_to_close_timeout']);
+    }
+
+    public function testLocalActivityChildWorkflowAndServiceTimeoutsAcceptFriendlyDurations(): void
+    {
+        $local = WorkflowCommand::canonicalLocalActivityOptions([
+            'start_to_close_timeout' => '30 seconds',
+            'schedule_to_close_timeout' => new DateInterval('PT1M'),
+            'heartbeat_timeout' => CarbonInterval::seconds(10),
+        ]);
+        self::assertSame(
+            ['start_to_close_timeout' => 30, 'schedule_to_close_timeout' => 60, 'heartbeat_timeout' => 10],
+            $local,
+        );
+
+        $commands = self::commandsFor(static fn (WorkflowContext $context) => $context->childWorkflow('child', [], [
+            'execution_timeout_seconds' => '2 hours',
+            'run_timeout_seconds' => new DateInterval('PT1H'),
+        ]));
+        self::assertSame(7200, $commands[0]['execution_timeout_seconds']);
+        self::assertSame(3600, $commands[0]['run_timeout_seconds']);
+
+        $service = WorkflowCommand::serviceOperation('billing', 'invoices', 'create', [], ['wait_timeout_seconds' => '5 minutes']);
+        self::assertSame(300, $service->attributes['wait_timeout_seconds']);
+        $zero = WorkflowCommand::serviceOperation('billing', 'invoices', 'create', [], ['wait_timeout_seconds' => '0 seconds']);
+        self::assertSame(0, $zero->attributes['wait_timeout_seconds']);
+    }
+
+    /**
+     * The embedded package converts with ceil(CarbonInterval::fromString($s)->totalSeconds).
+     *
+     * @return iterable<string, array{string, int}>
+     */
+    public static function embeddedStrings(): iterable
+    {
+        yield '30 minutes' => ['30 minutes', 1800];
+        yield '1 hour 30 minutes' => ['1 hour 30 minutes', 5400];
+        yield '1 hour and 30 minutes' => ['1 hour and 30 minutes', 5400];
+        yield '1h 30m' => ['1h 30m', 5400];
+        yield '2 days' => ['2 days', 172800];
+        yield '1 week' => ['1 week', 604800];
+        yield '1.5 weeks' => ['1.5 weeks', 907200];
+        yield '90 seconds' => ['90 seconds', 90];
+        yield '1.5 hours' => ['1.5 hours', 5400];
+        yield '1 month uses the four-week factor' => ['1 month', 2419200];
+        yield '1 year uses the twelve-month factor' => ['1 year', 29030400];
+        yield 'uppercase' => ['30 MINUTES', 1800];
+        yield 'no space' => ['30minutes', 1800];
+        yield 'surrounding whitespace' => ['  30 minutes  ', 1800];
+        yield 'milliseconds round up' => ['1500 ms', 2];
+        yield 'one microsecond rounds up' => ['1 µs', 1];
+        yield 'zero' => ['0 seconds', 0];
+    }
+
+    #[DataProvider('embeddedStrings')]
+    public function testStringsConvertExactlyLikeTheEmbeddedPackage(string $duration, int $seconds): void
+    {
+        self::assertSame((int) ceil(CarbonInterval::fromString($duration)->totalSeconds), $seconds);
+        self::assertSame($seconds, WorkflowDuration::seconds($duration, 'timer'));
+    }
+
+    public function testIntervalsConvertExactlyLikeTheEmbeddedPackage(): void
+    {
+        foreach ([
+            CarbonInterval::minutes(90),
+            CarbonInterval::days(2)->hours(3),
+            CarbonInterval::months(1),
+            new DateInterval('P1W'),
+            new DateInterval('P1Y2M3DT4H5M6S'),
+            (new \DateTimeImmutable('2024-01-01'))->diff(new \DateTimeImmutable('2024-01-03 12:00:00')),
+        ] as $interval) {
+            $carbon = $interval instanceof CarbonInterval ? $interval : CarbonInterval::instance($interval);
+            self::assertSame((int) ceil($carbon->totalSeconds), WorkflowDuration::seconds($interval, 'timer'));
+        }
+    }
+
+    /** @return iterable<string, array{string|DateInterval, string}> */
+    public static function rejected(): iterable
+    {
+        yield 'empty string' => ['', 'Invalid timer duration "": it is empty.'];
+        yield 'whitespace' => ['   ', 'Invalid timer duration "   ": it is empty.'];
+        yield 'garbage' => ['abc', 'Invalid timer duration "abc": it is not a duration of numbers and units.'];
+        yield 'bare number' => ['30', 'Invalid timer duration "30": it has an unknown unit'];
+        yield 'unknown unit' => ['30 lightyears', 'Invalid timer duration "30 lightyears": it has an unknown unit'];
+        yield 'unsupported abbreviation' => ['30 mins', 'Invalid timer duration "30 mins": it has an unknown unit'];
+        yield 'trailing garbage' => ['30 minutes garbage', 'Invalid timer duration "30 minutes garbage": it is not a duration of numbers and units.'];
+        yield 'leading garbage' => ['in 30 minutes', 'Invalid timer duration "in 30 minutes": it is not a duration of numbers and units.'];
+        yield 'comma separator' => ['1 hour, 30 minutes', 'Invalid timer duration "1 hour, 30 minutes": it has an unknown unit'];
+        yield 'negative' => ['-5 minutes', 'Invalid timer duration "-5 minutes": durations and their parts must not be negative.'];
+        yield 'negative part' => ['1 hour -5 minutes', 'Invalid timer duration "1 hour -5 minutes": durations and their parts must not be negative.'];
+        yield 'ISO 8601 string' => ['PT30M', 'Invalid timer duration "PT30M": ISO 8601 duration strings are not accepted; pass new DateInterval(\'PT30M\') instead.'];
+        yield 'too large' => ['99999999999 years', 'Invalid timer duration "99999999999 years": it is too large.'];
+        yield 'inverted DateInterval' => [self::inverted(new DateInterval('PT5M')), 'Invalid timer duration DateInterval -P0Y0M0DT0H5M0S: it is negative.'];
+        yield 'negative CarbonInterval' => [CarbonInterval::minutes(-5), 'it is negative.'];
+        yield 'weekday relative' => [DateInterval::createFromDateString('next weekday'), 'Invalid timer duration'];
+        yield 'negative createFromDateString' => [DateInterval::createFromDateString('-5 minutes'), 'Invalid timer duration'];
+    }
+
+    #[DataProvider('rejected')]
+    public function testUnparseableAndNegativeDurationsAreRejectedWithAClearMessage(string|DateInterval $duration, string $message): void
+    {
+        try {
+            WorkflowDuration::seconds($duration, 'timer');
+            self::fail('Expected the duration to be rejected.');
+        } catch (InvalidArgumentException $error) {
+            self::assertStringContainsString($message, $error->getMessage());
+            self::assertStringContainsString('Accepted forms: int or float seconds; a duration string such as "30 minutes"', $error->getMessage());
+        }
+    }
+
+    public function testContextMethodsNameTheRejectedParameter(): void
+    {
+        $cases = [
+            'timer' => static fn (WorkflowContext $context) => $context->sleep('abc'),
+            'condition wait timeout' => static fn (WorkflowContext $context) => $context->waitCondition(static fn (): bool => false, 'k', 'soon'),
+            'remote activity start_to_close_timeout' => static fn (WorkflowContext $context) => $context->activity('a', [], ['start_to_close_timeout' => '30 lightyears']),
+            'child workflow run_timeout_seconds' => static fn (WorkflowContext $context) => $context->childWorkflow('c', [], ['run_timeout_seconds' => '-1 hour']),
+        ];
+        foreach ($cases as $parameter => $workflow) {
+            try {
+                self::commandsFor($workflow);
+                self::fail("Expected {$parameter} to be rejected.");
+            } catch (InvalidArgumentException $error) {
+                self::assertStringStartsWith("Invalid {$parameter} duration ", $error->getMessage());
+            }
+        }
+    }
+
+    public function testZeroIsRejectedWhereAtLeastOneSecondIsRequired(): void
+    {
+        foreach (['0 seconds', new DateInterval('PT0S'), '0.0000001 seconds'] as $zero) {
+            try {
+                WorkflowCommand::canonicalRemoteActivityOptions(['start_to_close_timeout' => $zero]);
+                self::fail('Expected a zero activity timeout to be rejected.');
+            } catch (InvalidArgumentException $error) {
+                self::assertStringContainsString('Invalid remote activity start_to_close_timeout duration', $error->getMessage());
+                self::assertStringContainsString('it must be at least 1 second.', $error->getMessage());
+            }
+        }
+
+        $this->expectExceptionMessage('Invalid local activity heartbeat_timeout duration "0 seconds": it must be at least 1 second.');
+        WorkflowCommand::canonicalLocalActivityOptions(['heartbeat_timeout' => '0 seconds']);
+    }
+
+    public function testZeroRemainsValidForTimersAndConditionTimeouts(): void
+    {
+        self::assertSame(0, self::commandsFor(static fn (WorkflowContext $context) => $context->sleep('0 seconds'))[0]['delay_seconds']);
+        self::assertSame(0, self::commandsFor(static fn (WorkflowContext $context) => $context->sleep(0))[0]['delay_seconds']);
+        $wait = static fn (int|DateInterval $timeout) => static fn (WorkflowContext $context) => $context->waitCondition(
+            static fn (): bool => false,
+            'k',
+            $timeout,
+        );
+        self::assertSame(self::commandsFor($wait(0)), self::commandsFor($wait(new DateInterval('PT0S'))));
+    }
+
+    public function testConversionDoesNotDependOnTheCurrentDateOrTimezone(): void
+    {
+        $inputs = ['30 minutes', '1.5 hours', '2 days', '1 week', '1 month', '1 year', new DateInterval('P1M'),
+            new DateInterval('P1Y2M3DT4H'), CarbonInterval::months(2), CarbonInterval::days(1)];
+        $reference = array_map(static fn (string|DateInterval $input): int => WorkflowDuration::seconds($input, 'timer'), $inputs);
+
+        // Month ends, leap days and DST transitions in several zones.
+        foreach (['2024-02-29 12:00:00', '2025-01-31 23:59:59', '2026-03-08 01:30:00', '2026-11-01 01:30:00', '2100-12-31 00:00:00'] as $now) {
+            foreach (['UTC', 'America/New_York', 'Australia/Lord_Howe', 'Pacific/Kiritimati'] as $timezone) {
+                date_default_timezone_set($timezone);
+                Carbon::setTestNow(Carbon::parse($now, $timezone));
+                self::assertSame(
+                    $reference,
+                    array_map(static fn (string|DateInterval $input): int => WorkflowDuration::seconds($input, 'timer'), $inputs),
+                    "{$now} {$timezone}",
+                );
+            }
+        }
+        self::assertSame([1800, 5400, 172800, 604800, 2419200, 29030400, 2419200, 34142400, 4838400, 86400], $reference);
+    }
+
+    /**
+     * @param callable(WorkflowContext): mixed $workflow
+     * @return list<array<string, mixed>>
+     */
+    private static function commandsFor(callable $workflow): array
+    {
+        return (new Replayer(new AvroPayloadCodec()))->replay($workflow, [], [], 'php-workers')->commands;
+    }
+
+    private static function withMicroseconds(DateInterval $interval, float $fraction): DateInterval
+    {
+        $interval->f = $fraction;
+
+        return $interval;
+    }
+
+    private static function inverted(DateInterval $interval): DateInterval
+    {
+        $interval->invert = 1;
+
+        return $interval;
+    }
+}

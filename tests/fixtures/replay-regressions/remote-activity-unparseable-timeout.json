@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "remote-activity-unparseable-timeout",
+  "protocol_version": "1",
+  "bindings": ["php"],
+  "history": [{"event_type": "WorkflowStarted", "payload": {}}],
+  "workflow": {
+    "type": "golden.invalid-activity-options",
+    "input": [{"start_to_close_timeout": "30 lightyears"}]
+  },
+  "expected": {
+    "command_sequence": [{
+      "type": "complete_workflow",
+      "result": "Invalid remote activity start_to_close_timeout duration \"30 lightyears\": it has an unknown unit or separator. Accepted forms: int or float seconds; a duration string such as \"30 minutes\", \"1h 30m\" or \"1 hour and 30 minutes\" (units: microseconds, milliseconds, seconds, minutes, hours, days, weeks, months, years); or a DateInterval or CarbonInterval such as new DateInterval('PT30M') or CarbonInterval::minutes(30)."
+    }]
+  }
+}

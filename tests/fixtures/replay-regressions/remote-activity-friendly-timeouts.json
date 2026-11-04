@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "remote-activity-friendly-timeouts",
+  "protocol_version": "1",
+  "bindings": ["php"],
+  "history": [{"event_type": "WorkflowStarted", "payload": {}}],
+  "workflow": {
+    "type": "golden.invalid-activity-options",
+    "input": [{
+      "start_to_close_timeout": "30 minutes",
+      "schedule_to_close_timeout": "1 hour and 30 minutes",
+      "heartbeat_timeout": "90 seconds"
+    }]
+  },
+  "expected": {
+    "command_sequence": [{
+      "type": "schedule_activity",
+      "activity_type": "golden.greet",
+      "start_to_close_timeout": 1800,
+      "schedule_to_close_timeout": 5400,
+      "heartbeat_timeout": 90
+    }]
+  }
+}

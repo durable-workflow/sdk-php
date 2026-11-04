@@ -8,6 +8,32 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Friendly durations for workflow timers and timeouts (#254).
+  `WorkflowContext::sleep()`, `deferTimer()`, and the `timeout` of
+  `waitCondition()` and `deferCondition()` now accept a string such as
+  `'30 minutes'`, `'1h 30m'` or `'1.5 hours'`, or a `DateInterval` or
+  `CarbonInterval`, as well as int or float seconds. The remote and local
+  activity timeout options, the child workflow `execution_timeout_seconds` and
+  `run_timeout_seconds` options and the service operation
+  `wait_timeout_seconds` option accept the same forms. Each value converts once
+  to whole seconds, rounding up as before, so `'30 minutes'`, `1800`,
+  `new DateInterval('PT30M')` and `CarbonInterval::minutes(30)` record
+  identical commands and history. Strings and intervals convert exactly as the
+  embedded `durable-workflow/workflow` package's `timer()` and `await()` do:
+  `ceil(CarbonInterval::fromString($string)->totalSeconds)` and
+  `ceil($interval->totalSeconds)`. Carbon's fixed factors (a 4-week month and a
+  12-month year) make the result independent of the current date and time zone.
+  The SDK is stricter than the embedded package: unknown units, extra words,
+  commas, negative values and ISO 8601 strings throw `InvalidArgumentException`
+  naming the parameter and the accepted forms. Pass ISO 8601 durations as a
+  `DateInterval`. Activity and child workflow timeouts must be at least one
+  second. Existing int and float arguments behave as before.
+- `nesbot/carbon` `^2.72.6|^3.8.4` is now a required dependency, so every
+  worker converts durations with the same parser as the embedded package. The
+  floors are Carbon's patched releases for CVE-2025-22145, and the range
+  overlaps every supported Laravel line. The production dependency boundary
+  allows Carbon's Symfony translation, clock and polyfill dependencies.
+
 - Replay evidence for Workflow 2.19 redrive reuse of `MemoUpserted` and
   `SearchAttributesUpserted`, and for Core's reused signal-wait events
   (`SignalWaitOpened`, `SignalReceived`, `SignalApplied`). Each fixture is a

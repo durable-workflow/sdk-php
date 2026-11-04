@@ -135,6 +135,8 @@ common failure diagnostics.
 ## Capabilities
 
 - Workflows, activities, child workflows, timers, retries, and heartbeats
+- Timers and timeouts in seconds, `'30 minutes'`-style strings, or `DateInterval`
+  and `CarbonInterval` values, converted like the embedded Laravel package
 - Signals, queries, updates, condition waits, and message streams
 - Parallel work, sagas, cancellation, continue-as-new, and version markers
 - Schedules, search attributes, memo, external payloads, and worker versioning
