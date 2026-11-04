@@ -7,7 +7,9 @@ namespace DurableWorkflow\Tests\Support;
 use DateTimeImmutable;
 
 /**
- * Checks that a replay fixture is a history Workflow 2.19 redrive can write.
+ * Checks the supported replay-fixture shapes against Workflow 2.19 redrive.
+ * This is a test evidence model. Scoped, grouped, selection and operation
+ * deliveries remain outside its qualified single-call boundary.
  *
  * Core's DefaultWorkflowControlPlane::redrive() records, in one transaction,
  * a WorkflowStarted carrying the successor identity and the redrive envelope,
@@ -220,6 +222,16 @@ final class RedriveSuccessorHistory
             if (array_key_exists('workflow_instance_id', $payload) && $payload['workflow_instance_id'] !== $instance) {
                 return "successor {$type} must bind to the successor instance";
             }
+            if ($type === 'ActivityCancelled') {
+                if (!is_int($payload['sequence'] ?? null) || $payload['sequence'] < 1) {
+                    return 'ActivityCancelled must name a positive workflow step';
+                }
+                foreach (['activity_type', 'activity_execution_id'] as $field) {
+                    if (!self::nonBlank($payload[$field] ?? null)) {
+                        return "ActivityCancelled {$field} must be a non-blank string";
+                    }
+                }
+            }
             $cancellation = is_array($payload['cancellation'] ?? null) ? $payload['cancellation'] : null;
             if ($cancellation !== null) {
                 if (($cancellation['root_workflow_instance_id'] ?? null) !== $instance || ($cancellation['root_workflow_run_id'] ?? null) !== $run) {
@@ -312,6 +324,10 @@ final class RedriveSuccessorHistory
         if ($contextViolation !== null) {
             return $contextViolation;
         }
+        if ((($context['reason'] ?? null) !== null && !is_string($context['reason']))
+            || ($request['reason'] ?? null) !== ($context['reason'] ?? null)) {
+            return "the cancellation request reason must be its context's nullable text reason";
+        }
         $requestedAt = self::time($context['requested_at']);
         $requestRecordedAt = self::time($history[$requestIndex]['recorded_at'] ?? null);
         if ($requestedAt === null || $requestRecordedAt === null || $requestedAt < $startedAt || $requestedAt > $requestRecordedAt) {
@@ -333,6 +349,9 @@ final class RedriveSuccessorHistory
     {
         if (($context['schema'] ?? null) !== 'durable-workflow.cancellation-context/v1') {
             return 'cancellation schema must be durable-workflow.cancellation-context/v1';
+        }
+        if (array_key_exists('scope_origin', $context) || array_key_exists('scope_authority_deadline_at', $context)) {
+            return 'a successor own cancellation must use a root context without scope fields';
         }
         foreach (['request_id', 'root_request_id', 'root_workflow_instance_id', 'root_workflow_run_id', 'source'] as $field) {
             if (!self::nonBlank($context[$field] ?? null)) {
@@ -373,9 +392,15 @@ final class RedriveSuccessorHistory
         if ($lineage[$last]['request_id'] !== $context['request_id']) {
             return 'cancellation lineage must end at this request';
         }
-        $parent = $context['parent_request_id'] ?? null;
+        if (!array_key_exists('parent_request_id', $context)) {
+            return 'cancellation parent_request_id must be present and null for a root request';
+        }
+        $parent = $context['parent_request_id'];
         if ($parent !== ($last === 0 ? null : $lineage[$last - 1]['request_id'])) {
             return 'cancellation parent_request_id must be the previous lineage request, or null for a root request';
+        }
+        if ($last !== 0 || count($lineage[0]) !== 3 || $context['root_request_id'] !== $command || $parent !== null) {
+            return 'a successor cancellation lineage must contain exactly its own root address';
         }
         $requestedAt = self::time($context['requested_at'] ?? null);
         $deadline = self::time($context['cleanup_deadline_at'] ?? null);
@@ -389,8 +414,8 @@ final class RedriveSuccessorHistory
     /**
      * Core CooperativeCancellationDelivery::validateCallBoundary() for a
      * single call: the step is a recorded call of the delivered kind that
-     * was not resolved before the request, or the next unrecorded step,
-     * which nothing may record after the delivery.
+     * was not resolved before the request, or the next reached unrecorded
+     * step, which nothing may record after the delivery.
      *
      * @param list<array<string, mixed>> $history
      * @param array<mixed> $delivery
@@ -405,12 +430,17 @@ final class RedriveSuccessorHistory
         if (!in_array($callKind, self::CALL_KINDS, true)) {
             return 'the cancellation delivery call_kind must be a single-call kind';
         }
+        foreach (['sequence_span', 'operation_sequence', 'operation_sequence_span'] as $field) {
+            if (array_key_exists($field, $delivery)) {
+                return 'a single-call cancellation delivery must not carry span or operation operands';
+            }
+        }
         $recordedKind = null;
         $nextStep = 1;
         foreach (array_slice($history, 0, $deliveryIndex) as $index => $event) {
             $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
             $sequence = $payload['sequence'] ?? null;
-            if (!is_int($sequence)) {
+            if (!is_int($sequence) || !self::isStepEvent((string) ($event['event_type'] ?? ''), $payload)) {
                 continue;
             }
             $nextStep = max($nextStep, $sequence + 1);
@@ -430,9 +460,61 @@ final class RedriveSuccessorHistory
         }
         if ($step === $nextStep) {
             foreach (array_slice($history, $deliveryIndex + 1) as $event) {
-                if (($event['payload']['sequence'] ?? null) === $step) {
+                $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+                if (($payload['sequence'] ?? null) === $step && self::isStepEvent((string) ($event['event_type'] ?? ''), $payload)) {
                     return "step {$step} must not be recorded after a cancellation delivered before it was scheduled";
                 }
+            }
+
+            return self::priorCallViolation(array_slice($history, 0, $deliveryIndex));
+        }
+
+        return null;
+    }
+
+    /** @param array<mixed> $payload */
+    private static function isStepEvent(string $type, array $payload): bool
+    {
+        return self::callKind($type, $payload) !== null
+            || in_array($type, self::RESOLUTIONS, true)
+            || in_array($type, ['MemoUpserted', 'SearchAttributesUpserted', 'SideEffectRecorded', 'VersionMarkerRecorded', 'CooperativeCancellationDelivered'], true);
+    }
+
+    /**
+     * This single-call evidence model cannot infer parallel progress. A later
+     * unrecorded call is reachable only after each modeled earlier call has a
+     * matching later resolution. History row order also applies to equal times.
+     *
+     * @param list<array<string, mixed>> $beforeDelivery
+     */
+    private static function priorCallViolation(array $beforeDelivery): ?string
+    {
+        $resolutions = [
+            'ActivityScheduled' => ['activity_execution_id', ['ActivityCompleted', 'ActivityCancelled']],
+            'TimerScheduled' => ['timer_id', ['TimerFired']],
+            'SignalWaitOpened' => ['signal_wait_id', ['SignalApplied']],
+        ];
+        foreach ($beforeDelivery as $index => $event) {
+            $shape = $resolutions[$event['event_type'] ?? ''] ?? null;
+            if ($shape === null) {
+                continue;
+            }
+            [$identity, $kinds] = $shape;
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $resolved = false;
+            foreach (array_slice($beforeDelivery, $index + 1) as $terminal) {
+                $terminalPayload = is_array($terminal['payload'] ?? null) ? $terminal['payload'] : [];
+                if (self::nonBlank($payload[$identity] ?? null)
+                    && is_int($payload['sequence'] ?? null) && $payload['sequence'] > 0
+                    && in_array($terminal['event_type'] ?? null, $kinds, true)
+                    && ($terminalPayload['sequence'] ?? null) === $payload['sequence']
+                    && ($terminalPayload[$identity] ?? null) === $payload[$identity]) {
+                    $resolved = true;
+                    break;
+                }
+            }
+            if (!$resolved) {
+                return 'the cancellation delivery targets an unreachable next step: an earlier call is unresolved';
             }
         }
 
