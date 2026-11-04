@@ -7,8 +7,8 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import {assertPrimaryGuideNavigation} from './check-docs-portal-navigation.mjs';
 import {fragmentLinks} from './check-docs-portal-links.mjs';
 
-const siteDirectory = path.resolve(process.argv[2] ?? 'build/site');
-const projectDirectory = path.resolve(import.meta.dirname, '..');
+const projectDirectory = path.resolve(process.env.DOCS_SOURCE_DIRECTORY || path.join(import.meta.dirname, '..'));
+const siteDirectory = path.resolve(process.argv[2] ?? path.join(projectDirectory, 'build/site'));
 const composer = JSON.parse(fs.readFileSync(path.join(projectDirectory, 'composer.json'), 'utf8'));
 const navigation = JSON.parse(fs.readFileSync(path.join(projectDirectory, 'docs/portal/_data/navigation.json'), 'utf8'));
 const quickstartContract = JSON.parse(fs.readFileSync(path.join(projectDirectory, 'docs/quickstart-contract.json'), 'utf8'));

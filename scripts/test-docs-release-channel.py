@@ -13,6 +13,7 @@ from pathlib import Path
 
 
 GUARD = Path(__file__).with_name("check-docs-release-channel.py").resolve()
+PREPARE = Path(__file__).with_name("prepare-docs-tooling.py").resolve()
 
 
 class DocumentationChannelTest(unittest.TestCase):
@@ -89,6 +90,43 @@ class DocumentationChannelTest(unittest.TestCase):
     def testPublishedStableTagIsStable(self) -> None:
         self.channel(True)
         self.channel(True, STABLE_TAG="3.9.4")
+
+    def test_tooling_is_exact_and_separate_from_an_old_selected_tag(self) -> None:
+        self.write("scripts/check-docs-release-channel.py", GUARD.read_text())
+        self.write("package.json", json.dumps({"scripts": {"test:docs-portal-links": "workflow-owned"}}))
+        workflow = self.commit()
+        self.git("checkout", "--detach", self.published)
+        self.assertFalse((self.root / "scripts/check-docs-release-channel.py").exists())
+        selected_manifest = (self.root / "package.json").read_bytes()
+        tooling = Path(self.temporary.name) / "tooling"
+        prepared = subprocess.run(
+            [sys.executable, str(PREPARE), workflow, str(tooling)],
+            cwd=self.root, env=self.environment, text=True, capture_output=True,
+        )
+        self.assertEqual(0, prepared.returncode, prepared.stderr)
+        self.assertEqual(workflow, subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=tooling, env=self.environment, text=True,
+        ).strip())
+        self.assertIn("test:docs-portal-links", (tooling / "package.json").read_text())
+        result = subprocess.run(
+            [sys.executable, str(tooling / "scripts/check-docs-release-channel.py")],
+            cwd=self.root, env=self.environment | {"STABLE_TAG": "3.9.4"}, text=True, capture_output=True,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(f"stable=true\nsource_revision={self.published}\n", self.output.read_text())
+        self.assertEqual(selected_manifest, (self.root / "package.json").read_bytes())
+        self.assertEqual("", self.git("diff", "HEAD"))
+        self.git("worktree", "remove", str(tooling))
+
+    def test_tooling_refuses_a_mutable_revision_or_existing_directory(self) -> None:
+        for revision, destination in [("main", Path(self.temporary.name) / "new"), (self.published, self.root)]:
+            with self.subTest(revision=revision):
+                result = subprocess.run(
+                    [sys.executable, str(PREPARE), revision, str(destination)],
+                    cwd=self.root, env=self.environment, text=True, capture_output=True,
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual(self.published, self.git("rev-parse", "HEAD"))
 
     def testDocumentationOnlyMainChangesRemainStable(self) -> None:
         self.changed("docs/index.md")

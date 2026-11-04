@@ -65,6 +65,21 @@ def same_published_product(tag_ref: str, *, explicit: bool) -> bool:
     return json.dumps(published, ensure_ascii=False) == json.dumps(selected, ensure_ascii=False)
 
 
+def explicit_stable_source(stable_tag: str, stable_source: str, selected: str, version: str) -> bool:
+    if version != stable_tag or not published_stable_release(stable_tag):
+        raise ChannelError("stable_tag must match the manifest and a published stable release.")
+    tag_ref = f"refs/tags/{stable_tag}"
+    published = git("rev-parse", "--verify", f"{tag_ref}^{{commit}}")
+    if not stable_source:
+        if selected != published:
+            raise ChannelError("The selected documentation source does not match stable_tag.")
+    elif selected != stable_source or run("git", "merge-base", "--is-ancestor", selected, "origin/main").returncode:
+        raise ChannelError("stable_source must select the exact main-branch source commit.")
+    if not same_published_product(tag_ref, explicit=True):
+        raise ChannelError("The selected source changes the published SDK product or manifest.")
+    return True
+
+
 def release_channel(stable_tag: str, stable_source: str) -> tuple[bool, str]:
     if stable_tag and not STABLE_VERSION.fullmatch(stable_tag):
         raise ChannelError("stable_tag must name an exact stable SDK version.")
@@ -79,19 +94,7 @@ def release_channel(stable_tag: str, stable_source: str) -> tuple[bool, str]:
         raise ChannelError("The selected SDK manifest has no product-train version.")
 
     if stable_tag:
-        if version != stable_tag or not published_stable_release(stable_tag):
-            raise ChannelError("stable_tag must match the manifest and a published stable release.")
-        tag_ref = f"refs/tags/{stable_tag}"
-        published = git("rev-parse", "--verify", f"{tag_ref}^{{commit}}")
-        if not stable_source:
-            if selected != published:
-                raise ChannelError("The selected documentation source does not match stable_tag.")
-        else:
-            if selected != stable_source or run("git", "merge-base", "--is-ancestor", selected, "origin/main").returncode:
-                raise ChannelError("stable_source must select the exact main-branch source commit.")
-        if not same_published_product(tag_ref, explicit=True):
-            raise ChannelError("The selected source changes the published SDK product or manifest.")
-        return True, selected
+        return explicit_stable_source(stable_tag, stable_source, selected, version), selected
 
     if not STABLE_VERSION.fullmatch(version):
         return False, selected

@@ -53,7 +53,8 @@ $removedGraphPages = removeIncompleteGraphPages($buildDirectory);
 $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($buildDirectory));
 $description = 'Generated classes, methods, models, exceptions, and worker types for the Durable Workflow PHP SDK.';
 $count = 0;
-$faviconSource = __DIR__.'/../docs/portal/assets/favicon.svg';
+$sourceDirectory = getenv('DOCS_SOURCE_DIRECTORY') ?: __DIR__.'/..';
+$faviconSource = $sourceDirectory.'/docs/portal/assets/favicon.svg';
 $faviconTarget = $buildDirectory.'/assets/favicon.svg';
 
 if (! is_file($faviconSource) || ! is_dir(dirname($faviconTarget)) || ! copy($faviconSource, $faviconTarget)) {

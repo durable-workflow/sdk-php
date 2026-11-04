@@ -528,15 +528,34 @@ jobs:
       - run: composer analyse
 
   docs:
+    name: ${{ matrix.source == 'current' && 'docs' || format('docs compatibility ({0})', matrix.source) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      max-parallel: 2
+      matrix:
+        source: [current, '3.9.4', '6a821568db5c72983bd3990fe27c7990f092db12']
+    env:
+      DOCS_SOURCE_DIRECTORY: ${{ github.workspace }}
+      DOCS_TOOLING_DIRECTORY: ${{ runner.temp }}/docs-tooling
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ matrix.source == 'current' && github.sha || matrix.source }}
+          fetch-depth: 0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: '3.12'
+      - name: Prepare exact current tooling against the selected source
+        env:
+          DOCS_WORKFLOW_REVISION: ${{ github.sha }}
+        run: |
+          git fetch origin "$DOCS_WORKFLOW_REVISION"
+          git show "$DOCS_WORKFLOW_REVISION:scripts/prepare-docs-tooling.py" > "$RUNNER_TEMP/prepare-docs-tooling.py"
+          python "$RUNNER_TEMP/prepare-docs-tooling.py" "$DOCS_WORKFLOW_REVISION" "$DOCS_TOOLING_DIRECTORY"
       - name: Test documentation release-channel guards
-        run: python scripts/test-docs-release-channel.py
+        if: matrix.source == 'current'
+        run: python "$DOCS_TOOLING_DIRECTORY/scripts/test-docs-release-channel.py"
       - name: Select authenticated dependency trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
         with:
@@ -550,18 +569,19 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+          cache-dependency-path: ${{ env.DOCS_TOOLING_DIRECTORY }}/package-lock.json
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
-      - run: composer install --no-interaction --prefer-dist
-      - run: npm ci --ignore-scripts
-      - run: npm audit --audit-level=moderate
-      - run: npm run check:docs-examples
-      - run: npm run test:docs-portal-links
+      - run: composer --working-dir="$DOCS_TOOLING_DIRECTORY" install --no-interaction --prefer-dist
+      - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" ci --ignore-scripts
+      - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" audit --audit-level=moderate
+      - run: node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-examples.mjs"
+      - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-portal-links
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
-      - run: composer docs
-      - run: npm run check:docs
-      - run: php scripts/check-docs-analytics.php build/site
+      - run: bash "$DOCS_TOOLING_DIRECTORY/scripts/build-docs.sh"
+      - run: node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-portal.mjs" build/site
+      - run: php "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-analytics.php" build/site
       - name: Check rendered portal links before merge
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:
@@ -571,9 +591,11 @@ jobs:
             --root-dir build/site
             build/site
       - name: Install the locked Chromium browser
-        run: ./node_modules/.bin/playwright install --with-deps chromium
+        run: '"$DOCS_TOOLING_DIRECTORY/node_modules/.bin/playwright" install --with-deps chromium'
       - name: Verify missing-resource browser evidence
-        run: npm run test:docs-browser-failures
+        run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-browser-failures
+      - name: Check portal and API layouts in Chromium
+        run: node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-browser.mjs" build/site
       - name: Check repository-owned documentation links offline
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:
@@ -583,6 +605,11 @@ jobs:
             --include-fragments
             --root-dir .
             README.md docs/*.md
+      - name: Verify the selected source remains unchanged
+        run: |
+          git diff --exit-code HEAD
+          test "$(git rev-parse HEAD)" = "$(git rev-parse '${{ matrix.source == 'current' && github.sha || matrix.source }}^{commit}')"
+          test "$(git -C "$DOCS_TOOLING_DIRECTORY" rev-parse HEAD)" = "$GITHUB_SHA"
   package-smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
