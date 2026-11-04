@@ -21,14 +21,16 @@ use Throwable;
  * time zone, PHP version or Carbon major version. Changing the factors globally with
  * `CarbonInterval::setCascadeFactors()` changes the result, as it does in the embedded package.
  *
- * Numeric strings such as "30" or "1.5" keep the behavior they had when these parameters were
- * typed `int|float`: timers and condition timeouts round them up to whole seconds, and option
- * values pass through unchanged.
+ * Numeric strings such as "30" or "1.5" convert as they were coerced when these parameters were
+ * typed `int|float` in files without strict_types: timers and condition timeouts round them up to
+ * whole seconds, and option values pass through unchanged. With strict_types they used to throw a
+ * TypeError and are now accepted the same way.
  *
  * The SDK is stricter than the embedded package, so every accepted string converts to the same
  * seconds there and here. A string must consist only of Carbon duration parts (optionally joined by
- * "and"). Parts must not be negative, have more than 15 integer digits, or use a fraction with a
- * calendar unit (months, quarters, years, decades, centuries, millennia), which Carbon truncates.
+ * "and"). Parts must not be negative, have more than 15 integer digits, reach 2^53 seconds alone or
+ * together (Carbon's integer arithmetic could wrap them), or use a fraction with a calendar unit
+ * (months, quarters, years, decades, centuries, millennia), which Carbon truncates.
  * ISO 8601 strings must be passed as a DateInterval. Intervals must not be negative or relative
  * (weekday or "first/last day of" `DateInterval::createFromDateString()` expressions).
  *
@@ -45,8 +47,32 @@ final class WorkflowDuration
         'quarter', 'quarters', 'month', 'months', 'mo', 'mos',
     ];
 
-    /** Longest integer part of one string duration part; longer values could wrap inside Carbon. */
+    /**
+     * Longest integer part of one string duration part. This keeps Carbon's integer parsing in
+     * range, but a shorter calendar value can still overflow Carbon's arithmetic, so each part's
+     * seconds are also bounded by MAX_SECONDS before Carbon sees the string.
+     */
     private const MAX_PART_DIGITS = 15;
+
+    /** Seconds per Carbon `fromString()` unit with Carbon's default cascade factors. */
+    private const UNIT_SECONDS = [
+        'millennia' => 29_030_400_000, 'millennium' => 29_030_400_000,
+        'century' => 2_903_040_000, 'centuries' => 2_903_040_000,
+        'decade' => 290_304_000, 'decades' => 290_304_000,
+        'year' => 29_030_400, 'years' => 29_030_400, 'y' => 29_030_400, 'yr' => 29_030_400, 'yrs' => 29_030_400,
+        'quarter' => 7_257_600, 'quarters' => 7_257_600,
+        'month' => 2_419_200, 'months' => 2_419_200, 'mo' => 2_419_200, 'mos' => 2_419_200,
+        'week' => 604_800, 'weeks' => 604_800, 'w' => 604_800,
+        'day' => 86_400, 'days' => 86_400, 'd' => 86_400,
+        'hour' => 3_600, 'hours' => 3_600, 'h' => 3_600,
+        'minute' => 60, 'minutes' => 60, 'm' => 60,
+        'second' => 1, 'seconds' => 1, 's' => 1,
+        'millisecond' => 0.001, 'milliseconds' => 0.001, 'milli' => 0.001, 'ms' => 0.001,
+        'microsecond' => 0.000_001, 'microseconds' => 0.000_001, 'micro' => 0.000_001, 'µs' => 0.000_001,
+    ];
+
+    /** Seconds per DateInterval field (y, m, d, h, i, s) with Carbon's default cascade factors. */
+    private const FIELD_SECONDS = [29_030_400, 2_419_200, 86_400, 3_600, 60, 1];
 
     private const ACCEPTED_FORMS = 'Accepted forms: int or float seconds; a duration string such as "30 minutes", '
         .'"1h 30m" or "1 hour and 30 minutes"; or a DateInterval or CarbonInterval such as '
@@ -119,6 +145,7 @@ final class WorkflowDuration
             throw self::invalid($parameter, $duration, 'it is not a duration of numbers and units');
         }
         preg_match_all(self::CARBON_PART, $definition, $parts, PREG_SET_ORDER);
+        $estimate = 0.0;
         foreach ($parts as [, $value, $unit]) {
             [$integer, $fraction] = explode('.', $value.'.');
             if (strlen(ltrim($integer, '0')) > self::MAX_PART_DIGITS) {
@@ -130,6 +157,12 @@ final class WorkflowDuration
                     $duration,
                     "the {$unit} part must be a whole number; Carbon would truncate its fraction",
                 );
+            }
+            // Carbon's integer calendar arithmetic can wrap a huge part to a small positive total,
+            // so bound every part, and their sum, as floats before Carbon sees the string.
+            $estimate += (float) $value * (self::UNIT_SECONDS[$unit === 'µs' ? 'µs' : strtolower($unit)] ?? 0);
+            if ($estimate >= self::MAX_SECONDS) {
+                throw self::invalid($parameter, $duration, 'it is too large');
             }
         }
 
@@ -157,6 +190,13 @@ final class WorkflowDuration
         $fields = [$interval->y, $interval->m, $interval->d, $interval->h, $interval->i, $interval->s, $interval->f];
         if ($interval->invert === 1 || min($fields) < 0) {
             throw self::invalid($parameter, $interval, 'it is negative or has a negative part');
+        }
+        $estimate = (float) $interval->f;
+        foreach (self::FIELD_SECONDS as $index => $factor) {
+            $estimate += (float) $fields[$index] * $factor;
+        }
+        if ($estimate >= self::MAX_SECONDS) {
+            throw self::invalid($parameter, $interval, 'it is too large');
         }
         $plain = new DateInterval('PT0S');
         [$plain->y, $plain->m, $plain->d, $plain->h, $plain->i, $plain->s, $plain->f] = $fields;
@@ -225,10 +265,15 @@ final class WorkflowDuration
 
     private static function describeInterval(DateInterval $interval): string
     {
-        try {
-            return ($interval->invert === 1 ? '-' : '').$interval->format('P%yY%mM%dDT%hH%iM%sS');
-        } catch (Throwable) {
-            return '(unformattable)';
-        }
+        return sprintf(
+            '%sP%dY%dM%dDT%dH%dM%dS',
+            $interval->invert === 1 ? '-' : '',
+            $interval->y,
+            $interval->m,
+            $interval->d,
+            $interval->h,
+            $interval->i,
+            $interval->s,
+        );
     }
 }

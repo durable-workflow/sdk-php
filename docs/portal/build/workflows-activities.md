@@ -112,16 +112,19 @@ Parts may be separated by spaces or `and`, such as `'1 hour and 30 minutes'`,
 and may use a decimal fraction, such as `'1.5 hours'`. A fraction of a month,
 quarter, year, decade, century or millennium is rejected, because Carbon would
 truncate it. Unknown units, extra words, commas, negative parts, parts with
-more than 15 digits before the decimal point, and ISO 8601 strings throw
+more than 15 digits before the decimal point, durations of 2^53 seconds or more
+(about 285 million years), and ISO 8601 strings throw
 `InvalidArgumentException` naming the parameter and the accepted forms. Pass
 ISO 8601 durations as `new DateInterval('PT30M')`. Negative intervals and
 relative `DateInterval::createFromDateString()` values such as `'next weekday'`
 or `'last day of next month'` are rejected too.
 
-A numeric string such as `'30'` or `'1.5'` behaves as before string durations
-were accepted. Timers and condition timeouts round it up to whole seconds, with
-negative values becoming zero. Activity and child-workflow options pass it to
-the Server unchanged.
+A numeric string such as `'30'` or `'1.5'` converts as PHP coerced it before
+string durations were accepted, in a file without `strict_types`. Timers and
+condition timeouts round it up to whole seconds, with negative values becoming
+zero. Activity and child-workflow options pass it to the Server unchanged. In a
+file with `declare(strict_types=1)`, such a string used to throw a `TypeError`;
+it is now accepted with the same conversion.
 
 A zero duration is valid for timers, condition waits and `wait_timeout_seconds`.
 Activity and child-workflow timeouts need at least one second.
