@@ -12,6 +12,9 @@ Octane, which uses more memory. Production capacity remains workload-specific.
 
 ## Reproducible inputs
 
+These inputs describe the measured cohort. The application's `composer.json`
+has since moved to a later SDK release that these runs have not covered.
+
 The October 18 cohort uses normally installed SDK 2.4.2 / `25d796ad`, published
 Server 2.8.7 / `964f9e3d` / immutable image index `27c08e15`, and Workflow
 2.5.32 / `78075b6f`. All 166 installed SDK source/resource/schema files match
