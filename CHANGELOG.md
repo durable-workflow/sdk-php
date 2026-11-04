@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.9.4] - 2026-11-04
+
 ### Fixed
 
 - Replay checks a recorded `condition_wait_occurrence_id` against the call
