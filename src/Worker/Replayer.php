@@ -1248,7 +1248,9 @@ final class Replayer
             if ($previous !== null && $this->isConditionReopen($previous, $step)) {
                 $steps[$index]['timeout_seconds'] = $previous['timeout_seconds'];
                 $steps[$index]['opened_at'] = $previous['opened_at'] ?? null;
-                $steps[$index]['occurrence_id'] = $this->stepOccurrence($previous) ?? $this->stepOccurrence($step);
+                // The first open owns the logical wait's id. A first open from a
+                // worker before #274 has none, and a later open must not lend it one.
+                $steps[$index]['occurrence_id'] = $this->stepOccurrence($previous);
             }
         }
 
@@ -3386,7 +3388,7 @@ final class Replayer
                 && $step['parallel_path'] === [] && $collapsed[$last]['parallel_path'] === []) {
                 $step['sequence'] = $collapsed[$last]['sequence'];
                 $step['opened_at'] = $collapsed[$last]['opened_at'] ?? null;
-                $step['occurrence_id'] = $this->stepOccurrence($collapsed[$last]) ?? $this->stepOccurrence($step);
+                $step['occurrence_id'] = $this->stepOccurrence($collapsed[$last]);
                 $collapsed[$last] = $step;
                 continue;
             }
@@ -3441,9 +3443,9 @@ final class Replayer
         }
         $recordedOccurrence = $this->stepOccurrence($step);
         $currentOccurrence = $this->stringValue($command->attributes['condition_wait_occurrence_id'] ?? null);
-        // Only ids this SDK authored (php:condition-wait:N, #274) identify an
-        // authored call; histories without one, or with another writer's ids,
-        // replay as before.
+        // Only ids in this SDK's own format (php:condition-wait:N, #274) are
+        // compared. A history without an id, or with an id in another format,
+        // is not checked against the call.
         if ($recordedOccurrence !== null && $currentOccurrence !== null
             && str_starts_with($recordedOccurrence, 'php:condition-wait:') && $recordedOccurrence !== $currentOccurrence) {
             throw new NonDeterministicWorkflow(

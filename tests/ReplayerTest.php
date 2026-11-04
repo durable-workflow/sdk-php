@@ -1327,6 +1327,39 @@ final class ReplayerTest extends TestCase
         ];
     }
 
+    /**
+     * A run that crosses the upgrade: the first open was written before #274
+     * without an id, and a later open carries one. The logical wait keeps the
+     * first open's missing id, so replay keeps waiting as before (#286 review).
+     */
+    public function testAnOpenWithoutAnIdDoesNotTakeALaterOpensId(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): array {
+            $approvals = static fn (int $needed): \Closure => static fn (): bool => count($context->signals('approve')) >= $needed;
+
+            return [
+                $context->waitCondition($approvals(1), key: 'approval', timeout: 300),
+                $context->waitCondition($approvals(2), key: 'approval', timeout: 300),
+            ];
+        };
+        $fingerprint = (new Replayer($codec))->replay($workflow, [], [], 'php-workers')->commands[0]['condition_definition_fingerprint'];
+        $open = static fn (int $sequence, ?string $occurrence): array => ['event_type' => 'ConditionWaitOpened', 'payload' => array_filter([
+            'sequence' => $sequence, 'condition_wait_id' => 'wait-'.$sequence, 'condition_key' => 'approval', 'timeout_seconds' => 300,
+            'condition_definition_fingerprint' => $fingerprint, 'condition_wait_occurrence_id' => $occurrence,
+        ], static fn (mixed $value): bool => $value !== null)];
+        $history = [
+            $open(1, null),
+            ['event_type' => 'SignalReceived', 'payload' => ['workflow_sequence' => 1, 'signal_name' => 'approve', 'arguments' => $codec->envelope([])]],
+            ['event_type' => 'ConditionWaitSatisfied', 'payload' => ['sequence' => 1, 'condition_wait_id' => 'wait-1', 'condition_key' => 'approval']],
+            $open(2, 'php:condition-wait:1'),
+        ];
+
+        $commands = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers')->commands;
+
+        self::assertSame('open_condition_wait', $commands[0]['type'], 'replay keeps waiting instead of refusing the first call');
+    }
+
     /** Two physical opens recorded for different calls are never one reopened wait (#281). */
     public function testOpensOfDifferentOccurrencesAreNotLinked(): void
     {
