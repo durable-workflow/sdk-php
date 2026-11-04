@@ -33,6 +33,15 @@ function filesUnder(directory, extension) {
   });
 }
 
+const elementIdCache = new Map();
+function elementIds(file) {
+  if (!elementIdCache.has(file)) {
+    const html = fs.readFileSync(file, 'utf8');
+    elementIdCache.set(file, new Set([...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1])));
+  }
+  return elementIdCache.get(file);
+}
+
 function outputPath(url) {
   const pathname = new URL(url, 'https://php.durable-workflow.com').pathname;
   if (pathname.endsWith('/')) return path.join(siteDirectory, pathname, 'index.html');
@@ -112,7 +121,24 @@ for (const file of htmlFiles) {
     const target = outputPath(url.split('#')[0].split('?')[0]);
     assert(fs.existsSync(target), `${relative} links to a missing local target: ${url}`);
   }
+
+  if (!relative.startsWith('api/')) {
+    for (const href of html.matchAll(/href="((?:\/(?!\/)[^"#]*)?#[^"]+)"/g)) {
+      const [pathname, fragment] = href[1].split('#');
+      const target = pathname === '' ? file : outputPath(pathname.split('?')[0]);
+      assert(
+        elementIds(target).has(decodeURIComponent(fragment)),
+        `${relative} links to a missing fragment: ${href[1]}`,
+      );
+    }
+  }
 }
+
+const workflowsActivities = path.join(siteDirectory, 'build/workflows-activities/index.html');
+assert(
+  elementIds(workflowsActivities).has('durations'),
+  'Guide headings must render GitHub-style ids; /build/workflows-activities/#durations is linked from durable-workflow.com.',
+);
 
 const graphDirectory = path.join(siteDirectory, 'api/graphs');
 const graphPages = fs.existsSync(graphDirectory) ? filesUnder(graphDirectory, '.html') : [];
