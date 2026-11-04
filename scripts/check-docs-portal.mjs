@@ -300,13 +300,43 @@ for (const source of filesUnder(path.join(projectDirectory, 'docs/portal'), '.md
   );
 }
 
+// A durable-workflow/sdk version written into prose or a command: `sdk:^3.9`,
+// `sdk "^3.8"`, `sdk:>=2.0`, `sdk:v2.5.4`, `"durable-workflow/sdk": "^2.0"`.
+// Render the requirement from release metadata, or omit it. `dev-main` and
+// wildcards are not versions and stay allowed. The text after each package
+// name is tested with an anchored pattern whose parts never overlap, so it
+// runs in linear time.
+const CONSTRAINT_AFTER_SDK_NAME = /^[ \t"':]+(?:[~^v<>=!]{1,2}[ \t]*)?\d/;
+function hardCodesSdkConstraint(text) {
+  return text.split('durable-workflow/sdk').slice(1).some((rest) => CONSTRAINT_AFTER_SDK_NAME.test(rest));
+}
+for (const sample of [
+  "composer require 'durable-workflow/sdk:^2.0'",
+  'composer require durable-workflow/sdk "^3.8"',
+  'durable-workflow/sdk:>=2.0',
+  'durable-workflow/sdk:v2.5.4',
+  '"durable-workflow/sdk": "^2.0"',
+  'durable-workflow/sdk 3.9.0',
+]) {
+  assert(hardCodesSdkConstraint(sample), `The SDK constraint check must reject: ${sample}`);
+}
+for (const sample of [
+  'composer require durable-workflow/sdk:dev-main',
+  'composer require durable-workflow/sdk',
+  'durable-workflow/sdk:*',
+  'durable-workflow/sdk-php 3.9.0',
+  'composer require durable-workflow/sdk\n\n1. Start the worker',
+]) {
+  assert(!hardCodesSdkConstraint(sample), `The SDK constraint check must allow: ${sample}`);
+}
+
 for (const source of [
   path.join(projectDirectory, 'README.md'),
   ...filesUnder(path.join(projectDirectory, 'docs'), '.md'),
 ]) {
   const markdown = fs.readFileSync(source, 'utf8');
   assert(
-    !/durable-workflow\/sdk:['"]?[~^]?\d/.test(markdown),
+    !hardCodesSdkConstraint(markdown),
     `${path.relative(projectDirectory, source)} hard-codes an SDK version constraint; render it from release metadata or omit it.`,
   );
 }
