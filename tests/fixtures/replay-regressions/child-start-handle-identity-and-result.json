@@ -1,0 +1,67 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-child-start-handle-identity-and-result",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "golden.child-start-handle",
+    "input": ["billing.reconcile"]
+  },
+  "history": [
+    {
+      "event_type": "ChildWorkflowScheduled",
+      "payload": {
+        "sequence": 1,
+        "workflow_link_id": "call-1",
+        "child_call_id": "call-1",
+        "child_workflow_instance_id": "child-instance",
+        "child_workflow_run_id": "child-run-1",
+        "child_workflow_type": "billing.reconcile"
+      }
+    },
+    {
+      "event_type": "ChildRunStarted",
+      "payload": {
+        "sequence": 1,
+        "workflow_link_id": "call-1",
+        "child_call_id": "call-1",
+        "child_workflow_instance_id": "child-instance",
+        "child_workflow_run_id": "child-run-1",
+        "child_workflow_type": "billing.reconcile"
+      }
+    },
+    {
+      "event_type": "ChildRunStarted",
+      "payload": {
+        "sequence": 1,
+        "workflow_link_id": "link-2",
+        "child_call_id": "call-1",
+        "child_workflow_instance_id": "child-instance",
+        "child_workflow_run_id": "child-run-2",
+        "child_workflow_type": "billing.reconcile"
+      }
+    },
+    {
+      "event_type": "ChildRunCompleted",
+      "payload": {
+        "sequence": 1,
+        "child_call_id": "call-1",
+        "child_workflow_instance_id": "child-instance",
+        "child_workflow_run_id": "child-run-2",
+        "child_workflow_type": "billing.reconcile",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoUcmVjb25jaWxlZA=="
+        }
+      }
+    }
+  ],
+  "expected": {
+    "type": "complete_workflow",
+    "result": {
+      "identity": ["call-1", "child-instance", "child-run-1"],
+      "child": "reconciled"
+    }
+  }
+}

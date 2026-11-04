@@ -6,6 +6,20 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `WorkflowContext::startChildWorkflow()` starts a child and returns a
+  `ChildWorkflowHandle` once the runtime has committed the start (#185). The
+  handle's `identity()` gives the child call ID, the child workflow ID and the
+  initial run ID from canonical history while the child keeps running, and
+  `await()` returns its result or throws `ChildWorkflowFailed`, following the
+  same call through child continue-as-new and retries. The start sends
+  `start_child_workflow` with `await: "started"` and needs a runtime that
+  advertises `child_workflow_start_turn`; without it the worker abandons the
+  task before submitting anything. `childWorkflow()`, `deferChildWorkflow()`
+  and group APIs are unchanged, and `childWorkflow()` refuses an `await`
+  option.
+
 ## [3.9.4] - 2026-11-04
 
 ### Fixed
