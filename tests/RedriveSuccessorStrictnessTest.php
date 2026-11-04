@@ -198,7 +198,10 @@ final class RedriveSuccessorStrictnessTest extends TestCase
         self::assertNull(RedriveSuccessorHistory::violation($fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE]));
     }
 
-    /** @param array<string, mixed> $fixture @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $fixture
+     * @return array<string, mixed>
+     */
     private static function withCall(array $fixture, string $kind): array
     {
         $fixture['history'][4] = [...$fixture['history'][4], 'event_type' => $kind, 'payload' => match ($kind) {
@@ -228,7 +231,10 @@ final class RedriveSuccessorStrictnessTest extends TestCase
         };
     }
 
-    /** @param array<string, mixed> $fixture @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $fixture
+     * @return array<string, mixed>
+     */
     private static function terminal(array $fixture, string $kind): array
     {
         $payload = $fixture['history'][4]['payload'];
@@ -240,7 +246,11 @@ final class RedriveSuccessorStrictnessTest extends TestCase
         return ['event_type' => $kind, 'payload' => $payload];
     }
 
-    /** @param array<string, mixed> $fixture @param array<string, mixed> $event @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $fixture
+     * @param array<string, mixed> $event
+     * @return array<string, mixed>
+     */
     private static function insert(array $fixture, int $index, array $event): array
     {
         $event['recorded_at'] ??= $fixture['history'][$index]['recorded_at'] ?? $fixture['history'][count($fixture['history']) - 1]['recorded_at'];
