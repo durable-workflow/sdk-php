@@ -113,7 +113,8 @@ and may use a decimal fraction, such as `'1.5 hours'`. A fraction of a month,
 quarter, year, decade, century or millennium is rejected, because Carbon would
 truncate it. Unknown units, extra words, commas, negative parts, parts with
 more than 15 digits before the decimal point, durations of 2^53 seconds or more
-(about 285 million years), and ISO 8601 strings throw
+(about 310 million years as Carbon counts them, with 336-day years), and
+ISO 8601 strings throw
 `InvalidArgumentException` naming the parameter and the accepted forms. Pass
 ISO 8601 durations as `new DateInterval('PT30M')`. Negative intervals and
 relative `DateInterval::createFromDateString()` values such as `'next weekday'`

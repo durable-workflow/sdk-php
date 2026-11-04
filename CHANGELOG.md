@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.9.1] - 2026-11-04
+
 ### Fixed
 
 - Friendly durations whose calendar total wraps inside Carbon are now rejected
