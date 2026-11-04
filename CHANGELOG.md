@@ -24,6 +24,14 @@ project follows [Semantic Versioning](https://semver.org/).
     earlier; they fail with "reached complete_workflow before consuming its
     recorded durable history". Upgrade every worker on a task queue together,
     and do not roll a queue back below this release once such a reopen exists.
+  - **Equal-timeout waits after a timeout:** 3.9.1 and earlier merged a wait
+    into the previous one whenever both had the same key, predicate and
+    timeout, even when the first had timed out. A run that waits again with
+    the same key, predicate and timeout after a timeout (for example a retry
+    loop) now replays the two waits separately, as they were recorded. A run
+    recorded by an older worker under the merged reading can fail replay with
+    a non-determinism error. Give each logical wait its own key. Waits inside
+    `all()`, `parallel()` and selections are never merged with each other.
 
 ## [3.9.1] - 2026-11-04
 

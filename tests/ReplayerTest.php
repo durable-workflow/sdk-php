@@ -1131,6 +1131,38 @@ final class ReplayerTest extends TestCase
         self::assertSame(300, $commands[0]['timeout_seconds']);
     }
 
+    /** Two keyless members of one group are separate waits, never a reopen (#271 review). */
+    public function testKeylessGroupMembersAreNotLinkedAsReopens(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): array {
+            $approved = static fn (): bool => $context->signals('approve') !== [];
+
+            return $context->all([
+                $context->deferCondition($approved, null, 3600),
+                $context->deferCondition($approved, null, 900),
+            ]);
+        };
+        $first = (new Replayer($codec))->replay($workflow, [], [], 'php-workers')->commands;
+        $history = [];
+        foreach ($first as $index => $command) {
+            $path = $command['parallel_group_path'];
+            $history[] = ['event_type' => 'ConditionWaitOpened', 'recorded_at' => '2026-11-04T02:00:00.00'.$index.'000+00:00', 'payload' => [
+                'sequence' => $index + 1, 'condition_wait_id' => 'wait-'.($index + 1),
+                'condition_definition_fingerprint' => $command['condition_definition_fingerprint'],
+                'timeout_seconds' => $command['timeout_seconds'], ...$path[array_key_last($path)], 'parallel_group_path' => $path,
+            ]];
+        }
+        $history[] = ['event_type' => 'SignalReceived', 'recorded_at' => '2026-11-04T02:01:00.000000+00:00', 'payload' => [
+            'workflow_sequence' => 1, 'signal_name' => 'approve', 'arguments' => $codec->envelope([]),
+        ]];
+
+        $commands = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers')->commands;
+
+        self::assertSame('complete_workflow', $commands[0]['type']);
+        self::assertSame([true, true], $codec->decodeEnvelope($commands[0]['result']));
+    }
+
     public function testAnEventTimeWithoutAnOffsetIsIgnored(): void
     {
         $codec = new AvroPayloadCodec();

@@ -1194,7 +1194,9 @@ final class Replayer
             && ($previous['timeout_seconds'] === $next['timeout_seconds']
                 || (is_int($previous['timeout_seconds']) && is_int($next['timeout_seconds'])
                     && $next['timeout_seconds'] < $previous['timeout_seconds']))
-            && $this->conditionWaitStillLive($previous);
+            && $this->conditionWaitStillLive($previous)
+            // Grouped members are separate calls; grouped reopens are #278.
+            && $previous['parallel_path'] === [] && $next['parallel_path'] === [];
     }
 
     /**
@@ -3351,7 +3353,8 @@ final class Replayer
                 && $step['condition_key'] === $collapsed[$last]['condition_key']
                 && $step['condition_definition_fingerprint'] === $collapsed[$last]['condition_definition_fingerprint']
                 && $step['timeout_seconds'] === $collapsed[$last]['timeout_seconds']
-                && $this->conditionWaitStillLive($collapsed[$last])) {
+                && $this->conditionWaitStillLive($collapsed[$last])
+                && $step['parallel_path'] === [] && $collapsed[$last]['parallel_path'] === []) {
                 $step['sequence'] = $collapsed[$last]['sequence'];
                 $step['opened_at'] = $collapsed[$last]['opened_at'] ?? null;
                 $collapsed[$last] = $step;
