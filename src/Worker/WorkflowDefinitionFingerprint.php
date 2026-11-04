@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Worker;
 
+use DurableWorkflow\Transport\JsonDocument;
 use ReflectionClass;
 use ReflectionFunction;
 use Throwable;
@@ -34,7 +35,7 @@ final class WorkflowDefinitionFingerprint
 
             ksort($sources);
 
-            return 'sha256:'.hash('sha256', json_encode([
+            return 'sha256:'.hash('sha256', JsonDocument::encodeWith([
                 'domain' => 'durable-workflow-php.workflow-definition.v1',
                 'workflow_type' => $workflowType,
                 'sources' => $sources,

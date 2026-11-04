@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Worker;
 
+use DurableWorkflow\Transport\JsonDocument;
 use InvalidArgumentException;
 
 /** @internal Frozen admission facts, never proof of callback stop or effect authority. */
@@ -79,7 +80,7 @@ final class CancellationScopeActivityProjection
             }
             // Match Native's v5 scalar projection exactly, without application payload bytes.
             $members[] = ['sequence' => $sequence, 'activity_execution_id' => $id,
-                'descriptor_hash' => hash('sha256', json_encode([
+                'descriptor_hash' => hash('sha256', JsonDocument::encodeWith([
                     $scopeId, $event['id'], $policy, $payload['local_activity'] ?? false,
                     $payload['execution_mode'] ?? null, $activity['schedule_to_close_deadline_at'] ?? null,
                 ], JSON_THROW_ON_ERROR))];
