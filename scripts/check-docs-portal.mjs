@@ -200,6 +200,11 @@ assert(
   adoptionValidator.errorsText(validateLaravelAdoption.errors),
 );
 assert.equal(
+  laravelAdoptionContract.modes.service_v2.channel,
+  quickstartContract.package.onboarding_requirement,
+  'Laravel adoption must publish the same SDK channel as the quickstart onboarding requirement.',
+);
+assert.equal(
   laravelAdoptionContract.framework.constraint,
   release.frameworks.laravel,
   'Laravel adoption and Composer framework compatibility must stay aligned.',
@@ -292,6 +297,17 @@ for (const source of filesUnder(path.join(projectDirectory, 'docs/portal'), '.md
   assert(
     !/\b2\.0\.0-(?:alpha|beta|rc)\.\d+\b/.test(markdown),
     `${path.relative(projectDirectory, source)} hard-codes a release candidate instead of using release metadata.`,
+  );
+}
+
+for (const source of [
+  path.join(projectDirectory, 'README.md'),
+  ...filesUnder(path.join(projectDirectory, 'docs'), '.md'),
+]) {
+  const markdown = fs.readFileSync(source, 'utf8');
+  assert(
+    !/durable-workflow\/sdk:['"]?[~^]?\d/.test(markdown),
+    `${path.relative(projectDirectory, source)} hard-codes an SDK version constraint; render it from release metadata or omit it.`,
   );
 }
 
