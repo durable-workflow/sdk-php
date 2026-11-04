@@ -1215,6 +1215,61 @@ final class ReplayerTest extends TestCase
         }
     }
 
+    /**
+     * A repeated open leaves an orphan whose timer still fires. The orphan was
+     * open when the repeat opened, so it is the same wait (#283).
+     *
+     * @param list<array<string, mixed>> $tail
+     */
+    #[DataProvider('orphanedRepeatedOpens')]
+    public function testAnOrphanedRepeatedOpenStaysTheSameWaitAfterItsTimerFires(int $reopenTimeout, array $tail, string $expected, ?int $timeout): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static fn (WorkflowContext $context): string => $context->waitCondition(
+            static fn (): bool => $context->signals('decision') !== [] && $context->signals('decision')[0][0] === 'proposal-1',
+            key: 'decision-1',
+            timeout: '5 minutes',
+        ) ? 'decided' : 'expired';
+        $open = static fn (int $sequence, int $timeout, string $at): array => ['event_type' => 'ConditionWaitOpened', 'recorded_at' => $at,
+            'payload' => ['sequence' => $sequence, 'condition_wait_id' => 'wait-'.$sequence, 'condition_key' => 'decision-1', 'timeout_seconds' => $timeout]];
+        $history = [
+            $open(3, 300, '2026-11-04T04:07:36.890000+00:00'),
+            $open(4, 300, '2026-11-04T04:07:36.908000+00:00'),
+            ['event_type' => 'SignalReceived', 'recorded_at' => '2026-11-04T04:09:36.979000+00:00',
+                'payload' => ['workflow_sequence' => 4, 'signal_name' => 'decision', 'arguments' => $codec->envelope(['proposal-0'])]],
+            ['event_type' => 'ConditionWaitSatisfied', 'recorded_at' => '2026-11-04T04:09:37.008000+00:00',
+                'payload' => ['sequence' => 4, 'condition_wait_id' => 'wait-4', 'condition_key' => 'decision-1']],
+            $open(5, $reopenTimeout, '2026-11-04T04:09:37.010000+00:00'),
+            ['event_type' => 'ConditionWaitTimedOut', 'recorded_at' => '2026-11-04T04:12:36.956000+00:00',
+                'payload' => ['sequence' => 3, 'condition_wait_id' => 'wait-3', 'condition_key' => 'decision-1']],
+            ...$tail,
+        ];
+
+        $commands = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers')->commands;
+
+        if ($timeout !== null) {
+            self::assertSame('open_condition_wait', $commands[0]['type']);
+            self::assertSame($timeout, $commands[0]['timeout_seconds']);
+        } else {
+            self::assertSame('complete_workflow', $commands[0]['type']);
+            self::assertSame($expected, $codec->decodeEnvelope($commands[0]['result']));
+        }
+    }
+
+    /** @return array<string, array{int, list<array<string, mixed>>, string, ?int}> */
+    public static function orphanedRepeatedOpens(): array
+    {
+        $reopenTimedOut = ['event_type' => 'ConditionWaitTimedOut', 'recorded_at' => '2026-11-04T04:12:37.216000+00:00',
+            'payload' => ['sequence' => 5, 'condition_wait_id' => 'wait-5', 'condition_key' => 'decision-1']];
+
+        return [
+            // The issue's 3.9.1-shaped history: the orphan times out, the reopen is still open; 0 s are left.
+            'reopen recorded at 300 s by 3.9.1, orphan timed out' => [300, [], '', 0],
+            'reopen recorded at 180 s by 3.9.2, orphan timed out' => [180, [], '', 0],
+            'the reopen times out too' => [180, [$reopenTimedOut], 'expired', null],
+        ];
+    }
+
     public function testAReopenLongerThanTheAuthoredTimeoutIsNotTheSameWait(): void
     {
         $codec = new AvroPayloadCodec();

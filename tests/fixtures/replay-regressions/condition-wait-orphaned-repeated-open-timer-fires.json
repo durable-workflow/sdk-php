@@ -1,0 +1,71 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-condition-wait-orphaned-repeated-open-timer-fires",
+  "protocol_version": "1.13",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "golden.signal",
+    "input": ["condition:signal"]
+  },
+  "history": [
+    {
+      "event_type": "ConditionWaitOpened",
+      "recorded_at": "2026-11-04T04:07:36.890000+00:00",
+      "payload": {"sequence": 1, "condition_wait_id": "wait-1", "condition_key": "approval", "timeout_seconds": 30}
+    },
+    {
+      "event_type": "TimerScheduled",
+      "recorded_at": "2026-11-04T04:07:36.891000+00:00",
+      "payload": {"sequence": 1, "timer_id": "timer-1", "timer_kind": "condition_timeout", "condition_key": "approval", "delay_seconds": 30, "condition_wait_id": "wait-1"}
+    },
+    {
+      "event_type": "ConditionWaitOpened",
+      "recorded_at": "2026-11-04T04:07:36.908000+00:00",
+      "payload": {"sequence": 2, "condition_wait_id": "wait-2", "condition_key": "approval", "timeout_seconds": 30}
+    },
+    {
+      "event_type": "TimerScheduled",
+      "recorded_at": "2026-11-04T04:07:36.908000+00:00",
+      "payload": {"sequence": 2, "timer_id": "timer-2", "timer_kind": "condition_timeout", "condition_key": "approval", "delay_seconds": 30, "condition_wait_id": "wait-2"}
+    },
+    {
+      "event_type": "SignalReceived",
+      "recorded_at": "2026-11-04T04:07:48.979000+00:00",
+      "payload": {
+        "signal_name": "reject",
+        "arguments": {"codec": "avro", "blob": "wwHioz3/VYAiNwwCCgZBZGEA"}
+      }
+    },
+    {
+      "event_type": "ConditionWaitSatisfied",
+      "recorded_at": "2026-11-04T04:07:49.008000+00:00",
+      "payload": {"sequence": 2, "timer_id": "timer-2", "condition_key": "approval", "timeout_seconds": 30, "condition_wait_id": "wait-2"}
+    },
+    {
+      "event_type": "TimerCancelled",
+      "recorded_at": "2026-11-04T04:07:49.010000+00:00",
+      "payload": {"sequence": 2, "timer_id": "timer-2", "timer_kind": "condition_timeout", "condition_key": "approval", "delay_seconds": 30, "condition_wait_id": "wait-2"}
+    },
+    {
+      "event_type": "ConditionWaitOpened",
+      "recorded_at": "2026-11-04T04:07:49.010000+00:00",
+      "payload": {"sequence": 3, "condition_wait_id": "wait-3", "condition_key": "approval", "timeout_seconds": 30}
+    },
+    {
+      "event_type": "TimerScheduled",
+      "recorded_at": "2026-11-04T04:07:49.011000+00:00",
+      "payload": {"sequence": 3, "timer_id": "timer-3", "timer_kind": "condition_timeout", "condition_key": "approval", "delay_seconds": 30, "condition_wait_id": "wait-3"}
+    },
+    {
+      "event_type": "TimerFired",
+      "recorded_at": "2026-11-04T04:08:06.956000+00:00",
+      "payload": {"sequence": 1, "timer_id": "timer-1", "timer_kind": "condition_timeout", "condition_key": "approval", "delay_seconds": 30, "condition_wait_id": "wait-1"}
+    }
+  ],
+  "expected": {
+    "type": "open_condition_wait",
+    "condition_key": "approval",
+    "timeout_seconds": 0
+  }
+}

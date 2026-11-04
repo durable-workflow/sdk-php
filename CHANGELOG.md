@@ -16,6 +16,16 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- 3.9.2 workers could fail runs that had a repeated condition-wait open once
+  the orphaned first open's timer fired (#283). The Server records a second
+  physical wait when a queued workflow task re-sends a still-open wait
+  (#269 part 2), and the first wait's timer still fires later. 3.9.2 treated
+  that timeout as finishing the first wait, split it from the rest of the
+  chain, and replay then failed with a non-determinism error. Whether a later
+  open continues an earlier same-key wait now depends on the earlier wait's
+  state when the later one opened: still open or satisfied means the same
+  wait, and a timeout before the later open still makes a separate call, such
+  as a grace period.
 - Request bodies keep full float precision whatever the host's
   `serialize_precision` is (#248). With a non-default value such as 3, a float
   search attribute of 1.2345 was sent and recorded as 1.23, and replay then
