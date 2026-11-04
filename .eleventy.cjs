@@ -1,7 +1,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const QUICKSTART_CONTRACT = require('./docs/quickstart-contract.json');
+// Deployment tooling can be newer than the selected published SDK source.
+const sourceDirectory = path.resolve(process.env.DOCS_SOURCE_DIRECTORY || __dirname);
+const QUICKSTART_CONTRACT = require(path.join(sourceDirectory, 'docs/quickstart-contract.json'));
 const QUICKSTART_BASES = QUICKSTART_CONTRACT.reference_resolution?.bases;
 const QUICKSTART_SOURCES = Object.freeze(Object.fromEntries(
   Object.entries(QUICKSTART_CONTRACT.sources).map(([name, reference]) => {
@@ -83,8 +85,8 @@ module.exports = function configure(eleventyConfig) {
     if (typeof sourcePath !== 'string') {
       throw new Error(`Unknown package-owned quickstart source: ${sourceName}`);
     }
-    const resolved = path.resolve(__dirname, sourcePath);
-    const examplesDirectory = path.resolve(__dirname, 'examples');
+    const resolved = path.resolve(sourceDirectory, sourcePath);
+    const examplesDirectory = path.resolve(sourceDirectory, 'examples');
     if (!resolved.startsWith(`${examplesDirectory}${path.sep}`)) {
       throw new Error(`Quickstart source must stay under ${examplesDirectory}: ${sourcePath}`);
     }
