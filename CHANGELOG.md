@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.9.1] - 2026-11-04
+
 ### Fixed
 
 - An empty workflow ID now fails when the handle is created (#252). Before,
