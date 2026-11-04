@@ -98,8 +98,8 @@ final class WorkflowDurationTest extends TestCase
 
         self::assertSame(1800, $observed[0]['timeout_seconds']);
         self::assertSame(
-            array_diff_key($observed[1], ['condition_definition_fingerprint' => true]),
-            array_diff_key($observed[0], ['condition_definition_fingerprint' => true]),
+            array_diff_key($observed[1], ['condition_definition_fingerprint' => true, 'condition_wait_occurrence_id' => true]),
+            array_diff_key($observed[0], ['condition_definition_fingerprint' => true, 'condition_wait_occurrence_id' => true]),
         );
     }
 

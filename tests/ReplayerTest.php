@@ -943,6 +943,38 @@ final class ReplayerTest extends TestCase
         self::assertSame($firstWorker->commands, $restartedWorker->commands);
     }
 
+    public function testEachConditionCallSendsOneStableOccurrenceId(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): array {
+            $first = $context->waitCondition(static fn (): bool => $context->signals('first') !== [], key: 'first', timeout: 60);
+            $second = $context->waitCondition(static fn (): bool => $context->signals('second') !== [], key: 'second', timeout: 60);
+
+            return [$first, $second];
+        };
+        $opened = ['event_type' => 'ConditionWaitOpened', 'payload' => [
+            'sequence' => 1, 'condition_wait_id' => 'wait-1', 'condition_key' => 'first', 'timeout_seconds' => 60,
+            'condition_wait_occurrence_id' => 'php:condition-wait:0',
+        ]];
+        $falseWake = ['event_type' => 'SignalReceived', 'payload' => [
+            'workflow_sequence' => 1, 'signal_name' => 'other', 'arguments' => $codec->envelope([]),
+        ]];
+        $trueWake = ['event_type' => 'SignalReceived', 'payload' => [
+            'workflow_sequence' => 1, 'signal_name' => 'first', 'arguments' => $codec->envelope([]),
+        ]];
+
+        $initial = (new Replayer($codec))->replay($workflow, [], [], 'php-workers')->commands;
+        $reopened = (new Replayer($codec))->replay($workflow, [$opened, $falseWake], [], 'php-workers')->commands;
+        $next = (new Replayer($codec))->replay($workflow, [$opened, $trueWake, [
+            'event_type' => 'ConditionWaitSatisfied', 'payload' => ['sequence' => 1, 'condition_wait_id' => 'wait-1', 'condition_key' => 'first'],
+        ]], [], 'php-workers')->commands;
+
+        self::assertSame('php:condition-wait:0', $initial[0]['condition_wait_occurrence_id']);
+        self::assertSame('php:condition-wait:0', $reopened[0]['condition_wait_occurrence_id'], 'a reopen keeps its occurrence');
+        self::assertSame('second', $next[0]['condition_key']);
+        self::assertSame('php:condition-wait:1', $next[0]['condition_wait_occurrence_id'], 'the next call is a new occurrence');
+    }
+
     public function testRepeatedPhysicalOpensReplayAsOneLogicalCondition(): void
     {
         $codec = new AvroPayloadCodec();
