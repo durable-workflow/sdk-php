@@ -6,6 +6,17 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- An empty workflow ID now fails when the handle is created (#252). Before,
+  `workflowHandle('')`, and the Laravel bridge's `handle(Workflow::class, '')`,
+  returned a handle whose calls built routes such as `GET /api/workflows/`,
+  and Server 3 answered `rust_capability_not_implemented`, which read like a
+  missing server feature. `WorkflowHandle` and the test fake's handle now throw
+  `InvalidArgumentException` for an empty workflow ID or an empty selected run
+  ID (pass `null` to follow the current run). Every `Client` call also refuses
+  an empty identifier in its request path before sending anything.
+
 ## [3.9.1] - 2026-11-04
 
 ### Fixed
