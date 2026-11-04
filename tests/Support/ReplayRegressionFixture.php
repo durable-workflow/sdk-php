@@ -432,6 +432,15 @@ final class ReplayRegressionFixture
 
                 return ['child' => $result];
             },
+            'golden.child-start-handle' => static function (
+                WorkflowContext $context,
+                mixed $workflowType,
+            ): array {
+                $child = $context->startChildWorkflow((string) $workflowType, ['golden-input']);
+                $identity = $child->identity();
+
+                return ['identity' => [$identity->callId, $identity->workflowId, $identity->initialRunId], 'child' => $child->await()];
+            },
             'golden.side-effect' => static function (WorkflowContext $context, mixed $value): array {
                 $result = $context->sideEffect(static fn (): mixed => $value);
 

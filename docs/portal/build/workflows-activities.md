@@ -289,6 +289,106 @@ The barrier is fail-fast. The first failure in durable history order is thrown i
 
 On retry or worker restart, replay validates the exact group ID, base sequence, size, leaf index, and nested path. Pending or completed members keep their original sequence and are not scheduled again. Changing a dynamic fan-out count, order, operation kind, or nesting while an open run can reach the group raises `NonDeterministicWorkflow` before any replacement commands leave the worker.
 
+## Start a child and keep its identity
+
+`childWorkflow()` returns the child's result, so the parent waits until the
+child finishes. When the parent needs the child's identity first, for example
+to record it or notify someone, start the child with `startChildWorkflow()`:
+
+```php
+use DurableWorkflow\Worker\ParentClosePolicy;
+
+$child = $context->startChildWorkflow('billing.reconcile', [$accountId], [
+    'parent_close_policy' => ParentClosePolicy::Abandon,
+]);
+
+$identity = $child->identity();
+$context->activity('notify.reconcile-started', [$identity->workflowId]);
+
+$summary = $child->await();
+```
+
+The turn that calls `startChildWorkflow()` ends after the start command. The
+runtime commits the child's start and gives the parent a new turn while the
+child keeps running, so the handle returns only for a committed child.
+`identity()` reads canonical history:
+
+| Property | Meaning |
+| --- | --- |
+| `callId` | The parent's call for this child. It stays the same through child continue-as-new and retries. |
+| `workflowId` | The child workflow instance ID. |
+| `initialRunId` | The first run of the child. A later continued or retried run does not change it. |
+
+`await()` returns the child's result or throws `ChildWorkflowFailed`. It
+follows the same child call through continue-as-new and retries, and sends no
+command of its own. Replay and a replacement worker rebuild the same handle
+from history without starting another child.
+
+Parent-close and cancellation policies, timeouts and retries work as they do
+for `childWorkflow()`. The handle supports only `identity()` and `await()`:
+it cannot signal, query, update, cancel or terminate the child. Await it in the
+workflow execution that started it. `startChildWorkflow()` cannot run inside an
+`all()` or `parallel()` group; use `deferChildWorkflow()` there.
+
+This needs a runtime that advertises `child_workflow_start_turn`. Native Server
+3.0.x and PHP Server 2.x do not. On those, the worker abandons the task with
+`child_workflow_start_turn_unavailable` before it submits anything, so no child
+starts. A cancellation-scope checkpoint keeps the parent's claim, so the
+runtime refuses a start there with `child_start_turn_not_at_checkpoint`.
+
+### Run the service-mode child example
+
+The complete [worker](https://github.com/durable-workflow/sdk-php/blob/main/examples/child-workflow-worker.php)
+and [client](https://github.com/durable-workflow/sdk-php/blob/main/examples/child-workflow-client.php)
+use the quickstart's [bootstrap](https://github.com/durable-workflow/sdk-php/blob/main/examples/bootstrap.php).
+Copy those three files beside the `vendor/` directory of your Composer project.
+Use an SDK release containing `startChildWorkflow()` and a Server advertising
+`child_workflow_start_turn`. The same runtime URL and namespace must be available
+to both processes. Set `DURABLE_WORKFLOW_RUNTIME_URL`,
+`DURABLE_WORKFLOW_NAMESPACE`, and `DURABLE_WORKFLOW_TASK_QUEUE` in both terminals.
+Set `DURABLE_WORKFLOW_WORKER_TOKEN` in the worker terminal and
+`DURABLE_WORKFLOW_CLIENT_TOKEN` in the client terminal, using their respective
+role credentials.
+
+Start the worker, then run a client command in the second terminal:
+
+```bash
+php child-workflow-worker.php
+```
+
+```bash
+php child-workflow-client.php await
+php child-workflow-client.php await reject
+php child-workflow-client.php abandon
+php child-workflow-client.php cancel
+php child-workflow-client.php terminate
+```
+
+Each parent first demonstrates a sequential result. It then starts a child with a committed handle and records
+the identity in an activity. The activity may be retried, so an application
+replacing its sample output with an external write should make that write
+idempotent by `call_id`.
+
+`await` returns the typed greeting. `await reject` catches `ChildWorkflowFailed`
+and returns its recorded failure. The other modes close the parent while its
+child remains open: `abandon` allows it to complete, `cancel` applies legacy
+terminal cancellation, and `terminate` terminates it. The client prints the
+parent result and the child's observed status. Cancellation through the handle
+is unsupported. Cooperative cleanup uses the separate opt-in cancellation APIs
+and `ParentClosePolicy::RequestCancellation`, as described in the cancellation
+guide. Initial run IDs remain snapshots through retry and continue-as-new;
+instance-oriented client operations target the child's current run unless the
+caller explicitly selects a run.
+
+`deferChildWorkflow()` prepares an operation without starting it or providing a
+child identity. Join it at an `all()` or `parallel()` barrier on a runtime that
+supports child members in those groups, as shown in the concurrency examples
+above. Native Server currently refuses child members with
+`development_parallel_group_unqualified`.
+[Server #325](https://github.com/durable-workflow/server/issues/325) tracks this
+runtime parity gap. The runnable example uses sequential children and committed
+start handles; it does not establish deferred-group compatibility on Native.
+
 ## Evolve workflow code with version markers
 
 Give each long-lived code change a stable ID and keep the old branch while histories can still reach it. `getVersion()` records the maximum supported version for a new run and returns that same decision after redelivery, worker restart, or cold replay. Including `-1` in the first range lets histories that passed this point before the marker existed stay on the legacy branch:
@@ -475,6 +575,7 @@ The context provides these replay-aware commands:
 | `saga()` | Reverse-order compensation through ordinary activity history. |
 | `sleep()` | A durable timer that survives worker downtime. |
 | `childWorkflow()` | A separately identified durable execution. |
+| `startChildWorkflow()` | A started child whose identity the parent reads before awaiting its result. |
 | `all()`, `parallel()` | An ordered, fail-fast join over deferred activities, child workflows, and timers. |
 | `sideEffect()` | A small nondeterministic value recorded once in history. |
 | `getVersion()`, `patched()`, `deprecatePatch()` | A durable workflow-code evolution decision. |

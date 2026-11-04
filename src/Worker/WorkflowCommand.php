@@ -223,6 +223,9 @@ final class WorkflowCommand
      */
     public static function childWorkflow(string $workflowType, array $arguments, array $options = []): self
     {
+        if (array_key_exists('await', $options)) {
+            throw new InvalidArgumentException('Child workflow await is chosen by the API: use startChildWorkflow() for a committed start handle.');
+        }
         $policies = self::canonicalChildWorkflowPolicies($options);
         unset($options['parent_close_policy'], $options['cancellation_policy']);
         foreach (self::CHILD_WORKFLOW_TIMEOUT_FIELDS as $field) {
@@ -235,6 +238,15 @@ final class WorkflowCommand
             'workflow_type' => $workflowType,
             'arguments_value' => $arguments,
         ]));
+    }
+
+    /**
+     * @internal Waits on a started child's recorded resolution. The replayer
+     * resolves it from history; it is never sent to the runtime.
+     */
+    public static function awaitChildWorkflow(int $sequence): self
+    {
+        return new self('await_child_workflow', 'child_workflow', ['sequence' => $sequence]);
     }
 
     /**
