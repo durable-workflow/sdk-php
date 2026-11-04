@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-condition-wait-token-fingerprint-v2",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.signal",
+    "input": [
+      "condition:pending"
+    ]
+  },
+  "history": [
+    {
+      "event_type": "ConditionWaitOpened",
+      "payload": {
+        "sequence": 1,
+        "condition_wait_id": "pending-1",
+        "condition_key": "approval-pending",
+        "condition_definition_fingerprint": "dwphp2:sha256:02a95ef3eef2f4aec3dbd83735628c87719b16370c73743a0bd4fc7b91abc15c",
+        "timeout_seconds": 60
+      }
+    }
+  ],
+  "expected": {
+    "type": "open_condition_wait",
+    "condition_key": "approval-pending",
+    "condition_definition_fingerprint": "dwphp2:sha256:02a95ef3eef2f4aec3dbd83735628c87719b16370c73743a0bd4fc7b91abc15c",
+    "timeout_seconds": 60
+  }
+}
