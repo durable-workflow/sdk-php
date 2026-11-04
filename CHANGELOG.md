@@ -6,6 +6,16 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Replay checks a recorded `condition_wait_occurrence_id` against the call
+  being replayed (#281). If a history records this SDK's id for a different
+  `waitCondition()` call (`php:condition-wait:N` with another N), replay fails
+  with `condition_wait_occurrence_mismatch` instead of resuming the wrong call.
+  Two physical opens recorded for different occurrences are never merged into
+  one wait. Histories without the field, or with ids written by another
+  runtime, replay as before.
+
 ## [3.9.3] - 2026-11-04
 
 **Upgrade from 3.9.2 now.** 3.9.2 can fail existing runs on native Server 3.0.x
