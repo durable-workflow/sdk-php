@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-11-04
+
 ### Added
 
 - Friendly durations for workflow timers and timeouts (#254).

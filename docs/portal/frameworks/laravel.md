@@ -238,7 +238,7 @@ final class GreetingWorkflow
         $approved = $context->waitCondition(
             static fn (): bool => $context->signals('approve-greeting') !== [],
             key: 'greeting-approved',
-            timeout: 300,
+            timeout: '5 minutes',
         );
         if (!$approved) {
             return 'Greeting approval timed out.';
