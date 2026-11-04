@@ -6,8 +6,6 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [3.9.1] - 2026-11-04
-
 ### Fixed
 
 - An empty workflow ID now fails when the handle is created (#252). Before,
@@ -18,6 +16,8 @@ project follows [Semantic Versioning](https://semver.org/).
   `InvalidArgumentException` for an empty workflow ID or an empty selected run
   ID (pass `null` to follow the current run). Every `Client` call also refuses
   an empty identifier in its request path before sending anything.
+
+## [3.9.1] - 2026-11-04
 
 ### Fixed
 
