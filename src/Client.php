@@ -667,29 +667,8 @@ final class Client implements WorkflowClientInterface
         $power = 1;
         while (true) {
             [$items, $page] = $fetch($token);
-            if (!array_key_exists('next_page_token', $page)) {
-                throw new PaginationException('The page omitted its continuation token.', 'missing_continuation');
-            }
-            $next = $page['next_page_token'];
-            if ($next !== null && !is_string($next)) {
-                throw new PaginationException('A continuation token must be a string or null.', 'invalid_continuation');
-            }
-            $next = $next === '' ? null : $next;
-            if ($next !== null) {
-                // Brent's cycle detection uses two tokens, matching the Rust
-                // iterator without retaining an unbounded export's token set.
-                if ($next === $token || $next === $checkpoint) {
-                    throw new PaginationException('The Server repeated a continuation token or formed a token cycle.', 'repeated_page_token');
-                }
-                if ($distance < PHP_INT_MAX) {
-                    ++$distance;
-                }
-                if ($distance >= $power) {
-                    $checkpoint = $next;
-                    $power = $power > intdiv(PHP_INT_MAX, 2) ? PHP_INT_MAX : $power * 2;
-                    $distance = 0;
-                }
-            }
+            $next = $this->continuationToken($page);
+            self::advancePaginationCycle($token, $next, $checkpoint, $distance, $power);
             foreach ($items as $item) {
                 // yield from would reuse each page's integer keys and could
                 // overwrite earlier items in iterator_to_array().
@@ -700,6 +679,45 @@ final class Client implements WorkflowClientInterface
                 return;
             }
             $token = $next;
+        }
+    }
+
+    /** @param array<string, mixed> $page */
+    private function continuationToken(array $page): ?string
+    {
+        if (!array_key_exists('next_page_token', $page)) {
+            throw new PaginationException('The page omitted its continuation token.', 'missing_continuation');
+        }
+        $next = $page['next_page_token'];
+        if ($next !== null && !is_string($next)) {
+            throw new PaginationException('A continuation token must be a string or null.', 'invalid_continuation');
+        }
+
+        return $next === '' ? null : $next;
+    }
+
+    private static function advancePaginationCycle(
+        ?string $current,
+        ?string $next,
+        ?string &$checkpoint,
+        int &$distance,
+        int &$power,
+    ): void {
+        if ($next === null) {
+            return;
+        }
+        // Brent's cycle detection retains two tokens, matching Rust, rather
+        // than retaining every token in an unbounded export.
+        if ($next === $current || $next === $checkpoint) {
+            throw new PaginationException('The Server repeated a continuation token or formed a token cycle.', 'repeated_page_token');
+        }
+        if ($distance < PHP_INT_MAX) {
+            ++$distance;
+        }
+        if ($distance >= $power) {
+            $checkpoint = $next;
+            $power = $power > intdiv(PHP_INT_MAX, 2) ? PHP_INT_MAX : $power * 2;
+            $distance = 0;
         }
     }
 
