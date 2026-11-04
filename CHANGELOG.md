@@ -8,6 +8,19 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Replay checks a recorded `condition_wait_occurrence_id` against the call
+  being replayed (#281). If a history records this SDK's id for a different
+  `waitCondition()` or `deferCondition()` call (`php:condition-wait:N` with
+  another N), replay fails with `condition_wait_occurrence_mismatch` instead of
+  resuming the wrong call. Two physical opens recorded for different
+  occurrences are never merged into one wait. A logical wait keeps the id of
+  its first open, so a run whose first open was written before 3.9.3 (with no
+  id) keeps replaying as before. Ids in any other format are not compared.
+  - **Code changes:** ids are ordinals of the condition calls in a run, so
+    inserting or removing a `waitCondition()` call before an existing one in
+    code that already has runs in flight now fails replay for runs recorded
+    with ids, as other non-deterministic changes do. Use version markers for
+    such changes.
 - Prepared local activity checkpoint ids, cancellation-scope descriptor
   hashes and the workflow definition fingerprint no longer depend on the host's
   `serialize_precision` (#282). They hash JSON that can contain floats, such as
