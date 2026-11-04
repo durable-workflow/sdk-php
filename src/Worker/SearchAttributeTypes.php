@@ -82,9 +82,9 @@ final class SearchAttributeTypes
         };
     }
 
-    private static function stringValue(mixed $value, int $limit): bool
+    private static function stringValue(mixed $value, int $limit, bool $allowBlank = false): bool
     {
-        if (!is_string($value) || trim($value) === '') {
+        if (!is_string($value) || (!$allowBlank && trim($value) === '')) {
             return false;
         }
         $length = preg_match_all('/./su', trim($value));
@@ -98,11 +98,8 @@ final class SearchAttributeTypes
             return false;
         }
         foreach ($value as $item) {
-            if (!is_string($item)) {
-                return false;
-            }
-            $length = preg_match_all('/./su', trim($item));
-            if ($length === false || $length > 255) {
+            // Core allows blank list items, unlike standalone string attributes.
+            if (!self::stringValue($item, 255, allowBlank: true)) {
                 return false;
             }
         }
