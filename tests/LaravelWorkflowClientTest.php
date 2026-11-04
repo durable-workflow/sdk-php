@@ -91,6 +91,16 @@ final class LaravelWorkflowClientTest extends TestCase
         $fake->assertWorkflowStarted(LaravelClientFixtureWorkflow::class, ['Ada'], workflowId: $handle->workflowId);
     }
 
+    public function testABlankWorkflowIdFailsWhenTheHandleIsRequested(): void
+    {
+        $client = new LaravelWorkflowClient(new WorkflowClientFake(), $this->configuration());
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Workflow ID cannot be empty.');
+
+        $client->handle(LaravelClientFixtureWorkflow::class, '');
+    }
+
     public function testLaravelFakeArrangesAndAssertsTheCompensatedSagaJourney(): void
     {
         $fake = (new LaravelWorkflowClientFake($this->configuration([
