@@ -438,6 +438,8 @@ final class Replayer
                             }
 
                             $metadata = $path[array_key_last($path)] ?? [];
+                            // Grouped reopens keep the authored timeout: replay of a
+                            // grouped physical reopen is not qualified yet (#278).
                             $command = $command->withAttributes([
                                 ...$metadata,
                                 'parallel_group_path' => $path,
@@ -765,7 +767,7 @@ final class Replayer
 
                     if (($encodingFailure = $this->appendWorkflowCommand(
                         $commands,
-                        $suspended,
+                        $this->conditionReopen($suspended, $step, $history),
                         $taskQueue,
                         $context,
                     )) !== null) {
@@ -1189,7 +1191,96 @@ final class Replayer
         return $previous['shape'] === 'condition_wait' && $next['shape'] === 'condition_wait'
             && $previous['condition_key'] === $next['condition_key']
             && $previous['condition_definition_fingerprint'] === $next['condition_definition_fingerprint']
-            && $previous['timeout_seconds'] === $next['timeout_seconds'];
+            && ($previous['timeout_seconds'] === $next['timeout_seconds']
+                || (is_int($previous['timeout_seconds']) && is_int($next['timeout_seconds'])
+                    && $next['timeout_seconds'] < $previous['timeout_seconds']))
+            && $this->conditionWaitStillLive($previous)
+            // Grouped members are separate calls; grouped reopens are #278.
+            && $previous['parallel_path'] === [] && $next['parallel_path'] === [];
+    }
+
+    /**
+     * Only a wait the Server satisfied (a false wake), or one still open (a
+     * repeated open, #269 part 2), is physically reopened. A wait that timed
+     * out or failed is finished, so a later wait with the same key and
+     * predicate is a separate call, such as a grace period.
+     *
+     * @param array<string, mixed> $step
+     */
+    private function conditionWaitStillLive(array $step): bool
+    {
+        return $step['resolved'] !== true || ($step['value'] === true && $step['failure'] === null);
+    }
+
+    /**
+     * A physical reopen of one logical condition wait keeps that wait's first
+     * opening time and authored timeout. Workers before #269 reopened with the
+     * full timeout; later ones reopen with the time remaining, so a reopen may
+     * record a smaller timeout than the wait it continues.
+     *
+     * @param list<array<string, mixed>> $steps
+     * @return list<array<string, mixed>>
+     */
+    private function bindConditionReopens(array $steps): array
+    {
+        foreach ($steps as $index => $step) {
+            $previous = $steps[$index - 1] ?? null;
+            if ($previous !== null && $this->isConditionReopen($previous, $step)) {
+                $steps[$index]['timeout_seconds'] = $previous['timeout_seconds'];
+                $steps[$index]['opened_at'] = $previous['opened_at'] ?? null;
+            }
+        }
+
+        return $steps;
+    }
+
+    /**
+     * The command that reopens a recorded condition wait, bounded by the wait's
+     * original deadline as embedded await($condition, $timeout) is. The Server
+     * satisfies an open wait on any signal and starts a new timer from each
+     * physical open, so the full timeout would move the deadline forward.
+     *
+     * @param array<string, mixed> $step
+     * @param list<array<string, mixed>> $history
+     */
+    private function conditionReopen(WorkflowCommand $command, array $step, array $history): WorkflowCommand
+    {
+        $timeout = $step['timeout_seconds'] ?? null;
+        $openedAt = $step['opened_at'] ?? null;
+        if (!is_int($timeout) || !$openedAt instanceof \DateTimeImmutable) {
+            return $command;
+        }
+        $now = null;
+        foreach ($history as $event) {
+            $time = $this->eventTime($event);
+            if ($time !== null && ($now === null || $time > $now)) {
+                $now = $time;
+            }
+        }
+        if ($now === null) {
+            return $command;
+        }
+        $elapsed = (float) $now->format('U.u') - (float) $openedAt->format('U.u');
+        $remaining = max(0, min($timeout, (int) ceil($timeout - $elapsed)));
+
+        return $command->withAttributes(['timeout_seconds' => $remaining]);
+    }
+
+    /** @param mixed $event */
+    private function eventTime(mixed $event): ?\DateTimeImmutable
+    {
+        $value = is_array($event) ? ($event['timestamp'] ?? $event['recorded_at'] ?? null) : null;
+        // RFC 3339 with an explicit offset only: "now" or a zoneless time would
+        // read the wall clock or the host time zone and break determinism.
+        if (!is_string($value)
+            || preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/', $value) !== 1) {
+            return null;
+        }
+        try {
+            return new \DateTimeImmutable($value);
+        } catch (\Exception) {
+            return null;
+        }
     }
 
     /** @param list<array<string, mixed>> $history
@@ -1261,6 +1352,7 @@ final class Replayer
         $activityPolicies = [];
         $timerCleanup = [];
         $conditionStepsByWaitId = [];
+        $conditionOpenedAt = [];
         $versionMarkerSequences = [];
         $versionMarkerChangeIds = [];
         $memoSequences = [];
@@ -1702,6 +1794,7 @@ final class Replayer
                 if ($conditionWaitId !== null) {
                     $conditionStepsByWaitId[$conditionWaitId] = $key;
                 }
+                $conditionOpenedAt[$key] ??= $this->eventTime($event);
             } elseif (in_array($type, ['ConditionWaitSatisfied', 'ConditionWaitTimedOut'], true)) {
                 $conditionStepKey = $this->conditionStepKey($payload, $conditionStepsByWaitId);
                 if ($conditionStepKey !== null
@@ -1748,9 +1841,15 @@ final class Replayer
         foreach ($timerCleanup as $key => $proof) {
             if (isset($steps[$key])) { $steps[$key]['cancellation_cleanup'] = $proof; }
         }
+        foreach ($conditionOpenedAt as $key => $openedAt) {
+            if (($steps[$key]['shape'] ?? null) === 'condition_wait') {
+                $steps[$key]['opened_at'] = $openedAt;
+            }
+        }
         ksort($steps, SORT_NUMERIC);
+        $steps = $this->bindConditionReopens(array_values($steps));
 
-        return $preserveConditionReopens ? array_values($steps) : $this->collapseConditionReopens(array_values($steps));
+        return $preserveConditionReopens ? $steps : $this->collapseConditionReopens($steps);
     }
 
     /** @param list<array<string, mixed>> $history
@@ -3253,8 +3352,11 @@ final class Replayer
                 && $collapsed[$last]['shape'] === 'condition_wait'
                 && $step['condition_key'] === $collapsed[$last]['condition_key']
                 && $step['condition_definition_fingerprint'] === $collapsed[$last]['condition_definition_fingerprint']
-                && $step['timeout_seconds'] === $collapsed[$last]['timeout_seconds']) {
+                && $step['timeout_seconds'] === $collapsed[$last]['timeout_seconds']
+                && $this->conditionWaitStillLive($collapsed[$last])
+                && $step['parallel_path'] === [] && $collapsed[$last]['parallel_path'] === []) {
                 $step['sequence'] = $collapsed[$last]['sequence'];
+                $step['opened_at'] = $collapsed[$last]['opened_at'] ?? null;
                 $collapsed[$last] = $step;
                 continue;
             }
