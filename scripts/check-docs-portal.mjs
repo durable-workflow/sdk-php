@@ -300,13 +300,32 @@ for (const source of filesUnder(path.join(projectDirectory, 'docs/portal'), '.md
   );
 }
 
+// A durable-workflow/sdk version written into prose or a command: `sdk:^3.9`,
+// `sdk "^3.8"`, `sdk:>=2.0`, `sdk:v2.5.4`, `"durable-workflow/sdk": "^2.0"`.
+// Render the requirement from release metadata, or omit it. `dev-main` and
+// wildcards are not versions and stay allowed.
+const HARD_CODED_SDK_CONSTRAINT = /durable-workflow\/sdk(?:["']?\s*:\s*["']?|\s+["']?)(?:[~^v]|[<>]=?|==?|!=)?\s*\d/;
+for (const sample of [
+  "composer require 'durable-workflow/sdk:^2.0'",
+  'composer require durable-workflow/sdk "^3.8"',
+  'durable-workflow/sdk:>=2.0',
+  'durable-workflow/sdk:v2.5.4',
+  '"durable-workflow/sdk": "^2.0"',
+  'durable-workflow/sdk 3.9.0',
+]) {
+  assert(HARD_CODED_SDK_CONSTRAINT.test(sample), `The SDK constraint check must reject: ${sample}`);
+}
+for (const sample of ['composer require durable-workflow/sdk:dev-main', 'composer require durable-workflow/sdk', 'durable-workflow/sdk:*']) {
+  assert(!HARD_CODED_SDK_CONSTRAINT.test(sample), `The SDK constraint check must allow: ${sample}`);
+}
+
 for (const source of [
   path.join(projectDirectory, 'README.md'),
   ...filesUnder(path.join(projectDirectory, 'docs'), '.md'),
 ]) {
   const markdown = fs.readFileSync(source, 'utf8');
   assert(
-    !/durable-workflow\/sdk:['"]?[~^]?\d/.test(markdown),
+    !HARD_CODED_SDK_CONSTRAINT.test(markdown),
     `${path.relative(projectDirectory, source)} hard-codes an SDK version constraint; render it from release metadata or omit it.`,
   );
 }
