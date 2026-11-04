@@ -1,10 +1,14 @@
 import {readFile} from 'node:fs/promises';
 import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
 
-const repoRoot = new URL('../', import.meta.url);
+const repoRoot = process.env.DOCS_SOURCE_DIRECTORY
+  ? pathToFileURL(path.resolve(process.env.DOCS_SOURCE_DIRECTORY) + path.sep)
+  : new URL('../', import.meta.url);
 const contract = JSON.parse(
-  await readFile(new URL('scripts/check-docs-examples-contract.json', repoRoot), 'utf8'),
+  await readFile(new URL('./check-docs-examples-contract.json', import.meta.url), 'utf8'),
 );
 const quickstart = JSON.parse(
   await readFile(new URL(contract.quickstartContract, repoRoot), 'utf8'),

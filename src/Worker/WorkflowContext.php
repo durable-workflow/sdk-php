@@ -452,6 +452,49 @@ final class WorkflowContext
     }
 
     /**
+     * Start a child workflow and return a handle once its start is committed.
+     *
+     * The current turn ends after the start command. The runtime commits
+     * ChildWorkflowScheduled and ChildRunStarted and gives the parent a fresh
+     * turn, so the handle's identity comes from canonical history while the
+     * child keeps running. Call await() on the handle for the child's result.
+     * Requires a runtime that advertises child_workflow_start_turn; the worker
+     * refuses the start before submitting it otherwise. Not available inside
+     * all()/parallel() groups.
+     *
+     * @param list<mixed> $arguments
+     * @param array<string, mixed> $options the same options as childWorkflow()
+     */
+    public function startChildWorkflow(string $workflowType, array $arguments = [], array $options = []): ChildWorkflowHandle
+    {
+        $this->assertActiveFiber();
+        if ($this->isCapturing()) {
+            throw new LogicException('startChildWorkflow() cannot run inside an all() or parallel() group. Use deferChildWorkflow() there.');
+        }
+        $command = $this->withCancellationScope(
+            WorkflowCommand::childWorkflow($workflowType, $arguments, $options)->withAttributes(['await' => 'started']),
+        );
+        $handle = $this->suspend($command);
+        if (!$handle instanceof ChildWorkflowHandle) {
+            throw new LogicException('A started child workflow must resume with its committed handle.');
+        }
+
+        return $handle;
+    }
+
+    /** @internal Called by ChildWorkflowHandle::await(). */
+    public function awaitChildWorkflow(ChildWorkflowHandle $handle): mixed
+    {
+        $this->assertActiveFiber();
+        $handle->assertOwner($this);
+        if ($this->isCapturing()) {
+            throw new LogicException('A child workflow handle cannot be awaited inside an all() or parallel() group.');
+        }
+
+        return $this->suspend(WorkflowCommand::awaitChildWorkflow($handle->sequence));
+    }
+
+    /**
      * Prepare an activity without scheduling it until an all/parallel barrier is reached.
      *
      * @param list<mixed> $arguments
