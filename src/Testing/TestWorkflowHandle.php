@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Testing;
 
 use DurableWorkflow\WorkflowHandleInterface;
+use InvalidArgumentException;
 
 /** In-memory workflow handle returned by WorkflowClientFake. */
 final class TestWorkflowHandle implements WorkflowHandleInterface
@@ -15,6 +16,12 @@ final class TestWorkflowHandle implements WorkflowHandleInterface
         public readonly string $workflowType = '',
         public readonly ?string $selectedRunId = null,
     ) {
+        if ($workflowId === '') {
+            throw new InvalidArgumentException('Workflow ID cannot be empty.');
+        }
+        if ($selectedRunId === '') {
+            throw new InvalidArgumentException('Selected run ID cannot be empty. Pass null to follow the current run.');
+        }
     }
 
     /** @param list<mixed> $arguments */
