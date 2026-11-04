@@ -5,6 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import Ajv2020 from 'ajv/dist/2020.js';
 import {assertPrimaryGuideNavigation} from './check-docs-portal-navigation.mjs';
+import {fragmentLinks} from './check-docs-portal-links.mjs';
 
 const siteDirectory = path.resolve(process.argv[2] ?? 'build/site');
 const projectDirectory = path.resolve(import.meta.dirname, '..');
@@ -121,12 +122,10 @@ for (const file of htmlFiles) {
   }
 
   if (!relative.startsWith('api/')) {
-    for (const href of html.matchAll(/href="((?:\/(?!\/)[^"#]*)?#[^"]+)"/g)) {
-      const [pathname, fragment] = href[1].split('#');
-      const target = pathname === '' ? file : outputPath(pathname.split('?')[0]);
+    for (const link of fragmentLinks(html, relative)) {
       assert(
-        elementIds(target).has(decodeURIComponent(fragment)),
-        `${relative} links to a missing fragment: ${href[1]}`,
+        elementIds(outputPath(link.url)).has(link.fragment),
+        `${relative} links to a missing fragment: ${link.href}`,
       );
     }
   }
