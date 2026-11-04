@@ -321,6 +321,59 @@ This needs a runtime that advertises `child_workflow_start_turn`. Native Server
 starts. A cancellation-scope checkpoint keeps the parent's claim, so the
 runtime refuses a start there with `child_start_turn_not_at_checkpoint`.
 
+### Run the service-mode child example
+
+The complete [worker](https://github.com/durable-workflow/sdk-php/blob/main/examples/child-workflow-worker.php)
+and [client](https://github.com/durable-workflow/sdk-php/blob/main/examples/child-workflow-client.php)
+use the quickstart's [bootstrap](https://github.com/durable-workflow/sdk-php/blob/main/examples/bootstrap.php).
+Copy those three files beside the `vendor/` directory of your Composer project.
+Use an SDK release containing `startChildWorkflow()` and a Server advertising
+`child_workflow_start_turn`. The same runtime URL and namespace must be available
+to both processes. Set `DURABLE_WORKFLOW_RUNTIME_URL`,
+`DURABLE_WORKFLOW_NAMESPACE`, and `DURABLE_WORKFLOW_TASK_QUEUE` in both terminals.
+Set `DURABLE_WORKFLOW_WORKER_TOKEN` in the worker terminal and
+`DURABLE_WORKFLOW_CLIENT_TOKEN` in the client terminal, using their respective
+role credentials.
+
+Start the worker, then run a client command in the second terminal:
+
+```bash
+php child-workflow-worker.php
+```
+
+```bash
+php child-workflow-client.php await
+php child-workflow-client.php await reject
+php child-workflow-client.php abandon
+php child-workflow-client.php cancel
+php child-workflow-client.php terminate
+```
+
+Each parent first demonstrates a sequential result. It then starts a child with a committed handle and records
+the identity in an activity. The activity may be retried, so an application
+replacing its sample output with an external write should make that write
+idempotent by `call_id`.
+
+`await` returns the typed greeting. `await reject` catches `ChildWorkflowFailed`
+and returns its recorded failure. The other modes close the parent while its
+child remains open: `abandon` allows it to complete, `cancel` applies legacy
+terminal cancellation, and `terminate` terminates it. The client prints the
+parent result and the child's observed status. Cancellation through the handle
+is unsupported. Cooperative cleanup uses the separate opt-in cancellation APIs
+and `ParentClosePolicy::RequestCancellation`, as described in the cancellation
+guide. Initial run IDs remain snapshots through retry and continue-as-new;
+instance-oriented client operations target the child's current run unless the
+caller explicitly selects a run.
+
+`deferChildWorkflow()` prepares an operation without starting it or providing a
+child identity. Join it at an `all()` or `parallel()` barrier on a runtime that
+supports child members in those groups, as shown in the concurrency examples
+above. Native Server currently refuses child members with
+`development_parallel_group_unqualified`.
+[Server #325](https://github.com/durable-workflow/server/issues/325) tracks this
+runtime parity gap. The runnable example uses sequential children and committed
+start handles; it does not establish deferred-group compatibility on Native.
+
 ## Evolve workflow code with version markers
 
 Give each long-lived code change a stable ID and keep the old branch while histories can still reach it. `getVersion()` records the maximum supported version for a new run and returns that same decision after redelivery, worker restart, or cold replay. Including `-1` in the first range lets histories that passed this point before the marker existed stay on the legacy branch:
