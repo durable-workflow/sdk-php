@@ -14,6 +14,15 @@ project follows [Semantic Versioning](https://semver.org/).
   reopen of one call sends the same id, so the Server can recognize a repeated
   open of a wait that is still open instead of recording a second one.
 
+### Fixed
+
+- Request bodies keep full float precision whatever the host's
+  `serialize_precision` is (#248). With a non-default value such as 3, a float
+  search attribute of 1.2345 was sent and recorded as 1.23, and replay then
+  refused the history as `search_attribute_value_mismatch`. Request documents
+  are now encoded with round-trip precision, and the host setting is restored
+  after each encode.
+
 ## [3.9.2] - 2026-11-04
 
 ### Changed
