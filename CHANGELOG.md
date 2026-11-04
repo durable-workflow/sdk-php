@@ -20,6 +20,25 @@ project follows [Semantic Versioning](https://semver.org/).
   and group APIs are unchanged, and `childWorkflow()` refuses an `await`
   option.
 
+### Changed
+
+- New condition waits use versioned `dwphp2:sha256:` predicate fingerprints
+  (#293). Callable tokens exclude whitespace, comments and neighboring call-site
+  arguments, while preserving literals and operator boundaries. A predicate
+  change still fails replay. Indistinguishable same-line closures share a
+  combined fingerprint; put predicates on separate lines before starting runs
+  when they need independent identities. Unsupported source shapes or a PHP
+  build without the tokenizer retain the existing v1 computation.
+  Replaying v2 waits requires the tokenizer in every worker.
+- Replay accepts a recorded v1 fingerprint only when its original source-line
+  hash matches exactly. Physical reopens preserve their first recorded
+  fingerprint, including its absence. V2 formatting tolerance therefore applies
+  to waits first opened with v2, not retroactively to legacy runs.
+- Upgrade the queue's workers together before opening v2 waits. Older workers
+  reject v2 fingerprints, so rolling back below this SDK after v2 waits exist
+  can fail replay. Deploy sources atomically and restart workers, including
+  workers using OPcache.
+
 ## [3.9.4] - 2026-11-04
 
 ### Fixed

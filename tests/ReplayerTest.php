@@ -756,7 +756,7 @@ final class ReplayerTest extends TestCase
         self::assertSame('approval.ready', $result->commands[0]['condition_key']);
         self::assertSame(61, $result->commands[0]['timeout_seconds']);
         self::assertMatchesRegularExpression(
-            '/\Asha256:[0-9a-f]{64}\z/',
+            '/\Adwphp2:sha256:[0-9a-f]{64}\z/',
             $result->commands[0]['condition_definition_fingerprint'],
         );
     }

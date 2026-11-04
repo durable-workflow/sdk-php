@@ -420,6 +420,7 @@ final class Replayer
                     $this->assertParallelPathMatches($step, $path);
                     if ($command->type === 'open_condition_wait') {
                         $this->assertConditionWaitCompatible($step, $command);
+                        $command = $command->withRecordedConditionDefinition($step['condition_definition_fingerprint']);
                     }
                     $nextSequence = max($nextSequence, $step['sequence'] + 1);
 
@@ -1318,6 +1319,7 @@ final class Replayer
      */
     private function conditionReopen(WorkflowCommand $command, array $step, array $history): WorkflowCommand
     {
+        $command = $command->withRecordedConditionDefinition($step['condition_definition_fingerprint']);
         $timeout = $step['timeout_seconds'] ?? null;
         $openedAt = $step['opened_at'] ?? null;
         if (!is_int($timeout) || !$openedAt instanceof \DateTimeImmutable) {
@@ -3494,7 +3496,7 @@ final class Replayer
             );
         }
         if ($step['condition_definition_fingerprint'] !== null
-            && $step['condition_definition_fingerprint'] !== $currentFingerprint) {
+            && !$command->conditionDefinitionMatches($step['condition_definition_fingerprint'])) {
             throw new NonDeterministicWorkflow(
                 'Condition wait predicate fingerprint changed during replay.',
                 $step['sequence'],

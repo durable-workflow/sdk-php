@@ -39,6 +39,12 @@
           "glob": "src/Worker/Replayer.php"
         },
         {
+          "glob": "src/Worker/ConditionWaitDefinition.php"
+        },
+        {
+          "glob": "src/Worker/ConditionPredicateSource.php"
+        },
+        {
           "glob": "src/Worker/WorkflowEntryArguments.php"
         },
         {

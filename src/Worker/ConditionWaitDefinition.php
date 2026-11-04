@@ -13,6 +13,16 @@ final class ConditionWaitDefinition
 {
     public static function fingerprint(Closure $predicate): ?string
     {
+        $tokens = ConditionPredicateSource::canonical($predicate);
+
+        return $tokens === null
+            ? self::legacyFingerprint($predicate)
+            : 'dwphp2:sha256:'.hash('sha256', $tokens);
+    }
+
+    /** The published v1 computation remains exact for histories opened by older workers. */
+    public static function legacyFingerprint(Closure $predicate): ?string
+    {
         $source = self::source($predicate);
 
         return $source === null
