@@ -8,6 +8,13 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `Client::iterateWorkflows()` and `iterateWorkflowHistory()` lazily read
+  complete workflow listings and exact-run histories, retaining one page at a
+  time. Existing one-page methods stay available. Iteration preserves opaque
+  cursors, namespace and filters, propagates later-page errors, and refuses
+  malformed continuations or token cycles instead of silently truncating or
+  looping (#247 in durable-workflow/.github).
+
 - `WorkflowContext::startChildWorkflow()` starts a child and returns a
   `ChildWorkflowHandle` once the runtime has committed the start (#185). The
   handle's `identity()` gives the child call ID, the child workflow ID and the

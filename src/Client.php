@@ -67,6 +67,7 @@ use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkerSessionOptions;
 use DurableWorkflow\Worker\ActivityLeaseBinding;
 use DurableWorkflow\Worker\ActivityLeaseProcess;
+use DurableWorkflow\Exception\PaginationException;
 use InvalidArgumentException;
 
 /** Synchronous control-plane and worker-plane client for the standalone server. */
@@ -538,7 +539,7 @@ final class Client implements WorkflowClientInterface
         ]);
         $response = $this->control('GET', $path);
         $executions = [];
-        foreach (($response['workflows'] ?? []) as $value) {
+        foreach ((is_array($response['workflows'] ?? null) ? $response['workflows'] : []) as $value) {
             if (is_array($value)) {
                 $executions[] = WorkflowExecution::fromArray($value);
             }
@@ -550,6 +551,27 @@ final class Client implements WorkflowClientInterface
             isset($response['workflow_count']) ? (int) $response['workflow_count'] : count($executions),
             $response,
         );
+    }
+
+    /**
+     * Lazily enumerate workflow visibility results in the Server's order.
+     * This is not a snapshot across concurrent changes.
+     *
+     * @return \Generator<int, WorkflowExecution>
+     */
+    public function iterateWorkflows(
+        ?string $workflowType = null,
+        ?string $status = null,
+        ?string $query = null,
+        ?int $pageSize = null,
+        ?string $nextPageToken = null,
+    ): \Generator {
+        return $this->iteratePages(function (?string $token) use ($workflowType, $status, $query, $pageSize): array {
+            $page = $this->listWorkflows($workflowType, $status, $query, $pageSize, $token);
+            $this->paginationItems($page->raw, 'workflows');
+
+            return [$page->executions, $page->raw];
+        }, $nextPageToken);
     }
 
     /** @return list<WorkflowRun> */
@@ -593,6 +615,92 @@ final class Client implements WorkflowClientInterface
                 ['page_size' => $pageSize, 'next_page_token' => $nextPageToken],
             ),
         );
+    }
+
+    /**
+     * Lazily enumerate the raw events of one exact run. This does not follow
+     * continue-as-new or subscribe after the last page.
+     *
+     * @return \Generator<int, array<string, mixed>>
+     */
+    public function iterateWorkflowHistory(
+        string $workflowId,
+        string $runId,
+        ?int $pageSize = null,
+        ?string $nextPageToken = null,
+    ): \Generator {
+        return $this->iteratePages(function (?string $token) use ($workflowId, $runId, $pageSize): array {
+            $page = $this->workflowHistory($workflowId, $runId, $pageSize, $token);
+
+            return [$this->paginationItems($page, 'events'), $page];
+        }, $nextPageToken);
+    }
+
+    /**
+     * @param array<string, mixed> $page
+     * @return list<array<string, mixed>>
+     */
+    private function paginationItems(array $page, string $field): array
+    {
+        $items = $page[$field] ?? null;
+        if (!is_array($items) || !array_is_list($items)) {
+            throw new PaginationException('The page must contain an ordered '.$field.' list.', 'invalid_page');
+        }
+        foreach ($items as $item) {
+            if (!is_array($item) || array_is_list($item)) {
+                throw new PaginationException('A page item must be an object.', 'invalid_item');
+            }
+        }
+
+        return $items;
+    }
+
+    /**
+     * @template T
+     * @param \Closure(?string): array{0: list<T>, 1: array<string, mixed>} $fetch
+     * @return \Generator<int, T>
+     */
+    private function iteratePages(\Closure $fetch, ?string $token): \Generator
+    {
+        $checkpoint = $token;
+        $distance = 0;
+        $power = 1;
+        while (true) {
+            [$items, $page] = $fetch($token);
+            if (!array_key_exists('next_page_token', $page)) {
+                throw new PaginationException('The page omitted its continuation token.', 'missing_continuation');
+            }
+            $next = $page['next_page_token'];
+            if ($next !== null && !is_string($next)) {
+                throw new PaginationException('A continuation token must be a string or null.', 'invalid_continuation');
+            }
+            $next = $next === '' ? null : $next;
+            if ($next !== null) {
+                // Brent's cycle detection uses two tokens, matching the Rust
+                // iterator without retaining an unbounded export's token set.
+                if ($next === $token || $next === $checkpoint) {
+                    throw new PaginationException('The Server repeated a continuation token or formed a token cycle.', 'repeated_page_token');
+                }
+                if ($distance < PHP_INT_MAX) {
+                    ++$distance;
+                }
+                if ($distance >= $power) {
+                    $checkpoint = $next;
+                    $power = $power > intdiv(PHP_INT_MAX, 2) ? PHP_INT_MAX : $power * 2;
+                    $distance = 0;
+                }
+            }
+            foreach ($items as $item) {
+                // yield from would reuse each page's integer keys and could
+                // overwrite earlier items in iterator_to_array().
+                yield $item;
+            }
+            unset($items, $page, $item);
+            if ($next === null) {
+                return;
+            }
+            $token = $next;
+        }
     }
 
     /** @return array<string, mixed> */
