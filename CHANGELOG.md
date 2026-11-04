@@ -15,6 +15,7 @@ project follows [Semantic Versioning](https://semver.org/).
   combined fingerprint; put predicates on separate lines before starting runs
   when they need independent identities. Unsupported source shapes or a PHP
   build without the tokenizer retain the existing v1 computation.
+  Replaying v2 waits requires the tokenizer in every worker.
 - Replay accepts a recorded v1 fingerprint only when its original source-line
   hash matches exactly. Physical reopens preserve their first recorded
   fingerprint, including its absence. V2 formatting tolerance therefore applies

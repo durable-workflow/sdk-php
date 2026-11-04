@@ -12,12 +12,12 @@ use Throwable;
 /** @internal Normalizes callable source without evaluating the predicate or using compiler identities. */
 final class ConditionPredicateSource
 {
-    /** @var array<string, array{hash: string, tokens: list<PhpToken>}> */
+    /** @var array<string, array{hash: string, tokens: list<PhpToken>, starts: array<int, list<int>>}> */
     private static array $files = [];
 
     public static function canonical(Closure $predicate): ?string
     {
-        if (!class_exists(PhpToken::class)) {
+        if (!class_exists(PhpToken::class, false)) {
             return null;
         }
         try {
@@ -26,12 +26,10 @@ final class ConditionPredicateSource
             if (!is_string($file) || !is_file($file)) {
                 return null;
             }
-            $tokens = self::fileTokens($file);
+            $source = self::fileTokens($file);
+            $tokens = $source['tokens'];
             $candidates = [];
-            foreach ($tokens as $index => $token) {
-                if (!$token->is([T_FUNCTION, T_FN]) || $token->line !== $reflection->getStartLine()) {
-                    continue;
-                }
+            foreach ($source['starts'][$reflection->getStartLine()] ?? [] as $index) {
                 $candidate = self::candidate($tokens, $index, $reflection);
                 if ($candidate !== null) {
                     $candidates[] = $candidate;
@@ -51,27 +49,33 @@ final class ConditionPredicateSource
         }
     }
 
-    /** @return list<PhpToken> */
+    /** @return array{hash: string, tokens: list<PhpToken>, starts: array<int, list<int>>} */
     private static function fileTokens(string $file): array
     {
         $source = @file_get_contents($file);
         if (!is_string($source)) {
-            return [];
+            return ['hash' => '', 'tokens' => [], 'starts' => []];
         }
         $hash = hash('sha256', $source);
         if ((self::$files[$file]['hash'] ?? null) === $hash) {
-            return self::$files[$file]['tokens'];
+            return self::$files[$file];
         }
         $tokens = array_values(array_filter(PhpToken::tokenize($source),
             static fn (PhpToken $token): bool => !$token->is([T_WHITESPACE, T_COMMENT, T_DOC_COMMENT])));
+        $starts = [];
+        foreach ($tokens as $index => $token) {
+            if ($token->is([T_FUNCTION, T_FN])) {
+                $starts[$token->line][] = $index;
+            }
+        }
         // Bound process memory and replace a file's entry when its bytes change.
         // File paths and content hashes are cache keys, never fingerprint input.
-        if (count(self::$files) >= 8) {
+        if (count(self::$files) >= 8 && !isset(self::$files[$file])) {
             array_shift(self::$files);
         }
-        self::$files[$file] = ['hash' => $hash, 'tokens' => $tokens];
+        self::$files[$file] = ['hash' => $hash, 'tokens' => $tokens, 'starts' => $starts];
 
-        return $tokens;
+        return self::$files[$file];
     }
 
     /** @param list<PhpToken> $tokens */
@@ -85,8 +89,11 @@ final class ConditionPredicateSource
         if (($tokens[$cursor] ?? null)?->is(T_STRING)) {
             $name = $tokens[$cursor++]->text;
         }
-        if (($reflection->isAnonymous() && $name !== null)
-            || (!$reflection->isAnonymous() && $name !== $reflection->getShortName())
+        // isAnonymous() starts at PHP 8.2. Anonymous reflection names contain
+        // this marker on 8.1 too; the rest of the name never enters the hash.
+        $anonymous = str_contains($reflection->getName(), '{closure');
+        if (($anonymous && $name !== null)
+            || (!$anonymous && $name !== $reflection->getShortName())
             || ($tokens[$cursor]->text ?? null) !== '(') {
             return null;
         }

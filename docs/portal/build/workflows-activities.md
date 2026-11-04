@@ -304,6 +304,7 @@ both. Formatting that resolves that ambiguity can also change the candidate
 set. Put predicates on separate lines before starting runs when they need
 independent identities. If the callable cannot be isolated, or PHP lacks the
 tokenizer, the worker retains the v1 source-line fingerprint.
+Every worker that replays v2 waits needs PHP's tokenizer enabled.
 
 Waits first opened by older SDKs retain their exact v1 source-line check.
 Re-indenting those lines, changing a comment or editing neighboring code on
