@@ -197,10 +197,12 @@ final class WorkflowCommand
         ?string $key,
         ?string $definitionFingerprint,
         ?int $timeoutSeconds,
+        ?string $occurrenceId = null,
     ): self {
         return new self('open_condition_wait', 'condition_wait', array_filter([
             'condition_key' => $key,
             'condition_definition_fingerprint' => $definitionFingerprint,
+            'condition_wait_occurrence_id' => $occurrenceId,
             'timeout_seconds' => $timeoutSeconds,
         ], static fn (mixed $value): bool => $value !== null), conditionPredicate: $predicate);
     }
