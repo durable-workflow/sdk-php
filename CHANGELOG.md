@@ -6,6 +6,15 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Prepared local activity checkpoint ids, cancellation-scope descriptor
+  hashes and the workflow definition fingerprint no longer depend on the host's
+  `serialize_precision` (#282). They hash JSON that can contain floats, such as
+  search attribute values in a checkpointed command, and now use the same
+  round-trip precision as request bodies (#248). Under the default setting the
+  hashes are byte-identical to before.
+
 ## [3.9.3] - 2026-11-04
 
 **Upgrade from 3.9.2 now.** 3.9.2 can fail existing runs on native Server 3.0.x
