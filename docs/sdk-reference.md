@@ -67,7 +67,7 @@ Create an empty Composer project and install the current published package:
 mkdir durable-php-quickstart
 cd durable-php-quickstart
 composer init --name=acme/durable-php-quickstart --no-interaction
-composer require 'durable-workflow/sdk:^2.0'
+composer require durable-workflow/sdk
 ```
 
 The package declares its supported Server baseline in Composer metadata.
@@ -632,7 +632,7 @@ cleanly. Composer only suggests the extension, and the official `php:*-cli`
 images do not include it:
 
 ```bash
-composer require 'durable-workflow/sdk:^2.0'
+composer require durable-workflow/sdk
 php artisan vendor:publish --tag=durable-workflow-config
 php artisan config:cache
 php artisan durable-workflow:worker

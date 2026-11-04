@@ -129,7 +129,7 @@ The SDK can be installed while v1 remains present and draining.
 1. Install the service-mode channel and publish configuration:
 
    ```bash
-   composer require 'durable-workflow/sdk:^2.0'
+   {{ release.composerCommand }}
    php artisan vendor:publish --tag=durable-workflow-config
    ```
 
