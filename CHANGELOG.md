@@ -6,6 +6,21 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Friendly durations whose calendar total wraps inside Carbon are now rejected
+  (#257). In 3.9.0, a 12–15 digit part such as `'635428518853 years'` or
+  `'213503982334602 days'` overflowed Carbon's integer arithmetic. It was
+  accepted as a small positive duration (581632 s and 61440 s). The SDK now
+  throws `InvalidArgumentException` ("it is too large") when any part, or the
+  sum of the parts, reaches 2^53 seconds, measured as a float with Carbon's
+  default factors. `DateInterval` and `CarbonInterval` fields get the same bound.
+  Every value 3.9.0 accepted below that bound converts to the same seconds.
+- Correction to the 3.9.0 notes: numeric strings such as `'30'` keep their
+  earlier conversion only in files without `strict_types`. With
+  `declare(strict_types=1)`, `sleep('30')` used to throw a `TypeError` and is
+  now accepted, which is an intended widening.
+
 ## [3.9.0] - 2026-11-04
 
 ### Added

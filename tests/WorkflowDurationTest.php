@@ -267,6 +267,13 @@ final class WorkflowDurationTest extends TestCase
         yield 'negative part' => ['1 hour -5 minutes', 'Invalid timer duration "1 hour -5 minutes": durations and their parts must not be negative.'];
         yield 'ISO 8601 string' => ['PT30M', 'Invalid timer duration "PT30M": ISO 8601 duration strings are not accepted; pass new DateInterval(\'PT30M\') instead.'];
         yield 'too large' => ['99999999999 years', 'Invalid timer duration "99999999999 years": it is too large.'];
+        yield 'years wrapping inside Carbon' => ['635428518853 years', 'Invalid timer duration "635428518853 years": it is too large.'];
+        yield 'days wrapping inside Carbon' => ['213503982334602 days', 'Invalid timer duration "213503982334602 days": it is too large.'];
+        yield 'one day past 2^53 seconds' => ['104249991375 days', 'it is too large.'];
+        yield 'weeks reaching 2^53 seconds' => ['14892857142 weeks', 'it is too large.'];
+        yield 'parts summing past 2^53 seconds' => ['104249991374 days 104249991374 days', 'it is too large.'];
+        yield 'DateInterval years wrapping inside Carbon' => [self::withField(new DateInterval('PT0S'), 'y', 635428518853), 'Invalid timer duration DateInterval P635428518853Y0M0DT0H0M0S: it is too large.'];
+        yield 'DateInterval days wrapping inside Carbon' => [self::withField(new DateInterval('PT0S'), 'd', 213503982334602), 'Invalid timer duration DateInterval P0Y0M213503982334602DT0H0M0S: it is too large.'];
         yield 'too many digits' => ['99999999999999999999 years', 'Invalid timer duration "99999999999999999999 years": it is too large.'];
         yield 'too many second digits' => ['1234567890123456 seconds', 'it is too large.'];
         yield 'fractional month' => ['0.5 months', 'Invalid timer duration "0.5 months": the months part must be a whole number; Carbon would truncate its fraction.'];
@@ -401,6 +408,55 @@ final class WorkflowDurationTest extends TestCase
             self::assertSame($seconds, WorkflowDuration::seconds((string) $input, 'timer'), (string) $input);
             self::assertSame((string) $input, WorkflowDuration::normalize((string) $input, 'option', 1), (string) $input);
         }
+    }
+
+    /**
+     * Seconds that SDK 3.9.0 produced for these inputs on Carbon 2.73.0 and 3.15.1. The #257 bound
+     * rejects only values whose true total reaches 2^53 seconds, so every accepted value is unchanged.
+     *
+     * @return iterable<string, array{string|DateInterval, int}>
+     */
+    public static function acceptedBy390(): iterable
+    {
+        yield '30 minutes' => ['30 minutes', 1800];
+        yield '1 hour 30 minutes' => ['1 hour 30 minutes', 5400];
+        yield '1h 30m' => ['1h 30m', 5400];
+        yield '2 days' => ['2 days', 172800];
+        yield '1 week' => ['1 week', 604800];
+        yield '1.5 weeks' => ['1.5 weeks', 907200];
+        yield '90 seconds' => ['90 seconds', 90];
+        yield '1.5 hours' => ['1.5 hours', 5400];
+        yield '1 month' => ['1 month', 2419200];
+        yield '1 year' => ['1 year', 29030400];
+        yield '1 quarter' => ['1 quarter', 7257600];
+        yield '1 decade' => ['1 decade', 290304000];
+        yield '1 century' => ['1 century', 2903040000];
+        yield '1 millennium' => ['1 millennium', 29030400000];
+        yield '300000 millennia' => ['300000 millennia', 8709120000000000];
+        yield '310000000 years' => ['310000000 years', 8999424000000000];
+        yield '3720000000 months' => ['3720000000 months', 8999424000000000];
+        yield '104249991374 days' => ['104249991374 days', 9007199254713600];
+        yield '2501999792 hours' => ['2501999792 hours', 9007199251200];
+        yield '150119987579 minutes' => ['150119987579 minutes', 9007199254740];
+        yield '900719925474099 seconds' => ['900719925474099 seconds', 900719925474099];
+        yield '999999999999999 ms' => ['999999999999999 ms', 1000000000000];
+        yield '999999999999999 µs' => ['999999999999999 µs', 1000000000];
+        yield '0.001 ms' => ['0.001 ms', 1];
+        yield '1500 ms' => ['1500 ms', 2];
+        yield '1 µs' => ['1 µs', 1];
+        yield '0 seconds' => ['0 seconds', 0];
+        yield '30' => ['30', 30];
+        yield '1.5' => ['1.5', 2];
+        yield 'DateInterval PT30M' => [new DateInterval('PT30M'), 1800];
+        yield 'DateInterval P1Y2M3DT4H5M6S' => [new DateInterval('P1Y2M3DT4H5M6S'), 34142706];
+        yield 'DateInterval P300000000Y' => [new DateInterval('P300000000Y'), 8709120000000000];
+        yield 'DateInterval P104249991374D' => [new DateInterval('P104249991374D'), 9007199254713600];
+    }
+
+    #[DataProvider('acceptedBy390')]
+    public function testAcceptedValuesConvertExactlyAsIn390(string|DateInterval $duration, int $seconds): void
+    {
+        self::assertSame($seconds, WorkflowDuration::seconds($duration, 'timer'));
     }
 
     /**
