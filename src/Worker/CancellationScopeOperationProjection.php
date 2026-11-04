@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Worker;
 
+use DurableWorkflow\Transport\JsonDocument;
 use DateTimeImmutable;
 use DateTimeZone;
 use InvalidArgumentException;
@@ -190,7 +191,7 @@ final class CancellationScopeOperationProjection
     }
 
     /** @param list<mixed> $values */
-    private static function hash(array $values): string { return hash('sha256', json_encode($values, JSON_THROW_ON_ERROR)); }
+    private static function hash(array $values): string { return hash('sha256', JsonDocument::encodeWith($values, JSON_THROW_ON_ERROR)); }
 
     /**
      * @param array<string, mixed> $payload

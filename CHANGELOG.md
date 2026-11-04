@@ -20,6 +20,70 @@ project follows [Semantic Versioning](https://semver.org/).
   and group APIs are unchanged, and `childWorkflow()` refuses an `await`
   option.
 
+## [3.9.4] - 2026-11-04
+
+### Fixed
+
+- Replay checks a recorded `condition_wait_occurrence_id` against the call
+  being replayed (#281). If a history records this SDK's id for a different
+  `waitCondition()` or `deferCondition()` call (`php:condition-wait:N` with
+  another N), replay fails with `condition_wait_occurrence_mismatch` instead of
+  resuming the wrong call. Two physical opens recorded for different
+  occurrences are never merged into one wait. A logical wait keeps the id of
+  its first open, so a run whose first open was written before 3.9.3 (with no
+  id) keeps replaying as before. Ids in any other format are not compared.
+  - **Code changes:** ids are ordinals of the condition calls in a run, so
+    inserting or removing a `waitCondition()` call before an existing one in
+    code that already has runs in flight now fails replay for runs recorded
+    with ids, as other non-deterministic changes do. Use version markers for
+    such changes.
+- Prepared local activity checkpoint ids, cancellation-scope descriptor
+  hashes and the workflow definition fingerprint no longer depend on the host's
+  `serialize_precision` (#282). They hash JSON that can contain floats, such as
+  search attribute values in a checkpointed command, and now use the same
+  round-trip precision as request bodies (#248). Under the default setting the
+  hashes are byte-identical to before.
+
+## [3.9.3] - 2026-11-04
+
+**Upgrade from 3.9.2 now.** 3.9.2 can fail existing runs on native Server 3.0.x
+that contain a repeated condition-wait open (#283). Users of 3.9.1 should
+upgrade too: 3.9.3 keeps 3.9.2's fix that stops unrelated signals from
+restarting a `waitCondition()` timeout (#269).
+
+### Added
+
+- `open_condition_wait` commands carry `condition_wait_occurrence_id`
+  (protocol 1.17), `php:condition-wait:N` for the Nth `waitCondition()` or
+  `deferCondition()` call in the run (#269). Every replay and every physical
+  reopen of one call sends the same id, so the Server can recognize a repeated
+  open of a wait that is still open instead of recording a second one.
+
+### Fixed
+
+- 3.9.2 workers could fail runs that had a repeated condition-wait open once
+  the orphaned first open's timer fired (#283). The Server records a second
+  physical wait when a queued workflow task re-sends a still-open wait
+  (#269 part 2), and the first wait's timer still fires later. 3.9.2 treated
+  that timeout as finishing the first wait, split it from the rest of the
+  chain, and replay then failed with a non-determinism error. Whether a later
+  open continues an earlier same-key wait now depends on the earlier wait's
+  state when the later one opened: still open or satisfied means the same
+  wait, and a timeout before the later open still makes a separate call, such
+  as a grace period. When the earlier wait's deadline has already passed, the
+  worker re-sends the wait with `timeout_seconds: 0`, so the Server times it
+  out at once and `waitCondition()` returns `false`.
+  - **Known limitation:** a repeated open that the Server records after the
+    earlier wait has already timed out is still refused by replay. Server
+    3.1.1 is planned to stop recording repeated opens of a still-open wait
+    (server#1015), which removes that case.
+- Request bodies keep full float precision whatever the host's
+  `serialize_precision` is (#248). With a non-default value such as 3, a float
+  search attribute of 1.2345 was sent and recorded as 1.23, and replay then
+  refused the history as `search_attribute_value_mismatch`. Request documents
+  are now encoded with round-trip precision, and the host setting is restored
+  after each encode.
+
 ## [3.9.2] - 2026-11-04
 
 ### Changed

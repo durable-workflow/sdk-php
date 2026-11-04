@@ -35,9 +35,15 @@ function headingSlug(text) {
     .replaceAll(' ', '-');
 }
 
+// Ids follow GitHub's slugger: a repeated slug takes the next free numeric
+// suffix, skipping ids already emitted (including a literal "Foo-1" heading).
 function headingIds(markdown) {
   markdown.core.ruler.push('heading_ids', (state) => {
-    const used = new Map();
+    const occurrences = new Map();
+    for (const token of state.tokens) {
+      const id = token.type === 'heading_open' ? token.attrGet('id') : null;
+      if (id !== null) occurrences.set(id, 0);
+    }
     state.tokens.forEach((token, index) => {
       if (token.type !== 'heading_open' || token.attrGet('id') !== null) return;
       const inline = state.tokens[index + 1];
@@ -47,9 +53,14 @@ function headingIds(markdown) {
         .join('');
       const base = headingSlug(text);
       if (base === '') return;
-      const count = used.get(base) ?? 0;
-      used.set(base, count + 1);
-      token.attrSet('id', count === 0 ? base : `${base}-${count}`);
+      let id = base;
+      while (occurrences.has(id)) {
+        const count = occurrences.get(base) + 1;
+        occurrences.set(base, count);
+        id = `${base}-${count}`;
+      }
+      occurrences.set(id, 0);
+      token.attrSet('id', id);
     });
   });
 }
@@ -95,3 +106,5 @@ module.exports = function configure(eleventyConfig) {
     templateFormats: ['md', 'njk'],
   };
 };
+
+module.exports.headingIds = headingIds;

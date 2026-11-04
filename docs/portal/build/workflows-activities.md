@@ -337,6 +337,10 @@ A later deployment can raise the maximum while keeping the recorded versions in 
 
 For a boolean rollout, use `patched('require-reservation-review')`. It returns `false` for legacy histories and `true` for new histories. After the legacy branch is no longer supported, replace the conditional call with `deprecatePatch()` for the same ID before eventually removing the marker. Compatible numeric and patch helpers share the same frozen version for a change ID. Every call must support that version, and `patched()` returns whether it equals `1`. Do not reuse a change ID for an unrelated rollout.
 
+A `waitCondition()` predicate is part of replay identity too. The worker fingerprints the source lines the closure occupies, so editing those lines while open runs have recorded that wait (even one already satisfied) raises `NonDeterministicWorkflow`. That includes re-indenting or editing an inner comment. Any other code on the predicate's lines, such as the variable it assigns, is hashed too. Moving the file or editing code above or below the predicate does not change the fingerprint. The key and timeout are part of replay identity in their own right; change them only behind a version marker, as with a changed predicate. [Issue #293](https://github.com/durable-workflow/sdk-php/issues/293) tracks a whitespace-insensitive fingerprint.
+
+Deploy workflow code atomically and restart workers. The fingerprint reads the deployed source file. If files are replaced in place under any long-running worker that still has the old code loaded, the loaded code and the file on disk can disagree, and replay reports a mismatch until the worker restarts. `opcache.validate_timestamps=0` widens this window. Ship the PHP sources with the worker image; the fingerprint cannot be computed without them.
+
 ## Put side effects in activities
 
 ```php

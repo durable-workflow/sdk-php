@@ -1233,6 +1233,14 @@ final class Replayer
         return $identity instanceof ChildWorkflowIdentity ? $identity : null;
     }
 
+    /** @param array<string, mixed> $step */
+    private function stepOccurrence(array $step): ?string
+    {
+        $occurrence = $step['occurrence_id'] ?? null;
+
+        return is_string($occurrence) && $occurrence !== '' ? $occurrence : null;
+    }
+
     /** @param array<string, mixed> $previous
      *  @param array<string, mixed> $next
      */
@@ -1244,22 +1252,34 @@ final class Replayer
             && ($previous['timeout_seconds'] === $next['timeout_seconds']
                 || (is_int($previous['timeout_seconds']) && is_int($next['timeout_seconds'])
                     && $next['timeout_seconds'] < $previous['timeout_seconds']))
-            && $this->conditionWaitStillLive($previous)
+            && $this->conditionWaitStillLive($previous, $next)
+            // Two physical opens with different recorded occurrences are two calls (#281).
+            && ($this->stepOccurrence($previous) === null || $this->stepOccurrence($next) === null
+                || $this->stepOccurrence($previous) === $this->stepOccurrence($next))
             // Grouped members are separate calls; grouped reopens are #278.
             && $previous['parallel_path'] === [] && $next['parallel_path'] === [];
     }
 
     /**
-     * Only a wait the Server satisfied (a false wake), or one still open (a
-     * repeated open, #269 part 2), is physically reopened. A wait that timed
-     * out or failed is finished, so a later wait with the same key and
-     * predicate is a separate call, such as a grace period.
+     * A later open continues a wait the Server satisfied (a false wake) or a
+     * wait that was still open when the later one opened (a repeated open,
+     * #269 part 2). What counts is the state at that open: a repeated open's
+     * orphan may time out afterwards (#283) and is still the same wait. A wait
+     * that timed out or failed before the later open is finished, so that
+     * open is a separate call, such as a grace period.
      *
-     * @param array<string, mixed> $step
+     * @param array<string, mixed> $previous
+     * @param array<string, mixed> $next
      */
-    private function conditionWaitStillLive(array $step): bool
+    private function conditionWaitStillLive(array $previous, array $next): bool
     {
-        return $step['resolved'] !== true || ($step['value'] === true && $step['failure'] === null);
+        if ($previous['resolved'] !== true || ($previous['value'] === true && $previous['failure'] === null)) {
+            return true;
+        }
+        $nextOpened = $next['opened_order'] ?? null;
+        $resolved = $previous['resolution_order'] ?? null;
+
+        return is_int($nextOpened) && is_int($resolved) && $resolved > $nextOpened;
     }
 
     /**
@@ -1278,6 +1298,9 @@ final class Replayer
             if ($previous !== null && $this->isConditionReopen($previous, $step)) {
                 $steps[$index]['timeout_seconds'] = $previous['timeout_seconds'];
                 $steps[$index]['opened_at'] = $previous['opened_at'] ?? null;
+                // The first open owns the logical wait's id. A first open from a
+                // worker before #274 has none, and a later open must not lend it one.
+                $steps[$index]['occurrence_id'] = $this->stepOccurrence($previous);
             }
         }
 
@@ -1404,6 +1427,8 @@ final class Replayer
         $conditionStepsByWaitId = [];
         $conditionOpenedAt = [];
         $childIdentities = [];
+        $conditionOpenedOrder = [];
+        $conditionOccurrences = [];
         $versionMarkerSequences = [];
         $versionMarkerChangeIds = [];
         $memoSequences = [];
@@ -1849,6 +1874,8 @@ final class Replayer
                     $conditionStepsByWaitId[$conditionWaitId] = $key;
                 }
                 $conditionOpenedAt[$key] ??= $this->eventTime($event);
+                $conditionOpenedOrder[$key] ??= $resolutionOrder;
+                $conditionOccurrences[$key] ??= $this->stringValue($payload['condition_wait_occurrence_id'] ?? null);
             } elseif (in_array($type, ['ConditionWaitSatisfied', 'ConditionWaitTimedOut'], true)) {
                 $conditionStepKey = $this->conditionStepKey($payload, $conditionStepsByWaitId);
                 if ($conditionStepKey !== null
@@ -1898,6 +1925,8 @@ final class Replayer
         foreach ($conditionOpenedAt as $key => $openedAt) {
             if (($steps[$key]['shape'] ?? null) === 'condition_wait') {
                 $steps[$key]['opened_at'] = $openedAt;
+                $steps[$key]['opened_order'] = $conditionOpenedOrder[$key] ?? null;
+                $steps[$key]['occurrence_id'] = $conditionOccurrences[$key] ?? null;
             }
         }
         foreach ($childIdentities as $key => $identity) {
@@ -3412,10 +3441,13 @@ final class Replayer
                 && $step['condition_key'] === $collapsed[$last]['condition_key']
                 && $step['condition_definition_fingerprint'] === $collapsed[$last]['condition_definition_fingerprint']
                 && $step['timeout_seconds'] === $collapsed[$last]['timeout_seconds']
-                && $this->conditionWaitStillLive($collapsed[$last])
+                && $this->conditionWaitStillLive($collapsed[$last], $step)
+                && ($this->stepOccurrence($collapsed[$last]) === null || $this->stepOccurrence($step) === null
+                    || $this->stepOccurrence($collapsed[$last]) === $this->stepOccurrence($step))
                 && $step['parallel_path'] === [] && $collapsed[$last]['parallel_path'] === []) {
                 $step['sequence'] = $collapsed[$last]['sequence'];
                 $step['opened_at'] = $collapsed[$last]['opened_at'] ?? null;
+                $step['occurrence_id'] = $this->stepOccurrence($collapsed[$last]);
                 $collapsed[$last] = $step;
                 continue;
             }
@@ -3466,6 +3498,21 @@ final class Replayer
                 $step['sequence'],
                 $step['condition_definition_fingerprint'],
                 $currentFingerprint,
+            );
+        }
+        $recordedOccurrence = $this->stepOccurrence($step);
+        $currentOccurrence = $this->stringValue($command->attributes['condition_wait_occurrence_id'] ?? null);
+        // Only ids in this SDK's own format (php:condition-wait:N, #274) are
+        // compared. A history without an id, or with an id in another format,
+        // is not checked against the call.
+        if ($recordedOccurrence !== null && $currentOccurrence !== null
+            && str_starts_with($recordedOccurrence, 'php:condition-wait:') && $recordedOccurrence !== $currentOccurrence) {
+            throw new NonDeterministicWorkflow(
+                sprintf('Condition wait occurrence changed from %s to %s during replay.', $recordedOccurrence, $currentOccurrence),
+                $step['sequence'],
+                $recordedOccurrence,
+                $currentOccurrence,
+                'condition_wait_occurrence_mismatch',
             );
         }
         if ($step['timeout_seconds'] !== $currentTimeout) {

@@ -68,6 +68,8 @@ final class WorkflowContext
     /** @var Fiber<mixed, mixed, mixed, mixed>|null */
     private readonly ?Fiber $execution;
 
+    private int $conditionWaitOccurrences = 0;
+
     private int $workflowStreamCommandOrdinal = 0;
     private int $serviceOperationOrdinal = 0;
 
@@ -419,11 +421,17 @@ final class WorkflowContext
             default => WorkflowDuration::seconds($timeout, 'condition wait timeout'),
         };
 
+        // One authored call is one logical wait. The ordinal follows deterministic
+        // workflow code, so every replay and every physical reopen of this call
+        // sends the same id, which lets the Server recognize a repeated open.
+        $occurrenceId = 'php:condition-wait:'.$this->conditionWaitOccurrences++;
+
         return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::conditionWait(
             $condition,
             self::conditionKey($key),
             ConditionWaitDefinition::fingerprint($condition),
             $timeoutSeconds,
+            $occurrenceId,
         )));
     }
 

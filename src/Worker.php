@@ -48,6 +48,7 @@ use DurableWorkflow\Worker\WorkflowEntryArguments;
 use DurableWorkflow\Worker\StickyWorkflowCache;
 use DurableWorkflow\Worker\WorkerSession;
 use DurableWorkflow\Worker\WorkerSessionOptions;
+use DurableWorkflow\Worker\PreparedLocalCheckpointId;
 use DurableWorkflow\Worker\WorkflowCommand;
 use DurableWorkflow\Transport\RequestBudget;
 use DurableWorkflow\Telemetry\ExecutionTelemetry;
@@ -2055,7 +2056,7 @@ final class Worker
                 return $this->checkpointPreparedLocalPrefix($task, $replay->commands, $group->baseSequence);
             }
             if (!$group->committed) {
-                $checkpointId = hash('sha256', json_encode([$taskId, $owner, $epoch, $group->baseSequence, $group->commands], JSON_THROW_ON_ERROR));
+                $checkpointId = PreparedLocalCheckpointId::for($taskId, $owner, $epoch, $group->baseSequence, $group->commands);
                 $receipt = $this->client->preparedLocalActivityOperation($taskId, $owner, $epoch, 'checkpoint-group', [
                     'checkpoint_id' => $checkpointId, 'start_sequence' => $group->baseSequence, 'commands' => $group->commands,
                 ]);
@@ -2134,7 +2135,7 @@ final class Worker
         $owner = (string) ($task['lease_owner'] ?? $this->workerId);
         $epoch = (int) ($task['workflow_task_attempt'] ?? 1);
         $start = $nextSequence - count($commands);
-        $checkpointId = hash('sha256', json_encode([$taskId, $owner, $epoch, $start, $commands], JSON_THROW_ON_ERROR));
+        $checkpointId = PreparedLocalCheckpointId::for($taskId, $owner, $epoch, $start, $commands);
         $body = ['checkpoint_id' => $checkpointId, 'start_sequence' => $start, 'commands' => $commands];
         $budget = $scopePrefix ? ($budget ?? new RequestBudget(5)) : null;
         try {

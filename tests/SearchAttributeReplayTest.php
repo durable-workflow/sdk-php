@@ -6,6 +6,7 @@ namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Tests\Support\RedriveFixtureRegistry;
 use DurableWorkflow\Tests\Support\RedriveSuccessorHistory;
 use DurableWorkflow\Tests\Support\ReplayRegressionFixture;
 use DurableWorkflow\Worker\ReplayResult;
@@ -28,7 +29,7 @@ final class SearchAttributeReplayTest extends TestCase
 {
     public function testRedriveReusedSearchAttributesRejectAChangedValue(): void
     {
-        $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-search-attributes-changed.json';
+        $path = RedriveFixtureRegistry::path('redrive-reused-search-attributes-changed');
         $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
         self::assertSame(3, $fixture['history'][0]['payload']['resume_step_sequence']);
         self::assertNull(RedriveSuccessorHistory::violation($fixture, ['MemoUpserted', 'SearchAttributesUpserted']));
@@ -177,7 +178,7 @@ final class SearchAttributeReplayTest extends TestCase
     #[DataProvider('collidingRedriveHistories')]
     public function testReusedSearchAttributeUpsertCannotShareItsStep(callable $mutate, string $reason): void
     {
-        $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-upserts-clock.json';
+        $path = RedriveFixtureRegistry::path('redrive-reused-upserts-clock');
         $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
         $fixture['history'] = $mutate($fixture['history']);
         $fixture['expected'] = ['workflow_tasks' => [['command_sequence' => [['type' => 'replay_error', 'reason' => $reason]]]]];
@@ -470,7 +471,7 @@ final class SearchAttributeReplayTest extends TestCase
     #[DataProvider('reusedDeliveryCollisions')]
     public function testACooperativeDeliveryCannotShareAReusedUpsertsStep(callable $mutate): void
     {
-        $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-upserts-cancellation-clock.json';
+        $path = RedriveFixtureRegistry::path('redrive-successor-reused-upserts-cancellation-clock');
         $fixture = $mutate(json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR));
         $fixture['expected'] = ['workflow_tasks' => [['command_sequence' => [['type' => 'replay_error', 'reason' => 'durable_command_sequence_collision']]]]];
 
@@ -677,7 +678,7 @@ final class SearchAttributeReplayTest extends TestCase
 
     public function testRedriveReusedUpsertWithoutAttributesFailsClosed(): void
     {
-        $path = __DIR__.'/fixtures/replay-regressions/redrive-reused-search-attributes-missing.json';
+        $path = RedriveFixtureRegistry::path('redrive-reused-search-attributes-missing');
         $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
         self::assertNull(RedriveSuccessorHistory::violation($fixture, ['MemoUpserted', 'SearchAttributesUpserted']));
         self::assertArrayNotHasKey('attributes', $fixture['history'][2]['payload']);

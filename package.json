@@ -9,12 +9,14 @@
     "check:docs": "node scripts/check-docs-portal.mjs build/site",
     "check:docs-browser": "node scripts/check-docs-browser.mjs build/site",
     "check:docs-examples": "node scripts/check-docs-examples.mjs",
+    "test:docs-portal-links": "node --test scripts/check-docs-portal-links.test.mjs",
     "test:docs-browser-failures": "node --test scripts/check-docs-browser-failures.test.mjs"
   },
   "devDependencies": {
     "@11ty/eleventy": "3.1.7",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
+    "markdown-it": "14.3.3",
     "playwright": "1.62.1"
   },
   "overrides": {
