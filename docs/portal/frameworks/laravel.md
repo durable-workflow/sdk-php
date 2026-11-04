@@ -413,7 +413,27 @@ final class StartGreeting
 }
 ```
 
-Omit `workflowId` to generate a new ID. Pass `WorkflowStartOptions` when an
+Omit `workflowId` to generate a new ID, then read it from the returned handle,
+for example to put it in a signed link:
+
+```php
+$handle = $this->workflows->start(GreetingWorkflow::class, [$name]);
+
+return ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId];
+```
+
+`workflowId` and `selectedRunId` are read-only properties of the SDK's handles
+and of the Laravel fake's handle. `WorkflowHandleInterface` documents them with
+`@property-read`, which IDEs read. PHPStan does not read that tag on an
+interface, so where static analysis needs it, narrow the handle to the SDK
+handle types:
+
+```php
+/** @var \DurableWorkflow\WorkflowHandle|\DurableWorkflow\Testing\TestWorkflowHandle $handle */
+$handle = $this->workflows->start(GreetingWorkflow::class, [$name]);
+```
+
+Pass `WorkflowStartOptions` when an
 application needs a queue override, timeouts, duplicate policy, memo, search
 attributes, priority, fairness, or build ID. `handle(GreetingWorkflow::class,
 $workflowId)` returns the existing workflow handle after validating the same
