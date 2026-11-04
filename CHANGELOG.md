@@ -8,6 +8,10 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- An unreleased schedule-to-start histogram for workflow/activity dispatch uses
+  the runtime's capability-gated `ready_age_ms` claim metadata (shared metrics
+  revision 2, central #233). Valid zero is retained; missing, unsupported or
+  malformed ages are omitted. Existing instruments keep their names and tags.
 - `WorkflowContext::startChildWorkflow()` starts a child and returns a
   `ChildWorkflowHandle` once the runtime has committed the start (#185). The
   handle's `identity()` gives the child call ID, the child workflow ID and the

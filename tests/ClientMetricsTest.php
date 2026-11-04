@@ -17,7 +17,7 @@ final class ClientMetricsTest extends TestCase
 {
     public function testSharedContractBytesStayPinned(): void
     {
-        self::assertSame('c456f4f434c601fa26f0caba07ef0fd29f548ca8f5fc29ba2f6430f01e32c0f0',
+        self::assertSame('081d98ec6f5f6e3812f81ddbe8d2589d75e7c6e457c580dc6631d7857594516a',
             hash_file('sha256', dirname(__DIR__).'/resources/protocol/sdk-metrics-v1.json'));
     }
 

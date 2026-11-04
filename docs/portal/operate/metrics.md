@@ -56,13 +56,42 @@ result, a retry decision, a deadline or task authority.
 | `durable_workflow_worker_poll_duration_seconds` | histogram | `s` | same as above |
 | `durable_workflow_worker_tasks` | counter | `1` | `task_kind`, `task_queue`, `outcome` |
 | `durable_workflow_worker_task_duration_seconds` | histogram | `s` | same as above |
+| `durable_workflow_worker_task_schedule_to_start_seconds` (unreleased) | histogram | `s` | `task_kind`, `task_queue` |
 
-Each observation increments its counter by one and records one nonnegative
+Each request, poll or processing observation increments its counter by one and records one nonnegative
 duration with the same tags. A client observation covers one logical request,
 including the SDK's internal transport retries. Poll and task observations
 describe this worker process, not durable execution counts, workflow completion
 or schedule-to-start latency. A missing observation does not mean zero work or
 a healthy process.
+
+## Schedule-to-start timing (unreleased)
+
+The revision-2 dispatch histogram records only workflow and activity tasks that
+this worker actually dispatches. The runtime must explicitly advertise Boolean
+`claimed_task_ready_age: true` in discovery or registration capabilities and
+provide an integer `ready_age_ms` between `0` and `9007199254740991` on the claim.
+The recorder receives that value divided by 1000, with only `task_kind` and
+`task_queue` tags. A real zero is recorded. There is no paired counter or
+outcome tag.
+
+The Server measures from the attempt's eligibility to its committed lease.
+Scheduled delay and retry backoff are excluded. Missing or unsupported metadata
+produces no sample. Malformed metadata produces no sample and a fixed diagnostic
+without its value. The worker never substitutes a local clock difference, an
+old creation time or zero for an unknown origin.
+
+Managed registration caches its capability response. When using `tick()` alone,
+discover with `$client->workerClusterInfo()` before constructing the worker.
+Dispatch adds no discovery request. Query work, empty or refused polls and HTTP
+retries produce no schedule-to-start sample. A replayed claim retains its
+original age; actually dispatching it again is another process observation,
+so this histogram does not establish exactly-once execution.
+
+The vendored registry pins shared contract revision 2 at
+[`23f9bc3c`](https://github.com/durable-workflow/.github/tree/23f9bc3c3798cb6aab6ccf5f9cd210854b820c65/sdk-metrics).
+Server eligibility-origin implementation and exact published Server/installed
+SDK qualification remain required before this addition is delivered.
 
 ## Bounded labels
 
