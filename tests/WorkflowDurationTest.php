@@ -232,7 +232,7 @@ final class WorkflowDurationTest extends TestCase
     #[DataProvider('embeddedStrings')]
     public function testStringsConvertExactlyLikeTheEmbeddedPackage(string $duration, int $seconds): void
     {
-        self::assertSame((int) ceil(CarbonInterval::fromString($duration)->totalSeconds), $seconds);
+        self::assertSame($seconds, (int) ceil(CarbonInterval::fromString($duration)->totalSeconds));
         self::assertSame($seconds, WorkflowDuration::seconds($duration, 'timer'));
     }
 

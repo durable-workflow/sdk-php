@@ -102,7 +102,7 @@ final class WorkflowDuration
         if ($definition === '') {
             throw self::invalid($parameter, $duration, 'it is empty');
         }
-        if (preg_match('/^P(?:T|\d)/i', $definition) === 1) {
+        if (preg_match('/^P[T\d]/i', $definition) === 1) {
             throw self::invalid(
                 $parameter,
                 $duration,

@@ -186,8 +186,13 @@ jobs:
           coverage: none
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
-      - name: Resolve the oldest supported Carbon major
-        run: composer update --no-interaction --prefer-dist --no-progress --with 'nesbot/carbon:^2.72.6'
+      - name: Constrain the manifest to the oldest supported Carbon major
+        run: |
+          php -r '$path = "composer.json";
+            $manifest = json_decode((string) file_get_contents($path), flags: JSON_THROW_ON_ERROR);
+            $manifest->require->{"nesbot/carbon"} = "^2.72.6";
+            file_put_contents($path, json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n");'
+      - run: composer install --no-interaction --prefer-dist --no-progress
       - name: Require Carbon 2
         run: |
           php -r 'require "vendor/autoload.php";
