@@ -4,6 +4,11 @@ This application runs with nginx/PHP-FPM or optional Laravel Octane and
 RoadRunner. The [qualification report](qualification/report.md) records the
 tested configuration, resource costs and limits.
 
+The report's measurements were taken with SDK 2.4.2 against Server 2.8.7. The
+application now installs the current SDK release pinned in `composer.json`; it
+installs, boots and keeps the same routes, but the load, recovery and cache runs
+have not been repeated on the new tuple yet.
+
 Start with FPM for this recipe. Both documented two-CLI-worker profiles pass
 functional/recovery controls, three short comparison pairs, a baseline recheck
 and mixed-load reload soaks on the pinned tuple. Octane improves small context
