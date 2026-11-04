@@ -66,6 +66,13 @@ assert(
 );
 
 const htmlFiles = filesUnder(siteDirectory, '.html');
+// Ids are indexed from the enumerated pages, so fragment checks look up link
+// targets without reading a path taken from page content.
+const pageIds = new Map(htmlFiles.map((file) => [
+  file,
+  new Set([...fs.readFileSync(file, 'utf8').matchAll(/\sid="([^"]+)"/g)].map((match) => match[1])),
+]));
+const elementIds = (file) => pageIds.get(file) ?? new Set();
 for (const file of htmlFiles) {
   const html = fs.readFileSync(file, 'utf8');
   const relative = path.relative(siteDirectory, file).replaceAll(path.sep, '/');
@@ -112,7 +119,24 @@ for (const file of htmlFiles) {
     const target = outputPath(url.split('#')[0].split('?')[0]);
     assert(fs.existsSync(target), `${relative} links to a missing local target: ${url}`);
   }
+
+  if (!relative.startsWith('api/')) {
+    for (const href of html.matchAll(/href="((?:\/(?!\/)[^"#]*)?#[^"]+)"/g)) {
+      const [pathname, fragment] = href[1].split('#');
+      const target = pathname === '' ? file : outputPath(pathname.split('?')[0]);
+      assert(
+        elementIds(target).has(decodeURIComponent(fragment)),
+        `${relative} links to a missing fragment: ${href[1]}`,
+      );
+    }
+  }
 }
+
+const workflowsActivities = path.join(siteDirectory, 'build/workflows-activities/index.html');
+assert(
+  elementIds(workflowsActivities).has('durations'),
+  'Guide headings must render GitHub-style ids; /build/workflows-activities/#durations is linked from durable-workflow.com.',
+);
 
 const graphDirectory = path.join(siteDirectory, 'api/graphs');
 const graphPages = fs.existsSync(graphDirectory) ? filesUnder(graphDirectory, '.html') : [];
