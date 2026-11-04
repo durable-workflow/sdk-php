@@ -16,7 +16,14 @@ project follows [Semantic Versioning](https://semver.org/).
   reopens with the time remaining since the first `ConditionWaitOpened`,
   rounded up to whole seconds and never below zero, matching embedded
   `await($condition, $timeout)`. Histories whose reopens carry the full timeout
-  still replay. This needs no Server change.
+  still replay. This needs no Server change. A wait that timed out is never
+  treated as reopened: a later wait with the same key and predicate, such as a
+  grace period, is a separate call measured from its own open.
+  - **Mixed fleets and rollback:** a history in which this release reopened a
+    wait with a reduced timeout cannot be replayed by workers on 3.9.1 or
+    earlier; they fail with "reached complete_workflow before consuming its
+    recorded durable history". Upgrade every worker on a task queue together,
+    and do not roll a queue back below this release once such a reopen exists.
 
 ## [3.9.1] - 2026-11-04
 

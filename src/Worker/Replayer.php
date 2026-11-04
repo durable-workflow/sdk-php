@@ -1191,7 +1191,21 @@ final class Replayer
             && $previous['condition_definition_fingerprint'] === $next['condition_definition_fingerprint']
             && ($previous['timeout_seconds'] === $next['timeout_seconds']
                 || (is_int($previous['timeout_seconds']) && is_int($next['timeout_seconds'])
-                    && $next['timeout_seconds'] < $previous['timeout_seconds']));
+                    && $next['timeout_seconds'] < $previous['timeout_seconds']))
+            && $this->conditionWaitStillLive($previous);
+    }
+
+    /**
+     * Only a wait the Server satisfied (a false wake), or one still open (a
+     * repeated open, #269 part 2), is physically reopened. A wait that timed
+     * out or failed is finished, so a later wait with the same key and
+     * predicate is a separate call, such as a grace period.
+     *
+     * @param array<string, mixed> $step
+     */
+    private function conditionWaitStillLive(array $step): bool
+    {
+        return $step['resolved'] !== true || ($step['value'] === true && $step['failure'] === null);
     }
 
     /**
@@ -1252,7 +1266,10 @@ final class Replayer
     private function eventTime(mixed $event): ?\DateTimeImmutable
     {
         $value = is_array($event) ? ($event['timestamp'] ?? $event['recorded_at'] ?? null) : null;
-        if (!is_string($value) || $value === '') {
+        // RFC 3339 with an explicit offset only: "now" or a zoneless time would
+        // read the wall clock or the host time zone and break determinism.
+        if (!is_string($value)
+            || preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/', $value) !== 1) {
             return null;
         }
         try {
@@ -3331,7 +3348,8 @@ final class Replayer
                 && $collapsed[$last]['shape'] === 'condition_wait'
                 && $step['condition_key'] === $collapsed[$last]['condition_key']
                 && $step['condition_definition_fingerprint'] === $collapsed[$last]['condition_definition_fingerprint']
-                && $step['timeout_seconds'] === $collapsed[$last]['timeout_seconds']) {
+                && $step['timeout_seconds'] === $collapsed[$last]['timeout_seconds']
+                && $this->conditionWaitStillLive($collapsed[$last])) {
                 $step['sequence'] = $collapsed[$last]['sequence'];
                 $step['opened_at'] = $collapsed[$last]['opened_at'] ?? null;
                 $collapsed[$last] = $step;
