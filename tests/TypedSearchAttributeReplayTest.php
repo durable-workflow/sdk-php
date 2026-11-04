@@ -140,6 +140,19 @@ final class TypedSearchAttributeReplayTest extends TestCase
         WorkflowCommand::upsertSearchAttributes($attributes, $types);
     }
 
+    public function testInvalidKeysAreRejectedBeforeTheirTypeIsDiagnosed(): void
+    {
+        $key = "private-key\n";
+        try {
+            WorkflowCommand::upsertSearchAttributes([$key => 'private-value'], [$key => 'private-type']);
+        } catch (InvalidArgumentException $error) {
+            self::assertStringNotContainsString('private', $error->getMessage());
+
+            return;
+        }
+        self::fail('An invalid key must be refused without reflecting its contents.');
+    }
+
     public function testRedriveFixturePinsTypeChangesAtTheReusedStep(): void
     {
         $path = RedriveFixtureRegistry::path('redrive-reused-search-attribute-type-changed');

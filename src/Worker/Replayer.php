@@ -3024,10 +3024,10 @@ final class Replayer
      * sorted. The authored call is normalized the same way. Anything outside
      * that set, recorded or authored, refuses replay instead of being coerced.
      *
-     * Recorded attribute_types are not part of this identity: this SDK's
-     * upsert command carries no declared types, and the effective type the
-     * Server records may come from a namespace registration the worker cannot
-     * see. This is value-only binding.
+     * Explicitly authored types bind separately against known recorded types.
+     * Legacy one-argument calls remain value-only because effective types may
+     * come from a namespace registration the worker cannot see. Histories
+     * without type metadata also retain value-only compatibility.
      *
      * @return array<string, null|bool|int|float|string|list<string>>
      */

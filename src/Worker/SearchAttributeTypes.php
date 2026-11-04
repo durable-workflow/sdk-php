@@ -23,11 +23,13 @@ final class SearchAttributeTypes
         if ($attributes === [] || count($attributes) > 100) {
             throw new InvalidArgumentException('A typed search-attribute update requires between one and 100 attributes.');
         }
-        $canonical = self::typeMap($attributes, $types);
-        foreach ($attributes as $key => $value) {
+        foreach ($attributes as $key => $_) {
             if (!is_string($key) || preg_match('/\A[A-Za-z0-9_.:-]{1,64}\z/', $key) !== 1) {
                 throw new InvalidArgumentException('Search attributes require portable string keys.');
             }
+        }
+        $canonical = self::typeMap($attributes, $types);
+        foreach ($attributes as $key => $value) {
             if ($value !== null && !array_key_exists($key, $canonical)) {
                 throw new InvalidArgumentException("Search attribute [{$key}] needs an explicit type; use null to delete it.");
             }
