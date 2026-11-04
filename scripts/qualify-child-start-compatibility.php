@@ -12,7 +12,11 @@ use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\WorkflowContext;
 
 [$script, $autoload, $url] = $argv;
-require $autoload;
+require_once $autoload;
+
+final class ChildStartCompatibilityFailed extends RuntimeException
+{
+}
 
 if (($argv[3] ?? null) === '--worker') {
     [$namespace, $queue, $mode, $receipt] = array_slice($argv, 4);
@@ -47,7 +51,7 @@ if (($argv[3] ?? null) === '--worker') {
 function check(bool $condition, string $message): void
 {
     if (!$condition) {
-        throw new RuntimeException($message);
+        throw new ChildStartCompatibilityFailed($message);
     }
     echo "ok: {$message}\n";
 }
