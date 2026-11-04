@@ -1685,9 +1685,11 @@ final class Replayer
                     $this->payloadDetail($payload, 'child_workflow'),
                     parallelPath: $this->parallelPath($payload, $sequence),
                 );
-                // The first committed start fixes the identity; a later
-                // ChildRunStarted for a continued or retried run does not move it.
-                $childIdentities[$key] ??= $this->childIdentity($payload);
+                // Preserve a missing initial identity too. A later continued
+                // or retried run cannot establish which run started the child.
+                if (!array_key_exists($key, $childIdentities)) {
+                    $childIdentities[$key] = $this->childIdentity($payload);
+                }
             } elseif ($type === 'ChildRunCompleted') {
                 if (($steps[$key]['resolved'] ?? false) === true) {
                     continue;

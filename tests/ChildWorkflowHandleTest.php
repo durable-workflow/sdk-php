@@ -119,6 +119,23 @@ final class ChildWorkflowHandleTest extends TestCase
         }
     }
 
+    public function testALaterRunCannotSupplyTheMissingInitialIdentity(): void
+    {
+        $history = $this->started();
+        unset($history[0]['payload']['child_call_id'], $history[1]['payload']['child_call_id']);
+        $history[] = ['event_type' => 'ChildRunStarted', 'payload' => [
+            'sequence' => 1, 'child_call_id' => 'call-1', 'child_workflow_instance_id' => 'child-instance',
+            'child_workflow_run_id' => 'child-run-2', 'child_workflow_type' => 'billing.reconcile',
+        ]];
+
+        try {
+            $this->replay($history);
+            self::fail('A later run must not become the initial child identity.');
+        } catch (NonDeterministicWorkflow $exception) {
+            self::assertSame('child_start_identity_missing', $exception->reason);
+        }
+    }
+
     public function testTheExistingChildCallKeepsReturningTheResult(): void
     {
         $workflow = static fn (WorkflowContext $context): mixed => $context->childWorkflow('billing.reconcile', ['acct-1']);
