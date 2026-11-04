@@ -25,7 +25,38 @@ function escapeHtml(value) {
     .replaceAll('\n', '&#10;');
 }
 
+// GitHub-style heading slugs, so links written against the GitHub rendering of
+// these pages (and from durable-workflow.com) resolve on the portal too.
+function headingSlug(text) {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{N}\p{Pc}\- ]/gu, '')
+    .replaceAll(' ', '-');
+}
+
+function headingIds(markdown) {
+  markdown.core.ruler.push('heading_ids', (state) => {
+    const used = new Map();
+    state.tokens.forEach((token, index) => {
+      if (token.type !== 'heading_open' || token.attrGet('id') !== null) return;
+      const inline = state.tokens[index + 1];
+      const text = (inline?.children ?? [])
+        .filter((child) => child.type === 'text' || child.type === 'code_inline')
+        .map((child) => child.content)
+        .join('');
+      const base = headingSlug(text);
+      if (base === '') return;
+      const count = used.get(base) ?? 0;
+      used.set(base, count + 1);
+      token.attrSet('id', count === 0 ? base : `${base}-${count}`);
+    });
+  });
+}
+
 module.exports = function configure(eleventyConfig) {
+  eleventyConfig.amendLibrary('md', (markdown) => markdown.use(headingIds));
+
   eleventyConfig.addPassthroughCopy({'docs/CNAME': 'CNAME'});
   eleventyConfig.addPassthroughCopy({'docs/portal/assets': 'assets'});
   eleventyConfig.addPassthroughCopy({'docs/quickstart-contract.json': 'quickstart-contract.json'});
