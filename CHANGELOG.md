@@ -21,6 +21,12 @@ project follows [Semantic Versioning](https://semver.org/).
     code that already has runs in flight now fails replay for runs recorded
     with ids, as other non-deterministic changes do. Use version markers for
     such changes.
+- Prepared local activity checkpoint ids, cancellation-scope descriptor
+  hashes and the workflow definition fingerprint no longer depend on the host's
+  `serialize_precision` (#282). They hash JSON that can contain floats, such as
+  search attribute values in a checkpointed command, and now use the same
+  round-trip precision as request bodies (#248). Under the default setting the
+  hashes are byte-identical to before.
 
 ## [3.9.3] - 2026-11-04
 
