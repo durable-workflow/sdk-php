@@ -305,7 +305,7 @@ for (const source of filesUnder(path.join(projectDirectory, 'docs/portal'), '.md
 // wildcards are not versions and stay allowed. The text after each package
 // name is tested with an anchored pattern whose parts never overlap, so it
 // runs in linear time.
-const CONSTRAINT_AFTER_SDK_NAME = /^[ \t"':]+(?:[~^v<>=!]{1,2}[ \t]*)?\d/;
+const CONSTRAINT_AFTER_SDK_NAME = /^[ \t"':=]+(?:[~^v<>!]{1,2}=?[ \t]*)?\d/;
 function hardCodesSdkConstraint(text) {
   return text.split('durable-workflow/sdk').slice(1).some((rest) => CONSTRAINT_AFTER_SDK_NAME.test(rest));
 }
@@ -316,6 +316,9 @@ for (const sample of [
   'durable-workflow/sdk:v2.5.4',
   '"durable-workflow/sdk": "^2.0"',
   'durable-workflow/sdk 3.9.0',
+  'durable-workflow/sdk=3.9.0',
+  'durable-workflow/sdk = "^3.9"',
+  'durable-workflow/sdk:<=3.9',
 ]) {
   assert(hardCodesSdkConstraint(sample), `The SDK constraint check must reject: ${sample}`);
 }
@@ -323,6 +326,7 @@ for (const sample of [
   'composer require durable-workflow/sdk:dev-main',
   'composer require durable-workflow/sdk',
   'durable-workflow/sdk:*',
+  'durable-workflow/sdk=dev-main',
   'durable-workflow/sdk-php 3.9.0',
   'composer require durable-workflow/sdk\n\n1. Start the worker',
 ]) {
