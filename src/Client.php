@@ -3031,6 +3031,12 @@ final class Client implements WorkflowClientInterface
 
     private function segment(string $value): string
     {
+        // An empty identifier collapses the route (for example /workflows/ instead of
+        // /workflows/{id}) and the server then reports an unrelated capability error.
+        if ($value === '') {
+            throw new InvalidArgumentException('Durable Workflow request path identifiers cannot be empty.');
+        }
+
         return rawurlencode($value);
     }
 

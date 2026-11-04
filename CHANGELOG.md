@@ -6,8 +6,24 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `WorkflowHandleInterface` documents the `workflowId` and `selectedRunId`
+  read-only properties that the SDK's handles and the test fake's handle
+  already expose (#251), and the Laravel guide shows reading a generated
+  workflow ID from the handle `start()` returns. The interface gains no
+  methods, so application classes that implement it keep loading.
+
 ### Fixed
 
+- An empty workflow ID now fails when the handle is created (#252). Before,
+  `workflowHandle('')`, and the Laravel bridge's `handle(Workflow::class, '')`,
+  returned a handle whose calls built routes such as `GET /api/workflows/`,
+  and Server 3 answered `rust_capability_not_implemented`, which read like a
+  missing server feature. `WorkflowHandle` and the test fake's handle now throw
+  `InvalidArgumentException` for an empty workflow ID or an empty selected run
+  ID (pass `null` to follow the current run). Every `Client` call also refuses
+  an empty identifier in its request path before sending anything.
 - Request bodies keep full float precision whatever the host's
   `serialize_precision` is (#248). With a non-default value such as 3, a float
   search attribute of 1.2345 was sent and recorded as 1.23, and replay then
