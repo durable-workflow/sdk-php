@@ -17,8 +17,10 @@ use Throwable;
  * measured by their y/m/d/h/i/s/f fields with `CarbonInterval::instance()->totalSeconds`, which
  * matches the embedded package for every interval that does not carry diff() start and end dates.
  * Carbon applies its cascade factors rather than a calendar (by default a day is 24 hours, a week
- * 7 days, a month 4 weeks and a year 12 months), so the result does not depend on the current date,
- * time zone, PHP version or Carbon major version. Changing the factors globally with
+ * 7 days, a month 4 weeks and a year 12 months), so calendar dates and time zones do not affect
+ * measurement. Floating-point precision is retained from the installed Carbon major: very large
+ * durations containing millisecond or microsecond parts can produce different whole seconds
+ * across majors. Changing the factors globally with
  * `CarbonInterval::setCascadeFactors()` changes the result, as it does in the embedded package.
  *
  * Numeric strings such as "30" or "1.5" convert as they were coerced when these parameters were
