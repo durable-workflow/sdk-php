@@ -62,12 +62,14 @@ final class RedriveFixtureRegistry
             'sha256' => 'c353e90d99bea68e73cf4b22e720d81aae1e37e7a58a797d3eed3786e4ca5b9d',
             'replacement' => 'redrive-successor-reused-timer',
         ],
-        // #250: Core's WorkflowStub writes command_type and
-        // workflow_instance_id on every request, and its delivery carries
-        // the request's context. This history has neither.
+        // #250: Core's WorkflowStub::recordCancellationRequest() writes
+        // command_type, workflow_instance_id and workflow_run_id on every
+        // request, and CooperativeCancellationDelivery::record() copies the
+        // request's context onto the delivery. This request lacks command_type
+        // and workflow_instance_id, and its delivery has no context.
         'redrive-reused-upserts-cancellation-clock' => [
             'prefix' => ['MemoUpserted', 'SearchAttributesUpserted'],
-            'violation' => 'the cancellation request command_type must be request_cancellation',
+            'violation' => 'the cancellation request must carry the successor workflow_instance_id and workflow_run_id',
             'sha256' => '4de4433d2c3ce2ed24ef0cb82ad5d633817c162a560ea17aecff1dbfcc41391c',
             'replacement' => 'redrive-successor-reused-upserts-cancellation-clock',
         ],

@@ -454,6 +454,13 @@ final class RedriveSuccessorEvidenceTest extends TestCase
 
             return $fixture;
         }, 'command_type'];
+        foreach (['workflow_instance_id', 'workflow_run_id'] as $field) {
+            $cases["request without {$field}"] = [self::CANCELLATION, static function (array $fixture) use ($field): array {
+                unset($fixture['history'][5]['payload'][$field]);
+
+                return $fixture;
+            }, 'successor workflow_instance_id and workflow_run_id'];
+        }
         $cases['request with another cleanup deadline'] = [self::CANCELLATION, $set(5, 'cleanup_deadline_at', '2026-11-03T00:05:30.000000Z'), "cleanup_deadline_at must be its context's"];
         $cases['delivery without the context'] = [self::CANCELLATION, static function (array $fixture): array {
             unset($fixture['history'][6]['payload']['cancellation']);

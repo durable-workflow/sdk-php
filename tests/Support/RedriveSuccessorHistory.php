@@ -253,7 +253,7 @@ final class RedriveSuccessorHistory
             return 'resume_step_sequence must be the last reused workflow step + 1 ('.($lastReusedStep + 1).')';
         }
         if ($requests !== [] || $deliveries !== []) {
-            return self::cancellationViolation($history, $requests, $deliveries, $startedAt);
+            return self::cancellationViolation($history, $requests, $deliveries, $startedAt, $instance, $run);
         }
 
         return null;
@@ -261,7 +261,8 @@ final class RedriveSuccessorHistory
 
     /**
      * The successor's own cancellation, as Core 28893f97 writes it: one
-     * WorkflowStub request, then one CooperativeCancellationDelivery record
+     * WorkflowStub::recordCancellationRequest() request, then one
+     * CooperativeCancellationDelivery::record() delivery
      * carrying the same context, delivered to a call boundary that
      * CooperativeCancellationDelivery::validateCallBoundary() accepts.
      *
@@ -274,6 +275,8 @@ final class RedriveSuccessorHistory
         array $requests,
         array $deliveries,
         DateTimeImmutable $startedAt,
+        string $instance,
+        string $run,
     ): ?string {
         if (count($requests) !== 1 || count($deliveries) !== 1) {
             return 'a successor cancellation is exactly one request and one delivery';
@@ -287,6 +290,10 @@ final class RedriveSuccessorHistory
         $command = $request['workflow_command_id'] ?? null;
         if (!self::nonBlank($command)) {
             return 'the cancellation request must carry a non-blank workflow_command_id';
+        }
+        // recordCancellationRequest() always writes both identities.
+        if (($request['workflow_instance_id'] ?? null) !== $instance || ($request['workflow_run_id'] ?? null) !== $run) {
+            return 'the cancellation request must carry the successor workflow_instance_id and workflow_run_id';
         }
         if (($request['command_type'] ?? null) !== 'request_cancellation') {
             return 'the cancellation request command_type must be request_cancellation';
