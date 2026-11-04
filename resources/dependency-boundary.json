@@ -1,6 +1,7 @@
 {
   "schema": "durable-workflow.sdk-php.dependency-boundary/v1",
   "allowed_symfony_packages": [
+    "symfony/clock",
     "symfony/contracts",
     "symfony/deprecation-contracts",
     "symfony/polyfill-ctype",
@@ -11,9 +12,13 @@
     "symfony/polyfill-php83",
     "symfony/polyfill-php84",
     "symfony/polyfill-php85",
-    "symfony/service-contracts"
+    "symfony/polyfill-time",
+    "symfony/service-contracts",
+    "symfony/translation",
+    "symfony/translation-contracts"
   ],
   "required_constraints": {
+    "nesbot/carbon": "^2.72.6|^3.8.4",
     "pear/http_request2": "^2.8"
   },
   "minimum_stable_versions": {
@@ -25,6 +30,10 @@
     },
     "pear/pear_exception": {
       "1": "1.0.2"
+    },
+    "nesbot/carbon": {
+      "2": "2.72.6",
+      "3": "3.8.4"
     }
   },
   "required_conflicts": {

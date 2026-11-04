@@ -354,7 +354,16 @@ final class WorkflowContext
         return new Saga($this);
     }
 
-    public function sleep(int|float $seconds): void
+    /**
+     * Start a durable timer and suspend until it fires.
+     *
+     * Accepts int or float seconds, a duration string such as "30 minutes" or "1h 30m", or a
+     * DateInterval or CarbonInterval. Every form rounds up to whole seconds once, so equivalent
+     * values record identical history.
+     *
+     * @throws \InvalidArgumentException when a string or interval is unparseable or negative
+     */
+    public function sleep(int|float|string|\DateInterval $seconds): void
     {
         $operation = $this->deferTimer($seconds);
         if ($this->isCapturing()) {
@@ -371,13 +380,16 @@ final class WorkflowContext
      *
      * The result is true only when the condition was satisfied and false only when it timed out.
      * Give repeated or otherwise ambiguous waits a stable key so replay can identify them.
+     * The timeout accepts int or float seconds, a duration string such as "30 minutes", or a
+     * DateInterval or CarbonInterval, and rounds up to whole seconds.
      *
      * @param callable(): bool $predicate
+     * @throws \InvalidArgumentException when a string or interval timeout is unparseable or negative
      */
     public function waitCondition(
         callable $predicate,
         ?string $key = null,
-        int|float|null $timeout = null,
+        int|float|string|\DateInterval|null $timeout = null,
     ): bool {
         $operation = $this->deferCondition($predicate, $key, $timeout);
         if ($this->isCapturing()) {
@@ -389,15 +401,23 @@ final class WorkflowContext
         return (bool) $this->suspend($operation->command);
     }
 
-    /** Prepare a deterministic condition or signal-derived wait for a durable group. */
+    /**
+     * Prepare a deterministic condition or signal-derived wait for a durable group.
+     *
+     * @throws \InvalidArgumentException when a string or interval timeout is unparseable or negative
+     */
     public function deferCondition(
         callable $predicate,
         ?string $key = null,
-        int|float|null $timeout = null,
+        int|float|string|\DateInterval|null $timeout = null,
     ): DeferredWorkflowOperation {
         $this->assertActiveFiber();
         $condition = Closure::fromCallable($predicate);
-        $timeoutSeconds = $timeout === null ? null : max(0, (int) ceil($timeout));
+        $timeoutSeconds = match (true) {
+            $timeout === null => null,
+            is_int($timeout), is_float($timeout) => max(0, (int) ceil($timeout)),
+            default => WorkflowDuration::seconds($timeout, 'condition wait timeout'),
+        };
 
         return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::conditionWait(
             $condition,
@@ -436,12 +456,21 @@ final class WorkflowContext
         return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::activity($activityType, $arguments, $options)));
     }
 
-    /** Prepare a durable timer for an all/parallel barrier. */
-    public function deferTimer(int|float $seconds): DeferredWorkflowOperation
+    /**
+     * Prepare a durable timer for an all/parallel barrier.
+     *
+     * Accepts the same int, float, string and interval durations as sleep().
+     *
+     * @throws \InvalidArgumentException when a string or interval is unparseable or negative
+     */
+    public function deferTimer(int|float|string|\DateInterval $seconds): DeferredWorkflowOperation
     {
         $this->assertActiveFiber();
+        $seconds = is_int($seconds) || is_float($seconds)
+            ? (int) ceil($seconds)
+            : WorkflowDuration::seconds($seconds, 'timer');
 
-        return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::timer((int) ceil($seconds))));
+        return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::timer($seconds)));
     }
 
     /**

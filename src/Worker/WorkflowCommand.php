@@ -44,6 +44,16 @@ final class WorkflowCommand
         'schedule_to_close_timeout',
         'heartbeat_timeout',
     ];
+    private const REMOTE_ACTIVITY_TIMEOUT_FIELDS = [
+        'start_to_close_timeout',
+        'schedule_to_start_timeout',
+        'schedule_to_close_timeout',
+        'heartbeat_timeout',
+    ];
+    private const CHILD_WORKFLOW_TIMEOUT_FIELDS = [
+        'execution_timeout_seconds',
+        'run_timeout_seconds',
+    ];
     private const ACTIVITY_RETRY_POLICY_FIELDS = [
         'max_attempts',
         'backoff_seconds',
@@ -89,6 +99,11 @@ final class WorkflowCommand
     public static function canonicalRemoteActivityOptions(array $options): array
     {
         self::assertRemoteActivityFields($options, self::REMOTE_ACTIVITY_OPTION_FIELDS, 'options');
+        foreach (self::REMOTE_ACTIVITY_TIMEOUT_FIELDS as $field) {
+            if (array_key_exists($field, $options)) {
+                $options[$field] = WorkflowDuration::normalize($options[$field], "remote activity {$field}", 1);
+            }
+        }
         if (is_array($options['retry_policy'] ?? null)) {
             self::assertRemoteActivityFields($options['retry_policy'], self::ACTIVITY_RETRY_POLICY_FIELDS, 'retry_policy');
         }
@@ -153,6 +168,12 @@ final class WorkflowCommand
         }
         $options = array_filter($options, static fn (mixed $value): bool => $value !== null);
         $options += ['mode_override' => 'sync', 'wait_for' => 'completed'];
+        if (isset($options['wait_timeout_seconds'])) {
+            $options['wait_timeout_seconds'] = WorkflowDuration::normalize(
+                $options['wait_timeout_seconds'],
+                'service wait_timeout_seconds',
+            );
+        }
         if (!in_array($options['mode_override'], ['sync', 'async'], true)
             || !in_array($options['wait_for'], ['completed', 'accepted'], true)) {
             throw new InvalidArgumentException('Service mode_override must be sync or async, and wait_for must be completed or accepted.');
@@ -202,6 +223,11 @@ final class WorkflowCommand
     {
         $policies = self::canonicalChildWorkflowPolicies($options);
         unset($options['parent_close_policy'], $options['cancellation_policy']);
+        foreach (self::CHILD_WORKFLOW_TIMEOUT_FIELDS as $field) {
+            if (array_key_exists($field, $options)) {
+                $options[$field] = WorkflowDuration::normalize($options[$field], "child workflow {$field}", 1);
+            }
+        }
 
         return new self('start_child_workflow', 'child_workflow', array_merge($options, $policies, [
             'workflow_type' => $workflowType,
@@ -313,10 +339,11 @@ final class WorkflowCommand
             if (!array_key_exists($field, $options) || $options[$field] === null) {
                 continue;
             }
-            if (!is_int($options[$field]) || $options[$field] < 1) {
+            $value = WorkflowDuration::normalize($options[$field], "local activity {$field}", 1);
+            if (!is_int($value) || $value < 1) {
                 throw new InvalidArgumentException("Local activity {$field} must be a positive integer when provided.");
             }
-            $canonical[$field] = $options[$field];
+            $canonical[$field] = $value;
         }
 
         $startToClose = $canonical['start_to_close_timeout'] ?? null;

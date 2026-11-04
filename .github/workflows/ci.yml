@@ -164,6 +164,45 @@ jobs:
         if: matrix.php == '8.1'
         run: composer check-http-only-platform
 
+  carbon-2:
+    name: PHP 8.1 with Carbon 2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: '8.1'
+          tools: composer:2.10.3
+          coverage: none
+      - name: Constrain the manifest to the oldest supported Carbon major
+        run: |
+          php -r '$path = "composer.json";
+            $manifest = json_decode((string) file_get_contents($path), flags: JSON_THROW_ON_ERROR);
+            $manifest->require->{"nesbot/carbon"} = "^2.72.6";
+            file_put_contents($path, json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n");'
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+      - run: composer install --no-interaction --prefer-dist --no-progress
+      - name: Require Carbon 2
+        run: |
+          php -r 'require "vendor/autoload.php";
+            $version = ltrim((string) Composer\InstalledVersions::getPrettyVersion("nesbot/carbon"), "v");
+            fwrite(STDOUT, "nesbot/carbon {$version}\n");
+            exit(str_starts_with($version, "2.") ? 0 : 1);'
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+      - run: composer test
+
   framework-compat:
     name: ${{ matrix.framework }} ${{ matrix.version }}
     runs-on: ubuntu-24.04
@@ -834,6 +873,7 @@ jobs:
       - action-policy
       - regression-corpus
       - test
+      - carbon-2
       - framework-compat
       - laravel-transition-compat
       - analyse
@@ -853,6 +893,7 @@ jobs:
         env:
           CORPUS_RESULT: ${{ needs.regression-corpus.result }}
           TEST_RESULT: ${{ needs.test.result }}
+          CARBON_2_RESULT: ${{ needs.carbon-2.result }}
           FRAMEWORK_RESULT: ${{ needs.framework-compat.result }}
           LARAVEL_TRANSITION_RESULT: ${{ needs.laravel-transition-compat.result }}
           ANALYSIS_RESULT: ${{ needs.analyse.result }}
@@ -862,6 +903,7 @@ jobs:
         run: |
           test "$CORPUS_RESULT" = success
           test "$TEST_RESULT" = success
+          test "$CARBON_2_RESULT" = success
           test "$FRAMEWORK_RESULT" = success
           test "$LARAVEL_TRANSITION_RESULT" = success
           test "$ANALYSIS_RESULT" = success
