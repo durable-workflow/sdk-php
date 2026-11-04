@@ -9,30 +9,45 @@ project follows [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Friendly durations for workflow timers and timeouts (#254).
-  `WorkflowContext::sleep()`, `deferTimer()`, and the `timeout` of
-  `waitCondition()` and `deferCondition()` now accept a string such as
-  `'30 minutes'`, `'1h 30m'` or `'1.5 hours'`, or a `DateInterval` or
-  `CarbonInterval`, as well as int or float seconds. The remote and local
-  activity timeout options, the child workflow `execution_timeout_seconds` and
-  `run_timeout_seconds` options and the service operation
-  `wait_timeout_seconds` option accept the same forms. Each value converts once
-  to whole seconds, rounding up as before, so `'30 minutes'`, `1800`,
-  `new DateInterval('PT30M')` and `CarbonInterval::minutes(30)` record
-  identical commands and history. Strings and intervals convert exactly as the
-  embedded `durable-workflow/workflow` package's `timer()` and `await()` do:
-  `ceil(CarbonInterval::fromString($string)->totalSeconds)` and
-  `ceil($interval->totalSeconds)`. Carbon's fixed factors (a 4-week month and a
-  12-month year) make the result independent of the current date and time zone.
-  The SDK is stricter than the embedded package: unknown units, extra words,
-  commas, negative values and ISO 8601 strings throw `InvalidArgumentException`
-  naming the parameter and the accepted forms. Pass ISO 8601 durations as a
-  `DateInterval`. Activity and child workflow timeouts must be at least one
-  second. Existing int and float arguments behave as before.
+  - **Where:** `WorkflowContext::sleep()`, `deferTimer()`, and the `timeout` of
+    `waitCondition()` and `deferCondition()`. Also the remote and local
+    activity timeout options, the child workflow `execution_timeout_seconds`
+    and `run_timeout_seconds` options, and the service operation
+    `wait_timeout_seconds` option.
+  - **Forms:** besides int or float seconds, a string such as
+    `'30 minutes'`, `'1h 30m'` or `'1.5 hours'`, or a `DateInterval` or
+    `CarbonInterval`.
+  - **Conversion:** each value converts once to whole seconds, rounding up as
+    before. `'30 minutes'`, `1800`, `new DateInterval('PT30M')` and
+    `CarbonInterval::minutes(30)` record identical commands and history.
+    - Strings convert exactly as the embedded `durable-workflow/workflow`
+      `timer()` and `await()` do:
+      `ceil(CarbonInterval::fromString($string)->totalSeconds)`.
+    - Intervals are measured by their fields with
+      `CarbonInterval::instance()->totalSeconds`. A Carbon 3 `diff()`
+      interval therefore uses its fields (a 4-week month), not its real date
+      span.
+    - Carbon's default cascade factors make the result independent of the
+      current date, time zone, PHP version and Carbon major version.
+  - **Stricter than the embedded package.** These throw
+    `InvalidArgumentException` naming the parameter and the accepted forms:
+    - unknown units, extra words or commas;
+    - negative parts;
+    - parts with more than 15 integer digits;
+    - fractions of calendar units such as `'0.5 months'`, which Carbon
+      truncates;
+    - ISO 8601 strings (pass a `DateInterval` instead);
+    - negative or relative intervals.
+  - Activity and child workflow timeouts must be at least one second.
+  - **Unchanged:** int and float arguments, and numeric strings such as `'30'`
+    in files without `strict_types`. Timers and condition timeouts still round
+    numeric strings up. Activity and child options still pass them through.
 - `nesbot/carbon` `^2.72.6|^3.8.4` is now a required dependency, so every
   worker converts durations with the same parser as the embedded package. The
   floors are Carbon's patched releases for CVE-2025-22145, and the range
   overlaps every supported Laravel line. The production dependency boundary
-  allows Carbon's Symfony translation, clock and polyfill dependencies.
+  allows Carbon's Symfony translation, clock and polyfill dependencies. CI runs
+  the unit tests on Carbon 2 as well as Carbon 3.
 
 - Replay evidence for Workflow 2.19 redrive reuse of `MemoUpserted` and
   `SearchAttributesUpserted`, and for Core's reused signal-wait events

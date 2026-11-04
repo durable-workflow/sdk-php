@@ -257,7 +257,7 @@ final class WorkflowDurationTest extends TestCase
         yield 'empty string' => ['', 'Invalid timer duration "": it is empty.'];
         yield 'whitespace' => ['   ', 'Invalid timer duration "   ": it is empty.'];
         yield 'garbage' => ['abc', 'Invalid timer duration "abc": it is not a duration of numbers and units.'];
-        yield 'bare number' => ['30', 'Invalid timer duration "30": it has an unknown unit'];
+        yield 'number without a unit' => ['30 and 5', 'Invalid timer duration "30 and 5": it has an unknown unit'];
         yield 'unknown unit' => ['30 lightyears', 'Invalid timer duration "30 lightyears": it has an unknown unit'];
         yield 'unsupported abbreviation' => ['30 mins', 'Invalid timer duration "30 mins": it has an unknown unit'];
         yield 'trailing garbage' => ['30 minutes garbage', 'Invalid timer duration "30 minutes garbage": it is not a duration of numbers and units.'];
@@ -267,10 +267,23 @@ final class WorkflowDurationTest extends TestCase
         yield 'negative part' => ['1 hour -5 minutes', 'Invalid timer duration "1 hour -5 minutes": durations and their parts must not be negative.'];
         yield 'ISO 8601 string' => ['PT30M', 'Invalid timer duration "PT30M": ISO 8601 duration strings are not accepted; pass new DateInterval(\'PT30M\') instead.'];
         yield 'too large' => ['99999999999 years', 'Invalid timer duration "99999999999 years": it is too large.'];
-        yield 'inverted DateInterval' => [self::inverted(new DateInterval('PT5M')), 'Invalid timer duration DateInterval -P0Y0M0DT0H5M0S: it is negative.'];
-        yield 'negative CarbonInterval' => [CarbonInterval::minutes(-5), 'it is negative.'];
-        yield 'weekday relative' => [DateInterval::createFromDateString('next weekday'), 'Invalid timer duration'];
-        yield 'negative createFromDateString' => [DateInterval::createFromDateString('-5 minutes'), 'Invalid timer duration'];
+        yield 'too many digits' => ['99999999999999999999 years', 'Invalid timer duration "99999999999999999999 years": it is too large.'];
+        yield 'too many second digits' => ['1234567890123456 seconds', 'it is too large.'];
+        yield 'fractional month' => ['0.5 months', 'Invalid timer duration "0.5 months": the months part must be a whole number; Carbon would truncate its fraction.'];
+        yield 'fractional year' => ['1.5 years', 'the years part must be a whole number'];
+        yield 'fractional quarter' => ['1.5 quarters', 'the quarters part must be a whole number'];
+        yield 'fractional mo' => ['2.25mo', 'the mo part must be a whole number'];
+        yield 'inverted DateInterval' => [self::inverted(new DateInterval('PT5M')), 'Invalid timer duration DateInterval -P0Y0M0DT0H5M0S: it is negative or has a negative part.'];
+        yield 'negative CarbonInterval' => [CarbonInterval::minutes(-5), 'it is negative'];
+        $relative = 'relative DateInterval::createFromDateString() expressions such as weekdays or "last day of" are not fixed durations.';
+        yield 'weekday relative' => [DateInterval::createFromDateString('next weekday'), $relative];
+        yield 'named weekday' => [DateInterval::createFromDateString('monday'), $relative];
+        yield 'last day of' => [DateInterval::createFromDateString('last day of next month'), $relative];
+        yield 'first day of' => [DateInterval::createFromDateString('first day of next month'), $relative];
+        yield 'negative createFromDateString' => [DateInterval::createFromDateString('-5 minutes'), 'it is negative or has a negative part.'];
+        yield 'createFromDateString ago' => [DateInterval::createFromDateString('3 days ago'), 'it is negative or has a negative part.'];
+        yield 'mixed-sign createFromDateString' => [DateInterval::createFromDateString('1 hour -5 minutes'), 'it is negative or has a negative part.'];
+        yield 'negative DateInterval field' => [self::withField(new DateInterval('PT1H'), 'i', -5), 'it is negative or has a negative part.'];
     }
 
     #[DataProvider('rejected')]
@@ -352,6 +365,44 @@ final class WorkflowDurationTest extends TestCase
         self::assertSame([1800, 5400, 172800, 604800, 2419200, 29030400, 2419200, 34142400, 4838400, 86400], $reference);
     }
 
+    /** @return iterable<string, array{DateInterval, int}> */
+    public static function createdFromDateString(): iterable
+    {
+        yield '5 mins' => [DateInterval::createFromDateString('5 mins'), 300];
+        yield '1 sec' => [DateInterval::createFromDateString('1 sec'), 1];
+        yield '1 fortnight' => [DateInterval::createFromDateString('1 fortnight'), 1209600];
+        yield '+1 day' => [DateInterval::createFromDateString('+1 day'), 86400];
+        yield '2 weeks 3 days' => [DateInterval::createFromDateString('2 weeks 3 days'), 1468800];
+        yield '1 month' => [DateInterval::createFromDateString('1 month'), 2419200];
+        yield '500 msec rounds up' => [DateInterval::createFromDateString('500 msec'), 1];
+    }
+
+    /** The same createFromDateString() value converts identically on PHP 8.1 and 8.2+. */
+    #[DataProvider('createdFromDateString')]
+    public function testCreateFromDateStringIntervalsUseTheirFieldsOnEveryPhpVersion(DateInterval $interval, int $seconds): void
+    {
+        self::assertSame($seconds, WorkflowDuration::seconds($interval, 'timer'));
+    }
+
+    public function testDiffIntervalsAreMeasuredByTheirFieldsOnEveryCarbonVersion(): void
+    {
+        $start = Carbon::parse('2024-01-01 00:00:00', 'UTC');
+        $end = Carbon::parse('2024-02-10 01:00:00', 'UTC');
+        // 1 month, 9 days and 1 hour with Carbon's 4-week month; not the 40-day calendar span.
+        $fields = 28 * 86400 + 9 * 86400 + 3600;
+
+        self::assertSame($fields, WorkflowDuration::seconds($start->diffAsCarbonInterval($end), 'timer'));
+        self::assertSame($fields, WorkflowDuration::seconds($start->toDateTimeImmutable()->diff($end->toDateTimeImmutable()), 'timer'));
+    }
+
+    public function testNumericStringsConvertLikeTheNumbersTheyCoercedToBefore(): void
+    {
+        foreach (['30' => 30, '1.5' => 2, ' 30' => 30, '30 ' => 30, '1e3' => 1000, '.5' => 1, '-5' => 0, '0' => 0] as $input => $seconds) {
+            self::assertSame($seconds, WorkflowDuration::seconds((string) $input, 'timer'), (string) $input);
+            self::assertSame((string) $input, WorkflowDuration::normalize((string) $input, 'option', 1), (string) $input);
+        }
+    }
+
     /**
      * @param callable(WorkflowContext): mixed $workflow
      * @return list<array<string, mixed>>
@@ -364,6 +415,13 @@ final class WorkflowDurationTest extends TestCase
     private static function withMicroseconds(DateInterval $interval, float $fraction): DateInterval
     {
         $interval->f = $fraction;
+
+        return $interval;
+    }
+
+    private static function withField(DateInterval $interval, string $field, int $value): DateInterval
+    {
+        $interval->{$field} = $value;
 
         return $interval;
     }

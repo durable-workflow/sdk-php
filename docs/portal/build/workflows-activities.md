@@ -71,21 +71,60 @@ $receipt = $context->activity('payments.capture', [$orderId], [
 
 The SDK converts each duration to whole seconds once, rounding up, so
 `'30 minutes'`, `1800`, `new DateInterval('PT30M')` and
-`CarbonInterval::minutes(30)` record identical history. Strings and intervals
-convert exactly as the embedded Laravel package's `timer()` and `await()` do,
-with `CarbonInterval::fromString()` and `totalSeconds`. Carbon uses fixed
-factors, not the calendar: a day is 24 hours, a week 7 days, a month 4 weeks
-and a year 12 months. The result never depends on the current date, time zone
-or daylight-saving changes.
+`CarbonInterval::minutes(30)` record identical history. Strings convert exactly
+as the embedded Laravel package's `timer()` and `await()` do, with
+`ceil(CarbonInterval::fromString($duration)->totalSeconds)`. Intervals are
+measured by their year, month, day, hour, minute, second and microsecond fields
+with `CarbonInterval::instance()->totalSeconds`.
 
-String units are `microseconds`/`µs`, `milliseconds`/`ms`, `seconds`/`s`,
-`minutes`/`m`, `hours`/`h`, `days`/`d`, `weeks`/`w`, `months`/`mo` and
-`years`/`y`, with singular and plural spellings. Unknown units, extra words,
-commas, negative values and ISO 8601 strings throw `InvalidArgumentException`
-naming the parameter and the accepted forms. Pass ISO 8601 durations as
-`new DateInterval('PT30M')`. A zero duration is valid for timers, condition
-waits and `wait_timeout_seconds`. Activity and child-workflow timeouts need at
-least one second.
+Carbon converts with its cascade factors, not the calendar: by default a day is
+24 hours, a week 7 days, a month 4 weeks and a year 12 months. The result does
+not depend on the current date, time zone, daylight-saving changes, PHP version
+or Carbon major version. Changing the factors with
+`CarbonInterval::setCascadeFactors()` changes the result, in the SDK and in the
+embedded package, so leave them at their defaults in worker processes.
+
+A `CarbonInterval` from `diff()` is measured by its fields too. For example, the
+interval from January 1 to February 10, 01:00 is 1 month, 9 days and 1 hour, so
+it converts to 37 days and 1 hour. On Carbon 3, the embedded package measures
+the 40-day span between the interval's dates instead. Pass
+`$start->diffInSeconds($end)` when you need the real span.
+
+These are the string units, matched case-insensitively:
+
+| Unit | Spellings |
+|---|---|
+| Microseconds | `microsecond`, `microseconds`, `micro`, `µs` |
+| Milliseconds | `millisecond`, `milliseconds`, `milli`, `ms` |
+| Seconds | `second`, `seconds`, `s` |
+| Minutes | `minute`, `minutes`, `m` |
+| Hours | `hour`, `hours`, `h` |
+| Days | `day`, `days`, `d` |
+| Weeks | `week`, `weeks`, `w` |
+| Months | `month`, `months`, `mo`, `mos` |
+| Quarters | `quarter`, `quarters` |
+| Years | `year`, `years`, `y`, `yr`, `yrs` |
+| Decades | `decade`, `decades` |
+| Centuries | `century`, `centuries` |
+| Millennia | `millennium`, `millennia` |
+
+Parts may be separated by spaces or `and`, such as `'1 hour and 30 minutes'`,
+and may use a decimal fraction, such as `'1.5 hours'`. A fraction of a month,
+quarter, year, decade, century or millennium is rejected, because Carbon would
+truncate it. Unknown units, extra words, commas, negative parts, parts with
+more than 15 digits before the decimal point, and ISO 8601 strings throw
+`InvalidArgumentException` naming the parameter and the accepted forms. Pass
+ISO 8601 durations as `new DateInterval('PT30M')`. Negative intervals and
+relative `DateInterval::createFromDateString()` values such as `'next weekday'`
+or `'last day of next month'` are rejected too.
+
+A numeric string such as `'30'` or `'1.5'` behaves as before string durations
+were accepted. Timers and condition timeouts round it up to whole seconds, with
+negative values becoming zero. Activity and child-workflow options pass it to
+the Server unchanged.
+
+A zero duration is valid for timers, condition waits and `wait_timeout_seconds`.
+Activity and child-workflow timeouts need at least one second.
 
 Keep a timer's duration stable across deployments. Changing `'30 minutes'` to
 `'31 minutes'` while a run is waiting on that timer raises `NonDeterministicWorkflow`

@@ -12,18 +12,25 @@ use Throwable;
 /**
  * Converts friendly workflow durations to the whole seconds recorded in history.
  *
- * Strings and intervals convert exactly like the embedded durable-workflow/workflow package's
- * `timer()` and `await()`: `(int) ceil(CarbonInterval::fromString($duration)->totalSeconds)` for a
- * string, and `(int) ceil($interval->totalSeconds)` for a CarbonInterval, with a plain DateInterval
- * first wrapped by `CarbonInterval::instance()`. Carbon applies fixed factors rather than a
- * calendar (a day is 24 hours, a week 7 days, a month 4 weeks and a year 12 months), so the result
- * depends only on the input, never on the current date or time zone.
+ * Duration strings convert exactly like the embedded durable-workflow/workflow package's `timer()`
+ * and `await()`: `(int) ceil(CarbonInterval::fromString($duration)->totalSeconds)`. Intervals are
+ * measured by their y/m/d/h/i/s/f fields with `CarbonInterval::instance()->totalSeconds`, which
+ * matches the embedded package for every interval that does not carry diff() start and end dates.
+ * Carbon applies its cascade factors rather than a calendar (by default a day is 24 hours, a week
+ * 7 days, a month 4 weeks and a year 12 months), so the result does not depend on the current date,
+ * time zone, PHP version or Carbon major version. Changing the factors globally with
+ * `CarbonInterval::setCascadeFactors()` changes the result, as it does in the embedded package.
  *
- * The SDK is stricter than the embedded package about what it accepts, so every accepted value
- * converts to the same seconds there and here: a string must consist only of Carbon duration parts
- * (optionally joined by "and"), parts may not be negative, ISO 8601 strings must be passed as a
- * DateInterval, and weekday or "last day of" `DateInterval::createFromDateString()` expressions are
- * rejected.
+ * Numeric strings such as "30" or "1.5" keep the behavior they had when these parameters were
+ * typed `int|float`: timers and condition timeouts round them up to whole seconds, and option
+ * values pass through unchanged.
+ *
+ * The SDK is stricter than the embedded package, so every accepted string converts to the same
+ * seconds there and here. A string must consist only of Carbon duration parts (optionally joined by
+ * "and"). Parts must not be negative, have more than 15 integer digits, or use a fraction with a
+ * calendar unit (months, quarters, years, decades, centuries, millennia), which Carbon truncates.
+ * ISO 8601 strings must be passed as a DateInterval. Intervals must not be negative or relative
+ * (weekday or "first/last day of" `DateInterval::createFromDateString()` expressions).
  *
  * @internal
  */
@@ -32,10 +39,18 @@ final class WorkflowDuration
     /** Carbon's own `CarbonInterval::fromString()` part grammar. */
     private const CARBON_PART = '/(-?\d+(?:\.\d+)?)\h*([^\d\h]*)/i';
 
+    /** Carbon `fromString()` units whose fractions Carbon silently truncates. */
+    private const CALENDAR_UNITS = [
+        'millennia', 'millennium', 'century', 'centuries', 'decade', 'decades', 'year', 'years', 'y', 'yr', 'yrs',
+        'quarter', 'quarters', 'month', 'months', 'mo', 'mos',
+    ];
+
+    /** Longest integer part of one string duration part; longer values could wrap inside Carbon. */
+    private const MAX_PART_DIGITS = 15;
+
     private const ACCEPTED_FORMS = 'Accepted forms: int or float seconds; a duration string such as "30 minutes", '
-        .'"1h 30m" or "1 hour and 30 minutes" (units: microseconds, milliseconds, seconds, minutes, hours, days, '
-        .'weeks, months, years); or a DateInterval or CarbonInterval such as new DateInterval(\'PT30M\') or '
-        .'CarbonInterval::minutes(30).';
+        .'"1h 30m" or "1 hour and 30 minutes"; or a DateInterval or CarbonInterval such as '
+        .'new DateInterval(\'PT30M\') or CarbonInterval::minutes(30).';
 
     /** Largest whole-second value that converts from a float without losing integer precision. */
     private const MAX_SECONDS = 9_007_199_254_740_992;
@@ -47,11 +62,17 @@ final class WorkflowDuration
     /**
      * Convert a duration string or interval to whole seconds, rounding up like integer and float seconds.
      *
+     * A numeric string converts like the int or float it coerced to before string durations were
+     * accepted: `max(0, (int) ceil((float) $duration))`.
+     *
      * @param string $parameter the parameter or option name reported in validation errors
      * @param int<0, 1> $minimum 0 where zero is a valid duration, 1 where at least one second is required
      */
     public static function seconds(string|DateInterval $duration, string $parameter, int $minimum = 0): int
     {
+        if (is_string($duration) && is_numeric($duration)) {
+            return max(0, (int) ceil((float) $duration));
+        }
         if (is_string($duration)) {
             return self::fromString($duration, $parameter, $minimum);
         }
@@ -60,13 +81,14 @@ final class WorkflowDuration
     }
 
     /**
-     * Convert a string or interval option value, leaving every other value for existing validation.
+     * Convert a duration string or interval option value. Numbers, numeric strings and every other
+     * value pass through unchanged to the option's existing validation.
      *
      * @param int<0, 1> $minimum
      */
     public static function normalize(mixed $value, string $parameter, int $minimum = 0): mixed
     {
-        if (is_string($value) || $value instanceof DateInterval) {
+        if ((is_string($value) && !is_numeric($value)) || $value instanceof DateInterval) {
             return self::seconds($value, $parameter, $minimum);
         }
 
@@ -96,6 +118,20 @@ final class WorkflowDuration
             || preg_match('/^(?:\s|\band\b)*$/iD', $residue) !== 1) {
             throw self::invalid($parameter, $duration, 'it is not a duration of numbers and units');
         }
+        preg_match_all(self::CARBON_PART, $definition, $parts, PREG_SET_ORDER);
+        foreach ($parts as [, $value, $unit]) {
+            [$integer, $fraction] = explode('.', $value.'.');
+            if (strlen(ltrim($integer, '0')) > self::MAX_PART_DIGITS) {
+                throw self::invalid($parameter, $duration, 'it is too large');
+            }
+            if (trim($fraction, '0') !== '' && in_array(strtolower($unit), self::CALENDAR_UNITS, true)) {
+                throw self::invalid(
+                    $parameter,
+                    $duration,
+                    "the {$unit} part must be a whole number; Carbon would truncate its fraction",
+                );
+            }
+        }
 
         try {
             $interval = CarbonInterval::fromString($definition);
@@ -109,29 +145,48 @@ final class WorkflowDuration
     /** @param int<0, 1> $minimum */
     private static function fromInterval(DateInterval $interval, string $parameter, int $minimum): int
     {
-        $properties = (array) $interval;
-        if (($properties['from_string'] ?? false) === true) {
-            // PHP 8.2+ keeps DateInterval::createFromDateString() input as text instead of fields.
-            // Parse that text with the string rules, which match what PHP 8.1 records as fields.
-            return self::fromString((string) ($properties['date_string'] ?? ''), $parameter, $minimum);
-        }
-        if (!empty($properties['have_special_relative'])
-            || !empty($properties['have_weekday_relative'])
-            || !empty($properties['first_last_day_of'])) {
+        if (self::isRelative($interval)) {
             throw self::invalid(
                 $parameter,
                 $interval,
                 'relative DateInterval::createFromDateString() expressions such as weekdays or "last day of" are not fixed durations',
             );
         }
+        // Read the fields on every PHP version. PHP 8.2+ still exposes them for createFromDateString()
+        // values, and measuring fields keeps diff() intervals identical on Carbon 2 and 3.
+        $fields = [$interval->y, $interval->m, $interval->d, $interval->h, $interval->i, $interval->s, $interval->f];
+        if ($interval->invert === 1 || min($fields) < 0) {
+            throw self::invalid($parameter, $interval, 'it is negative or has a negative part');
+        }
+        $plain = new DateInterval('PT0S');
+        [$plain->y, $plain->m, $plain->d, $plain->h, $plain->i, $plain->s, $plain->f] = $fields;
 
         try {
-            $total = ($interval instanceof CarbonInterval ? $interval : CarbonInterval::instance($interval))->totalSeconds;
+            $total = CarbonInterval::instance($plain)->totalSeconds;
         } catch (Throwable $error) {
-            throw self::invalid($parameter, $interval, 'Carbon could not measure it ('.$error->getMessage().')', $error);
+            throw self::invalid($parameter, $interval, 'Carbon could not measure it', $error);
         }
 
         return self::wholeSeconds($total, $parameter, $interval, $minimum);
+    }
+
+    private static function isRelative(DateInterval $interval): bool
+    {
+        $properties = (array) $interval;
+        if (!empty($properties['have_special_relative'])
+            || !empty($properties['have_weekday_relative'])
+            || !empty($properties['first_last_day_of'])) {
+            return true; // PHP 8.1 exposes the relative flags directly.
+        }
+        if (($properties['from_string'] ?? false) !== true) {
+            return false;
+        }
+        // PHP 8.2+ hides those flags for createFromDateString() values; parse the kept text with the
+        // same timelib parser to find them.
+        $relative = date_parse((string) ($properties['date_string'] ?? ''))['relative'] ?? [];
+
+        return isset($relative['weekday']) || isset($relative['weekdays'])
+            || !empty($relative['first_day_of_month']) || !empty($relative['last_day_of_month']);
     }
 
     /** @param int<0, 1> $minimum */
