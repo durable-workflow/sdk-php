@@ -6,6 +6,18 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A `waitCondition()` timeout now runs from the first time the wait opens
+  (#269). The Server wakes an open condition wait on any signal and records it
+  satisfied; when the predicate was still false the worker reopened the wait
+  with the full `timeout_seconds`, so each unrelated signal moved the deadline
+  forward (a 5-minute wait timed out after 422 s in one run). The worker now
+  reopens with the time remaining since the first `ConditionWaitOpened`,
+  rounded up to whole seconds and never below zero, matching embedded
+  `await($condition, $timeout)`. Histories whose reopens carry the full timeout
+  still replay. This needs no Server change.
+
 ## [3.9.1] - 2026-11-04
 
 ### Fixed

@@ -943,6 +943,101 @@ final class ReplayerTest extends TestCase
         self::assertSame($firstWorker->commands, $restartedWorker->commands);
     }
 
+    /**
+     * A false wake satisfies the Server's wait, so the worker reopens it. The
+     * reopen keeps the deadline of the first open (#269).
+     *
+     * @param list<array{string, string, array<string, mixed>}> $events
+     */
+    #[DataProvider('falseWakeDeadlines')]
+    public function testAReopenedConditionKeepsItsFirstOpeningDeadline(array $events, ?int $expectedTimeout, bool $completes): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): bool {
+            return $context->waitCondition(
+                static fn (): bool => $context->signals('approve') !== [],
+                key: 'approval',
+                timeout: '5 minutes',
+            );
+        };
+        $history = array_map(static fn (array $event): array => [
+            'event_type' => $event[0],
+            'recorded_at' => $event[1],
+            'payload' => isset($event[2]['arguments']) ? [...$event[2], 'arguments' => $codec->envelope($event[2]['arguments'])] : $event[2],
+        ], $events);
+
+        $commands = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers')->commands;
+
+        if ($completes) {
+            self::assertSame('complete_workflow', $commands[0]['type']);
+
+            return;
+        }
+        self::assertCount(1, $commands);
+        self::assertSame('open_condition_wait', $commands[0]['type']);
+        self::assertSame('approval', $commands[0]['condition_key']);
+        self::assertSame($expectedTimeout, $commands[0]['timeout_seconds']);
+    }
+
+    /** @return array<string, array{list<array{string, string, array<string, mixed>}>, ?int, bool}> */
+    public static function falseWakeDeadlines(): array
+    {
+        $opened = ['ConditionWaitOpened', '2026-11-04T02:36:05.295000+00:00', [
+            'sequence' => 4, 'condition_wait_id' => 'wait-1', 'condition_key' => 'approval', 'timeout_seconds' => 300,
+        ]];
+        $wrong = static fn (string $at): array => ['SignalReceived', $at, [
+            'workflow_sequence' => 4, 'signal_name' => 'reject', 'arguments' => ['another-proposal'],
+        ]];
+        $satisfied = ['ConditionWaitSatisfied', '2026-11-04T02:38:05.397000+00:00', [
+            'sequence' => 4, 'condition_wait_id' => 'wait-1', 'condition_key' => 'approval',
+        ]];
+        $reopened = static fn (int $timeout): array => ['ConditionWaitOpened', '2026-11-04T02:38:05.402000+00:00', [
+            'sequence' => 5, 'condition_wait_id' => 'wait-2', 'condition_key' => 'approval', 'timeout_seconds' => $timeout,
+        ]];
+
+        return [
+            // sample-app's run: a wrong decision 120.05 s in must leave 180 s, not reset to 300 s.
+            'first false wake' => [[$opened, $wrong('2026-11-04T02:38:05.345000+00:00')], 180, false],
+            // A later false wake still measures from the first open, whether the
+            // recorded reopen carried the full timeout (before #269) or the rest.
+            'second false wake after a full-timeout reopen' => [[
+                $opened, $wrong('2026-11-04T02:38:05.345000+00:00'), $satisfied, $reopened(300),
+                $wrong('2026-11-04T02:40:05.000000+00:00'),
+            ], 61, false],
+            'second false wake after a remaining-time reopen' => [[
+                $opened, $wrong('2026-11-04T02:38:05.345000+00:00'), $satisfied, $reopened(180),
+                $wrong('2026-11-04T02:40:05.000000+00:00'),
+            ], 61, false],
+            // The deadline passed before the Server fired the timer: the reopen times out at once.
+            'false wake after the deadline' => [[$opened, $wrong('2026-11-04T02:41:06.000000+00:00')], 0, false],
+            'a true wake after a remaining-time reopen completes' => [[
+                $opened, $wrong('2026-11-04T02:38:05.345000+00:00'), $satisfied, $reopened(180),
+                ['SignalReceived', '2026-11-04T02:39:00.000000+00:00', [
+                    'workflow_sequence' => 5, 'signal_name' => 'approve', 'arguments' => ['proposal-1'],
+                ]],
+            ], null, true],
+        ];
+    }
+
+    public function testAReopenLongerThanTheAuthoredTimeoutIsNotTheSameWait(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static fn (WorkflowContext $context): bool => $context->waitCondition(
+            static fn (): bool => $context->signals('approve') !== [],
+            key: 'approval',
+            timeout: 300,
+        );
+        $history = [
+            ['event_type' => 'ConditionWaitOpened', 'payload' => ['sequence' => 4, 'condition_wait_id' => 'wait-1', 'condition_key' => 'approval', 'timeout_seconds' => 300]],
+            ['event_type' => 'ConditionWaitSatisfied', 'payload' => ['sequence' => 4, 'condition_wait_id' => 'wait-1', 'condition_key' => 'approval']],
+            ['event_type' => 'ConditionWaitOpened', 'payload' => ['sequence' => 5, 'condition_wait_id' => 'wait-2', 'condition_key' => 'approval', 'timeout_seconds' => 301]],
+        ];
+
+        $this->expectException(NonDeterministicWorkflow::class);
+
+        (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+    }
+
     public function testRepeatedPhysicalOpensReplayAsOneLogicalCondition(): void
     {
         $codec = new AvroPayloadCodec();
