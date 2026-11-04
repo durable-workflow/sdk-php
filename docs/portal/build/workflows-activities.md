@@ -78,11 +78,26 @@ measured by their year, month, day, hour, minute, second and microsecond fields
 with `CarbonInterval::instance()->totalSeconds`.
 
 Carbon converts with its cascade factors, not the calendar: by default a day is
-24 hours, a week 7 days, a month 4 weeks and a year 12 months. The result does
-not depend on the current date, time zone, daylight-saving changes, PHP version
-or Carbon major version. Changing the factors with
+24 hours, a week 7 days, a month 4 weeks and a year 12 months. Those factors do
+not depend on the current date, time zone or daylight-saving changes. Changing
+the factors with
 `CarbonInterval::setCascadeFactors()` changes the result, in the SDK and in the
 embedded package, so leave them at their defaults in worker processes.
+
+Conversion retains the installed Carbon major's floating-point behavior. Very
+large accepted durations with millisecond or microsecond parts can produce
+different whole-second results across Carbon majors. For example,
+`'5555555555555 seconds 32037 milliseconds'` converts to `5555555555588`
+seconds on Carbon 2 and `5555555555556` on Carbon 3. Each matches the embedded
+package on that same Carbon major.
+
+Regression samples span base durations from 10 billion seconds through the
+reported value above, with cases around 100 billion and one trillion seconds.
+These sample points do not establish a universal precision bound. Even a
+one-microsecond part can disappear before
+rounding at large magnitudes. Keep the Carbon major consistent when workers
+replay runs using such duration strings; explicit integer seconds avoid this
+string-conversion difference.
 
 A `CarbonInterval` from `diff()` is measured by its fields too. For example, the
 interval from January 1 to February 10, 01:00 is 1 month, 9 days and 1 hour, so

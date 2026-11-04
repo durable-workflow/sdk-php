@@ -170,7 +170,16 @@ restarting a `waitCondition()` timeout (#269).
       interval therefore uses its fields (a 4-week month), not its real date
       span.
     - Carbon's default cascade factors make the result independent of the
-      current date, time zone, PHP version and Carbon major version.
+      current date and time zone.
+    - **Correction (#265):** the original notes also claimed independence
+      from PHP and Carbon major versions. Very large durations containing
+      millisecond or microsecond parts retain the installed Carbon major's
+      floating-point behavior. For example,
+      `'5555555555555 seconds 32037 milliseconds'` converts to
+      `5555555555588` seconds on Carbon 2 and `5555555555556` on Carbon 3.
+      SDK/embedded parity on each major is preserved. The regression sample
+      points do not establish a universal precision bound, and no conversion
+      behavior changes with this documentation correction.
   - **Stricter than the embedded package.** These throw
     `InvalidArgumentException` naming the parameter and the accepted forms:
     - unknown units, extra words or commas;
