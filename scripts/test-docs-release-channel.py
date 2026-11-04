@@ -14,6 +14,7 @@ from pathlib import Path
 
 GUARD = Path(__file__).with_name("check-docs-release-channel.py").resolve()
 PREPARE = Path(__file__).with_name("prepare-docs-tooling.py").resolve()
+BIND = Path(__file__).with_name("bind-docs-artifact.py").resolve()
 
 
 class DocumentationChannelTest(unittest.TestCase):
@@ -127,6 +128,26 @@ class DocumentationChannelTest(unittest.TestCase):
                 )
                 self.assertNotEqual(0, result.returncode)
                 self.assertEqual(self.published, self.git("rev-parse", "HEAD"))
+
+    def test_artifact_audit_uses_exact_selected_source(self) -> None:
+        for source in [self.published, self.changed("docs/index.md")]:
+            with self.subTest(source=source):
+                self.git("checkout", "--detach", source)
+                (self.root / "build/site").mkdir(parents=True, exist_ok=True)
+                result = subprocess.run([sys.executable, str(BIND), source], cwd=self.root, env=self.environment, capture_output=True)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual({"schema": "durable-workflow.sdk-php.docs-deployment/v1", "source_revision": source},
+                                 json.loads((self.root / "build/site/deployment-audit.json").read_text()))
+
+    def test_artifact_refuses_wrong_identity_and_modified_selected_source(self) -> None:
+        (self.root / "build/site").mkdir(parents=True)
+        for expected, dirty in [("main", False), ("a" * 40, False), (self.published, True)]:
+            with self.subTest(expected=expected, dirty=dirty):
+                if dirty:
+                    self.write("docs/index.md", "uncommitted documentation")
+                result = subprocess.run([sys.executable, str(BIND), expected], cwd=self.root, env=self.environment, capture_output=True)
+                self.assertNotEqual(0, result.returncode)
+                self.assertFalse((self.root / "build/site/deployment-audit.json").exists())
 
     def testDocumentationOnlyMainChangesRemainStable(self) -> None:
         self.changed("docs/index.md")

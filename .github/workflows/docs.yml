@@ -38,7 +38,6 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       DOCS_SOURCE_DIRECTORY: ${{ github.workspace }}
-      DOCS_TOOLING_DIRECTORY: ${{ runner.temp }}/docs-tooling
     outputs:
       stable: ${{ steps.release-channel.outputs.stable }}
     steps:
@@ -75,6 +74,8 @@ jobs:
           php-version: '8.3'
           tools: composer:2.10.3
           coverage: none
+      - name: Select the temporary tooling directory
+        run: echo "DOCS_TOOLING_DIRECTORY=$RUNNER_TEMP/docs-tooling" >> "$GITHUB_ENV"
       - name: Prepare the exact workflow tooling separately
         env:
           DOCS_WORKFLOW_REVISION: ${{ github.workflow_sha }}
@@ -143,16 +144,8 @@ jobs:
         env:
           EXPECTED_SOURCE_REVISION: ${{ steps.release-channel.outputs.source_revision }}
         run: |
-          SOURCE_REVISION=$(git rev-parse HEAD)
-          test "$SOURCE_REVISION" = "$EXPECTED_SOURCE_REVISION"
-          git diff --exit-code HEAD
           test "$(git -C "$DOCS_TOOLING_DIRECTORY" rev-parse HEAD)" = "$GITHUB_WORKFLOW_SHA"
-          if ! printf '%s' "$SOURCE_REVISION" | grep -Eq '^[a-f0-9]{40}$'; then
-            echo 'SOURCE_REVISION must be an exact lowercase commit SHA' >&2
-            exit 1
-          fi
-          printf '{"schema":"durable-workflow.sdk-php.docs-deployment/v1","source_revision":"%s"}\n' \
-            "$SOURCE_REVISION" > build/site/deployment-audit.json
+          python "$DOCS_TOOLING_DIRECTORY/scripts/bind-docs-artifact.py" "$EXPECTED_SOURCE_REVISION"
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5
         if: github.server_url == 'https://github.com'
         with:

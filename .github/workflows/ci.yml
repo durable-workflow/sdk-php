@@ -537,7 +537,6 @@ jobs:
         source: [current, '3.9.4', '6a821568db5c72983bd3990fe27c7990f092db12']
     env:
       DOCS_SOURCE_DIRECTORY: ${{ github.workspace }}
-      DOCS_TOOLING_DIRECTORY: ${{ runner.temp }}/docs-tooling
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
@@ -546,6 +545,8 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: '3.12'
+      - name: Select the temporary tooling directory
+        run: echo "DOCS_TOOLING_DIRECTORY=$RUNNER_TEMP/docs-tooling" >> "$GITHUB_ENV"
       - name: Prepare exact current tooling against the selected source
         env:
           DOCS_WORKFLOW_REVISION: ${{ github.sha }}
@@ -610,6 +611,7 @@ jobs:
           git diff --exit-code HEAD
           test "$(git rev-parse HEAD)" = "$(git rev-parse '${{ matrix.source == 'current' && github.sha || matrix.source }}^{commit}')"
           test "$(git -C "$DOCS_TOOLING_DIRECTORY" rev-parse HEAD)" = "$GITHUB_SHA"
+          python "$DOCS_TOOLING_DIRECTORY/scripts/bind-docs-artifact.py" "$(git rev-parse '${{ matrix.source == 'current' && github.sha || matrix.source }}^{commit}')"
   package-smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

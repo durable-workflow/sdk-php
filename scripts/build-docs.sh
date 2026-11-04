@@ -12,7 +12,7 @@ php "$tooling_directory/scripts/finalize-api-reference.php" build/api
 "$tooling_directory/node_modules/.bin/eleventy" --config="$tooling_directory/.eleventy.cjs"
 
 # Substitute only the generated runtime; keep the selected checkout unchanged.
-if [ "${DOCS_REQUIRE_ANALYTICS_TOKEN:-}" = true ]; then
+if [[ "${DOCS_REQUIRE_ANALYTICS_TOKEN:-}" = true ]]; then
   if [[ ! "${CLOUDFLARE_WEB_ANALYTICS_TOKEN:-}" =~ ^[a-f0-9]{32}$ ]]; then
     echo 'CLOUDFLARE_WEB_ANALYTICS_TOKEN must be the canonical 32-character site token' >&2
     exit 1

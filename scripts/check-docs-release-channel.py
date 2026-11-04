@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 
-STABLE_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+STABLE_VERSION = re.compile(r"\d+\.\d+\.\d+", re.ASCII)
 SOURCE_REVISION = re.compile(r"[0-9a-f]{40}")
 SDK_PATHS = ("src", "examples", "resources", "config")
 AUTOMATIC_PATHS = SDK_PATHS + ("composer.lock", "package.json", "package-lock.json")
