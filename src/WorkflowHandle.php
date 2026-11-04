@@ -6,6 +6,7 @@ namespace DurableWorkflow;
 
 use DurableWorkflow\Model\WorkflowExecution;
 use DurableWorkflow\Model\WorkflowRun;
+use InvalidArgumentException;
 use LogicException;
 
 /** Operations bound to one stable workflow ID and, optionally, its originally selected run. */
@@ -17,6 +18,12 @@ final class WorkflowHandle implements WorkflowHandleInterface
         public readonly ?string $selectedRunId = null,
         public readonly string $workflowType = '',
     ) {
+        if ($workflowId === '') {
+            throw new InvalidArgumentException('Workflow ID cannot be empty.');
+        }
+        if ($selectedRunId === '') {
+            throw new InvalidArgumentException('Selected run ID cannot be empty. Pass null to follow the current run.');
+        }
     }
 
     public function describe(): WorkflowExecution

@@ -8,6 +8,17 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- An empty workflow ID now fails when the handle is created (#252). Before,
+  `workflowHandle('')`, and the Laravel bridge's `handle(Workflow::class, '')`,
+  returned a handle whose calls built routes such as `GET /api/workflows/`,
+  and Server 3 answered `rust_capability_not_implemented`, which read like a
+  missing server feature. `WorkflowHandle` and the test fake's handle now throw
+  `InvalidArgumentException` for an empty workflow ID or an empty selected run
+  ID (pass `null` to follow the current run). Every `Client` call also refuses
+  an empty identifier in its request path before sending anything.
+
+### Fixed
+
 - Friendly durations whose calendar total wraps inside Carbon are now rejected
   (#257). In 3.9.0, a 12–15 digit part such as `'635428518853 years'` or
   `'213503982334602 days'` overflowed Carbon's integer arithmetic. It was
