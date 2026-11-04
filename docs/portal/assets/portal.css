@@ -37,6 +37,8 @@ img, svg { max-width: 100%; }
 .skip-link { background: var(--mint); color: var(--mint-ink); left: 1rem; padding: .65rem 1rem; position: fixed; top: -5rem; z-index: 1000; }
 .skip-link:focus { top: 1rem; }
 
+main :is(h1, h2, h3, h4, h5, h6)[id] { scroll-margin-top: 96px; }
+
 .site-header { backdrop-filter: blur(18px); background: rgb(11 17 24 / 82%); border-bottom: 1px solid rgb(255 255 255 / 8%); position: sticky; top: 0; z-index: 100; }
 .header-inner { align-items: center; display: flex; gap: 2rem; justify-content: space-between; margin: 0 auto; max-width: var(--content); min-height: 72px; padding: 0 24px; }
 .brand { align-items: center; display: inline-flex; gap: .7rem; text-decoration: none; white-space: nowrap; }

@@ -129,7 +129,7 @@ The SDK can be installed while v1 remains present and draining.
 1. Install the service-mode channel and publish configuration:
 
    ```bash
-   composer require 'durable-workflow/sdk:^2.0'
+   {{ release.composerCommand }}
    php artisan vendor:publish --tag=durable-workflow-config
    ```
 
@@ -151,7 +151,22 @@ The SDK can be installed while v1 remains present and draining.
      php artisan config:cache
    ```
 
-4. Start the worker with only its worker credential. Start one canary through
+4. Confirm the worker's PHP has `ext-pcntl`. The Artisan worker refuses to
+   start without it, so `SIGINT` and `SIGTERM` always drain the worker cleanly.
+   Composer only suggests the extension, and the official `php:*-cli` and
+   `composer` images do not include it. Run this with the same PHP binary or
+   image that runs the worker:
+
+   ```bash
+   php -r 'exit(function_exists("pcntl_async_signals") && function_exists("pcntl_signal") ? 0 : 1);' \
+     && echo 'pcntl ready'
+   ```
+
+   In a `php:*-cli` based image, add it with `docker-php-ext-install pcntl`. If
+   the extension is loaded but the check fails, remove the `pcntl_*` functions
+   from `disable_functions` for the worker's PHP configuration.
+
+5. Start the worker with only its worker credential. Start one canary through
    the injected application client with only its client credential:
 
    ```bash
@@ -164,7 +179,7 @@ The SDK can be installed while v1 remains present and draining.
      php artisan app:start-greeting greeting-canary Ada
    ```
 
-5. Drain v1 or maintain an explicit ID-to-runtime routing table. Switch starts,
+6. Drain v1 or maintain an explicit ID-to-runtime routing table. Switch starts,
    signals, queries, and updates together; then inspect the service-mode result.
 
 Existing v1 history remains in the Laravel database. Reusing a type name or
@@ -504,7 +519,8 @@ resource limits, request-context controls and a separately supervised Artisan
 worker. The recipe records its runtime/tool images and qualification outcomes.
 
 HTTP workers submit and inspect workflows. Run `durable-workflow:worker` in its
-own process; Server or Cloud owns durable state, timers and task leases. Keep
+own process with `ext-pcntl` loaded; Server or Cloud owns durable state, timers
+and task leases. The HTTP processes do not need `ext-pcntl`. Keep
 each process's endpoint, namespace and credential authority fixed, and pass
 client and worker credentials only to their respective roles outside cached
 configuration. The CLI worker's history cache retains history and still replays
