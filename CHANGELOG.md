@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `open_condition_wait` commands carry `condition_wait_occurrence_id`
+  (protocol 1.17), `php:condition-wait:N` for the Nth `waitCondition()` or
+  `deferCondition()` call in the run (#269). Every replay and every physical
+  reopen of one call sends the same id, so the Server can recognize a repeated
+  open of a wait that is still open instead of recording a second one.
+
 ## [3.9.2] - 2026-11-04
 
 ### Changed
