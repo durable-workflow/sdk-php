@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.9.2] - 2026-11-04
+
 ### Changed
 
 - `WorkflowHandleInterface` documents the `workflowId` and `selectedRunId`
