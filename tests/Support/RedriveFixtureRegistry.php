@@ -24,7 +24,7 @@ final class RedriveFixtureRegistry
      */
     public const SUCCESSORS = [
         'redrive-reused-upserts-clock' => ['MemoUpserted', 'SearchAttributesUpserted'],
-        'redrive-reused-upserts-cancellation-clock' => ['MemoUpserted', 'SearchAttributesUpserted'],
+        'redrive-successor-reused-upserts-cancellation-clock' => ['MemoUpserted', 'SearchAttributesUpserted'],
         'redrive-reused-signal-wait-clock' => ['SignalWaitOpened', 'SignalReceived', 'SignalApplied'],
         'redrive-reused-search-attributes-changed' => ['MemoUpserted', 'SearchAttributesUpserted'],
         'redrive-reused-search-attributes-missing' => ['MemoUpserted', 'SearchAttributesUpserted'],
@@ -62,6 +62,15 @@ final class RedriveFixtureRegistry
             'sha256' => 'c353e90d99bea68e73cf4b22e720d81aae1e37e7a58a797d3eed3786e4ca5b9d',
             'replacement' => 'redrive-successor-reused-timer',
         ],
+        // #250: Core's WorkflowStub writes command_type and
+        // workflow_instance_id on every request, and its delivery carries
+        // the request's context. This history has neither.
+        'redrive-reused-upserts-cancellation-clock' => [
+            'prefix' => ['MemoUpserted', 'SearchAttributesUpserted'],
+            'violation' => 'the cancellation request command_type must be request_cancellation',
+            'sha256' => '4de4433d2c3ce2ed24ef0cb82ad5d633817c162a560ea17aecff1dbfcc41391c',
+            'replacement' => 'redrive-successor-reused-upserts-cancellation-clock',
+        ],
     ];
 
     /**
@@ -79,9 +88,27 @@ final class RedriveFixtureRegistry
         return dirname(__DIR__).'/fixtures/replay-regressions';
     }
 
+    /**
+     * Successor histories that replay exactly like a corpus fixture but add the
+     * fields Core writes and replay ignores. The replay corpus would count them
+     * as semantic duplicates, so they live outside it.
+     */
+    public static function successorShapeDirectory(): string
+    {
+        return dirname(__DIR__).'/fixtures/redrive-successors';
+    }
+
+    /** @return list<string> */
+    public static function directories(): array
+    {
+        return [self::directory(), self::successorShapeDirectory()];
+    }
+
     public static function path(string $name): string
     {
-        return self::directory()."/{$name}.json";
+        $shape = self::successorShapeDirectory()."/{$name}.json";
+
+        return is_file($shape) ? $shape : self::directory()."/{$name}.json";
     }
 
     /** @return array<string, mixed> */

@@ -47,6 +47,21 @@ final class RedriveSuccessorHistory
         'ConditionWaitSatisfied' => ['condition_wait', 'condition_wait_id'],
     ];
 
+    /** Core FailedRunRedrivePlan::isPlainTimer: redrive copies only plain timers. */
+    private const NON_PLAIN_TIMER_KEYS = [
+        'timer_kind', 'cancellation_cleanup', 'cancellation_scope_id', 'parallel_group_id', 'condition_wait_id', 'signal_wait_id',
+    ];
+
+    /** Core CooperativeCancellationDelivery::RESOLUTION_TYPES for the call kinds these fixtures use. */
+    private const RESOLUTIONS = [
+        'ActivityCompleted', 'ActivityFailed', 'ActivityCancelled', 'ActivityTimedOut', 'TimerFired', 'TimerCancelled',
+        'ConditionWaitSatisfied', 'ConditionWaitTimedOut', 'SignalApplied', 'ChildRunCompleted', 'ChildRunFailed',
+        'ChildRunCancelled', 'ChildRunTerminated', 'ServiceCallCompleted', 'ServiceCallFailed', 'ServiceCallCancelled',
+    ];
+
+    /** Core CooperativeCancellationDelivery::CALL_SHAPES; parallel and selection deliveries are not covered here. */
+    private const CALL_KINDS = ['activity', 'local_activity', 'timer', 'condition', 'signal', 'child', 'service_operation'];
+
     /**
      * @param array<string, mixed> $fixture a replay-regression fixture with history, workflow and workflow_tasks
      * @param list<string> $reusedEventTypes the reused prefix, in order, exactly as redrive copies it
@@ -108,6 +123,8 @@ final class RedriveSuccessorHistory
         $stepOwner = null;
         $previousAt = $startedAt;
         $prefixLength = count($reusedEventTypes);
+        $requests = [];
+        $deliveries = [];
         foreach (array_slice($history, 1) as $offset => $event) {
             $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
             $type = (string) ($event['event_type'] ?? '');
@@ -139,6 +156,11 @@ final class RedriveSuccessorHistory
                     foreach (self::REUSE_KEYS as $key) {
                         if (array_key_exists($key, $payload)) {
                             return "copied TimerScheduled must not carry {$key}";
+                        }
+                    }
+                    foreach (self::NON_PLAIN_TIMER_KEYS as $key) {
+                        if (($payload[$key] ?? null) !== null) {
+                            return "copied TimerScheduled must be a plain timer, without {$key}";
                         }
                     }
                 } else {
@@ -212,6 +234,11 @@ final class RedriveSuccessorHistory
             if (is_int($payload['sequence'] ?? null) && $payload['sequence'] <= $lastReusedStep) {
                 return "successor {$type} must not reuse a reused step sequence";
             }
+            if ($type === 'CooperativeCancellationRequested') {
+                $requests[] = $offset + 1;
+            } elseif ($type === 'CooperativeCancellationDelivered') {
+                $deliveries[] = $offset + 1;
+            }
         }
         if (count($history) - 1 < $prefixLength) {
             return 'history ends before the expected reused prefix';
@@ -225,8 +252,206 @@ final class RedriveSuccessorHistory
         if (($start['resume_step_sequence'] ?? null) !== $lastReusedStep + 1) {
             return 'resume_step_sequence must be the last reused workflow step + 1 ('.($lastReusedStep + 1).')';
         }
+        if ($requests !== [] || $deliveries !== []) {
+            return self::cancellationViolation($history, $requests, $deliveries, $startedAt);
+        }
 
         return null;
+    }
+
+    /**
+     * The successor's own cancellation, as Core 28893f97 writes it: one
+     * WorkflowStub request, then one CooperativeCancellationDelivery record
+     * carrying the same context, delivered to a call boundary that
+     * CooperativeCancellationDelivery::validateCallBoundary() accepts.
+     *
+     * @param list<array<string, mixed>> $history
+     * @param list<int> $requests history indexes
+     * @param list<int> $deliveries history indexes
+     */
+    private static function cancellationViolation(
+        array $history,
+        array $requests,
+        array $deliveries,
+        DateTimeImmutable $startedAt,
+    ): ?string {
+        if (count($requests) !== 1 || count($deliveries) !== 1) {
+            return 'a successor cancellation is exactly one request and one delivery';
+        }
+        [$requestIndex, $deliveryIndex] = [$requests[0], $deliveries[0]];
+        if ($deliveryIndex < $requestIndex) {
+            return 'the cancellation delivery must follow its request';
+        }
+        $request = $history[$requestIndex]['payload'];
+        $delivery = $history[$deliveryIndex]['payload'];
+        $command = $request['workflow_command_id'] ?? null;
+        if (!self::nonBlank($command)) {
+            return 'the cancellation request must carry a non-blank workflow_command_id';
+        }
+        if (($request['command_type'] ?? null) !== 'request_cancellation') {
+            return 'the cancellation request command_type must be request_cancellation';
+        }
+        if (($delivery['workflow_command_id'] ?? null) !== $command) {
+            return 'the cancellation delivery must name its request workflow_command_id';
+        }
+        $context = $request['cancellation'] ?? null;
+        if (!is_array($context) || $context === []) {
+            return 'the cancellation request must carry its cancellation context';
+        }
+        if (($delivery['cancellation'] ?? null) !== $context) {
+            return "the cancellation delivery must carry its request's cancellation context";
+        }
+        $contextViolation = self::contextViolation($context, $command);
+        if ($contextViolation !== null) {
+            return $contextViolation;
+        }
+        $requestedAt = self::time($context['requested_at']);
+        $requestRecordedAt = self::time($history[$requestIndex]['recorded_at'] ?? null);
+        if ($requestedAt === null || $requestRecordedAt === null || $requestedAt < $startedAt || $requestedAt > $requestRecordedAt) {
+            return 'cancellation requested_at must fall between the successor start and the request record';
+        }
+        if (($request['cleanup_deadline_at'] ?? null) !== $context['cleanup_deadline_at']) {
+            return "the cancellation request cleanup_deadline_at must be its context's";
+        }
+
+        return self::deliveryStepViolation($history, $requestIndex, $deliveryIndex, $delivery);
+    }
+
+    /**
+     * Core CancellationContext::fromArray() identity rules for a v1 context.
+     *
+     * @param array<mixed> $context
+     */
+    private static function contextViolation(array $context, string $command): ?string
+    {
+        if (($context['schema'] ?? null) !== 'durable-workflow.cancellation-context/v1') {
+            return 'cancellation schema must be durable-workflow.cancellation-context/v1';
+        }
+        foreach (['request_id', 'root_request_id', 'root_workflow_instance_id', 'root_workflow_run_id', 'source'] as $field) {
+            if (!self::nonBlank($context[$field] ?? null)) {
+                return "cancellation {$field} must be a non-blank string";
+            }
+        }
+        if ($context['request_id'] !== $command) {
+            return 'cancellation request_id must be the request workflow_command_id';
+        }
+        $requester = $context['requester'] ?? null;
+        if (!is_array($requester) || $requester === [] || array_is_list($requester)) {
+            return 'cancellation requester must identify its caller';
+        }
+        foreach ($requester as $key => $value) {
+            if (!in_array($key, ['type', 'id', 'label'], true) || !is_string($value) || $value === '') {
+                return 'cancellation requester may carry only non-empty type, id and label';
+            }
+        }
+        $lineage = $context['lineage'] ?? null;
+        if (!is_array($lineage) || $lineage === [] || !array_is_list($lineage)) {
+            return 'cancellation lineage must contain the root request';
+        }
+        foreach ($lineage as $entry) {
+            if (!is_array($entry) || !self::nonBlank($entry['request_id'] ?? null)
+                || !self::nonBlank($entry['workflow_instance_id'] ?? null) || !self::nonBlank($entry['workflow_run_id'] ?? null)) {
+                return 'cancellation lineage entries must name a request, instance and run';
+            }
+        }
+        $last = count($lineage) - 1;
+        if (count(array_unique(array_column($lineage, 'request_id'))) !== count($lineage)
+            || count(array_unique(array_column($lineage, 'workflow_run_id'))) !== count($lineage)) {
+            return 'cancellation lineage must not repeat a request or run';
+        }
+        if ([$lineage[0]['request_id'], $lineage[0]['workflow_instance_id'], $lineage[0]['workflow_run_id']]
+            !== [$context['root_request_id'], $context['root_workflow_instance_id'], $context['root_workflow_run_id']]) {
+            return 'cancellation lineage must start at the root request';
+        }
+        if ($lineage[$last]['request_id'] !== $context['request_id']) {
+            return 'cancellation lineage must end at this request';
+        }
+        $parent = $context['parent_request_id'] ?? null;
+        if ($parent !== ($last === 0 ? null : $lineage[$last - 1]['request_id'])) {
+            return 'cancellation parent_request_id must be the previous lineage request, or null for a root request';
+        }
+        $requestedAt = self::time($context['requested_at'] ?? null);
+        $deadline = self::time($context['cleanup_deadline_at'] ?? null);
+        if ($requestedAt === null || $deadline === null || $deadline <= $requestedAt) {
+            return 'cancellation cleanup_deadline_at must be a valid time after requested_at';
+        }
+
+        return null;
+    }
+
+    /**
+     * Core CooperativeCancellationDelivery::validateCallBoundary() for a
+     * single call: the step is a recorded call of the delivered kind that
+     * was not resolved before the request, or the next unrecorded step,
+     * which nothing may record after the delivery.
+     *
+     * @param list<array<string, mixed>> $history
+     * @param array<mixed> $delivery
+     */
+    private static function deliveryStepViolation(array $history, int $requestIndex, int $deliveryIndex, array $delivery): ?string
+    {
+        $step = $delivery['sequence'] ?? null;
+        $callKind = $delivery['call_kind'] ?? null;
+        if (!is_int($step) || $step < 1) {
+            return 'the cancellation delivery must name a positive workflow step';
+        }
+        if (!in_array($callKind, self::CALL_KINDS, true)) {
+            return 'the cancellation delivery call_kind must be a single-call kind';
+        }
+        $recordedKind = null;
+        $nextStep = 1;
+        foreach (array_slice($history, 0, $deliveryIndex) as $index => $event) {
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $sequence = $payload['sequence'] ?? null;
+            if (!is_int($sequence)) {
+                continue;
+            }
+            $nextStep = max($nextStep, $sequence + 1);
+            if ($sequence !== $step) {
+                continue;
+            }
+            $recordedKind ??= self::callKind((string) ($event['event_type'] ?? ''), $payload);
+            if ($index < $requestIndex && in_array($event['event_type'] ?? null, self::RESOLUTIONS, true)) {
+                return "the cancellation delivery targets step {$step}, which resolved before the request";
+            }
+        }
+        if ($step > $nextStep) {
+            return "the cancellation delivery targets step {$step}, after the next step {$nextStep}";
+        }
+        if ($step < $nextStep && $recordedKind !== $callKind) {
+            return "the cancellation delivery call_kind must match the call recorded at step {$step}";
+        }
+        if ($step === $nextStep) {
+            foreach (array_slice($history, $deliveryIndex + 1) as $event) {
+                if (($event['payload']['sequence'] ?? null) === $step) {
+                    return "step {$step} must not be recorded after a cancellation delivered before it was scheduled";
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Core CooperativeCancellationDelivery::callKindAt() for one event.
+     *
+     * @param array<mixed> $payload
+     */
+    private static function callKind(string $type, array $payload): ?string
+    {
+        return match ($type) {
+            'ActivityScheduled' => ($payload['local_activity'] ?? false) === true ? 'local_activity' : 'activity',
+            'ConditionWaitOpened' => 'condition',
+            'SignalWaitOpened' => 'signal',
+            'ChildWorkflowScheduled' => 'child',
+            'ServiceOperationScheduled', 'ServiceCallStarted' => 'service_operation',
+            'TimerScheduled' => match ($payload['timer_kind'] ?? null) {
+                'condition_timeout' => 'condition',
+                'signal_timeout' => 'signal',
+                default => 'timer',
+            },
+            default => null,
+        };
     }
 
     private static function nonBlank(mixed $value): bool
