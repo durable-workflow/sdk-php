@@ -33,15 +33,6 @@ function filesUnder(directory, extension) {
   });
 }
 
-const elementIdCache = new Map();
-function elementIds(file) {
-  if (!elementIdCache.has(file)) {
-    const html = fs.readFileSync(file, 'utf8');
-    elementIdCache.set(file, new Set([...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1])));
-  }
-  return elementIdCache.get(file);
-}
-
 function outputPath(url) {
   const pathname = new URL(url, 'https://php.durable-workflow.com').pathname;
   if (pathname.endsWith('/')) return path.join(siteDirectory, pathname, 'index.html');
@@ -75,6 +66,13 @@ assert(
 );
 
 const htmlFiles = filesUnder(siteDirectory, '.html');
+// Ids are indexed from the enumerated pages, so fragment checks look up link
+// targets without reading a path taken from page content.
+const pageIds = new Map(htmlFiles.map((file) => [
+  file,
+  new Set([...fs.readFileSync(file, 'utf8').matchAll(/\sid="([^"]+)"/g)].map((match) => match[1])),
+]));
+const elementIds = (file) => pageIds.get(file) ?? new Set();
 for (const file of htmlFiles) {
   const html = fs.readFileSync(file, 'utf8');
   const relative = path.relative(siteDirectory, file).replaceAll(path.sep, '/');
