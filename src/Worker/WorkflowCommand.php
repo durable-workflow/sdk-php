@@ -217,6 +217,27 @@ final class WorkflowCommand
         return ($this->conditionPredicate)() === true;
     }
 
+    /** @internal V1 remains strict even when a new command would write v2. */
+    public function conditionDefinitionMatches(string $recorded): bool
+    {
+        return $recorded === ($this->attributes['condition_definition_fingerprint'] ?? null)
+            || ($this->conditionPredicate !== null
+                && preg_match('/\Asha256:[a-f0-9]{64}\z/', $recorded) === 1
+                && ConditionWaitDefinition::legacyFingerprint($this->conditionPredicate) === $recorded);
+    }
+
+    /** @internal A physical reopen keeps its logical wait's first fingerprint, including absence. */
+    public function withRecordedConditionDefinition(?string $fingerprint): self
+    {
+        $attributes = $this->attributes;
+        unset($attributes['condition_definition_fingerprint']);
+        if ($fingerprint !== null) {
+            $attributes['condition_definition_fingerprint'] = $fingerprint;
+        }
+
+        return $this->copyWithAttributes($attributes);
+    }
+
     /**
      * @param list<mixed> $arguments
      * @param array<string, mixed> $options
@@ -689,10 +710,16 @@ final class WorkflowCommand
     /** @param array<string, mixed> $attributes */
     public function withAttributes(array $attributes): self
     {
+        return $this->copyWithAttributes(array_merge($this->attributes, $attributes));
+    }
+
+    /** @param array<string, mixed> $attributes */
+    private function copyWithAttributes(array $attributes): self
+    {
         return new self(
             $this->type,
             $this->historyShape,
-            array_merge($this->attributes, $attributes),
+            $attributes,
             $this->localResult,
             $this->sideEffect,
             $this->conditionPredicate,
