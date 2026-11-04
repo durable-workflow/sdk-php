@@ -107,6 +107,7 @@ final class Worker
     /** @var array<string, mixed>|null */
     private ?array $workflowMemoCapability = null;
     private bool $serviceOperationsSupported = false;
+    private bool $stickyExecutionUnsupported = false;
     private bool $queryTaskAuthoritySupported = false;
     private ?QueryTaskAuthority $queryTaskAuthority = null;
     private bool $activityLeaseRenewalSupported = false;
@@ -453,6 +454,11 @@ final class Worker
                 'invalid_worker_registration_fence');
         }
         $this->activityLeaseRenewalSupported = ($capabilities['activity_lease_renewal'] ?? null) === true;
+        // A runtime that says it routes no task to a sticky worker (native
+        // Server, server#1017) always sends full history. Retaining histories
+        // would only cost memory, and every task would count as a cache miss.
+        $sticky = $capabilities['sticky_execution'] ?? null;
+        $this->stickyExecutionUnsupported = $sticky === false || (is_array($sticky) && ($sticky['supported'] ?? null) === false);
         $capability = $capabilities['worker_deregistration_fencing'] ?? null;
         if (($capability === null || (is_array($capability) && ($capability['supported'] ?? null) === false))
             && $token === null) {
@@ -1847,7 +1853,7 @@ final class Worker
         }
         $workflowId = (string) ($task['workflow_id'] ?? '');
         $runId = (string) ($task['run_id'] ?? '');
-        if ($workflowId !== '' && $runId !== '') {
+        if ($workflowId !== '' && $runId !== '' && !$this->stickyExecutionUnsupported) {
             $this->stickyCache->remember($workflowId, $runId, $this->effectiveBuildId(), $history);
         }
 
@@ -3020,7 +3026,7 @@ final class Worker
 
         $workflowId = (string) ($task['workflow_id'] ?? '');
         $runId = (string) ($task['run_id'] ?? '');
-        if ($workflowId === '' || $runId === '') {
+        if ($workflowId === '' || $runId === '' || $this->stickyExecutionUnsupported) {
             return $history;
         }
 
@@ -3497,7 +3503,8 @@ final class Worker
      */
     private function stickyCacheClaim(array $task): ?array
     {
-        if ((string) ($task['workflow_id'] ?? '') === '' || (string) ($task['run_id'] ?? '') === '') {
+        if ($this->stickyExecutionUnsupported
+            || (string) ($task['workflow_id'] ?? '') === '' || (string) ($task['run_id'] ?? '') === '') {
             return null;
         }
 

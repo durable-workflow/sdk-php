@@ -8,6 +8,16 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- A worker connected to a runtime that reports `sticky_execution` as
+  unsupported (native Server today) no longer keeps workflow histories in its
+  sticky cache, counts its tasks as cache misses or sends a `sticky_cache`
+  claim (#233). Such a runtime always sends full history, so the cache only
+  used memory and its miss count suggested a broken cache. Runtimes that
+  support sticky execution, or that do not say, are unchanged. Native support
+  is tracked in server#1017.
+
+### Changed
+
 - `WorkflowHandleInterface` documents the `workflowId` and `selectedRunId`
   read-only properties that the SDK's handles and the test fake's handle
   already expose (#251), and the Laravel guide shows reading a generated
