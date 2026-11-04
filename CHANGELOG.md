@@ -14,6 +14,8 @@ project follows [Semantic Versioning](https://semver.org/).
   reopen of one call sends the same id, so the Server can recognize a repeated
   open of a wait that is still open instead of recording a second one.
 
+## [3.9.2] - 2026-11-04
+
 ### Changed
 
 - `WorkflowHandleInterface` documents the `workflowId` and `selectedRunId`
@@ -32,6 +34,30 @@ project follows [Semantic Versioning](https://semver.org/).
   `InvalidArgumentException` for an empty workflow ID or an empty selected run
   ID (pass `null` to follow the current run). Every `Client` call also refuses
   an empty identifier in its request path before sending anything.
+- A `waitCondition()` timeout now runs from the first time the wait opens
+  (#269). The Server wakes an open condition wait on any signal and records it
+  satisfied; when the predicate was still false the worker reopened the wait
+  with the full `timeout_seconds`, so each unrelated signal moved the deadline
+  forward (a 5-minute wait timed out after 422 s in one run). The worker now
+  reopens with the time remaining since the first `ConditionWaitOpened`,
+  rounded up to whole seconds and never below zero, matching embedded
+  `await($condition, $timeout)`. Histories whose reopens carry the full timeout
+  still replay. This needs no Server change. A wait that timed out is never
+  treated as reopened: a later wait with the same key and predicate, such as a
+  grace period, is a separate call measured from its own open.
+  - **Mixed fleets and rollback:** a history in which this release reopened a
+    wait with a reduced timeout cannot be replayed by workers on 3.9.1 or
+    earlier; they fail with "reached complete_workflow before consuming its
+    recorded durable history". Upgrade every worker on a task queue together,
+    and do not roll a queue back below this release once such a reopen exists.
+  - **Equal-timeout waits after a timeout:** 3.9.1 and earlier merged a wait
+    into the previous one whenever both had the same key, predicate and
+    timeout, even when the first had timed out. A run that waits again with
+    the same key, predicate and timeout after a timeout (for example a retry
+    loop) now replays the two waits separately, as they were recorded. A run
+    recorded by an older worker under the merged reading can fail replay with
+    a non-determinism error. Give each logical wait its own key. Waits inside
+    `all()`, `parallel()` and selections are never merged with each other.
 
 ## [3.9.1] - 2026-11-04
 
