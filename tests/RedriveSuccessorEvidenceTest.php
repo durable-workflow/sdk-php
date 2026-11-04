@@ -43,11 +43,13 @@ final class RedriveSuccessorEvidenceTest extends TestCase
     public function testEveryRedriveFixtureIsAValidSuccessorOrANamedException(): void
     {
         $selected = [];
-        foreach (glob(RedriveFixtureRegistry::directory().'/*.json') ?: [] as $path) {
-            $name = basename($path, '.json');
-            $fixture = RedriveFixtureRegistry::fixture($name);
-            if (str_contains($name, 'redrive') || self::carriesReuse($fixture) || self::opensRedrive($fixture)) {
-                $selected[] = $name;
+        foreach (RedriveFixtureRegistry::directories() as $directory) {
+            foreach (glob($directory.'/*.json') ?: [] as $path) {
+                $name = basename($path, '.json');
+                $fixture = RedriveFixtureRegistry::fixture($name);
+                if (str_contains($name, 'redrive') || self::carriesReuse($fixture) || self::opensRedrive($fixture)) {
+                    $selected[] = $name;
+                }
             }
         }
         sort($selected);
@@ -413,7 +415,105 @@ final class RedriveSuccessorEvidenceTest extends TestCase
         }, 'lineage must name the successor'];
         $cases['successor event carries a reuse key'] = [self::CANCELLATION, $set(4, 'reused_from_run_id', '01JBREDRIVESOURCERUN000000'), 'outside the reused prefix'];
 
+        // #250: each case below was accepted before the request/delivery pair
+        // was checked against Core 28893f97 (CancellationContext::fromArray,
+        // WorkflowStub's request and CooperativeCancellationDelivery).
+        $context = static fn (callable $change): callable => static function (array $fixture) use ($change): array {
+            foreach ([5, 6] as $index) {
+                $fixture['history'][$index]['payload']['cancellation'] = $change($fixture['history'][$index]['payload']['cancellation']);
+            }
+
+            return $fixture;
+        };
+        $insert = static fn (int $at, array $event): callable => static function (array $fixture) use ($at, $event): array {
+            array_splice($fixture['history'], $at, 0, [$event]);
+            foreach ($fixture['history'] as $index => $_) {
+                $fixture['history'][$index]['sequence'] = $index + 1;
+            }
+
+            return $fixture;
+        };
+        $instance = 'regression-corpus-redrive-successor-cancellation';
+        $successor = ['request_id' => 'successor-request', 'workflow_instance_id' => $instance, 'workflow_run_id' => 'regression-corpus-run'];
+        $cases['root request with a parent'] = [self::CANCELLATION, $context(static fn (array $c): array => [...$c, 'parent_request_id' => 'parent-request']), 'parent_request_id'];
+        $cases['root_request_id names another request'] = [self::CANCELLATION, $context(static fn (array $c): array => [...$c, 'root_request_id' => 'other-request']), 'start at the root request'];
+        $cases['lineage repeats the successor run'] = [self::CANCELLATION, $context(static fn (array $c): array => [
+            ...$c, 'root_request_id' => 'earlier-request', 'parent_request_id' => 'earlier-request',
+            'lineage' => [[...$successor, 'request_id' => 'earlier-request'], $successor],
+        ]), 'must not repeat a request or run'];
+        $cases['lineage ends at another request'] = [self::CANCELLATION, $context(static fn (array $c): array => [
+            ...$c, 'lineage' => [[...$successor, 'request_id' => 'other-request']], 'root_request_id' => 'other-request',
+        ]), 'end at this request'];
+        $cases['context names another request'] = [self::CANCELLATION, $context(static fn (array $c): array => [...$c, 'request_id' => 'other-request']), 'request_id must be the request workflow_command_id'];
+        $cases['context schema v2 without a scope'] = [self::CANCELLATION, $context(static fn (array $c): array => [...$c, 'schema' => 'durable-workflow.cancellation-context/v2']), 'schema'];
+        $cases['context requester is a list'] = [self::CANCELLATION, $context(static fn (array $c): array => [...$c, 'requester' => ['operator']]), 'requester'];
+        $cases['context deadline before its request'] = [self::CANCELLATION, $context(static fn (array $c): array => [...$c, 'cleanup_deadline_at' => '2026-11-03T00:05:00.000000Z']), 'cleanup_deadline_at must be a valid time after requested_at'];
+        $cases['context requested after the request record'] = [self::CANCELLATION, $context(static fn (array $c): array => [...$c, 'requested_at' => '2026-11-03T00:05:01.500000Z']), 'requested_at'];
+        $cases['request without command_type'] = [self::CANCELLATION, static function (array $fixture): array {
+            unset($fixture['history'][5]['payload']['command_type']);
+
+            return $fixture;
+        }, 'command_type'];
+        foreach (['workflow_instance_id', 'workflow_run_id'] as $field) {
+            $cases["request without {$field}"] = [self::CANCELLATION, static function (array $fixture) use ($field): array {
+                unset($fixture['history'][5]['payload'][$field]);
+
+                return $fixture;
+            }, 'successor workflow_instance_id and workflow_run_id'];
+        }
+        $cases['request with another cleanup deadline'] = [self::CANCELLATION, $set(5, 'cleanup_deadline_at', '2026-11-03T00:05:30.000000Z'), "cleanup_deadline_at must be its context's"];
+        $cases['delivery without the context'] = [self::CANCELLATION, static function (array $fixture): array {
+            unset($fixture['history'][6]['payload']['cancellation']);
+
+            return $fixture;
+        }, "delivery must carry its request's cancellation context"];
+        $cases['delivery with another context'] = [self::CANCELLATION, static function (array $fixture): array {
+            $fixture['history'][6]['payload']['cancellation']['reason'] = 'changed';
+
+            return $fixture;
+        }, "delivery must carry its request's cancellation context"];
+        $cases['delivery names another request'] = [self::CANCELLATION, $set(6, 'workflow_command_id', 'other-request'), 'name its request'];
+        $cases['delivery call_kind mismatches the recorded call'] = [self::CANCELLATION, $set(6, 'call_kind', 'timer'), 'call_kind must match'];
+        $cases['delivery call_kind is a group kind'] = [self::CANCELLATION, $set(6, 'call_kind', 'parallel'), 'single-call kind'];
+        $cases['delivery beyond the next step'] = [self::CANCELLATION, $set(6, 'sequence', 5), 'after the next step'];
+        $cases['delivery to a call resolved before the request'] = [self::CANCELLATION, $insert(5, [
+            'event_type' => 'ActivityCompleted', 'recorded_at' => '2026-11-03T00:05:00.750000+00:00',
+            'payload' => ['activity_execution_id' => '01JBREDRIVESUCCESSORACT001', 'sequence' => 3, 'payload_codec' => 'avro'],
+        ]), 'resolved before the request'];
+        $cases['a call scheduled after its delivery to the unscheduled step'] = [self::CANCELLATION, static function (array $fixture): array {
+            $fixture['history'][6]['payload']['sequence'] = 4;
+            $fixture['history'][] = ['event_type' => 'ActivityScheduled', 'sequence' => 8, 'recorded_at' => '2026-11-03T00:05:03+00:00',
+                'payload' => ['activity_execution_id' => '01JBREDRIVESUCCESSORACT002', 'activity_type' => 'late', 'sequence' => 4]];
+
+            return $fixture;
+        }, 'must not be recorded after a cancellation delivered before it was scheduled'];
+        $cases['two requests'] = [self::CANCELLATION, static function (array $fixture): array {
+            $request = $fixture['history'][5];
+            $fixture['history'][] = [...$request, 'sequence' => 8, 'recorded_at' => '2026-11-03T00:05:03+00:00'];
+
+            return $fixture;
+        }, 'exactly one request and one delivery'];
+        $cases['delivery before its request'] = [self::CANCELLATION, static function (array $fixture): array {
+            [$fixture['history'][5], $fixture['history'][6]] = [$fixture['history'][6], $fixture['history'][5]];
+            $fixture['history'][5]['sequence'] = 6;
+            $fixture['history'][6]['sequence'] = 7;
+            $fixture['history'][5]['recorded_at'] = $fixture['history'][6]['recorded_at'];
+
+            return $fixture;
+        }, 'follow its request'];
+        foreach (['timer_kind' => 'condition_timeout', 'cancellation_scope_id' => 'scope-1', 'condition_wait_id' => 'wait-1'] as $key => $value) {
+            $cases["copied TimerScheduled with {$key}"] = [$timer, $set(2, $key, $value), "plain timer, without {$key}"];
+        }
+
         return $cases;
+    }
+
+    public function testADeliveryToTheNextUnscheduledStepIsValid(): void
+    {
+        $fixture = RedriveFixtureRegistry::fixture(self::CANCELLATION);
+        $fixture['history'][6]['payload']['sequence'] = 4;
+
+        self::assertNull(RedriveSuccessorHistory::violation($fixture, RedriveFixtureRegistry::SUCCESSORS[self::CANCELLATION]));
     }
 
     /** @return array<string, array{string, list<string>, string}> */
