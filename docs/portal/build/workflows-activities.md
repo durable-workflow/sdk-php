@@ -517,6 +517,30 @@ heartbeats. Prepared local activities use supervised callback processes.
 
 ## Inspect retry budget and the owning workflow
 
+The unreleased `ActivityContext::activityExecutionId` property contains the
+logical `activity_execution_id` received with the claim. Ordinary and
+cooperatively supervised remote callbacks expose that same execution identity
+across retry attempts, while `activityAttemptId` identifies each attempt.
+Use the logical ID in a downstream idempotency key when the destination honors
+that key, including your application scope where needed.
+
+```php
+function activityIdempotencyKey(
+    \DurableWorkflow\Worker\ActivityContext $context,
+    string $businessKey,
+): string {
+    return $context->activityExecutionId ?? $businessKey;
+}
+```
+
+Older claims can omit the field. Missing, null, empty or non-string values
+produce null, so supply a business key when it is unavailable. Prepared local
+callbacks expose the execution ID from their validated Server admission.
+Inline local and Server-free callbacks without that admission report null.
+Session activity callbacks expose the field when their actual claim includes
+it; omission also produces null. The property is read-only and performs no
+additional runtime request.
+
 PHP SDK 3.6.0 introduced retry metadata on `ActivityContext`. Use 3.6.1 or later
 for the original owning workflow and run IDs from public activity claims.
 `$context->retryInfo` retains the original attempt number and retry policy,

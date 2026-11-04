@@ -8,6 +8,13 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `ActivityContext::activityExecutionId` exposes the received logical activity
+  execution ID for downstream idempotency keys. Missing or invalid legacy
+  metadata stays null; task and attempt IDs are never used as substitutes.
+  Prepared local callbacks receive their validated Server execution identity;
+  inline local and Server-free callbacks without one report null
+  (durable-workflow/.github#211).
+
 - `WorkflowContext::startChildWorkflow()` starts a child and returns a
   `ChildWorkflowHandle` once the runtime has committed the start (#185). The
   handle's `identity()` gives the child call ID, the child workflow ID and the

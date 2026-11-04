@@ -47,6 +47,7 @@ final class PreparedLocalActivityWorkerTest extends TestCase
         $worker->registerWorkflow('prepared', static fn (WorkflowContext $context): mixed => $context->localActivity('effect'));
         $worker->registerActivity('effect', static fn (ActivityContext $context): array => [
             'workflow_id' => $context->workflowId, 'run_id' => $context->runId,
+            'activity_execution_id' => $context->activityExecutionId,
             'provided' => $context->retryInfo->policyProvided, 'last' => $context->retryInfo->isLastConfiguredAttempt(),
         ]);
         $worker->run(0);
@@ -54,7 +55,8 @@ final class PreparedLocalActivityWorkerTest extends TestCase
         self::assertCount(1, $transport->operations('outcome'));
         $command = $transport->completions[0]['commands'][0];
         self::assertSame('complete_workflow', $command['type']);
-        self::assertSame(['workflow_id' => 'workflow', 'run_id' => 'run', 'provided' => false, 'last' => null],
+        self::assertSame(['workflow_id' => 'workflow', 'run_id' => 'run', 'activity_execution_id' => 'backend-execution-1',
+            'provided' => false, 'last' => null],
             (new AvroPayloadCodec())->decodeEnvelope($command['result']));
     }
 
