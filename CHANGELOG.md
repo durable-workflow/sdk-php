@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `WorkflowHandleInterface` documents the `workflowId` and `selectedRunId`
+  read-only properties that the SDK's handles and the test fake's handle
+  already expose (#251), and the Laravel guide shows reading a generated
+  workflow ID from the handle `start()` returns. The interface gains no
+  methods, so application classes that implement it keep loading.
+
 ### Fixed
 
 - An empty workflow ID now fails when the handle is created (#252). Before,

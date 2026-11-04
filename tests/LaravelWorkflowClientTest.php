@@ -80,6 +80,17 @@ final class LaravelWorkflowClientTest extends TestCase
         $fake->assertResultRequested('greeting-fake');
     }
 
+    public function testAGeneratedWorkflowIdIsReadableFromTheReturnedHandle(): void
+    {
+        $fake = new LaravelWorkflowClientFake($this->configuration());
+
+        $handle = $fake->start(LaravelClientFixtureWorkflow::class, ['Ada']);
+
+        self::assertMatchesRegularExpression('/^laravel-greeting-[0-9a-f]{24}$/', $handle->workflowId);
+        self::assertNull($handle->selectedRunId);
+        $fake->assertWorkflowStarted(LaravelClientFixtureWorkflow::class, ['Ada'], workflowId: $handle->workflowId);
+    }
+
     public function testABlankWorkflowIdFailsWhenTheHandleIsRequested(): void
     {
         $client = new LaravelWorkflowClient(new WorkflowClientFake(), $this->configuration());

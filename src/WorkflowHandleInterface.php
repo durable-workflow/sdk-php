@@ -4,7 +4,17 @@ declare(strict_types=1);
 
 namespace DurableWorkflow;
 
-/** Workflow interactions shared by live and in-memory handles. */
+/**
+ * Workflow interactions shared by live and in-memory handles.
+ *
+ * The SDK's handles, WorkflowHandle and TestWorkflowHandle, expose the bound
+ * workflow and run as the read-only properties below. The interface does not
+ * declare them as methods, so existing application implementations keep
+ * loading; PHPStan does not read these tags on an interface.
+ *
+ * @property-read string $workflowId The workflow ID the handle is bound to, including an ID the client generated at start.
+ * @property-read string|null $selectedRunId The run selected when the handle was created, or null to follow the current run.
+ */
 interface WorkflowHandleInterface
 {
     /** @param list<mixed> $arguments */
