@@ -107,6 +107,7 @@ final class Worker
     /** @var array<string, mixed>|null */
     private ?array $workflowMemoCapability = null;
     private bool $serviceOperationsSupported = false;
+    private bool $childStartTurnSupported = false;
     private bool $queryTaskAuthoritySupported = false;
     private ?QueryTaskAuthority $queryTaskAuthority = null;
     private bool $activityLeaseRenewalSupported = false;
@@ -806,6 +807,8 @@ final class Worker
         $supportedCommands = is_array($capabilities) ? ($capabilities['supported_workflow_task_commands'] ?? null) : null;
         $this->serviceOperationsSupported = is_array($supportedCommands)
             && in_array('start_service_operation', $supportedCommands, true);
+        $this->childStartTurnSupported = is_array($capabilities)
+            && ($capabilities['child_workflow_start_turn'] ?? null) === true;
         $this->heartbeatIfDue();
         if ($this->crossKindPollWakeReceived($workflowPoll)) {
             $pollTimeoutSeconds = 0;
@@ -1458,6 +1461,7 @@ final class Worker
             }
             $this->assertWorkflowMemoUpdatesAvailable($commands);
             $this->assertServiceOperationsAvailable($commands);
+            $this->assertChildStartTurnAvailable($commands);
             $this->assertCancellationPoliciesAvailable($commands);
             $stickyClaim = $this->stickyCacheClaim($task);
             $this->retryStorageAdmission('workflow_complete', fn (): array => $this->client->completeWorkflowTask(
@@ -2406,6 +2410,25 @@ final class Worker
             if (($command['type'] ?? null) === 'start_service_operation' && !$this->serviceOperationsSupported) {
                 throw new WorkflowClaimAborted(
                     'service_operations_unavailable: the connected runtime did not advertise start_service_operation support.',
+                );
+            }
+        }
+    }
+
+    /**
+     * A runtime without the capability ignores the unknown await field and
+     * would start the child without the parent turn startChildWorkflow() waits
+     * for, so the claim is abandoned before anything is submitted.
+     *
+     * @param list<array<string, mixed>> $commands
+     */
+    private function assertChildStartTurnAvailable(array $commands): void
+    {
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'start_child_workflow' && ($command['await'] ?? null) === 'started'
+                && !$this->childStartTurnSupported) {
+                throw new WorkflowClaimAborted(
+                    'child_workflow_start_turn_unavailable: startChildWorkflow() needs a runtime that advertises child_workflow_start_turn.',
                 );
             }
         }

@@ -728,6 +728,24 @@ final class Replayer
                 continue;
             }
 
+            if ($suspended->type === 'await_child_workflow') {
+                // A started child's await consumes no sequence: it reads the
+                // original call's resolution, through continuation and retries.
+                $awaited = $stepsBySequence[$suspended->attributes['sequence']] ?? null;
+                if (($awaited['shape'] ?? null) !== 'child_workflow') {
+                    throw new NonDeterministicWorkflow('An awaited child workflow has no recorded child call.',
+                        (int) $suspended->attributes['sequence'], reason: 'child_workflow_handle_mismatch');
+                }
+                if ($awaited['resolved'] !== true) {
+                    return $this->result($commands, $context);
+                }
+                $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($awaited));
+                $suspended = $awaited['failure'] instanceof Throwable
+                    ? $execution->throw($awaited['failure'])
+                    : $execution->resume($awaited['value']);
+                continue;
+            }
+
             $step = $steps[$stepCursor] ?? null;
             if ($step !== null) {
                 if ($strictSequences && $step['sequence'] !== $nextSequence) {
@@ -748,6 +766,15 @@ final class Replayer
                 }
                 ++$stepCursor;
                 $nextSequence = max($nextSequence, $step['sequence'] + 1);
+                if ($suspended->type === 'start_child_workflow' && ($suspended->attributes['await'] ?? null) === 'started') {
+                    $identity = $this->stepChildIdentity($step);
+                    if ($identity === null) {
+                        throw new NonDeterministicWorkflow('A committed child start lacks its child call, instance or run identity.',
+                            $step['sequence'], reason: 'child_start_identity_missing');
+                    }
+                    $suspended = $execution->resume(new ChildWorkflowHandle($context, $step['sequence'], $identity));
+                    continue;
+                }
                 if ($suspended->type === 'open_condition_wait') {
                     $this->assertConditionWaitCompatible($step, $suspended);
                     $nextStep = $steps[$stepCursor] ?? null;
@@ -1183,6 +1210,29 @@ final class Replayer
         return true;
     }
 
+    /** @param array<string, mixed> $payload */
+    private function childIdentity(array $payload): ?ChildWorkflowIdentity
+    {
+        $call = $payload['child_call_id'] ?? null;
+        $instance = $payload['child_workflow_instance_id'] ?? $payload['workflow_instance_id'] ?? null;
+        $run = $payload['child_workflow_run_id'] ?? $payload['workflow_run_id'] ?? null;
+        foreach ([$call, $instance, $run] as $value) {
+            if (!is_string($value) || trim($value) === '') {
+                return null;
+            }
+        }
+
+        return new ChildWorkflowIdentity($call, $instance, $run);
+    }
+
+    /** @param array<string, mixed> $step */
+    private function stepChildIdentity(array $step): ?ChildWorkflowIdentity
+    {
+        $identity = $step['child_identity'] ?? null;
+
+        return $identity instanceof ChildWorkflowIdentity ? $identity : null;
+    }
+
     /** @param array<string, mixed> $previous
      *  @param array<string, mixed> $next
      */
@@ -1353,6 +1403,7 @@ final class Replayer
         $timerCleanup = [];
         $conditionStepsByWaitId = [];
         $conditionOpenedAt = [];
+        $childIdentities = [];
         $versionMarkerSequences = [];
         $versionMarkerChangeIds = [];
         $memoSequences = [];
@@ -1609,6 +1660,9 @@ final class Replayer
                     $this->payloadDetail($payload, 'child_workflow'),
                     parallelPath: $this->parallelPath($payload, $sequence),
                 );
+                // The first committed start fixes the identity; a later
+                // ChildRunStarted for a continued or retried run does not move it.
+                $childIdentities[$key] ??= $this->childIdentity($payload);
             } elseif ($type === 'ChildRunCompleted') {
                 if (($steps[$key]['resolved'] ?? false) === true) {
                     continue;
@@ -1844,6 +1898,11 @@ final class Replayer
         foreach ($conditionOpenedAt as $key => $openedAt) {
             if (($steps[$key]['shape'] ?? null) === 'condition_wait') {
                 $steps[$key]['opened_at'] = $openedAt;
+            }
+        }
+        foreach ($childIdentities as $key => $identity) {
+            if (($steps[$key]['shape'] ?? null) === 'child_workflow' && $identity !== null) {
+                $steps[$key]['child_identity'] = $identity;
             }
         }
         ksort($steps, SORT_NUMERIC);
