@@ -535,6 +535,8 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: '3.12'
+      - name: Test documentation release-channel guards
+        run: python scripts/test-docs-release-channel.py
       - name: Select authenticated dependency trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
         with:

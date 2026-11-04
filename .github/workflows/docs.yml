@@ -78,34 +78,17 @@ jobs:
           STABLE_TAG: ${{ inputs.stable_tag }}
           STABLE_SOURCE: ${{ inputs.stable_source }}
           GH_TOKEN: ${{ github.token }}
+          DOCS_WORKFLOW_REVISION: ${{ github.workflow_sha }}
         run: |
-          version=$(php -r '$manifest = json_decode(file_get_contents("composer.json"), true, flags: JSON_THROW_ON_ERROR); echo $manifest["extra"]["durable-workflow"]["product-train"];')
-          if [ -n "$STABLE_TAG" ]; then
-            test "$version" = "$STABLE_TAG"
-            test "$(gh release view "$STABLE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq '(.isDraft == false and .isPrerelease == false)')" = true
-            if [ -z "$STABLE_SOURCE" ]; then
-              test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$STABLE_TAG^{commit}")"
-            else
-              test "$(git rev-parse HEAD)" = "$STABLE_SOURCE"
-              git merge-base --is-ancestor HEAD origin/main
-              git diff --exit-code "refs/tags/$STABLE_TAG" HEAD -- src examples resources config
-              git show "refs/tags/$STABLE_TAG:composer.json" > "$RUNNER_TEMP/published-sdk-composer.json"
-              PUBLISHED_MANIFEST="$RUNNER_TEMP/published-sdk-composer.json" php <<'PHP'
-          <?php
-          $published = json_decode(file_get_contents(getenv('PUBLISHED_MANIFEST')), true, flags: JSON_THROW_ON_ERROR);
-          $selected = json_decode(file_get_contents('composer.json'), true, flags: JSON_THROW_ON_ERROR);
-          unset($published['extra']['durable-workflow']['product-train'], $selected['extra']['durable-workflow']['product-train']);
-          if ($published !== $selected) {
-              throw new RuntimeException('Selected documentation source changes the published package manifest.');
-          }
-          PHP
-            fi
+          if [[ ! "$DOCS_WORKFLOW_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'The documentation guard requires the exact workflow revision' >&2
+            exit 1
           fi
-          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo stable=true >> "$GITHUB_OUTPUT"
-          else
-            echo stable=false >> "$GITHUB_OUTPUT"
-          fi
+          # Published tags can predate this guard. Execute the reviewed workflow's
+          # guard while inspecting the separately selected documentation source.
+          git show "$DOCS_WORKFLOW_REVISION:scripts/check-docs-release-channel.py" \
+            > "$RUNNER_TEMP/check-docs-release-channel.py"
+          python "$RUNNER_TEMP/check-docs-release-channel.py"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
         with:
           node-version: '24'
@@ -160,8 +143,11 @@ jobs:
       - name: Check portal and API layouts in Chromium
         run: npm run check:docs-browser
       - name: Bind Pages artifact to the exact source revision
+        env:
+          EXPECTED_SOURCE_REVISION: ${{ steps.release-channel.outputs.source_revision }}
         run: |
           SOURCE_REVISION=$(git rev-parse HEAD)
+          test "$SOURCE_REVISION" = "$EXPECTED_SOURCE_REVISION"
           if ! printf '%s' "$SOURCE_REVISION" | grep -Eq '^[a-f0-9]{40}$'; then
             echo 'SOURCE_REVISION must be an exact lowercase commit SHA' >&2
             exit 1
