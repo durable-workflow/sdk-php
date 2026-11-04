@@ -438,7 +438,9 @@ final class Replayer
                             }
 
                             $metadata = $path[array_key_last($path)] ?? [];
-                            $command = $this->conditionReopen($command, $step, $history)->withAttributes([
+                            // Grouped reopens keep the authored timeout: replay of a
+                            // grouped physical reopen is not qualified yet (#278).
+                            $command = $command->withAttributes([
                                 ...$metadata,
                                 'parallel_group_path' => $path,
                             ]);

@@ -1100,6 +1100,37 @@ final class ReplayerTest extends TestCase
         }
     }
 
+    /** Grouped reopens keep the authored timeout until grouped reopen replay is qualified (#278). */
+    public function testAGroupedConditionReopensWithTheAuthoredTimeout(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static fn (WorkflowContext $context): array => $context->all([
+            $context->deferCondition(static fn (): bool => $context->signals('approve') !== [], 'approval', 300),
+            $context->deferTimer(1000),
+        ]);
+        $first = (new Replayer($codec))->replay($workflow, [], [], 'php-workers')->commands;
+        $path = $first[0]['parallel_group_path'];
+        $timerPath = $first[1]['parallel_group_path'];
+        $history = [
+            ['event_type' => 'ConditionWaitOpened', 'recorded_at' => '2026-11-04T02:00:00.000000+00:00', 'payload' => [
+                'sequence' => 1, 'condition_wait_id' => 'wait-1', 'condition_key' => 'approval',
+                'condition_definition_fingerprint' => $first[0]['condition_definition_fingerprint'], 'timeout_seconds' => 300,
+                ...$path[array_key_last($path)], 'parallel_group_path' => $path,
+            ]],
+            ['event_type' => 'TimerScheduled', 'recorded_at' => '2026-11-04T02:00:00.001000+00:00', 'payload' => [
+                'sequence' => 2, 'delay_seconds' => 1000, 'timer_id' => 'timer-2', ...$timerPath[array_key_last($timerPath)], 'parallel_group_path' => $timerPath,
+            ]],
+            ['event_type' => 'SignalReceived', 'recorded_at' => '2026-11-04T02:00:20.000000+00:00', 'payload' => [
+                'workflow_sequence' => 1, 'signal_name' => 'reject', 'arguments' => $codec->envelope([]),
+            ]],
+        ];
+
+        $commands = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers')->commands;
+
+        self::assertSame('open_condition_wait', $commands[0]['type']);
+        self::assertSame(300, $commands[0]['timeout_seconds']);
+    }
+
     public function testAnEventTimeWithoutAnOffsetIsIgnored(): void
     {
         $codec = new AvroPayloadCodec();
