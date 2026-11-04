@@ -6,6 +6,13 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.9.3] - 2026-11-04
+
+**Upgrade from 3.9.2 now.** 3.9.2 can fail existing runs on native Server 3.0.x
+that contain a repeated condition-wait open (#283). Users of 3.9.1 should
+upgrade too: 3.9.3 keeps 3.9.2's fix that stops unrelated signals from
+restarting a `waitCondition()` timeout (#269).
+
 ### Added
 
 - `open_condition_wait` commands carry `condition_wait_occurrence_id`
@@ -25,7 +32,13 @@ project follows [Semantic Versioning](https://semver.org/).
   open continues an earlier same-key wait now depends on the earlier wait's
   state when the later one opened: still open or satisfied means the same
   wait, and a timeout before the later open still makes a separate call, such
-  as a grace period.
+  as a grace period. When the earlier wait's deadline has already passed, the
+  worker re-sends the wait with `timeout_seconds: 0`, so the Server times it
+  out at once and `waitCondition()` returns `false`.
+  - **Known limitation:** a repeated open that the Server records after the
+    earlier wait has already timed out is still refused by replay. Server
+    3.1.1 is planned to stop recording repeated opens of a still-open wait
+    (server#1015), which removes that case.
 - Request bodies keep full float precision whatever the host's
   `serialize_precision` is (#248). With a non-default value such as 3, a float
   search attribute of 1.2345 was sent and recorded as 1.23, and replay then
