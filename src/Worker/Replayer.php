@@ -1194,22 +1194,31 @@ final class Replayer
             && ($previous['timeout_seconds'] === $next['timeout_seconds']
                 || (is_int($previous['timeout_seconds']) && is_int($next['timeout_seconds'])
                     && $next['timeout_seconds'] < $previous['timeout_seconds']))
-            && $this->conditionWaitStillLive($previous)
+            && $this->conditionWaitStillLive($previous, $next)
             // Grouped members are separate calls; grouped reopens are #278.
             && $previous['parallel_path'] === [] && $next['parallel_path'] === [];
     }
 
     /**
-     * Only a wait the Server satisfied (a false wake), or one still open (a
-     * repeated open, #269 part 2), is physically reopened. A wait that timed
-     * out or failed is finished, so a later wait with the same key and
-     * predicate is a separate call, such as a grace period.
+     * A later open continues a wait the Server satisfied (a false wake) or a
+     * wait that was still open when the later one opened (a repeated open,
+     * #269 part 2). What counts is the state at that open: a repeated open's
+     * orphan may time out afterwards (#283) and is still the same wait. A wait
+     * that timed out or failed before the later open is finished, so that
+     * open is a separate call, such as a grace period.
      *
-     * @param array<string, mixed> $step
+     * @param array<string, mixed> $previous
+     * @param array<string, mixed> $next
      */
-    private function conditionWaitStillLive(array $step): bool
+    private function conditionWaitStillLive(array $previous, array $next): bool
     {
-        return $step['resolved'] !== true || ($step['value'] === true && $step['failure'] === null);
+        if ($previous['resolved'] !== true || ($previous['value'] === true && $previous['failure'] === null)) {
+            return true;
+        }
+        $nextOpened = $next['opened_order'] ?? null;
+        $resolved = $previous['resolution_order'] ?? null;
+
+        return is_int($nextOpened) && is_int($resolved) && $resolved > $nextOpened;
     }
 
     /**
@@ -1353,6 +1362,7 @@ final class Replayer
         $timerCleanup = [];
         $conditionStepsByWaitId = [];
         $conditionOpenedAt = [];
+        $conditionOpenedOrder = [];
         $versionMarkerSequences = [];
         $versionMarkerChangeIds = [];
         $memoSequences = [];
@@ -1795,6 +1805,7 @@ final class Replayer
                     $conditionStepsByWaitId[$conditionWaitId] = $key;
                 }
                 $conditionOpenedAt[$key] ??= $this->eventTime($event);
+                $conditionOpenedOrder[$key] ??= $resolutionOrder;
             } elseif (in_array($type, ['ConditionWaitSatisfied', 'ConditionWaitTimedOut'], true)) {
                 $conditionStepKey = $this->conditionStepKey($payload, $conditionStepsByWaitId);
                 if ($conditionStepKey !== null
@@ -1844,6 +1855,7 @@ final class Replayer
         foreach ($conditionOpenedAt as $key => $openedAt) {
             if (($steps[$key]['shape'] ?? null) === 'condition_wait') {
                 $steps[$key]['opened_at'] = $openedAt;
+                $steps[$key]['opened_order'] = $conditionOpenedOrder[$key] ?? null;
             }
         }
         ksort($steps, SORT_NUMERIC);
@@ -3353,7 +3365,7 @@ final class Replayer
                 && $step['condition_key'] === $collapsed[$last]['condition_key']
                 && $step['condition_definition_fingerprint'] === $collapsed[$last]['condition_definition_fingerprint']
                 && $step['timeout_seconds'] === $collapsed[$last]['timeout_seconds']
-                && $this->conditionWaitStillLive($collapsed[$last])
+                && $this->conditionWaitStillLive($collapsed[$last], $step)
                 && $step['parallel_path'] === [] && $collapsed[$last]['parallel_path'] === []) {
                 $step['sequence'] = $collapsed[$last]['sequence'];
                 $step['opened_at'] = $collapsed[$last]['opened_at'] ?? null;
