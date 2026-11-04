@@ -532,6 +532,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
+      fail-fast: false
       max-parallel: 2
       matrix:
         source: [current, '3.9.4', '6a821568db5c72983bd3990fe27c7990f092db12']
@@ -569,8 +570,6 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
         with:
           node-version: '24'
-          cache: npm
-          cache-dependency-path: ${{ env.DOCS_TOOLING_DIRECTORY }}/package-lock.json
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - run: composer --working-dir="$DOCS_TOOLING_DIRECTORY" install --no-interaction --prefer-dist

@@ -120,7 +120,7 @@ class DocumentationChannelTest(unittest.TestCase):
         self.git("worktree", "remove", str(tooling))
 
     def test_tooling_refuses_a_mutable_revision_or_existing_directory(self) -> None:
-        for revision, destination in [("main", Path(self.temporary.name) / "new"), (self.published, self.root)]:
+        for revision, destination in [("main", Path(self.temporary.name) / "new"), (self.published, self.root), (self.published, Path("--orphan"))]:
             with self.subTest(revision=revision):
                 result = subprocess.run(
                     [sys.executable, str(PREPARE), revision, str(destination)],
