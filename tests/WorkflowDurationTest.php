@@ -6,6 +6,7 @@ namespace DurableWorkflow\Tests;
 
 use Carbon\Carbon;
 use Carbon\CarbonInterval;
+use Composer\InstalledVersions;
 use DateInterval;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
@@ -234,6 +235,33 @@ final class WorkflowDurationTest extends TestCase
     {
         self::assertSame($seconds, (int) ceil(CarbonInterval::fromString($duration)->totalSeconds));
         self::assertSame($seconds, WorkflowDuration::seconds($duration, 'timer'));
+    }
+
+    /** @return iterable<string, array{string, array{2: int, 3: int}}> */
+    public static function largeSubSecondStrings(): iterable
+    {
+        yield 'microsecond at ten billion seconds' => ['10000000000 seconds 1 microsecond', [2 => 10_000_000_001, 3 => 10_000_000_001]];
+        yield 'microsecond lost at one hundred billion seconds' => ['100000000000 seconds 1 microsecond', [2 => 100_000_000_000, 3 => 100_000_000_000]];
+        yield 'milliseconds at one hundred billion seconds' => ['100000000000 seconds 32037 milliseconds', [2 => 100_000_000_033, 3 => 100_000_000_033]];
+        yield 'microseconds at one hundred billion seconds' => ['100000000000 seconds 32037000 microseconds', [2 => 100_000_000_033, 3 => 100_000_000_033]];
+        yield 'milliseconds below one trillion seconds' => ['999999999999 seconds 32037 milliseconds', [2 => 1_000_000_000_032, 3 => 1_000_000_000_032]];
+        yield 'milliseconds at one trillion seconds' => ['1000000000000 seconds 32037 milliseconds', [2 => 1_000_000_000_033, 3 => 1_000_000_000_001]];
+        yield 'microseconds at one trillion seconds' => ['1000000000000 seconds 32037000 microseconds', [2 => 1_000_000_000_033, 3 => 1_000_000_000_001]];
+        yield 'reported milliseconds example' => ['5555555555555 seconds 32037 milliseconds', [2 => 5_555_555_555_588, 3 => 5_555_555_555_556]];
+        yield 'reported example in microseconds' => ['5555555555555 seconds 32037000 microseconds', [2 => 5_555_555_555_588, 3 => 5_555_555_555_556]];
+    }
+
+    /** @param array{2: int, 3: int} $secondsByCarbonMajor */
+    #[DataProvider('largeSubSecondStrings')]
+    public function testLargeSubSecondStringsPreserveTheInstalledCarbonBehavior(string $duration, array $secondsByCarbonMajor): void
+    {
+        $major = (int) InstalledVersions::getVersion('nesbot/carbon');
+        self::assertArrayHasKey($major, $secondsByCarbonMajor);
+        $seconds = $secondsByCarbonMajor[$major];
+
+        self::assertSame($seconds, (int) ceil(CarbonInterval::fromString($duration)->totalSeconds));
+        self::assertSame($seconds, WorkflowDuration::seconds($duration, 'timer'));
+        self::assertSame($seconds, self::commandsFor(static fn (WorkflowContext $context) => $context->sleep($duration))[0]['delay_seconds']);
     }
 
     public function testIntervalsConvertExactlyLikeTheEmbeddedPackage(): void
