@@ -29,6 +29,7 @@
     "label": "Operate",
     "items": [
       {"label": "Deployment", "url": "/operate/deployment/"},
+      {"label": "Upgrading", "url": "/operate/upgrading/"},
       {"label": "Authentication", "url": "/operate/authentication/"},
       {"label": "Graceful shutdown", "url": "/operate/graceful-shutdown/"},
       {"label": "Execution tracing", "url": "/operate/tracing/"},

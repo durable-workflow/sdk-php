@@ -39,6 +39,10 @@ transient, while injected collaborators may remain shared. Constructors run
 during replay and must be free of external side effects. See the
 [registration migration guide](https://php.durable-workflow.com/build/workflows-activities/#migrate-workflow-registration-from-php-sdk-2).
 
+For a minor SDK upgrade, review the [upgrade guide](docs/portal/operate/upgrading.md)
+for condition-history compatibility, queue-wide rollout and static credential
+validation before replacing workers.
+
 ## Choose Your Path
 
 | Starting point | Recommended guide |
