@@ -52,9 +52,10 @@
       const source = button.closest('.code-stage')?.querySelector('code')?.textContent;
       if (!source) return;
       try { await navigator.clipboard.writeText(source); button.textContent = 'Copied'; }
-      catch (_) {
-        // Clipboard permission or browser support may be unavailable; report it in the control.
-        button.textContent = 'Copy unavailable';
+      catch (error) {
+        // Expose a bounded permission hint, without rendering browser-supplied error text.
+        button.textContent = error instanceof DOMException && error.name === 'NotAllowedError'
+          ? 'Clipboard blocked' : 'Copy unavailable';
       }
       window.setTimeout(() => { button.textContent = 'Copy'; }, 1800);
     });

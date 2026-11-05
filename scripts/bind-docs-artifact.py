@@ -10,8 +10,11 @@ import sys
 from pathlib import Path
 
 
+SOURCE_REVISION = re.compile(r"[0-9a-f]{40}")
+
+
 def main() -> int:
-    if len(sys.argv) != 2 or not re.fullmatch(r"[0-9a-f]{40}", sys.argv[1]):
+    if len(sys.argv) != 2 or not SOURCE_REVISION.fullmatch(sys.argv[1]):
         print("Expected the exact selected source commit.", file=sys.stderr)
         return 1
     selected = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
@@ -19,7 +22,7 @@ def main() -> int:
         print("The selected documentation source changed before artifact binding.", file=sys.stderr)
         return 1
     presentation = os.environ.get("DOCS_PRESENTATION_REVISION", selected)
-    if not re.fullmatch(r"[0-9a-f]{40}", presentation):
+    if not SOURCE_REVISION.fullmatch(presentation):
         print("The presentation revision is invalid.", file=sys.stderr)
         return 1
     if os.environ.get("DOCS_PRESENTATION_DIRECTORY"):
@@ -34,7 +37,7 @@ def main() -> int:
     }
     tag = os.environ.get("STABLE_TAG", "")
     if tag:
-        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", tag):
+        if not re.fullmatch(r"\d+\.\d+\.\d+", tag, re.ASCII):
             print("The published SDK tag is invalid.", file=sys.stderr)
             return 1
         audit["published_sdk_source_revision"] = subprocess.check_output(
@@ -43,7 +46,7 @@ def main() -> int:
         audit["published_sdk_version"] = tag
     workflow = os.environ.get("GITHUB_WORKFLOW_SHA", "")
     if workflow:
-        if not re.fullmatch(r"[0-9a-f]{40}", workflow):
+        if not SOURCE_REVISION.fullmatch(workflow):
             return 1
         audit["workflow_revision"] = workflow
     Path("build/site/deployment-audit.json").write_text(json.dumps(audit) + "\n")

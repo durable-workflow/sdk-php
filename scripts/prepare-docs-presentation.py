@@ -19,6 +19,7 @@ PRESENTATION_FILES = frozenset({
     ".phpdoc/template/components/identity-header.html.twig",
     ".phpdoc/template/components/identity-footer.html.twig",
 })
+PACKET_FILE = "presentation.json"
 PRESENTATION_TREES = ("docs/portal/assets/", ".phpdoc/template/assets/")
 
 
@@ -39,19 +40,7 @@ def copy_regular_tree(source: Path, target: Path) -> None:
     shutil.copytree(source, target)
 
 
-def prepare(root: Path, revision: str, destination: Path, release_adapter: Path) -> dict:
-    if not REVISION.fullmatch(revision):
-        raise PresentationError("presentation_source must be an exact lowercase commit.")
-    if git(root, "rev-parse", "--verify", revision + "^{commit}").decode().strip() != revision:
-        raise PresentationError("The presentation commit differs.")
-    if subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", revision, "origin/main"],
-                      check=False, timeout=30, capture_output=True).returncode:
-        raise PresentationError("The presentation must come from accepted main.")
-    if git(root, "diff", "--name-only", "HEAD"):
-        raise PresentationError("The selected SDK source must remain unchanged.")
-    selected = git(root, "rev-parse", "HEAD").decode().strip()
-    if destination.exists():
-        raise PresentationError("The presentation staging directory must not exist.")
+def presentation_blobs(root: Path, revision: str) -> list[tuple[str, bytes]]:
     entries = git(root, "ls-tree", "-rz", revision).split(b"\0")
     overlays = []
     total = 0
@@ -70,6 +59,23 @@ def prepare(root: Path, revision: str, destination: Path, release_adapter: Path)
         overlays.append((name, content))
     if not PRESENTATION_FILES.issubset({name for name, _ in overlays}):
         raise PresentationError("The selected presentation is incomplete.")
+    return overlays
+
+
+def prepare(root: Path, revision: str, destination: Path, release_adapter: Path) -> dict:
+    if not REVISION.fullmatch(revision):
+        raise PresentationError("presentation_source must be an exact lowercase commit.")
+    if git(root, "rev-parse", "--verify", revision + "^{commit}").decode().strip() != revision:
+        raise PresentationError("The presentation commit differs.")
+    if subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", revision, "origin/main"],
+                      check=False, timeout=30, capture_output=True).returncode:
+        raise PresentationError("The presentation must come from accepted main.")
+    if git(root, "diff", "--name-only", "HEAD"):
+        raise PresentationError("The selected SDK source must remain unchanged.")
+    selected = git(root, "rev-parse", "HEAD").decode().strip()
+    if destination.exists():
+        raise PresentationError("The presentation staging directory must not exist.")
+    overlays = presentation_blobs(root, revision)
     destination.mkdir(parents=True)
     copy_regular_tree(root / "docs/portal", destination / "portal")
     copy_regular_tree(root / ".phpdoc/template", destination / "template")
@@ -86,14 +92,14 @@ def prepare(root: Path, revision: str, destination: Path, release_adapter: Path)
                  for path in sorted(destination.rglob("*")) if path.is_file()}
     packet = {"schema": "durable-workflow.sdk-php.docs-presentation/v1",
               "sdk_source_revision": selected, "presentation_source_revision": revision, "files": inventory}
-    (destination / "presentation.json").write_text(json.dumps(packet, sort_keys=True) + "\n")
+    (destination / PACKET_FILE).write_text(json.dumps(packet, sort_keys=True) + "\n")
     return packet
 
 
 def verify(destination: Path, selected: str, revision: str) -> None:
-    packet = json.loads((destination / "presentation.json").read_text())
+    packet = json.loads((destination / PACKET_FILE).read_text())
     actual = {path.relative_to(destination).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-              for path in sorted(destination.rglob("*")) if path.is_file() and path != destination / "presentation.json"}
+              for path in sorted(destination.rglob("*")) if path.is_file() and path != destination / PACKET_FILE}
     if packet.get("sdk_source_revision") != selected or packet.get("presentation_source_revision") != revision \
             or packet.get("files") != actual or any(path.is_symlink() for path in destination.rglob("*")):
         raise PresentationError("The staged presentation changed before artifact binding.")
@@ -118,7 +124,7 @@ def main() -> int:
                 stream.write("".join(f"{key}={value}\n" for key, value in values.items()))
         print(json.dumps({key: packet[key] for key in ("sdk_source_revision", "presentation_source_revision")}))
         return 0
-    except (PresentationError, OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError, subprocess.SubprocessError):
         print("Documentation presentation refused; no SDK source override is allowed.", file=sys.stderr)
         return 1
 
