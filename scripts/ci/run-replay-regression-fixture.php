@@ -758,12 +758,12 @@ final class ReplayRegressionConsumer
                 return 'search-attributes-upserted';
             },
             'golden.condition-sequential-legacy' => static function (WorkflowContext $context): bool {
-                $signal = 'first';
-                $predicate = static function () use ($context, &$signal): bool {
-                    return $context->signals($signal) !== [];
+                $state = (object) ['signal' => 'first'];
+                $predicate = static function () use ($context, $state): bool {
+                    return $context->signals($state->signal) !== [];
                 };
                 $context->waitCondition($predicate, key: 'approval', timeout: 30);
-                $signal = 'second';
+                $state->signal = 'second';
 
                 return $context->waitCondition($predicate, key: 'approval', timeout: 20);
             },
