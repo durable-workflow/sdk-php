@@ -1,0 +1,29 @@
+# Exact-source Server builds run Composer inside BuildKit. This overlay hands
+# the Server Dockerfile's trust hook (durable-workflow/.github#237) the reviewed
+# central verifier, the authenticated CA bundle selected by the clean CI
+# bootstrap, its digest, and the exact source/Dockerfile binding. The secret and
+# named context are build-time mounts only; they never enter the image.
+x-composer-trust-build: &composer-trust-build
+  context: ../server
+  additional_contexts:
+    dwf_composer_trust: ${DWF_COMPOSER_TRUST_CONTEXT:?Select the reviewed central Composer verifier directory}
+  secrets:
+    - dwf_ci_ca
+  args:
+    DW_CI_CA_SHA256: ${DW_CI_CA_SHA256:?Bootstrap the authenticated CI CA bundle first}
+    DW_SERVER_SOURCE_COMMIT: ${DW_SERVER_SOURCE_COMMIT:?Bind the exact Server source commit}
+    DW_SERVER_DOCKERFILE_SHA256: ${DW_SERVER_DOCKERFILE_SHA256:?Bind the exact Server Dockerfile bytes}
+
+services:
+  bootstrap:
+    build: *composer-trust-build
+  server:
+    build: *composer-trust-build
+  worker:
+    build: *composer-trust-build
+  repair:
+    build: *composer-trust-build
+
+secrets:
+  dwf_ci_ca:
+    file: ${COMPOSER_CAFILE:?Bootstrap the authenticated CI CA bundle first}

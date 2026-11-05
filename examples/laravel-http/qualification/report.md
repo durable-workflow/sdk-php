@@ -12,6 +12,9 @@ Octane, which uses more memory. Production capacity remains workload-specific.
 
 ## Reproducible inputs
 
+These inputs describe the measured cohort. The application's `composer.json`
+has since moved to a later SDK release that these runs have not covered.
+
 The October 18 cohort uses normally installed SDK 2.4.2 / `25d796ad`, published
 Server 2.8.7 / `964f9e3d` / immutable image index `27c08e15`, and Workflow
 2.5.32 / `78075b6f`. All 166 installed SDK source/resource/schema files match
@@ -24,6 +27,10 @@ Laravel 12.69.3 and Octane 2.21.0. RoadRunner 2025.1.15 has SHA-256
 `c67dd4dc6d14c0120a7f8a2edcb035eddc693db880d349f3be33a38728b89efb`.
 The lock SHA-256 is
 `a41fe273640b8562608a0c1de468826c1e983e817bf2a056c1b20e00142eec34`.
+That hash identifies the measured lock. The lock was later changed only to
+update `symfony/mime` from 7.4.19 to 7.4.22 for CVE-2026-45070
+([#223](https://github.com/durable-workflow/sdk-php/issues/223)). The load
+profile was not re-measured for that maintenance change.
 The [input manifest](inputs.json) pins backend and measurement tools.
 RoadRunner enables its HTTP pool and loopback control RPC, with no jobs pool.
 

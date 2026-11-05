@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Bridge\Laravel;
 
+use DurableWorkflow\Auth\StaticCredential;
 use DurableWorkflow\Bridge\ServiceConfiguration;
 use DurableWorkflow\Client;
 use DurableWorkflow\Transport\Transport;
@@ -107,6 +108,9 @@ final class ProcessCredentialResolver
         $value = getenv($name);
         if ($value === false || $value === '') {
             return null;
+        }
+        if ($name !== self::PROCESS_ROLE) {
+            StaticCredential::assertValid($value, $name);
         }
 
         return $value;

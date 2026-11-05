@@ -10,8 +10,9 @@ runnable path.
 - **Laravel adoption:** start with the [ownership-first transition
   guide](https://php.durable-workflow.com/frameworks/laravel/) when moving a
   Laravel Workflow v1 application to v2 embedded or service mode, or when
-  moving embedded v2 to service mode. Laravel 9 through 13 are supported on
-  both v2 destinations.
+  moving embedded v2 to service mode. Both v2 destinations support Laravel
+  10.50.4, 11.56.1, 12.69.0, and 13.30.0 and later releases of each major, the
+  patched minimums for GHSA-f9x3-7vq9-cph6; earlier releases are unsupported.
 - **Plain PHP service mode:** follow the quickstart below when a framework-neutral
   application and remote worker connect to Durable Workflow Cloud or a
   self-hosted Server.
@@ -66,7 +67,7 @@ Create an empty Composer project and install the current published package:
 mkdir durable-php-quickstart
 cd durable-php-quickstart
 composer init --name=acme/durable-php-quickstart --no-interaction
-composer require 'durable-workflow/sdk:^2.0'
+composer require durable-workflow/sdk
 ```
 
 The package declares its supported Server baseline in Composer metadata.
@@ -294,6 +295,18 @@ the supported runtime URL forms, role-specific environment variables,
 package-owned source files, and expected result. Documentation builds verify
 that the visible examples still match those runnable files.
 
+## Activity execution identity
+
+The unreleased `ActivityContext::activityExecutionId` is the nullable logical
+execution identity supplied by an activity claim. `workflowId` and `runId`
+identify its owning workflow/run; `activityAttemptId` remains attempt-specific.
+Use a caller-owned business key when logical identity is unavailable. The SDK
+preserves received ID spelling and never manufactures an execution ID from a
+task, attempt or session ID. Prepared local callbacks expose the validated
+Server execution ID; inline local/Server-free callbacks without one report
+null. Session callbacks use the actual claim field when present. The same
+accessor is used in ordinary and cooperative remote execution.
+
 ## Workflow handles and control-plane APIs
 
 `WorkflowHandle` distinguishes the stable workflow instance from a selected
@@ -302,6 +315,27 @@ continue-as-new transition. The `*SelectedRun()` methods retain the original
 run guard and fail rather than silently targeting a successor.
 
 ## Control-plane administration and discovery
+
+`listWorkflows()` and `workflowHistory()` each read one page. The unreleased
+iterator API follows the Server's continuation tokens lazily:
+
+```php
+foreach ($client->iterateWorkflows(status: 'running', pageSize: 100) as $execution) {
+    echo $execution->workflowId, "\n";
+}
+foreach ($client->iterateWorkflowHistory($workflowId, $runId, pageSize: 100) as $event) {
+    echo $event['sequence'], ': ', $event['event_type'], "\n";
+}
+```
+
+The list yields `WorkflowExecution` values; history yields the original event
+maps. Both retain one page and fetch the next only when needed. Breaking out
+does not prefetch. History stays on the selected run through continue-as-new;
+listing follows the Server's ordering and consistency, not a global snapshot.
+Missing or invalid page metadata and repeated/cyclic tokens throw
+`PaginationException` with a typed `reason`. An HTTP error propagates unchanged
+and closes the generator. Earlier items may already have been yielded, so
+consumers must handle a partial export on failure.
 
 `Client::withNamespace()` returns an immutable namespace selection that keeps
 the configured authentication and transport. Workflow payload encoding remains
@@ -565,6 +599,9 @@ attempt and owner. It cannot extend recorded activity/workflow deadlines,
 change an attempt or reset the original TTL of a required worker session.
 Actual application heartbeats can advance only their recorded progress
 interval. Runtime pings do not record progress or add heartbeat history events.
+A renewal that reports no progress yet never extends the claim's heartbeat
+deadline. A heartbeat reply without `heartbeat_deadline_at` advances it by the
+original `heartbeat_timeout` only.
 An activity with a heartbeat timeout must still call `$context->heartbeat()`.
 
 The helper exits when its owning process dies or its private input closes.
@@ -618,12 +655,17 @@ and the shipped [client](../examples/message-stream-client.php) and
 
 ## Laravel service mode
 
-Laravel 9 through 13 auto-discover the service provider from the same SDK package.
+Laravel 10.50.4, 11.56.1, 12.69.0, 13.30.0 and later releases of each major
+auto-discover the service provider from the same SDK package. Earlier releases
+predate the GHSA-f9x3-7vq9-cph6 fix and are outside the supported boundary.
 Publish the environment-backed configuration, add attributed handler services,
-and start the supervised Artisan command:
+and start the supervised Artisan command. The worker process needs `ext-pcntl`;
+the command refuses to start without it so `SIGINT` and `SIGTERM` always drain
+cleanly. Composer only suggests the extension, and the official `php:*-cli`
+images do not include it:
 
 ```bash
-composer require 'durable-workflow/sdk:^2.0'
+composer require durable-workflow/sdk
 php artisan vendor:publish --tag=durable-workflow-config
 php artisan config:cache
 php artisan durable-workflow:worker

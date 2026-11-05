@@ -1,0 +1,92 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-redrive-reused-search-attributes-changed",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.redrive-reused-search-attributes-changed",
+    "input": [
+      "Taylor"
+    ]
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestRedriveVisibilityWorkflow",
+        "workflow_type": "golden.redrive-reused-search-attributes-changed",
+        "workflow_instance_id": "regression-corpus-redrive-upserts",
+        "workflow_run_id": "regression-corpus-run",
+        "workflow_command_id": "01JBREDRIVECOMMAND00000000",
+        "continued_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "resume_step_sequence": 3,
+        "recovery_kind": "redrive",
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
+        "replayed_started_at": "2026-11-03T00:00:00+00:00",
+        "workflow_link_id": "01JBREDRIVELINK00000000000"
+      }
+    },
+    {
+      "sequence": 2,
+      "event_type": "MemoUpserted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "sequence": 1,
+        "entries": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4EEGN1c3RvbWVyCgxUYXlsb3IKc3RhZ2UKEGdyZWV0aW5nAA=="
+        },
+        "merged": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4EEGN1c3RvbWVyCgxUYXlsb3IKc3RhZ2UKEGdyZWV0aW5nAA=="
+        },
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "SearchAttributesUpserted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "sequence": 2,
+        "attributes": {
+          "Stage": "greeting"
+        },
+        "attribute_types": {
+          "Stage": "keyword"
+        },
+        "merged": {
+          "Stage": "greeting"
+        },
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      }
+    }
+  ],
+  "workflow_tasks": [
+    {
+      "workflow_id": "regression-corpus-redrive-upserts",
+      "run_id": "regression-corpus-run"
+    }
+  ],
+  "expected": {
+    "workflow_tasks": [
+      {
+        "command_sequence": [
+          {
+            "type": "replay_error",
+            "reason": "search_attribute_value_mismatch",
+            "sequence": 2
+          }
+        ]
+      }
+    ]
+  }
+}

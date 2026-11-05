@@ -44,11 +44,11 @@ A minimal production image should:
 4. expose no HTTP port unless the container also owns a separate health process;
 5. identify the application release through `buildId`.
 
-Do not use the SDK repository's `main` branch as a production Composer source. Install `{{ release.composerPackage }}` to follow the supported stable 2.0 line, then commit the resolved version in `composer.lock`.
+Do not use the SDK repository's `main` branch as a production Composer source. Install `{{ release.composerPackage }}` to follow the supported {{ release.sdkChannel }} release line, then commit the resolved version in `composer.lock`.
 
 ## Roll out compatible workers
 
-Start new workers before draining the old pool. Keep old and new builds registered only when both can replay the histories routed to that queue. If a change is not replay-compatible, use a new task queue or a worker build-routing plan rather than hoping restarts choose the right code.
+Start new workers before draining the old pool. Keep old and new builds registered only when both can replay the histories routed to that queue. If a change is not replay-compatible, use a new task queue or a worker build-routing plan rather than hoping restarts choose the right code. Deploy each release atomically, as a new image or release directory, and restart workers onto it. Do not replace workflow source files under a running worker: condition-wait replay identity reads the deployed source, so an in-place swap can raise a [false replay mismatch](/build/workflows-activities/#evolve-workflow-code-with-version-markers).
 
 A new queue is not a migration of existing runs or activities. Previously scheduled activities, delayed retries and repaired tasks retain their recorded queue. Passive runs and continuation chains can still need old workers. Deploy the new pool and routing first, then keep compatible old pools available until their dependencies are accounted for and new work no longer creates them. An empty ready-task count or a fresh registration is not proof of safe retirement. Use the [recorded-queue procedure and existing run/queue diagnostics](https://durable-workflow.com/docs/polyglot/task-matching-dispatch/#recorded-activity-queues). Repair does not relocate work or extend its original total deadline. [Server #519](https://github.com/durable-workflow/server/issues/519) tracks the separate guarded retirement capability.
 

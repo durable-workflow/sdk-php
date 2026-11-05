@@ -11,6 +11,8 @@ use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\PreserveGlobalState;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 
 final class FrameworkBridgeTest extends TestCase
@@ -275,7 +277,7 @@ final class FrameworkBridgeTest extends TestCase
             $manifest['extra']['laravel']['providers'],
         );
         self::assertSame(
-            '^9.0|^10.0|^11.0|^12.0|^13.0',
+            '^10.50.4|^11.56.1|^12.69.0|^13.30.0',
             $manifest['extra']['durable-workflow']['frameworks']['laravel'],
         );
         self::assertSame('^6.4|^7.0|^8.0', $manifest['extra']['durable-workflow']['frameworks']['symfony']);
@@ -285,6 +287,8 @@ final class FrameworkBridgeTest extends TestCase
         self::assertArrayNotHasKey('symfony/console', $manifest['require']);
     }
 
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
     public function testPlainPhpClientDoesNotLoadFrameworkBridgeFiles(): void
     {
         new Client('http://localhost:8080');

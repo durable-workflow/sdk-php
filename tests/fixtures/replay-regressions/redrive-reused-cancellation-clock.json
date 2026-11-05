@@ -1,0 +1,57 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-redrive-reused-cancellation-clock",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.redrive-reused-cancellation-clock", "input": []},
+  "history": [
+    {
+      "event_type": "CooperativeCancellationRequested", "recorded_at": "2026-11-03T00:00:00.000000Z",
+      "payload": {
+        "workflow_command_id": "original-request", "workflow_run_id": "regression-inline",
+        "cleanup_deadline_at": "2026-11-03T00:00:30.000000Z",
+        "cancellation": {
+          "schema": "durable-workflow.cancellation-context/v1",
+          "request_id": "original-request", "root_request_id": "original-request",
+          "root_workflow_instance_id": "regression-workflow",
+          "root_workflow_run_id": "regression-inline", "parent_request_id": null,
+          "reason": null, "requester": {"type": "operator", "id": "fixture-operator"}, "source": "control_plane",
+          "requested_at": "2026-11-03T00:00:00.000000Z", "cleanup_deadline_at": "2026-11-03T00:00:30.000000Z",
+          "lineage": [{"request_id": "original-request", "workflow_instance_id": "regression-workflow", "workflow_run_id": "regression-inline"}]
+        }
+      }
+    },
+    {
+      "event_type": "CooperativeCancellationDelivered", "timestamp": "2026-11-03T00:00:01Z",
+      "payload": {"workflow_command_id": "original-request", "workflow_run_id": "regression-inline", "sequence": 1, "call_kind": "timer"}
+    },
+    {
+      "event_type": "ActivityCompleted", "timestamp": "2026-11-03T00:05:00Z",
+      "payload": {
+        "sequence": 2, "activity_type": "golden.redrive.cleanup",
+        "result": "wwHioz3/VYAiNwoOY2xlYW5lZA==", "payload_codec": "avro",
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_activity_execution_id": "01JBREDRIVESOURCEACTIVITY0",
+        "reused_recorded_at": "2026-11-03T00:00:06+00:00"
+      }
+    },
+    {
+      "event_type": "TimerScheduled", "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {"timer_id": "01JBREDRIVESUCCESSORTIMER0", "sequence": 3, "delay_seconds": 5, "fire_at": "2026-11-03T00:00:11.000000Z"}
+    },
+    {
+      "event_type": "TimerFired", "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "timer_id": "01JBREDRIVESUCCESSORTIMER0", "sequence": 3, "delay_seconds": 5,
+        "fired_at": "2026-11-03T00:00:12.000000Z",
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:12+00:00"
+      }
+    }
+  ],
+  "workflow_tasks": [{"workflow_id": "regression-workflow", "run_id": "regression-inline"}],
+  "expected": {
+    "workflow_tasks": [{"command_sequence": [{"type": "complete_workflow", "result": 18.0}]}]
+  }
+}

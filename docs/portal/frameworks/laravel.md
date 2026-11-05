@@ -17,9 +17,22 @@ next:
   <div class="choice"><h3>Cloud or Server</h3><p><code>durable-workflow/sdk</code> connects the same Laravel application structure to a separately operated namespace. The Laravel bridge keeps container resolution, configuration, Artisan, logging, events, and testing.</p></div>
 </div>
 
-The service-mode bridge supports Laravel 9, 10, 11, 12, and 13 on the PHP
-versions supported by the SDK. Those are the same Laravel majors supported by
-embedded v2, so changing state ownership does not force a Laravel upgrade.
+The service-mode bridge supports Laravel 10.50.4, 11.56.1, 12.69.0, and
+13.30.0, and later releases of each major, on the PHP versions supported by the
+SDK (`^10.50.4|^11.56.1|^12.69.0|^13.30.0`). These are the patched minimum
+releases for GHSA-f9x3-7vq9-cph6, and the same Laravel range that embedded v2
+requires from Workflow 2.17.0, so changing state ownership does not force a
+Laravel upgrade. Earlier Laravel 10, 11, 12, and 13 releases, and every Laravel
+9 release, are outside the supported service-mode boundary. The SDK does not
+block installing them, so upgrade Laravel before adopting either v2 destination.
+
+Laravel 10 and 11 are past their upstream end of life. Some published
+Laravel advisories affect every release of those majors and have no fixed
+10.x or 11.x release. The SDK keeps them only for bounded 3.8.x transition
+compatibility, matching Workflow 2.17.1, and removes them in the next SDK minor
+([#239](https://github.com/durable-workflow/sdk-php/issues/239)). Move
+applications to a maintained Laravel release (12 or 13) before or with
+adopting service mode.
 
 Do not install the two packages as interchangeable storage adapters. They have
 different authoritative histories, worker lifecycles, queue boundaries,
@@ -116,7 +129,7 @@ The SDK can be installed while v1 remains present and draining.
 1. Install the service-mode channel and publish configuration:
 
    ```bash
-   composer require 'durable-workflow/sdk:^2.0'
+   {{ release.composerCommand }}
    php artisan vendor:publish --tag=durable-workflow-config
    ```
 
@@ -138,7 +151,22 @@ The SDK can be installed while v1 remains present and draining.
      php artisan config:cache
    ```
 
-4. Start the worker with only its worker credential. Start one canary through
+4. Confirm the worker's PHP has `ext-pcntl`. The Artisan worker refuses to
+   start without it, so `SIGINT` and `SIGTERM` always drain the worker cleanly.
+   Composer only suggests the extension, and the official `php:*-cli` and
+   `composer` images do not include it. Run this with the same PHP binary or
+   image that runs the worker:
+
+   ```bash
+   php -r 'exit(function_exists("pcntl_async_signals") && function_exists("pcntl_signal") ? 0 : 1);' \
+     && echo 'pcntl ready'
+   ```
+
+   In a `php:*-cli` based image, add it with `docker-php-ext-install pcntl`. If
+   the extension is loaded but the check fails, remove the `pcntl_*` functions
+   from `disable_functions` for the worker's PHP configuration.
+
+5. Start the worker with only its worker credential. Start one canary through
    the injected application client with only its client credential:
 
    ```bash
@@ -151,7 +179,7 @@ The SDK can be installed while v1 remains present and draining.
      php artisan app:start-greeting greeting-canary Ada
    ```
 
-5. Drain v1 or maintain an explicit ID-to-runtime routing table. Switch starts,
+6. Drain v1 or maintain an explicit ID-to-runtime routing table. Switch starts,
    signals, queries, and updates together; then inspect the service-mode result.
 
 Existing v1 history remains in the Laravel database. Reusing a type name or
@@ -225,7 +253,7 @@ final class GreetingWorkflow
         $approved = $context->waitCondition(
             static fn (): bool => $context->signals('approve-greeting') !== [],
             key: 'greeting-approved',
-            timeout: 300,
+            timeout: '5 minutes',
         );
         if (!$approved) {
             return 'Greeting approval timed out.';
@@ -400,7 +428,27 @@ final class StartGreeting
 }
 ```
 
-Omit `workflowId` to generate a new ID. Pass `WorkflowStartOptions` when an
+Omit `workflowId` to generate a new ID, then read it from the returned handle,
+for example to put it in a signed link:
+
+```php
+$handle = $this->workflows->start(GreetingWorkflow::class, [$name]);
+
+return ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId];
+```
+
+`workflowId` and `selectedRunId` are read-only properties of the SDK's handles
+and of the Laravel fake's handle. `WorkflowHandleInterface` documents them with
+`@property-read`, which IDEs read. PHPStan does not read that tag on an
+interface, so where static analysis needs it, narrow the handle to the SDK
+handle types:
+
+```php
+/** @var \DurableWorkflow\WorkflowHandle|\DurableWorkflow\Testing\TestWorkflowHandle $handle */
+$handle = $this->workflows->start(GreetingWorkflow::class, [$name]);
+```
+
+Pass `WorkflowStartOptions` when an
 application needs a queue override, timeouts, duplicate policy, memo, search
 attributes, priority, fairness, or build ID. `handle(GreetingWorkflow::class,
 $workflowId)` returns the existing workflow handle after validating the same
@@ -471,7 +519,8 @@ resource limits, request-context controls and a separately supervised Artisan
 worker. The recipe records its runtime/tool images and qualification outcomes.
 
 HTTP workers submit and inspect workflows. Run `durable-workflow:worker` in its
-own process; Server or Cloud owns durable state, timers and task leases. Keep
+own process with `ext-pcntl` loaded; Server or Cloud owns durable state, timers
+and task leases. The HTTP processes do not need `ext-pcntl`. Keep
 each process's endpoint, namespace and credential authority fixed, and pass
 client and worker credentials only to their respective roles outside cached
 configuration. The CLI worker's history cache retains history and still replays
@@ -496,6 +545,8 @@ The service-mode application client uses the SDK's 60-second total HTTP request
 deadline. Set `DURABLE_WORKFLOW_REQUEST_TIMEOUT_SECONDS=5` or
 `request_timeout_seconds` in `config/durable-workflow.php` to choose a positive
 number of seconds. Existing published config files can add that key explicitly.
-Worker polling, lease/heartbeat requests and payload-transfer clocks remain
-separate. See [client setup](/getting-started/client-setup/#bound-ordinary-http-requests)
+Worker registration, heartbeats, task completion/failure and deregistration use
+a separate 60-second deadline. Set it with `DURABLE_WORKFLOW_WORKER_REQUEST_TIMEOUT_SECONDS`
+or `worker_request_timeout_seconds`. Worker polling and payload-transfer clocks
+remain separate. See [client setup](/getting-started/client-setup/#bound-ordinary-http-requests)
 for timeout errors, custom transport policy and ambiguous mutation outcomes.

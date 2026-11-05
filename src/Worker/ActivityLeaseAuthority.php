@@ -233,7 +233,11 @@ final class ActivityLeaseAuthority
                 return;
             }
             if ($this->heartbeatInterval !== null) {
-                $deadline = self::timestamp($reply['heartbeat_deadline_at'] ?? null);
+                // Released Servers record progress + heartbeat_timeout without echoing
+                // it. An absent deadline is that original interval; a stated one must match.
+                $deadline = ($reply['heartbeat_deadline_at'] ?? null) === null
+                    ? $progress + $this->heartbeatInterval
+                    : self::timestamp($reply['heartbeat_deadline_at']);
                 if (abs($deadline - $progress - $this->heartbeatInterval) > 0.000001) {
                     throw new \UnexpectedValueException('Heartbeat changed the recorded progress interval.');
                 }
@@ -302,7 +306,18 @@ final class ActivityLeaseAuthority
         if ($this->heartbeatInterval === null || $this->heartbeatUntil === null) {
             return;
         }
-        $progress = self::timestamp($reply['last_heartbeat_at'] ?? null);
+        if (($reply['last_heartbeat_at'] ?? null) === null) {
+            // Released Servers report no progress before the first application
+            // heartbeat. No progress grants nothing: a stated deadline can only
+            // shorten the captured bound, and recorded progress never moves.
+            if (($reply['heartbeat_deadline_at'] ?? null) !== null) {
+                $this->heartbeatUntil = min($this->heartbeatUntil,
+                    $started + self::timestamp($reply['heartbeat_deadline_at']) - $server);
+            }
+
+            return;
+        }
+        $progress = self::timestamp($reply['last_heartbeat_at']);
         $deadline = self::timestamp($reply['heartbeat_deadline_at'] ?? null);
         if ($progress > $server || abs($deadline - $progress - $this->heartbeatInterval) > 0.000001) {
             throw new \UnexpectedValueException('Runtime renewal changed application progress policy.');

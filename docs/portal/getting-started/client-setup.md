@@ -64,6 +64,33 @@ $result = $handle->result(timeoutSeconds: 30);
 
 The workflow ID is the stable instance identity. The run ID identifies one execution in that instance's chain. Ordinary handle methods follow the current run after continue-as-new; methods ending in `SelectedRun` keep the original run guard and fail instead of silently crossing to a successor.
 
+## Read complete lists and histories
+
+`listWorkflows()` and `workflowHistory()` each return one bounded page. The
+following iterator methods are unreleased:
+
+```php
+foreach ($controlClient->iterateWorkflows(status: 'running', pageSize: 100) as $execution) {
+    echo $execution->workflowId, "\n";
+}
+foreach ($controlClient->iterateWorkflowHistory($workflowId, $runId, pageSize: 100) as $event) {
+    echo $event['sequence'], ': ', $event['event_type'], "\n";
+}
+```
+
+Iterators retain one page and request the next only when iteration reaches it.
+Stop with `break` to avoid further requests. The history iterator keeps the
+exact workflow/run pair; it does not follow a new run or wait for new events
+after the last page. Workflow listing follows the Server's current ordering
+and consistency, so concurrent changes are not a snapshot.
+
+Handle errors around the entire loop. A later HTTP error propagates and closes
+the generator; malformed metadata or a token cycle raises
+`DurableWorkflow\Exception\PaginationException` with a typed `reason`.
+Earlier items may have been yielded before an error. Iteration preserves raw
+history event values and uses the same namespace, authentication and per-request
+deadline as the one-page methods.
+
 ## Inject a PSR transport when you need one
 
 Guzzle is included as the default transport. To reuse your application's PSR-18 client and PSR-17 factories, construct `Psr18Transport` and pass it as `transport:`. Authentication still belongs in an `Authentication` implementation; do not bury rotating role credentials in a generic HTTP middleware stack.
@@ -91,10 +118,36 @@ send another mutation. Do not automatically retry a start, signal or update
 because the response timed out.
 
 This is a per-request limit. Discovery, an external-payload transfer and a later
-mutation can be separate HTTP requests. It does not change worker long polls,
-lease/heartbeat requests, payload-transfer deadlines, workflow execution timeouts
-or `WorkflowHandle::result()`'s caller wait. `withNamespace()` preserves the
+mutation can be separate HTTP requests. It does not change worker requests,
+payload-transfer deadlines, workflow execution timeouts or
+`WorkflowHandle::result()`'s caller wait. `withNamespace()` preserves the
 configured transport and deadline.
+
+### Bound worker requests
+
+Worker requests have their own deadline, so the control deadline never shortens
+them. The SDK-owned transport applies a **60-second total deadline to each
+worker request that is not a long poll**: registration, worker and activity
+heartbeats, workflow and activity task completion and failure, and
+deregistration. Set it with `workerRequestTimeoutSeconds`:
+
+```php
+$client = new Client(
+    'https://runtime.example',
+    workerToken: $token,
+    workerRequestTimeoutSeconds: 15.0,
+);
+```
+
+A timeout raises `ServerException` with `status` zero, `reason`
+`request_timeout` and the message `The worker HTTP request timed out.`, instead
+of leaving the worker waiting on a Server that accepted the connection but never
+answered. Task polls keep their longer budget: the requested wait plus a margin.
+Workers with cooperative cancellation keep their own per-operation budgets. A
+task completion that times out has an uncertain outcome. The worker's existing
+fenced retry resends the same completion under the original lease; it does not
+run the handler again. The activity-lease helper process and `withNamespace()`
+keep the configured value.
 
 The owned transport uses Guzzle with cURL, or a Guzzle adapter using the mature
 HTTP_Request2 socket client without cURL. PHP 8.1 and JSON remain the installation requirements. HTTP-only consumers
@@ -111,8 +164,8 @@ native stream handler. A configured proxy is never bypassed to avoid an error.
 
 An injected `Transport` or PSR-18 HTTP client keeps its own connection, private-CA,
 proxy and timeout policy. Configure its total deadline on that client. Passing
-`requestTimeoutSeconds` together with an injected client/transport is rejected
-instead of replacing its configuration. For example:
+`requestTimeoutSeconds` or `workerRequestTimeoutSeconds` together with an injected
+client/transport is rejected instead of replacing its configuration. For example:
 
 ```php
 $http = new \GuzzleHttp\Client([

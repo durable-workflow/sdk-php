@@ -68,6 +68,8 @@ final class WorkflowContext
     /** @var Fiber<mixed, mixed, mixed, mixed>|null */
     private readonly ?Fiber $execution;
 
+    private int $conditionWaitOccurrences = 0;
+
     private int $workflowStreamCommandOrdinal = 0;
     private int $serviceOperationOrdinal = 0;
 
@@ -354,7 +356,16 @@ final class WorkflowContext
         return new Saga($this);
     }
 
-    public function sleep(int|float $seconds): void
+    /**
+     * Start a durable timer and suspend until it fires.
+     *
+     * Accepts int or float seconds, a duration string such as "30 minutes" or "1h 30m", or a
+     * DateInterval or CarbonInterval. Every form rounds up to whole seconds once, so equivalent
+     * values record identical history.
+     *
+     * @throws \InvalidArgumentException when a string or interval is unparseable or negative
+     */
+    public function sleep(int|float|string|\DateInterval $seconds): void
     {
         $operation = $this->deferTimer($seconds);
         if ($this->isCapturing()) {
@@ -371,13 +382,16 @@ final class WorkflowContext
      *
      * The result is true only when the condition was satisfied and false only when it timed out.
      * Give repeated or otherwise ambiguous waits a stable key so replay can identify them.
+     * The timeout accepts int or float seconds, a duration string such as "30 minutes", or a
+     * DateInterval or CarbonInterval, and rounds up to whole seconds.
      *
      * @param callable(): bool $predicate
+     * @throws \InvalidArgumentException when a string or interval timeout is unparseable or negative
      */
     public function waitCondition(
         callable $predicate,
         ?string $key = null,
-        int|float|null $timeout = null,
+        int|float|string|\DateInterval|null $timeout = null,
     ): bool {
         $operation = $this->deferCondition($predicate, $key, $timeout);
         if ($this->isCapturing()) {
@@ -389,21 +403,35 @@ final class WorkflowContext
         return (bool) $this->suspend($operation->command);
     }
 
-    /** Prepare a deterministic condition or signal-derived wait for a durable group. */
+    /**
+     * Prepare a deterministic condition or signal-derived wait for a durable group.
+     *
+     * @throws \InvalidArgumentException when a string or interval timeout is unparseable or negative
+     */
     public function deferCondition(
         callable $predicate,
         ?string $key = null,
-        int|float|null $timeout = null,
+        int|float|string|\DateInterval|null $timeout = null,
     ): DeferredWorkflowOperation {
         $this->assertActiveFiber();
         $condition = Closure::fromCallable($predicate);
-        $timeoutSeconds = $timeout === null ? null : max(0, (int) ceil($timeout));
+        $timeoutSeconds = match (true) {
+            $timeout === null => null,
+            is_int($timeout), is_float($timeout) => max(0, (int) ceil($timeout)),
+            default => WorkflowDuration::seconds($timeout, 'condition wait timeout'),
+        };
+
+        // One authored call is one logical wait. The ordinal follows deterministic
+        // workflow code, so every replay and every physical reopen of this call
+        // sends the same id, which lets the Server recognize a repeated open.
+        $occurrenceId = 'php:condition-wait:'.$this->conditionWaitOccurrences++;
 
         return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::conditionWait(
             $condition,
             self::conditionKey($key),
             ConditionWaitDefinition::fingerprint($condition),
             $timeoutSeconds,
+            $occurrenceId,
         )));
     }
 
@@ -424,6 +452,49 @@ final class WorkflowContext
     }
 
     /**
+     * Start a child workflow and return a handle once its start is committed.
+     *
+     * The current turn ends after the start command. The runtime commits
+     * ChildWorkflowScheduled and ChildRunStarted and gives the parent a fresh
+     * turn, so the handle's identity comes from canonical history while the
+     * child keeps running. Call await() on the handle for the child's result.
+     * Requires a runtime that advertises child_workflow_start_turn; the worker
+     * refuses the start before submitting it otherwise. Not available inside
+     * all()/parallel() groups.
+     *
+     * @param list<mixed> $arguments
+     * @param array<string, mixed> $options the same options as childWorkflow()
+     */
+    public function startChildWorkflow(string $workflowType, array $arguments = [], array $options = []): ChildWorkflowHandle
+    {
+        $this->assertActiveFiber();
+        if ($this->isCapturing()) {
+            throw new LogicException('startChildWorkflow() cannot run inside an all() or parallel() group. Use deferChildWorkflow() there.');
+        }
+        $command = $this->withCancellationScope(
+            WorkflowCommand::childWorkflow($workflowType, $arguments, $options)->withAttributes(['await' => 'started']),
+        );
+        $handle = $this->suspend($command);
+        if (!$handle instanceof ChildWorkflowHandle) {
+            throw new LogicException('A started child workflow must resume with its committed handle.');
+        }
+
+        return $handle;
+    }
+
+    /** @internal Called by ChildWorkflowHandle::await(). */
+    public function awaitChildWorkflow(ChildWorkflowHandle $handle): mixed
+    {
+        $this->assertActiveFiber();
+        $handle->assertOwner($this);
+        if ($this->isCapturing()) {
+            throw new LogicException('A child workflow handle cannot be awaited inside an all() or parallel() group.');
+        }
+
+        return $this->suspend(WorkflowCommand::awaitChildWorkflow($handle->sequence));
+    }
+
+    /**
      * Prepare an activity without scheduling it until an all/parallel barrier is reached.
      *
      * @param list<mixed> $arguments
@@ -436,12 +507,21 @@ final class WorkflowContext
         return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::activity($activityType, $arguments, $options)));
     }
 
-    /** Prepare a durable timer for an all/parallel barrier. */
-    public function deferTimer(int|float $seconds): DeferredWorkflowOperation
+    /**
+     * Prepare a durable timer for an all/parallel barrier.
+     *
+     * Accepts the same int, float, string and interval durations as sleep().
+     *
+     * @throws \InvalidArgumentException when a string or interval is unparseable or negative
+     */
+    public function deferTimer(int|float|string|\DateInterval $seconds): DeferredWorkflowOperation
     {
         $this->assertActiveFiber();
+        $seconds = is_int($seconds) || is_float($seconds)
+            ? (int) ceil($seconds)
+            : WorkflowDuration::seconds($seconds, 'timer');
 
-        return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::timer((int) ceil($seconds))));
+        return new DeferredWorkflowOperation($this->withCancellationScope(WorkflowCommand::timer($seconds)));
     }
 
     /**
@@ -591,10 +671,16 @@ final class WorkflowContext
         throw new LogicException('A continue-as-new command cannot resume the current workflow execution.');
     }
 
-    /** @param array<string, mixed> $attributes */
-    public function upsertSearchAttributes(array $attributes): void
+    /**
+     * Explicit types bind replay to the complete type identity of non-deleted
+     * attributes. Omit the map to retain the existing value-only API.
+     *
+     * @param array<string, mixed> $attributes
+     * @param array<string, string>|null $attributeTypes
+     */
+    public function upsertSearchAttributes(array $attributes, ?array $attributeTypes = null): void
     {
-        $this->suspend(WorkflowCommand::upsertSearchAttributes($attributes));
+        $this->suspend(WorkflowCommand::upsertSearchAttributes($attributes, $attributeTypes));
     }
 
     /**

@@ -47,6 +47,7 @@ final class PreparedLocalActivityWorkerTest extends TestCase
         $worker->registerWorkflow('prepared', static fn (WorkflowContext $context): mixed => $context->localActivity('effect'));
         $worker->registerActivity('effect', static fn (ActivityContext $context): array => [
             'workflow_id' => $context->workflowId, 'run_id' => $context->runId,
+            'activity_execution_id' => $context->activityExecutionId,
             'provided' => $context->retryInfo->policyProvided, 'last' => $context->retryInfo->isLastConfiguredAttempt(),
         ]);
         $worker->run(0);
@@ -54,7 +55,8 @@ final class PreparedLocalActivityWorkerTest extends TestCase
         self::assertCount(1, $transport->operations('outcome'));
         $command = $transport->completions[0]['commands'][0];
         self::assertSame('complete_workflow', $command['type']);
-        self::assertSame(['workflow_id' => 'workflow', 'run_id' => 'run', 'provided' => false, 'last' => null],
+        self::assertSame(['workflow_id' => 'workflow', 'run_id' => 'run', 'activity_execution_id' => 'backend-execution-1',
+            'provided' => false, 'last' => null],
             (new AvroPayloadCodec())->decodeEnvelope($command['result']));
     }
 
@@ -79,6 +81,11 @@ final class PreparedLocalActivityWorkerTest extends TestCase
         self::assertSame([], $transport->failures);
         self::assertSame(1, $prefixCalls);
         self::assertCount(1, $transport->operations('checkpoint'));
+        $checkpoint = $transport->operations('checkpoint')[0]['body'];
+        self::assertSame(
+            \DurableWorkflow\Worker\PreparedLocalCheckpointId::for('task', 'original', 4, $checkpoint['start_sequence'], $checkpoint['commands']),
+            $checkpoint['checkpoint_id'],
+        );
         self::assertCount(5, $transport->operations('prepare'));
         self::assertCount(5, $transport->operations('outcome'));
         self::assertSame(['complete_workflow'], array_column($transport->completions[0]['commands'], 'type'));
@@ -184,6 +191,13 @@ final class PreparedLocalActivityWorkerTest extends TestCase
         self::assertSame(1, $prefixCalls);
         self::assertCount(1, $transport->operations('checkpoint'));
         self::assertCount(1, $transport->operations('checkpoint-group'));
+        $group = $transport->operations('checkpoint-group')[0]['body'];
+        self::assertSame(2, $group['start_sequence']);
+        self::assertCount(2, $group['commands']);
+        self::assertSame(
+            \DurableWorkflow\Worker\PreparedLocalCheckpointId::for('task', 'original', 4, 2, $group['commands']),
+            $group['checkpoint_id'],
+        );
         self::assertCount(2, $transport->operations('prepare'));
         self::assertCount(2, $transport->operations('outcome'));
         self::assertContains('prepared_local_activity_groups', $transport->registration['capabilities']);

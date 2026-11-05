@@ -44,6 +44,16 @@ final class WorkflowCommand
         'schedule_to_close_timeout',
         'heartbeat_timeout',
     ];
+    private const REMOTE_ACTIVITY_TIMEOUT_FIELDS = [
+        'start_to_close_timeout',
+        'schedule_to_start_timeout',
+        'schedule_to_close_timeout',
+        'heartbeat_timeout',
+    ];
+    private const CHILD_WORKFLOW_TIMEOUT_FIELDS = [
+        'execution_timeout_seconds',
+        'run_timeout_seconds',
+    ];
     private const ACTIVITY_RETRY_POLICY_FIELDS = [
         'max_attempts',
         'backoff_seconds',
@@ -89,6 +99,11 @@ final class WorkflowCommand
     public static function canonicalRemoteActivityOptions(array $options): array
     {
         self::assertRemoteActivityFields($options, self::REMOTE_ACTIVITY_OPTION_FIELDS, 'options');
+        foreach (self::REMOTE_ACTIVITY_TIMEOUT_FIELDS as $field) {
+            if (array_key_exists($field, $options)) {
+                $options[$field] = WorkflowDuration::normalize($options[$field], "remote activity {$field}", 1);
+            }
+        }
         if (is_array($options['retry_policy'] ?? null)) {
             self::assertRemoteActivityFields($options['retry_policy'], self::ACTIVITY_RETRY_POLICY_FIELDS, 'retry_policy');
         }
@@ -153,6 +168,12 @@ final class WorkflowCommand
         }
         $options = array_filter($options, static fn (mixed $value): bool => $value !== null);
         $options += ['mode_override' => 'sync', 'wait_for' => 'completed'];
+        if (isset($options['wait_timeout_seconds'])) {
+            $options['wait_timeout_seconds'] = WorkflowDuration::normalize(
+                $options['wait_timeout_seconds'],
+                'service wait_timeout_seconds',
+            );
+        }
         if (!in_array($options['mode_override'], ['sync', 'async'], true)
             || !in_array($options['wait_for'], ['completed', 'accepted'], true)) {
             throw new InvalidArgumentException('Service mode_override must be sync or async, and wait_for must be completed or accepted.');
@@ -176,10 +197,12 @@ final class WorkflowCommand
         ?string $key,
         ?string $definitionFingerprint,
         ?int $timeoutSeconds,
+        ?string $occurrenceId = null,
     ): self {
         return new self('open_condition_wait', 'condition_wait', array_filter([
             'condition_key' => $key,
             'condition_definition_fingerprint' => $definitionFingerprint,
+            'condition_wait_occurrence_id' => $occurrenceId,
             'timeout_seconds' => $timeoutSeconds,
         ], static fn (mixed $value): bool => $value !== null), conditionPredicate: $predicate);
     }
@@ -194,19 +217,57 @@ final class WorkflowCommand
         return ($this->conditionPredicate)() === true;
     }
 
+    /** @internal V1 remains strict even when a new command would write v2. */
+    public function conditionDefinitionMatches(string $recorded): bool
+    {
+        return $recorded === ($this->attributes['condition_definition_fingerprint'] ?? null)
+            || ($this->conditionPredicate !== null
+                && preg_match('/\Asha256:[a-f0-9]{64}\z/', $recorded) === 1
+                && ConditionWaitDefinition::legacyFingerprint($this->conditionPredicate) === $recorded);
+    }
+
+    /** @internal A physical reopen keeps its logical wait's first fingerprint, including absence. */
+    public function withRecordedConditionDefinition(?string $fingerprint): self
+    {
+        $attributes = $this->attributes;
+        unset($attributes['condition_definition_fingerprint']);
+        if ($fingerprint !== null) {
+            $attributes['condition_definition_fingerprint'] = $fingerprint;
+        }
+
+        return $this->copyWithAttributes($attributes);
+    }
+
     /**
      * @param list<mixed> $arguments
      * @param array<string, mixed> $options
      */
     public static function childWorkflow(string $workflowType, array $arguments, array $options = []): self
     {
+        if (array_key_exists('await', $options)) {
+            throw new InvalidArgumentException('Child workflow await is chosen by the API: use startChildWorkflow() for a committed start handle.');
+        }
         $policies = self::canonicalChildWorkflowPolicies($options);
         unset($options['parent_close_policy'], $options['cancellation_policy']);
+        foreach (self::CHILD_WORKFLOW_TIMEOUT_FIELDS as $field) {
+            if (array_key_exists($field, $options)) {
+                $options[$field] = WorkflowDuration::normalize($options[$field], "child workflow {$field}", 1);
+            }
+        }
 
         return new self('start_child_workflow', 'child_workflow', array_merge($options, $policies, [
             'workflow_type' => $workflowType,
             'arguments_value' => $arguments,
         ]));
+    }
+
+    /**
+     * @internal Waits on a started child's recorded resolution. The replayer
+     * resolves it from history; it is never sent to the runtime.
+     */
+    public static function awaitChildWorkflow(int $sequence): self
+    {
+        return new self('await_child_workflow', 'child_workflow', ['sequence' => $sequence]);
     }
 
     /**
@@ -313,10 +374,11 @@ final class WorkflowCommand
             if (!array_key_exists($field, $options) || $options[$field] === null) {
                 continue;
             }
-            if (!is_int($options[$field]) || $options[$field] < 1) {
+            $value = WorkflowDuration::normalize($options[$field], "local activity {$field}", 1);
+            if (!is_int($value) || $value < 1) {
                 throw new InvalidArgumentException("Local activity {$field} must be a positive integer when provided.");
             }
-            $canonical[$field] = $options[$field];
+            $canonical[$field] = $value;
         }
 
         $startToClose = $canonical['start_to_close_timeout'] ?? null;
@@ -660,10 +722,16 @@ final class WorkflowCommand
     /** @param array<string, mixed> $attributes */
     public function withAttributes(array $attributes): self
     {
+        return $this->copyWithAttributes(array_merge($this->attributes, $attributes));
+    }
+
+    /** @param array<string, mixed> $attributes */
+    private function copyWithAttributes(array $attributes): self
+    {
         return new self(
             $this->type,
             $this->historyShape,
-            array_merge($this->attributes, $attributes),
+            $attributes,
             $this->localResult,
             $this->sideEffect,
             $this->conditionPredicate,
@@ -718,10 +786,18 @@ final class WorkflowCommand
         ]);
     }
 
-    /** @param array<string, mixed> $attributes */
-    public static function upsertSearchAttributes(array $attributes): self
+    /**
+     * @param array<string, mixed> $attributes
+     * @param array<string, string>|null $attributeTypes
+     */
+    public static function upsertSearchAttributes(array $attributes, ?array $attributeTypes = null): self
     {
-        return new self('upsert_search_attributes', 'search_attributes', ['attributes' => $attributes]);
+        $identity = ['attributes' => $attributes];
+        if ($attributeTypes !== null) {
+            $identity['attribute_types'] = SearchAttributeTypes::canonical($attributes, $attributeTypes);
+        }
+
+        return new self('upsert_search_attributes', 'search_attributes', $identity);
     }
 
     /** @param array<string, mixed> $entries */
@@ -822,6 +898,11 @@ final class WorkflowCommand
     {
         $wire = ['type' => $this->type];
         foreach ($this->attributes as $key => $value) {
+            if ($key === 'attribute_types' && $value === []) {
+                // An all-deletion update has no wire type declarations, but its
+                // empty authored identity still constrains recorded type maps.
+                continue;
+            }
             if ($key === 'request_payload_value') {
                 $wire['request_payload'] = $codec->envelope($value);
                 continue;

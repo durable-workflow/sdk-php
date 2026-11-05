@@ -5,9 +5,10 @@ import path from 'node:path';
 import process from 'node:process';
 import Ajv2020 from 'ajv/dist/2020.js';
 import {assertPrimaryGuideNavigation} from './check-docs-portal-navigation.mjs';
+import {fragmentLinks} from './check-docs-portal-links.mjs';
 
-const siteDirectory = path.resolve(process.argv[2] ?? 'build/site');
-const projectDirectory = path.resolve(import.meta.dirname, '..');
+const projectDirectory = path.resolve(process.env.DOCS_SOURCE_DIRECTORY || path.join(import.meta.dirname, '..'));
+const siteDirectory = path.resolve(process.argv[2] ?? path.join(projectDirectory, 'build/site'));
 const composer = JSON.parse(fs.readFileSync(path.join(projectDirectory, 'composer.json'), 'utf8'));
 const navigation = JSON.parse(fs.readFileSync(path.join(projectDirectory, 'docs/portal/_data/navigation.json'), 'utf8'));
 const quickstartContract = JSON.parse(fs.readFileSync(path.join(projectDirectory, 'docs/quickstart-contract.json'), 'utf8'));
@@ -66,6 +67,13 @@ assert(
 );
 
 const htmlFiles = filesUnder(siteDirectory, '.html');
+// Ids are indexed from the enumerated pages, so fragment checks look up link
+// targets without reading a path taken from page content.
+const pageIds = new Map(htmlFiles.map((file) => [
+  file,
+  new Set([...fs.readFileSync(file, 'utf8').matchAll(/\sid="([^"]+)"/g)].map((match) => match[1])),
+]));
+const elementIds = (file) => pageIds.get(file) ?? new Set();
 for (const file of htmlFiles) {
   const html = fs.readFileSync(file, 'utf8');
   const relative = path.relative(siteDirectory, file).replaceAll(path.sep, '/');
@@ -112,7 +120,22 @@ for (const file of htmlFiles) {
     const target = outputPath(url.split('#')[0].split('?')[0]);
     assert(fs.existsSync(target), `${relative} links to a missing local target: ${url}`);
   }
+
+  if (!relative.startsWith('api/')) {
+    for (const link of fragmentLinks(html, relative)) {
+      assert(
+        elementIds(outputPath(link.url)).has(link.fragment),
+        `${relative} links to a missing fragment: ${link.href}`,
+      );
+    }
+  }
 }
+
+const workflowsActivities = path.join(siteDirectory, 'build/workflows-activities/index.html');
+assert(
+  elementIds(workflowsActivities).has('durations'),
+  'Guide headings must render GitHub-style ids; /build/workflows-activities/#durations is linked from durable-workflow.com.',
+);
 
 const graphDirectory = path.join(siteDirectory, 'api/graphs');
 const graphPages = fs.existsSync(graphDirectory) ? filesUnder(graphDirectory, '.html') : [];
@@ -174,6 +197,11 @@ const validateLaravelAdoption = adoptionValidator.compile(laravelAdoptionSchema)
 assert(
   validateLaravelAdoption(laravelAdoptionContract),
   adoptionValidator.errorsText(validateLaravelAdoption.errors),
+);
+assert.equal(
+  laravelAdoptionContract.modes.service_v2.channel,
+  quickstartContract.package.onboarding_requirement,
+  'Laravel adoption must publish the same SDK channel as the quickstart onboarding requirement.',
 );
 assert.equal(
   laravelAdoptionContract.framework.constraint,
@@ -268,6 +296,51 @@ for (const source of filesUnder(path.join(projectDirectory, 'docs/portal'), '.md
   assert(
     !/\b2\.0\.0-(?:alpha|beta|rc)\.\d+\b/.test(markdown),
     `${path.relative(projectDirectory, source)} hard-codes a release candidate instead of using release metadata.`,
+  );
+}
+
+// A durable-workflow/sdk version written into prose or a command: `sdk:^3.9`,
+// `sdk "^3.8"`, `sdk:>=2.0`, `sdk:v2.5.4`, `"durable-workflow/sdk": "^2.0"`.
+// Render the requirement from release metadata, or omit it. `dev-main` and
+// wildcards are not versions and stay allowed. The text after each package
+// name is tested with an anchored pattern whose parts never overlap, so it
+// runs in linear time.
+const CONSTRAINT_AFTER_SDK_NAME = /^[ \t"':=]+(?:[~^v<>!]{1,2}=?[ \t]*)?\d/;
+function hardCodesSdkConstraint(text) {
+  return text.split('durable-workflow/sdk').slice(1).some((rest) => CONSTRAINT_AFTER_SDK_NAME.test(rest));
+}
+for (const sample of [
+  "composer require 'durable-workflow/sdk:^2.0'",
+  'composer require durable-workflow/sdk "^3.8"',
+  'durable-workflow/sdk:>=2.0',
+  'durable-workflow/sdk:v2.5.4',
+  '"durable-workflow/sdk": "^2.0"',
+  'durable-workflow/sdk 3.9.0',
+  'durable-workflow/sdk=3.9.0',
+  'durable-workflow/sdk = "^3.9"',
+  'durable-workflow/sdk:<=3.9',
+]) {
+  assert(hardCodesSdkConstraint(sample), `The SDK constraint check must reject: ${sample}`);
+}
+for (const sample of [
+  'composer require durable-workflow/sdk:dev-main',
+  'composer require durable-workflow/sdk',
+  'durable-workflow/sdk:*',
+  'durable-workflow/sdk=dev-main',
+  'durable-workflow/sdk-php 3.9.0',
+  'composer require durable-workflow/sdk\n\n1. Start the worker',
+]) {
+  assert(!hardCodesSdkConstraint(sample), `The SDK constraint check must allow: ${sample}`);
+}
+
+for (const source of [
+  path.join(projectDirectory, 'README.md'),
+  ...filesUnder(path.join(projectDirectory, 'docs'), '.md'),
+]) {
+  const markdown = fs.readFileSync(source, 'utf8');
+  assert(
+    !hardCodesSdkConstraint(markdown),
+    `${path.relative(projectDirectory, source)} hard-codes an SDK version constraint; render it from release metadata or omit it.`,
   );
 }
 

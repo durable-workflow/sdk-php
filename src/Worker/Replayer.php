@@ -21,6 +21,53 @@ use Throwable;
 /** Re-executes a straight-line workflow Fiber against committed, sequence-ordered history. */
 final class Replayer
 {
+    /**
+     * Every durable history event that claims a workflow sequence, by the
+     * command kind that owns it, following Core's
+     * WorkflowStepHistory::WORKFLOW_STEP_EVENT_TYPES. A command's lifecycle
+     * rows (terminal, retry, heartbeat and cancelled rows included) share its
+     * sequence. Internal wait-timeout timer rows belong to their wait; see
+     * durableCommandKind(). ActivityOutcomeRejected is deliberately absent:
+     * it is a payload-free audit fact that neither resolves an activity nor
+     * consumes a command position. Rows that only point at a step claim
+     * nothing: signal receipt and rejection, updates, message cursors,
+     * selection markers, cancellation requests and scope requests or
+     * preparations. Cancellation deliveries claim their whole span; see
+     * DELIVERY_EVENTS.
+     */
+    private const DURABLE_COMMAND_KINDS = [
+        'ActivityScheduled' => 'activity', 'ActivityStarted' => 'activity', 'ActivityHeartbeatRecorded' => 'activity',
+        'ActivityRetryScheduled' => 'activity', 'ActivityCompleted' => 'activity', 'ActivityFailed' => 'activity',
+        'ActivityCancelled' => 'activity', 'ActivityTimedOut' => 'activity', 'ActivityCancellationAcknowledged' => 'activity',
+        'TimerScheduled' => 'timer', 'TimerFired' => 'timer', 'TimerCancelled' => 'timer',
+        'ChildWorkflowScheduled' => 'child', 'ChildRunStarted' => 'child', 'ChildRunCompleted' => 'child',
+        'ChildRunFailed' => 'child', 'ChildRunCancelled' => 'child', 'ChildRunTerminated' => 'child',
+        'ConditionWaitOpened' => 'condition', 'ConditionWaitSatisfied' => 'condition',
+        'ConditionWaitTimedOut' => 'condition', 'ConditionWaitCancelled' => 'condition',
+        'SignalWaitOpened' => 'signal', 'SignalWaitReceived' => 'signal', 'SignalApplied' => 'signal',
+        'SignalWaitTimedOut' => 'signal', 'SignalWaitCancelled' => 'signal',
+        'ServiceOperationScheduled' => 'service_call', 'ServiceCallStarted' => 'service_call',
+        'ServiceCallCompleted' => 'service_call', 'ServiceCallFailed' => 'service_call',
+        'ServiceCallCancelled' => 'service_call', 'ServiceCallTimedOut' => 'service_call',
+        'SideEffectRecorded' => 'side_effect',
+        'VersionMarkerRecorded' => 'version_marker',
+        'MemoUpserted' => 'memo',
+        'SearchAttributesUpserted' => 'search_attributes',
+        'CancellationScopeOpened' => 'cancellation_scope',
+        'WorkflowContinuedAsNew' => 'continue_as_new',
+    ];
+
+    /**
+     * A delivered cancellation consumes the interrupted call even when that
+     * call was never scheduled, and its sequence_span reserves the whole
+     * interrupted range, sequence .. sequence + span - 1 inclusive (Core
+     * WorkflowStepHistory::nextSequenceFromEvents()).
+     */
+    private const DELIVERY_EVENTS = ['CooperativeCancellationDelivered', 'CancellationScopeDelivered'];
+
+    /** An upsert is the only command at its sequence. */
+    private const UPSERT_COMMAND_KINDS = ['memo', 'search_attributes'];
+
     private const MIN_VERSION = -2_147_483_648;
 
     private const MAX_VERSION = 2_147_483_647;
@@ -166,8 +213,16 @@ final class Replayer
         $nextSequence = 1;
         $cancellationConsumed = false;
         $consumedScopeDeliveries = [];
+        $consumedConditionTail = null;
 
         while (!$execution->isTerminated()) {
+            if ($consumedConditionTail !== null) {
+                $remaining = $this->restoreConsumedConditionTail($suspended, $consumedConditionTail);
+                if ($remaining !== []) {
+                    array_splice($steps, $stepCursor, 0, $remaining);
+                }
+                $consumedConditionTail = null;
+            }
             if ($suspended instanceof WorkflowCommand && !isset($cancelledConditionSequences[$nextSequence])
                 && ($conditionResult = $this->unrecordedConditionResult($suspended, $steps[$stepCursor] ?? null)) !== null) {
                 $suspended = $execution->resume($conditionResult);
@@ -373,6 +428,7 @@ final class Replayer
                     $this->assertParallelPathMatches($step, $path);
                     if ($command->type === 'open_condition_wait') {
                         $this->assertConditionWaitCompatible($step, $command);
+                        $command = $command->withRecordedConditionDefinition($step['condition_definition_fingerprint']);
                     }
                     $nextSequence = max($nextSequence, $step['sequence'] + 1);
 
@@ -391,6 +447,8 @@ final class Replayer
                             }
 
                             $metadata = $path[array_key_last($path)] ?? [];
+                            // Grouped reopens keep the authored timeout: replay of a
+                            // grouped physical reopen is not qualified yet (#278).
                             $command = $command->withAttributes([
                                 ...$metadata,
                                 'parallel_group_path' => $path,
@@ -679,6 +737,24 @@ final class Replayer
                 continue;
             }
 
+            if ($suspended->type === 'await_child_workflow') {
+                // A started child's await consumes no sequence: it reads the
+                // original call's resolution, through continuation and retries.
+                $awaited = $stepsBySequence[$suspended->attributes['sequence']] ?? null;
+                if (($awaited['shape'] ?? null) !== 'child_workflow') {
+                    throw new NonDeterministicWorkflow('An awaited child workflow has no recorded child call.',
+                        (int) $suspended->attributes['sequence'], reason: 'child_workflow_handle_mismatch');
+                }
+                if ($awaited['resolved'] !== true) {
+                    return $this->result($commands, $context);
+                }
+                $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($awaited));
+                $suspended = $awaited['failure'] instanceof Throwable
+                    ? $execution->throw($awaited['failure'])
+                    : $execution->resume($awaited['value']);
+                continue;
+            }
+
             $step = $steps[$stepCursor] ?? null;
             if ($step !== null) {
                 if ($strictSequences && $step['sequence'] !== $nextSequence) {
@@ -699,6 +775,15 @@ final class Replayer
                 }
                 ++$stepCursor;
                 $nextSequence = max($nextSequence, $step['sequence'] + 1);
+                if ($suspended->type === 'start_child_workflow' && ($suspended->attributes['await'] ?? null) === 'started') {
+                    $identity = $this->stepChildIdentity($step);
+                    if ($identity === null) {
+                        throw new NonDeterministicWorkflow('A committed child start lacks its child call, instance or run identity.',
+                            $step['sequence'], reason: 'child_start_identity_missing');
+                    }
+                    $suspended = $execution->resume(new ChildWorkflowHandle($context, $step['sequence'], $identity));
+                    continue;
+                }
                 if ($suspended->type === 'open_condition_wait') {
                     $this->assertConditionWaitCompatible($step, $suspended);
                     $nextStep = $steps[$stepCursor] ?? null;
@@ -708,17 +793,19 @@ final class Replayer
                     }
                     if ($step['resolved']) {
                         $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($step));
+                        $consumedConditionTail = $this->conditionTailAfterConsumption($step, $suspended, $step['value'] === true);
                         $suspended = $execution->resume($step['value']);
                         continue;
                     }
                     if ($suspended->conditionSatisfied()) {
+                        $consumedConditionTail = $this->conditionTailAfterConsumption($step, $suspended, true);
                         $suspended = $execution->resume(true);
                         continue;
                     }
 
                     if (($encodingFailure = $this->appendWorkflowCommand(
                         $commands,
-                        $suspended,
+                        $this->conditionReopen($suspended, $step, $history),
                         $taskQueue,
                         $context,
                     )) !== null) {
@@ -1134,6 +1221,37 @@ final class Replayer
         return true;
     }
 
+    /** @param array<string, mixed> $payload */
+    private function childIdentity(array $payload): ?ChildWorkflowIdentity
+    {
+        $call = $payload['child_call_id'] ?? null;
+        $instance = $payload['child_workflow_instance_id'] ?? $payload['workflow_instance_id'] ?? null;
+        $run = $payload['child_workflow_run_id'] ?? $payload['workflow_run_id'] ?? null;
+        foreach ([$call, $instance, $run] as $value) {
+            if (!is_string($value) || trim($value) === '') {
+                return null;
+            }
+        }
+
+        return new ChildWorkflowIdentity($call, $instance, $run);
+    }
+
+    /** @param array<string, mixed> $step */
+    private function stepChildIdentity(array $step): ?ChildWorkflowIdentity
+    {
+        $identity = $step['child_identity'] ?? null;
+
+        return $identity instanceof ChildWorkflowIdentity ? $identity : null;
+    }
+
+    /** @param array<string, mixed> $step */
+    private function stepOccurrence(array $step): ?string
+    {
+        $occurrence = $step['occurrence_id'] ?? null;
+
+        return is_string($occurrence) && $occurrence !== '' ? $occurrence : null;
+    }
+
     /** @param array<string, mixed> $previous
      *  @param array<string, mixed> $next
      */
@@ -1142,7 +1260,198 @@ final class Replayer
         return $previous['shape'] === 'condition_wait' && $next['shape'] === 'condition_wait'
             && $previous['condition_key'] === $next['condition_key']
             && $previous['condition_definition_fingerprint'] === $next['condition_definition_fingerprint']
-            && $previous['timeout_seconds'] === $next['timeout_seconds'];
+            && ($previous['timeout_seconds'] === $next['timeout_seconds']
+                || (is_int($previous['timeout_seconds']) && is_int($next['timeout_seconds'])
+                    && $next['timeout_seconds'] < $previous['timeout_seconds']))
+            && $this->conditionWaitStillLive($previous, $next)
+            // Two physical opens with different recorded occurrences are two calls (#281).
+            && ($this->stepOccurrence($previous) === null || $this->stepOccurrence($next) === null
+                || $this->stepOccurrence($previous) === $this->stepOccurrence($next))
+            // Grouped members are separate calls; grouped reopens are #278.
+            && $previous['parallel_path'] === [] && $next['parallel_path'] === [];
+    }
+
+    /**
+     * A later open continues a wait the Server satisfied (a false wake) or a
+     * wait that was still open when the later one opened (a repeated open,
+     * #269 part 2). What counts is the state at that open: a repeated open's
+     * orphan may time out afterwards (#283) and is still the same wait. A wait
+     * that timed out or failed before the later open is finished, so that
+     * open is a separate call, such as a grace period.
+     *
+     * @param array<string, mixed> $previous
+     * @param array<string, mixed> $next
+     */
+    private function conditionWaitStillLive(array $previous, array $next): bool
+    {
+        if ($previous['resolved'] !== true || ($previous['value'] === true && $previous['failure'] === null)) {
+            return true;
+        }
+        $nextOpened = $next['opened_order'] ?? null;
+        $resolved = $previous['resolution_order'] ?? null;
+
+        return is_int($nextOpened) && is_int($resolved) && $resolved > $nextOpened;
+    }
+
+    /**
+     * A physical reopen of one logical condition wait keeps that wait's first
+     * opening time and authored timeout. Workers before #269 reopened with the
+     * full timeout; later ones reopen with the time remaining, so a reopen may
+     * record a smaller timeout than the wait it continues.
+     *
+     * @param list<array<string, mixed>> $steps
+     * @return list<array<string, mixed>>
+     */
+    private function bindConditionReopens(array $steps): array
+    {
+        foreach ($steps as $index => $step) {
+            $previous = $steps[$index - 1] ?? null;
+            if ($previous !== null && $this->isConditionReopen($previous, $step)) {
+                $steps[$index]['timeout_seconds'] = $previous['timeout_seconds'];
+                $steps[$index]['opened_at'] = $previous['opened_at'] ?? null;
+                // The first open owns the logical wait's id. A first open from a
+                // worker before #274 has none, and a later open must not lend it one.
+                $steps[$index]['occurrence_id'] = $this->stepOccurrence($previous);
+            }
+        }
+
+        return $steps;
+    }
+
+    /**
+     * Keep the raw opens until workflow code has consumed the earlier result.
+     * Equal keys/fingerprints alone cannot decide whether a later legacy open
+     * was another false wake or a new authored call. Only a recorded satisfied
+     * wait followed by a different recorded wait identity can supply a tail;
+     * its own original timeout/opening is used if code actually authors it.
+     *
+     * @param array<string, mixed> $step
+     * @return array{consumed: bool, occurrence: ?string, terminal: array<string, mixed>, steps: list<array<string, mixed>>}|null
+     */
+    private function conditionTailAfterConsumption(array $step, WorkflowCommand $command, bool $satisfied): ?array
+    {
+        $physical = $step['physical_condition_steps'] ?? [];
+        foreach ($physical as $index => $previous) {
+            if (!$this->isLegacySatisfiedCondition($previous)) {
+                continue;
+            }
+            foreach (array_slice($physical, $index + 1) as $offset => $next) {
+                if (is_int($next['opened_order'] ?? null)
+                    && $next['opened_order'] > $previous['resolution_order']) {
+                    return ['consumed' => $satisfied,
+                        'occurrence' => $this->stringValue($command->attributes['condition_wait_occurrence_id'] ?? null),
+                        'terminal' => $previous,
+                        'steps' => array_slice($physical, $index + $offset + 1)];
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /** @param array<string, mixed> $step */
+    private function isLegacySatisfiedCondition(array $step): bool
+    {
+        return $this->stepOccurrence($step) === null && $step['resolved'] === true
+            && $step['value'] === true && $step['failure'] === null
+            && is_string($step['condition_definition_fingerprint'] ?? null)
+            && preg_match('/\Asha256:[a-f0-9]{64}\z/', $step['condition_definition_fingerprint']) === 1;
+    }
+
+    /**
+     * @param array{consumed: bool, occurrence: ?string, terminal: array<string, mixed>, steps: list<array<string, mixed>>} $pending
+     * @return list<array<string, mixed>>
+     */
+    private function restoreConsumedConditionTail(mixed $command, array $pending): array
+    {
+        $first = $pending['steps'][0];
+        if (!$command instanceof WorkflowCommand || $command->type !== 'open_condition_wait'
+            || $first['condition_key'] !== $this->stringValue($command->attributes['condition_key'] ?? null)) {
+            return [];
+        }
+        if ($this->stepOccurrence($first) !== null && $this->stepOccurrence($first) === $pending['occurrence']) {
+            // A later canonical id can prove this was still the consumed call,
+            // even when its first legacy open had no occurrence metadata.
+            return [];
+        }
+        if (!$pending['consumed'] || !$this->conditionTerminalIdentityMatches($pending['terminal'])
+            || !is_string($first['condition_wait_id'] ?? null)
+            || ($first['condition_open_sequence'] ?? null) !== $first['sequence']
+            || $first['condition_wait_id'] === $pending['terminal']['condition_wait_id']) {
+            throw new NonDeterministicWorkflow(
+                'Legacy condition history cannot distinguish this authored call from a physical reopen.',
+                $first['sequence'], reason: 'legacy_condition_call_boundary_ambiguous',
+            );
+        }
+        $this->assertConditionWaitCompatible($first, $command);
+        $steps = $pending['steps'];
+        foreach ($steps as $index => $step) {
+            $steps[$index]['physical_condition_steps'] = [$step];
+        }
+
+        return $this->collapseConditionReopens($this->bindConditionReopens($steps));
+    }
+
+    /** @param array<string, mixed> $step */
+    private function conditionTerminalIdentityMatches(array $step): bool
+    {
+        $terminal = $step['condition_terminal'] ?? [];
+
+        return is_string($step['condition_wait_id'] ?? null)
+            && ($step['condition_open_sequence'] ?? null) === $step['sequence']
+            && ($terminal['condition_wait_id'] ?? null) === $step['condition_wait_id']
+            && ($terminal['sequence'] ?? null) === $step['sequence']
+            && is_int($step['opened_order'] ?? null) && $step['resolution_order'] > $step['opened_order'];
+    }
+
+    /**
+     * The command that reopens a recorded condition wait, bounded by the wait's
+     * original deadline as embedded await($condition, $timeout) is. The Server
+     * satisfies an open wait on any signal and starts a new timer from each
+     * physical open, so the full timeout would move the deadline forward.
+     *
+     * @param array<string, mixed> $step
+     * @param list<array<string, mixed>> $history
+     */
+    private function conditionReopen(WorkflowCommand $command, array $step, array $history): WorkflowCommand
+    {
+        $command = $command->withRecordedConditionDefinition($step['condition_definition_fingerprint']);
+        $timeout = $step['timeout_seconds'] ?? null;
+        $openedAt = $step['opened_at'] ?? null;
+        if (!is_int($timeout) || !$openedAt instanceof \DateTimeImmutable) {
+            return $command;
+        }
+        $now = null;
+        foreach ($history as $event) {
+            $time = $this->eventTime($event);
+            if ($time !== null && ($now === null || $time > $now)) {
+                $now = $time;
+            }
+        }
+        if ($now === null) {
+            return $command;
+        }
+        $elapsed = (float) $now->format('U.u') - (float) $openedAt->format('U.u');
+        $remaining = max(0, min($timeout, (int) ceil($timeout - $elapsed)));
+
+        return $command->withAttributes(['timeout_seconds' => $remaining]);
+    }
+
+    /** @param mixed $event */
+    private function eventTime(mixed $event): ?\DateTimeImmutable
+    {
+        $value = is_array($event) ? ($event['timestamp'] ?? $event['recorded_at'] ?? null) : null;
+        // RFC 3339 with an explicit offset only: "now" or a zoneless time would
+        // read the wall clock or the host time zone and break determinism.
+        if (!is_string($value)
+            || preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/', $value) !== 1) {
+            return null;
+        }
+        try {
+            return new \DateTimeImmutable($value);
+        } catch (\Exception) {
+            return null;
+        }
     }
 
     /** @param list<array<string, mixed>> $history
@@ -1214,9 +1523,19 @@ final class Replayer
         $activityPolicies = [];
         $timerCleanup = [];
         $conditionStepsByWaitId = [];
+        $conditionOpenedAt = [];
+        $childIdentities = [];
+        $conditionOpenedOrder = [];
+        $conditionOccurrences = [];
+        $conditionWaitIds = [];
+        $conditionOpenSequences = [];
+        $conditionTerminals = [];
         $versionMarkerSequences = [];
         $versionMarkerChangeIds = [];
         $memoSequences = [];
+        $commandKindsBySequence = [];
+        $deliveryRanges = [];
+        $upsertSequences = [];
         $fallbackSequence = 1_000_000;
         foreach ($history as $resolutionOrder => $event) {
             $type = (string) ($event['event_type'] ?? $event['type'] ?? '');
@@ -1224,6 +1543,7 @@ final class Replayer
             $sequence = match ($type) {
                 'VersionMarkerRecorded' => $this->versionMarkerSequence($payload),
                 'MemoUpserted' => $this->memoSequence($payload),
+                'SearchAttributesUpserted' => $this->searchAttributeSequence($payload),
                 default => $this->sequence($payload) ?? $fallbackSequence++,
             };
             $key = (string) $sequence;
@@ -1233,6 +1553,37 @@ final class Replayer
                 && $incomingShape !== null && $incomingShape !== 'service_operation') {
                 throw new NonDeterministicWorkflow('Service call collides with another durable command.', $sequence,
                     reason: 'durable_command_sequence_collision');
+            }
+
+            // One workflow sequence is one durable command: only rows of the
+            // same command's lifecycle share it. A collision that involves an
+            // upsert is refused in either order, whether or not the replay
+            // parser below would build a step from the other row.
+            if (in_array($type, self::DELIVERY_EVENTS, true)) {
+                // A delivery claims its whole span. Compare ranges rather than
+                // expanding them, so a large span costs nothing.
+                [$first, $last] = $this->deliveryRange($type, $payload);
+                foreach ($upsertSequences as $upsertSequence => $upsertKind) {
+                    if ($upsertSequence >= $first && $upsertSequence <= $last) {
+                        $this->refuseUpsertCollision($upsertSequence, $type, $upsertKind, 'cancellation_delivery');
+                    }
+                }
+                $deliveryRanges[] = [$first, $last, $type];
+            } elseif (($claim = $this->durableCommandKind($type, $payload)) !== null) {
+                $kinds = $commandKindsBySequence[$key] ?? [];
+                $kinds[$claim] = true;
+                if (count($kinds) > 1 && array_intersect(array_keys($kinds), self::UPSERT_COMMAND_KINDS) !== []) {
+                    $this->refuseUpsertCollision($sequence, $type, implode(', ', array_diff(array_keys($kinds), [$claim])), $claim);
+                }
+                $commandKindsBySequence[$key] = $kinds;
+                if (in_array($claim, self::UPSERT_COMMAND_KINDS, true)) {
+                    foreach ($deliveryRanges as [$first, $last]) {
+                        if ($sequence >= $first && $sequence <= $last) {
+                            $this->refuseUpsertCollision($sequence, $type, 'cancellation_delivery', $claim);
+                        }
+                    }
+                    $upsertSequences[$sequence] = $claim;
+                }
             }
 
             if ($type !== 'CancellationScopeOpened' && isset($scopes->openings[$sequence])
@@ -1435,6 +1786,11 @@ final class Replayer
                     $this->payloadDetail($payload, 'child_workflow'),
                     parallelPath: $this->parallelPath($payload, $sequence),
                 );
+                // Preserve a missing initial identity too. A later continued
+                // or retried run cannot establish which run started the child.
+                if (!array_key_exists($key, $childIdentities)) {
+                    $childIdentities[$key] = $this->childIdentity($payload);
+                }
             } elseif ($type === 'ChildRunCompleted') {
                 if (($steps[$key]['resolved'] ?? false) === true) {
                     continue;
@@ -1563,12 +1919,47 @@ final class Replayer
                     resolutionOrder: $resolutionOrder,
                 );
             } elseif ($type === 'SearchAttributesUpserted') {
-                $steps[$key] = $this->resolvedStep(
-                    $sequence,
-                    'search_attributes',
-                    null,
-                    resolutionOrder: $resolutionOrder,
-                );
+                if (($steps[$key]['shape'] ?? null) === 'search_attributes') {
+                    throw new NonDeterministicWorkflow(
+                        "Workflow sequence {$sequence} contains more than one SearchAttributesUpserted event.",
+                        $sequence,
+                        'one SearchAttributesUpserted event',
+                        'multiple SearchAttributesUpserted events',
+                        'duplicate_search_attribute_update',
+                    );
+                }
+                if (isset($steps[$key])) {
+                    throw new NonDeterministicWorkflow(
+                        "Workflow sequence {$sequence} contains a search-attribute upsert and another durable command.",
+                        $sequence,
+                        'one durable command shape',
+                        $steps[$key]['shape'].' and search attribute upsert',
+                        'durable_command_sequence_collision',
+                    );
+                }
+                $attributes = $payload['attributes'] ?? null;
+                if (!is_array($attributes) || $attributes === []) {
+                    // The same reason sdk-rust reports for this history.
+                    throw new NonDeterministicWorkflow(
+                        "SearchAttributesUpserted history at sequence {$sequence} is missing its recorded attributes.",
+                        $sequence,
+                        'non-empty search attribute object',
+                        'missing attributes',
+                        'search_attribute_update_missing',
+                    );
+                }
+                $steps[$key] = [
+                    ...$this->resolvedStep(
+                        $sequence,
+                        'search_attributes',
+                        null,
+                        resolutionOrder: $resolutionOrder,
+                    ),
+                    'search_attributes' => $this->canonicalSearchAttributes($attributes, $sequence, 'recorded'),
+                    'search_attribute_types' => array_key_exists('attribute_types', $payload)
+                        ? $this->recordedSearchAttributeTypes($attributes, $payload['attribute_types'], $sequence)
+                        : null,
+                ];
             } elseif ($type === 'ConditionWaitOpened') {
                 $conditionKey = $this->stringValue($payload['condition_key'] ?? null);
                 $conditionDefinitionFingerprint = $this->stringValue(
@@ -1587,7 +1978,12 @@ final class Replayer
                 $conditionWaitId = $this->stringValue($payload['condition_wait_id'] ?? null);
                 if ($conditionWaitId !== null) {
                     $conditionStepsByWaitId[$conditionWaitId] = $key;
+                    $conditionWaitIds[$key] = $conditionWaitId;
                 }
+                $conditionOpenedAt[$key] ??= $this->eventTime($event);
+                $conditionOpenedOrder[$key] ??= $resolutionOrder;
+                $conditionOccurrences[$key] ??= $this->stringValue($payload['condition_wait_occurrence_id'] ?? null);
+                $conditionOpenSequences[$key] ??= $this->sequence($payload);
             } elseif (in_array($type, ['ConditionWaitSatisfied', 'ConditionWaitTimedOut'], true)) {
                 $conditionStepKey = $this->conditionStepKey($payload, $conditionStepsByWaitId);
                 if ($conditionStepKey !== null
@@ -1608,6 +2004,10 @@ final class Replayer
                         ),
                         resolutionOrder: $resolutionOrder,
                     );
+                    $conditionTerminals[$conditionStepKey] = [
+                        'sequence' => $this->sequence($payload),
+                        'condition_wait_id' => $this->stringValue($payload['condition_wait_id'] ?? null),
+                    ];
                 }
             }
         }
@@ -1634,9 +2034,28 @@ final class Replayer
         foreach ($timerCleanup as $key => $proof) {
             if (isset($steps[$key])) { $steps[$key]['cancellation_cleanup'] = $proof; }
         }
+        foreach ($conditionOpenedAt as $key => $openedAt) {
+            if (($steps[$key]['shape'] ?? null) === 'condition_wait') {
+                $steps[$key]['opened_at'] = $openedAt;
+                $steps[$key]['opened_order'] = $conditionOpenedOrder[$key] ?? null;
+                $steps[$key]['occurrence_id'] = $conditionOccurrences[$key] ?? null;
+                $steps[$key]['condition_wait_id'] = $conditionWaitIds[$key] ?? null;
+                $steps[$key]['condition_open_sequence'] = $conditionOpenSequences[$key] ?? null;
+                $steps[$key]['condition_terminal'] = $conditionTerminals[$key] ?? null;
+                // Snapshot before bindConditionReopens changes timeout/opening
+                // metadata. This is internal replay state, never a wire field.
+                $steps[$key]['physical_condition_steps'] = [$steps[$key]];
+            }
+        }
+        foreach ($childIdentities as $key => $identity) {
+            if (($steps[$key]['shape'] ?? null) === 'child_workflow' && $identity !== null) {
+                $steps[$key]['child_identity'] = $identity;
+            }
+        }
         ksort($steps, SORT_NUMERIC);
+        $steps = $this->bindConditionReopens(array_values($steps));
 
-        return $preserveConditionReopens ? array_values($steps) : $this->collapseConditionReopens(array_values($steps));
+        return $preserveConditionReopens ? $steps : $this->collapseConditionReopens($steps);
     }
 
     /** @param list<array<string, mixed>> $history
@@ -2381,6 +2800,29 @@ final class Replayer
             );
         }
 
+        if ($command->historyShape === 'search_attributes') {
+            $authored = $this->canonicalSearchAttributes($command->attributes['attributes'] ?? null, $step['sequence'], 'authored');
+            $difference = self::searchAttributesDifference($step['search_attributes'] ?? [], $authored);
+            if ($difference !== null) {
+                // Diagnostics name the key, never the values.
+                throw new NonDeterministicWorkflow(
+                    "Recorded search attributes changed during replay: {$difference}.",
+                    $step['sequence'],
+                    'the recorded search attributes',
+                    $difference,
+                    'search_attribute_value_mismatch',
+                );
+            }
+            $recordedTypes = $step['search_attribute_types'] ?? null;
+            if ($recordedTypes !== null && array_key_exists('attribute_types', $command->attributes)
+                && $recordedTypes !== $command->attributes['attribute_types']) {
+                throw new NonDeterministicWorkflow(
+                    'Declared search-attribute types changed during replay.',
+                    $step['sequence'], reason: 'search_attribute_type_mismatch',
+                );
+            }
+        }
+
         $actualDetail = $this->commandDetail($command);
         if ($command->type !== 'open_condition_wait'
             && $step['detail'] !== null
@@ -2663,6 +3105,134 @@ final class Replayer
         return $value === null ? null : (string) $value;
     }
 
+    private const SEARCH_ATTRIBUTE_MAX_STRING_LENGTH = 2048;
+
+    private const SEARCH_ATTRIBUTE_MAX_KEYWORD_LENGTH = 255;
+
+    /**
+     * @param array<string, mixed> $attributes
+     * @return array<string, string>
+     */
+    private function recordedSearchAttributeTypes(array $attributes, mixed $types, int $sequence): array
+    {
+        try {
+            return SearchAttributeTypes::canonical($attributes, $types);
+        } catch (\InvalidArgumentException $error) {
+            throw new NonDeterministicWorkflow(
+                $error->getMessage(), $sequence, reason: 'search_attribute_types_malformed',
+            );
+        }
+    }
+
+    /**
+     * The canonical replay identity of a search-attribute upsert's values.
+     *
+     * History keeps the values as Core's UpsertSearchAttributesCall normalizes
+     * them: a non-empty map with 1-64 character URL-safe string keys; each
+     * value null, a bool, an int, a finite float, a string of at most 2048
+     * characters or a list of strings of at most 255 characters each; strings
+     * and list items trimmed, an empty scalar string as a deletion, keys
+     * sorted. The authored call is normalized the same way. Anything outside
+     * that set, recorded or authored, refuses replay instead of being coerced.
+     *
+     * Explicitly authored types bind separately against known recorded types.
+     * Legacy one-argument calls remain value-only because effective types may
+     * come from a namespace registration the worker cannot see. Histories
+     * without type metadata also retain value-only compatibility.
+     *
+     * @return array<string, null|bool|int|float|string|list<string>>
+     */
+    private function canonicalSearchAttributes(mixed $attributes, int $sequence, string $origin): array
+    {
+        $refuse = static function (string $detail) use ($sequence, $origin): never {
+            throw new NonDeterministicWorkflow(
+                "The {$origin} search attributes at sequence {$sequence} are not portable: {$detail}.",
+                $sequence,
+                'a non-empty map of portable keys to null, bool, int, finite float, string or string-list values',
+                $detail,
+                'search_attributes_unportable',
+            );
+        };
+        if (!is_array($attributes) || $attributes === []) {
+            $refuse('expected a non-empty map');
+        }
+        $normalized = [];
+        foreach ($attributes as $key => $value) {
+            if (!is_string($key) || preg_match('/\A[A-Za-z0-9_.:-]{1,64}\z/', $key) !== 1) {
+                $refuse(is_string($key) ? 'a key is not a 1-64 character URL-safe string' : 'a key is not a string');
+            }
+            if (is_string($value)) {
+                $value = trim($value);
+                $length = self::characterLength($value);
+                if ($length === null || $length > self::SEARCH_ATTRIBUTE_MAX_STRING_LENGTH) {
+                    $refuse("[{$key}] is not a UTF-8 string of at most ".self::SEARCH_ATTRIBUTE_MAX_STRING_LENGTH.' characters');
+                }
+                $value = $value === '' ? null : $value;
+            } elseif (is_float($value)) {
+                if (!is_finite($value)) {
+                    $refuse("[{$key}] is not a finite number");
+                }
+            } elseif (is_array($value)) {
+                if (!array_is_list($value)) {
+                    $refuse("[{$key}] is a map, not a list");
+                }
+                foreach ($value as $index => $item) {
+                    if (!is_string($item)) {
+                        $refuse("[{$key}] list value {$index} is not a string");
+                    }
+                    $item = trim($item);
+                    $length = self::characterLength($item);
+                    if ($length === null || $length > self::SEARCH_ATTRIBUTE_MAX_KEYWORD_LENGTH) {
+                        $refuse("[{$key}] list value {$index} is not a UTF-8 string of at most ".self::SEARCH_ATTRIBUTE_MAX_KEYWORD_LENGTH.' characters');
+                    }
+                    $value[$index] = $item;
+                }
+            } elseif ($value !== null && !is_bool($value) && !is_int($value)) {
+                $refuse("[{$key}] is a ".get_debug_type($value));
+            }
+            $normalized[$key] = $value;
+        }
+        ksort($normalized, SORT_STRING);
+
+        return $normalized;
+    }
+
+    private static function characterLength(string $value): ?int
+    {
+        $length = preg_match_all('/./su', $value);
+
+        return $length === false ? null : $length;
+    }
+
+    /**
+     * Compare two canonical maps structurally and type-strictly, without any
+     * JSON or php.ini dependent formatting. An int and a float are different
+     * values; floats compare numerically, so -0.0 equals 0.0.
+     *
+     * @param array<string, mixed> $recorded
+     * @param array<string, mixed> $authored
+     * @return string|null a payload-free description of the first difference
+     */
+    private static function searchAttributesDifference(array $recorded, array $authored): ?string
+    {
+        if (array_keys($recorded) !== array_keys($authored)) {
+            return 'the key set changed';
+        }
+        foreach ($recorded as $key => $value) {
+            $other = $authored[$key];
+            $same = match (true) {
+                is_float($value) => is_float($other) && $value == $other,
+                is_array($value) => is_array($other) && $value === $other,
+                default => $value === $other,
+            };
+            if (!$same) {
+                return "[{$key}] changed";
+            }
+        }
+
+        return null;
+    }
+
     /** @param array<string, mixed> $payload */
     private function payloadDetail(array $payload, string $shape): ?string
     {
@@ -2727,6 +3297,97 @@ final class Replayer
                 'positive integer sequence',
                 is_scalar($sequence) ? (string) $sequence : get_debug_type($sequence),
                 'memo_sequence_invalid',
+            );
+        }
+
+        return $sequence;
+    }
+
+    /**
+     * The sequences a cancellation delivery reserves: its interrupted call's
+     * sequence through sequence + sequence_span - 1, inclusive, as Core counts
+     * them. A span that is present must be a positive integer.
+     *
+     * @param array<string, mixed> $payload
+     * @return array{int, int}
+     */
+    private function deliveryRange(string $type, array $payload): array
+    {
+        $sequence = $payload['sequence'] ?? null;
+        $span = $payload['sequence_span'] ?? 1;
+        if (!is_int($sequence) || $sequence <= 0 || !is_int($span) || $span <= 0 || $sequence > PHP_INT_MAX - $span) {
+            throw new NonDeterministicWorkflow(
+                "{$type} history must name a positive workflow sequence and span.",
+                is_int($sequence) ? $sequence : null,
+                'positive integer sequence and sequence_span',
+                'invalid delivery position',
+                'durable_command_sequence_invalid',
+            );
+        }
+
+        return [$sequence, $sequence + $span - 1];
+    }
+
+    private function refuseUpsertCollision(int $sequence, string $type, string $existing, string $incoming): never
+    {
+        throw new NonDeterministicWorkflow(
+            "Workflow sequence {$sequence} records {$type} after a {$existing} command.",
+            $sequence,
+            'one durable command per workflow sequence',
+            "{$existing} and {$incoming}",
+            'durable_command_sequence_collision',
+        );
+    }
+
+    /**
+     * The command kind that owns a durable history row, or null for a row that
+     * only points at a step. A wait's internal timeout timer belongs to that
+     * wait, not to a workflow timer.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function durableCommandKind(string $type, array $payload): ?string
+    {
+        $kind = self::DURABLE_COMMAND_KINDS[$type] ?? null;
+        if ($kind !== 'timer') {
+            return $kind;
+        }
+        $timerKind = $payload['timer_kind'] ?? null;
+        if ($timerKind === 'condition_timeout' || $this->stringValue($payload['condition_wait_id'] ?? null) !== null) {
+            return 'condition';
+        }
+        if ($timerKind === 'signal_timeout' || $this->stringValue($payload['signal_wait_id'] ?? null) !== null) {
+            return 'signal';
+        }
+
+        return 'timer';
+    }
+
+    /**
+     * A recorded search-attribute upsert must name its own workflow step;
+     * replay never synthesizes one. The reasons match sdk-rust.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function searchAttributeSequence(array $payload): int
+    {
+        if (!array_key_exists('sequence', $payload) || $payload['sequence'] === null) {
+            throw new NonDeterministicWorkflow(
+                'SearchAttributesUpserted history has no workflow sequence.',
+                null,
+                'positive integer sequence',
+                'missing sequence',
+                'durable_command_sequence_missing',
+            );
+        }
+        $sequence = $payload['sequence'];
+        if (!is_int($sequence) || $sequence <= 0) {
+            throw new NonDeterministicWorkflow(
+                'SearchAttributesUpserted history uses an invalid workflow sequence.',
+                is_int($sequence) ? $sequence : null,
+                'positive integer sequence',
+                is_scalar($sequence) ? (string) $sequence : get_debug_type($sequence),
+                'durable_command_sequence_invalid',
             );
         }
 
@@ -2894,7 +3555,8 @@ final class Replayer
      *     condition_definition_fingerprint: ?string,
      *     timeout_seconds: ?int,
      *     parallel_path: list<array<string, mixed>>,
-     *     resolution_order: int
+     *     resolution_order: int,
+     *     physical_condition_steps?: list<array<string, mixed>>
      * }> $steps
      * @return list<array{
      *     sequence: int,
@@ -2907,7 +3569,8 @@ final class Replayer
      *     condition_definition_fingerprint: ?string,
      *     timeout_seconds: ?int,
      *     parallel_path: list<array<string, mixed>>,
-     *     resolution_order: int
+     *     resolution_order: int,
+     *     physical_condition_steps?: list<array<string, mixed>>
      * }>
      */
     private function collapseConditionReopens(array $steps): array
@@ -2920,8 +3583,18 @@ final class Replayer
                 && $collapsed[$last]['shape'] === 'condition_wait'
                 && $step['condition_key'] === $collapsed[$last]['condition_key']
                 && $step['condition_definition_fingerprint'] === $collapsed[$last]['condition_definition_fingerprint']
-                && $step['timeout_seconds'] === $collapsed[$last]['timeout_seconds']) {
+                && $step['timeout_seconds'] === $collapsed[$last]['timeout_seconds']
+                && $this->conditionWaitStillLive($collapsed[$last], $step)
+                && ($this->stepOccurrence($collapsed[$last]) === null || $this->stepOccurrence($step) === null
+                    || $this->stepOccurrence($collapsed[$last]) === $this->stepOccurrence($step))
+                && $step['parallel_path'] === [] && $collapsed[$last]['parallel_path'] === []) {
                 $step['sequence'] = $collapsed[$last]['sequence'];
+                $step['opened_at'] = $collapsed[$last]['opened_at'] ?? null;
+                $step['occurrence_id'] = $this->stepOccurrence($collapsed[$last]);
+                $step['physical_condition_steps'] = [
+                    ...($collapsed[$last]['physical_condition_steps'] ?? []),
+                    ...($step['physical_condition_steps'] ?? []),
+                ];
                 $collapsed[$last] = $step;
                 continue;
             }
@@ -2966,12 +3639,27 @@ final class Replayer
             );
         }
         if ($step['condition_definition_fingerprint'] !== null
-            && $step['condition_definition_fingerprint'] !== $currentFingerprint) {
+            && !$command->conditionDefinitionMatches($step['condition_definition_fingerprint'])) {
             throw new NonDeterministicWorkflow(
                 'Condition wait predicate fingerprint changed during replay.',
                 $step['sequence'],
                 $step['condition_definition_fingerprint'],
                 $currentFingerprint,
+            );
+        }
+        $recordedOccurrence = $this->stepOccurrence($step);
+        $currentOccurrence = $this->stringValue($command->attributes['condition_wait_occurrence_id'] ?? null);
+        // Only ids in this SDK's own format (php:condition-wait:N, #274) are
+        // compared. A history without an id, or with an id in another format,
+        // is not checked against the call.
+        if ($recordedOccurrence !== null && $currentOccurrence !== null
+            && str_starts_with($recordedOccurrence, 'php:condition-wait:') && $recordedOccurrence !== $currentOccurrence) {
+            throw new NonDeterministicWorkflow(
+                sprintf('Condition wait occurrence changed from %s to %s during replay.', $recordedOccurrence, $currentOccurrence),
+                $step['sequence'],
+                $recordedOccurrence,
+                $currentOccurrence,
+                'condition_wait_occurrence_mismatch',
             );
         }
         if ($step['timeout_seconds'] !== $currentTimeout) {

@@ -10,6 +10,9 @@ on:
       - '.eleventy.cjs'
       - 'scripts/check-docs-*'
       - 'scripts/finalize-api-reference.php'
+      - 'scripts/build-docs.sh'
+      - 'scripts/prepare-docs-tooling.py'
+      - 'scripts/bind-docs-artifact.py'
       - 'README.md'
       - 'composer.json'
       - 'package.json'
@@ -36,6 +39,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    env:
+      DOCS_SOURCE_DIRECTORY: ${{ github.workspace }}
     outputs:
       stable: ${{ steps.release-channel.outputs.stable }}
     steps:
@@ -60,53 +65,47 @@ jobs:
         with:
           ref: ${{ inputs.stable_source || (inputs.stable_tag != '' && format('refs/tags/{0}', inputs.stable_tag)) || github.sha }}
           fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git,npm
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: '8.3'
-          tools: composer:v2
+          tools: composer:2.10.3
           coverage: none
+      - name: Select the temporary tooling directory
+        run: echo "DOCS_TOOLING_DIRECTORY=$RUNNER_TEMP/docs-tooling" >> "$GITHUB_ENV"
+      - name: Prepare the exact workflow tooling separately
+        env:
+          DOCS_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: |
+          if [[ ! "$DOCS_WORKFLOW_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'The documentation tooling requires the exact workflow revision' >&2
+            exit 1
+          fi
+          git show "$DOCS_WORKFLOW_REVISION:scripts/prepare-docs-tooling.py" > "$RUNNER_TEMP/prepare-docs-tooling.py"
+          python "$RUNNER_TEMP/prepare-docs-tooling.py" "$DOCS_WORKFLOW_REVISION" "$DOCS_TOOLING_DIRECTORY"
       - name: Resolve the public documentation release channel
         id: release-channel
         env:
           STABLE_TAG: ${{ inputs.stable_tag }}
           STABLE_SOURCE: ${{ inputs.stable_source }}
           GH_TOKEN: ${{ github.token }}
-        run: |
-          version=$(php -r '$manifest = json_decode(file_get_contents("composer.json"), true, flags: JSON_THROW_ON_ERROR); echo $manifest["extra"]["durable-workflow"]["product-train"];')
-          if [ -n "$STABLE_TAG" ]; then
-            test "$version" = "$STABLE_TAG"
-            test "$(gh release view "$STABLE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq '(.isDraft == false and .isPrerelease == false)')" = true
-            if [ -z "$STABLE_SOURCE" ]; then
-              test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$STABLE_TAG^{commit}")"
-            else
-              test "$(git rev-parse HEAD)" = "$STABLE_SOURCE"
-              git merge-base --is-ancestor HEAD origin/main
-              git diff --exit-code "refs/tags/$STABLE_TAG" HEAD -- src examples resources config
-              git show "refs/tags/$STABLE_TAG:composer.json" > "$RUNNER_TEMP/published-sdk-composer.json"
-              PUBLISHED_MANIFEST="$RUNNER_TEMP/published-sdk-composer.json" php <<'PHP'
-          <?php
-          $published = json_decode(file_get_contents(getenv('PUBLISHED_MANIFEST')), true, flags: JSON_THROW_ON_ERROR);
-          $selected = json_decode(file_get_contents('composer.json'), true, flags: JSON_THROW_ON_ERROR);
-          unset($published['extra']['durable-workflow']['product-train'], $selected['extra']['durable-workflow']['product-train']);
-          if ($published !== $selected) {
-              throw new RuntimeException('Selected documentation source changes the published package manifest.');
-          }
-          PHP
-            fi
-          fi
-          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo stable=true >> "$GITHUB_OUTPUT"
-          else
-            echo stable=false >> "$GITHUB_OUTPUT"
-          fi
+        run: python "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-release-channel.py"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
         with:
           node-version: '24'
-          cache: npm
-      - run: composer install --no-interaction --prefer-dist
-      - run: npm ci --ignore-scripts
-      - run: npm audit --audit-level=moderate
-      - run: npm run check:docs-examples
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+      - run: composer --working-dir="$DOCS_TOOLING_DIRECTORY" install --no-interaction --prefer-dist
+      - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" ci --ignore-scripts
+      - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" audit --audit-level=moderate
+      - run: node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-examples.mjs"
+      - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-portal-links
       - name: Check repository-owned documentation links offline
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:
@@ -116,21 +115,16 @@ jobs:
             --include-fragments
             --root-dir .
             README.md docs/*.md
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Build authored portal and generated API reference
         env:
+          DOCS_REQUIRE_ANALYTICS_TOKEN: 'true'
           CLOUDFLARE_WEB_ANALYTICS_TOKEN: ${{ vars.CLOUDFLARE_WEB_ANALYTICS_TOKEN }}
         run: |
-          if [ "$GITHUB_SERVER_URL" = https://github.com ]; then
-            if ! printf '%s' "$CLOUDFLARE_WEB_ANALYTICS_TOKEN" | grep -Eq '^[a-f0-9]{32}$'; then
-              echo 'CLOUDFLARE_WEB_ANALYTICS_TOKEN must be the canonical 32-character site token' >&2
-              exit 1
-            fi
-            sed -i "s/__CLOUDFLARE_WEB_ANALYTICS_TOKEN__/$CLOUDFLARE_WEB_ANALYTICS_TOKEN/" \
-              .phpdoc/template/analytics/analytics.js
-          fi
-          composer docs
-          npm run check:docs
-          php scripts/check-docs-analytics.php build/site
+          bash "$DOCS_TOOLING_DIRECTORY/scripts/build-docs.sh"
+          node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-portal.mjs" build/site
+          php "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-analytics.php" build/site
           test -s build/site/index.html
           test -s build/site/api/index.html
           test "$(cat build/site/CNAME)" = "php.durable-workflow.com"
@@ -142,20 +136,17 @@ jobs:
             --offline
             --root-dir build/site
             build/site
-      - run: ./node_modules/.bin/playwright install --with-deps chromium
+      - run: '"$DOCS_TOOLING_DIRECTORY/node_modules/.bin/playwright" install --with-deps chromium'
       - name: Test missing-resource browser evidence
-        run: npm run test:docs-browser-failures
+        run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-browser-failures
       - name: Check portal and API layouts in Chromium
-        run: npm run check:docs-browser
+        run: node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-browser.mjs" build/site
       - name: Bind Pages artifact to the exact source revision
+        env:
+          EXPECTED_SOURCE_REVISION: ${{ steps.release-channel.outputs.source_revision }}
         run: |
-          SOURCE_REVISION=$(git rev-parse HEAD)
-          if ! printf '%s' "$SOURCE_REVISION" | grep -Eq '^[a-f0-9]{40}$'; then
-            echo 'SOURCE_REVISION must be an exact lowercase commit SHA' >&2
-            exit 1
-          fi
-          printf '{"schema":"durable-workflow.sdk-php.docs-deployment/v1","source_revision":"%s"}\n' \
-            "$SOURCE_REVISION" > build/site/deployment-audit.json
+          test "$(git -C "$DOCS_TOOLING_DIRECTORY" rev-parse HEAD)" = "$GITHUB_WORKFLOW_SHA"
+          python "$DOCS_TOOLING_DIRECTORY/scripts/bind-docs-artifact.py" "$EXPECTED_SOURCE_REVISION"
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5
         if: github.server_url == 'https://github.com'
         with:

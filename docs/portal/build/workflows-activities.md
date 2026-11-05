@@ -18,7 +18,7 @@ For repeated ordered application input, open an
 [inbound Message Stream](/build/message-streams/) from `WorkflowContext`. Its
 durable cursor resumes after replay, worker replacement, and continue-as-new.
 
-Use `WorkflowContext::waitCondition()` when progress depends on workflow state rather than an external activity. Its deterministic predicate is re-evaluated when committed signals or updates produce another workflow task. A stable key identifies the wait across replay, and the optional timeout returns `false` instead of requiring an application timer loop.
+Use `WorkflowContext::waitCondition()` when progress depends on workflow state rather than an external activity. Its deterministic predicate is re-evaluated when committed signals or updates produce another workflow task. A stable key identifies the wait across replay, and the optional timeout returns `false` instead of requiring an application timer loop. The timeout runs from the first time the wait opens: a signal or update that leaves the predicate false does not restart it.
 
 Choose a distinct stable key for each logical wait, and preserve its predicate
 and timeout across replay. An already true condition, or a false condition with
@@ -37,6 +37,117 @@ if (!$approved) {
     return ['status' => 'timed_out'];
 }
 ```
+
+### Durations
+
+`sleep()` and `deferTimer()`, the `timeout` of `waitCondition()` and
+`deferCondition()`, the remote and local activity timeout options, the child
+workflow `execution_timeout_seconds` and `run_timeout_seconds` options, and the
+`serviceOperation()` `wait_timeout_seconds` option take a duration in any of
+these forms:
+
+- `int` or `float` seconds, such as `1800`;
+- a string such as `'30 minutes'`, `'1h 30m'`, `'1.5 hours'` or
+  `'1 hour and 30 minutes'`;
+- a `DateInterval` or `CarbonInterval`, such as `new DateInterval('PT30M')` or
+  `CarbonInterval::minutes(30)`.
+
+```php
+use Carbon\CarbonInterval;
+
+$verified = $context->waitCondition(
+    static fn (): bool => $context->signals('verify') !== [],
+    key: 'email-verified',
+    timeout: '30 minutes',
+);
+
+$context->sleep(CarbonInterval::hours(2));
+
+$receipt = $context->activity('payments.capture', [$orderId], [
+    'start_to_close_timeout' => '30 seconds',
+    'schedule_to_close_timeout' => '10 minutes',
+]);
+```
+
+The SDK converts each duration to whole seconds once, rounding up, so
+`'30 minutes'`, `1800`, `new DateInterval('PT30M')` and
+`CarbonInterval::minutes(30)` record identical history. Strings convert exactly
+as the embedded Laravel package's `timer()` and `await()` do, with
+`ceil(CarbonInterval::fromString($duration)->totalSeconds)`. Intervals are
+measured by their year, month, day, hour, minute, second and microsecond fields
+with `CarbonInterval::instance()->totalSeconds`.
+
+Carbon converts with its cascade factors, not the calendar: by default a day is
+24 hours, a week 7 days, a month 4 weeks and a year 12 months. Those factors do
+not depend on the current date, time zone or daylight-saving changes. Changing
+the factors with
+`CarbonInterval::setCascadeFactors()` changes the result, in the SDK and in the
+embedded package, so leave them at their defaults in worker processes.
+
+Conversion retains the installed Carbon major's floating-point behavior. Very
+large accepted durations with millisecond or microsecond parts can produce
+different whole-second results across Carbon majors. For example,
+`'5555555555555 seconds 32037 milliseconds'` converts to `5555555555588`
+seconds on Carbon 2 and `5555555555556` on Carbon 3. Each matches the embedded
+package on that same Carbon major.
+
+Regression samples span base durations from 10 billion seconds through the
+reported value above, with cases around 100 billion and one trillion seconds.
+These sample points do not establish a universal precision bound. Even a
+one-microsecond part can disappear before
+rounding at large magnitudes. Keep the Carbon major consistent when workers
+replay runs using such duration strings; explicit integer seconds avoid this
+string-conversion difference.
+
+A `CarbonInterval` from `diff()` is measured by its fields too. For example, the
+interval from January 1 to February 10, 01:00 is 1 month, 9 days and 1 hour, so
+it converts to 37 days and 1 hour. On Carbon 3, the embedded package measures
+the 40-day span between the interval's dates instead. Pass
+`$start->diffInSeconds($end)` when you need the real span.
+
+These are the string units, matched case-insensitively:
+
+| Unit | Spellings |
+|---|---|
+| Microseconds | `microsecond`, `microseconds`, `micro`, `µs` |
+| Milliseconds | `millisecond`, `milliseconds`, `milli`, `ms` |
+| Seconds | `second`, `seconds`, `s` |
+| Minutes | `minute`, `minutes`, `m` |
+| Hours | `hour`, `hours`, `h` |
+| Days | `day`, `days`, `d` |
+| Weeks | `week`, `weeks`, `w` |
+| Months | `month`, `months`, `mo`, `mos` |
+| Quarters | `quarter`, `quarters` |
+| Years | `year`, `years`, `y`, `yr`, `yrs` |
+| Decades | `decade`, `decades` |
+| Centuries | `century`, `centuries` |
+| Millennia | `millennium`, `millennia` |
+
+Parts may be separated by spaces or `and`, such as `'1 hour and 30 minutes'`,
+and may use a decimal fraction, such as `'1.5 hours'`. A fraction of a month,
+quarter, year, decade, century or millennium is rejected, because Carbon would
+truncate it. Unknown units, extra words, commas, negative parts, parts with
+more than 15 digits before the decimal point, durations of 2^53 seconds or more
+(about 310 million years as Carbon counts them, with 336-day years), and
+ISO 8601 strings throw
+`InvalidArgumentException` naming the parameter and the accepted forms. Pass
+ISO 8601 durations as `new DateInterval('PT30M')`. Negative intervals and
+relative `DateInterval::createFromDateString()` values such as `'next weekday'`
+or `'last day of next month'` are rejected too.
+
+A numeric string such as `'30'` or `'1.5'` converts as PHP coerced it before
+string durations were accepted, in a file without `strict_types`. Timers and
+condition timeouts round it up to whole seconds, with negative values becoming
+zero. Activity and child-workflow options pass it to the Server unchanged. In a
+file with `declare(strict_types=1)`, such a string used to throw a `TypeError`;
+it is now accepted with the same conversion.
+
+A zero duration is valid for timers, condition waits and `wait_timeout_seconds`.
+Activity and child-workflow timeouts need at least one second.
+
+Keep a timer's duration stable across deployments. Changing `'30 minutes'` to
+`'31 minutes'` while a run is waiting on that timer raises `NonDeterministicWorkflow`
+on replay, just as changing `1800` to `1860` would.
 
 ```php
 $worker->registerWorkflow(
@@ -57,7 +168,8 @@ $worker->registerWorkflow(
 
 Remote activity options are `connection`, `queue`, `retry_policy`,
 `start_to_close_timeout`, `schedule_to_start_timeout`, `schedule_to_close_timeout`,
-`heartbeat_timeout`, `worker_session` and `cancellation_policy`. Unknown option
+`heartbeat_timeout`, `worker_session` and `cancellation_policy`. The four
+timeouts accept the [duration forms](#durations) above. Unknown option
 or retry-policy field names fail locally with `InvalidArgumentException`.
 See [failures and retries](/build/failures-retries/) for the retry policy fields.
 
@@ -177,6 +289,106 @@ The barrier is fail-fast. The first failure in durable history order is thrown i
 
 On retry or worker restart, replay validates the exact group ID, base sequence, size, leaf index, and nested path. Pending or completed members keep their original sequence and are not scheduled again. Changing a dynamic fan-out count, order, operation kind, or nesting while an open run can reach the group raises `NonDeterministicWorkflow` before any replacement commands leave the worker.
 
+## Start a child and keep its identity
+
+`childWorkflow()` returns the child's result, so the parent waits until the
+child finishes. When the parent needs the child's identity first, for example
+to record it or notify someone, start the child with `startChildWorkflow()`:
+
+```php
+use DurableWorkflow\Worker\ParentClosePolicy;
+
+$child = $context->startChildWorkflow('billing.reconcile', [$accountId], [
+    'parent_close_policy' => ParentClosePolicy::Abandon,
+]);
+
+$identity = $child->identity();
+$context->activity('notify.reconcile-started', [$identity->workflowId]);
+
+$summary = $child->await();
+```
+
+The turn that calls `startChildWorkflow()` ends after the start command. The
+runtime commits the child's start and gives the parent a new turn while the
+child keeps running, so the handle returns only for a committed child.
+`identity()` reads canonical history:
+
+| Property | Meaning |
+| --- | --- |
+| `callId` | The parent's call for this child. It stays the same through child continue-as-new and retries. |
+| `workflowId` | The child workflow instance ID. |
+| `initialRunId` | The first run of the child. A later continued or retried run does not change it. |
+
+`await()` returns the child's result or throws `ChildWorkflowFailed`. It
+follows the same child call through continue-as-new and retries, and sends no
+command of its own. Replay and a replacement worker rebuild the same handle
+from history without starting another child.
+
+Parent-close and cancellation policies, timeouts and retries work as they do
+for `childWorkflow()`. The handle supports only `identity()` and `await()`:
+it cannot signal, query, update, cancel or terminate the child. Await it in the
+workflow execution that started it. `startChildWorkflow()` cannot run inside an
+`all()` or `parallel()` group; use `deferChildWorkflow()` there.
+
+This needs a runtime that advertises `child_workflow_start_turn`. Native Server
+3.0.x and PHP Server 2.x do not. On those, the worker abandons the task with
+`child_workflow_start_turn_unavailable` before it submits anything, so no child
+starts. A cancellation-scope checkpoint keeps the parent's claim, so the
+runtime refuses a start there with `child_start_turn_not_at_checkpoint`.
+
+### Run the service-mode child example
+
+The complete [worker](https://github.com/durable-workflow/sdk-php/blob/main/examples/child-workflow-worker.php)
+and [client](https://github.com/durable-workflow/sdk-php/blob/main/examples/child-workflow-client.php)
+use the quickstart's [bootstrap](https://github.com/durable-workflow/sdk-php/blob/main/examples/bootstrap.php).
+Copy those three files beside the `vendor/` directory of your Composer project.
+Use an SDK release containing `startChildWorkflow()` and a Server advertising
+`child_workflow_start_turn`. The same runtime URL and namespace must be available
+to both processes. Set `DURABLE_WORKFLOW_RUNTIME_URL`,
+`DURABLE_WORKFLOW_NAMESPACE`, and `DURABLE_WORKFLOW_TASK_QUEUE` in both terminals.
+Set `DURABLE_WORKFLOW_WORKER_TOKEN` in the worker terminal and
+`DURABLE_WORKFLOW_CLIENT_TOKEN` in the client terminal, using their respective
+role credentials.
+
+Start the worker, then run a client command in the second terminal:
+
+```bash
+php child-workflow-worker.php
+```
+
+```bash
+php child-workflow-client.php await
+php child-workflow-client.php await reject
+php child-workflow-client.php abandon
+php child-workflow-client.php cancel
+php child-workflow-client.php terminate
+```
+
+Each parent first demonstrates a sequential result. It then starts a child with a committed handle and records
+the identity in an activity. The activity may be retried, so an application
+replacing its sample output with an external write should make that write
+idempotent by `call_id`.
+
+`await` returns the typed greeting. `await reject` catches `ChildWorkflowFailed`
+and returns its recorded failure. The other modes close the parent while its
+child remains open: `abandon` allows it to complete, `cancel` applies legacy
+terminal cancellation, and `terminate` terminates it. The client prints the
+parent result and the child's observed status. Cancellation through the handle
+is unsupported. Cooperative cleanup uses the separate opt-in cancellation APIs
+and `ParentClosePolicy::RequestCancellation`, as described in the cancellation
+guide. Initial run IDs remain snapshots through retry and continue-as-new;
+instance-oriented client operations target the child's current run unless the
+caller explicitly selects a run.
+
+`deferChildWorkflow()` prepares an operation without starting it or providing a
+child identity. Join it at an `all()` or `parallel()` barrier on a runtime that
+supports child members in those groups, as shown in the concurrency examples
+above. Native Server currently refuses child members with
+`development_parallel_group_unqualified`.
+[Server #325](https://github.com/durable-workflow/server/issues/325) tracks this
+runtime parity gap. The runnable example uses sequential children and committed
+start handles; it does not establish deferred-group compatibility on Native.
+
 ## Evolve workflow code with version markers
 
 Give each long-lived code change a stable ID and keep the old branch while histories can still reach it. `getVersion()` records the maximum supported version for a new run and returns that same decision after redelivery, worker restart, or cold replay. Including `-1` in the first range lets histories that passed this point before the marker existed stay on the legacy branch:
@@ -192,6 +404,31 @@ $reservation = $version === -1
 A later deployment can raise the maximum while keeping the recorded versions in range. Existing runs keep their decision; only runs that have not recorded this change ID select the new maximum.
 
 For a boolean rollout, use `patched('require-reservation-review')`. It returns `false` for legacy histories and `true` for new histories. After the legacy branch is no longer supported, replace the conditional call with `deprecatePatch()` for the same ID before eventually removing the marker. Compatible numeric and patch helpers share the same frozen version for a change ID. Every call must support that version, and `patched()` returns whether it equals `1`. Do not reuse a change ID for an unrelated rollout.
+
+A `waitCondition()` predicate is part of replay identity too. New waits use a
+`dwphp2:sha256:` fingerprint of the callable's tokens. Whitespace and comments
+outside literals, file locations and neighboring call-site arguments are
+excluded. Changing the predicate's tokens still raises
+`NonDeterministicWorkflow`, even for a wait that has already been satisfied.
+The key and timeout remain separate replay checks; change them behind a version
+marker when an open run can reach the call.
+
+Reflection can leave several same-line closures indistinguishable. Those
+closures share a combined candidate fingerprint, so changing either can affect
+both. Formatting that resolves that ambiguity can also change the candidate
+set. Put predicates on separate lines before starting runs when they need
+independent identities. If the callable cannot be isolated, or PHP lacks the
+tokenizer, the worker retains the v1 source-line fingerprint.
+Every worker that replays v2 waits needs PHP's tokenizer enabled.
+
+Waits first opened by older SDKs retain their exact v1 source-line check.
+Re-indenting those lines, changing a comment or editing neighboring code on
+the same lines can still fail legacy replay. A physical reopen echoes the
+first recorded fingerprint, so upgrading does not change an existing wait's
+identity. Upgrade the queue's workers together: older workers reject v2
+fingerprints, and cannot safely take over runs that already contain them.
+
+Deploy workflow code atomically and restart workers. The fingerprint reads the deployed source file. If files are replaced in place under any long-running worker that still has the old code loaded, the loaded code and the file on disk can disagree, and replay reports a mismatch until the worker restarts. `opcache.validate_timestamps=0` widens this window. Ship the PHP sources with the worker image; the fingerprint cannot be computed without them.
 
 ## Put side effects in activities
 
@@ -280,6 +517,30 @@ heartbeats. Prepared local activities use supervised callback processes.
 
 ## Inspect retry budget and the owning workflow
 
+The unreleased `ActivityContext::activityExecutionId` property contains the
+logical `activity_execution_id` received with the claim. Ordinary and
+cooperatively supervised remote callbacks expose that same execution identity
+across retry attempts, while `activityAttemptId` identifies each attempt.
+Use the logical ID in a downstream idempotency key when the destination honors
+that key, including your application scope where needed.
+
+```php
+function activityIdempotencyKey(
+    \DurableWorkflow\Worker\ActivityContext $context,
+    string $businessKey,
+): string {
+    return $context->activityExecutionId ?? $businessKey;
+}
+```
+
+Older claims can omit the field. Missing, null, empty or non-string values
+produce null, so supply a business key when it is unavailable. Prepared local
+callbacks expose the execution ID from their validated Server admission.
+Inline local and Server-free callbacks without that admission report null.
+Session activity callbacks expose the field when their actual claim includes
+it; omission also produces null. The property is read-only and performs no
+additional runtime request.
+
 PHP SDK 3.6.0 introduced retry metadata on `ActivityContext`. Use 3.6.1 or later
 for the original owning workflow and run IDs from public activity claims.
 `$context->retryInfo` retains the original attempt number and retry policy,
@@ -359,6 +620,7 @@ The context provides these replay-aware commands:
 | `saga()` | Reverse-order compensation through ordinary activity history. |
 | `sleep()` | A durable timer that survives worker downtime. |
 | `childWorkflow()` | A separately identified durable execution. |
+| `startChildWorkflow()` | A started child whose identity the parent reads before awaiting its result. |
 | `all()`, `parallel()` | An ordered, fail-fast join over deferred activities, child workflows, and timers. |
 | `sideEffect()` | A small nondeterministic value recorded once in history. |
 | `getVersion()`, `patched()`, `deprecatePatch()` | A durable workflow-code evolution decision. |
@@ -366,6 +628,31 @@ The context provides these replay-aware commands:
 | `continueAsNew()` | A fresh run with bounded history. |
 
 Do not use PHP's process sleep, random-number functions, current wall-clock time, or mutable global state directly to make workflow decisions. `sideEffect()` is for small values whose result belongs in history, not for network or database work.
+
+## Declare search-attribute types
+
+Pass a type map when the workflow must preserve search-attribute type identity
+across replay and redrive:
+
+```php
+$context->upsertSearchAttributes(
+    ['Stage' => 'approved', 'Attempts' => 2],
+    ['Stage' => 'keyword', 'Attempts' => 'int'],
+);
+```
+
+Declare every non-deleted attribute. Canonical types are `string`, `keyword`,
+`keyword_list`, `int`, `float`, `bool`, and `datetime`. Use `null` to delete a
+key. The runtime also checks declarations against the namespace's registered
+types. Search metadata uses the existing `typed_search_attributes` worker
+capability and protocol contract.
+
+An explicitly typed call refuses a changed value or a changed recorded type.
+Malformed recorded type maps also refuse replay. Histories written before type
+metadata existed still compare values, since their type identity is unknown.
+Existing calls that omit the type map keep their value-only behavior. That
+legacy path does not establish typed replay equivalence; signal-wait redrive
+qualification is also separate.
 
 ## Bound long histories
 

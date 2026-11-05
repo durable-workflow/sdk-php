@@ -6,6 +6,450 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- An unreleased schedule-to-start histogram for workflow/activity dispatch uses
+  the runtime's capability-gated `ready_age_ms` claim metadata (shared metrics
+  revision 2, central #233). Valid zero is retained; missing, unsupported or
+  malformed ages are omitted. Existing instruments keep their names and tags.
+
+- `ActivityContext::activityExecutionId` exposes the received logical activity
+  execution ID for downstream idempotency keys. Missing or invalid legacy
+  metadata stays null; task and attempt IDs are never used as substitutes.
+  Prepared local callbacks receive their validated Server execution identity;
+  inline local and Server-free callbacks without one report null
+  (durable-workflow/.github#211).
+
+- `Client::iterateWorkflows()` and `iterateWorkflowHistory()` lazily read
+  complete workflow listings and exact-run histories, retaining one page at a
+  time. Existing one-page methods stay available. Iteration preserves opaque
+  cursors, namespace and filters, propagates later-page errors, and refuses
+  malformed continuations or token cycles instead of silently truncating or
+  looping (#247 in durable-workflow/.github).
+
+- `WorkflowContext::upsertSearchAttributes()` accepts an optional complete map
+  of canonical type declarations (#244). Explicitly typed calls bind replay to
+  both values and recorded type identity. Existing one-argument calls retain
+  value-only replay, and histories without type metadata retain legacy
+  compatibility. Malformed recorded type identities are refused.
+
+- `WorkflowContext::startChildWorkflow()` starts a child and returns a
+  `ChildWorkflowHandle` once the runtime has committed the start (#185). The
+  handle's `identity()` gives the child call ID, the child workflow ID and the
+  initial run ID from canonical history while the child keeps running, and
+  `await()` returns its result or throws `ChildWorkflowFailed`, following the
+  same call through child continue-as-new and retries. The start sends
+  `start_child_workflow` with `await: "started"` and needs a runtime that
+  advertises `child_workflow_start_turn`; without it the worker abandons the
+  task before submitting anything. `childWorkflow()`, `deferChildWorkflow()`
+  and group APIs are unchanged, and `childWorkflow()` refuses an `await`
+  option.
+
+### Changed
+
+- New condition waits use versioned `dwphp2:sha256:` predicate fingerprints
+  (#293). Callable tokens exclude whitespace, comments and neighboring call-site
+  arguments, while preserving literals and operator boundaries. A predicate
+  change still fails replay. Indistinguishable same-line closures share a
+  combined fingerprint; put predicates on separate lines before starting runs
+  when they need independent identities. Unsupported source shapes or a PHP
+  build without the tokenizer retain the existing v1 computation.
+  Replaying v2 waits requires the tokenizer in every worker.
+- Replay accepts a recorded v1 fingerprint only when its original source-line
+  hash matches exactly. Physical reopens preserve their first recorded
+  fingerprint, including its absence. V2 formatting tolerance therefore applies
+  to waits first opened with v2, not retroactively to legacy runs.
+- Upgrade the queue's workers together before opening v2 waits. Older workers
+  reject v2 fingerprints, so rolling back below this SDK after v2 waits exist
+  can fail replay. Deploy sources atomically and restart workers, including
+  workers using OPcache.
+
+### Fixed
+
+- Static shared, control and worker credentials are validated in their original
+  form before role selection and fallback, including framework configuration
+  and Laravel process handoffs (#307). Invalid UTF-8, leading/trailing Unicode
+  White_Space and embedded C0/DEL/C1 controls now fail with a setting-only error
+  instead of being trimmed or silently ignored. This deliberately rejects
+  malformed UTF-8 bytes previously accepted by PHP. Valid opaque spelling and
+  literal-empty optional fallback remain unchanged; dynamic authentication is
+  outside this static-token policy.
+
+- A legacy sequential condition wait can recover its own recorded opening and
+  deadline after the previous authored call's result is consumed (#269).
+  Repeated physical opens still share their first deadline. Missing or reused
+  wait identities and an ambiguous consumed outcome produce an explicit replay
+  conflict instead of assigning a guessed deadline to the next call.
+
+## [3.9.4] - 2026-11-04
+
+### Fixed
+
+- Replay checks a recorded `condition_wait_occurrence_id` against the call
+  being replayed (#281). If a history records this SDK's id for a different
+  `waitCondition()` or `deferCondition()` call (`php:condition-wait:N` with
+  another N), replay fails with `condition_wait_occurrence_mismatch` instead of
+  resuming the wrong call. Two physical opens recorded for different
+  occurrences are never merged into one wait. A logical wait keeps the id of
+  its first open, so a run whose first open was written before 3.9.3 (with no
+  id) keeps replaying as before. Ids in any other format are not compared.
+  - **Code changes:** ids are ordinals of the condition calls in a run, so
+    inserting or removing a `waitCondition()` call before an existing one in
+    code that already has runs in flight now fails replay for runs recorded
+    with ids, as other non-deterministic changes do. Use version markers for
+    such changes.
+- Prepared local activity checkpoint ids, cancellation-scope descriptor
+  hashes and the workflow definition fingerprint no longer depend on the host's
+  `serialize_precision` (#282). They hash JSON that can contain floats, such as
+  search attribute values in a checkpointed command, and now use the same
+  round-trip precision as request bodies (#248). Under the default setting the
+  hashes are byte-identical to before.
+
+## [3.9.3] - 2026-11-04
+
+**Upgrade from 3.9.2 now.** 3.9.2 can fail existing runs on native Server 3.0.x
+that contain a repeated condition-wait open (#283). Users of 3.9.1 should
+upgrade too: 3.9.3 keeps 3.9.2's fix that stops unrelated signals from
+restarting a `waitCondition()` timeout (#269).
+
+### Added
+
+- `open_condition_wait` commands carry `condition_wait_occurrence_id`
+  (protocol 1.17), `php:condition-wait:N` for the Nth `waitCondition()` or
+  `deferCondition()` call in the run (#269). Every replay and every physical
+  reopen of one call sends the same id, so the Server can recognize a repeated
+  open of a wait that is still open instead of recording a second one.
+
+### Fixed
+
+- 3.9.2 workers could fail runs that had a repeated condition-wait open once
+  the orphaned first open's timer fired (#283). The Server records a second
+  physical wait when a queued workflow task re-sends a still-open wait
+  (#269 part 2), and the first wait's timer still fires later. 3.9.2 treated
+  that timeout as finishing the first wait, split it from the rest of the
+  chain, and replay then failed with a non-determinism error. Whether a later
+  open continues an earlier same-key wait now depends on the earlier wait's
+  state when the later one opened: still open or satisfied means the same
+  wait, and a timeout before the later open still makes a separate call, such
+  as a grace period. When the earlier wait's deadline has already passed, the
+  worker re-sends the wait with `timeout_seconds: 0`, so the Server times it
+  out at once and `waitCondition()` returns `false`.
+  - **Known limitation:** a repeated open that the Server records after the
+    earlier wait has already timed out is still refused by replay. Server
+    3.1.1 is planned to stop recording repeated opens of a still-open wait
+    (server#1015), which removes that case.
+- Request bodies keep full float precision whatever the host's
+  `serialize_precision` is (#248). With a non-default value such as 3, a float
+  search attribute of 1.2345 was sent and recorded as 1.23, and replay then
+  refused the history as `search_attribute_value_mismatch`. Request documents
+  are now encoded with round-trip precision, and the host setting is restored
+  after each encode.
+
+## [3.9.2] - 2026-11-04
+
+### Changed
+
+- `WorkflowHandleInterface` documents the `workflowId` and `selectedRunId`
+  read-only properties that the SDK's handles and the test fake's handle
+  already expose (#251), and the Laravel guide shows reading a generated
+  workflow ID from the handle `start()` returns. The interface gains no
+  methods, so application classes that implement it keep loading.
+
+### Fixed
+
+- An empty workflow ID now fails when the handle is created (#252). Before,
+  `workflowHandle('')`, and the Laravel bridge's `handle(Workflow::class, '')`,
+  returned a handle whose calls built routes such as `GET /api/workflows/`,
+  and Server 3 answered `rust_capability_not_implemented`, which read like a
+  missing server feature. `WorkflowHandle` and the test fake's handle now throw
+  `InvalidArgumentException` for an empty workflow ID or an empty selected run
+  ID (pass `null` to follow the current run). Every `Client` call also refuses
+  an empty identifier in its request path before sending anything.
+- A `waitCondition()` timeout now runs from the first time the wait opens
+  (#269). The Server wakes an open condition wait on any signal and records it
+  satisfied; when the predicate was still false the worker reopened the wait
+  with the full `timeout_seconds`, so each unrelated signal moved the deadline
+  forward (a 5-minute wait timed out after 422 s in one run). The worker now
+  reopens with the time remaining since the first `ConditionWaitOpened`,
+  rounded up to whole seconds and never below zero, matching embedded
+  `await($condition, $timeout)`. Histories whose reopens carry the full timeout
+  still replay. This needs no Server change. A wait that timed out is never
+  treated as reopened: a later wait with the same key and predicate, such as a
+  grace period, is a separate call measured from its own open.
+  - **Mixed fleets and rollback:** a history in which this release reopened a
+    wait with a reduced timeout cannot be replayed by workers on 3.9.1 or
+    earlier; they fail with "reached complete_workflow before consuming its
+    recorded durable history". Upgrade every worker on a task queue together,
+    and do not roll a queue back below this release once such a reopen exists.
+  - **Equal-timeout waits after a timeout:** 3.9.1 and earlier merged a wait
+    into the previous one whenever both had the same key, predicate and
+    timeout, even when the first had timed out. A run that waits again with
+    the same key, predicate and timeout after a timeout (for example a retry
+    loop) now replays the two waits separately, as they were recorded. A run
+    recorded by an older worker under the merged reading can fail replay with
+    a non-determinism error. Give each logical wait its own key. Waits inside
+    `all()`, `parallel()` and selections are never merged with each other.
+
+## [3.9.1] - 2026-11-04
+
+### Fixed
+
+- Friendly durations whose calendar total wraps inside Carbon are now rejected
+  (#257). In 3.9.0, a 12–15 digit part such as `'635428518853 years'` or
+  `'213503982334602 days'` overflowed Carbon's integer arithmetic. It was
+  accepted as a small positive duration (581632 s and 61440 s). The SDK now
+  throws `InvalidArgumentException` ("it is too large") when any part, or the
+  sum of the parts, reaches 2^53 seconds, measured as a float with Carbon's
+  default factors. `DateInterval` and `CarbonInterval` fields get the same bound.
+  Every value 3.9.0 accepted below that bound converts to the same seconds.
+- Correction to the 3.9.0 notes: numeric strings such as `'30'` keep their
+  earlier conversion only in files without `strict_types`. With
+  `declare(strict_types=1)`, `sleep('30')` used to throw a `TypeError` and is
+  now accepted, which is an intended widening.
+
+## [3.9.0] - 2026-11-04
+
+### Added
+
+- Friendly durations for workflow timers and timeouts (#254).
+  - **Where:** `WorkflowContext::sleep()`, `deferTimer()`, and the `timeout` of
+    `waitCondition()` and `deferCondition()`. Also the remote and local
+    activity timeout options, the child workflow `execution_timeout_seconds`
+    and `run_timeout_seconds` options, and the service operation
+    `wait_timeout_seconds` option.
+  - **Forms:** besides int or float seconds, a string such as
+    `'30 minutes'`, `'1h 30m'` or `'1.5 hours'`, or a `DateInterval` or
+    `CarbonInterval`.
+  - **Conversion:** each value converts once to whole seconds, rounding up as
+    before. `'30 minutes'`, `1800`, `new DateInterval('PT30M')` and
+    `CarbonInterval::minutes(30)` record identical commands and history.
+    - Strings convert exactly as the embedded `durable-workflow/workflow`
+      `timer()` and `await()` do:
+      `ceil(CarbonInterval::fromString($string)->totalSeconds)`.
+    - Intervals are measured by their fields with
+      `CarbonInterval::instance()->totalSeconds`. A Carbon 3 `diff()`
+      interval therefore uses its fields (a 4-week month), not its real date
+      span.
+    - Carbon's default cascade factors make the result independent of the
+      current date and time zone.
+    - **Correction (#265):** the original notes also claimed independence
+      from PHP and Carbon major versions. Very large durations containing
+      millisecond or microsecond parts retain the installed Carbon major's
+      floating-point behavior. For example,
+      `'5555555555555 seconds 32037 milliseconds'` converts to
+      `5555555555588` seconds on Carbon 2 and `5555555555556` on Carbon 3.
+      SDK/embedded parity on each major is preserved. The regression sample
+      points do not establish a universal precision bound, and no conversion
+      behavior changes with this documentation correction.
+  - **Stricter than the embedded package.** These throw
+    `InvalidArgumentException` naming the parameter and the accepted forms:
+    - unknown units, extra words or commas;
+    - negative parts;
+    - parts with more than 15 integer digits;
+    - fractions of calendar units such as `'0.5 months'`, which Carbon
+      truncates;
+    - ISO 8601 strings (pass a `DateInterval` instead);
+    - negative or relative intervals.
+  - Activity and child workflow timeouts must be at least one second.
+  - **Unchanged:** int and float arguments, and numeric strings such as `'30'`
+    in files without `strict_types`. Timers and condition timeouts still round
+    numeric strings up. Activity and child options still pass them through.
+- `nesbot/carbon` `^2.72.6|^3.8.4` is now a required dependency, so every
+  worker converts durations with the same parser as the embedded package. The
+  floors are Carbon's patched releases for CVE-2025-22145, and the range
+  overlaps every supported Laravel line. The production dependency boundary
+  allows Carbon's Symfony translation, clock and polyfill dependencies. CI runs
+  the unit tests on Carbon 2 as well as Carbon 3.
+
+- Replay evidence for Workflow 2.19 redrive reuse of `MemoUpserted` and
+  `SearchAttributesUpserted`, and for Core's reused signal-wait events
+  (`SignalWaitOpened`, `SignalReceived`, `SignalApplied`). Each fixture is a
+  redrive successor checked by a shared test validator: `WorkflowStarted`
+  carries the successor identity, link and redrive envelope, with
+  `resume_step_sequence` one past the last reused step; the reused prefix
+  follows it; successor rows come later and bind to the successor run. A
+  cold worker replays them with the recorded values and does not upsert
+  again or reopen the wait. The reused times are not a replay time source
+  here: cooperative cancellation `remaining()` starts at a successor
+  delivery after the prefix. No runtime change was needed. This does not
+  qualify PHP service workers for Core signal waits, which this SDK cannot
+  author.
+
+### Fixed
+
+- Correction to 3.8.3: its cancellation-clock fixture
+  (`redrive-reused-cancellation-clock`) was not a valid Workflow 2.19 redrive
+  successor history. It had no redrive `WorkflowStarted` and placed the
+  cancellation before the reused prefix. The 3.8.3 claim that cleanup after a
+  reused activity completion or fired timer no longer loses the redrive delay
+  from its budget is incorrect. In valid redrive histories the reused prefix
+  always precedes the successor's cancellation delivery, so `remaining()` is
+  computed from that delivery and cannot observe a reused event's earlier
+  `reused_recorded_at`. Preferring `reused_recorded_at` changes no observable
+  result and restores no cleanup budget. The runtime code is unchanged.
+  - Reused activity completions, fired timers, side effects and version
+    markers, and a successor cancellation after them, are now qualified with
+    valid successor histories built to Workflow 2.19 (`redrive-successor-*`).
+  - The 3.8.3 markers and timer fixtures also lacked the redrive envelope.
+    The three 3.8.3 fixtures stay in the immutable corpus, byte-identical, but
+    are named as non-qualifying evidence. Every redrive fixture must pass the
+    successor check or be one of those named exceptions.
+  - The successor check accepts the `TimerScheduled` Core copies for a reused
+    fired timer: no reuse keys, a new `timer_id`, and directly followed by the
+    reused `TimerFired` of the same timer and step.
+- Replay now checks the values of a recorded `SearchAttributesUpserted`
+  against the workflow's `upsertSearchAttributes()` call, as it already did
+  for memo upserts, including an upsert a redrive successor reused from the
+  failed run.
+  - A changed value, PHP value type or key set raises
+    `NonDeterministicWorkflow` (`search_attribute_value_mismatch`) instead
+    of being accepted.
+  - Both sides are normalized as Core does (trimmed strings and list items,
+    an empty string as a deletion, sorted keys) and compared structurally
+    and type-strictly. Ints and floats differ, `-0.0` equals `0.0`, and the
+    result does not depend on JSON formatting or `serialize_precision`.
+  - Keys and values outside Core's portable set refuse replay with
+    `search_attributes_unportable`: non-string or non-portable keys,
+    objects, maps, nested or non-string lists, non-finite floats, strings
+    over 2,048 characters and list items over 255.
+  - A recorded upsert without its `attributes` refuses with
+    `search_attribute_update_missing`, the reason sdk-rust uses.
+  - A second `SearchAttributesUpserted` at one workflow sequence refuses
+    with `duplicate_search_attribute_update`. A memo or search-attribute
+    upsert sharing a sequence with any other durable command refuses with
+    `durable_command_sequence_collision` in either order. An explicit claim
+    map decides which rows claim a sequence, even when the command's opener
+    is absent. It follows Core's `WorkflowStepHistory`: activity rows
+    (retry, heartbeat and cancellation acknowledgement included, but not
+    the payload-free `ActivityOutcomeRejected` audit row), timer, child,
+    condition and signal-wait rows (including terminal, cancelled and
+    internal timeout timer rows), service-call rows, side effects, version
+    markers, authored cancellation scope openings and continue-as-new. A
+    `CooperativeCancellationDelivered` or `CancellationScopeDelivered`
+    claims every sequence in its `sequence_span`, inclusive. Before, the
+    later event could silently replace the earlier one or be ignored.
+  - A recorded upsert must carry its own positive integer `sequence`.
+    Replay no longer synthesizes one: a missing sequence refuses with
+    `durable_command_sequence_missing`, and an invalid one with
+    `durable_command_sequence_invalid`, as in sdk-rust.
+  - Recorded `attribute_types` are not compared: this SDK's command cannot
+    declare types, so this is value-only hardening and does not qualify
+    typed search-attribute reuse.
+
+## [3.8.3] - 2026-11-03
+
+### Fixed
+
+- Cooperative cancellation `remaining()` now advances to a redrive-reused
+  step's original `reused_recorded_at` time instead of the time the successor
+  run copied it, matching Core. Cleanup after a reused activity completion or
+  fired timer no longer loses the redrive delay from its budget.
+
+## [3.8.2] - 2026-11-03
+
+### Fixed
+
+- Service-mode Laravel support now names the patched minimum releases for
+  GHSA-f9x3-7vq9-cph6: Laravel 10.50.4, 11.56.1, 12.69.0 and 13.30.0, and later
+  releases of each major (`^10.50.4|^11.56.1|^12.69.0|^13.30.0`). 3.8.1
+  published major-only ranges (`^10.0|^11.0|^12.0|^13.0`), which included
+  releases from before the TokenGuard fix. Earlier Laravel 10, 11, 12 and 13
+  releases are outside the supported service-mode boundary. The Composer
+  framework metadata and `suggest` text and the Laravel adoption contract and
+  its schema now publish these floors, matching Workflow 2.17.1's embedded v2
+  authority.
+- Each CI framework-compat Laravel cell now installs exactly its major's
+  minimum release (`laravel/framework` 10.50.4, 11.56.1, 12.69.0 or 13.30.0),
+  never a later one. It checks the installed version, from Composer's metadata
+  and Laravel's `Application::VERSION`, before and after installing the SDK and
+  its test tooling. Every adoption contract cell records both its caret support
+  range and the exact release it exercises.
+- The embedded-v2 to service-mode transition check now compares the exact
+  Laravel and PHP constraints as well as the Laravel/PHP cells, and that each
+  cell names and exercises its major's floor, so a future floor drift between
+  the SDK and Workflow fails CI.
+- The SDK still only suggests `laravel/framework`. It adds no Composer
+  `conflict` and does not change an application's Laravel resolution.
+
+### Deprecated
+
+- Laravel 10 and 11 are past their upstream end of life, and some published
+  Laravel advisories have no fixed 10.x or 11.x release. They remain in the
+  service-mode support boundary only for bounded 3.8.x transition
+  compatibility, matching Workflow 2.17.1, and will be removed in the next SDK
+  minor (#239). Move to a maintained Laravel release (12 or 13).
+
+## [3.8.1] - 2026-11-02
+
+### Changed
+
+- Service-mode Laravel bridge support now starts at Laravel 10, matching
+  Workflow 2.17.0 (GHSA-f9x3-7vq9-cph6). Laravel 9 has no fixed release for
+  that advisory, so upgrade a Laravel 9 application before adopting service
+  mode. The Composer framework metadata, the Laravel adoption contract and its
+  qualification matrix, and the CI framework cells now list Laravel 10 through 13.
+
+### Fixed
+
+- Activities with a `heartbeat_timeout` run again on published PHP Server 2.11
+  and native Server 3.0 when activity lease maintenance is active. SDK 3.8.0
+  abandoned these claims. The first runtime renewal reports
+  `last_heartbeat_at: null` until the first application heartbeat
+  (`activity_maintenance_bootstrap_failed`). Accepted heartbeat replies omit
+  `heartbeat_deadline_at` (`invalid_activity_heartbeat`).
+- A renewal that reports no progress grants none. It never moves the recorded
+  progress time, and a stated `heartbeat_deadline_at` can only shorten the
+  claim's heartbeat bound. A heartbeat reply without a deadline advances
+  progress by the original `heartbeat_timeout`, which is the deadline the
+  Server records. Present timestamps must still be canonical UTC, a stated
+  deadline must still match the original interval, and progress later than
+  Server time is still refused.
+
+## [3.8.0] - 2026-11-02
+
+### Added
+
+- Optional SDK metrics that follow the shared cross-SDK contract. Client
+  requests, worker polls and worker tasks each record a counter and a duration
+  histogram through a pluggable `MetricsRecorder`. Pass it as `Client(metrics:)`;
+  a worker inherits it, or takes its own through `Worker::create(metrics:)`.
+  The default `NoopMetricsRecorder` discards observations, and recorder failures
+  never change results, retries, deadlines or task authority.
+- Labels are bounded. Request routes are reviewed templates shared with the
+  Python SDK, and any other path becomes `unknown`. Workflow, run, task,
+  worker and session identifiers, query strings, payloads, credentials and
+  exception messages never become labels. Worker task outcomes describe the
+  worker's processing, separate from workflow terminal state. A forked
+  cooperative child process does not record through the parent's recorder.
+- `InMemoryMetricsRecorder` for tests and diagnostics, and
+  `OpenTelemetryMetricsRecorder` for an application-owned OpenTelemetry meter
+  provider (needs the optional `open-telemetry/api`; no new dependency). The new
+  Metrics guide covers OpenTelemetry export and Prometheus scraping through an
+  OpenTelemetry Collector. See `examples/metrics-opentelemetry.php`.
+
+## [3.7.0] - 2026-11-02
+
+### Added
+
+- Worker requests other than long polls now have a finite, configurable deadline
+  on SDK-owned transports. These are registration, worker and activity heartbeats,
+  workflow and activity task completion and failure, and deregistration.
+  `workerRequestTimeoutSeconds` (default 60 seconds) is separate from the control
+  `requestTimeoutSeconds`, so neither shortens the other. Laravel and Symfony
+  configure it with `worker_request_timeout_seconds`. Previously a default
+  worker could wait indefinitely on a Server that accepted the connection but
+  never answered. A timeout raises a typed `ServerException` with `reason`
+  `request_timeout`. Task polls keep their own budget, cooperative workers keep
+  their per-operation budgets, and injected transports keep their own policy.
+
+## [3.6.2] - 2026-11-02
+
+### Added
+
+- Declare minimum stable Server releases separately for the PHP 2.x and native
+  3.x Server lines. Preserve the existing 2.x metadata for older release readers;
+  worker protocol and capability negotiation remain required.
+
 ## [3.6.0] - 2026-10-27
 
 ### Added

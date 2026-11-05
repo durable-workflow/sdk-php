@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow;
 
 use DurableWorkflow\Auth\Authentication;
+use DurableWorkflow\Auth\StaticCredential;
 use DurableWorkflow\Auth\TokenAuthentication;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Codec\PayloadCodec;
@@ -40,6 +41,11 @@ use DurableWorkflow\Model\WorkflowStreamAppendResult;
 use DurableWorkflow\Model\WorkflowStreamDescription;
 use DurableWorkflow\Model\WorkflowStreamItem;
 use DurableWorkflow\Model\WorkflowStreamPage;
+use DurableWorkflow\Metrics\ClientRequestObservation;
+use DurableWorkflow\Metrics\MetricsObserver;
+use DurableWorkflow\Metrics\MetricsRecorder;
+use DurableWorkflow\Metrics\MetricsRoutes;
+use DurableWorkflow\Metrics\NoopMetricsRecorder;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Transport\BoundedTransport;
 use DurableWorkflow\Transport\BoundedPayloadTransport;
@@ -65,6 +71,7 @@ use DurableWorkflow\Worker\ActivityLeaseProcess;
 use DurableWorkflow\Worker\TaskDelivery;
 use DurableWorkflow\Worker\TaskDeliveryAttempt;
 use DurableWorkflow\Transport\PollTransport;
+use DurableWorkflow\Exception\PaginationException;
 use InvalidArgumentException;
 
 /** Synchronous control-plane and worker-plane client for the standalone server. */
@@ -88,6 +95,9 @@ final class Client implements WorkflowClientInterface
     private ?string $activityLeaseBootstrap = null;
     private ?ExecutionTelemetry $executionTelemetry = null;
     private bool $observabilityContextSupported = false;
+    private bool $claimedTaskReadyAgeSupported = false;
+    private MetricsObserver $metricsObserver;
+    private ?ClientRequestObservation $metricsRequest = null;
     /** @var (\Closure(string, array<string, mixed>|null, array<string, mixed>, RequestBudget|null): (?\Closure))|null */
     private ?\Closure $workerPayloadObserver = null;
     /** @var (\Closure(array<string, mixed>): void)|null */
@@ -105,7 +115,12 @@ final class Client implements WorkflowClientInterface
         public readonly int $maxExternalPayloadBytes = 67108864,
         public readonly string $workerProtocolVersion = Version::WORKER_PROTOCOL,
         ?float $requestTimeoutSeconds = null,
+        ?float $workerRequestTimeoutSeconds = null,
+        ?MetricsRecorder $metrics = null,
     ) {
+        foreach (['token' => $token, 'controlToken' => $controlToken, 'workerToken' => $workerToken] as $setting => $value) {
+            StaticCredential::assertValid($value, $setting);
+        }
         if (trim($baseUri) === '') {
             throw new InvalidArgumentException('The Durable Workflow server URI cannot be empty.');
         }
@@ -142,12 +157,17 @@ final class Client implements WorkflowClientInterface
         if ($transport !== null && $requestTimeoutSeconds !== null) {
             throw new InvalidArgumentException('Configure request timeouts on the injected transport instead of passing requestTimeoutSeconds.');
         }
-        $this->transport = $transport ?? new Psr18Transport(requestTimeoutSeconds: $requestTimeoutSeconds);
+        if ($transport !== null && $workerRequestTimeoutSeconds !== null) {
+            throw new InvalidArgumentException('Configure request timeouts on the injected transport instead of passing workerRequestTimeoutSeconds.');
+        }
+        $this->transport = $transport ?? new Psr18Transport(requestTimeoutSeconds: $requestTimeoutSeconds,
+            workerRequestTimeoutSeconds: $workerRequestTimeoutSeconds);
         $this->codec = $codec ?? new AvroPayloadCodec();
         $this->payloadUploads = new RuntimePayloadUploads($this->transport, $this->baseUri);
         $this->failureReports = new FailureReportLimiter(new FailureReportLimits(), $this->transport);
         $this->activityLeaseBinding = new ActivityLeaseBinding();
         $this->taskDelivery = new TaskDelivery();
+        $this->metricsObserver = new MetricsObserver($metrics ?? new NoopMetricsRecorder());
     }
 
     /** Narrow the encoded failure-report request budget for an application transport. */
@@ -172,6 +192,20 @@ final class Client implements WorkflowClientInterface
     public function payloadCodec(): PayloadCodec
     {
         return $this->codec;
+    }
+
+    public function metricsRecorder(): MetricsRecorder
+    {
+        return $this->metricsObserver->recorder;
+    }
+
+    public function withMetrics(MetricsRecorder $metrics): self
+    {
+        $copy = clone $this;
+        $copy->metricsObserver = new MetricsObserver($metrics);
+        $copy->metricsRequest = null;
+
+        return $copy;
     }
 
     /**
@@ -208,7 +242,8 @@ final class Client implements WorkflowClientInterface
         }
 
         return $configuration + ['worker_headers' => $this->authentication?->headers(true) ?? [],
-            'request_timeout_seconds' => $this->transport->defaultRequestTimeoutSeconds()];
+            'request_timeout_seconds' => $this->transport->defaultRequestTimeoutSeconds(),
+            'worker_request_timeout_seconds' => $this->transport->defaultWorkerRequestTimeoutSeconds()];
     }
 
     /** @internal Bootstrap validation never makes a control-plane request. */
@@ -311,10 +346,12 @@ final class Client implements WorkflowClientInterface
     public function clusterInfo(bool $includeDiagnostics = false): ClusterInfo
     {
         $this->observabilityContextSupported = false;
+        $this->claimedTaskReadyAgeSupported = false;
         $path = $includeDiagnostics ? self::CLUSTER_INFO_PATH.'?include=diagnostics' : self::CLUSTER_INFO_PATH;
 
         $info = $this->control('GET', $path);
         $this->observabilityContextSupported = TraceCarrier::supported($info);
+        $this->rememberClaimedTaskReadyAge($info['worker_protocol']['server_capabilities'] ?? null);
 
         return ClusterInfo::fromArray($info);
     }
@@ -425,10 +462,24 @@ final class Client implements WorkflowClientInterface
     public function workerClusterInfo(): ClusterInfo
     {
         $this->observabilityContextSupported = false;
+        $this->claimedTaskReadyAgeSupported = false;
         $info = $this->worker('GET', self::CLUSTER_INFO_PATH);
         $this->observabilityContextSupported = TraceCarrier::supported($info);
+        $this->rememberClaimedTaskReadyAge($info['worker_protocol']['server_capabilities'] ?? null);
 
         return ClusterInfo::fromArray($info);
+    }
+
+    /** @internal Read cached discovery without adding I/O to task dispatch. */
+    public function claimedTaskReadyAgeAvailable(): bool
+    {
+        return $this->claimedTaskReadyAgeSupported;
+    }
+
+    private function rememberClaimedTaskReadyAge(mixed $capabilities): void
+    {
+        $this->claimedTaskReadyAgeSupported = is_array($capabilities)
+            && ($capabilities['claimed_task_ready_age'] ?? null) === true;
     }
 
     /**
@@ -514,7 +565,7 @@ final class Client implements WorkflowClientInterface
         ]);
         $response = $this->control('GET', $path);
         $executions = [];
-        foreach (($response['workflows'] ?? []) as $value) {
+        foreach ((is_array($response['workflows'] ?? null) ? $response['workflows'] : []) as $value) {
             if (is_array($value)) {
                 $executions[] = WorkflowExecution::fromArray($value);
             }
@@ -526,6 +577,27 @@ final class Client implements WorkflowClientInterface
             isset($response['workflow_count']) ? (int) $response['workflow_count'] : count($executions),
             $response,
         );
+    }
+
+    /**
+     * Lazily enumerate workflow visibility results in the Server's order.
+     * This is not a snapshot across concurrent changes.
+     *
+     * @return \Generator<int, WorkflowExecution>
+     */
+    public function iterateWorkflows(
+        ?string $workflowType = null,
+        ?string $status = null,
+        ?string $query = null,
+        ?int $pageSize = null,
+        ?string $nextPageToken = null,
+    ): \Generator {
+        return $this->iteratePages(function (?string $token) use ($workflowType, $status, $query, $pageSize): array {
+            $page = $this->listWorkflows($workflowType, $status, $query, $pageSize, $token);
+            $this->paginationItems($page->raw, 'workflows');
+
+            return [$page->executions, $page->raw];
+        }, $nextPageToken);
     }
 
     /** @return list<WorkflowRun> */
@@ -569,6 +641,110 @@ final class Client implements WorkflowClientInterface
                 ['page_size' => $pageSize, 'next_page_token' => $nextPageToken],
             ),
         );
+    }
+
+    /**
+     * Lazily enumerate the raw events of one exact run. This does not follow
+     * continue-as-new or subscribe after the last page.
+     *
+     * @return \Generator<int, array<string, mixed>>
+     */
+    public function iterateWorkflowHistory(
+        string $workflowId,
+        string $runId,
+        ?int $pageSize = null,
+        ?string $nextPageToken = null,
+    ): \Generator {
+        return $this->iteratePages(function (?string $token) use ($workflowId, $runId, $pageSize): array {
+            $page = $this->workflowHistory($workflowId, $runId, $pageSize, $token);
+
+            return [$this->paginationItems($page, 'events'), $page];
+        }, $nextPageToken);
+    }
+
+    /**
+     * @param array<string, mixed> $page
+     * @return list<array<string, mixed>>
+     */
+    private function paginationItems(array $page, string $field): array
+    {
+        $items = $page[$field] ?? null;
+        if (!is_array($items) || !array_is_list($items)) {
+            throw new PaginationException('The page must contain an ordered '.$field.' list.', 'invalid_page');
+        }
+        foreach ($items as $item) {
+            if (!is_array($item) || array_is_list($item)) {
+                throw new PaginationException('A page item must be an object.', 'invalid_item');
+            }
+        }
+
+        return $items;
+    }
+
+    /**
+     * @template T
+     * @param \Closure(?string): array{0: list<T>, 1: array<string, mixed>} $fetch
+     * @return \Generator<int, T>
+     */
+    private function iteratePages(\Closure $fetch, ?string $token): \Generator
+    {
+        $checkpoint = $token;
+        $distance = 0;
+        $power = 1;
+        while (true) {
+            [$items, $page] = $fetch($token);
+            $next = $this->continuationToken($page);
+            self::advancePaginationCycle($token, $next, $checkpoint, $distance, $power);
+            foreach ($items as $item) {
+                // yield from would reuse each page's integer keys and could
+                // overwrite earlier items in iterator_to_array().
+                yield $item;
+            }
+            unset($items, $page, $item);
+            if ($next === null) {
+                return;
+            }
+            $token = $next;
+        }
+    }
+
+    /** @param array<string, mixed> $page */
+    private function continuationToken(array $page): ?string
+    {
+        if (!array_key_exists('next_page_token', $page)) {
+            throw new PaginationException('The page omitted its continuation token.', 'missing_continuation');
+        }
+        $next = $page['next_page_token'];
+        if ($next !== null && !is_string($next)) {
+            throw new PaginationException('A continuation token must be a string or null.', 'invalid_continuation');
+        }
+
+        return $next === '' ? null : $next;
+    }
+
+    private static function advancePaginationCycle(
+        ?string $current,
+        ?string $next,
+        ?string &$checkpoint,
+        int &$distance,
+        int &$power,
+    ): void {
+        if ($next === null) {
+            return;
+        }
+        // Brent's cycle detection retains two tokens, matching Rust, rather
+        // than retaining every token in an unbounded export.
+        if ($next === $current || $next === $checkpoint) {
+            throw new PaginationException('The Server repeated a continuation token or formed a token cycle.', 'repeated_page_token');
+        }
+        if ($distance < PHP_INT_MAX) {
+            ++$distance;
+        }
+        if ($distance >= $power) {
+            $checkpoint = $next;
+            $power = $power > intdiv(PHP_INT_MAX, 2) ? PHP_INT_MAX : $power * 2;
+            $distance = 0;
+        }
     }
 
     /** @return array<string, mixed> */
@@ -1616,7 +1792,7 @@ final class Client implements WorkflowClientInterface
             }
         }
 
-        $response = $this->worker('POST', '/worker/register', $this->withoutNulls([
+        $registration = $this->worker('POST', '/worker/register', $this->withoutNulls([
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
             'runtime' => 'php',
@@ -1633,9 +1809,12 @@ final class Client implements WorkflowClientInterface
             'build_id' => $buildId,
             'process_metrics' => ['process_id' => getmypid(), 'process_uptime_seconds' => 0],
         ]));
-        $this->taskDelivery->registered($workerId, $taskQueue, $this->workerProtocolVersion, $capabilities, $response);
+        $this->taskDelivery->registered($workerId, $taskQueue, $this->workerProtocolVersion, $capabilities, $registration);
+        if (array_key_exists('server_capabilities', $registration)) {
+            $this->rememberClaimedTaskReadyAge($registration['server_capabilities']);
+        }
 
-        return $response;
+        return $registration;
     }
 
     /** @return array<string, mixed> */
@@ -2606,6 +2785,23 @@ final class Client implements WorkflowClientInterface
      */
     private function pollTaskResponse(string $path, array $body): array
     {
+        if (!$this->metricsObserver->enabled()) {
+            return $this->performPollTaskResponse($path, $body);
+        }
+
+        return $this->observeRequest('POST', $path, true, function (ClientRequestObservation $observation) use ($path, $body): array {
+            $copy = clone $this;
+            $copy->metricsRequest = $observation;
+
+            return $copy->performPollTaskResponse($path, $body);
+        });
+    }
+
+    /** @param array<string, mixed> $body
+     * @return array<string, mixed>
+     */
+    private function performPollTaskResponse(string $path, array $body): array
+    {
         $retryTransientFailure = true;
         while (true) {
             try {
@@ -2717,6 +2913,52 @@ final class Client implements WorkflowClientInterface
         ?string $requestId = null,
         ?\Closure $responseValidator = null,
     ): array {
+        if ($this->metricsRequest !== null || !$this->metricsObserver->enabled()) {
+            return $this->performRequest($method, $path, $worker, $body, $operation, $budget, $payloadPaths, $requestId,
+                $this->metricsRequest, $responseValidator);
+        }
+
+        return $this->observeRequest($method, $path, $worker,
+            fn (ClientRequestObservation $observation): array => $this->performRequest(
+                $method, $path, $worker, $body, $operation, $budget, $payloadPaths, $requestId, $observation, $responseValidator));
+    }
+
+    /** @param \Closure(ClientRequestObservation): array<string, mixed> $operation
+     * @return array<string, mixed>
+     */
+    private function observeRequest(string $method, string $path, bool $worker, \Closure $operation): array
+    {
+        $observation = new ClientRequestObservation($this->metricsObserver, $method,
+            MetricsRoutes::template($path), $worker ? 'worker' : 'control');
+        try {
+            return $operation($observation);
+        } catch (\Throwable $error) {
+            $observation->failed($error);
+            throw $error;
+        } finally {
+            $observation->finish();
+        }
+    }
+
+    /** @param array<string, mixed>|null $body
+     * @param (\Closure(array<string, mixed>): list<list<int|string>>)|null $payloadPaths
+     * @return array<string, mixed>
+     */
+    private function performRequest(
+        string $method,
+        string $path,
+        bool $worker,
+        ?array $body,
+        ?string $operation,
+        ?RequestBudget $budget,
+        ?\Closure $payloadPaths,
+        ?string $requestId,
+        ?ClientRequestObservation $observation,
+        ?\Closure $responseValidator,
+    ): array {
+        if ($observation !== null) {
+            $observation->status = null;
+        }
         $headers = $this->requestHeaders($worker, $path);
         $logicalPath = PollTransport::logicalPath($path);
         try {
@@ -2738,7 +2980,11 @@ final class Client implements WorkflowClientInterface
                 $activityLease->checkRequest($body);
                 $budget?->restrictAuthorityDeadline($activityLease->publicationDeadline());
             }
-            $response = $this->sendTransportRequest($method, $path, $worker, $headers, $body, $budget);
+            try {
+                $response = $this->sendTransportRequest($method, $path, $worker, $headers, $body, $budget);
+            } finally {
+                $observation?->captureStatus($this->transport);
+            }
 
             $budget?->remainingSeconds();
             if ($responseValidator !== null) {
@@ -2971,6 +3217,12 @@ final class Client implements WorkflowClientInterface
 
     private function segment(string $value): string
     {
+        // An empty identifier collapses the route (for example /workflows/ instead of
+        // /workflows/{id}) and the server then reports an unrelated capability error.
+        if ($value === '') {
+            throw new InvalidArgumentException('Durable Workflow request path identifiers cannot be empty.');
+        }
+
         return rawurlencode($value);
     }
 
