@@ -17,18 +17,32 @@ const mediaTypes = {
   '.png': 'image/png', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.ico': 'image/x-icon',
 };
 
+// Requests select only bytes from this immutable build inventory. No request
+// pathname reaches a filesystem operation, including metadata probes.
+function documentationFiles(directory = siteDirectory, files = new Map()) {
+  for (const entry of fs.readdirSync(directory, {withFileTypes: true})) {
+    const file = path.join(directory, entry.name);
+    if (entry.isSymbolicLink()) throw new Error('Documentation artifacts must not contain symbolic links.');
+    if (entry.isDirectory()) documentationFiles(file, files);
+    else if (entry.isFile()) {
+      const url = `/${path.relative(siteDirectory, file).split(path.sep).join('/')}`;
+      files.set(url, {body: fs.readFileSync(file), type: mediaTypes[path.extname(file)] ?? 'application/octet-stream'});
+    }
+  }
+  return files;
+}
+const documentation = documentationFiles();
+
 function serveDocumentation(request, response) {
   try {
     const pathname = decodeURIComponent(new URL(request.url, 'http://127.0.0.1').pathname);
-    const requested = path.resolve(siteDirectory, `.${pathname}`);
-    const target = fs.statSync(requested).isDirectory() ? path.join(requested, 'index.html') : requested;
-    const actual = fs.realpathSync(target);
-    if (!actual.startsWith(`${siteDirectory}${path.sep}`)) throw new Error('Outside documentation root');
-    const body = fs.readFileSync(actual);
-    response.writeHead(200, {'Content-Type': mediaTypes[path.extname(actual)] ?? 'application/octet-stream'});
-    response.end(body);
+    const key = pathname.endsWith('/') ? `${pathname}index.html` : pathname;
+    const file = documentation.get(key);
+    if (!file) throw new Error('Unknown documentation URL');
+    response.writeHead(200, {'Content-Type': file.type});
+    response.end(file.body);
   } catch {
-    // Missing/invalid files are observable HTTP failures in the browser check.
+    // Missing/invalid URLs are observable HTTP failures in the browser check.
     response.writeHead(404, {'Content-Type': 'text/plain'});
     response.end('Not found');
   }
