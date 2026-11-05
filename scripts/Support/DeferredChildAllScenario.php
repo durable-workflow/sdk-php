@@ -294,6 +294,9 @@ final class DeferredChildAllScenario
             self::check(($payload['continued_from_run_id'] ?? null) === $original['child_workflow_run_id']
                 && ($payload['retry_of_child_workflow_run_id'] ?? null) === null && ($payload['retry_attempt'] ?? null) === null
                 && is_string($payload['workflow_link_id'] ?? null) && $payload['workflow_link_id'] !== '', 'Replacement child has no exact continuation predecessor.');
+            self::check(is_string($original['workflow_link_id'] ?? null) && $original['workflow_link_id'] !== ''
+                && $payload['workflow_link_id'] !== $original['workflow_link_id']
+                && $payload['workflow_link_id'] !== $replacement['workflow_link_id'], 'Continuation link reuses a parent-child link role.');
             $continued = array_values(array_filter($predecessor, static fn (array $event): bool => ($event['event_type'] ?? null) === 'WorkflowContinuedAsNew'));
             self::check(count($continued) === 1, 'Continuation predecessor has no unique canonical handoff.');
             $handoff = $continued[0]['payload'];

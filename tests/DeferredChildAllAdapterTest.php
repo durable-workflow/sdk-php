@@ -237,6 +237,30 @@ final class DeferredChildAllAdapterTest extends TestCase
         $proof = self::replacementProof($case);
         self::scenario($case, 2)->assertReplacementHistory(...$proof);
         self::assertSame($case === 'continue' ? 'continuation-link' : 'replacement-link', $proof[0][0]['payload']['workflow_link_id']);
+        if ($case === 'continue') {
+            self::assertNotSame($proof[1]['workflow_link_id'], $proof[0][0]['payload']['workflow_link_id']);
+            self::assertNotSame($proof[2]['workflow_link_id'], $proof[0][0]['payload']['workflow_link_id']);
+        } else {
+            self::assertSame($proof[2]['workflow_link_id'], $proof[0][0]['payload']['workflow_link_id']);
+        }
+    }
+
+    #[DataProvider('parentChildLinkRoles')]
+    public function testContinuationRefusesCoherentTwoFieldParentChildLinkSubstitution(string $role): void
+    {
+        [$history, $original, $replacement, $parent, $predecessor] = self::replacementProof('continue');
+        $link = $role === 'initial' ? $original['workflow_link_id'] : $replacement['workflow_link_id'];
+        $history[0]['payload']['workflow_link_id'] = $link;
+        $predecessor[0]['payload']['workflow_link_id'] = $link;
+        $this->expectException(RuntimeException::class);
+        self::scenario('continue', 2)->assertReplacementHistory($history, $original, $replacement, $parent, $predecessor);
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function parentChildLinkRoles(): iterable
+    {
+        yield 'initial parent-child link' => ['initial'];
+        yield 'replacement parent-child link' => ['replacement'];
     }
 
     #[DataProvider('replacementProofMutations')]
@@ -547,7 +571,7 @@ final class DeferredChildAllAdapterTest extends TestCase
      */
     private static function replacementProof(string $case): array
     {
-        $original = ['child_call_id' => 'call-0', 'child_workflow_instance_id' => 'child-0', 'child_workflow_run_id' => 'run-0'];
+        $original = ['child_call_id' => 'call-0', 'child_workflow_instance_id' => 'child-0', 'child_workflow_run_id' => 'run-0', 'workflow_link_id' => 'link-0'];
         $replacement = ['run_id' => 'replacement', 'workflow_link_id' => 'replacement-link', 'terminal' => 'ChildRunCompleted'];
         $parent = ['workflow_id' => 'parent', 'run_id' => 'parent-run'];
         $history = [['event_type' => 'WorkflowStarted', 'payload' => [
