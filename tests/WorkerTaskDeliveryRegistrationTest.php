@@ -75,7 +75,8 @@ final class WorkerTaskDeliveryRegistrationTest extends TestCase
         } else {
             self::assertArrayNotHasKey('result', $outcome, 'A stale successful receipt cannot authorize execution.');
             self::assertInstanceOf(ServerException::class, $outcome['error'] ?? null);
-            self::assertSame($phase === 'observer' ? 1 : 0, $observed, 'Transport replacement must refuse before payload observation.');
+            $expectedObservations = $phase === 'observer' ? 1 : 0;
+            self::assertSame($expectedObservations, $observed, 'Transport replacement must refuse before payload observation.');
         }
         $expected = self::claimed($kind, 'replacement');
         $actual = self::poll($replacement, $endpoint, $kind, 'replacement', $queue);
