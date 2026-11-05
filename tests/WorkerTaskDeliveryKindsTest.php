@@ -160,6 +160,23 @@ final class WorkerTaskDeliveryKindsTest extends TestCase
     /** @return array<array{string}> */
     public static function selectedKinds(): array { return [['workflow'], ['update_validation']]; }
 
+    public function testCallerReferencesCannotMutateTheSelectedKindSetOrRetryBytes(): void
+    {
+        $kind = 'workflow';
+        $requested = [&$kind, 'update_validation'];
+        $transport = new FakeTransport([self::registration(), self::offer('workflow'),
+            new TransportException('Timeout.', 504), self::claimed('workflow')]);
+        $client = self::client($transport);
+        [, $error] = self::capture(static fn (): array => self::poll($client, $requested));
+        self::assertInstanceOf(TaskDeliveryUncertain::class, $error);
+        $originalPacket = json_encode($transport->requests[2], JSON_THROW_ON_ERROR);
+        $kind = 'activity';
+        [$result, $error] = self::capture(static fn (): array => self::poll(clone $client, self::BOTH));
+        self::assertNull($error, $error?->getMessage() ?? '');
+        self::assertSame(self::claimed('workflow'), $result);
+        self::assertSame($originalPacket, json_encode($transport->requests[3], JSON_THROW_ON_ERROR));
+    }
+
     #[DataProvider('concurrentKinds')]
     public function testKindSetBindingSpansOfferAndAcceptanceOwnership(string $kind, string $phase, bool $clone, bool $changed): void
     {

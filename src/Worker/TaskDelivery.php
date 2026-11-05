@@ -88,36 +88,47 @@ final class TaskDelivery
         // Hold ownership across both requests, including a suspended offer read.
         $this->accepting[$key] = $allowedKinds;
         try {
-            try {
-                if ($selected === null) {
-                    $wirePath = substr($path, 0, -5).'/offers';
-                    $body['registration_token'] = $registration['token'];
-                    $response = $send($wirePath, $body, null);
-                    if (!array_key_exists('task_offer', $response)) {
-                        return $response;
-                    }
-                    $candidate = TaskDeliveryAttempt::fromResponse($wirePath, $body, $response, $allowedKinds);
-                    $selected = $this->pending[$key] ??= $candidate;
-                }
-                $response = $send($selected->path, $selected->requestBody(), $selected);
-                if ($response['task'] === null && !PollResponse::isTerminal($response)) {
-                    throw new TaskDeliveryUncertain((string) $body['poll_request_id'], 200);
-                }
-            } catch (ServerException $exception) {
-                $response = $this->refusedResponse($exception, $workerId);
-                if ($response === null) {
-                    if ($this->isUncertain($exception, $selected)) {
-                        throw new TaskDeliveryUncertain((string) $body['poll_request_id'], $exception->status, $exception);
-                    }
-                    throw $exception;
-                }
-            }
-            $this->resolved($key, $selected);
+            $body['registration_token'] = $registration['token'];
 
-            return $response;
+            return $this->deliver($key, substr($path, 0, -5).'/offers', $body, $allowedKinds, $selected, $send);
         } finally {
             unset($this->accepting[$key]);
         }
+    }
+
+    /**
+     * @param array<string, mixed> $body
+     * @param list<string> $allowedKinds
+     * @param Closure(string, array<string, mixed>, ?TaskDeliveryAttempt): array<string, mixed> $send
+     * @return array<string, mixed>
+     */
+    private function deliver(string $key, string $wirePath, array $body, array $allowedKinds, ?TaskDeliveryAttempt $selected, Closure $send): array
+    {
+        try {
+            if ($selected === null) {
+                $response = $send($wirePath, $body, null);
+                if (!array_key_exists('task_offer', $response)) {
+                    return $response;
+                }
+                $candidate = TaskDeliveryAttempt::fromResponse($wirePath, $body, $response, $allowedKinds);
+                $selected = $this->pending[$key] ??= $candidate;
+            }
+            $response = $send($selected->path, $selected->requestBody(), $selected);
+            if ($response['task'] === null && !PollResponse::isTerminal($response)) {
+                throw new TaskDeliveryUncertain((string) $body['poll_request_id'], 200);
+            }
+        } catch (ServerException $exception) {
+            $response = $this->refusedResponse($exception, (string) $body['worker_id']);
+            if ($response === null) {
+                if ($this->isUncertain($exception, $selected)) {
+                    throw new TaskDeliveryUncertain((string) $body['poll_request_id'], $exception->status, $exception);
+                }
+                throw $exception;
+            }
+        }
+        $this->resolved($key, $selected);
+
+        return $response;
     }
 
     /**
@@ -160,16 +171,18 @@ final class TaskDelivery
         if (!is_array($requested) || !array_is_list($requested) || $requested === []) {
             throw new InvalidArgumentException('Task kinds must be a nonempty list allowed by the poll endpoint.');
         }
+        $normalized = [];
         foreach ($requested as $value) {
             if (!is_string($value) || !in_array($value, $permitted, true)) {
                 throw new InvalidArgumentException('Task kinds must be a nonempty list allowed by the poll endpoint.');
             }
+            // Copy scalar values rather than retaining caller-owned array references.
+            $normalized[] = $value;
         }
-        /** @var list<string> $requested */
-        $requested = array_values(array_unique($requested));
-        sort($requested, SORT_STRING);
+        $normalized = array_values(array_unique($normalized));
+        sort($normalized, SORT_STRING);
 
-        return $requested;
+        return $normalized;
     }
 
     public function forget(string $workerId): void
