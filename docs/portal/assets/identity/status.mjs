@@ -6,9 +6,7 @@ const unknown = () => ({state: 'unknown', validUntil: 0});
 function timestamp(value) {
   if (typeof value !== 'string') return Number.NaN;
   const match = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d{1,9})?(Z|([+-])(\d\d):(\d\d))$/.exec(value);
-  // RFC 3339 -00:00 has an unknown local offset; this producer requires a
-  // known offset for status evidence (its canonical output uses +00:00).
-  if (!match || match[2] === '-00:00') return Number.NaN;
+  if (!match) return Number.NaN;
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return Number.NaN;
   const offset = match[2] === 'Z' ? 0 : (Number(match[4]) * 60 + Number(match[5])) * (match[3] === '-' ? -1 : 1);
