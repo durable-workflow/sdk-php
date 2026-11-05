@@ -8,6 +8,13 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `Client::iterateWorkflows()` and `iterateWorkflowHistory()` lazily read
+  complete workflow listings and exact-run histories, retaining one page at a
+  time. Existing one-page methods stay available. Iteration preserves opaque
+  cursors, namespace and filters, propagates later-page errors, and refuses
+  malformed continuations or token cycles instead of silently truncating or
+  looping (#247 in durable-workflow/.github).
+
 - `WorkflowContext::upsertSearchAttributes()` accepts an optional complete map
   of canonical type declarations (#244). Explicitly typed calls bind replay to
   both values and recorded type identity. Existing one-argument calls retain
