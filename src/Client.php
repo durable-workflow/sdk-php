@@ -2808,8 +2808,10 @@ final class Client implements WorkflowClientInterface
                 return $this->taskDelivery->poll($path, $body,
                     fn (string $wirePath, array $wireBody, ?TaskDeliveryAttempt $selected): array =>
                         $this->request('POST', $wirePath, true, $wireBody,
-                            responseValidator: static fn (array $response) =>
-                                TaskDelivery::assertResponse($response, $wireBody, $wirePath, $selected)))
+                            responseValidator: function (array $response) use ($wireBody, $wirePath, $selected): void {
+                                $this->taskDelivery->assertCurrentRegistration($wireBody);
+                                TaskDelivery::assertResponse($response, $wireBody, $wirePath, $selected);
+                            }))
                     ?? $this->worker('POST', $path, $body);
             } catch (ServerException $exception) {
                 if ($retryTransientFailure && $exception->isTransientConnectionFailure()) {

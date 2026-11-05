@@ -107,6 +107,7 @@ final class TaskDelivery
         try {
             if ($selected === null) {
                 $response = $send($wirePath, $body, null);
+                $this->assertCurrentRegistration($body);
                 if (!array_key_exists('task_offer', $response)) {
                     return $response;
                 }
@@ -114,6 +115,7 @@ final class TaskDelivery
                 $selected = $this->pending[$key] ??= $candidate;
             }
             $response = $send($selected->path, $selected->requestBody(), $selected);
+            $this->assertCurrentRegistration($selected->requestBody());
             if ($response['task'] === null) {
                 throw new TaskDeliveryUncertain((string) $body['poll_request_id'], 200);
             }
@@ -129,6 +131,18 @@ final class TaskDelivery
         $this->resolved($key, $selected);
 
         return $response;
+    }
+
+    /** @internal Recheck after I/O and before observing or returning its response.
+     * @param array<string, mixed> $body
+     */
+    public function assertCurrentRegistration(array $body): void
+    {
+        $current = $this->registrations[(string) $body['worker_id']] ?? null;
+        if ($current === null || $current !== ['queue' => $body['task_queue'] ?? null, 'token' => $body['registration_token'] ?? null]) {
+            throw new ServerException('The task-delivery registration changed before its response.', 200,
+                'stale_task_delivery_registration');
+        }
     }
 
     /**
