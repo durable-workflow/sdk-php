@@ -508,12 +508,12 @@ final class RedriveSuccessorEvidenceTest extends TestCase
         return $cases;
     }
 
-    public function testADeliveryToTheNextUnscheduledStepIsValid(): void
+    public function testADeliveryToTheNextUnscheduledStepNeedsThePriorActivityToResolve(): void
     {
         $fixture = RedriveFixtureRegistry::fixture(self::CANCELLATION);
         $fixture['history'][6]['payload']['sequence'] = 4;
 
-        self::assertNull(RedriveSuccessorHistory::violation($fixture, RedriveFixtureRegistry::SUCCESSORS[self::CANCELLATION]));
+        self::assertStringContainsString('earlier call is unresolved', (string) RedriveSuccessorHistory::violation($fixture, RedriveFixtureRegistry::SUCCESSORS[self::CANCELLATION]));
     }
 
     /** @return array<string, array{string, list<string>, string}> */
