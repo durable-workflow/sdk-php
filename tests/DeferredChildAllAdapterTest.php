@@ -251,6 +251,51 @@ final class DeferredChildAllAdapterTest extends TestCase
         yield 'no matching poll' => [true, false];
     }
 
+    public function testOnlyExplicitEmptyPollsProveNoParentTask(): void
+    {
+        foreach (['empty', 'timeout'] as $status) {
+            Scenario::assertEmptyPoll(['task' => null, 'poll_status' => $status]);
+            Scenario::assertEmptyPoll(['task' => null, 'poll_status' => $status, 'reason' => null]);
+        }
+        $this->addToAssertionCount(4);
+    }
+
+    /** @param array<string, mixed> $response */
+    #[DataProvider('uncertainPolls')]
+    public function testUnavailableMalformedOrLeasedPollsCannotProveNoParentTask(array $response): void
+    {
+        $this->expectException(RuntimeException::class);
+        Scenario::assertEmptyPoll($response);
+    }
+
+    /** @return iterable<string, array{array<string, mixed>}> */
+    public static function uncertainPolls(): iterable
+    {
+        foreach (['draining', 'stopped', 'stale_worker_registration', 'backend_lock_pressure', 'leased', 'future_status'] as $status) {
+            yield $status => [['task' => null, 'poll_status' => $status]];
+        }
+        yield 'missing status' => [['task' => null]];
+        yield 'missing task' => [['poll_status' => 'empty']];
+        yield 'leased task' => [['task' => ['task_id' => 'task'], 'poll_status' => 'empty']];
+        yield 'mixed terminal reason' => [['task' => null, 'poll_status' => 'empty', 'reason' => 'worker_draining']];
+        yield 'unknown reason' => [['task' => null, 'poll_status' => 'timeout', 'reason' => 'future_reason']];
+    }
+
+    public function testParentReceiptBindsTheIntendedWorkflowRunAndQueue(): void
+    {
+        $task = ['workflow_id' => 'parent', 'run_id' => 'initial-run', 'task_queue' => 'parents'];
+        Scenario::assertParentTask($task, 'parent', 'initial-run', 'parents');
+        $this->addToAssertionCount(1);
+        foreach (array_keys($task) as $key) {
+            try {
+                Scenario::assertParentTask(array_replace($task, [$key => 'other']), 'parent', 'initial-run', 'parents');
+                self::fail('Another parent identity must refuse.');
+            } catch (RuntimeException $error) {
+                self::assertSame('Managed parent received another workflow, run or queue.', $error->getMessage());
+            }
+        }
+    }
+
     private static function scenario(string $case, int $size): Scenario
     {
         return new Scenario($case, array_map(static fn (int $index): string => 'child-'.$index, range(0, $size - 1)));

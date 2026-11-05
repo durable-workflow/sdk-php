@@ -207,6 +207,21 @@ final class DeferredChildAllScenario
         }
     }
 
+    /** @param array<string, mixed> $response */
+    public static function assertEmptyPoll(array $response): void
+    {
+        self::check(array_key_exists('task', $response) && $response['task'] === null
+            && in_array($response['poll_status'] ?? null, ['empty', 'timeout'], true)
+            && ($response['reason'] ?? null) === null, 'Poll did not prove an empty parent queue.');
+    }
+
+    /** @param array<string, mixed> $task */
+    public static function assertParentTask(array $task, string $workflow, string $run, string $queue): void
+    {
+        self::check(($task['workflow_id'] ?? null) === $workflow && ($task['run_id'] ?? null) === $run
+            && ($task['task_queue'] ?? null) === $queue, 'Managed parent received another workflow, run or queue.');
+    }
+
     /** @phpstan-assert true $condition */
     public static function check(bool $condition, string $message): void
     {

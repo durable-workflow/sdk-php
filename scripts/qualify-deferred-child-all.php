@@ -129,7 +129,7 @@ function childAllNoParentTask(Client $worker, Scenario $scenario, string $queue)
     $registration = $worker->registerWorker($id, $queue, [$scenario->parentType()], []);
     try {
         $response = $worker->pollWorkflowTaskResponse($id, $queue, 0);
-        Scenario::check(array_key_exists('task', $response) && $response['task'] === null, 'Unexpected extra or premature parent task.');
+        Scenario::assertEmptyPoll($response);
     } finally {
         $worker->deregisterWorkerRegistration($id, $registration['registration_token'] ?? null);
     }
@@ -190,6 +190,7 @@ function childAllCase(string $case): array
     $parent = $control->startWorkflow($scenario->parentType(), 'parent-'.$suffix, $parentQueue, [$scenario->fixture['input']]);
     $run = (string) $parent->selectedRunId;
     $start = childAllTurn($scenario, $namespace, $parentQueue);
+    Scenario::assertParentTask($start['task'], $parent->workflowId, $run, $parentQueue);
     $prefix = childAllHistory($control, $parent->workflowId, $run);
     $commands = $start['body']['commands'];
     $identities = $scenario->identities($prefix, $commands);
@@ -231,6 +232,7 @@ function childAllCase(string $case): array
             continue;
         }
         $finish = childAllTurn($scenario, $namespace, $parentQueue);
+        Scenario::assertParentTask($finish['task'], $parent->workflowId, $run, $parentQueue);
         $finishCommands = $finish['body']['commands'];
         Scenario::check(count($finishCommands) === 1 && $finishCommands[0]['type'] === 'complete_workflow', 'Cold parent did not finish with one result.');
         $result = $control->payloadCodec()->decodeEnvelope($finishCommands[0]['result']);

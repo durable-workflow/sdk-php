@@ -26,7 +26,10 @@ exact typed result or `ChildWorkflowFailed` shape without starting another child
 Duplicate parent and child completion attempts must be explicit no-ops or fenced
 and leave complete canonical history unchanged. After an early failure closes
 the parent under default abandon, successful siblings must add no parent history
-or further ready task.
+or further ready task. Empty-queue observations require an explicit empty or
+timeout poll with no refusal reason. Lifecycle or unavailable replies cannot
+prove that the parent has no task. Both parent receipts bind the selected
+workflow, run and queue.
 
 For a separately admitted disposable tuple, the command is:
 
