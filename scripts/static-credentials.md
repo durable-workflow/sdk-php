@@ -14,11 +14,22 @@ including malformed UTF-8, with a length-delimited inventory computed using
 Python's Unicode encoder and the original hex inputs. Server-only cases and
 the binary-key boundary remain inventory entries, not PHP scalar passes.
 
-`tests/fixtures/static-credential-consumer/composer.json` is the proposed
+`tests/fixtures/static-credential-consumer/dependency-intent.json` is the proposed
 dependency intent. Its exact interpreter/package versions and known framework
 source references are inputs to a later complete advisory-enforced graph;
 there is no lockfile, installed subject or registry SDK substitution here.
 Do not resolve it or install packages as a side effect of source controls.
+It is deliberately an intent document rather than an installable Composer
+project with a fabricated or unresolved lockfile.
+
+`StaticCredentialProbe` shares the public construction/header inspection paths
+with source regressions. `StaticCredentialTransportSpy` refuses direct SDK
+sends. For real framework-created default clients, it instruments the existing
+Guzzle handler and separate bounded-control handler without replacing the
+provider/factory or selected authentication. Countercontrols exercise both
+control and worker requests and require the spy to intercept them. Constructors
+remain inside the caller's network-isolated boundary; the fixture runner never
+starts a worker loop or transmits credential headers.
 
 The caller-owned runner is being authored to cover direct public credential
 construction, both service configuration paths, Laravel's process resolver and

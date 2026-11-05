@@ -7,9 +7,9 @@ namespace DurableWorkflow\Tests;
 use DurableWorkflow\Auth\Authentication;
 use DurableWorkflow\Auth\TokenAuthentication;
 use DurableWorkflow\Bridge\Laravel\ProcessCredentialResolver;
-use DurableWorkflow\Bridge\ServiceConfiguration;
 use DurableWorkflow\Client;
 use DurableWorkflow\Qualification\StaticCredentialFixture;
+use DurableWorkflow\Qualification\StaticCredentialProbe;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use InvalidArgumentException;
 use LogicException;
@@ -18,6 +18,7 @@ use PHPUnit\Framework\TestCase;
 use ReflectionProperty;
 
 require_once dirname(__DIR__).'/scripts/Support/StaticCredentialFixture.php';
+require_once dirname(__DIR__).'/scripts/Support/StaticCredentialProbe.php';
 
 final class StaticCredentialValidationTest extends TestCase
 {
@@ -228,56 +229,7 @@ final class StaticCredentialValidationTest extends TestCase
      */
     private static function exercise(string $target, array $options, string $plane, FakeTransport $transport, array $process = []): array
     {
-        if ($target === 'TokenAuthentication') {
-            $authentication = new TokenAuthentication(
-                token: $options['shared'] ?? null, controlToken: $options['control'] ?? null, workerToken: $options['worker'] ?? null,
-            );
-        } else {
-            $client = match ($target) {
-                'Client' => new Client('https://server.example', transport: $transport,
-                    token: $options['shared'] ?? null, controlToken: $options['control'] ?? null, workerToken: $options['worker'] ?? null),
-                'ServiceConfiguration' => self::configuredClient($options, $plane, $transport),
-                'ProcessCredentialResolver' => self::processClient($options, $process, $plane, $transport),
-                default => throw new LogicException('The canonical credential target must be supported.'),
-            };
-            // Inspect the constructed auth object without issuing a request or
-            // claiming arbitrary-Unicode HTTP-header/authentication success.
-            $authentication = (new ReflectionProperty(Client::class, 'authentication'))->getValue($client);
-            self::assertTrue($authentication === null || $authentication instanceof Authentication);
-        }
-
-        return $authentication?->headers($plane === 'worker') ?? [];
-    }
-
-    /** @param array<string, ?string> $options */
-    private static function configuredClient(array $options, string $plane, FakeTransport $transport): Client
-    {
-        $credentials = [];
-        foreach ($options as $role => $value) {
-            $credentials[self::CONFIGURATION[$role]] = $value;
-        }
-        $configuration = ServiceConfiguration::fromArray(['endpoint' => 'https://server.example',
-            'namespace' => 'fixture', 'task_queue' => 'fixture', 'handlers' => [], 'credentials' => $credentials]);
-
-        return $plane === 'worker' ? $configuration->workerClient($transport) : $configuration->controlClient($transport);
-    }
-
-    /**
-     * @param array<string, ?string> $options
-     * @param array<string, string> $process
-     */
-    private static function processClient(array $options, array $process, string $plane, FakeTransport $transport): Client
-    {
-        foreach ($options as $role => $value) {
-            if ($value !== null) {
-                $process[self::ENVIRONMENT[$role]] = $value;
-            }
-        }
-        $configuration = ServiceConfiguration::fromArray(['endpoint' => 'https://server.example', 'task_queue' => 'fixture']);
-
-        return self::withEnvironment($process, static fn (): Client => $plane === 'worker'
-            ? ProcessCredentialResolver::workerClient($configuration, $transport)
-            : ProcessCredentialResolver::applicationClient($configuration, $transport));
+        return StaticCredentialProbe::headers($target, $options, $plane, $transport, $process);
     }
 
     /**
