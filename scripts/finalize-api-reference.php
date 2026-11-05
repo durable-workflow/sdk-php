@@ -54,7 +54,8 @@ $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($buildD
 $description = 'Generated classes, methods, models, exceptions, and worker types for the Durable Workflow PHP SDK.';
 $count = 0;
 $sourceDirectory = getenv('DOCS_SOURCE_DIRECTORY') ?: __DIR__.'/..';
-$faviconSource = $sourceDirectory.'/docs/portal/assets/favicon.svg';
+$portalDirectory = getenv('DOCS_PORTAL_DIRECTORY') ?: $sourceDirectory.'/docs/portal';
+$faviconSource = $portalDirectory.'/assets/favicon.svg';
 $faviconTarget = $buildDirectory.'/assets/favicon.svg';
 
 if (! is_file($faviconSource) || ! is_dir(dirname($faviconTarget)) || ! copy($faviconSource, $faviconTarget)) {

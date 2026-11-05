@@ -15,75 +15,64 @@ description: Build, test, deploy, and operate durable PHP workflows with first-p
         <a class="button secondary" href="/getting-started/first-workflow/">Start with plain PHP</a>
       </div>
     </div>
-    <div class="hero-terminal" aria-label="Example terminal session">
-      <div class="terminal-bar"><i></i><i></i><i></i><span>first-workflow</span></div>
-      <pre><span class="prompt">$</span> {{ release.composerCommand }}
-<span class="prompt">$</span> env -u DURABLE_WORKFLOW_CLIENT_TOKEN php worker.php &amp;
-<span class="result">✓ worker registered · queue php-quickstart</span>
-<span class="prompt">$</span> env -u DURABLE_WORKFLOW_WORKER_TOKEN php client.php
-<span class="result">{"workflow_id":"php-quickstart-a83f…","result":{"greeting":"hello, PHP"}}</span></pre>
+    <div>
+      <div class="code-stage hero-terminal" aria-label="Quickstart commands">
+        <div class="code-stage__bar"><span>first-workflow</span><button class="copy-button" type="button">Copy</button></div>
+        <pre><code>{{ release.composerCommand }}
+env -u DURABLE_WORKFLOW_CLIENT_TOKEN \
+  php worker.php &amp;
+env -u DURABLE_WORKFLOW_WORKER_TOKEN \
+  php client.php</code></pre>
+      </div>
+      <p class="terminal-note">After <a href="/getting-started/first-workflow/">configuring the runtime and saving the example files</a>.</p>
     </div>
   </div>
 </section>
 
-<div class="capability-strip" aria-label="SDK capabilities"><div><span>Workflows</span><span>Activities</span><span>Signals</span><span>Queries</span><span>Updates</span><span>Retries</span></div></div>
-
 <section class="home-section" id="choose-php-path">
   <div class="section-heading">
-    <h2>Start where your PHP already lives.</h2>
+    <h2>Start where your PHP already lives</h2>
     <p>The durable model is shared. The bootstrap, container, and operating experience stay idiomatic to your stack.</p>
   </div>
   <div class="path-grid">
     <a class="path-card" href="/frameworks/laravel/">
-      <span class="number">01 / LARAVEL</span>
+      <span class="number">01 · LARAVEL</span>
       <h3>Move from v1 without losing Laravel</h3>
       <p>Choose v2 embedded or service mode now, then change ownership later through one supported transition matrix.</p>
-      <span class="arrow" aria-hidden="true">→</span>
+      <span class="arrow">Laravel guide →</span>
     </a>
     <a class="path-card" href="/getting-started/first-workflow/">
-      <span class="number">02 / PLAIN PHP</span>
+      <span class="number">02 · PLAIN PHP</span>
       <h3>Client + remote worker</h3>
       <p>Use the framework-neutral SDK in a script, service, or existing application.</p>
-      <span class="arrow" aria-hidden="true">→</span>
+      <span class="arrow">Plain PHP guide →</span>
     </a>
     <a class="path-card" href="/frameworks/symfony/">
-      <span class="number">03 / SYMFONY</span>
+      <span class="number">03 · SYMFONY</span>
       <h3>Container-managed worker</h3>
       <p>Configure the first-party SDK as services and run a Console command under your supervisor.</p>
-      <span class="arrow" aria-hidden="true">→</span>
+      <span class="arrow">Symfony guide →</span>
     </a>
   </div>
 </section>
 
 <section class="home-section" id="choose-runtime">
   <div class="section-heading">
-    <h2>Choose who operates the runtime.</h2>
+    <h2>Choose who runs the runtime</h2>
     <p>Your workflow code and task queue stay the same. The runtime URL, credentials, and operating boundary change.</p>
   </div>
   <div class="deployment-grid">
+    <a class="deployment-card" href="/operate/deployment/#self-hosted-server">
+      <span class="tag">Your infrastructure · no account</span>
+      <h3>Self-hosted Server</h3>
+      <p>Run the published Server image with your database, auth policy, and operational controls.</p>
+      <span class="arrow">Run Server →</span>
+    </a>
     <article class="deployment-card dw-cloud-promotion" data-promotion-source="sdk-php-reference">
       <span class="tag">Managed · limited access</span>
       <h3>Durable Workflow Cloud</h3>
       <p>Request a managed namespace, then use its full runtime URL with separate client and worker credentials.</p>
       <a class="arrow dw-cloud-promotion__action" data-promotion-action="early-access" href="https://cloud.durable-workflow.com/early-access#source=sdk-php-reference">Request early access →</a>
     </article>
-    <a class="deployment-card" href="/operate/deployment/#self-hosted-server">
-      <span class="tag">Your infrastructure</span>
-      <h3>Self-hosted Server</h3>
-      <p>Run the published Server image with your database, auth policy, and operational controls.</p>
-      <span class="arrow" aria-hidden="true">Run Server →</span>
-    </a>
-  </div>
-</section>
-
-<section class="home-section">
-  <div class="section-heading">
-    <h2>Learn one useful layer at a time.</h2>
-    <p>Get a result first. Then add durable messages, retry policy, tests, and production operations as your workflow needs them.</p>
-  </div>
-  <div class="path-grid">
-    <a class="path-card" href="/build/messages/"><span class="number">COMMUNICATE</span><h3>Signals, queries &amp; updates</h3><p>Send events, inspect replayed state, and request tracked changes.</p><span class="arrow">→</span></a>
-    <a class="path-card" href="/build/testing/"><span class="number">PROVE</span><h3>Replay-safe tests</h3><p>Test handlers quickly, then qualify the real worker and runtime boundary.</p><span class="arrow">→</span></a>
-    <a class="path-card" href="/operate/troubleshooting/"><span class="number">RECOVER</span><h3>Operate with evidence</h3><p>Diagnose auth, queue, replay, retry, and version mismatches by symptom.</p><span class="arrow">→</span></a>
   </div>
 </section>

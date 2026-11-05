@@ -6,9 +6,11 @@
   <title>{% if title %}{{ title }} · {% endif %}Durable Workflow PHP SDK</title>
   <meta name="description" content="{{ description }}">
   <meta name="robots" content="index,follow">
-  <meta name="theme-color" content="#101820">
+  <meta name="theme-color" content="#F6F7F5">
   <link rel="canonical" href="{{ page.url | absoluteUrl }}">
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <script src="/assets/theme.js"></script>
+  <link rel="stylesheet" href="/assets/identity.css">
   <link rel="stylesheet" href="/assets/portal.css">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Durable Workflow PHP SDK">
@@ -24,29 +26,12 @@
   <meta name="twitter:description" content="{{ description }}">
   <meta name="twitter:image" content="https://php.durable-workflow.com/assets/social-card.png">
   <script defer src="/assets/portal.js"></script>
+  <script type="module" src="/assets/status.js"></script>
   <script type="module" src="/analytics/analytics.js"></script>
 </head>
 <body class="{% if layoutType == 'home' %}home{% else %}guide{% endif %}">
   <a class="skip-link" href="#main-content">Skip to content</a>
-  <header class="site-header">
-    <div class="header-inner">
-      <a class="brand" href="/" aria-label="Durable Workflow PHP SDK home">
-        <span class="brand-mark" aria-hidden="true">DW</span>
-        <span class="brand-name">Durable Workflow</span>
-        <span class="brand-product">PHP</span>
-      </a>
-      <button class="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="primary-navigation">
-        <span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span>
-      </button>
-      <nav id="primary-navigation" class="primary-nav" aria-label="Primary navigation">
-        <a href="/getting-started/first-workflow/">Get started</a>
-        <a href="/build/workflows-activities/">Guides</a>
-        <a href="/frameworks/laravel/">Frameworks</a>
-        <a href="/operate/deployment/">Operate</a>
-        <a class="api-link" href="/api/">API Reference</a>
-      </nav>
-    </div>
-  </header>
+  {% identityHeader %}
 
   {% if layoutType == 'home' %}
     <main id="main-content">{{ content | safe }}</main>
@@ -82,14 +67,6 @@
     </div>
   {% endif %}
 
-  <footer class="site-footer">
-    <div><strong>Durable Workflow for PHP</strong><p>First-party clients and workers for Cloud and self-hosted Server.</p></div>
-    <nav aria-label="Related developer sites">
-      <a href="https://durable-workflow.com/docs/2.0/">Main docs</a>
-      <a href="https://python.durable-workflow.com/">Python</a>
-      <a href="https://rust.durable-workflow.com/">Rust</a>
-      <a href="https://github.com/durable-workflow/sdk-php">GitHub</a>
-    </nav>
-  </footer>
+  {% identityFooter %}
 </body>
 </html>

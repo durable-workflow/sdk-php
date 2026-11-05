@@ -10,7 +10,8 @@
     "check:docs-browser": "node scripts/check-docs-browser.mjs build/site",
     "check:docs-examples": "node scripts/check-docs-examples.mjs",
     "test:docs-portal-links": "node --test scripts/check-docs-portal-links.test.mjs",
-    "test:docs-browser-failures": "node --test scripts/check-docs-browser-failures.test.mjs"
+    "test:docs-browser-failures": "node --test scripts/check-docs-browser-failures.test.mjs",
+    "test:docs-identity-status": "node --test scripts/check-docs-identity-status.test.mjs"
   },
   "devDependencies": {
     "@11ty/eleventy": "3.1.7",
