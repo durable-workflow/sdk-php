@@ -786,10 +786,18 @@ final class WorkflowCommand
         ]);
     }
 
-    /** @param array<string, mixed> $attributes */
-    public static function upsertSearchAttributes(array $attributes): self
+    /**
+     * @param array<string, mixed> $attributes
+     * @param array<string, string>|null $attributeTypes
+     */
+    public static function upsertSearchAttributes(array $attributes, ?array $attributeTypes = null): self
     {
-        return new self('upsert_search_attributes', 'search_attributes', ['attributes' => $attributes]);
+        $identity = ['attributes' => $attributes];
+        if ($attributeTypes !== null) {
+            $identity['attribute_types'] = SearchAttributeTypes::canonical($attributes, $attributeTypes);
+        }
+
+        return new self('upsert_search_attributes', 'search_attributes', $identity);
     }
 
     /** @param array<string, mixed> $entries */
@@ -890,6 +898,11 @@ final class WorkflowCommand
     {
         $wire = ['type' => $this->type];
         foreach ($this->attributes as $key => $value) {
+            if ($key === 'attribute_types' && $value === []) {
+                // An all-deletion update has no wire type declarations, but its
+                // empty authored identity still constrains recorded type maps.
+                continue;
+            }
             if ($key === 'request_payload_value') {
                 $wire['request_payload'] = $codec->envelope($value);
                 continue;

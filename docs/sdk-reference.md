@@ -316,6 +316,27 @@ run guard and fail rather than silently targeting a successor.
 
 ## Control-plane administration and discovery
 
+`listWorkflows()` and `workflowHistory()` each read one page. The unreleased
+iterator API follows the Server's continuation tokens lazily:
+
+```php
+foreach ($client->iterateWorkflows(status: 'running', pageSize: 100) as $execution) {
+    echo $execution->workflowId, "\n";
+}
+foreach ($client->iterateWorkflowHistory($workflowId, $runId, pageSize: 100) as $event) {
+    echo $event['sequence'], ': ', $event['event_type'], "\n";
+}
+```
+
+The list yields `WorkflowExecution` values; history yields the original event
+maps. Both retain one page and fetch the next only when needed. Breaking out
+does not prefetch. History stays on the selected run through continue-as-new;
+listing follows the Server's ordering and consistency, not a global snapshot.
+Missing or invalid page metadata and repeated/cyclic tokens throw
+`PaginationException` with a typed `reason`. An HTTP error propagates unchanged
+and closes the generator. Earlier items may already have been yielded, so
+consumers must handle a partial export on failure.
+
 `Client::withNamespace()` returns an immutable namespace selection that keeps
 the configured authentication and transport. Workflow payload encoding remains
 Apache Avro. Workflow

@@ -45,6 +45,9 @@
           "glob": "src/Worker/ConditionPredicateSource.php"
         },
         {
+          "glob": "src/Worker/SearchAttributeTypes.php"
+        },
+        {
           "glob": "src/Worker/WorkflowEntryArguments.php"
         },
         {
