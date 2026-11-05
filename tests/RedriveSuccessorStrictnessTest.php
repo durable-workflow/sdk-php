@@ -198,6 +198,161 @@ final class RedriveSuccessorStrictnessTest extends TestCase
         self::assertNull(RedriveSuccessorHistory::violation($fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE]));
     }
 
+    /** @param array<string, mixed> $opening */
+    #[DataProvider('priorCallResolutions')]
+    public function testPriorCallAcceptsEverySupportedTerminal(array $opening, string $terminalType): void
+    {
+        $fixture = self::priorCallFixture($opening);
+        $terminal = ['event_type' => $terminalType, 'payload' => $opening['payload']];
+        $fixture = self::insert($fixture, 6, $terminal);
+
+        self::assertNull(RedriveSuccessorHistory::violation($fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE]));
+    }
+
+    /** @return iterable<string, array{array<string, mixed>, string}> */
+    public static function priorCallResolutions(): iterable
+    {
+        foreach (self::priorCallFamilies() as $name => [$opening, , $terminals]) {
+            foreach ($terminals as $terminal) {
+                yield $name.' / '.$terminal => [$opening, $terminal];
+            }
+        }
+    }
+
+    /** @param array<string, mixed> $opening */
+    #[DataProvider('priorCallRefusals')]
+    public function testPriorCallRequiresItsOwnLaterResolution(array $opening, string $identity, string $terminalType, string $fault): void
+    {
+        $fixture = self::priorCallFixture($opening);
+        $terminal = ['event_type' => $terminalType, 'payload' => $opening['payload']];
+        $position = 6;
+        if ($fault === 'other resource') {
+            $terminal['payload'][$identity] = 'foreign-resource';
+        } elseif ($fault === 'other step') {
+            $terminal['payload']['sequence'] = 4;
+            $fixture['history'][6]['payload']['sequence'] = 5;
+        } elseif ($fault === 'other family') {
+            $terminal['event_type'] = $terminalType === 'TimerFired' ? 'ActivityCompleted' : 'TimerFired';
+        } elseif ($fault === 'before opener') {
+            $position = 4;
+        } elseif ($fault === 'after delivery') {
+            $position = 7;
+        } elseif ($fault === 'missing opener identity') {
+            unset($fixture['history'][4]['payload'][$identity]);
+        } elseif ($fault === 'missing terminal identity') {
+            unset($terminal['payload'][$identity]);
+        }
+        if ($fault !== 'unresolved') {
+            $fixture = self::insert($fixture, $position, $terminal);
+        }
+
+        self::assertStringContainsString('earlier call is unresolved', (string) RedriveSuccessorHistory::violation(
+            $fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE],
+        ));
+    }
+
+    /** @return iterable<string, array{array<string, mixed>, string, string, string}> */
+    public static function priorCallRefusals(): iterable
+    {
+        foreach (self::priorCallFamilies() as $name => [$opening, $identity, $terminals]) {
+            foreach (['unresolved', 'other resource', 'other step', 'other family', 'before opener', 'after delivery',
+                'missing opener identity', 'missing terminal identity'] as $fault) {
+                yield $name.' / '.$fault => [$opening, $identity, $terminals[0], $fault];
+            }
+        }
+    }
+
+    public function testPriorCallDistinguishesLocalAndRemoteActivityResolutions(): void
+    {
+        foreach ([false, true] as $local) {
+            $opening = ['event_type' => 'ActivityScheduled', 'payload' => ['sequence' => 3,
+                'activity_execution_id' => 'activity', 'activity_type' => 'effect', 'local_activity' => $local]];
+            $fixture = self::priorCallFixture($opening);
+            $terminal = ['event_type' => 'ActivityCompleted', 'payload' => [...$opening['payload'], 'local_activity' => !$local]];
+            $fixture = self::insert($fixture, 6, $terminal);
+            self::assertStringContainsString('earlier call is unresolved', (string) RedriveSuccessorHistory::violation(
+                $fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE],
+            ));
+        }
+    }
+
+    public function testPriorCallChildIdentitySurvivesAChangedRunAndLink(): void
+    {
+        [$opening] = self::priorCallFamilies()['child'];
+        $fixture = self::priorCallFixture($opening);
+        $terminal = ['event_type' => 'ChildRunCompleted', 'payload' => [...$opening['payload'],
+            'child_workflow_run_id' => 'continued-child-run', 'workflow_link_id' => 'continued-link']];
+        $fixture = self::insert($fixture, 6, $terminal);
+        self::assertNull(RedriveSuccessorHistory::violation($fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE]));
+    }
+
+    #[DataProvider('serviceOperationEvents')]
+    public function testPriorCallExplicitlyExcludesServiceOperationHistories(string $type): void
+    {
+        $fixture = self::priorCallFixture(['event_type' => $type,
+            'payload' => ['sequence' => 3, 'service_operation_id' => 'operation']]);
+        self::assertStringContainsString('service-operation histories are outside', (string) RedriveSuccessorHistory::violation(
+            $fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE],
+        ));
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function serviceOperationEvents(): iterable
+    {
+        foreach (['ServiceOperationScheduled', 'ServiceCallStarted', 'ServiceCallCompleted', 'ServiceCallFailed', 'ServiceCallCancelled'] as $type) {
+            yield $type => [$type];
+        }
+    }
+
+    public function testPriorCallExplicitlyExcludesServiceOperationDelivery(): void
+    {
+        $fixture = RedriveFixtureRegistry::fixture(self::FIXTURE);
+        $fixture['history'][6]['payload']['call_kind'] = 'service_operation';
+        self::assertStringContainsString('single-call kind', (string) RedriveSuccessorHistory::violation(
+            $fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE],
+        ));
+    }
+
+    /** @return array<string, array{array<string, mixed>, string, list<string>}> */
+    private static function priorCallFamilies(): array
+    {
+        $activity = ['sequence' => 3, 'activity_execution_id' => 'activity', 'activity_type' => 'effect'];
+        $activityTerminals = ['ActivityCompleted', 'ActivityFailed', 'ActivityTimedOut', 'ActivityCancelled'];
+
+        return [
+            'activity' => [['event_type' => 'ActivityScheduled', 'payload' => $activity], 'activity_execution_id', $activityTerminals],
+            'local activity' => [['event_type' => 'ActivityScheduled', 'payload' => [...$activity, 'local_activity' => true]],
+                'activity_execution_id', $activityTerminals],
+            'timer' => [['event_type' => 'TimerScheduled', 'payload' => ['sequence' => 3, 'timer_id' => 'timer']],
+                'timer_id', ['TimerFired', 'TimerCancelled']],
+            'condition' => [['event_type' => 'ConditionWaitOpened', 'payload' => ['sequence' => 3, 'condition_wait_id' => 'condition']],
+                'condition_wait_id', ['ConditionWaitSatisfied', 'ConditionWaitTimedOut']],
+            'signal' => [['event_type' => 'SignalWaitOpened', 'payload' => ['sequence' => 3, 'signal_wait_id' => 'signal']],
+                'signal_wait_id', ['SignalApplied']],
+            'child' => [['event_type' => 'ChildWorkflowScheduled', 'payload' => ['sequence' => 3, 'child_call_id' => 'child-call',
+                'child_workflow_instance_id' => 'child', 'child_workflow_run_id' => 'initial-child-run', 'workflow_link_id' => 'initial-link']],
+                'child_call_id', ['ChildRunCompleted', 'ChildRunFailed', 'ChildRunCancelled', 'ChildRunTerminated']],
+            'condition timer' => [['event_type' => 'TimerScheduled', 'payload' => ['sequence' => 3, 'timer_id' => 'timer',
+                'timer_kind' => 'condition_timeout', 'condition_wait_id' => 'condition']],
+                'condition_wait_id', ['ConditionWaitSatisfied', 'ConditionWaitTimedOut']],
+            'signal timer' => [['event_type' => 'TimerScheduled', 'payload' => ['sequence' => 3, 'timer_id' => 'timer',
+                'timer_kind' => 'signal_timeout', 'signal_wait_id' => 'signal']], 'signal_wait_id', ['SignalApplied']],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $opening
+     * @return array<string, mixed>
+     */
+    private static function priorCallFixture(array $opening): array
+    {
+        $fixture = RedriveFixtureRegistry::fixture(self::FIXTURE);
+        $fixture['history'][4] = [...$fixture['history'][4], ...$opening];
+        $fixture['history'][6]['payload']['sequence'] = 4;
+
+        return $fixture;
+    }
+
     /**
      * @param array<string, mixed> $fixture
      * @return array<string, mixed>

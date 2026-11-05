@@ -8,7 +8,7 @@ use DateTimeImmutable;
 
 /**
  * Checks the supported replay-fixture shapes against Workflow 2.19 redrive.
- * This is a test evidence model. Scoped, grouped, selection and operation
+ * This is a test evidence model. Scoped, grouped, selection and service-operation
  * deliveries remain outside its qualified single-call boundary.
  *
  * Core's DefaultWorkflowControlPlane::redrive() records, in one transaction,
@@ -54,15 +54,25 @@ final class RedriveSuccessorHistory
         'timer_kind', 'cancellation_cleanup', 'cancellation_scope_id', 'parallel_group_id', 'condition_wait_id', 'signal_wait_id',
     ];
 
-    /** Core CooperativeCancellationDelivery::RESOLUTION_TYPES for the call kinds these fixtures use. */
-    private const RESOLUTIONS = [
-        'ActivityCompleted', 'ActivityFailed', 'ActivityCancelled', 'ActivityTimedOut', 'TimerFired', 'TimerCancelled',
-        'ConditionWaitSatisfied', 'ConditionWaitTimedOut', 'SignalApplied', 'ChildRunCompleted', 'ChildRunFailed',
-        'ChildRunCancelled', 'ChildRunTerminated', 'ServiceCallCompleted', 'ServiceCallFailed', 'ServiceCallCancelled',
+    private const ACTIVITY_TERMINALS = ['ActivityCompleted', 'ActivityFailed', 'ActivityCancelled', 'ActivityTimedOut'];
+
+    /**
+     * The admitted single-call families and their canonical resource/terminal
+     * pairs. Derive terminal and delivery admission from this same closed set.
+     * Service operations, groups and selection deliveries remain unqualified.
+     */
+    private const CALL_RESOLUTIONS = [
+        'activity' => ['activity_execution_id', self::ACTIVITY_TERMINALS],
+        'local_activity' => ['activity_execution_id', self::ACTIVITY_TERMINALS],
+        'timer' => ['timer_id', ['TimerFired', 'TimerCancelled']],
+        'condition' => ['condition_wait_id', ['ConditionWaitSatisfied', 'ConditionWaitTimedOut']],
+        'signal' => ['signal_wait_id', ['SignalApplied']],
+        'child' => ['child_call_id', ['ChildRunCompleted', 'ChildRunFailed', 'ChildRunCancelled', 'ChildRunTerminated']],
     ];
 
-    /** Core CooperativeCancellationDelivery::CALL_SHAPES; parallel and selection deliveries are not covered here. */
-    private const CALL_KINDS = ['activity', 'local_activity', 'timer', 'condition', 'signal', 'child', 'service_operation'];
+    private const SERVICE_OPERATION_EVENTS = [
+        'ServiceOperationScheduled', 'ServiceCallStarted', 'ServiceCallCompleted', 'ServiceCallFailed', 'ServiceCallCancelled',
+    ];
 
     /**
      * @param array<string, mixed> $fixture a replay-regression fixture with history, workflow and workflow_tasks
@@ -130,6 +140,9 @@ final class RedriveSuccessorHistory
         foreach (array_slice($history, 1) as $offset => $event) {
             $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
             $type = (string) ($event['event_type'] ?? '');
+            if (in_array($type, self::SERVICE_OPERATION_EVENTS, true)) {
+                return 'service-operation histories are outside the qualified successor evidence model';
+            }
             if (($event['sequence'] ?? null) !== $offset + 2) {
                 return "history order: {$type} must be history sequence ".($offset + 2);
             }
@@ -427,7 +440,7 @@ final class RedriveSuccessorHistory
         if (!is_int($step) || $step < 1) {
             return 'the cancellation delivery must name a positive workflow step';
         }
-        if (!in_array($callKind, self::CALL_KINDS, true)) {
+        if (!is_string($callKind) || !array_key_exists($callKind, self::CALL_RESOLUTIONS)) {
             return 'the cancellation delivery call_kind must be a single-call kind';
         }
         foreach (['sequence_span', 'operation_sequence', 'operation_sequence_span'] as $field) {
@@ -448,7 +461,7 @@ final class RedriveSuccessorHistory
                 continue;
             }
             $recordedKind ??= self::callKind((string) ($event['event_type'] ?? ''), $payload);
-            if ($index < $requestIndex && in_array($event['event_type'] ?? null, self::RESOLUTIONS, true)) {
+            if ($index < $requestIndex && self::isResolution($event['event_type'] ?? null)) {
                 return "the cancellation delivery targets step {$step}, which resolved before the request";
             }
         }
@@ -476,7 +489,7 @@ final class RedriveSuccessorHistory
     private static function isStepEvent(string $type, array $payload): bool
     {
         return self::callKind($type, $payload) !== null
-            || in_array($type, self::RESOLUTIONS, true)
+            || self::isResolution($type)
             || in_array($type, ['MemoUpserted', 'SearchAttributesUpserted', 'SideEffectRecorded', 'VersionMarkerRecorded', 'CooperativeCancellationDelivered'], true);
     }
 
@@ -489,36 +502,56 @@ final class RedriveSuccessorHistory
      */
     private static function priorCallViolation(array $beforeDelivery): ?string
     {
-        $resolutions = [
-            'ActivityScheduled' => ['activity_execution_id', ['ActivityCompleted', 'ActivityCancelled']],
-            'TimerScheduled' => ['timer_id', ['TimerFired']],
-            'SignalWaitOpened' => ['signal_wait_id', ['SignalApplied']],
-        ];
         foreach ($beforeDelivery as $index => $event) {
-            $shape = $resolutions[$event['event_type'] ?? ''] ?? null;
-            if ($shape === null) {
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $kind = self::callKind((string) ($event['event_type'] ?? ''), $payload);
+            $shape = self::CALL_RESOLUTIONS[$kind ?? ''] ?? null;
+            if ($kind === null || $shape === null) {
                 continue;
             }
-            [$identity, $kinds] = $shape;
-            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
-            $resolved = false;
-            foreach (array_slice($beforeDelivery, $index + 1) as $terminal) {
-                $terminalPayload = is_array($terminal['payload'] ?? null) ? $terminal['payload'] : [];
-                if (self::nonBlank($payload[$identity] ?? null)
-                    && is_int($payload['sequence'] ?? null) && $payload['sequence'] > 0
-                    && in_array($terminal['event_type'] ?? null, $kinds, true)
-                    && ($terminalPayload['sequence'] ?? null) === $payload['sequence']
-                    && ($terminalPayload[$identity] ?? null) === $payload[$identity]) {
-                    $resolved = true;
-                    break;
-                }
-            }
-            if (!$resolved) {
+            if (!self::callIsResolved($kind, $payload, $shape, array_slice($beforeDelivery, $index + 1))) {
                 return 'the cancellation delivery targets an unreachable next step: an earlier call is unresolved';
             }
         }
 
         return null;
+    }
+
+    /**
+     * @param array<mixed> $payload
+     * @param array{string, list<string>} $shape
+     * @param list<array<string, mixed>> $afterOpening
+     */
+    private static function callIsResolved(string $kind, array $payload, array $shape, array $afterOpening): bool
+    {
+        [$identity, $terminals] = $shape;
+        if (!self::nonBlank($payload[$identity] ?? null)
+            || !is_int($payload['sequence'] ?? null) || $payload['sequence'] < 1) {
+            return false;
+        }
+        foreach ($afterOpening as $terminal) {
+            $terminalPayload = is_array($terminal['payload'] ?? null) ? $terminal['payload'] : [];
+            $sameActivityMode = !in_array($kind, ['activity', 'local_activity'], true)
+                || (($terminalPayload['local_activity'] ?? false) === true) === ($kind === 'local_activity');
+            if (in_array($terminal['event_type'] ?? null, $terminals, true) && $sameActivityMode
+                && ($terminalPayload['sequence'] ?? null) === $payload['sequence']
+                && ($terminalPayload[$identity] ?? null) === $payload[$identity]) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function isResolution(mixed $type): bool
+    {
+        foreach (self::CALL_RESOLUTIONS as [, $terminals]) {
+            if (in_array($type, $terminals, true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -533,7 +566,6 @@ final class RedriveSuccessorHistory
             'ConditionWaitOpened' => 'condition',
             'SignalWaitOpened' => 'signal',
             'ChildWorkflowScheduled' => 'child',
-            'ServiceOperationScheduled', 'ServiceCallStarted' => 'service_operation',
             'TimerScheduled' => match ($payload['timer_kind'] ?? null) {
                 'condition_timeout' => 'condition',
                 'signal_timeout' => 'signal',
