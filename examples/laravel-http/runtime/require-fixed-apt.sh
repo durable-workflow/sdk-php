@@ -15,8 +15,8 @@ refuse() {
 
 installed_version() {
     record=$(/usr/bin/timeout 10 /usr/bin/dpkg-query --show \
-        "--showformat=\${db:Status-Status}\t\${Version}\n" "$1") || refuse
-    prefix=$(printf 'installed\t')
+        "--showformat=\${Status}\t\${Version}\n" "$1") || refuse
+    prefix=$(printf 'install ok installed\t')
     case "$record" in "$prefix"*) version=${record#"$prefix"} ;; *) refuse ;; esac
     case "$version" in ''|[!0-9]*|*[!0-9A-Za-z.+:~-]*) refuse ;; esac
     [ "${#version}" -le 100 ] || refuse

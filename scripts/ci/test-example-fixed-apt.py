@@ -32,8 +32,8 @@ def require_source_boundary(dockerfile, proof):
 
 
 class ExampleFixedAptTest(unittest.TestCase):
-    def run_guard(self, *, apt="2.6.2", library="2.6.2", status="installed", release='ID=debian\nVERSION_ID="12"\n',
-                  architecture="amd64", client=None, query_exit=0, compare_exit=None, args=(), raw_record=None):
+    def run_guard(self, *, apt="2.6.2", library="2.6.2", status="install ok installed", release='ID=debian\nVERSION_ID="12"\n',
+                  architecture="amd64", client=None, query_exit=0, compare_exit=None, args=(), raw_record=None, database_statuses=None):
         with tempfile.TemporaryDirectory(prefix="sdk-php-apt-source-") as directory:
             root = Path(directory)
             os_release = root / "os-release"
@@ -46,8 +46,18 @@ class ExampleFixedAptTest(unittest.TestCase):
                              + "printf 'query\\n' >> " + shlex.quote(str(calls)) + "\n"
                              + "[ \"$1\" = --show ] || exit 91\ncase \"$3\" in\n"
                              + "apt) printf '%s' " + shlex.quote(apt_record) + ";;\n"
-                             + "libapt-pkg6.0) printf '%s' " + shlex.quote("installed\t" + library + "\n") + ";;\n"
+                             + "libapt-pkg6.0) printf '%s' " + shlex.quote("install ok installed\t" + library + "\n") + ";;\n"
                              + "*) exit 92;;\nesac\nexit " + str(query_exit) + "\n")
+            if database_statuses is not None:
+                database = root / "database"
+                database.mkdir()
+                database.joinpath("status").write_text("\n".join(
+                    "Package: " + package + "\nStatus: " + state + "\nArchitecture: amd64\nVersion: 2.6.2\n"
+                    + "Maintainer: Inert Source Fixture <test@example.invalid>\nDescription: inert read-only fixture\n"
+                    for package, state in zip(("apt", "libapt-pkg6.0"), database_statuses)))
+                query.write_text("#!/bin/sh\n/usr/bin/env > " + shlex.quote(str(environment)) + "\n"
+                                 + "printf 'query\\n' >> " + shlex.quote(str(calls)) + "\n"
+                                 + "exec /usr/bin/dpkg-query --admindir=" + shlex.quote(str(database)) + ' "$@"\n')
             dpkg = root / "dpkg"
             comparison = "exit " + str(compare_exit) if compare_exit is not None else 'exec /usr/bin/dpkg "$@"'
             dpkg.write_text("#!/bin/sh\ncase \"$1\" in\n--print-architecture) printf '%s\\n' "
@@ -84,12 +94,25 @@ class ExampleFixedAptTest(unittest.TestCase):
 
     def test_missing_malformed_duplicate_and_mixed_packages_refuse(self):
         cases = [{"raw_record": ""}, {"status": "unpacked"}, {"library": "2.6.1"},
-                 {"raw_record": "installed\t2.6.2\ninstalled\t2.6.2\n"},
-                 {"raw_record": "installed\t2.6.2\textra\n"}, {"apt": "x2.6.2"}, {"apt": "2.6.2;id"},
+                 {"raw_record": "install ok installed\t2.6.2\ninstall ok installed\t2.6.2\n"},
+                 {"raw_record": "install ok installed\t2.6.2\textra\n"}, {"apt": "x2.6.2"}, {"apt": "2.6.2;id"},
                  {"apt": "2" * 101}, {"query_exit": 1}, {"compare_exit": 2}]
         for case in cases:
             with self.subTest(case=case):
                 self.assertNotEqual(0, self.run_guard(**case)[0].returncode)
+
+    def test_real_fixture_status_parser_preserves_normal_installed_positive(self):
+        result, _, _ = self.run_guard(database_statuses=("install ok installed", "install ok installed"))
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_real_fixture_status_parser_refuses_error_and_noninstall_states(self):
+        for state in ("install reinstreq installed", "hold ok installed", "deinstall ok installed", "purge ok installed"):
+            for package in (0, 1):
+                with self.subTest(state=state, package=package):
+                    states = ["install ok installed", "install ok installed"]
+                    states[package] = state
+                    result, _, _ = self.run_guard(database_statuses=states)
+                    self.assertNotEqual(0, result.returncode, "Partial/error package state cannot authorize APT")
 
     def test_unknown_or_ambiguous_distro_and_foreign_architecture_refuse_before_query(self):
         for release in ('ID=ubuntu\nVERSION_ID="24.04"\n', 'ID=debian\nVERSION_ID="13"\n',
@@ -131,6 +154,8 @@ class ExampleFixedAptTest(unittest.TestCase):
         self.assertNotIn("apt-get update", source)
         self.assertNotIn("apt-get install", source)
         self.assertIn("/usr/bin/dpkg-query", source)
+        self.assertIn(r"\${Status}", source)
+        self.assertNotIn("db:Status-Status", source)
         self.assertIn("/usr/bin/dpkg --compare-versions", source)
 
 
