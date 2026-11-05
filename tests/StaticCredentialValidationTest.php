@@ -9,12 +9,15 @@ use DurableWorkflow\Auth\TokenAuthentication;
 use DurableWorkflow\Bridge\Laravel\ProcessCredentialResolver;
 use DurableWorkflow\Bridge\ServiceConfiguration;
 use DurableWorkflow\Client;
+use DurableWorkflow\Qualification\StaticCredentialFixture;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use InvalidArgumentException;
 use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use ReflectionProperty;
+
+require_once dirname(__DIR__).'/scripts/Support/StaticCredentialFixture.php';
 
 final class StaticCredentialValidationTest extends TestCase
 {
@@ -321,16 +324,16 @@ final class StaticCredentialValidationTest extends TestCase
         };
     }
 
+    private static function canonical(): StaticCredentialFixture
+    {
+        static $fixture = null;
+        return $fixture ??= new StaticCredentialFixture(self::fixturePath());
+    }
+
     /** @return array<string, mixed> */
     private static function fixture(): array
     {
-        static $fixture = null;
-        $fixture ??= json_decode((string) file_get_contents(self::fixturePath()), true, flags: JSON_THROW_ON_ERROR);
-        if (!is_array($fixture)) {
-            throw new LogicException('The frozen credential fixture must be an object.');
-        }
-
-        return $fixture;
+        return self::canonical()->data;
     }
 
     private static function fixturePath(): string
@@ -341,53 +344,23 @@ final class StaticCredentialValidationTest extends TestCase
     /** @return array<string, mixed> */
     private static function case(string $id): array
     {
-        foreach (['common_scalar_cases', 'php_byte_loader_cases'] as $group) {
-            foreach (self::fixture()[$group] as $case) {
-                if ($case['id'] === $id) {
-                    return $case;
-                }
-            }
-        }
-        throw new LogicException('The canonical scalar reference must exist.');
+        return self::canonical()->scalar($id);
     }
 
     /** @return array<string, mixed> */
     private static function adapterCase(string $id): array
     {
-        foreach (['pre_selection_cases', 'php_adapter_cases'] as $group) {
-            foreach (self::fixture()[$group] as $case) {
-                if ($case['id'] === $id) {
-                    return $case;
-                }
-            }
-        }
-        throw new LogicException('The canonical adapter reference must exist.');
+        return self::canonical()->adapter($id);
     }
 
     private static function value(string $id): string
     {
-        $case = self::case($id);
-        if (isset($case['input_hex'])) {
-            $bytes = hex2bin($case['input_hex']);
-            if ($bytes === false) {
-                throw new LogicException('The canonical byte fixture must contain hex.');
-            }
-
-            return $bytes;
-        }
-
-        return self::fromPoints($case['input_code_points']);
+        return self::canonical()->value($id);
     }
 
     /** @param list<int> $points */
     private static function fromPoints(array $points): string
     {
-        return implode('', array_map(static fn (int $point): string => match (true) {
-            $point <= 0x7f => chr($point),
-            $point <= 0x7ff => chr(0xc0 | ($point >> 6)).chr(0x80 | ($point & 0x3f)),
-            $point <= 0xffff => chr(0xe0 | ($point >> 12)).chr(0x80 | (($point >> 6) & 0x3f)).chr(0x80 | ($point & 0x3f)),
-            default => chr(0xf0 | ($point >> 18)).chr(0x80 | (($point >> 12) & 0x3f))
-                .chr(0x80 | (($point >> 6) & 0x3f)).chr(0x80 | ($point & 0x3f)),
-        }, $points));
+        return StaticCredentialFixture::points($points);
     }
 }
