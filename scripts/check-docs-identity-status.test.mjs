@@ -119,3 +119,9 @@ test('valid offsets and subsecond timestamps preserve the same checked instant',
   assert.equal(state(s), 'operational');
   assert.equal(publicStatus(s, now).validUntil, Date.parse('2026-11-05T12:15:00Z'));
 });
+test('unknown local offset is not admitted as producer evidence; known UTC forms pass', () => {
+  for (const offset of ['Z','+00:00','-00:00']) {
+    const s = snapshot(); s.checked_at = '2026-11-05T12:00:00'+offset;
+    assert.equal(state(s),offset === '-00:00' ? 'unknown' : 'operational');
+  }
+});
