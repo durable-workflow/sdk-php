@@ -64,6 +64,33 @@ $result = $handle->result(timeoutSeconds: 30);
 
 The workflow ID is the stable instance identity. The run ID identifies one execution in that instance's chain. Ordinary handle methods follow the current run after continue-as-new; methods ending in `SelectedRun` keep the original run guard and fail instead of silently crossing to a successor.
 
+## Read complete lists and histories
+
+`listWorkflows()` and `workflowHistory()` each return one bounded page. The
+following iterator methods are unreleased:
+
+```php
+foreach ($controlClient->iterateWorkflows(status: 'running', pageSize: 100) as $execution) {
+    echo $execution->workflowId, "\n";
+}
+foreach ($controlClient->iterateWorkflowHistory($workflowId, $runId, pageSize: 100) as $event) {
+    echo $event['sequence'], ': ', $event['event_type'], "\n";
+}
+```
+
+Iterators retain one page and request the next only when iteration reaches it.
+Stop with `break` to avoid further requests. The history iterator keeps the
+exact workflow/run pair; it does not follow a new run or wait for new events
+after the last page. Workflow listing follows the Server's current ordering
+and consistency, so concurrent changes are not a snapshot.
+
+Handle errors around the entire loop. A later HTTP error propagates and closes
+the generator; malformed metadata or a token cycle raises
+`DurableWorkflow\Exception\PaginationException` with a typed `reason`.
+Earlier items may have been yielded before an error. Iteration preserves raw
+history event values and uses the same namespace, authentication and per-request
+deadline as the one-page methods.
+
 ## Inject a PSR transport when you need one
 
 Guzzle is included as the default transport. To reuse your application's PSR-18 client and PSR-17 factories, construct `Psr18Transport` and pass it as `transport:`. Authentication still belongs in an `Authentication` implementation; do not bury rotating role credentials in a generic HTTP middleware stack.
