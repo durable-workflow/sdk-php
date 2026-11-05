@@ -22,8 +22,8 @@ use PHPUnit\Framework\TestCase;
  * matches its history. This matters most for redrive, where the successor
  * reuses the failed run's upsert instead of running it again.
  *
- * This is value-only binding. Recorded attribute_types are not compared,
- * because this SDK's upsert command cannot declare types.
+ * These legacy one-argument calls bind values. Explicit type declarations
+ * and their replay identity are covered in TypedSearchAttributeReplayTest.
  */
 final class SearchAttributeReplayTest extends TestCase
 {
