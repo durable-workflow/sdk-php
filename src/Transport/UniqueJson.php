@@ -37,8 +37,13 @@ final class UniqueJson
             self::items($json, $offset, $depth + 1);
         } elseif ($token === '"') {
             self::stringToken($json, $offset);
-        } elseif (preg_match('/\G(?:true|false|null|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)/A', $json, $match, 0, $offset) === 1) {
+        } elseif (preg_match('/\G(?:true|false|null)/A', $json, $match, 0, $offset) === 1) {
             $offset += strlen($match[0]);
+        } elseif (preg_match('/\G-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?/A', $json, $match, 0, $offset) === 1) {
+            $offset += strlen($match[0]);
+            if (preg_match('/\G[eE][+-]?[0-9]+/A', $json, $exponent, 0, $offset) === 1) {
+                $offset += strlen($exponent[0]);
+            }
         } else {
             throw new JsonException('Invalid JSON value.');
         }

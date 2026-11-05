@@ -68,6 +68,13 @@ final class WorkerTaskDeliveryWireTest extends TestCase
         $error = null;
         try { $result = self::poll($client, $endpoint, 'original'); }
         catch (ServerException $caught) { $error = $caught; }
+        if ($action === 'deliver_selected_task') {
+            self::assertNull($error, $error?->getMessage() ?? '');
+            self::assertSame($input['expected_claim'], $result);
+            self::assertSame(1, $observed);
+            self::assertCount(3, $requests);
+            return;
+        }
         self::assertSame(0, $observed, 'No refusal or uncertain outcome may start task execution.');
         if ($action === 'retain_selected_packet') {
             self::assertInstanceOf(TaskDeliveryUncertain::class, $error);
@@ -95,6 +102,22 @@ final class WorkerTaskDeliveryWireTest extends TestCase
                         yield $case['id'].' / '.$endpoint.' / '.$kind.($progress ? ' / progress' : '') => [$case['input'], $case['expected_action'], $endpoint, $kind, $raw, $progress];
                     }
                 }
+            }
+        }
+        $payload = <<<'JSON'
+{"zero":0,"negative":-3,"decimal":0.25,"tiny":1e-3,"huge":2E+4,"bool":true,"nil":null,"nested":[false,{},[]],"unicode":"\uD83D\uDE80","quotes":"a\"b","slash":"a\\b","names":{"re\u0061son":1,"other":2}}
+JSON;
+        $expected = ['zero' => 0, 'negative' => -3, 'decimal' => 0.25, 'tiny' => 0.001, 'huge' => 20000.0,
+            'bool' => true, 'nil' => null, 'nested' => [false, [], []], 'unicode' => '🚀', 'quotes' => 'a"b',
+            'slash' => 'a\\b', 'names' => ['reason' => 1, 'other' => 2]];
+        foreach ([['workflow', 'workflow'], ['workflow', 'update_validation'], ['activity', 'activity'], ['query', 'query'], ['update-validation', 'update_validation']] as [$endpoint, $kind]) {
+            $claim = self::claimed($kind);
+            $raw = substr(json_encode($claim, JSON_THROW_ON_ERROR), 0, -2).',"custom_data":'.$payload.'}}';
+            $claim['task']['custom_data'] = $expected;
+            foreach ([false, true] as $progress) {
+                yield 'valid claim values / '.$endpoint.' / '.$kind.($progress ? ' / progress' : '') => [
+                    ['http_status' => 200, 'raw_body_utf8' => $raw, 'expected_claim' => $claim], 'deliver_selected_task', $endpoint, $kind, true, $progress,
+                ];
             }
         }
     }
