@@ -671,10 +671,16 @@ final class WorkflowContext
         throw new LogicException('A continue-as-new command cannot resume the current workflow execution.');
     }
 
-    /** @param array<string, mixed> $attributes */
-    public function upsertSearchAttributes(array $attributes): void
+    /**
+     * Explicit types bind replay to the complete type identity of non-deleted
+     * attributes. Omit the map to retain the existing value-only API.
+     *
+     * @param array<string, mixed> $attributes
+     * @param array<string, string>|null $attributeTypes
+     */
+    public function upsertSearchAttributes(array $attributes, ?array $attributeTypes = null): void
     {
-        $this->suspend(WorkflowCommand::upsertSearchAttributes($attributes));
+        $this->suspend(WorkflowCommand::upsertSearchAttributes($attributes, $attributeTypes));
     }
 
     /**

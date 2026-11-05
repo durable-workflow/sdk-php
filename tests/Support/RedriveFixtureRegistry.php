@@ -28,6 +28,7 @@ final class RedriveFixtureRegistry
         'redrive-reused-signal-wait-clock' => ['SignalWaitOpened', 'SignalReceived', 'SignalApplied'],
         'redrive-reused-search-attributes-changed' => ['MemoUpserted', 'SearchAttributesUpserted'],
         'redrive-reused-search-attributes-missing' => ['MemoUpserted', 'SearchAttributesUpserted'],
+        'redrive-reused-search-attribute-type-changed' => ['MemoUpserted', 'SearchAttributesUpserted'],
         'redrive-successor-reused-markers' => ['SideEffectRecorded', 'VersionMarkerRecorded', 'ActivityCompleted'],
         'redrive-successor-reused-timer' => ['ActivityCompleted', 'TimerScheduled', 'TimerFired'],
         'redrive-successor-reused-cancellation-clock' => ['ActivityCompleted', 'TimerScheduled', 'TimerFired'],

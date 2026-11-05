@@ -605,6 +605,31 @@ The context provides these replay-aware commands:
 
 Do not use PHP's process sleep, random-number functions, current wall-clock time, or mutable global state directly to make workflow decisions. `sideEffect()` is for small values whose result belongs in history, not for network or database work.
 
+## Declare search-attribute types
+
+Pass a type map when the workflow must preserve search-attribute type identity
+across replay and redrive:
+
+```php
+$context->upsertSearchAttributes(
+    ['Stage' => 'approved', 'Attempts' => 2],
+    ['Stage' => 'keyword', 'Attempts' => 'int'],
+);
+```
+
+Declare every non-deleted attribute. Canonical types are `string`, `keyword`,
+`keyword_list`, `int`, `float`, `bool`, and `datetime`. Use `null` to delete a
+key. The runtime also checks declarations against the namespace's registered
+types. Search metadata uses the existing `typed_search_attributes` worker
+capability and protocol contract.
+
+An explicitly typed call refuses a changed value or a changed recorded type.
+Malformed recorded type maps also refuse replay. Histories written before type
+metadata existed still compare values, since their type identity is unknown.
+Existing calls that omit the type map keep their value-only behavior. That
+legacy path does not establish typed replay equivalence; signal-wait redrive
+qualification is also separate.
+
 ## Bound long histories
 
 Use `continueAsNew()` for recurring or event-heavy workflows. Pass only the state needed by the next run:
