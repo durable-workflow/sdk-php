@@ -430,6 +430,9 @@ fingerprints, and cannot safely take over runs that already contain them.
 
 Deploy workflow code atomically and restart workers. The fingerprint reads the deployed source file. If files are replaced in place under any long-running worker that still has the old code loaded, the loaded code and the file on disk can disagree, and replay reports a mismatch until the worker restarts. `opcache.validate_timestamps=0` widens this window. Ship the PHP sources with the worker image; the fingerprint cannot be computed without them.
 
+The [upgrade guide](/operate/upgrading/) covers the queue-wide deployment and
+rollback boundary when both legacy and v2 condition histories exist.
+
 ## Put side effects in activities
 
 ```php

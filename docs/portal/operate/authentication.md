@@ -4,8 +4,8 @@ title: Authentication
 description: Configure bearer, role-specific, and static-header authentication for Durable Workflow PHP clients and workers without leaking credentials.
 lead: Authentication is applied at the transport boundary. Prefer separate control-plane and worker principals, rotate them through your secret manager, and never place tokens in workflow history.
 previous:
-  label: Deployment
-  url: /operate/deployment/
+  label: Upgrading
+  url: /operate/upgrading/
 next:
   label: Graceful shutdown
   url: /operate/graceful-shutdown/
@@ -35,6 +35,53 @@ $workerClient = new Client(
 ```
 
 Control-plane operations use the control token; worker registration, heartbeats, polls, and task completion use the worker token. The fallback rules keep a deliberately shared token usable, but explicit role tokens make least privilege review clearer.
+
+## Static credential validation
+
+PHP SDK {{ release.sdkVersion }} validates each supplied static credential in its original form,
+before choosing a role or falling back to a shared token. This applies to
+`Client` and `TokenAuthentication` constructor options `token`, `controlToken`
+and `workerToken`, framework `ServiceConfiguration` credential settings, and
+Laravel's process-environment and explicit process-token handoff. An invalid
+unused role also fails validation; supplying a valid token for another role
+does not hide it.
+
+Static credential strings refuse:
+
+- malformed UTF-8 byte sequences;
+- leading or trailing Unicode `White_Space`, including ordinary spaces,
+  nonbreaking spaces and Unicode line separators;
+- C0 controls, DEL and C1 controls anywhere in the string, including tabs,
+  newlines and NUL.
+
+This deliberately rejects malformed UTF-8 that older releases could accept.
+Valid text is preserved byte for byte: the SDK does not trim, case-fold,
+normalize Unicode or rewrite internal spaces. Text validation alone does not
+establish that a runtime or HTTP intermediary accepts an arbitrary opaque
+credential. Obtain a correctly formed replacement from the credential issuer
+instead of trimming an invalid credential to make it pass.
+
+`null` and the literal empty string retain their existing optional fallback
+behavior. `TokenAuthentication` still requires at least one nonempty token;
+an anonymous `Client` remains available where it was already supported. An
+empty scoped token can fall back to a valid shared token, but a malformed
+nonempty scoped token is an error.
+
+Errors identify only the setting, for example
+`Invalid static credential setting DURABLE_WORKFLOW_WORKER_TOKEN.` They do
+not include the rejected value. Keep that boundary in application error
+handling and diagnostics too.
+
+For [Laravel](/frameworks/laravel/#service-mode), keep credentials out of cached
+configuration and inject the required role at process startup. The resolver
+validates shared, client, worker and explicit process-handoff text before
+selection, including values belonging to an unused role. For
+[Symfony](/frameworks/symfony/), the shared configuration path applies the same
+policy before constructing either role's client. Review all supplied settings
+before deploying, rather than checking only the selected token.
+
+Custom dynamic `Authentication` implementations retain their existing contract.
+The static-token policy does not change their signing or refresh behavior.
 
 ## Static headers for an authenticated gateway
 

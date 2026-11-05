@@ -7,8 +7,8 @@ previous:
   label: Symfony
   url: /frameworks/symfony/
 next:
-  label: Authentication
-  url: /operate/authentication/
+  label: Upgrading
+  url: /operate/upgrading/
 ---
 ## Cloud
 

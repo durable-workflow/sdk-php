@@ -6,6 +6,18 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- PHP `^8.1`, Laravel 10–13 and Symfony 6.4/7/8 support remain unchanged.
+  Upgrade the complete task queue before recording v2 condition fingerprints;
+  legacy fingerprints still require their exact source-line match. Read the
+  [upgrade guide](docs/portal/operate/upgrading.md) before deployment, including
+  its rollback boundary and atomic-source/OPcache restart requirements.
+- Static credential validation deliberately rejects malformed UTF-8, edge
+  Unicode whitespace and embedded controls before fallback or role selection.
+  Valid credential bytes remain exact. The [authentication guide](docs/portal/operate/authentication.md#static-credential-validation)
+  covers application, framework and process-handoff settings.
+
 ### Added
 
 - An unreleased schedule-to-start histogram for workflow/activity dispatch uses
