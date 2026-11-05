@@ -20,6 +20,7 @@ PRESENTATION_FILES = frozenset({
     ".phpdoc/template/components/identity-footer.html.twig",
 })
 PACKET_FILE = "presentation.json"
+TEMPLATE_DIRECTORY = ".phpdoc/template"
 PRESENTATION_TREES = ("docs/portal/assets/", ".phpdoc/template/assets/")
 
 
@@ -78,7 +79,7 @@ def prepare(root: Path, revision: str, destination: Path, release_adapter: Path)
     overlays = presentation_blobs(root, revision)
     destination.mkdir(parents=True)
     copy_regular_tree(root / "docs/portal", destination / "portal")
-    copy_regular_tree(root / ".phpdoc/template", destination / ".phpdoc/template")
+    copy_regular_tree(root / TEMPLATE_DIRECTORY, destination / TEMPLATE_DIRECTORY)
     for name, content in overlays:
         if name.startswith("docs/portal/"):
             path = destination / "portal" / name.removeprefix("docs/portal/")
@@ -114,7 +115,7 @@ def main() -> int:
         adapter = Path(__file__).resolve().parent.parent / "docs/portal/_data/release.js"
         packet = prepare(root, sys.argv[1], destination, adapter)
         values = {"DOCS_PORTAL_DIRECTORY": str(destination / "portal"),
-                  "DOCS_TEMPLATE_DIRECTORY": str(destination / ".phpdoc/template"),
+                  "DOCS_TEMPLATE_DIRECTORY": str(destination / TEMPLATE_DIRECTORY),
                   "DOCS_PRESENTATION_DIRECTORY": str(destination),
                   "DOCS_PRESENTATION_REVISION": packet["presentation_source_revision"]}
         if any("\n" in value or "\r" in value for value in values.values()):
