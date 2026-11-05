@@ -33,7 +33,7 @@ def require_source_boundary(dockerfile, proof):
 
 class ExampleFixedAptTest(unittest.TestCase):
     def run_guard(self, *, apt="2.6.2", library="2.6.2", status="install ok installed", release='ID=debian\nVERSION_ID="12"\n',
-                  architecture="amd64", client=None, query_exit=0, compare_exit=None, args=(), raw_record=None, database_statuses=None):
+                  architecture="amd64", client=None, query_exit=0, compare_exit=None, args=(), raw_record=None, database_statuses=None, database_mutation=None):
         with tempfile.TemporaryDirectory(prefix="sdk-php-apt-source-") as directory:
             root = Path(directory)
             os_release = root / "os-release"
@@ -55,6 +55,15 @@ class ExampleFixedAptTest(unittest.TestCase):
                     "Package: " + package + "\nStatus: " + state + "\nArchitecture: amd64\nVersion: 2.6.2\n"
                     + "Maintainer: Inert Source Fixture <test@example.invalid>\nDescription: inert read-only fixture\n"
                     for package, state in zip(("apt", "libapt-pkg6.0"), database_statuses)))
+                status_file = database / "status"
+                data = status_file.read_text()
+                if database_mutation == "duplicate-package":
+                    data += "\n" + data.split("\n\n", 1)[0] + "\n"
+                elif database_mutation == "duplicate-status":
+                    data = data.replace("Status: install ok installed\n", "Status: install ok installed\nStatus: install ok installed\n", 1)
+                elif database_mutation == "malformed-status":
+                    data = data.replace("Status: install ok installed\n", "Status: install unknown installed\n", 1)
+                status_file.write_text(data)
                 query.write_text("#!/bin/sh\n/usr/bin/env > " + shlex.quote(str(environment)) + "\n"
                                  + "printf 'query\\n' >> " + shlex.quote(str(calls)) + "\n"
                                  + "exec /usr/bin/dpkg-query --admindir=" + shlex.quote(str(database)) + ' "$@"\n')
@@ -113,6 +122,12 @@ class ExampleFixedAptTest(unittest.TestCase):
                     states[package] = state
                     result, _, _ = self.run_guard(database_statuses=states)
                     self.assertNotEqual(0, result.returncode, "Partial/error package state cannot authorize APT")
+
+    def test_real_fixture_status_parser_refuses_duplicate_and_malformed_records(self):
+        for mutation in ("duplicate-package", "duplicate-status", "malformed-status"):
+            with self.subTest(mutation=mutation):
+                result, _, _ = self.run_guard(database_statuses=("install ok installed", "install ok installed"), database_mutation=mutation)
+                self.assertNotEqual(0, result.returncode)
 
     def test_unknown_or_ambiguous_distro_and_foreign_architecture_refuse_before_query(self):
         for release in ('ID=ubuntu\nVERSION_ID="24.04"\n', 'ID=debian\nVERSION_ID="13"\n',
