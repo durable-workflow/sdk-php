@@ -77,7 +77,9 @@ final class WorkerTaskDeliveryRegistrationTest extends TestCase
             self::assertInstanceOf(ServerException::class, $outcome['error'] ?? null);
             self::assertSame($phase === 'observer' ? 1 : 0, $observed, 'Transport replacement must refuse before payload observation.');
         }
-        self::assertSame(self::claimed($kind, 'replacement'), self::poll($replacement, $endpoint, $kind, 'replacement', $queue));
+        $expected = self::claimed($kind, 'replacement');
+        $actual = self::poll($replacement, $endpoint, $kind, 'replacement', $queue);
+        self::assertSame($expected, $actual);
         $packets = array_values(array_filter($transport->requests, static fn (array $request): bool =>
             ($request['body']['poll_request_id'] ?? null) === 'replacement' && isset($request['body']['task_offer_token'])));
         self::assertCount(2, $packets);
