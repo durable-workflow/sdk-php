@@ -107,3 +107,15 @@ test('a successful result expires while a later request is still pending', async
   assert.equal(values.at(-1), 'unknown');
   stop();
 });
+test('calendar overflow and 24-hour normalization cannot create fresh evidence', () => {
+  for (const [bad, normalized] of [['2026-02-30T12:00:00Z','2026-03-02T12:00:00Z'],['2026-11-04T24:00:00Z','2026-11-05T00:00:00Z']]) {
+    const s = snapshot(); const normalizedMs = Date.parse(normalized);
+    s.checked_at = bad; s.generated_at = new Date(normalizedMs + 5000).toISOString();
+    assert.equal(publicStatus(s, normalizedMs + 30000).state, 'unknown');
+  }
+});
+test('valid offsets and subsecond timestamps preserve the same checked instant', () => {
+  const s = snapshot(); s.checked_at = '2026-11-05T14:00:00.000000+02:00'; s.generated_at = '2026-11-05T07:00:05-05:00';
+  assert.equal(state(s), 'operational');
+  assert.equal(publicStatus(s, now).validUntil, Date.parse('2026-11-05T12:15:00Z'));
+});

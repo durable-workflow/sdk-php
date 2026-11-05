@@ -3,7 +3,18 @@ export const STATUS_API = 'https://status.durable-workflow.com/api/current.json'
 const statuses = new Set(['ok', 'warning', 'failed', 'unknown']);
 const levels = new Set(['ok', 'warning', 'critical', 'unknown']);
 const unknown = () => ({state: 'unknown', validUntil: 0});
-const timestamp = value => typeof value === 'string' && /^\d{4}-\d\d-\d\dT.+(?:Z|[+-]\d\d:\d\d)$/.test(value) ? Date.parse(value) : Number.NaN;
+function timestamp(value) {
+  if (typeof value !== 'string') return Number.NaN;
+  const match = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d{1,9})?(Z|([+-])(\d\d):(\d\d))$/.exec(value);
+  if (!match) return Number.NaN;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return Number.NaN;
+  const offset = match[2] === 'Z' ? 0 : (Number(match[4]) * 60 + Number(match[5])) * (match[3] === '-' ? -1 : 1);
+  // Date.parse normalizes impossible days and 24:00. Round-trip the supplied
+  // calendar fields in their original offset before accepting the evidence.
+  const suppliedCalendar = new Date(parsed + offset * 60000).toISOString().slice(0, 19);
+  return suppliedCalendar === match[1] ? parsed : Number.NaN;
+}
 
 function evidenceWindow(snapshot, now) {
   if (snapshot?.schema !== 'durable_workflow.status_page_snapshot.v1'
