@@ -232,7 +232,8 @@ final class RedriveSuccessorStrictnessTest extends TestCase
             $terminal['payload']['sequence'] = 4;
             $fixture['history'][6]['payload']['sequence'] = 5;
         } elseif ($fault === 'other family') {
-            $terminal['event_type'] = $terminalType === 'TimerFired' ? 'ActivityCompleted' : 'TimerFired';
+            $terminal['event_type'] = in_array($identity, ['timer_id', 'condition_wait_id', 'signal_wait_id'], true)
+                ? 'ActivityCompleted' : 'TimerFired';
         } elseif ($fault === 'before opener') {
             $position = 4;
         } elseif ($fault === 'after delivery') {
@@ -311,6 +312,132 @@ final class RedriveSuccessorStrictnessTest extends TestCase
         self::assertStringContainsString('single-call kind', (string) RedriveSuccessorHistory::violation(
             $fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE],
         ));
+    }
+
+    #[DataProvider('waitTimeoutResolutions')]
+    public function testWaitTimeoutAcceptsItsMatchingTimerTerminal(string $kind, string $layout, string $terminalType): void
+    {
+        $fixture = self::waitTimeoutFixture($kind, $layout);
+        $fixture = self::insert($fixture, self::deliveryIndex($fixture), self::waitTimeoutTerminal($kind, $terminalType));
+        self::assertNull(RedriveSuccessorHistory::violation($fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE]));
+    }
+
+    /** @return iterable<string, array{string, string, string}> */
+    public static function waitTimeoutResolutions(): iterable
+    {
+        foreach (['condition', 'signal'] as $kind) {
+            foreach (['wait', 'timer', 'both'] as $layout) {
+                foreach (['TimerFired', 'TimerCancelled'] as $terminal) {
+                    yield $kind.' / '.$layout.' / '.$terminal => [$kind, $layout, $terminal];
+                }
+            }
+        }
+    }
+
+    #[DataProvider('waitTimeoutRefusals')]
+    public function testWaitTimeoutRejectsAnUnrelatedTimerTerminal(string $kind, string $terminalType, string $fault): void
+    {
+        $fixture = self::waitTimeoutFixture($kind, 'both');
+        $terminal = self::waitTimeoutTerminal($kind, $terminalType);
+        $position = self::deliveryIndex($fixture);
+        if ($fault === 'missing kind') {
+            unset($terminal['payload']['timer_kind']);
+        } elseif ($fault === 'null kind') {
+            $terminal['payload']['timer_kind'] = null;
+        } elseif ($fault === 'other timeout kind') {
+            $terminal['payload']['timer_kind'] = $kind === 'condition' ? 'signal_timeout' : 'condition_timeout';
+        } elseif ($fault === 'plain kind') {
+            $terminal['payload']['timer_kind'] = 'ordinary';
+        } elseif ($fault === 'other wait') {
+            $terminal['payload'][$kind.'_wait_id'] = 'foreign-wait';
+        } elseif ($fault === 'missing wait') {
+            unset($terminal['payload'][$kind.'_wait_id']);
+        } elseif ($fault === 'other step') {
+            $terminal['payload']['sequence'] = 4;
+            $fixture['history'][$position]['payload']['sequence'] = 5;
+        } elseif ($fault === 'after delivery') {
+            ++$position;
+        } elseif ($fault === 'before opener') {
+            $position = 4;
+        }
+        $fixture = self::insert($fixture, $position, $terminal);
+        self::assertStringContainsString('earlier call is unresolved', (string) RedriveSuccessorHistory::violation(
+            $fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE],
+        ));
+    }
+
+    /** @return iterable<string, array{string, string, string}> */
+    public static function waitTimeoutRefusals(): iterable
+    {
+        foreach (['condition', 'signal'] as $kind) {
+            foreach (['TimerFired', 'TimerCancelled'] as $terminal) {
+                foreach (['missing kind', 'null kind', 'other timeout kind', 'plain kind', 'other wait', 'missing wait',
+                    'other step', 'after delivery', 'before opener'] as $fault) {
+                    yield $kind.' / '.$terminal.' / '.$fault => [$kind, $terminal, $fault];
+                }
+            }
+        }
+    }
+
+    #[DataProvider('plainTimerRefusals')]
+    public function testPlainTimerResolutionCannotUseAWaitTimeoutOrForeignTimer(string $terminalType, string $fault): void
+    {
+        [$opening] = self::priorCallFamilies()['timer'];
+        $fixture = self::priorCallFixture($opening);
+        $terminal = ['event_type' => $terminalType, 'payload' => $opening['payload']];
+        if ($fault === 'other timer') {
+            $terminal['payload']['timer_id'] = 'foreign-timer';
+        } elseif ($fault === 'missing timer') {
+            unset($terminal['payload']['timer_id']);
+        } else {
+            $terminal['payload']['timer_kind'] = $fault.'_timeout';
+            $terminal['payload'][$fault.'_wait_id'] = $fault;
+        }
+        $fixture = self::insert($fixture, 6, $terminal);
+        self::assertStringContainsString('earlier call is unresolved', (string) RedriveSuccessorHistory::violation(
+            $fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE],
+        ));
+    }
+
+    /** @return iterable<string, array{string, string}> */
+    public static function plainTimerRefusals(): iterable
+    {
+        foreach (['TimerFired', 'TimerCancelled'] as $terminal) {
+            foreach (['condition', 'signal', 'other timer', 'missing timer'] as $fault) {
+                yield $terminal.' / '.$fault => [$terminal, $fault];
+            }
+        }
+    }
+
+    /** @return array<string, mixed> */
+    private static function waitTimeoutFixture(string $kind, string $layout): array
+    {
+        $families = self::priorCallFamilies();
+        $fixture = self::priorCallFixture($families[$kind.($layout === 'timer' ? ' timer' : '')][0]);
+        if ($layout === 'both') {
+            $fixture = self::insert($fixture, 5, $families[$kind.' timer'][0]);
+        }
+
+        return $fixture;
+    }
+
+    /** @return array<string, mixed> */
+    private static function waitTimeoutTerminal(string $kind, string $type): array
+    {
+        return ['event_type' => $type, 'payload' => ['sequence' => 3, 'timer_id' => 'timer',
+            'timer_kind' => $kind.'_timeout', $kind.'_wait_id' => $kind]];
+    }
+
+    /** @param array<string, mixed> $fixture */
+    private static function deliveryIndex(array $fixture): int
+    {
+        foreach ($fixture['history'] as $index => $event) {
+            if ($event['event_type'] === 'CooperativeCancellationDelivered') {
+                return (int) $index;
+            }
+        }
+
+        throw new \LogicException('The source-control fixture requires its cancellation delivery.');
     }
 
     /** @return array<string, array{array<string, mixed>, string, list<string>}> */

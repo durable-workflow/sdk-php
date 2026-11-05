@@ -56,6 +56,8 @@ final class RedriveSuccessorHistory
 
     private const ACTIVITY_TERMINALS = ['ActivityCompleted', 'ActivityFailed', 'ActivityCancelled', 'ActivityTimedOut'];
 
+    private const TIMER_TERMINALS = ['TimerFired', 'TimerCancelled'];
+
     /**
      * The admitted single-call families and their canonical resource/terminal
      * pairs. Derive terminal and delivery admission from this same closed set.
@@ -64,9 +66,9 @@ final class RedriveSuccessorHistory
     private const CALL_RESOLUTIONS = [
         'activity' => ['activity_execution_id', self::ACTIVITY_TERMINALS],
         'local_activity' => ['activity_execution_id', self::ACTIVITY_TERMINALS],
-        'timer' => ['timer_id', ['TimerFired', 'TimerCancelled']],
-        'condition' => ['condition_wait_id', ['ConditionWaitSatisfied', 'ConditionWaitTimedOut']],
-        'signal' => ['signal_wait_id', ['SignalApplied']],
+        'timer' => ['timer_id', self::TIMER_TERMINALS],
+        'condition' => ['condition_wait_id', ['ConditionWaitSatisfied', 'ConditionWaitTimedOut', ...self::TIMER_TERMINALS]],
+        'signal' => ['signal_wait_id', ['SignalApplied', ...self::TIMER_TERMINALS]],
         'child' => ['child_call_id', ['ChildRunCompleted', 'ChildRunFailed', 'ChildRunCancelled', 'ChildRunTerminated']],
     ];
 
@@ -531,9 +533,9 @@ final class RedriveSuccessorHistory
         }
         foreach ($afterOpening as $terminal) {
             $terminalPayload = is_array($terminal['payload'] ?? null) ? $terminal['payload'] : [];
-            $sameActivityMode = !in_array($kind, ['activity', 'local_activity'], true)
-                || (($terminalPayload['local_activity'] ?? false) === true) === ($kind === 'local_activity');
-            if (in_array($terminal['event_type'] ?? null, $terminals, true) && $sameActivityMode
+            $type = $terminal['event_type'] ?? null;
+            if (in_array($type, $terminals, true)
+                && self::terminalFamilyMatches($kind, $type, $terminalPayload)
                 && ($terminalPayload['sequence'] ?? null) === $payload['sequence']
                 && ($terminalPayload[$identity] ?? null) === $payload[$identity]) {
                 return true;
@@ -541,6 +543,24 @@ final class RedriveSuccessorHistory
         }
 
         return false;
+    }
+
+    /** @param array<mixed> $payload */
+    private static function terminalFamilyMatches(string $kind, mixed $type, array $payload): bool
+    {
+        if (in_array($type, self::TIMER_TERMINALS, true)) {
+            $timerKind = $payload['timer_kind'] ?? null;
+
+            return match ($kind) {
+                'condition' => $timerKind === 'condition_timeout',
+                'signal' => $timerKind === 'signal_timeout',
+                'timer' => !in_array($timerKind, ['condition_timeout', 'signal_timeout'], true),
+                default => false,
+            };
+        }
+
+        return !in_array($kind, ['activity', 'local_activity'], true)
+            || (($payload['local_activity'] ?? false) === true) === ($kind === 'local_activity');
     }
 
     private static function isResolution(mixed $type): bool
