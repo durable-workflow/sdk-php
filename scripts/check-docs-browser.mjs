@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import net from 'node:net';
+import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { chromium } from 'playwright';
@@ -96,10 +97,10 @@ async function layoutState(page) {
   });
 }
 
-async function validateSurface(browser, origin, surface, viewportName, viewport) {
-  const context = await browser.newContext({viewport});
+async function validateSurface(browser, origin, surface, viewportName, viewport, theme) {
+  const context = await browser.newContext({viewport, colorScheme: 'dark', permissions: ['clipboard-read', 'clipboard-write']});
   const page = await context.newPage();
-  const label = `${surface.name} ${viewportName}`;
+  const label = `${surface.name} ${viewportName} ${theme}`;
   const errors = browserErrors(page, label);
   await page.route('https://cloud.durable-workflow.com/early-access/promotion-events', route => route.fulfill({
     status: 204,
@@ -118,6 +119,19 @@ async function validateSurface(browser, origin, surface, viewportName, viewport)
   }));
   await page.goto(`${origin}${surface.path}`, {waitUntil: 'networkidle'});
   await page.evaluate(() => document.fonts.ready);
+
+  assert.notEqual(await page.locator('html').getAttribute('data-theme'), 'dark', `${label} must default to light even with a dark system preference.`);
+  if (viewport.width <= 920) await page.locator('.nav-toggle').click();
+  if (theme === 'dark') await page.locator('.theme-toggle').click();
+  assert.equal(await page.locator('.theme-toggle').getAttribute('aria-pressed'), String(theme === 'dark'));
+  assert.equal(await page.locator('body').evaluate(element => getComputedStyle(element).backgroundColor),
+    theme === 'dark' ? 'rgb(15, 21, 19)' : 'rgb(246, 247, 245)', `${label} must use the shared Paper token.`);
+  const sdkSummary = page.locator('.sdk-switcher summary');
+  await sdkSummary.focus(); await page.keyboard.press('Enter');
+  assert(await page.locator('.sdk-menu a').first().isVisible(), `${label} SDK switcher must open from the keyboard.`);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('.sdk-switcher').getAttribute('open'), null, `${label} SDK switcher must close with Escape.`);
+  assert.equal(await page.evaluate(() => document.activeElement === document.querySelector('.sdk-switcher summary')), true);
 
   if (surface.kind === 'api') {
     await page.locator('.phpdocumentor-content').waitFor();
@@ -142,10 +156,24 @@ async function validateSurface(browser, origin, surface, viewportName, viewport)
   } else {
     await page.locator('#main-content').waitFor();
     assert(await page.locator('.brand').isVisible(), `${label} must show the site identity.`);
-    if (viewport.width <= 800) {
-      await page.locator('.nav-toggle').click();
+    if (viewport.width <= 920) {
       assert(await page.locator('.primary-nav').isVisible(), `${label} mobile navigation must open.`);
     }
+  }
+
+  if (surface.name === 'home' || surface.name === 'first workflow') {
+    const copy = page.locator('.copy-button').first();
+    const expected = await copy.evaluate(element => element.closest('.code-stage').querySelector('code').textContent);
+    await copy.click();
+    await page.waitForFunction(() => document.querySelector('.copy-button').textContent === 'Copied');
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), expected, `${label} must copy exact code text.`);
+  }
+  if (process.env.DOCS_SCREENSHOTS_DIRECTORY && ['home', 'first workflow', 'API Reference'].includes(surface.name)
+      && ['desktop', 'mobile'].includes(viewportName)) {
+    if (viewport.width <= 920) await page.locator('.nav-toggle').click();
+    fs.mkdirSync(process.env.DOCS_SCREENSHOTS_DIRECTORY, {recursive: true});
+    await page.screenshot({path: path.join(process.env.DOCS_SCREENSHOTS_DIRECTORY,
+      `${surface.name.replaceAll(' ', '-').toLowerCase()}-${viewportName}-${theme}.png`), fullPage: true});
   }
 
   const state = await layoutState(page);
@@ -188,11 +216,13 @@ try {
   ];
   for (const surface of surfaces) {
     for (const [viewportName, viewport] of viewports) {
-      await validateSurface(browser, origin, surface, viewportName, viewport);
+      for (const theme of ['light', 'dark']) {
+        await validateSurface(browser, origin, surface, viewportName, viewport, theme);
+      }
     }
   }
 
-  console.log('Validated seven portal/API surfaces at desktop, intermediate, mobile, and short-height viewports.');
+  console.log('Validated seven portal/API surfaces in both themes at desktop, intermediate, mobile, and short-height viewports; keyboard switcher, exact code copying and light-default controls passed.');
 } finally {
   await browser?.close();
   server.kill('SIGTERM');

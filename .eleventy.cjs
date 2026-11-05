@@ -70,6 +70,13 @@ function headingIds(markdown) {
 module.exports = function configure(eleventyConfig) {
   eleventyConfig.amendLibrary('md', (markdown) => markdown.use(headingIds));
 
+  // Both rendering engines use the same static product chrome.
+  for (const [name, file] of [['identityHeader', 'identity-header'], ['identityFooter', 'identity-footer']]) {
+    eleventyConfig.addShortcode(name, () => fs.readFileSync(
+      path.join(__dirname, `.phpdoc/template/components/${file}.html.twig`), 'utf8',
+    ));
+  }
+
   eleventyConfig.addPassthroughCopy({'docs/CNAME': 'CNAME'});
   eleventyConfig.addPassthroughCopy({'docs/portal/assets': 'assets'});
   eleventyConfig.addPassthroughCopy({'docs/quickstart-contract.json': 'quickstart-contract.json'});

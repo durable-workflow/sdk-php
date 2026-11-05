@@ -157,7 +157,7 @@
   padding: clamp(1.5rem, 4vw, 3.5rem);
   margin-bottom: var(--spacing-lg);
   color: #eef8ff;
-  background: linear-gradient(135deg, #102a43 0%, #0b6477 100%);
+  background: var(--surface);
   border-radius: .75rem;
 }
 
@@ -389,216 +389,6 @@
   }
 }
 
-/* Keep the generated reference visually subordinate to the authored portal. */
-:root {
-  color-scheme: dark;
-  --primary-color: #9effc7;
-  --primary-color-darken: #6fe3a1;
-  --primary-color-darker: #9effc7;
-  --primary-color-darkest: #f7f7f2;
-  --primary-color-lighten: #263746;
-  --primary-color-lighter: #101820;
-  --dark-gray: #263746;
-  --light-gray: #162330;
-  --text-color: #c6d0da;
-  --header-bg-color: #0b1118;
-  --code-background-color: #101820;
-  --code-border-color: #263746;
-  --button-border-color: #263746;
-  --button-color-primary: #9effc7;
-  --button-text-color: #c6d0da;
-  --button-text-color-primary: #082016;
-  --popover-background-color: rgb(16 24 32 / 96%);
-  --link-color-primary: #9effc7;
-  --link-hover-color-primary: #c5ffdc;
-  --form-field-border-color: #263746;
-  --form-field-color: #101820;
-  --table-separator-color: #263746;
-  --title-text-color: #f7f7f2;
-  --sidebar-border-color: #263746;
-  --font-primary: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-secondary: var(--font-primary);
-  --font-monospace: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  --letter-spacing--primary: 0;
-}
-
-body {
-  background: #0b1118;
-  color: #c6d0da;
-}
-
-.phpdocumentor-header {
-  gap: 1rem;
-  max-width: none;
-  padding-inline: max(1rem, calc((100vw - 1160px) / 2));
-  background: rgb(11 17 24 / 96%);
-  border-bottom: 1px solid #263746;
-}
-
-.phpdocumentor-title {
-  color: #f7f7f2;
-  font-size: 1rem;
-  font-weight: 720;
-}
-
-.phpdocumentor-title__link,
-.phpdocumentor-title__link:hover {
-  color: #f7f7f2;
-  transform: none;
-}
-
-.phpdocumentor-search {
-  min-width: 0;
-}
-
-.phpdocumentor-search__field {
-  color: #f7f7f2;
-  background: #101820;
-  border-color: #263746;
-}
-
-.phpdocumentor-search__field::placeholder,
-.phpdocumentor-search__icon {
-  color: #adbac8;
-}
-
-.dw-api-guide-link {
-  color: #f7f7f2;
-  background: #101820;
-  border-color: #263746;
-}
-
-.dw-api-guide-link:hover,
-.dw-api-guide-link:focus-visible {
-  color: #9effc7;
-  border-color: #9effc7;
-}
-
-.dw-cloud-promotion {
-  max-width: 1160px;
-  margin: 1rem auto;
-  padding: .85rem 1rem;
-  color: #adbac8;
-  background: #101820;
-  border: 1px solid #263746;
-  border-left: 3px solid #8da2ff;
-  border-radius: 8px;
-}
-
-.dw-cloud-promotion h2 {
-  color: #f7f7f2;
-  font-size: 1rem;
-}
-
-.dw-cloud-promotion__eyebrow {
-  color: #8da2ff;
-}
-
-.dw-cloud-promotion__action {
-  color: #c9d3ff;
-  border-color: #55679f;
-  border-radius: 6px;
-}
-
-.dw-cloud-promotion__action:hover,
-.dw-cloud-promotion__action:focus-visible {
-  color: #0b1118;
-  background: #8da2ff;
-  border-color: #8da2ff;
-}
-
-.phpdocumentor {
-  padding-top: 1rem;
-}
-
-.phpdocumentor .phpdocumentor-sidebar {
-  color: #adbac8;
-}
-
-.phpdocumentor .phpdocumentor-sidebar abbr,
-.phpdocumentor .phpdocumentor-sidebar a {
-  color: #adbac8;
-}
-
-.phpdocumentor .phpdocumentor-sidebar a:hover,
-.phpdocumentor .phpdocumentor-sidebar a.-active,
-.phpdocumentor .phpdocumentor-sidebar__category-header {
-  color: #9effc7;
-}
-
-.phpdocumentor-sidebar__menu-icon {
-  padding: .7rem .85rem;
-  color: #9effc7;
-  background: #101820;
-  border: 1px solid #263746;
-  border-radius: 6px;
-  letter-spacing: 0;
-  text-align: left;
-}
-
-.php-quickstart__hero {
-  color: #c6d0da;
-  background: linear-gradient(145deg, #162330, #101820);
-  border: 1px solid #263746;
-}
-
-.php-quickstart__hero h2 {
-  color: #f7f7f2;
-}
-
-.php-quickstart__eyebrow {
-  color: #9effc7;
-}
-
-.php-quickstart__path-nav a {
-  color: #f7f7f2;
-  border-color: #3b5063;
-}
-
-.php-quickstart__path-nav a:hover,
-.php-quickstart__path-nav a:focus-visible,
-.php-quickstart__path-nav a[aria-current="page"] {
-  color: #082016;
-  background: #9effc7;
-  border-color: #9effc7;
-}
-
-.php-quickstart__section {
-  color: #c6d0da;
-  background: #101820;
-  border-color: #263746;
-  box-shadow: none;
-}
-
-.php-quickstart__section h1,
-.php-quickstart__section h2,
-.php-quickstart__section h3,
-.php-quickstart__section h4,
-.php-quickstart__section h5,
-.php-quickstart__section h6 {
-  color: #f7f7f2;
-}
-
-.phpdocumentor-signature,
-.phpdocumentor-element .phpdocumentor-element,
-.phpdocumentor-table,
-.phpdocumentor-table th,
-.phpdocumentor-table td {
-  border-color: #263746 !important;
-}
-
-.phpdocumentor-search-results__dialog,
-.phpdocumentor-search-results__dialog > .phpdocumentor-search,
-.phpdocumentor-search-results__body {
-  color: #c6d0da;
-  background: #101820;
-}
-
-.phpdocumentor-back-to-top {
-  color: #9effc7;
-  background: #162330;
-}
-
 @media (min-width: 900px) {
   .phpdocumentor .phpdocumentor-sidebar.-three {
     width: 210px;
@@ -656,3 +446,53 @@ body {
     padding-top: .25rem;
   }
 }
+
+/* One Identity: shared type and palette, preserving generated reference layout. */
+:root {
+  --font-primary: var(--body); --font-secondary: var(--display); --font-monospace: var(--mono);
+  --primary-color: var(--action); --primary-color-darken: var(--action); --primary-color-lighten: var(--line); --primary-color-darker: var(--action); --primary-color-darkest: var(--ink); --primary-color-lighter: var(--surface);
+  --dark-gray: var(--line); --light-gray: var(--paper); --header-bg-color: var(--surface);
+  --code-border-color: var(--line); --button-border-color: var(--line);
+  --button-color-primary: var(--action); --button-text-color: var(--ink2); --button-text-color-primary: var(--action-ink);
+  --popover-background-color: var(--surface); --link-color-primary: var(--action); --link-hover-color-primary: var(--action);
+  --form-field-border-color: var(--line); --form-field-color: var(--surface); --title-text-color: var(--ink); --sidebar-border-color: var(--line); --letter-spacing--primary: 0;
+  --text-color: var(--ink2); --text-color-muted: var(--muted); --text-color-lighten: var(--muted);
+  --header-background-color: var(--surface); --sidebar-background-color: var(--paper);
+  --code-background-color: var(--code-bg); --code-color: var(--code-ink);
+  --table-separator-color: var(--line); --border-color: var(--line);
+}
+body { background: var(--paper); color: var(--ink); font-family: var(--body); }
+.phpdocumentor-header { background: var(--surface); border-bottom: 1px solid var(--line); color: var(--ink); }
+.phpdocumentor-header .phpdocumentor-title__link { color: var(--ink); font: 600 20px/1.3 var(--display); }
+.phpdocumentor .phpdocumentor-content, .phpdocumentor .phpdocumentor-content p,
+.phpdocumentor .phpdocumentor-description, .phpdocumentor-table { color: var(--ink2); }
+.phpdocumentor :is(h1,h2,h3,h4,h5,h6) { color: var(--ink); font-family: var(--display); font-weight: 600; }
+.phpdocumentor a, .phpdocumentor .phpdocumentor-sidebar a:hover,
+.phpdocumentor .phpdocumentor-sidebar a.-active,
+.phpdocumentor .phpdocumentor-sidebar__category-header { color: var(--action); }
+.phpdocumentor .phpdocumentor-sidebar a { color: var(--ink2); }
+.phpdocumentor .phpdocumentor-sidebar { background: var(--paper); border-color: var(--line); }
+.phpdocumentor-search__field { color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 6px; }
+.phpdocumentor-sidebar__menu-icon, .dw-api-guide-link { color: var(--action); background: var(--surface); border: 1px solid var(--line); font-family: var(--body); min-height: 44px; }
+.phpdocumentor .phpdocumentor-signature, .phpdocumentor-element .phpdocumentor-element,
+.phpdocumentor-table, .phpdocumentor-table th, .phpdocumentor-table td { border-color: var(--line) !important; }
+.phpdocumentor .phpdocumentor-signature, .phpdocumentor pre, .phpdocumentor code[class*='language-'] { background: var(--code-bg); color: var(--code-ink); font-family: var(--mono); text-shadow: none; }
+.phpdocumentor .token { color: var(--code-ink); background: transparent; }
+.phpdocumentor .token.comment { color: #9AA6A1; }
+.phpdocumentor .token.keyword, .phpdocumentor .token.function { color: #5FE0A6; }
+.phpdocumentor .phpdocumentor-signature { max-width: 100%; overflow-x: auto; border-radius: 8px; }
+.phpdocumentor .phpdocumentor-signature a { color: #5FE0A6; }
+.phpdocumentor-search-results__dialog, .phpdocumentor-search-results__dialog > .phpdocumentor-search,
+.phpdocumentor-search-results__body { color: var(--ink2); background: var(--surface); }
+.phpdocumentor-back-to-top { color: var(--action); background: var(--surface); }
+.php-quickstart__hero, .php-quickstart__section, .dw-cloud-promotion { background: var(--surface); color: var(--ink2); border: 1px solid var(--line); border-radius: 8px; box-shadow: none; }
+.php-quickstart__hero h2, .php-quickstart__section :is(h1,h2,h3,h4,h5,h6) { color: var(--ink); }
+.php-quickstart__hero h2 { font-size: clamp(32px, 4vw, 48px); letter-spacing: -.03em; }
+.php-quickstart__eyebrow, .dw-cloud-promotion__eyebrow { color: var(--action); font: 400 12px var(--mono); letter-spacing: .08em; }
+.php-quickstart__path-nav a { color: var(--action); border-color: var(--line); border-radius: 6px; min-height: 44px; }
+.php-quickstart__path-nav a:hover, .php-quickstart__path-nav a:focus-visible { color: var(--action-ink); background: var(--action); border-color: var(--action); }
+.dw-cloud-promotion__action { border-radius: 6px; min-height: 44px; color: var(--action); border-color: var(--action); }
+.dw-cloud-promotion__action:hover, .dw-cloud-promotion__action:focus-visible { background: var(--action); color: var(--action-ink); }
+.phpdocumentor-header .dw-api-guide-link { color: var(--action); }
+body:has(.phpdocumentor-search-results:not(.phpdocumentor-search-results--hidden)) > .site-header,
+body:has(.phpdocumentor-search-results:not(.phpdocumentor-search-results--hidden)) > .site-footer { visibility: hidden; }
