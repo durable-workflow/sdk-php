@@ -580,6 +580,8 @@ jobs:
       - run: node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-examples.mjs"
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-portal-links
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-identity-status
+      - name: Test selected presentation asset validation
+        run: python "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-analytics.test.py"
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - run: bash "$DOCS_TOOLING_DIRECTORY/scripts/build-docs.sh"
