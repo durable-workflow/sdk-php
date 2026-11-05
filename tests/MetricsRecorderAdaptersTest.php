@@ -8,6 +8,8 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Metrics\InMemoryMetricsRecorder;
 use DurableWorkflow\Metrics\OpenTelemetryMetricsRecorder;
 use DurableWorkflow\Tests\Support\FakeTransport;
+use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\ActivityContext;
 use OpenTelemetry\SDK\Metrics\Data\Histogram;
 use OpenTelemetry\SDK\Metrics\Data\Sum;
 use OpenTelemetry\SDK\Metrics\MeterProvider;
@@ -75,5 +77,39 @@ final class MetricsRecorderAdaptersTest extends TestCase
 
         self::assertStringNotContainsString('private-', serialize(array_map(
             static fn ($metric): array => [$metric->name, $metric->unit], $metrics)));
+    }
+
+    public function testActualActivityDispatchExportsTheScheduleToStartHistogram(): void
+    {
+        $exporter = new InMemoryExporter();
+        $reader = new ExportingReader($exporter);
+        $provider = MeterProvider::builder()->addReader($reader)->build();
+        $client = new Client('https://server.invalid', metrics: new OpenTelemetryMetricsRecorder($provider),
+            transport: new FakeTransport([
+                ['worker_protocol' => ['server_capabilities' => ['claimed_task_ready_age' => true]]],
+                ['task' => null, 'poll_status' => 'empty'],
+                ['task' => ['task_id' => 'activity-1', 'activity_attempt_id' => 'attempt-1',
+                    'lease_owner' => 'worker-1', 'activity_type' => 'orders.simple', 'payload_codec' => 'avro', 'ready_age_ms' => 1500],
+                    'poll_status' => 'leased'],
+                ['recorded' => true, 'outcome' => 'completed'],
+                ['task' => null, 'poll_status' => 'empty'],
+            ]));
+        $client->workerClusterInfo();
+        $worker = new Worker($client, 'orders', workerId: 'worker-1', clock: static fn (): float => 0);
+        $worker->registerActivity('orders.simple', static fn (ActivityContext $context): string => 'done');
+        self::assertTrue($worker->tick(0));
+        $reader->collect();
+        $metrics = [];
+        foreach ($exporter->collect() as $metric) {
+            $metrics[$metric->name] = $metric;
+        }
+        $metric = $metrics['durable_workflow_worker_task_schedule_to_start_seconds'];
+        self::assertSame('s', $metric->unit);
+        self::assertInstanceOf(Histogram::class, $metric->data);
+        $points = [...$metric->data->dataPoints];
+        self::assertCount(1, $points);
+        self::assertSame(1, $points[0]->count);
+        self::assertSame(1.5, $points[0]->sum);
+        self::assertSame(['task_kind' => 'activity', 'task_queue' => 'orders'], $points[0]->attributes->toArray());
     }
 }

@@ -1236,6 +1236,7 @@ final class Worker
     /** @param array<string, mixed> $task */
     private function executePolledTask(string $taskKind, array $task): void
     {
+        $this->observeTaskReadyAge($taskKind, $task);
         if (!$this->metricsObserver->enabled()) {
             $this->dispatchPolledTask($taskKind, $task);
 
@@ -1253,6 +1254,26 @@ final class Worker
             $observation->finish();
             $this->taskObservation = $previous;
         }
+    }
+
+    /** @param array<string, mixed> $task */
+    private function observeTaskReadyAge(string $taskKind, array $task): void
+    {
+        if (!$this->metricsObserver->enabled() || !in_array($taskKind, ['workflow', 'activity'], true)
+            || !$this->client->claimedTaskReadyAgeAvailable() || !array_key_exists('ready_age_ms', $task)) {
+            return;
+        }
+        $milliseconds = $task['ready_age_ms'];
+        if (!is_int($milliseconds) || $milliseconds < 0 || $milliseconds > 9007199254740991) {
+            try {
+                $this->diagnostic('worker.metrics_invalid_ready_age', ['task_kind' => $taskKind], 'warning');
+            } catch (Throwable) {
+                // A diagnostic failure cannot change the claimed task's result.
+            }
+            return;
+        }
+        $this->metricsObserver->observeHistogram('worker_task_dispatch', $milliseconds / 1000,
+            ['task_kind' => $taskKind, 'task_queue' => $this->taskQueue]);
     }
 
     /** @param array<string, mixed> $task */

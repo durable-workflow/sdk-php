@@ -50,4 +50,20 @@ final class MetricsObserver
             $this->recording = false;
         }
     }
+
+    /** @param array<string, string> $tags */
+    public function observeHistogram(string $scope, float $seconds, array $tags): void
+    {
+        if (!$this->enabled() || !is_finite($seconds) || $seconds < 0) {
+            return;
+        }
+        $this->recording = true;
+        try {
+            $this->recorder->record(MetricsContract::histogram($scope), $seconds, $tags);
+        } catch (Throwable) {
+            // Missing telemetry never authorizes repeating application work.
+        } finally {
+            $this->recording = false;
+        }
+    }
 }

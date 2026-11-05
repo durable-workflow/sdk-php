@@ -7,7 +7,7 @@ namespace DurableWorkflow\Metrics;
 /** @internal Loads the exact pinned shared registry, not a PHP-specific metric list. */
 final class MetricsContract
 {
-    /** @var array<string, array{counter: string, histogram: string}>|null */
+    /** @var array<string, array{counter?: string, histogram: string}>|null */
     private static ?array $pairs = null;
 
     /** @return array{counter: string, histogram: string} */
@@ -15,10 +15,22 @@ final class MetricsContract
     {
         self::$pairs ??= self::load();
 
-        return self::$pairs[$scope] ?? throw new \InvalidArgumentException('Unknown SDK metrics scope.');
+        $pair = self::$pairs[$scope] ?? null;
+        if (!isset($pair['counter'], $pair['histogram'])) {
+            throw new \InvalidArgumentException('SDK metrics scope has no counter/histogram pair.');
+        }
+
+        return ['counter' => $pair['counter'], 'histogram' => $pair['histogram']];
     }
 
-    /** @return array<string, array{counter: string, histogram: string}> */
+    public static function histogram(string $scope): string
+    {
+        self::$pairs ??= self::load();
+
+        return self::$pairs[$scope]['histogram'] ?? throw new \InvalidArgumentException('Unknown SDK metrics scope.');
+    }
+
+    /** @return array<string, array{counter?: string, histogram: string}> */
     private static function load(): array
     {
         $document = file_get_contents(dirname(__DIR__, 2).'/resources/protocol/sdk-metrics-v1.json');
@@ -37,6 +49,10 @@ final class MetricsContract
         }
         $complete = [];
         foreach ($pairs as $scope => $pair) {
+            if ($scope === 'worker_task_dispatch' && isset($pair['histogram']) && !isset($pair['counter'])) {
+                $complete[$scope] = ['histogram' => $pair['histogram']];
+                continue;
+            }
             if (!isset($pair['counter'], $pair['histogram'])) {
                 throw new InvalidMetricsRegistry('The SDK metrics registry has an incomplete scope.');
             }

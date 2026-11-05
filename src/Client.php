@@ -90,6 +90,7 @@ final class Client implements WorkflowClientInterface
     private ?string $activityLeaseBootstrap = null;
     private ?ExecutionTelemetry $executionTelemetry = null;
     private bool $observabilityContextSupported = false;
+    private bool $claimedTaskReadyAgeSupported = false;
     private MetricsObserver $metricsObserver;
     private ?ClientRequestObservation $metricsRequest = null;
     /** @var (\Closure(string, array<string, mixed>|null, array<string, mixed>, RequestBudget|null): (?\Closure))|null */
@@ -336,10 +337,12 @@ final class Client implements WorkflowClientInterface
     public function clusterInfo(bool $includeDiagnostics = false): ClusterInfo
     {
         $this->observabilityContextSupported = false;
+        $this->claimedTaskReadyAgeSupported = false;
         $path = $includeDiagnostics ? self::CLUSTER_INFO_PATH.'?include=diagnostics' : self::CLUSTER_INFO_PATH;
 
         $info = $this->control('GET', $path);
         $this->observabilityContextSupported = TraceCarrier::supported($info);
+        $this->rememberClaimedTaskReadyAge($info['worker_protocol']['server_capabilities'] ?? null);
 
         return ClusterInfo::fromArray($info);
     }
@@ -450,10 +453,24 @@ final class Client implements WorkflowClientInterface
     public function workerClusterInfo(): ClusterInfo
     {
         $this->observabilityContextSupported = false;
+        $this->claimedTaskReadyAgeSupported = false;
         $info = $this->worker('GET', self::CLUSTER_INFO_PATH);
         $this->observabilityContextSupported = TraceCarrier::supported($info);
+        $this->rememberClaimedTaskReadyAge($info['worker_protocol']['server_capabilities'] ?? null);
 
         return ClusterInfo::fromArray($info);
+    }
+
+    /** @internal Read cached discovery without adding I/O to task dispatch. */
+    public function claimedTaskReadyAgeAvailable(): bool
+    {
+        return $this->claimedTaskReadyAgeSupported;
+    }
+
+    private function rememberClaimedTaskReadyAge(mixed $capabilities): void
+    {
+        $this->claimedTaskReadyAgeSupported = is_array($capabilities)
+            && ($capabilities['claimed_task_ready_age'] ?? null) === true;
     }
 
     /**
@@ -1761,7 +1778,7 @@ final class Client implements WorkflowClientInterface
             }
         }
 
-        return $this->worker('POST', '/worker/register', $this->withoutNulls([
+        $registration = $this->worker('POST', '/worker/register', $this->withoutNulls([
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
             'runtime' => 'php',
@@ -1777,6 +1794,11 @@ final class Client implements WorkflowClientInterface
             'max_concurrent_worker_sessions' => $maxConcurrentWorkerSessions,
             'build_id' => $buildId,
         ]));
+        if (array_key_exists('server_capabilities', $registration)) {
+            $this->rememberClaimedTaskReadyAge($registration['server_capabilities']);
+        }
+
+        return $registration;
     }
 
     /** @return array<string, mixed> */

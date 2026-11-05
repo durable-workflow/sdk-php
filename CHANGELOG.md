@@ -8,6 +8,11 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- An unreleased schedule-to-start histogram for workflow/activity dispatch uses
+  the runtime's capability-gated `ready_age_ms` claim metadata (shared metrics
+  revision 2, central #233). Valid zero is retained; missing, unsupported or
+  malformed ages are omitted. Existing instruments keep their names and tags.
+
 - `ActivityContext::activityExecutionId` exposes the received logical activity
   execution ID for downstream idempotency keys. Missing or invalid legacy
   metadata stays null; task and attempt IDs are never used as substitutes.
