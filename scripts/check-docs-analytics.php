@@ -4,13 +4,14 @@ declare(strict_types=1);
 
 $siteDirectory = rtrim($argv[1] ?? __DIR__.'/../build/site', '/\\');
 $sourceDirectory = getenv('DOCS_SOURCE_DIRECTORY') ?: __DIR__.'/..';
+$templateDirectory = getenv('DOCS_TEMPLATE_DIRECTORY') ?: $sourceDirectory.'/.phpdoc/template';
 $runtimeSource = file_get_contents($sourceDirectory.'/.phpdoc/template/analytics/analytics.js');
 if ($runtimeSource !== false && getenv('CLOUDFLARE_WEB_ANALYTICS_TOKEN')) {
     $runtimeSource = str_replace('__CLOUDFLARE_WEB_ANALYTICS_TOKEN__', getenv('CLOUDFLARE_WEB_ANALYTICS_TOKEN'), $runtimeSource);
 }
 $runtime = file_get_contents($siteDirectory.'/analytics/analytics.js');
-$referenceStyles = file_get_contents($sourceDirectory.'/.phpdoc/template/assets/api-reference.css');
-$referenceRuntime = file_get_contents($sourceDirectory.'/.phpdoc/template/assets/api-reference.js');
+$referenceStyles = file_get_contents($templateDirectory.'/assets/api-reference.css');
+$referenceRuntime = file_get_contents($templateDirectory.'/assets/api-reference.js');
 
 if ($runtimeSource === false || $runtime === false || $runtime !== $runtimeSource) {
     throw new RuntimeException('Rendered analytics runtime is missing or stale.');
