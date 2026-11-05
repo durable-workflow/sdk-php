@@ -220,6 +220,211 @@ final class RedriveSuccessorStrictnessTest extends TestCase
     }
 
     /** @param array<string, mixed> $opening */
+    #[DataProvider('terminalLedgerCases')]
+    public function testPriorCallTerminalLedgerScansItsWholeInterval(
+        array $opening,
+        string $firstType,
+        string $secondType,
+        string $scenario,
+    ): void {
+        $fixture = self::priorCallFixture($opening);
+        $first = self::terminal($fixture, $firstType);
+        $second = self::terminal($fixture, $secondType);
+        $foreign = $second;
+        $kind = $opening['event_type'];
+        $foreign['payload'][self::identity($kind)] = 'unrelated-resource';
+        if ($scenario === 'later-other-step') {
+            $foreign = $second;
+            $foreign['payload']['sequence'] = 5;
+        }
+        if ($scenario !== 'foreign-only' && $scenario !== 'later-only') {
+            if ($scenario === 'foreign-before') {
+                $fixture = self::insert($fixture, self::deliveryIndex($fixture), $foreign);
+            }
+            $fixture = self::insert($fixture, self::deliveryIndex($fixture), $first);
+            self::assertNull(RedriveSuccessorHistory::violation($fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE]),
+                'Each multiplicity probe first proves its valid one-terminal control.');
+        }
+        if (in_array($scenario, ['foreign-only', 'foreign-after', 'duplicate-after-foreign'], true)) {
+            $fixture = self::insert($fixture, self::deliveryIndex($fixture), $foreign);
+        }
+        if (in_array($scenario, ['duplicate', 'duplicate-after-foreign'], true)) {
+            $fixture = self::insert($fixture, self::deliveryIndex($fixture), $second);
+        } elseif (in_array($scenario, ['later-duplicate', 'later-only'], true)) {
+            $fixture = self::insert($fixture, self::deliveryIndex($fixture) + 1, $second);
+        } elseif (in_array($scenario, ['later-foreign', 'later-other-step', 'later-duplicate-after-foreign'], true)) {
+            $fixture = self::insert($fixture, self::deliveryIndex($fixture) + 1, $foreign);
+            if ($scenario === 'later-duplicate-after-foreign') {
+                $fixture = self::insert($fixture, self::deliveryIndex($fixture) + 2, $second);
+            }
+        }
+        $violation = RedriveSuccessorHistory::violation($fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE]);
+
+        if (in_array($scenario, ['duplicate', 'duplicate-after-foreign', 'later-duplicate', 'later-duplicate-after-foreign'], true)) {
+            self::assertNotNull($violation);
+            self::assertStringContainsString('more than one terminal', $violation);
+        } elseif (in_array($scenario, ['foreign-only', 'later-only'], true)) {
+            self::assertNotNull($violation);
+            self::assertStringContainsString('an earlier call is unresolved', $violation);
+        } else {
+            self::assertNull($violation);
+        }
+    }
+
+    /** @return iterable<string, array{array<string, mixed>, string, string, string}> */
+    public static function terminalLedgerCases(): iterable
+    {
+        $families = self::priorCallFamilies();
+        $pairs = [
+            ['activity', 'ActivityFailed', 'ActivityCompleted'],
+            ['activity', 'ActivityCompleted', 'ActivityCompleted'],
+            ['local activity', 'ActivityFailed', 'ActivityCompleted'],
+            ['local activity', 'ActivityCompleted', 'ActivityCompleted'],
+            ['timer', 'TimerCancelled', 'TimerFired'],
+            ['timer', 'TimerFired', 'TimerFired'],
+            ['signal', 'SignalApplied', 'SignalApplied'],
+        ];
+        foreach ($pairs as [$name, $first, $second]) {
+            foreach (['duplicate', 'foreign-before', 'foreign-after', 'duplicate-after-foreign',
+                'foreign-only', 'later-duplicate', 'later-only', 'later-foreign', 'later-other-step',
+                'later-duplicate-after-foreign'] as $scenario) {
+                yield $name.' / '.$first.' / '.$second.' / '.$scenario => [$families[$name][0], $first, $second, $scenario];
+            }
+        }
+    }
+
+    /** @param array<string, mixed> $opening */
+    #[DataProvider('wholeHistoryTerminalCases')]
+    public function testWholeSuccessorRejectsASecondPrimaryTerminal(
+        array $opening,
+        string $firstType,
+        string $secondType,
+        string $boundary,
+    ): void {
+        $fixture = self::priorCallFixture($opening);
+        if ($boundary === 'recorded delivery') {
+            $fixture['history'][6]['payload']['sequence'] = 3;
+            $fixture['history'][6]['payload']['call_kind'] = match ($opening['event_type']) {
+                'TimerScheduled' => 'timer',
+                'SignalWaitOpened' => 'signal',
+                default => ($opening['payload']['local_activity'] ?? false) ? 'local_activity' : 'activity',
+            };
+        } elseif ($boundary === 'no cancellation') {
+            $fixture['history'] = array_values(array_filter($fixture['history'], static fn (array $event): bool => !in_array(
+                $event['event_type'], ['CooperativeCancellationRequested', 'CooperativeCancellationDelivered'], true,
+            )));
+        }
+        $first = self::terminal($fixture, $firstType);
+        $position = $boundary === 'no cancellation' ? count($fixture['history']) : self::deliveryIndex($fixture);
+        $fixture = self::insert($fixture, $position, $first);
+        self::assertNull(RedriveSuccessorHistory::violation($fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE]),
+            'One terminal remains valid at each claimed history boundary.');
+        $fixture = self::insert($fixture, count($fixture['history']), self::terminal($fixture, $secondType));
+        $violation = RedriveSuccessorHistory::violation($fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE]);
+
+        self::assertNotNull($violation);
+        self::assertStringContainsString('more than one terminal', $violation);
+    }
+
+    /** @return iterable<string, array{array<string, mixed>, string, string, string}> */
+    public static function wholeHistoryTerminalCases(): iterable
+    {
+        foreach (self::priorCallFamilies() as $family => [$opening, , $terminals]) {
+            if (!in_array($family, ['activity', 'local activity', 'timer', 'signal'], true)) {
+                continue;
+            }
+            foreach ($terminals as $first) {
+                foreach ($terminals as $second) {
+                    foreach (['next-step delivery', 'recorded delivery', 'no cancellation'] as $boundary) {
+                        yield $family.' / '.$first.' / '.$second.' / '.$boundary => [$opening, $first, $second, $boundary];
+                    }
+                }
+            }
+        }
+    }
+
+    #[DataProvider('pairedWaitTerminals')]
+    public function testCanonicalWaitAndBackingTimerRowsAreNotTwoLogicalTerminals(
+        string $kind,
+        string $layout,
+        string $waitTerminal,
+        string $timerTerminal,
+        bool $timerAfterDelivery,
+    ): void {
+        $fixture = self::waitTimeoutFixture($kind, $layout);
+        $fixture = self::insert($fixture, self::deliveryIndex($fixture), [
+            'event_type' => $waitTerminal,
+            'payload' => ['sequence' => 3, $kind.'_wait_id' => $kind,
+                'workflow_command_id' => 'signal-command', 'signal_id' => 'signal-event'],
+        ]);
+        $fixture = self::insert($fixture, self::deliveryIndex($fixture) + (int) $timerAfterDelivery,
+            self::waitTimeoutTerminal($kind, $timerTerminal));
+
+        self::assertNull(RedriveSuccessorHistory::violation($fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE]));
+    }
+
+    /** @return iterable<string, array{string, string, string, string, bool}> */
+    public static function pairedWaitTerminals(): iterable
+    {
+        foreach (['wait', 'timer', 'both'] as $layout) {
+            foreach ([false, true] as $later) {
+                yield 'condition satisfied / '.$layout.' / '.(int) $later => ['condition', $layout, 'ConditionWaitSatisfied', 'TimerCancelled', $later];
+                yield 'condition timed out / '.$layout.' / '.(int) $later => ['condition', $layout, 'ConditionWaitTimedOut', 'TimerFired', $later];
+                yield 'signal applied / '.$layout.' / '.(int) $later => ['signal', $layout, 'SignalApplied', 'TimerCancelled', $later];
+            }
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $opening
+     * @param array<string, mixed> $foreignFields
+     */
+    #[DataProvider('terminalModeAndKindCases')]
+    public function testForeignTerminalModeAndTimerKindCannotChangeTheClosedState(
+        array $opening,
+        string $type,
+        array $foreignFields,
+        string $scenario,
+    ): void {
+        $fixture = self::priorCallFixture($opening);
+        $valid = self::terminal($fixture, $type);
+        $foreign = $valid;
+        $foreign['payload'] = [...$foreign['payload'], ...$foreignFields];
+        $fixture = self::insert($fixture, self::deliveryIndex($fixture), $valid);
+        self::assertNull(RedriveSuccessorHistory::violation($fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE]));
+        $later = str_starts_with($scenario, 'later-');
+        $fixture = self::insert($fixture, $scenario === 'before' ? 6 : self::deliveryIndex($fixture) + (int) $later, $foreign);
+        if (str_ends_with($scenario, 'duplicate-after')) {
+            $fixture = self::insert($fixture, self::deliveryIndex($fixture) + ($later ? 2 : 0), $valid);
+        }
+        $violation = RedriveSuccessorHistory::violation($fixture, RedriveFixtureRegistry::SUCCESSORS[self::FIXTURE]);
+
+        if (str_ends_with($scenario, 'duplicate-after')) {
+            self::assertNotNull($violation);
+            self::assertStringContainsString('more than one terminal', $violation);
+        } else {
+            self::assertNull($violation);
+        }
+    }
+
+    /** @return iterable<string, array{array<string, mixed>, string, array<string, mixed>, string}> */
+    public static function terminalModeAndKindCases(): iterable
+    {
+        $families = self::priorCallFamilies();
+        $cases = [
+            ['activity', 'ActivityCompleted', ['local_activity' => true]],
+            ['local activity', 'ActivityCompleted', ['local_activity' => false]],
+            ['timer', 'TimerFired', ['timer_kind' => 'condition_timeout', 'condition_wait_id' => 'condition']],
+            ['timer', 'TimerFired', ['timer_kind' => 'signal_timeout', 'signal_wait_id' => 'signal']],
+        ];
+        foreach ($cases as $index => [$family, $type, $fields]) {
+            foreach (['before', 'after', 'duplicate-after', 'later-after', 'later-duplicate-after'] as $scenario) {
+                yield $family.' / '.$index.' / '.$scenario => [$families[$family][0], $type, $fields, $scenario];
+            }
+        }
+    }
+
+    /** @param array<string, mixed> $opening */
     #[DataProvider('priorCallRefusals')]
     public function testPriorCallRequiresItsOwnLaterResolution(array $opening, string $identity, string $terminalType, string $fault): void
     {

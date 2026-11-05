@@ -10,6 +10,11 @@ use DateTimeImmutable;
  * Checks the supported replay-fixture shapes against Workflow 2.19 redrive.
  * This is a test evidence model. Scoped, grouped, selection and service-operation
  * deliveries remain outside its qualified single-call boundary.
+ * Terminal multiplicity is checked across the whole successor for remote/local
+ * activities, plain timers and SignalApplied markers. Prior-call reachability
+ * uses only rows before delivery. Backing-timer/wait outcome combinations and child
+ * closure semantics retain their existing presence/identity bounds; this is
+ * not a generalized logical-outcome interpreter for those shapes.
  *
  * Core's DefaultWorkflowControlPlane::redrive() records, in one transaction,
  * a WorkflowStarted carrying the successor identity and the redrive envelope,
@@ -280,10 +285,13 @@ final class RedriveSuccessorHistory
             return 'resume_step_sequence must be the last reused workflow step + 1 ('.($lastReusedStep + 1).')';
         }
         if ($requests !== [] || $deliveries !== []) {
-            return self::cancellationViolation($history, $requests, $deliveries, $startedAt, $instance, $run);
+            $violation = self::cancellationViolation($history, $requests, $deliveries, $startedAt, $instance, $run);
+            if ($violation !== null) {
+                return $violation;
+            }
         }
 
-        return null;
+        return self::primaryTerminalViolation($history);
     }
 
     /**
@@ -511,8 +519,9 @@ final class RedriveSuccessorHistory
             if ($kind === null || $shape === null) {
                 continue;
             }
-            if (!self::callIsResolved($kind, $payload, $shape, array_slice($beforeDelivery, $index + 1))) {
-                return 'the cancellation delivery targets an unreachable next step: an earlier call is unresolved';
+            $violation = self::callResolutionViolation($kind, $payload, $shape, array_slice($beforeDelivery, $index + 1));
+            if ($violation !== null) {
+                return $violation;
             }
         }
 
@@ -524,25 +533,77 @@ final class RedriveSuccessorHistory
      * @param array{string, list<string>} $shape
      * @param list<array<string, mixed>> $afterOpening
      */
-    private static function callIsResolved(string $kind, array $payload, array $shape, array $afterOpening): bool
+    private static function callResolutionViolation(string $kind, array $payload, array $shape, array $afterOpening): ?string
     {
         [$identity, $terminals] = $shape;
+        $unresolved = 'the cancellation delivery targets an unreachable next step: an earlier call is unresolved';
         if (!self::nonBlank($payload[$identity] ?? null)
             || !is_int($payload['sequence'] ?? null) || $payload['sequence'] < 1) {
-            return false;
+            return $unresolved;
         }
+        $resolved = false;
         foreach ($afterOpening as $terminal) {
-            $terminalPayload = is_array($terminal['payload'] ?? null) ? $terminal['payload'] : [];
-            $type = $terminal['event_type'] ?? null;
-            if (in_array($type, $terminals, true)
-                && self::terminalFamilyMatches($kind, $type, $terminalPayload)
-                && ($terminalPayload['sequence'] ?? null) === $payload['sequence']
-                && ($terminalPayload[$identity] ?? null) === $payload[$identity]) {
-                return true;
+            if (self::terminalMatchesCall($kind, $payload, [$identity, $terminals], $terminal)) {
+                $resolved = true;
             }
         }
 
-        return false;
+        return $resolved ? null : $unresolved;
+    }
+
+    /** @param list<array<string, mixed>> $history */
+    private static function primaryTerminalViolation(array $history): ?string
+    {
+        foreach ($history as $index => $event) {
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $kind = self::callKind((string) ($event['event_type'] ?? ''), $payload);
+            if (!in_array($kind, ['activity', 'local_activity', 'timer', 'signal'], true)) {
+                continue;
+            }
+            $shape = self::CALL_RESOLUTIONS[$kind];
+            if (!self::nonBlank($payload[$shape[0]] ?? null)
+                || !is_int($payload['sequence'] ?? null) || $payload['sequence'] < 1) {
+                return 'a modeled primary call needs a resource identity and positive workflow step';
+            }
+            $closed = false;
+            foreach (array_slice($history, $index + 1) as $terminal) {
+                if (!self::closesModeledCall($kind, $terminal['event_type'] ?? null)
+                    || !self::terminalMatchesCall($kind, $payload, $shape, $terminal)) {
+                    continue;
+                }
+                if ($closed) {
+                    return 'a modeled primary call has more than one terminal';
+                }
+                $closed = true;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<mixed> $opening
+     * @param array{string, list<string>} $shape
+     * @param array<string, mixed> $terminal
+     */
+    private static function terminalMatchesCall(string $kind, array $opening, array $shape, array $terminal): bool
+    {
+        [$identity, $terminals] = $shape;
+        $payload = is_array($terminal['payload'] ?? null) ? $terminal['payload'] : [];
+        $type = $terminal['event_type'] ?? null;
+
+        return in_array($type, $terminals, true)
+            && self::terminalFamilyMatches($kind, $type, $payload)
+            && ($payload['sequence'] ?? null) === $opening['sequence']
+            && ($payload[$identity] ?? null) === $opening[$identity];
+    }
+
+    private static function closesModeledCall(string $kind, mixed $type): bool
+    {
+        // A canonical timeout timer and wait-specific event can describe one
+        // outcome. Do not count those physical rows as independent terminals.
+        return in_array($kind, ['activity', 'local_activity', 'timer'], true)
+            || ($kind === 'signal' && $type === 'SignalApplied');
     }
 
     /** @param array<mixed> $payload */
