@@ -9,10 +9,11 @@ function timestamp(value) {
   if (!match) return Number.NaN;
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return Number.NaN;
-  const offset = match[2] === 'Z' ? 0 : (Number(match[4]) * 60 + Number(match[5])) * (match[3] === '-' ? -1 : 1);
+  const offsetMinutes = match[2] === 'Z' ? 0 : Number(match[4]) * 60 + Number(match[5]);
+  const offsetSign = match[3] === '-' ? -1 : 1;
   // Date.parse normalizes impossible days and 24:00. Round-trip the supplied
   // calendar fields in their original offset before accepting the evidence.
-  const suppliedCalendar = new Date(parsed + offset * 60000).toISOString().slice(0, 19);
+  const suppliedCalendar = new Date(parsed + offsetMinutes * offsetSign * 60000).toISOString().slice(0, 19);
   return suppliedCalendar === match[1] ? parsed : Number.NaN;
 }
 
