@@ -1,0 +1,75 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-condition-legacy-consumed-terminal-starts-new-budget",
+  "protocol_version": "1.13",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.condition-sequential-legacy",
+    "input": []
+  },
+  "history": [
+    {
+      "event_type": "ConditionWaitOpened",
+      "recorded_at": "2026-11-04T00:00:00.000000+00:00",
+      "payload": {
+        "sequence": 1,
+        "condition_wait_id": "wait-1",
+        "condition_key": "approval",
+        "condition_definition_fingerprint": "sha256:ae8fde9b926b3c137612c63e648e84357e9bc08c321344712ac3e1e6c6d65cf8",
+        "timeout_seconds": 30
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "recorded_at": "2026-11-04T00:00:10.000000+00:00",
+      "payload": {
+        "workflow_sequence": 1,
+        "signal_name": "first",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCgZBZGEA"
+        }
+      }
+    },
+    {
+      "event_type": "ConditionWaitSatisfied",
+      "recorded_at": "2026-11-04T00:00:10.000000+00:00",
+      "payload": {
+        "sequence": 1,
+        "condition_wait_id": "wait-1",
+        "condition_key": "approval"
+      }
+    },
+    {
+      "event_type": "ConditionWaitOpened",
+      "recorded_at": "2026-11-04T00:00:12.000000+00:00",
+      "payload": {
+        "sequence": 2,
+        "condition_wait_id": "wait-2",
+        "condition_key": "approval",
+        "condition_definition_fingerprint": "sha256:ae8fde9b926b3c137612c63e648e84357e9bc08c321344712ac3e1e6c6d65cf8",
+        "timeout_seconds": 20
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "recorded_at": "2026-11-04T00:00:22.000000+00:00",
+      "payload": {
+        "workflow_sequence": 2,
+        "signal_name": "unrelated",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCgZBZGEA"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "type": "open_condition_wait",
+    "condition_key": "approval",
+    "timeout_seconds": 10
+  }
+}

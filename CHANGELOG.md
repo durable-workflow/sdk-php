@@ -64,6 +64,14 @@ project follows [Semantic Versioning](https://semver.org/).
   can fail replay. Deploy sources atomically and restart workers, including
   workers using OPcache.
 
+### Fixed
+
+- A legacy sequential condition wait can recover its own recorded opening and
+  deadline after the previous authored call's result is consumed (#269).
+  Repeated physical opens still share their first deadline. Missing or reused
+  wait identities and an ambiguous consumed outcome produce an explicit replay
+  conflict instead of assigning a guessed deadline to the next call.
+
 ## [3.9.4] - 2026-11-04
 
 ### Fixed

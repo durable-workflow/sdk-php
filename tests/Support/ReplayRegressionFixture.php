@@ -454,6 +454,16 @@ final class ReplayRegressionFixture
 
                 return 'search-attributes-upserted';
             },
+            'golden.condition-sequential-legacy' => static function (WorkflowContext $context): bool {
+                $signal = 'first';
+                $predicate = static function () use ($context, &$signal): bool {
+                    return $context->signals($signal) !== [];
+                };
+                $context->waitCondition($predicate, key: 'approval', timeout: 30);
+                $signal = 'second';
+
+                return $context->waitCondition($predicate, key: 'approval', timeout: 20);
+            },
             'golden.signal' => static function (
                 WorkflowContext $context,
                 mixed $signalName,

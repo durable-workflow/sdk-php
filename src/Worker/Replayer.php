@@ -213,8 +213,16 @@ final class Replayer
         $nextSequence = 1;
         $cancellationConsumed = false;
         $consumedScopeDeliveries = [];
+        $consumedConditionTail = null;
 
         while (!$execution->isTerminated()) {
+            if ($consumedConditionTail !== null) {
+                $remaining = $this->restoreConsumedConditionTail($suspended, $consumedConditionTail);
+                if ($remaining !== []) {
+                    array_splice($steps, $stepCursor, 0, $remaining);
+                }
+                $consumedConditionTail = null;
+            }
             if ($suspended instanceof WorkflowCommand && !isset($cancelledConditionSequences[$nextSequence])
                 && ($conditionResult = $this->unrecordedConditionResult($suspended, $steps[$stepCursor] ?? null)) !== null) {
                 $suspended = $execution->resume($conditionResult);
@@ -785,10 +793,12 @@ final class Replayer
                     }
                     if ($step['resolved']) {
                         $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($step));
+                        $consumedConditionTail = $this->conditionTailAfterConsumption($step, $suspended, $step['value'] === true);
                         $suspended = $execution->resume($step['value']);
                         continue;
                     }
                     if ($suspended->conditionSatisfied()) {
+                        $consumedConditionTail = $this->conditionTailAfterConsumption($step, $suspended, true);
                         $suspended = $execution->resume(true);
                         continue;
                     }
@@ -1309,6 +1319,92 @@ final class Replayer
     }
 
     /**
+     * Keep the raw opens until workflow code has consumed the earlier result.
+     * Equal keys/fingerprints alone cannot decide whether a later legacy open
+     * was another false wake or a new authored call. Only a recorded satisfied
+     * wait followed by a different recorded wait identity can supply a tail;
+     * its own original timeout/opening is used if code actually authors it.
+     *
+     * @param array<string, mixed> $step
+     * @return array{consumed: bool, occurrence: ?string, terminal: array<string, mixed>, steps: list<array<string, mixed>>}|null
+     */
+    private function conditionTailAfterConsumption(array $step, WorkflowCommand $command, bool $satisfied): ?array
+    {
+        $physical = $step['physical_condition_steps'] ?? [];
+        foreach ($physical as $index => $previous) {
+            if (!$this->isLegacySatisfiedCondition($previous)) {
+                continue;
+            }
+            foreach (array_slice($physical, $index + 1) as $offset => $next) {
+                if (is_int($next['opened_order'] ?? null)
+                    && $next['opened_order'] > $previous['resolution_order']) {
+                    return ['consumed' => $satisfied,
+                        'occurrence' => $this->stringValue($command->attributes['condition_wait_occurrence_id'] ?? null),
+                        'terminal' => $previous,
+                        'steps' => array_slice($physical, $index + $offset + 1)];
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /** @param array<string, mixed> $step */
+    private function isLegacySatisfiedCondition(array $step): bool
+    {
+        return $this->stepOccurrence($step) === null && $step['resolved'] === true
+            && $step['value'] === true && $step['failure'] === null
+            && is_string($step['condition_definition_fingerprint'] ?? null)
+            && preg_match('/\Asha256:[a-f0-9]{64}\z/', $step['condition_definition_fingerprint']) === 1;
+    }
+
+    /**
+     * @param array{consumed: bool, occurrence: ?string, terminal: array<string, mixed>, steps: list<array<string, mixed>>} $pending
+     * @return list<array<string, mixed>>
+     */
+    private function restoreConsumedConditionTail(mixed $command, array $pending): array
+    {
+        $first = $pending['steps'][0];
+        if (!$command instanceof WorkflowCommand || $command->type !== 'open_condition_wait'
+            || $first['condition_key'] !== $this->stringValue($command->attributes['condition_key'] ?? null)) {
+            return [];
+        }
+        if ($this->stepOccurrence($first) !== null && $this->stepOccurrence($first) === $pending['occurrence']) {
+            // A later canonical id can prove this was still the consumed call,
+            // even when its first legacy open had no occurrence metadata.
+            return [];
+        }
+        if (!$pending['consumed'] || !$this->conditionTerminalIdentityMatches($pending['terminal'])
+            || !is_string($first['condition_wait_id'] ?? null)
+            || ($first['condition_open_sequence'] ?? null) !== $first['sequence']
+            || $first['condition_wait_id'] === $pending['terminal']['condition_wait_id']) {
+            throw new NonDeterministicWorkflow(
+                'Legacy condition history cannot distinguish this authored call from a physical reopen.',
+                $first['sequence'], reason: 'legacy_condition_call_boundary_ambiguous',
+            );
+        }
+        $this->assertConditionWaitCompatible($first, $command);
+        $steps = $pending['steps'];
+        foreach ($steps as $index => $step) {
+            $steps[$index]['physical_condition_steps'] = [$step];
+        }
+
+        return $this->collapseConditionReopens($this->bindConditionReopens($steps));
+    }
+
+    /** @param array<string, mixed> $step */
+    private function conditionTerminalIdentityMatches(array $step): bool
+    {
+        $terminal = $step['condition_terminal'] ?? [];
+
+        return is_string($step['condition_wait_id'] ?? null)
+            && ($step['condition_open_sequence'] ?? null) === $step['sequence']
+            && ($terminal['condition_wait_id'] ?? null) === $step['condition_wait_id']
+            && ($terminal['sequence'] ?? null) === $step['sequence']
+            && is_int($step['opened_order'] ?? null) && $step['resolution_order'] > $step['opened_order'];
+    }
+
+    /**
      * The command that reopens a recorded condition wait, bounded by the wait's
      * original deadline as embedded await($condition, $timeout) is. The Server
      * satisfies an open wait on any signal and starts a new timer from each
@@ -1431,6 +1527,9 @@ final class Replayer
         $childIdentities = [];
         $conditionOpenedOrder = [];
         $conditionOccurrences = [];
+        $conditionWaitIds = [];
+        $conditionOpenSequences = [];
+        $conditionTerminals = [];
         $versionMarkerSequences = [];
         $versionMarkerChangeIds = [];
         $memoSequences = [];
@@ -1879,10 +1978,12 @@ final class Replayer
                 $conditionWaitId = $this->stringValue($payload['condition_wait_id'] ?? null);
                 if ($conditionWaitId !== null) {
                     $conditionStepsByWaitId[$conditionWaitId] = $key;
+                    $conditionWaitIds[$key] = $conditionWaitId;
                 }
                 $conditionOpenedAt[$key] ??= $this->eventTime($event);
                 $conditionOpenedOrder[$key] ??= $resolutionOrder;
                 $conditionOccurrences[$key] ??= $this->stringValue($payload['condition_wait_occurrence_id'] ?? null);
+                $conditionOpenSequences[$key] ??= $this->sequence($payload);
             } elseif (in_array($type, ['ConditionWaitSatisfied', 'ConditionWaitTimedOut'], true)) {
                 $conditionStepKey = $this->conditionStepKey($payload, $conditionStepsByWaitId);
                 if ($conditionStepKey !== null
@@ -1903,6 +2004,10 @@ final class Replayer
                         ),
                         resolutionOrder: $resolutionOrder,
                     );
+                    $conditionTerminals[$conditionStepKey] = [
+                        'sequence' => $this->sequence($payload),
+                        'condition_wait_id' => $this->stringValue($payload['condition_wait_id'] ?? null),
+                    ];
                 }
             }
         }
@@ -1934,6 +2039,12 @@ final class Replayer
                 $steps[$key]['opened_at'] = $openedAt;
                 $steps[$key]['opened_order'] = $conditionOpenedOrder[$key] ?? null;
                 $steps[$key]['occurrence_id'] = $conditionOccurrences[$key] ?? null;
+                $steps[$key]['condition_wait_id'] = $conditionWaitIds[$key] ?? null;
+                $steps[$key]['condition_open_sequence'] = $conditionOpenSequences[$key] ?? null;
+                $steps[$key]['condition_terminal'] = $conditionTerminals[$key] ?? null;
+                // Snapshot before bindConditionReopens changes timeout/opening
+                // metadata. This is internal replay state, never a wire field.
+                $steps[$key]['physical_condition_steps'] = [$steps[$key]];
             }
         }
         foreach ($childIdentities as $key => $identity) {
@@ -3444,7 +3555,8 @@ final class Replayer
      *     condition_definition_fingerprint: ?string,
      *     timeout_seconds: ?int,
      *     parallel_path: list<array<string, mixed>>,
-     *     resolution_order: int
+     *     resolution_order: int,
+     *     physical_condition_steps?: list<array<string, mixed>>
      * }> $steps
      * @return list<array{
      *     sequence: int,
@@ -3457,7 +3569,8 @@ final class Replayer
      *     condition_definition_fingerprint: ?string,
      *     timeout_seconds: ?int,
      *     parallel_path: list<array<string, mixed>>,
-     *     resolution_order: int
+     *     resolution_order: int,
+     *     physical_condition_steps?: list<array<string, mixed>>
      * }>
      */
     private function collapseConditionReopens(array $steps): array
@@ -3478,6 +3591,10 @@ final class Replayer
                 $step['sequence'] = $collapsed[$last]['sequence'];
                 $step['opened_at'] = $collapsed[$last]['opened_at'] ?? null;
                 $step['occurrence_id'] = $this->stepOccurrence($collapsed[$last]);
+                $step['physical_condition_steps'] = [
+                    ...($collapsed[$last]['physical_condition_steps'] ?? []),
+                    ...($step['physical_condition_steps'] ?? []),
+                ];
                 $collapsed[$last] = $step;
                 continue;
             }
