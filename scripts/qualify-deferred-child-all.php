@@ -8,6 +8,7 @@ declare(strict_types=1);
 use DurableWorkflow\Client;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Qualification\DeferredChildAllScenario as Scenario;
+use DurableWorkflow\Qualification\ChildAllQualificationFailure;
 use DurableWorkflow\Qualification\DeferredChildAllTurnTransport;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Worker;
@@ -97,21 +98,9 @@ function childAllTurn(Scenario $scenario, string $namespace, string $queue, stri
             }
             usleep(50_000);
         } while (microtime(true) < $turnDeadline);
-        throw new RuntimeException('Managed worker exceeded its turn deadline.');
+        throw new ChildAllQualificationFailure('Managed worker exceeded its turn deadline.');
     } finally {
-        if (is_resource($process)) {
-            if (childAllProcessRunning($process)) {
-                proc_terminate($process);
-                $stop = microtime(true) + 2;
-                while (childAllProcessRunning($process) && microtime(true) < $stop) {
-                    usleep(50_000);
-                }
-                if (childAllProcessRunning($process)) {
-                    proc_terminate($process, 9);
-                }
-            }
-            proc_close($process);
-        }
+        childAllStopProcess($process);
         if (is_string($receipt)) {
             @unlink($receipt);
         }
@@ -119,6 +108,25 @@ function childAllTurn(Scenario $scenario, string $namespace, string $queue, stri
             @unlink($log);
         }
     }
+}
+
+/** @param resource|null $process */
+function childAllStopProcess($process): void
+{
+    if (!is_resource($process)) {
+        return;
+    }
+    if (childAllProcessRunning($process)) {
+        proc_terminate($process);
+        $stop = microtime(true) + 2;
+        while (childAllProcessRunning($process) && microtime(true) < $stop) {
+            usleep(50_000);
+        }
+        if (childAllProcessRunning($process)) {
+            proc_terminate($process, 9);
+        }
+    }
+    proc_close($process);
 }
 
 /** A public poll observes readiness without running or retaining a parent claim. */
@@ -157,9 +165,10 @@ function childAllDuplicate(Client $worker, Client $control, array $receipt, stri
 
 /**
  * @param array<string, mixed> $identity
+ * @param array{workflow_id: string, run_id: string, queue: string} $parent
  * @return array<string, mixed>
  */
-function childAllMember(Scenario $scenario, Client $worker, Client $control, string $namespace, int $index, array $identity, string $parent, string $parentRun): array
+function childAllMember(Scenario $scenario, Client $worker, Client $control, string $namespace, int $index, array $identity, array $parent): array
 {
     $receipt = childAllTurn($scenario, $namespace, $scenario->queues[$index], $identity['child_workflow_run_id']);
     $task = $receipt['task'];
@@ -167,9 +176,46 @@ function childAllMember(Scenario $scenario, Client $worker, Client $control, str
         && ($task['task_queue'] ?? null) === $scenario->queues[$index], 'Managed child received a different member or queue.');
     $arguments = $control->payloadCodec()->decodeEnvelope($task['arguments']);
     Scenario::check(($arguments[0] ?? null) === ['index' => $index, 'value' => $scenario->fixture['input']], 'Child arguments lost their exact values or types.');
-    childAllDuplicate($worker, $control, $receipt, $task['workflow_id'], $task['run_id'], [[$parent, $parentRun]]);
+    childAllDuplicate($worker, $control, $receipt, $task['workflow_id'], $task['run_id'], [[$parent['workflow_id'], $parent['run_id']]]);
 
     return $receipt;
+}
+
+/**
+ * @param array<string, mixed> $identity
+ * @param array{workflow_id: string, run_id: string, queue: string, commands: list<array<string, mixed>>, identities: list<array<string, mixed>>} $parent
+ * @return list<string>
+ */
+function childAllRunMember(Scenario $scenario, Client $worker, Client $control, string $namespace, int $index, array $identity, array $parent): array
+{
+    if ($index === 0 && in_array($scenario->case, ['cancelled', 'terminated'], true)) {
+        if ($scenario->case === 'cancelled') {
+            $control->cancelWorkflow($identity['child_workflow_instance_id'], 'child barrier closed λ', $identity['child_workflow_run_id']);
+        } else {
+            $control->terminateWorkflow($identity['child_workflow_instance_id'], 'child barrier closed λ', $identity['child_workflow_run_id']);
+        }
+
+        return [];
+    }
+    $receipt = childAllMember($scenario, $worker, $control, $namespace, $index, $identity, $parent);
+    Scenario::check($receipt['task']['run_id'] === $identity['child_workflow_run_id'], 'Initial child task used another run.');
+    $runs = [$receipt['task']['run_id']];
+    if ($index !== 0 || !in_array($scenario->case, ['retry', 'continue'], true)) {
+        return $runs;
+    }
+    Scenario::check(count($receipt['body']['commands']) === 1
+        && $receipt['body']['commands'][0]['type'] === ($scenario->case === 'retry' ? 'fail_workflow' : 'continue_as_new'), 'Initial child turn did not request its selected replacement.');
+    childAllNoParentTask($worker, $scenario, $parent['queue']);
+    $replacement = childAllMember($scenario, $worker, $control, $namespace, $index, $identity, $parent);
+    Scenario::check($replacement['task']['run_id'] !== $identity['child_workflow_run_id'], 'Child chain did not create a distinct second run.');
+    $runs[] = $replacement['task']['run_id'];
+    $history = childAllHistory($control, $parent['workflow_id'], $parent['run_id']);
+    $chains = $scenario->assertStable($history, $parent['commands'], $parent['identities']);
+    $scenario->assertReplacementHistory(childAllHistory($control, $identity['child_workflow_instance_id'], $replacement['task']['run_id']),
+        $identity, $chains[0][1], ['workflow_id' => $parent['workflow_id'], 'run_id' => $parent['run_id']],
+        childAllHistory($control, $identity['child_workflow_instance_id'], $identity['child_workflow_run_id']));
+
+    return $runs;
 }
 
 /** @return array<string, mixed> */
@@ -199,31 +245,13 @@ function childAllCase(string $case): array
     childAllNoParentTask($worker, $scenario, $parentQueue);
     $closed = null;
     $memberRuns = [];
+    $parentContext = ['workflow_id' => $parent->workflowId, 'run_id' => $run, 'queue' => $parentQueue,
+        'commands' => $commands, 'identities' => $identities];
     foreach ($scenario->order() as $offset => $index) {
         childAllBudget();
-        $identity = $identities[$index];
-        if ($index === 0 && in_array($case, ['cancelled', 'terminated'], true)) {
-            if ($case === 'cancelled') {
-                $control->cancelWorkflow($identity['child_workflow_instance_id'], 'child barrier closed λ', $identity['child_workflow_run_id']);
-            } else {
-                $control->terminateWorkflow($identity['child_workflow_instance_id'], 'child barrier closed λ', $identity['child_workflow_run_id']);
-            }
-        } else {
-            $receipt = childAllMember($scenario, $worker, $control, $namespace, $index, $identity, $parent->workflowId, $run);
-            Scenario::check($receipt['task']['run_id'] === $identity['child_workflow_run_id'], 'Initial child task used another run.');
-            $memberRuns[$index] = [$receipt['task']['run_id']];
-            if ($index === 0 && in_array($case, ['retry', 'continue'], true)) {
-                Scenario::check(count($receipt['body']['commands']) === 1
-                    && $receipt['body']['commands'][0]['type'] === ($case === 'retry' ? 'fail_workflow' : 'continue_as_new'), 'Initial child turn did not request its selected replacement.');
-                childAllNoParentTask($worker, $scenario, $parentQueue);
-                $replacement = childAllMember($scenario, $worker, $control, $namespace, $index, $identity, $parent->workflowId, $run);
-                Scenario::check($replacement['task']['run_id'] !== $identity['child_workflow_run_id'], 'Child chain did not create a distinct second run.');
-                $memberRuns[$index][] = $replacement['task']['run_id'];
-                $chains = $scenario->assertStable(childAllHistory($control, $parent->workflowId, $run), $commands, $identities);
-                $scenario->assertReplacementHistory(childAllHistory($control, $identity['child_workflow_instance_id'], $replacement['task']['run_id']),
-                    $identity, $chains[0][1], ['workflow_id' => $parent->workflowId, 'run_id' => $run],
-                    childAllHistory($control, $identity['child_workflow_instance_id'], $identity['child_workflow_run_id']));
-            }
+        $runs = childAllRunMember($scenario, $worker, $control, $namespace, $index, $identities[$index], $parentContext);
+        if ($runs !== []) {
+            $memberRuns[$index] = $runs;
         }
         $history = childAllHistory($control, $parent->workflowId, $run);
         $scenario->assertStable($history, $commands, $identities);
