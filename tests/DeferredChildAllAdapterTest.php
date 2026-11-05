@@ -47,7 +47,14 @@ final class DeferredChildAllAdapterTest extends TestCase
         $scenario->assertStable($history, $commands, $identities);
         self::assertSame([], (new Replayer($codec))->replay($scenario->parent(), $history, [$scenario->fixture['input']], 'parents')->commands);
         foreach ($scenario->order() as $offset => $index) {
-            $terminal = self::terminal($history[$index * 2]['payload'], $codec->envelope(['echo' => [
+            $payload = $history[$index * 2]['payload'];
+            if ($index === 0 && in_array($case, ['retry', 'continue'], true)) {
+                $replacement = self::replacement($case, $payload);
+                $history[] = $replacement;
+                $scenario->assertStable($history, $commands, $identities);
+                $payload = $replacement['payload'];
+            }
+            $terminal = self::terminal($payload, $codec->envelope(['echo' => [
                 'index' => $index, 'value' => $scenario->fixture['input'],
             ]]));
             if ($scenario->failsEarly() && $offset === 0) {
@@ -66,6 +73,8 @@ final class DeferredChildAllAdapterTest extends TestCase
                 self::assertSame($scenario->expected(), $codec->decodeEnvelope($resumed[0]['result']));
             }
         }
+        $history[] = ['event_type' => 'WorkflowCompleted', 'payload' => []];
+        self::assertCount($size, $scenario->assertStable($history, $commands, $identities, parentFinished: true));
     }
 
     /** @return iterable<string, array{string, int}> */
@@ -144,19 +153,210 @@ final class DeferredChildAllAdapterTest extends TestCase
         }
     }
 
-    public function testReplacementRunKeepsInitialIdentityAndOriginalMemberPath(): void
+    #[DataProvider('replacementCases')]
+    public function testReplacementRunKeepsInitialIdentityAndOriginalMemberPath(string $case): void
     {
-        $scenario = self::scenario('continue', 2);
+        $scenario = self::scenario($case, 2);
         $codec = new AvroPayloadCodec();
         $commands = (new Replayer($codec))->replay($scenario->parent(), [], [$scenario->fixture['input']], 'parents')->commands;
         $history = self::history($commands);
         $identities = $scenario->identities($history, $commands);
-        $next = $history[1];
-        $next['payload']['child_workflow_run_id'] = 'replacement';
+        $next = self::replacement($case, $history[1]['payload']);
         $history[] = $next;
         $history[] = self::terminal($next['payload'], $codec->envelope('done'));
-        $scenario->assertStable($history, $commands, $identities);
+        $chains = $scenario->assertStable($history, $commands, $identities);
         self::assertSame('run-0', $scenario->identities($history, $commands)[0]['child_workflow_run_id']);
+        self::assertSame('link-0', $scenario->identities($history, $commands)[0]['workflow_link_id']);
+        self::assertSame('replacement-link', $chains[0][1]['workflow_link_id']);
+        self::assertSame('ChildRunCompleted', $chains[0][1]['terminal']);
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function replacementCases(): iterable
+    {
+        yield 'retry' => ['retry'];
+        yield 'continue' => ['continue'];
+    }
+
+    #[DataProvider('replacementLedgerMutations')]
+    public function testReplacementLedgerRejectsReusedClosedOrUnprovenRuns(string $case, string $mutation): void
+    {
+        $scenario = self::scenario($case, 2);
+        $codec = new AvroPayloadCodec();
+        $commands = (new Replayer($codec))->replay($scenario->parent(), [], [$scenario->fixture['input']], 'parents')->commands;
+        $history = self::history($commands);
+        $initial = $scenario->identities($history, $commands);
+        $next = self::replacement($case, $history[1]['payload']);
+        $terminal = self::terminal($next['payload'], $codec->envelope('done'));
+        switch ($mutation) {
+            case 'string replacement sequence': $next['payload']['sequence'] = '1'; break;
+            case 'wrong predecessor': $next['payload']['retry_of_child_workflow_run_id'] = 'other'; break;
+            case 'shared replacement link': $next['payload']['workflow_link_id'] = 'link-1'; break;
+            case 'wrong run number': $next['payload']['child_run_number'] = 1; break;
+            case 'initial terminal before replacement': $history[] = self::terminal($history[0]['payload'], $codec->envelope('done')); break;
+        }
+        $history[] = $next;
+        switch ($mutation) {
+            case 'duplicate replacement start': $history[] = $next; break;
+            case 'third run':
+                $third = $next;
+                $third['payload']['child_workflow_run_id'] = 'third';
+                $third['payload']['workflow_link_id'] = 'third-link';
+                $third['payload']['child_run_number'] = 3;
+                $history[] = $third;
+                break;
+            case 'event on replaced run': $history[] = self::terminal($history[0]['payload'], $codec->envelope('done')); break;
+            case 'wrong final link': $terminal['payload']['workflow_link_id'] = 'link-0'; $history[] = $terminal; break;
+            case 'repeat final terminal': $history[] = $terminal; $history[] = $terminal; break;
+            case 'replacement after terminal':
+                $history[] = $terminal;
+                $next['payload']['child_workflow_run_id'] = 'after-terminal';
+                $next['payload']['workflow_link_id'] = 'after-terminal-link';
+                $history[] = $next;
+                break;
+        }
+        $this->expectException(RuntimeException::class);
+        $scenario->assertStable($history, $commands, $initial);
+    }
+
+    /** @return iterable<string, array{string, string}> */
+    public static function replacementLedgerMutations(): iterable
+    {
+        foreach (['retry', 'continue'] as $case) {
+            foreach (['string replacement sequence', 'wrong predecessor', 'shared replacement link', 'wrong run number',
+                'initial terminal before replacement', 'duplicate replacement start', 'third run', 'event on replaced run',
+                'wrong final link', 'repeat final terminal', 'replacement after terminal'] as $mutation) {
+                yield $case.' '.$mutation => [$case, $mutation];
+            }
+        }
+    }
+
+    #[DataProvider('replacementCases')]
+    public function testChildHistoryProvesReplacementWithoutEquatingTheContinuationAndParentLinks(string $case): void
+    {
+        $proof = self::replacementProof($case);
+        self::scenario($case, 2)->assertReplacementHistory(...$proof);
+        self::assertSame($case === 'continue' ? 'continuation-link' : 'replacement-link', $proof[0][0]['payload']['workflow_link_id']);
+    }
+
+    #[DataProvider('replacementProofMutations')]
+    public function testChildReplacementProofRefusesChangedPredecessorOrAuthority(string $case, string $mutation): void
+    {
+        [$history, $original, $replacement, $parent, $predecessor] = self::replacementProof($case);
+        switch ($mutation) {
+            case 'wrong parent run': $history[0]['payload']['parent_workflow_run_id'] = 'other'; break;
+            case 'wrong child call': $history[0]['payload']['child_call_id'] = 'other'; break;
+            case 'wrong workflow type': $history[0]['payload']['workflow_type'] = 'other'; break;
+            case 'string parent sequence': $history[0]['payload']['parent_sequence'] = '1'; break;
+            case 'duplicate child start': $history[] = $history[0]; break;
+            case 'missing predecessor terminal': $predecessor = []; break;
+            case 'duplicate predecessor terminal': $predecessor[] = $predecessor[0]; break;
+            case 'wrong predecessor':
+                $history[0]['payload'][$case === 'retry' ? 'retry_of_child_workflow_run_id' : 'continued_from_run_id'] = 'other';
+                break;
+            case 'wrong predecessor link':
+                if ($case === 'retry') {
+                    $history[0]['payload']['workflow_link_id'] = 'other';
+                } else {
+                    $predecessor[0]['payload']['workflow_link_id'] = 'replacement-link';
+                }
+                break;
+        }
+        $this->expectException(RuntimeException::class);
+        self::scenario($case, 2)->assertReplacementHistory($history, $original, $replacement, $parent, $predecessor);
+    }
+
+    /** @return iterable<string, array{string, string}> */
+    public static function replacementProofMutations(): iterable
+    {
+        foreach (['retry', 'continue'] as $case) {
+            foreach (['wrong parent run', 'wrong child call', 'wrong workflow type', 'string parent sequence',
+                'duplicate child start', 'missing predecessor terminal', 'duplicate predecessor terminal', 'wrong predecessor', 'wrong predecessor link'] as $mutation) {
+                yield $case.' '.$mutation => [$case, $mutation];
+            }
+        }
+    }
+
+    #[DataProvider('heldHistoryAdmissions')]
+    public function testHeldHistoryAdmissionsAreRefused(string $case, string $mutation): void
+    {
+        $scenario = self::scenario($case, $case === 'single' ? 1 : ($case === 'out_of_order' ? 3 : 2));
+        $codec = new AvroPayloadCodec();
+        $commands = (new Replayer($codec))->replay($scenario->parent(), [], [$scenario->fixture['input']], 'parents')->commands;
+        $history = self::history($commands);
+        $initial = $scenario->identities($history, $commands);
+        $terminal = self::terminal($history[0]['payload'], $codec->envelope('done'));
+        if ($scenario->failsEarly()) {
+            $terminal['event_type'] = $scenario->expected()['failure_type'];
+        }
+        $history[] = $terminal;
+        switch ($mutation) {
+            case 'duplicate terminal': $history[] = $terminal; break;
+            case 'conflicting terminal':
+                $terminal['event_type'] = $terminal['event_type'] === 'ChildRunCompleted' ? 'ChildRunFailed' : 'ChildRunCompleted';
+                $history[] = $terminal;
+                break;
+            case 'unknown ChildRun type': $history[array_key_last($history)]['event_type'] = 'ChildRunAnything'; break;
+            case 'unknown Child type': $history[array_key_last($history)]['event_type'] = 'ChildWorkflowAnything'; break;
+            case 'string sequence': $history[array_key_last($history)]['payload']['sequence'] = '1'; break;
+            case 'leading-zero sequence': $history[array_key_last($history)]['payload']['sequence'] = '01'; break;
+            case 'float sequence': $history[array_key_last($history)]['payload']['sequence'] = 1.0; break;
+            case 'boolean sequence': $history[array_key_last($history)]['payload']['sequence'] = true; break;
+            case 'wrong workflow type': $history[array_key_last($history)]['payload']['child_workflow_type'] = 'other'; break;
+            case 'wrong run number': $history[array_key_last($history)]['payload']['child_run_number'] = '1'; break;
+            case 'post-parent-terminal event':
+                array_pop($history);
+                $history[] = ['event_type' => 'WorkflowCompleted', 'payload' => []];
+                $history[] = $terminal;
+                break;
+            case 'post-terminal unknown event':
+                $terminal['event_type'] = 'ChildRunProgress';
+                $history[] = $terminal;
+                break;
+        }
+        $this->expectException(RuntimeException::class);
+        $scenario->assertStable($history, $commands, $initial);
+    }
+
+    /** @return iterable<string, array{string, string}> */
+    public static function heldHistoryAdmissions(): iterable
+    {
+        foreach (['single', 'out_of_order', 'failed', 'cancelled', 'terminated'] as $case) {
+            foreach (['duplicate terminal', 'conflicting terminal'] as $mutation) {
+                yield $case.' '.$mutation => [$case, $mutation];
+            }
+        }
+        foreach (['unknown ChildRun type', 'unknown Child type', 'string sequence', 'leading-zero sequence',
+            'float sequence', 'boolean sequence', 'wrong workflow type', 'wrong run number',
+            'post-parent-terminal event', 'post-terminal unknown event'] as $mutation) {
+            yield $mutation => ['out_of_order', $mutation];
+        }
+    }
+
+    #[DataProvider('abandonedCases')]
+    public function testFinishedEarlyFailurePreservesAStartedButAbandonedSibling(string $case): void
+    {
+        $scenario = self::scenario($case, 2);
+        $codec = new AvroPayloadCodec();
+        $commands = (new Replayer($codec))->replay($scenario->parent(), [], [$scenario->fixture['input']], 'parents')->commands;
+        $history = self::history($commands);
+        $initial = $scenario->identities($history, $commands);
+        $terminal = self::terminal($history[0]['payload'], $codec->envelope('unused'));
+        $terminal['event_type'] = $scenario->expected()['failure_type'];
+        $history[] = $terminal;
+        $history[] = ['event_type' => 'WorkflowCompleted', 'payload' => []];
+        $chains = $scenario->assertStable($history, $commands, $initial, parentFinished: true);
+        self::assertSame($scenario->expected()['failure_type'], $chains[0][0]['terminal']);
+        self::assertNull($chains[1][0]['terminal']);
+        self::assertSame('run-1', $chains[1][0]['run_id']);
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function abandonedCases(): iterable
+    {
+        foreach (['failed', 'cancelled', 'terminated'] as $case) {
+            yield $case => [$case];
+        }
     }
 
     public function testActualManagedWorkerStopsAfterItsRecordedTurnAndReceiptOmitsHeaders(): void
@@ -314,7 +514,7 @@ final class DeferredChildAllAdapterTest extends TestCase
                 'child_call_id' => 'call-'.$index, 'workflow_link_id' => 'link-'.$index,
                 'child_workflow_instance_id' => 'child-'.$index, 'child_workflow_run_id' => 'run-'.$index, ...$metadata];
             $history[] = ['event_type' => 'ChildWorkflowScheduled', 'payload' => $payload];
-            $history[] = ['event_type' => 'ChildRunStarted', 'payload' => $payload];
+            $history[] = ['event_type' => 'ChildRunStarted', 'payload' => [...$payload, 'child_run_number' => 1]];
         }
 
         return $history;
@@ -327,7 +527,42 @@ final class DeferredChildAllAdapterTest extends TestCase
      */
     private static function terminal(array $payload, array $result): array
     {
-        return ['event_type' => 'ChildRunCompleted', 'payload' => [...$payload, 'result' => $result]];
+        return ['event_type' => 'ChildRunCompleted', 'payload' => [...$payload,
+            'child_run_number' => $payload['child_run_number'] ?? 1, 'result' => $result]];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private static function replacement(string $case, array $payload): array
+    {
+        return ['event_type' => 'ChildRunStarted', 'payload' => [...$payload, 'child_workflow_run_id' => 'replacement',
+            'workflow_link_id' => 'replacement-link', 'child_run_number' => 2,
+            ...($case === 'retry' ? ['retry_of_child_workflow_run_id' => $payload['child_workflow_run_id'], 'retry_attempt' => 2] : [])]];
+    }
+
+    /**
+     * @return array{list<array<string, mixed>>, array<string, mixed>, array{run_id: string, workflow_link_id: string, terminal: ?string}, array{workflow_id: string, run_id: string}, list<array<string, mixed>>}
+     */
+    private static function replacementProof(string $case): array
+    {
+        $original = ['child_call_id' => 'call-0', 'child_workflow_instance_id' => 'child-0', 'child_workflow_run_id' => 'run-0'];
+        $replacement = ['run_id' => 'replacement', 'workflow_link_id' => 'replacement-link', 'terminal' => 'ChildRunCompleted'];
+        $parent = ['workflow_id' => 'parent', 'run_id' => 'parent-run'];
+        $history = [['event_type' => 'WorkflowStarted', 'payload' => [
+            'workflow_instance_id' => 'child-0', 'workflow_run_id' => 'replacement',
+            'child_call_id' => 'call-0', 'parent_workflow_instance_id' => 'parent', 'parent_workflow_run_id' => 'parent-run',
+            'parent_sequence' => 1, 'workflow_type' => 'parity.v1.child_all_child',
+            ...($case === 'retry' ? ['retry_of_child_workflow_run_id' => 'run-0', 'retry_attempt' => 2, 'workflow_link_id' => 'replacement-link']
+                : ['continued_from_run_id' => 'run-0', 'workflow_link_id' => 'continuation-link']),
+        ]]];
+        $predecessor = $case === 'retry' ? [['event_type' => 'WorkflowFailed', 'payload' => []]]
+            : [['event_type' => 'WorkflowContinuedAsNew', 'payload' => [
+                'continued_to_run_id' => 'replacement', 'continued_to_run_number' => 2, 'sequence' => 1, 'workflow_link_id' => 'continuation-link',
+            ]]];
+
+        return [$history, $original, $replacement, $parent, $predecessor];
     }
 }
 

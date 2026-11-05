@@ -15,7 +15,12 @@ is not an expected installed result for this runner. The five canonical cases
 are single-child success, ordered results after completion order `[2, 0, 1]`, and
 an early child failure, cancellation or termination. Two additional controls
 exercise a retry and continue-as-new. Those controls preserve the initial child
-call, link, instance and run identity while a distinct second run finishes.
+call, link, instance and run tuple in its original schedule. The second run has
+a distinct parent-child link. Subsequent events must use that run/link and the
+original call, instance and group path. Retry records its predecessor in parent
+history. Continuation proves its predecessor through both child histories; the
+continue-as-new link is separate from the new parent-child link. These shapes
+follow the [accepted native source return](https://github.com/durable-workflow/server/issues/325#issuecomment-6665208804).
 
 The runner uses public `Client` and managed `Worker` APIs. It assigns a different
 valid queue to each deferred child so one worker at a time can drive a fixed
@@ -26,7 +31,12 @@ exact typed result or `ChildWorkflowFailed` shape without starting another child
 Duplicate parent and child completion attempts must be explicit no-ops or fenced
 and leave complete canonical history unchanged. After an early failure closes
 the parent under default abandon, successful siblings must add no parent history
-or further ready task. Empty-queue observations require an explicit empty or
+or further ready task. The finite child ledger checks exact integer sequences,
+workflow types, one start and at most one case-appropriate terminal per run.
+Unknown child events, duplicate or conflicting terminals and events on closed
+or replaced runs refuse, including malformed rows written by the first
+completion. An early failure may leave a sibling started and unresolved under
+abandon. Empty-queue observations require an explicit empty or
 timeout poll with no refusal reason. Lifecycle or unavailable replies cannot
 prove that the parent has no task. Both parent receipts bind the selected
 workflow, run and queue.

@@ -152,6 +152,7 @@ final class DeferredChildAllScenario
                 && ($command['queue'] ?? null) === $this->queues[$index]
                 && ($command['workflow_type'] ?? null) === $this->childType(), 'Unexpected child command or queue.');
             self::check(($payload['sequence'] ?? null) === $index + 1, 'Original child call sequence changed.');
+            self::check(($payload['child_workflow_type'] ?? null) === $this->childType(), 'Original child workflow type changed.');
             $identity = [];
             foreach (['child_call_id', 'workflow_link_id', 'child_workflow_instance_id', 'child_workflow_run_id'] as $key) {
                 self::check(is_string($payload[$key] ?? null) && $payload[$key] !== '', 'Missing canonical child identity.');
@@ -174,36 +175,131 @@ final class DeferredChildAllScenario
      * @param list<array<string, mixed>> $history
      * @param list<array<string, mixed>> $commands
      * @param list<array<string, mixed>> $initial
+     * @return list<list<array{run_id: string, workflow_link_id: string, terminal: ?string}>>
      */
-    public function assertStable(array $history, array $commands, array $initial): void
+    public function assertStable(array $history, array $commands, array $initial, bool $parentFinished = false): array
     {
         self::check($this->identities($history, $commands) === $initial, 'Replacement changed a recorded initial identity.');
         $runs = array_fill(0, $this->size, []);
+        $scheduled = array_fill(0, $this->size, false);
+        $usedRuns = array_column($initial, 'child_workflow_run_id');
+        $usedLinks = array_column($initial, 'workflow_link_id');
+        $parentClosed = false;
         foreach ($history as $event) {
-            if (!str_starts_with($event['event_type'], 'ChildRun')) {
+            $type = $event['event_type'] ?? null;
+            self::check(is_string($type), 'History event type is not a string.');
+            if ($type === 'WorkflowCompleted') {
+                self::check(!$parentClosed, 'Duplicate parent completion event.');
+                $parentClosed = true;
+            }
+            if (!str_starts_with($type, 'Child')) {
                 continue;
             }
-            $payload = $event['payload'];
-            $original = $initial[($payload['sequence'] ?? 0) - 1] ?? null;
-            self::check(is_array($original), 'Child event has no original member.');
-            foreach (['child_call_id', 'workflow_link_id', 'child_workflow_instance_id', 'parallel_group_id', 'parallel_group_path'] as $key) {
+            self::check(!$parentClosed, 'Child event follows parent completion.');
+            self::check(in_array($type, ['ChildWorkflowScheduled', 'ChildRunStarted', 'ChildRunCompleted',
+                'ChildRunFailed', 'ChildRunCancelled', 'ChildRunTerminated'], true), 'Unqualified child event type.');
+            $payload = $event['payload'] ?? null;
+            self::check(is_array($payload), 'Child event has no payload.');
+            $sequence = $payload['sequence'] ?? null;
+            self::check(is_int($sequence) && $sequence >= 1 && $sequence <= $this->size, 'Child sequence is not an exact member integer.');
+            $index = $sequence - 1;
+            $original = $initial[$index];
+            self::check(($payload['child_workflow_type'] ?? null) === $this->childType(), 'Child workflow type changed.');
+            foreach (['child_call_id', 'child_workflow_instance_id', 'parallel_group_id', 'parallel_group_path'] as $key) {
                 self::check(isset($payload[$key]) && $payload[$key] === $original[$key], 'Child event changed its original call/link/path.');
             }
-            $canReplaceRun = in_array($this->case, ['retry', 'continue'], true) && $payload['sequence'] === 1;
             self::check(is_string($payload['child_workflow_run_id'] ?? null) && $payload['child_workflow_run_id'] !== '', 'Child event has no run identity.');
-            $index = $payload['sequence'] - 1;
+            self::check(is_string($payload['workflow_link_id'] ?? null) && $payload['workflow_link_id'] !== '', 'Child event has no link identity.');
             $run = $payload['child_workflow_run_id'];
-            if ($event['event_type'] === 'ChildRunStarted') {
-                self::check(!in_array($run, $runs[$index], true), 'Duplicate child run start.');
-                self::check($runs[$index] === [] ? $run === $original['child_workflow_run_id'] : $canReplaceRun && count($runs[$index]) === 1,
-                    'Unexpected replacement child run.');
-                $runs[$index][] = $run;
-            } else {
-                self::check($runs[$index] !== [] && $run === $runs[$index][array_key_last($runs[$index])], 'Child event does not belong to its current recorded run.');
+            $link = $payload['workflow_link_id'];
+            if ($type === 'ChildWorkflowScheduled') {
+                self::check(!$scheduled[$index] && $runs[$index] === [], 'Child schedule is repeated or follows its start.');
+                $scheduled[$index] = true;
+                continue;
+            }
+            self::check($scheduled[$index], 'Child run event precedes its schedule.');
+            $current = $runs[$index] === [] ? null : $runs[$index][array_key_last($runs[$index])];
+            if ($type === 'ChildRunStarted') {
+                if ($current === null) {
+                    self::check($run === $original['child_workflow_run_id'] && $link === $original['workflow_link_id']
+                        && ($payload['child_run_number'] ?? null) === 1, 'Initial child run/link/number changed.');
+                    self::check(($payload['retry_of_child_workflow_run_id'] ?? null) === null
+                        && ($payload['retry_attempt'] ?? null) === null, 'Initial child run claims a retry predecessor.');
+                } else {
+                    self::check($index === 0 && in_array($this->case, ['retry', 'continue'], true)
+                        && count($runs[$index]) === 1 && $current['terminal'] === null, 'Child run cannot replace a closed or unqualified member.');
+                    self::check(!in_array($run, $usedRuns, true) && !in_array($link, $usedLinks, true)
+                        && ($payload['child_run_number'] ?? null) === 2, 'Replacement child run/link/number is not distinct.');
+                    // Native parent history records no intermediate terminal.
+                    // Retry has explicit provenance; continuation has a new
+                    // parent link but its predecessor is in child history.
+                    self::check($this->case === 'retry'
+                        ? ($payload['retry_of_child_workflow_run_id'] ?? null) === $current['run_id'] && ($payload['retry_attempt'] ?? null) === 2
+                        : ($payload['retry_of_child_workflow_run_id'] ?? null) === null && ($payload['retry_attempt'] ?? null) === null,
+                        'Replacement child transition does not match its case.');
+                    $usedRuns[] = $run;
+                    $usedLinks[] = $link;
+                }
+                $runs[$index][] = ['run_id' => $run, 'workflow_link_id' => $link, 'terminal' => null];
+                continue;
+            }
+            self::check($current !== null && $current['terminal'] === null && $run === $current['run_id']
+                && $link === $current['workflow_link_id'], 'Child terminal is repeated, late or belongs to another run/link.');
+            self::check(($payload['child_run_number'] ?? null) === count($runs[$index]), 'Child terminal run number changed.');
+            self::check($index !== 0 || !in_array($this->case, ['retry', 'continue'], true)
+                || count($runs[$index]) === 2, 'Replacement member resolved before its second run.');
+            $expected = $index === 0 && $this->failsEarly() ? $this->expected()['failure_type'] : 'ChildRunCompleted';
+            self::check($type === $expected, 'Child terminal does not match its selected case.');
+            $runs[$index][array_key_last($runs[$index])]['terminal'] = $type;
+        }
+        foreach ($runs as $index => $chain) {
+            self::check($chain !== [], 'Atomic child start has no initial run event.');
+            if ($parentFinished && (!$this->failsEarly() || $index === 0)) {
+                self::check($chain[array_key_last($chain)]['terminal'] !== null, 'Finished parent has an unresolved required member.');
             }
         }
-        foreach ($runs as $chain) {
-            self::check($chain !== [], 'Atomic child start has no initial run event.');
+        self::check(!$parentFinished || $parentClosed, 'Finished parent has no canonical completion.');
+
+        return $runs;
+    }
+
+    /**
+     * The parent continuation event intentionally has no predecessor field.
+     * Verify that relation from the replacement child's own canonical start.
+     *
+     * @param list<array<string, mixed>> $history
+     * @param list<array<string, mixed>> $predecessor
+     * @param array<string, mixed> $original
+     * @param array{run_id: string, workflow_link_id: string, terminal: ?string} $replacement
+     * @param array{workflow_id: string, run_id: string} $parent
+     */
+    public function assertReplacementHistory(array $history, array $original, array $replacement, array $parent, array $predecessor): void
+    {
+        self::check(in_array($this->case, ['retry', 'continue'], true), 'Unqualified replacement history.');
+        $starts = array_values(array_filter($history, static fn (array $event): bool => ($event['event_type'] ?? null) === 'WorkflowStarted'));
+        self::check(count($starts) === 1, 'Replacement child must have exactly one canonical start.');
+        $payload = $starts[0]['payload'];
+        foreach (['workflow_instance_id' => $original['child_workflow_instance_id'], 'workflow_run_id' => $replacement['run_id'],
+            'child_call_id' => $original['child_call_id'], 'parent_workflow_instance_id' => $parent['workflow_id'],
+            'parent_workflow_run_id' => $parent['run_id'], 'parent_sequence' => 1, 'workflow_type' => $this->childType()] as $key => $value) {
+            self::check(($payload[$key] ?? null) === $value, 'Replacement child start changed its parent/call/type identity.');
+        }
+        if ($this->case === 'retry') {
+            self::check(($payload['retry_of_child_workflow_run_id'] ?? null) === $original['child_workflow_run_id']
+                && ($payload['retry_attempt'] ?? null) === 2 && ($payload['continued_from_run_id'] ?? null) === null
+                && ($payload['workflow_link_id'] ?? null) === $replacement['workflow_link_id'], 'Replacement child has no exact retry predecessor/link.');
+            $failed = array_filter($predecessor, static fn (array $event): bool => ($event['event_type'] ?? null) === 'WorkflowFailed');
+            self::check(count($failed) === 1, 'Retry predecessor has no unique canonical failure.');
+        } else {
+            self::check(($payload['continued_from_run_id'] ?? null) === $original['child_workflow_run_id']
+                && ($payload['retry_of_child_workflow_run_id'] ?? null) === null && ($payload['retry_attempt'] ?? null) === null
+                && is_string($payload['workflow_link_id'] ?? null) && $payload['workflow_link_id'] !== '', 'Replacement child has no exact continuation predecessor.');
+            $continued = array_values(array_filter($predecessor, static fn (array $event): bool => ($event['event_type'] ?? null) === 'WorkflowContinuedAsNew'));
+            self::check(count($continued) === 1, 'Continuation predecessor has no unique canonical handoff.');
+            $handoff = $continued[0]['payload'];
+            self::check(($handoff['continued_to_run_id'] ?? null) === $replacement['run_id']
+                && ($handoff['continued_to_run_number'] ?? null) === 2 && ($handoff['sequence'] ?? null) === 1
+                && ($handoff['workflow_link_id'] ?? null) === $payload['workflow_link_id'], 'Continuation predecessor did not hand off to this child run/link.');
         }
     }
 

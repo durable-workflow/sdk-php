@@ -213,10 +213,16 @@ function childAllCase(string $case): array
             Scenario::check($receipt['task']['run_id'] === $identity['child_workflow_run_id'], 'Initial child task used another run.');
             $memberRuns[$index] = [$receipt['task']['run_id']];
             if ($index === 0 && in_array($case, ['retry', 'continue'], true)) {
+                Scenario::check(count($receipt['body']['commands']) === 1
+                    && $receipt['body']['commands'][0]['type'] === ($case === 'retry' ? 'fail_workflow' : 'continue_as_new'), 'Initial child turn did not request its selected replacement.');
                 childAllNoParentTask($worker, $scenario, $parentQueue);
                 $replacement = childAllMember($scenario, $worker, $control, $namespace, $index, $identity, $parent->workflowId, $run);
                 Scenario::check($replacement['task']['run_id'] !== $identity['child_workflow_run_id'], 'Child chain did not create a distinct second run.');
                 $memberRuns[$index][] = $replacement['task']['run_id'];
+                $chains = $scenario->assertStable(childAllHistory($control, $parent->workflowId, $run), $commands, $identities);
+                $scenario->assertReplacementHistory(childAllHistory($control, $identity['child_workflow_instance_id'], $replacement['task']['run_id']),
+                    $identity, $chains[0][1], ['workflow_id' => $parent->workflowId, 'run_id' => $run],
+                    childAllHistory($control, $identity['child_workflow_instance_id'], $identity['child_workflow_run_id']));
             }
         }
         $history = childAllHistory($control, $parent->workflowId, $run);
@@ -239,7 +245,7 @@ function childAllCase(string $case): array
         Scenario::check($result === $scenario->expected() && $parent->result(5) === $scenario->expected(), 'Cold parent result changed declaration order, values or failure type.');
         childAllDuplicate($worker, $control, $finish, $parent->workflowId, $run);
         $closed = childAllHistory($control, $parent->workflowId, $run);
-        $scenario->assertStable($closed, $commands, $identities);
+        $scenario->assertStable($closed, $commands, $identities, parentFinished: true);
         childAllNoParentTask($worker, $scenario, $parentQueue);
     }
     Scenario::check($closed !== null, 'Parent never reached its expected terminal result.');
@@ -250,6 +256,7 @@ function childAllCase(string $case): array
 
     return ['case' => $case, 'namespace' => $namespace, 'workflow_id' => $parent->workflowId, 'run_id' => $run,
         'initial_children' => $identities, 'child_queues' => $queues, 'member_runs' => $memberRuns,
+        'child_run_chains' => $scenario->assertStable($closed, $commands, $identities, parentFinished: true),
         'completion_order' => $scenario->order(), 'result' => $scenario->expected(),
         'events' => array_column($closed, 'event_type'), 'parent_completion_turns' => 2];
 }
