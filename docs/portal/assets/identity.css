@@ -86,4 +86,14 @@ h1, h2, h3, h4 { color: var(--ink); font-family: var(--display); font-weight: 60
   .footer-bottom { margin-inline: 18px; }
   .copy-button { min-height: 44px; }
 }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
+.sdk-switcher:not([open]) .sdk-menu { display: none; }
+.status-pill[data-state='operational'] { color: var(--action); background: var(--tint); border-color: var(--tint); }
+.status-pill[data-state='operational'] > span:first-child { background: var(--action); border-color: var(--action); }
+.status-pill[data-state='degraded'] { color: #8A5800; background: #FFF4D6; border-color: #D6B86A; }
+.status-pill[data-state='incident'] { color: #A42124; background: #FDEDEE; border-color: #E5B5B7; }
+.status-pill[data-state='maintenance'] { color: #225EAA; background: #EAF2FC; border-color: #A9C5E9; }
+[data-theme='dark'] .status-pill[data-state='degraded'] { color: #F2C46D; background: #302714; border-color: #6F5728; }
+[data-theme='dark'] .status-pill[data-state='incident'] { color: #F5A2A5; background: #351C20; border-color: #71373E; }
+[data-theme='dark'] .status-pill[data-state='maintenance'] { color: #A4C9F6; background: #192B40; border-color: #355C88; }
+.status-pill .status-label { width: auto; height: auto; border: 0; border-radius: 0; }
+.sdk-switcher summary, .sdk-menu a[aria-current], .footer-grid a[aria-current] { color: var(--ink); font-weight: 600; }

@@ -1,0 +1,1 @@
+Canonical shared public status module, unmodified from durable-workflow/durable-workflow.github.io commit 222d13ef1f04afdaa6784687c94023177adb3b81, static/identity/status.mjs. Shared reducer/watch semantics and tests belong to Docs #483/#484; Cloud owns public status and CORS. This consumer renders only bounded aggregate labels.

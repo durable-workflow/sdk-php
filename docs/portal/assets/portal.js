@@ -52,7 +52,10 @@
       const source = button.closest('.code-stage')?.querySelector('code')?.textContent;
       if (!source) return;
       try { await navigator.clipboard.writeText(source); button.textContent = 'Copied'; }
-      catch (_) { button.textContent = 'Copy unavailable'; }
+      catch (_) {
+        // Clipboard permission or browser support may be unavailable; report it in the control.
+        button.textContent = 'Copy unavailable';
+      }
       window.setTimeout(() => { button.textContent = 'Copy'; }, 1800);
     });
   }

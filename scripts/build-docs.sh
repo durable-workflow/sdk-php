@@ -7,7 +7,7 @@ export DOCS_SOURCE_DIRECTORY=${DOCS_SOURCE_DIRECTORY:-$PWD}
 cd "$DOCS_SOURCE_DIRECTORY"
 "$tooling_directory/vendor/bin/phpdoc" \
   -d "$PWD/src" -t "$PWD/build/api" --cache-folder "$PWD/build/phpdoc-cache" \
-  --title='Durable Workflow PHP SDK — API Reference' --template="$PWD/.phpdoc/template"
+  --title='Durable Workflow PHP SDK — API Reference' --template="${DOCS_TEMPLATE_DIRECTORY:-$PWD/.phpdoc/template}"
 php "$tooling_directory/scripts/finalize-api-reference.php" build/api
 "$tooling_directory/node_modules/.bin/eleventy" --config="$tooling_directory/.eleventy.cjs"
 

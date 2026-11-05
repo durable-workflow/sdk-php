@@ -19,8 +19,10 @@ description: Build, test, deploy, and operate durable PHP workflows with first-p
       <div class="code-stage hero-terminal" aria-label="Quickstart commands">
         <div class="code-stage__bar"><span>first-workflow</span><button class="copy-button" type="button">Copy</button></div>
         <pre><code>{{ release.composerCommand }}
-env -u DURABLE_WORKFLOW_CLIENT_TOKEN php worker.php &amp;
-env -u DURABLE_WORKFLOW_WORKER_TOKEN php client.php</code></pre>
+env -u DURABLE_WORKFLOW_CLIENT_TOKEN \
+  php worker.php &amp;
+env -u DURABLE_WORKFLOW_WORKER_TOKEN \
+  php client.php</code></pre>
       </div>
       <p class="terminal-note">After <a href="/getting-started/first-workflow/">configuring the runtime and saving the example files</a>.</p>
     </div>

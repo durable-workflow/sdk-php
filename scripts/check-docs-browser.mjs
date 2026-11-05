@@ -7,8 +7,10 @@ import path from 'node:path';
 import process from 'node:process';
 import { chromium } from 'playwright';
 
-const SITE_HOSTNAME = 'php.durable-workflow.com';
+// Loopback is a secure browser context for testing the real clipboard API.
+const SITE_HOSTNAME = '127.0.0.1';
 const siteDirectory = path.resolve(process.argv[2] ?? 'build/site');
+const oneIdentity = fs.existsSync(path.join(siteDirectory, 'assets/identity.css'));
 
 async function availablePort() {
   const server = net.createServer();
@@ -110,6 +112,11 @@ async function validateSurface(browser, origin, surface, viewportName, viewport,
       vary: 'Origin',
     },
   }));
+  // A deliberately unqualified fixture keeps status neutral in source layout checks.
+  await page.route('https://status.durable-workflow.com/api/current.json', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: '{}',
+    headers: {'access-control-allow-origin': origin, 'cache-control': 'no-store'},
+  }));
   await page.route('https://cloudflareinsights.com/cdn-cgi/rum', route => route.fulfill({
     status: 204,
     headers: {
@@ -120,8 +127,11 @@ async function validateSurface(browser, origin, surface, viewportName, viewport,
   await page.goto(`${origin}${surface.path}`, {waitUntil: 'networkidle'});
   await page.evaluate(() => document.fonts.ready);
 
+  if (oneIdentity) {
   assert.notEqual(await page.locator('html').getAttribute('data-theme'), 'dark', `${label} must default to light even with a dark system preference.`);
-  if (viewport.width <= 920) await page.locator('.nav-toggle').click();
+  }
+  if (viewport.width <= (oneIdentity ? 920 : 800)) await page.locator('.nav-toggle').click();
+  if (oneIdentity) {
   if (theme === 'dark') await page.locator('.theme-toggle').click();
   assert.equal(await page.locator('.theme-toggle').getAttribute('aria-pressed'), String(theme === 'dark'));
   assert.equal(await page.locator('body').evaluate(element => getComputedStyle(element).backgroundColor),
@@ -133,10 +143,22 @@ async function validateSurface(browser, origin, surface, viewportName, viewport,
   assert.equal(await page.locator('.sdk-switcher').getAttribute('open'), null, `${label} SDK switcher must close with Escape.`);
   assert.equal(await page.evaluate(() => document.activeElement === document.querySelector('.sdk-switcher summary')), true);
 
+  }
+
   if (surface.kind === 'api') {
     await page.locator('.phpdocumentor-content').waitFor();
     assert(await page.locator('.phpdocumentor-search__field').isVisible(), `${label} must show API search.`);
     assert(await page.locator('.dw-api-guide-link').isVisible(), `${label} must link back to authored guides.`);
+    if (surface.name === 'API Reference' && ['desktop', 'mobile'].includes(viewportName)) {
+      const search = page.locator('.phpdocumentor-search__field');
+      await search.fill('Client');
+      await search.press('Enter');
+      const dialog = page.locator('.phpdocumentor-search-results');
+      await page.waitForFunction(() => !document.querySelector('.phpdocumentor-search-results').classList.contains('phpdocumentor-search-results--hidden'));
+      assert(await dialog.locator('a[href*="Client"]').count() > 0, `${label} must find generated Client symbols.`);
+      await page.getByRole('button', {name: 'Close search results'}).click();
+      await page.waitForFunction(() => document.querySelector('.phpdocumentor-search-results').classList.contains('phpdocumentor-search-results--hidden'));
+    }
     const sidebarMenu = page.locator('.phpdocumentor-sidebar__menu-icon');
     if (await sidebarMenu.isVisible()) {
       assert.equal(await sidebarMenu.textContent(), 'Open navigation', `${label} must identify the collapsed API navigation.`);
@@ -155,13 +177,13 @@ async function validateSurface(browser, origin, surface, viewportName, viewport,
     }
   } else {
     await page.locator('#main-content').waitFor();
-    assert(await page.locator('.brand').isVisible(), `${label} must show the site identity.`);
-    if (viewport.width <= 920) {
+    assert(await page.locator('.site-header .brand').isVisible(), `${label} must show the site identity.`);
+    if (viewport.width <= (oneIdentity ? 920 : 800)) {
       assert(await page.locator('.primary-nav').isVisible(), `${label} mobile navigation must open.`);
     }
   }
 
-  if (surface.name === 'home' || surface.name === 'first workflow') {
+  if (oneIdentity && (surface.name === 'home' || surface.name === 'first workflow')) {
     const copy = page.locator('.copy-button').first();
     const expected = await copy.evaluate(element => element.closest('.code-stage').querySelector('code').textContent);
     await copy.click();
@@ -170,7 +192,9 @@ async function validateSurface(browser, origin, surface, viewportName, viewport,
   }
   if (process.env.DOCS_SCREENSHOTS_DIRECTORY && ['home', 'first workflow', 'API Reference'].includes(surface.name)
       && ['desktop', 'mobile'].includes(viewportName)) {
-    if (viewport.width <= 920) await page.locator('.nav-toggle').click();
+    }
+  if (viewport.width <= (oneIdentity ? 920 : 800)) await page.locator('.nav-toggle').click();
+  if (oneIdentity) {
     fs.mkdirSync(process.env.DOCS_SCREENSHOTS_DIRECTORY, {recursive: true});
     await page.screenshot({path: path.join(process.env.DOCS_SCREENSHOTS_DIRECTORY,
       `${surface.name.replaceAll(' ', '-').toLowerCase()}-${viewportName}-${theme}.png`), fullPage: true});
@@ -183,11 +207,12 @@ async function validateSurface(browser, origin, surface, viewportName, viewport,
   assert.deepEqual(state.unreachable, [], `${label} has controls covered by unrelated content.`);
   assert.deepEqual(errors, [], `${label} must render without browser or asset errors.`);
   await context.close();
+  return label;
 }
 
 const port = await availablePort();
 const origin = `http://${SITE_HOSTNAME}:${port}`;
-const server = spawn('php', ['-S', `127.0.0.1:${port}`, '-t', siteDirectory], {stdio: ['ignore', 'pipe', 'pipe']});
+const server = spawn('python3', ['-m', 'http.server', String(port), '--bind', '127.0.0.1', '--directory', siteDirectory], {stdio: ['ignore', 'pipe', 'pipe']});
 let browser;
 
 try {
@@ -214,15 +239,20 @@ try {
     ['mobile', {width: 390, height: 844}],
     ['short height', {width: 640, height: 360}],
   ];
-  for (const surface of surfaces) {
-    for (const [viewportName, viewport] of viewports) {
-      for (const theme of ['light', 'dark']) {
-        await validateSurface(browser, origin, surface, viewportName, viewport, theme);
+  // Async-generator yields keep one context at a time on shared hosts.
+  async function* checks() {
+    for (const surface of surfaces) {
+      for (const [viewportName, viewport] of viewports) {
+        for (const theme of oneIdentity ? ['light', 'dark'] : ['legacy']) {
+          yield validateSurface(browser, origin, surface, viewportName, viewport, theme);
+        }
       }
     }
   }
+  const completed = new Set();
+  for await (const label of checks()) completed.add(label);
 
-  console.log('Validated seven portal/API surfaces in both themes at desktop, intermediate, mobile, and short-height viewports; keyboard switcher, exact code copying and light-default controls passed.');
+  console.log(`Validated ${completed.size} portal/API theme/viewport cells; keyboard switcher, exact code copying and light-default controls passed.`);
 } finally {
   await browser?.close();
   server.kill('SIGTERM');

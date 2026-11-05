@@ -558,6 +558,8 @@ jobs:
       - name: Test documentation release-channel guards
         if: matrix.source == 'current'
         run: python "$DOCS_TOOLING_DIRECTORY/scripts/test-docs-release-channel.py"
+      - name: Test presentation and published SDK source isolation
+        run: python "$DOCS_TOOLING_DIRECTORY/scripts/prepare-docs-presentation.test.py"
       - name: Select authenticated dependency trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
         with:
@@ -577,6 +579,7 @@ jobs:
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" audit --audit-level=moderate
       - run: node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-examples.mjs"
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-portal-links
+      - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-identity-status
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - run: bash "$DOCS_TOOLING_DIRECTORY/scripts/build-docs.sh"
@@ -595,7 +598,15 @@ jobs:
       - name: Verify missing-resource browser evidence
         run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-browser-failures
       - name: Check portal and API layouts in Chromium
+        env:
+          DOCS_SCREENSHOTS_DIRECTORY: build/one-identity-screenshots
         run: node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-browser.mjs" build/site
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        if: always()
+        with:
+          name: php-docs-visual-${{ matrix.source }}
+          path: build/one-identity-screenshots
+          if-no-files-found: ignore
       - name: Check repository-owned documentation links offline
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:

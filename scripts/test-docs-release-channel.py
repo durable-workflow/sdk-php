@@ -136,7 +136,8 @@ class DocumentationChannelTest(unittest.TestCase):
                 (self.root / "build/site").mkdir(parents=True, exist_ok=True)
                 result = subprocess.run([sys.executable, str(BIND), source], cwd=self.root, env=self.environment, capture_output=True)
                 self.assertEqual(0, result.returncode, result.stderr)
-                self.assertEqual({"schema": "durable-workflow.sdk-php.docs-deployment/v1", "source_revision": source},
+                self.assertEqual({"schema": "durable-workflow.sdk-php.docs-deployment/v2", "source_revision": source,
+                                  "sdk_source_revision": source, "presentation_source_revision": source},
                                  json.loads((self.root / "build/site/deployment-audit.json").read_text()))
 
     def test_artifact_refuses_wrong_identity_and_modified_selected_source(self) -> None:

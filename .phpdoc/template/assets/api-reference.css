@@ -475,7 +475,7 @@ body { background: var(--paper); color: var(--ink); font-family: var(--body); }
 .phpdocumentor-search__field { color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 6px; }
 .phpdocumentor-sidebar__menu-icon, .dw-api-guide-link { color: var(--action); background: var(--surface); border: 1px solid var(--line); font-family: var(--body); min-height: 44px; }
 .phpdocumentor .phpdocumentor-signature, .phpdocumentor-element .phpdocumentor-element,
-.phpdocumentor-table, .phpdocumentor-table th, .phpdocumentor-table td { border-color: var(--line) !important; }
+.phpdocumentor-table, .phpdocumentor-table th, .phpdocumentor-table td { border-color: var(--line); }
 .phpdocumentor .phpdocumentor-signature, .phpdocumentor pre, .phpdocumentor code[class*='language-'] { background: var(--code-bg); color: var(--code-ink); font-family: var(--mono); text-shadow: none; }
 .phpdocumentor .token { color: var(--code-ink); background: transparent; }
 .phpdocumentor .token.comment { color: #9AA6A1; }
@@ -496,3 +496,4 @@ body { background: var(--paper); color: var(--ink); font-family: var(--body); }
 .phpdocumentor-header .dw-api-guide-link { color: var(--action); }
 body:has(.phpdocumentor-search-results:not(.phpdocumentor-search-results--hidden)) > .site-header,
 body:has(.phpdocumentor-search-results:not(.phpdocumentor-search-results--hidden)) > .site-footer { visibility: hidden; }
+.phpdocumentor-sidebar__menu-icon { letter-spacing: normal; text-transform: none; }

@@ -12,6 +12,7 @@ on:
       - 'scripts/finalize-api-reference.php'
       - 'scripts/build-docs.sh'
       - 'scripts/prepare-docs-tooling.py'
+      - 'scripts/prepare-docs-presentation.py'
       - 'scripts/bind-docs-artifact.py'
       - 'README.md'
       - 'composer.json'
@@ -22,6 +23,14 @@ on:
     inputs:
       stable_tag:
         description: 'Published stable SDK tag to deploy, or empty for current main'
+        type: string
+        required: false
+      build_only:
+        description: 'Build and qualify the exact stable tuple without deploying Pages'
+        type: boolean
+        default: false
+      presentation_source:
+        description: 'Optional exact accepted-main presentation commit; published SDK source stays unchanged'
         type: string
         required: false
       stable_source:
@@ -49,6 +58,7 @@ jobs:
         env:
           STABLE_TAG: ${{ inputs.stable_tag }}
           STABLE_SOURCE: ${{ inputs.stable_source }}
+          PRESENTATION_SOURCE: ${{ inputs.presentation_source }}
         run: |
           if [[ ! "$STABLE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo 'stable_tag must name an exact stable SDK version' >&2
@@ -58,8 +68,12 @@ jobs:
             echo 'stable_source must be an exact lowercase source commit' >&2
             exit 1
           fi
+          if [ -n "$PRESENTATION_SOURCE" ] && [[ ! "$PRESENTATION_SOURCE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'presentation_source must be an exact lowercase source commit' >&2
+            exit 1
+          fi
       - name: Require a stable tag for a documentation source override
-        if: inputs.stable_source != '' && inputs.stable_tag == ''
+        if: (inputs.stable_source != '' || inputs.presentation_source != '') && inputs.stable_tag == ''
         run: exit 1
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
@@ -96,6 +110,11 @@ jobs:
           STABLE_SOURCE: ${{ inputs.stable_source }}
           GH_TOKEN: ${{ github.token }}
         run: python "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-release-channel.py"
+      - name: Stage presentation over the unchanged published SDK docs
+        if: inputs.presentation_source != ''
+        env:
+          PRESENTATION_SOURCE: ${{ inputs.presentation_source }}
+        run: python "$DOCS_TOOLING_DIRECTORY/scripts/prepare-docs-presentation.py" "$PRESENTATION_SOURCE" "$RUNNER_TEMP/docs-presentation"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
         with:
           node-version: '24'
@@ -106,6 +125,7 @@ jobs:
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" audit --audit-level=moderate
       - run: node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-examples.mjs"
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-portal-links
+      - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-identity-status
       - name: Check repository-owned documentation links offline
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:
@@ -140,10 +160,19 @@ jobs:
       - name: Test missing-resource browser evidence
         run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-browser-failures
       - name: Check portal and API layouts in Chromium
+        env:
+          DOCS_SCREENSHOTS_DIRECTORY: build/one-identity-screenshots
         run: node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-browser.mjs" build/site
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        if: always()
+        with:
+          name: php-docs-visual-checks
+          path: build/one-identity-screenshots
+          if-no-files-found: ignore
       - name: Bind Pages artifact to the exact source revision
         env:
           EXPECTED_SOURCE_REVISION: ${{ steps.release-channel.outputs.source_revision }}
+          STABLE_TAG: ${{ inputs.stable_tag }}
         run: |
           test "$(git -C "$DOCS_TOOLING_DIRECTORY" rev-parse HEAD)" = "$GITHUB_WORKFLOW_SHA"
           python "$DOCS_TOOLING_DIRECTORY/scripts/bind-docs-artifact.py" "$EXPECTED_SOURCE_REVISION"
@@ -156,6 +185,7 @@ jobs:
     if: >-
       github.server_url == 'https://github.com' &&
       github.ref == 'refs/heads/main' &&
+      inputs.build_only != true &&
       needs.build.outputs.stable == 'true'
     needs: build
     runs-on: ubuntu-latest

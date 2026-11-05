@@ -3,6 +3,8 @@ const path = require('node:path');
 
 // Deployment tooling can be newer than the selected published SDK source.
 const sourceDirectory = path.resolve(process.env.DOCS_SOURCE_DIRECTORY || __dirname);
+const portalDirectory = process.env.DOCS_PORTAL_DIRECTORY || 'docs/portal';
+const templateDirectory = process.env.DOCS_TEMPLATE_DIRECTORY || path.join(sourceDirectory, '.phpdoc/template');
 const QUICKSTART_CONTRACT = require(path.join(sourceDirectory, 'docs/quickstart-contract.json'));
 const QUICKSTART_BASES = QUICKSTART_CONTRACT.reference_resolution?.bases;
 const QUICKSTART_SOURCES = Object.freeze(Object.fromEntries(
@@ -73,18 +75,18 @@ module.exports = function configure(eleventyConfig) {
   // Both rendering engines use the same static product chrome.
   for (const [name, file] of [['identityHeader', 'identity-header'], ['identityFooter', 'identity-footer']]) {
     eleventyConfig.addShortcode(name, () => fs.readFileSync(
-      path.join(__dirname, `.phpdoc/template/components/${file}.html.twig`), 'utf8',
+      path.join(templateDirectory, `components/${file}.html.twig`), 'utf8',
     ));
   }
 
   eleventyConfig.addPassthroughCopy({'docs/CNAME': 'CNAME'});
-  eleventyConfig.addPassthroughCopy({'docs/portal/assets': 'assets'});
+  eleventyConfig.addPassthroughCopy({[path.join(portalDirectory, 'assets')]: 'assets'});
   eleventyConfig.addPassthroughCopy({'docs/quickstart-contract.json': 'quickstart-contract.json'});
   eleventyConfig.addPassthroughCopy({'docs/quickstart-contract.schema.v2.json': 'quickstart-contract.schema.v2.json'});
   eleventyConfig.addPassthroughCopy({'docs/laravel-adoption-contract.json': 'laravel-adoption-contract.json'});
   eleventyConfig.addPassthroughCopy({'docs/laravel-adoption-contract.schema.json': 'laravel-adoption-contract.schema.json'});
   eleventyConfig.addPassthroughCopy({'.phpdoc/template/analytics': 'analytics'});
-  eleventyConfig.addPassthroughCopy({'.phpdoc/template/assets': 'assets'});
+  eleventyConfig.addPassthroughCopy({[path.join(templateDirectory, 'assets')]: 'assets'});
   eleventyConfig.addPassthroughCopy({'build/api': 'api'});
 
   eleventyConfig.addShortcode('sourceFile', function sourceFile(sourceName, language = 'text', label = sourceName) {
@@ -105,7 +107,7 @@ module.exports = function configure(eleventyConfig) {
 
   return {
     dir: {
-      input: 'docs/portal',
+      input: portalDirectory,
       includes: '_includes',
       data: '_data',
       output: 'build/site',

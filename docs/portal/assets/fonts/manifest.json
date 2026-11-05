@@ -1,0 +1,38 @@
+{
+  "css_source": "https://fonts.googleapis.com/css2?family=Inter:wght@400..600&family=JetBrains+Mono:wght@400..600&family=Space+Grotesk:wght@600&display=swap",
+  "fonts": [
+    {
+      "bytes": 48256,
+      "family": "Inter",
+      "file": "inter-latin.woff2",
+      "license_file": "inter-OFL.txt",
+      "license_sha256": "5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57",
+      "license_source": "https://raw.githubusercontent.com/google/fonts/24ddc1f324cac5d9f5aedca126d298f56e3f1640/ofl/inter/OFL.txt",
+      "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62",
+      "source": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2"
+    },
+    {
+      "bytes": 31432,
+      "family": "JetBrains Mono",
+      "file": "jetbrains-mono-latin.woff2",
+      "license_file": "jetbrainsmono-OFL.txt",
+      "license_sha256": "b2fe5e8987594e9ffd1d2ca52a2f5d73eb8335243893c5d6254b5ad69269591d",
+      "license_source": "https://raw.githubusercontent.com/google/fonts/24ddc1f324cac5d9f5aedca126d298f56e3f1640/ofl/jetbrainsmono/OFL.txt",
+      "sha256": "83c005d49d8a6a50474c73a5a36ac0468076e9c4a29da7bdb14995d80560a5be",
+      "source": "https://fonts.gstatic.com/s/jetbrainsmono/v24/tDbv2o-flEEny0FZhsfKu5WU4zr3E_BX0PnT8RD8yKwBNntkaToggR7BYRbKPxDcwg.woff2"
+    },
+    {
+      "bytes": 13284,
+      "family": "Space Grotesk",
+      "file": "space-grotesk-latin.woff2",
+      "license_file": "spacegrotesk-OFL.txt",
+      "license_sha256": "564ce565c371c5e5bbf286006565a7c9aa55a9f56e7ca58d56e05d649dd61a72",
+      "license_source": "https://raw.githubusercontent.com/google/fonts/24ddc1f324cac5d9f5aedca126d298f56e3f1640/ofl/spacegrotesk/OFL.txt",
+      "sha256": "685bbbf69fa616df1ef81847c85fc76be097ddfb3468ff2257be54511ab3130f",
+      "source": "https://fonts.gstatic.com/s/spacegrotesk/v22/V8mQoQDjQSkFtoMM3T6r8E7mF71Q-gOoraIAEj42VnskPMA.woff2"
+    }
+  ],
+  "license_repository_commit": "24ddc1f324cac5d9f5aedca126d298f56e3f1640",
+  "runtime_cdn": false,
+  "self_hosted": true
+}
