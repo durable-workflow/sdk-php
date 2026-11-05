@@ -39,7 +39,7 @@ final class StaticCredentialProbe
             $client = match ($target) {
                 'Client' => new Client('https://fixture.invalid', transport: $transport,
                     token: $options['shared'] ?? null, controlToken: $options['control'] ?? null, workerToken: $options['worker'] ?? null),
-                'ServiceConfiguration', 'ServiceConfigurationConstructor', 'ServiceConfigurationAlias' =>
+                'ServiceConfiguration', 'ServiceConfigurationAlias' =>
                     self::configured($target, $options, $plane, $transport),
                 'ProcessCredentialResolver' => self::process($options, $process, $plane, $transport),
                 default => throw new StaticCredentialProbeFailure('Unsupported credential target.'),
@@ -56,6 +56,18 @@ final class StaticCredentialProbe
             throw new StaticCredentialProbeFailure('Unsupported constructed authentication.');
         }
         return $authentication;
+    }
+
+    /**
+     * @param array<string, ?string> $options
+     * @return array<string, ?string>
+     */
+    public static function constructor(array $options): array
+    {
+        $configuration = new ServiceConfiguration('https://fixture.invalid', 'fixture', 'fixture', [],
+            $options['shared'] ?? null, $options['control'] ?? null, $options['worker'] ?? null);
+        return ['token' => $configuration->token, 'controlToken' => $configuration->controlToken,
+            'workerToken' => $configuration->workerToken];
     }
 
     /**
@@ -95,17 +107,12 @@ final class StaticCredentialProbe
     /** @param array<string, ?string> $options */
     private static function configured(string $target, array $options, string $plane, Transport $transport): Client
     {
-        if ($target === 'ServiceConfigurationConstructor') {
-            $configuration = new ServiceConfiguration('https://fixture.invalid', 'fixture', 'fixture', [],
-                $options['shared'] ?? null, $options['control'] ?? null, $options['worker'] ?? null);
-        } else {
-            $credentials = [];
-            foreach ($options as $role => $value) {
-                $credentials[self::CONFIGURATION[$role]] = $value;
-            }
-            $configuration = ServiceConfiguration::fromArray(['endpoint' => 'https://fixture.invalid',
-                'namespace' => 'fixture', 'task_queue' => 'fixture', 'handlers' => [], 'credentials' => $credentials]);
+        $credentials = [];
+        foreach ($options as $role => $value) {
+            $credentials[self::CONFIGURATION[$role]] = $value;
         }
+        $configuration = ServiceConfiguration::fromArray(['endpoint' => 'https://fixture.invalid',
+            'namespace' => 'fixture', 'task_queue' => 'fixture', 'handlers' => [], 'credentials' => $credentials]);
         if ($target === 'ServiceConfigurationAlias') {
             if ($plane !== 'control') {
                 throw new StaticCredentialProbeFailure('The configuration alias is a control client.');
@@ -121,15 +128,39 @@ final class StaticCredentialProbe
      */
     private static function process(array $options, array $values, string $plane, Transport $transport): Client
     {
-        foreach ($options as $role => $value) {
-            if ($value !== null) {
-                $values[self::ENVIRONMENT[$role]] = $value;
-            }
-        }
+        $values = self::processValues($options, $values);
         $configuration = ServiceConfiguration::fromArray(['endpoint' => 'https://fixture.invalid', 'task_queue' => 'fixture']);
         return self::environment($values, static fn (): Client => $plane === 'worker'
             ? ProcessCredentialResolver::workerClient($configuration, $transport)
             : ProcessCredentialResolver::applicationClient($configuration, $transport));
+    }
+
+    /**
+     * @param array<string, ?string> $options
+     * @param array<string, string> $values
+     * @return array<string, string>
+     */
+    public static function processValues(array $options, array $values = []): array
+    {
+        foreach ($options as $role => $value) {
+            if (!isset(self::ENVIRONMENT[$role])) {
+                throw new StaticCredentialProbeFailure('Unsupported fixture credential role.');
+            }
+            if ($value !== null) {
+                $values[self::ENVIRONMENT[$role]] = $value;
+            }
+        }
+        return $values;
+    }
+
+    /**
+     * @param array<string, ?string> $options
+     * @param array<string, string> $process
+     */
+    public static function workerRole(array $options, array $process = []): string
+    {
+        return self::environment(self::processValues($options, $process),
+            static fn (): string => ProcessCredentialResolver::workerCredentialRole());
     }
 
     private static function put(string $setting): void

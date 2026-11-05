@@ -31,12 +31,19 @@ control and worker requests and require the spy to intercept them. Constructors
 remain inside the caller's network-isolated boundary; the fixture runner never
 starts a worker loop or transmits credential headers.
 
-The caller-owned runner is being authored to cover direct public credential
+The draft caller-owned runner covers direct public credential
 construction, both service configuration paths, Laravel's process resolver and
 real provider/lazy-client/worker-factory paths, and Symfony's real bundle/client/
-worker-factory paths. It will compare the fixture's original bytes and exact
+worker-factory paths. It compares the fixture's original bytes and exact
 setting-only refusals with a refusing transport spy and no worker loop. It will
 not run a runtime smoke suite, acquire tools or manage a runtime/controller.
+
+The source checkpoint is preserved while the P0 documentation redesign (#315)
+takes priority. The pure preflight, core fixture matrix and refusal controls have
+source coverage. Positive Laravel/Symfony execution on the proposed complete
+dependency graph, installed metadata acceptance, final runner documentation and
+normal current-head qualification remain unfinished. The template intentionally
+has no future immutable references and must refuse before consumer autoload.
 
 The offline loader/regression controls use an existing source vendor:
 

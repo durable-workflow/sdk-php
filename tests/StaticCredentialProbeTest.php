@@ -98,9 +98,20 @@ final class StaticCredentialProbeTest extends TestCase
     /** @return iterable<string, array{string}> */
     public static function configurationTargets(): iterable
     {
-        foreach (['ServiceConfiguration', 'ServiceConfigurationConstructor', 'ServiceConfigurationAlias'] as $target) {
+        foreach (['ServiceConfiguration', 'ServiceConfigurationAlias'] as $target) {
             yield $target => [$target];
         }
+    }
+
+    public function testRawConstructorRetainsItsEmptySettingAndModeBoundary(): void
+    {
+        self::assertSame(['token' => '', 'controlToken' => null, 'workerToken' => null],
+            StaticCredentialProbe::constructor(['shared' => '']));
+        self::assertSame(['token' => null, 'controlToken' => "fixture-e\u{0301}", 'workerToken' => null],
+            StaticCredentialProbe::constructor(['control' => "fixture-e\u{0301}"]));
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Configure either the shared Durable Workflow token or scoped control and worker tokens, not both.');
+        StaticCredentialProbe::constructor(['shared' => '', 'control' => 'fixture-only']);
     }
 
     public function testUnknownPlanesDoNotFallBackToControl(): void
