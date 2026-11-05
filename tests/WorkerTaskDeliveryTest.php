@@ -9,6 +9,7 @@ use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TaskDeliveryUncertain;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Tests\Support\FakeTransport;
+use DurableWorkflow\Tests\Support\RecordingMetricsRecorder;
 use DurableWorkflow\Transport\PollTransport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\PollResponse;
@@ -18,6 +19,42 @@ use PHPUnit\Framework\TestCase;
 
 final class WorkerTaskDeliveryTest extends TestCase
 {
+    #[DataProvider('metricReceipts')]
+    public function testMetricsKeepOneLogicalPollAndValidateBeforePayloadObservation(bool $invalidFirst): void
+    {
+        $first = self::claimed('workflow');
+        if ($invalidFirst) {
+            unset($first['task']['task_kind']);
+        }
+        $transport = new FakeTransport([self::registration(), self::offer('workflow'), $first, self::claimed('workflow')]);
+        $recorder = new RecordingMetricsRecorder();
+        $observed = 0;
+        $client = (new Client('https://server.example', transport: $transport, metrics: $recorder))->withWorkerPayloadObserver(
+            static function (string $path, ?array $body, array $response) use (&$observed): ?\Closure {
+                if ($response['task'] ?? null) { ++$observed; }
+                return null;
+            });
+        $client->registerWorker('worker', 'orders', [], []);
+        if ($invalidFirst) {
+            try { self::poll($client, 'workflow'); self::fail('The selected receipt must carry its kind.'); }
+            catch (TaskDeliveryUncertain) {}
+            self::assertSame(0, $observed);
+            self::assertSame(self::claimed('workflow'), self::poll(clone $client, 'workflow'));
+            self::assertSame($transport->requests[2], $transport->requests[3]);
+        } else {
+            self::assertSame(self::claimed('workflow'), self::poll($client, 'workflow'));
+        }
+        self::assertSame(1, $observed);
+        $polls = array_values(array_filter($recorder->events, static fn (array $event): bool =>
+            $event['name'] === 'durable_workflow_client_requests' && $event['tags']['route'] === '/worker/workflow-tasks/poll'));
+        self::assertCount($invalidFirst ? 2 : 1, $polls);
+        self::assertCount($invalidFirst ? 4 : 3, $transport->requests);
+        self::assertStringNotContainsString('opaque-first-packet', json_encode($recorder->events, JSON_THROW_ON_ERROR));
+    }
+
+    /** @return array<array{bool}> */
+    public static function metricReceipts(): array { return [[false], [true]]; }
+
     #[DataProvider('kinds')]
     public function testOnlyPositiveAcceptanceReturnsAnExecutableTask(string $kind): void
     {

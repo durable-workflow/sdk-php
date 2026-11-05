@@ -8,6 +8,7 @@ use Closure;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TaskDeliveryUncertain;
 use DurableWorkflow\Transport\PollTransport;
+use InvalidArgumentException;
 
 /** Per-Client registration and unresolved delivery state, shared by its clones. */
 final class TaskDelivery
@@ -21,7 +22,7 @@ final class TaskDelivery
     private array $registrations = [];
     /** @var array<string, TaskDeliveryAttempt> */
     private array $pending = [];
-    /** @var array<string, true> */
+    /** @var array<string, list<string>> */
     private array $accepting = [];
 
     /**
@@ -71,14 +72,22 @@ final class TaskDelivery
         if ($registration === null || $registration['queue'] !== ($body['task_queue'] ?? null)) {
             return null;
         }
+        $allowedKinds = self::requestedKinds($path, $body);
+        if (array_key_exists('task_kinds', $body)) {
+            $body['task_kinds'] = $allowedKinds;
+        }
         $key = hash('sha256', json_encode([$path, $workerId, $body['task_queue'], $body['poll_request_id']], JSON_THROW_ON_ERROR));
+        $selected = $this->pending[$key] ?? null;
+        if (($selected !== null && !$selected->isForKinds($allowedKinds))
+            || (isset($this->accepting[$key]) && $this->accepting[$key] !== $allowedKinds)) {
+            throw new InvalidArgumentException('A logical task poll cannot change its requested task kinds.');
+        }
         if (isset($this->accepting[$key])) {
             return ['task' => null];
         }
         // Hold ownership across both requests, including a suspended offer read.
-        $this->accepting[$key] = true;
+        $this->accepting[$key] = $allowedKinds;
         try {
-            $selected = $this->pending[$key] ?? null;
             try {
                 if ($selected === null) {
                     $wirePath = substr($path, 0, -5).'/offers';
@@ -87,8 +96,7 @@ final class TaskDelivery
                     if (!array_key_exists('task_offer', $response)) {
                         return $response;
                     }
-                    $candidate = TaskDeliveryAttempt::fromResponse($wirePath, $body, $response,
-                        (string) PollTransport::taskKind('POST', $path));
+                    $candidate = TaskDeliveryAttempt::fromResponse($wirePath, $body, $response, $allowedKinds);
                     $selected = $this->pending[$key] ??= $candidate;
                 }
                 $response = $send($selected->path, $selected->requestBody(), $selected);
@@ -120,20 +128,48 @@ final class TaskDelivery
     public static function assertResponse(array $response, array $body, string $path, ?TaskDeliveryAttempt $selected): void
     {
         $task = $response['task'] ?? null;
-        $kind = PollTransport::taskKind('POST', $path);
+        $kind = $selected?->taskKind;
         $idField = match ($kind) {
-            'query' => 'query_task_id', 'update-validation' => 'update_validation_task_id', default => 'task_id',
+            'query' => 'query_task_id', 'update_validation' => 'update_validation_task_id', default => 'task_id',
         };
         if (!array_key_exists('task', $response)
             || (($selected !== null || $task !== null) && array_key_exists('task_offer', $response))
             || (($response['poll_status'] ?? null) === 'offered' && !array_key_exists('task_offer', $response))
-            || ($task !== null && (!is_array($task) || array_is_list($task)
+            || ($task !== null && ($selected === null || !is_array($task) || array_is_list($task)
                 || !is_string($task[$idField] ?? null) || $task[$idField] === ''
                 || ($task['lease_owner'] ?? null) !== $body['worker_id']
-                || ($selected !== null && $task[$idField] !== $selected->taskId)
-                || (isset($task['task_kind']) && $task['task_kind'] !== str_replace('-', '_', (string) $kind))))) {
+                || $task[$idField] !== $selected->taskId
+                || ($task['task_kind'] ?? null) !== $kind
+                || !$selected->isForKinds(self::requestedKinds($path, $body))))) {
             throw new ServerException('The task-delivery response is invalid.', 200, 'invalid_task_delivery_response');
         }
+    }
+
+    /**
+     * @param array<string, mixed> $body
+     * @return list<string>
+     */
+    private static function requestedKinds(string $path, array $body): array
+    {
+        $kind = str_replace('-', '_', (string) PollTransport::taskKind('POST', $path));
+        if (!in_array($kind, ['workflow', 'activity', 'query', 'update_validation'], true)) {
+            throw new InvalidArgumentException('Task delivery requires a supported poll endpoint.');
+        }
+        $permitted = $kind === 'workflow' ? ['workflow', 'update_validation'] : [$kind];
+        $requested = array_key_exists('task_kinds', $body) ? $body['task_kinds'] : [$kind];
+        if (!is_array($requested) || !array_is_list($requested) || $requested === []) {
+            throw new InvalidArgumentException('Task kinds must be a nonempty list allowed by the poll endpoint.');
+        }
+        foreach ($requested as $value) {
+            if (!is_string($value) || !in_array($value, $permitted, true)) {
+                throw new InvalidArgumentException('Task kinds must be a nonempty list allowed by the poll endpoint.');
+            }
+        }
+        /** @var list<string> $requested */
+        $requested = array_values(array_unique($requested));
+        sort($requested, SORT_STRING);
+
+        return $requested;
     }
 
     public function forget(string $workerId): void
