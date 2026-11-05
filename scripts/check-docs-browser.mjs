@@ -8,7 +8,10 @@ import { chromium } from 'playwright';
 
 // Loopback is a secure browser context for testing the real clipboard API.
 const SITE_HOSTNAME = '127.0.0.1';
-const siteDirectory = path.resolve(process.argv[2] ?? 'build/site');
+if (process.argv[2] && process.argv[2] !== 'build/site') {
+  throw new Error('Browser qualification accepts only the repository build/site output.');
+}
+const siteDirectory = path.resolve('build/site');
 const oneIdentity = fs.existsSync(path.join(siteDirectory, 'assets/identity.css'));
 
 const mediaTypes = {
