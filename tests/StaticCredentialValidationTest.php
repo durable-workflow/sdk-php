@@ -74,7 +74,7 @@ final class StaticCredentialValidationTest extends TestCase
         }
         self::assertNull($error);
         $expected = $value === '' ? $ordinary : $value;
-        self::assertTrue(($headers['Authorization'] ?? null) === 'Bearer '.$expected,
+        self::assertSame('Bearer '.$expected, $headers['Authorization'] ?? null,
             'Selected synthetic credential bytes must remain exact.');
         self::assertSame($case['expected_utf8_hex'], bin2hex($value));
     }
@@ -137,7 +137,7 @@ final class StaticCredentialValidationTest extends TestCase
             self::assertStringContainsString('A '.$plane.' credential is required', $error->getMessage());
         } else {
             self::assertNull($error);
-            self::assertTrue(($headers['Authorization'] ?? null) === 'Bearer '.self::value($case['expected_case_ref']),
+            self::assertSame('Bearer '.self::value($case['expected_case_ref']), $headers['Authorization'] ?? null,
                 'Selected synthetic credential bytes must remain exact.');
         }
     }
