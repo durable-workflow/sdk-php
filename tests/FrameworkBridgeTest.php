@@ -11,6 +11,8 @@ use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\PreserveGlobalState;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 
 final class FrameworkBridgeTest extends TestCase
@@ -285,6 +287,8 @@ final class FrameworkBridgeTest extends TestCase
         self::assertArrayNotHasKey('symfony/console', $manifest['require']);
     }
 
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
     public function testPlainPhpClientDoesNotLoadFrameworkBridgeFiles(): void
     {
         new Client('http://localhost:8080');

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow;
 
 use DurableWorkflow\Auth\Authentication;
+use DurableWorkflow\Auth\StaticCredential;
 use DurableWorkflow\Auth\TokenAuthentication;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Codec\PayloadCodec;
@@ -113,6 +114,9 @@ final class Client implements WorkflowClientInterface
         ?float $workerRequestTimeoutSeconds = null,
         ?MetricsRecorder $metrics = null,
     ) {
+        foreach (['token' => $token, 'controlToken' => $controlToken, 'workerToken' => $workerToken] as $setting => $value) {
+            StaticCredential::assertValid($value, $setting);
+        }
         if (trim($baseUri) === '') {
             throw new InvalidArgumentException('The Durable Workflow server URI cannot be empty.');
         }

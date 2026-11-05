@@ -66,6 +66,15 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Static shared, control and worker credentials are validated in their original
+  form before role selection and fallback, including framework configuration
+  and Laravel process handoffs (#307). Invalid UTF-8, leading/trailing Unicode
+  White_Space and embedded C0/DEL/C1 controls now fail with a setting-only error
+  instead of being trimmed or silently ignored. This deliberately rejects
+  malformed UTF-8 bytes previously accepted by PHP. Valid opaque spelling and
+  literal-empty optional fallback remain unchanged; dynamic authentication is
+  outside this static-token policy.
+
 - A legacy sequential condition wait can recover its own recorded opening and
   deadline after the previous authored call's result is consumed (#269).
   Repeated physical opens still share their first deadline. Missing or reused

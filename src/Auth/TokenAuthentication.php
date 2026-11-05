@@ -14,6 +14,9 @@ final class TokenAuthentication implements Authentication
         private readonly ?string $controlToken = null,
         private readonly ?string $workerToken = null,
     ) {
+        foreach (['token' => $this->token, 'controlToken' => $this->controlToken, 'workerToken' => $this->workerToken] as $setting => $value) {
+            StaticCredential::assertValid($value, $setting);
+        }
         if ($this->resolvedToken(false) === null && $this->resolvedToken(true) === null) {
             throw new InvalidArgumentException('At least one non-empty authentication token is required.');
         }
@@ -41,8 +44,8 @@ final class TokenAuthentication implements Authentication
             : [$this->controlToken, $this->token];
 
         foreach ($candidates as $candidate) {
-            if ($candidate !== null && trim($candidate) !== '') {
-                return trim($candidate);
+            if ($candidate !== null && $candidate !== '') {
+                return $candidate;
             }
         }
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Bridge;
 
+use DurableWorkflow\Auth\StaticCredential;
 use DurableWorkflow\Client;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker\StickyWorkflowCache;
@@ -29,6 +30,9 @@ final class ServiceConfiguration
         public readonly ?float $requestTimeoutSeconds = null,
         public readonly ?float $workerRequestTimeoutSeconds = null,
     ) {
+        foreach (['token' => $this->token, 'control_token' => $this->controlToken, 'worker_token' => $this->workerToken] as $setting => $value) {
+            StaticCredential::assertValid($value, 'credentials.'.$setting);
+        }
         $this->validate();
     }
 
