@@ -67,6 +67,7 @@ assert(
 );
 
 const htmlFiles = filesUnder(siteDirectory, '.html');
+const oneIdentity = fs.existsSync(path.join(siteDirectory, 'assets/identity.css'));
 // Ids are indexed from the enumerated pages, so fragment checks look up link
 // targets without reading a path taken from page content.
 const pageIds = new Map(htmlFiles.map((file) => [
@@ -77,6 +78,12 @@ const elementIds = (file) => pageIds.get(file) ?? new Set();
 for (const file of htmlFiles) {
   const html = fs.readFileSync(file, 'utf8');
   const relative = path.relative(siteDirectory, file).replaceAll(path.sep, '/');
+  if (oneIdentity) {
+    for (const control of ['site-header', 'theme-toggle', 'sdk-switcher', 'site-footer']) {
+      assert.equal(html.split(`class="${control}"`).length - 1, 1,
+        `${relative} must render one shared identity control: ${control}`);
+    }
+  }
   if (!relative.startsWith('api/')) {
     assert(
       !/\b\d+\.\d+\.\d+-(?:alpha|beta|rc)\.\d+\b/.test(html),

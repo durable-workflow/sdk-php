@@ -78,12 +78,12 @@ def prepare(root: Path, revision: str, destination: Path, release_adapter: Path)
     overlays = presentation_blobs(root, revision)
     destination.mkdir(parents=True)
     copy_regular_tree(root / "docs/portal", destination / "portal")
-    copy_regular_tree(root / ".phpdoc/template", destination / "template")
+    copy_regular_tree(root / ".phpdoc/template", destination / ".phpdoc/template")
     for name, content in overlays:
         if name.startswith("docs/portal/"):
             path = destination / "portal" / name.removeprefix("docs/portal/")
         else:
-            path = destination / "template" / name.removeprefix(".phpdoc/template/")
+            path = destination / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
     # This workflow-owned adapter reads release facts from DOCS_SOURCE_DIRECTORY.
@@ -114,7 +114,7 @@ def main() -> int:
         adapter = Path(__file__).resolve().parent.parent / "docs/portal/_data/release.js"
         packet = prepare(root, sys.argv[1], destination, adapter)
         values = {"DOCS_PORTAL_DIRECTORY": str(destination / "portal"),
-                  "DOCS_TEMPLATE_DIRECTORY": str(destination / "template"),
+                  "DOCS_TEMPLATE_DIRECTORY": str(destination / ".phpdoc/template"),
                   "DOCS_PRESENTATION_DIRECTORY": str(destination),
                   "DOCS_PRESENTATION_REVISION": packet["presentation_source_revision"]}
         if any("\n" in value or "\r" in value for value in values.values()):
