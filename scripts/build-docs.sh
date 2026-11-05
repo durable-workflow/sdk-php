@@ -5,9 +5,16 @@ set -euo pipefail
 tooling_directory=$(cd "$(dirname "$0")/.." && pwd)
 export DOCS_SOURCE_DIRECTORY=${DOCS_SOURCE_DIRECTORY:-$PWD}
 cd "$DOCS_SOURCE_DIRECTORY"
-"$tooling_directory/vendor/bin/phpdoc" \
-  -d "$PWD/src" -t "$PWD/build/api" --cache-folder "$PWD/build/phpdoc-cache" \
-  --title='Durable Workflow PHP SDK — API Reference' --template="${DOCS_TEMPLATE_DIRECTORY:-$PWD/.phpdoc/template}"
+source_directory=$PWD
+template_directory=${DOCS_TEMPLATE_DIRECTORY:-$PWD/.phpdoc/template}
+# phpDocumentor implicitly loads .phpdoc/template from its working directory.
+# Keep the published SDK's old overrides out of the staged presentation build.
+(
+  cd "${DOCS_PRESENTATION_DIRECTORY:-$source_directory}"
+  "$tooling_directory/vendor/bin/phpdoc" \
+    -d "$source_directory/src" -t "$source_directory/build/api" --cache-folder "$source_directory/build/phpdoc-cache" \
+    --title='Durable Workflow PHP SDK — API Reference' --template="$template_directory"
+)
 php "$tooling_directory/scripts/finalize-api-reference.php" build/api
 "$tooling_directory/node_modules/.bin/eleventy" --config="$tooling_directory/.eleventy.cjs"
 

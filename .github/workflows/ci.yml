@@ -618,7 +618,27 @@ jobs:
             --include-fragments
             --root-dir .
             README.md docs/*.md
-      - name: Verify the selected source remains unchanged
+      - name: Stage accepted presentation over the published documentation source
+        if: matrix.source == '6a821568db5c72983bd3990fe27c7990f092db12'
+        env:
+          PRESENTATION_SOURCE: ${{ github.event.pull_request.base.sha || github.sha }}
+        run: python "$DOCS_TOOLING_DIRECTORY/scripts/prepare-docs-presentation.py" "$PRESENTATION_SOURCE" "$RUNNER_TEMP/stable-presentation"
+      - name: Qualify the published SDK with its accepted presentation
+        if: matrix.source == '6a821568db5c72983bd3990fe27c7990f092db12'
+        env:
+          DOCS_SCREENSHOTS_DIRECTORY: build/stable-presentation-screenshots
+        run: |
+          bash "$DOCS_TOOLING_DIRECTORY/scripts/build-docs.sh"
+          node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-portal.mjs" build/site
+          php "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-analytics.php" build/site
+          node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-browser.mjs" build/site
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        if: always() && matrix.source == '6a821568db5c72983bd3990fe27c7990f092db12'
+        with:
+          name: php-docs-stable-presentation
+          path: build/stable-presentation-screenshots
+          if-no-files-found: ignore
+      - name: Verify the selected source and presentation remain bound
         run: |
           git diff --exit-code HEAD
           test "$(git rev-parse HEAD)" = "$(git rev-parse '${{ matrix.source == 'current' && github.sha || matrix.source }}^{commit}')"

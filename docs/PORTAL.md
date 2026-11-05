@@ -32,6 +32,12 @@ bodies and the API index remain selected-source inputs. The workflow-owned
 release-data adapter reads the selected SDK's manifest and quickstart contract.
 It never reads release facts from the presentation commit.
 
+The staged template keeps phpDocumentor's `.phpdoc/template` directory shape.
+The renderer runs from that staging root, so phpDocumentor's implicit overrides
+cannot select the published checkout's older layout. Normal CI retains the
+legacy render and also exercises the accepted presentation over the stable
+documentation source, including its full browser checks.
+
 Source code, Composer manifests, quickstart/adoption contracts, examples and
 runtime configuration cannot be overlaid. Generated API symbols still come
 from the selected published SDK's `src`. The selected Git checkout remains
