@@ -2337,7 +2337,8 @@ final class Worker
             }
             return $this->invokeActivity($handler, new ActivityContext($this->client, $attempt->taskId, $attempt->attemptId,
                 $attempt->leaseOwner, $activityType, $attempt->attemptNumber, localHeartbeat: $heartbeat,
-                taskMetadata: ['workflow_instance_id' => $task['workflow_id'] ?? null, 'workflow_run_id' => $task['run_id'] ?? null]), $arguments,
+                taskMetadata: ['workflow_instance_id' => $task['workflow_id'] ?? null, 'workflow_run_id' => $task['run_id'] ?? null,
+                    'activity_execution_id' => $attempt->executionId]), $arguments,
                 ['activity_id' => $attempt->executionId] + ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), true);
         };
 

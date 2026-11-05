@@ -295,6 +295,18 @@ the supported runtime URL forms, role-specific environment variables,
 package-owned source files, and expected result. Documentation builds verify
 that the visible examples still match those runnable files.
 
+## Activity execution identity
+
+The unreleased `ActivityContext::activityExecutionId` is the nullable logical
+execution identity supplied by an activity claim. `workflowId` and `runId`
+identify its owning workflow/run; `activityAttemptId` remains attempt-specific.
+Use a caller-owned business key when logical identity is unavailable. The SDK
+preserves received ID spelling and never manufactures an execution ID from a
+task, attempt or session ID. Prepared local callbacks expose the validated
+Server execution ID; inline local/Server-free callbacks without one report
+null. Session callbacks use the actual claim field when present. The same
+accessor is used in ordinary and cooperative remote execution.
+
 ## Workflow handles and control-plane APIs
 
 `WorkflowHandle` distinguishes the stable workflow instance from a selected
@@ -303,6 +315,27 @@ continue-as-new transition. The `*SelectedRun()` methods retain the original
 run guard and fail rather than silently targeting a successor.
 
 ## Control-plane administration and discovery
+
+`listWorkflows()` and `workflowHistory()` each read one page. The unreleased
+iterator API follows the Server's continuation tokens lazily:
+
+```php
+foreach ($client->iterateWorkflows(status: 'running', pageSize: 100) as $execution) {
+    echo $execution->workflowId, "\n";
+}
+foreach ($client->iterateWorkflowHistory($workflowId, $runId, pageSize: 100) as $event) {
+    echo $event['sequence'], ': ', $event['event_type'], "\n";
+}
+```
+
+The list yields `WorkflowExecution` values; history yields the original event
+maps. Both retain one page and fetch the next only when needed. Breaking out
+does not prefetch. History stays on the selected run through continue-as-new;
+listing follows the Server's ordering and consistency, not a global snapshot.
+Missing or invalid page metadata and repeated/cyclic tokens throw
+`PaginationException` with a typed `reason`. An HTTP error propagates unchanged
+and closes the generator. Earlier items may already have been yielded, so
+consumers must handle a partial export on failure.
 
 `Client::withNamespace()` returns an immutable namespace selection that keeps
 the configured authentication and transport. Workflow payload encoding remains

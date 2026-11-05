@@ -517,6 +517,30 @@ heartbeats. Prepared local activities use supervised callback processes.
 
 ## Inspect retry budget and the owning workflow
 
+The unreleased `ActivityContext::activityExecutionId` property contains the
+logical `activity_execution_id` received with the claim. Ordinary and
+cooperatively supervised remote callbacks expose that same execution identity
+across retry attempts, while `activityAttemptId` identifies each attempt.
+Use the logical ID in a downstream idempotency key when the destination honors
+that key, including your application scope where needed.
+
+```php
+function activityIdempotencyKey(
+    \DurableWorkflow\Worker\ActivityContext $context,
+    string $businessKey,
+): string {
+    return $context->activityExecutionId ?? $businessKey;
+}
+```
+
+Older claims can omit the field. Missing, null, empty or non-string values
+produce null, so supply a business key when it is unavailable. Prepared local
+callbacks expose the execution ID from their validated Server admission.
+Inline local and Server-free callbacks without that admission report null.
+Session activity callbacks expose the field when their actual claim includes
+it; omission also produces null. The property is read-only and performs no
+additional runtime request.
+
 PHP SDK 3.6.0 introduced retry metadata on `ActivityContext`. Use 3.6.1 or later
 for the original owning workflow and run IDs from public activity claims.
 `$context->retryInfo` retains the original attempt number and retry policy,
@@ -604,6 +628,31 @@ The context provides these replay-aware commands:
 | `continueAsNew()` | A fresh run with bounded history. |
 
 Do not use PHP's process sleep, random-number functions, current wall-clock time, or mutable global state directly to make workflow decisions. `sideEffect()` is for small values whose result belongs in history, not for network or database work.
+
+## Declare search-attribute types
+
+Pass a type map when the workflow must preserve search-attribute type identity
+across replay and redrive:
+
+```php
+$context->upsertSearchAttributes(
+    ['Stage' => 'approved', 'Attempts' => 2],
+    ['Stage' => 'keyword', 'Attempts' => 'int'],
+);
+```
+
+Declare every non-deleted attribute. Canonical types are `string`, `keyword`,
+`keyword_list`, `int`, `float`, `bool`, and `datetime`. Use `null` to delete a
+key. The runtime also checks declarations against the namespace's registered
+types. Search metadata uses the existing `typed_search_attributes` worker
+capability and protocol contract.
+
+An explicitly typed call refuses a changed value or a changed recorded type.
+Malformed recorded type maps also refuse replay. Histories written before type
+metadata existed still compare values, since their type identity is unknown.
+Existing calls that omit the type map keep their value-only behavior. That
+legacy path does not establish typed replay equivalence; signal-wait redrive
+qualification is also separate.
 
 ## Bound long histories
 

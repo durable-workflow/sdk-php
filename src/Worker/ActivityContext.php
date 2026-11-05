@@ -16,6 +16,8 @@ final class ActivityContext
     public readonly ?string $workflowId;
     /** Original run_id from the public claim; unavailable legacy identity stays null. */
     public readonly ?string $runId;
+    /** Logical execution from the claim, never inferred from task/attempt identity. */
+    public readonly ?string $activityExecutionId;
 
     /**
      * @param (Closure(array<array-key, mixed>): array<string, mixed>)|null $heartbeatRequest
@@ -39,6 +41,7 @@ final class ActivityContext
             ? $taskMetadata['workflow_id'] : ($taskMetadata['workflow_instance_id'] ?? null));
         $this->runId = self::receivedIdentity(array_key_exists('run_id', $taskMetadata)
             ? $taskMetadata['run_id'] : ($taskMetadata['workflow_run_id'] ?? null));
+        $this->activityExecutionId = self::receivedIdentity($taskMetadata['activity_execution_id'] ?? null);
     }
 
     private static function receivedIdentity(mixed $value): ?string

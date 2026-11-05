@@ -67,6 +67,7 @@ final class ActivityRetryInfoTest extends TestCase
         self::assertNull($context->retryInfo->isLastConfiguredAttempt());
         self::assertNull($context->workflowId);
         self::assertNull($context->runId);
+        self::assertNull($context->activityExecutionId);
     }
 
     public static function originalIdentities(): array
@@ -123,13 +124,15 @@ final class ActivityRetryInfoTest extends TestCase
         $worker->registerWorkflow('flow', static fn (WorkflowContext $context): mixed => $context->localActivity('metadata'));
         $worker->registerActivity('metadata', static fn (ActivityContext $context): array => [
             'workflow_id' => $context->workflowId, 'run_id' => $context->runId,
+            'activity_execution_id' => $context->activityExecutionId,
             'provided' => $context->retryInfo->policyProvided, 'last' => $context->retryInfo->isLastConfiguredAttempt(),
         ]);
         self::assertTrue($worker->tick(0));
         self::assertNotNull($completion);
         $finished = array_values(array_filter($completion['commands'], static fn (array $command): bool => $command['type'] === 'complete_workflow'));
         self::assertCount(1, $finished);
-        self::assertSame(['workflow_id' => 'original-workflow', 'run_id' => 'original-run', 'provided' => false, 'last' => null],
+        self::assertSame(['workflow_id' => 'original-workflow', 'run_id' => 'original-run', 'activity_execution_id' => null,
+            'provided' => false, 'last' => null],
             (new AvroPayloadCodec())->decodeEnvelope($finished[0]['result']));
     }
 

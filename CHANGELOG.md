@@ -8,6 +8,26 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `ActivityContext::activityExecutionId` exposes the received logical activity
+  execution ID for downstream idempotency keys. Missing or invalid legacy
+  metadata stays null; task and attempt IDs are never used as substitutes.
+  Prepared local callbacks receive their validated Server execution identity;
+  inline local and Server-free callbacks without one report null
+  (durable-workflow/.github#211).
+
+- `Client::iterateWorkflows()` and `iterateWorkflowHistory()` lazily read
+  complete workflow listings and exact-run histories, retaining one page at a
+  time. Existing one-page methods stay available. Iteration preserves opaque
+  cursors, namespace and filters, propagates later-page errors, and refuses
+  malformed continuations or token cycles instead of silently truncating or
+  looping (#247 in durable-workflow/.github).
+
+- `WorkflowContext::upsertSearchAttributes()` accepts an optional complete map
+  of canonical type declarations (#244). Explicitly typed calls bind replay to
+  both values and recorded type identity. Existing one-argument calls retain
+  value-only replay, and histories without type metadata retain legacy
+  compatibility. Malformed recorded type identities are refused.
+
 - `WorkflowContext::startChildWorkflow()` starts a child and returns a
   `ChildWorkflowHandle` once the runtime has committed the start (#185). The
   handle's `identity()` gives the child call ID, the child workflow ID and the
