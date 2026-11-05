@@ -106,6 +106,9 @@ If that response is lost, it retries the same packet and poll identity until
 the Server confirms the claim, expiry, or loss of registration authority.
 An older node returning an error cannot switch that poll to legacy delivery.
 Servers without this capability continue using the existing poll protocol.
+During acceptance, stop/drain hints and malformed replies retain that packet.
+Only the protocol's two closed HTTP `409` refusal shapes can release it or end
+the original registration; a later replacement registration is preserved.
 
 With the default cURL transport, supporting Servers send progress during idle
 worker polls. Progress keeps an idle connection active while the complete

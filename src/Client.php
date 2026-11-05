@@ -3017,7 +3017,8 @@ final class Client implements WorkflowClientInterface
                 throw $exception;
             }
             $details = $exception->response;
-            $reason = is_array($details) && isset($details['reason']) ? (string) $details['reason'] : null;
+            $reason = is_array($details) && isset($details['reason'])
+                && ($responseValidator === null || is_string($details['reason'])) ? (string) $details['reason'] : null;
             $status = $exception->status ?? 0;
             $message = $exception->getMessage();
             if ($operation === 'query') {

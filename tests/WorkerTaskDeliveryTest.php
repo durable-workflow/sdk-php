@@ -244,10 +244,17 @@ final class WorkerTaskDeliveryTest extends TestCase
         self::assertStringEndsWith('/activity-tasks/offers', $transport->requests[2]['uri']);
     }
 
+    private static function refusal(string $status, string $reason): TransportException
+    {
+        $body = ['task' => null, 'poll_status' => $status, 'reason' => $reason];
+        return new TransportException('Synthetic refusal.', 409, $body,
+            taskDeliveryRefusal: \DurableWorkflow\Transport\TaskDeliveryRefusal::fromJson(409, json_encode($body, JSON_THROW_ON_ERROR)));
+    }
+
     public function testAConfirmedExpiryReleasesTheSelectedPacket(): void
     {
         $transport = new FakeTransport([self::registration(), self::offer('workflow'),
-            new TransportException('Expired.', 409, ['task' => null, 'poll_status' => 'task_offer_expired', 'reason' => 'task_offer_expired']),
+            self::refusal('task_offer_expired', 'task_offer_expired'),
             self::offer('workflow', 'second-packet'), self::claimed('workflow')]);
         $client = new Client('https://server.example', transport: $transport);
         $client->registerWorker('worker', 'orders', [], []);
@@ -271,16 +278,17 @@ final class WorkerTaskDeliveryTest extends TestCase
         self::assertSame($transport->requests[2], $transport->requests[4]);
     }
 
-    public function testAnAuthoritativeWorkerStopIsNotRetriedAsAnUncertainAcceptance(): void
+    public function testAnAuthoritativeDiscoveryWorkerStopNeedsNoAcceptance(): void
     {
         $terminal = ['task' => null, 'poll_status' => 'draining', 'reason' => 'worker_draining'];
-        $transport = new FakeTransport([self::registration(), self::offer('workflow'),
+        $transport = new FakeTransport([self::registration(),
             new TransportException('Worker is draining.', 409, $terminal)]);
         $client = new Client('https://server.example', transport: $transport);
         $client->registerWorker('worker', 'orders', [], []);
         self::assertSame($terminal, self::poll($client, 'workflow'));
         self::assertTrue(PollResponse::isTerminal($terminal));
-        self::assertCount(3, $transport->requests);
+        self::assertCount(2, $transport->requests);
+        self::assertArrayNotHasKey('task_offer_token', $transport->requests[1]['body']);
     }
 
     public function testReplacementRegistrationDiscardsOnlyTheOldIncarnationsPacket(): void
@@ -352,7 +360,7 @@ final class WorkerTaskDeliveryTest extends TestCase
         $retries = [];
         $transport = new FakeTransport([self::registration(), self::offer('workflow'),
             new TransportException('Not found.', 404),
-            ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped']]);
+            self::refusal('stale_worker_registration', 'worker_registration_lost_authority')]);
         $worker = new Worker(new Client('https://server.example', transport: $transport), 'orders', workerId: 'worker',
             clock: static function () use (&$now): float { return $now; },
             sleeper: static function (int $microseconds) use (&$now): void { $now += $microseconds / 1_000_000; },
