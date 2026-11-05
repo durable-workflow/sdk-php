@@ -14,11 +14,12 @@ refuse() {
 [ "$(/usr/bin/timeout 10 /usr/bin/dpkg --print-architecture)" = amd64 ] || refuse
 
 installed_version() {
+    package_name=$1
     record=$(/usr/bin/timeout 10 /usr/bin/dpkg-query --show \
-        "--showformat=\${Status}\t\${Version}\n" "$1") || refuse
+        "--showformat=\${Status}\t\${Version}\n" "$package_name") || refuse
     prefix=$(printf 'install ok installed\t')
     case "$record" in "$prefix"*) version=${record#"$prefix"} ;; *) refuse ;; esac
-    case "$version" in ''|[!0-9]*|*[!0-9A-Za-z.+:~-]*) refuse ;; esac
+    case "$version" in ''|[!0-9]*|*[!0-9A-Za-z.+:~-]*) refuse ;; *) : ;; esac
     [ "${#version}" -le 100 ] || refuse
     printf '%s' "$version"
 }
