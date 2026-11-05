@@ -1,0 +1,18 @@
+{
+  "schema": "durable-workflow.example-apt-parent.v1",
+  "image": "docker.io/library/php",
+  "php": "8.3.36-fpm-bookworm",
+  "os": "debian",
+  "release": "12",
+  "architecture": "amd64",
+  "minimum_apt": "2.6.2",
+  "index": "sha256:d7677e2a3c1579fbe52848cc446bc24860187c876c383a43b7d4b8e06dce537e",
+  "child": "sha256:dd334c86ae15a5a77e77ea1cdcbad84a86f891f46a760bfa797a5a8873b7ad4a",
+  "config": "sha256:ef8c9d707d4b1241249cf5ca39f4ff90023f73fab53fdff366248e6fe4baf3f7",
+  "attestation": "sha256:aefceea882cf43ae490d5a26dfa48767627e59fc461cad00b33149b33d3b1845",
+  "spdx": "sha256:484298045b1f260c3751891f32bc2b90618d38c082a8b204d8ab6193ef7f857f",
+  "spdx_bytes": 6408541,
+  "packages": {"apt": "2.6.2", "libapt-pkg6.0": "2.6.2"},
+  "advisory": "https://security-tracker.debian.org/tracker/DLA-4880-1",
+  "source_inventory": "https://github.com/durable-workflow/.github/issues/295#issuecomment-6662173761"
+}
