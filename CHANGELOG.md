@@ -6,6 +6,22 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.9.5] - 2026-11-06
+
+### Fixed
+
+- Reuse a Worker's activity lease helper across sequential activities after a
+  confirmed finish, instead of starting a process and rebuilding its Client for
+  each callback (#326). Every claim retains its own lease, business deadline and
+  heartbeat authority. Dead or unconfirmed helpers are replaced, forked callbacks
+  cannot use their parent's helper, and shutdown closes the idle process.
+- Skip the initial workflow-task renewal for a fresh, fully fenced poll grant
+  with a valid Server clock and sufficient remaining lease (#327). Request time,
+  payload loading and history paging consume that margin. Servers without a
+  qualifying clock and stale or short grants retain the existing renewal path.
+- Update the optional Laravel HTTP example's Symfony HTTP Client, HttpFoundation,
+  HttpKernel, Routing and YAML lock entries to their accepted security patches.
+
 ## [3.9.4] - 2026-11-04
 
 ### Fixed
