@@ -1,0 +1,11 @@
+{
+    "schema": "durable-workflow.php-static-credential-subject/v1",
+    "runner_reference": null,
+    "sdk_reference": null,
+    "lock_sha256": null,
+    "archive_inventory_file": "archive-inventory.json",
+    "archive_inventory_sha256": null,
+    "sdk_archive_file": "sdk.zip",
+    "sdk_archive_sha256": null,
+    "sdk_archive_bytes": null
+}

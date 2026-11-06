@@ -67,6 +67,13 @@ an anonymous `Client` remains available where it was already supported. An
 empty scoped token can fall back to a valid shared token, but a malformed
 nonempty scoped token is an error.
 
+The bridge's existing shared-versus-scoped mode rule still applies.
+`ServiceConfiguration::fromArray()` treats literal-empty optional settings as
+absence. Its direct constructor retains the exact supplied properties,
+including empty strings, and does not normalize them before its mode check.
+Use `null` or omission for an absent constructor argument; an empty shared
+argument combined with scoped arguments still conflicts with that mode rule.
+
 Errors identify only the setting, for example
 `Invalid static credential setting DURABLE_WORKFLOW_WORKER_TOKEN.` They do
 not include the rejected value. Keep that boundary in application error

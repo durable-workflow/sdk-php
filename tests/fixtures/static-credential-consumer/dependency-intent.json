@@ -1,0 +1,33 @@
+{
+    "schema": "durable-workflow.php-static-credential-intent/v1",
+    "requirements": {
+        "php": "8.4.27",
+        "durable-workflow/sdk": "3.10.0",
+        "laravel/framework": "12.69.3",
+        "symfony/framework-bundle": "7.4.21"
+    },
+    "framework_source_references": {
+        "laravel/framework": "58ea544a2a80dc03c168e13a5dc9a1d176a88717",
+        "symfony/framework-bundle": "62b38e9cb02c944e01030898b3d2b4f31722e47f"
+    },
+    "fixture": {
+        "sha256": "0d4f01b763d72850943acbd9a74a0cc5da1ca6db5bc1b6fa5ca37fda11810acb",
+        "bytes": 60716,
+        "unique_ids": 319
+    },
+    "dependency_policy": {
+        "plugins": false,
+        "scripts": false,
+        "advisory_policy": "normal"
+    },
+    "execution": {
+        "network": "none",
+        "transport": "refusing_spy",
+        "worker_loop": false
+    },
+    "future_inputs": [
+        "normal_registry_sdk_identity",
+        "complete_advisory_enforced_dependency_graph",
+        "sealed_archive_inventory"
+    ]
+}
