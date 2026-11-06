@@ -113,6 +113,7 @@ final class Worker
     private ?QueryTaskAuthority $queryTaskAuthority = null;
     private bool $activityLeaseRenewalSupported = false;
     private ?ActivityLeaseProcess $activityLeaseProcess = null;
+    private ?ActivityLeaseProcess $activityLeaseHelper = null;
     /** @var (\Closure(): void)|null */
     private ?\Closure $unbindActivityLease = null;
     private ?CancellationRequest $claimCancellation = null;
@@ -355,6 +356,9 @@ final class Worker
             return;
         }
         $this->shutdownRequested = true;
+        if ($this->activityLeaseProcess === null) {
+            $this->activityLeaseHelper?->stop();
+        }
         $this->diagnostic('worker.shutdown_requested', ['worker_id' => $this->workerId]);
     }
 
@@ -420,6 +424,8 @@ final class Worker
             throw $exception;
         } finally {
             $this->stopActivityLease();
+            $this->activityLeaseHelper?->stop();
+            $this->activityLeaseHelper = null;
             $this->closeWorkerSessions();
             $this->stickyCache->clear();
             if ($this->registered) {
@@ -1620,9 +1626,16 @@ final class Worker
                 if ($this->activityLeaseProcess !== null) {
                     throw new WorkflowClaimRevoked('activity_supervisor_conflict', 'A previous activity supervisor is still active.');
                 }
-                $this->activityLeaseProcess = new ActivityLeaseProcess($this->client, $task, $this->workerId,
-                    $this->taskQueue, $response['server_time'] ?? null, hrtime(true) / 1e9,
-                    ['registered' => $this->registered, 'heartbeat_interval' => $this->heartbeatIntervalSeconds]);
+                $presence = ['registered' => $this->registered, 'heartbeat_interval' => $this->heartbeatIntervalSeconds,
+                    'presence_due_in' => max(0.0, $this->heartbeatIntervalSeconds - $this->elapsedSinceHeartbeat())];
+                if ($this->activityLeaseHelper === null) {
+                    $this->activityLeaseHelper = new ActivityLeaseProcess($this->client, $task, $this->workerId,
+                        $this->taskQueue, $response['server_time'] ?? null, hrtime(true) / 1e9, $presence);
+                } else {
+                    $this->activityLeaseHelper->start($this->client, $task, $this->workerId,
+                        $this->taskQueue, $response['server_time'] ?? null, hrtime(true) / 1e9, $presence);
+                }
+                $this->activityLeaseProcess = $this->activityLeaseHelper;
                 $this->unbindActivityLease = $this->client->bindActivityLease($this->activityLeaseProcess);
 
                 $process = $this->activityLeaseProcess;
@@ -3719,8 +3732,11 @@ final class Worker
             ($this->unbindActivityLease)();
             $this->unbindActivityLease = null;
         }
-        $this->activityLeaseProcess?->stop();
+        $this->activityLeaseProcess?->finish();
         $this->activityLeaseProcess = null;
+        if ($this->shutdownRequested) {
+            $this->activityLeaseHelper?->stop();
+        }
     }
 
     private function heartbeat(?RequestBudget $budget = null): void
