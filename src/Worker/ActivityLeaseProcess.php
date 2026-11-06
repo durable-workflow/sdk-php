@@ -81,9 +81,7 @@ final class ActivityLeaseProcess
             if (!is_resource($this->process)) {
                 throw new ActivityLeaseMaintenanceException('Could not start independent activity lease maintenance.');
             }
-            foreach ($this->pipes as $pipe) {
-                stream_set_blocking($pipe, false);
-            }
+            array_walk($this->pipes, static fn ($pipe): bool => stream_set_blocking($pipe, false));
             $this->configurationKey = $key;
         }
         $this->lostReason = null;
