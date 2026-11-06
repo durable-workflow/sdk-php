@@ -26,9 +26,15 @@ if (($_SERVER['HTTP_AUTHORIZATION'] ?? '') !== 'Bearer '.$expectedToken) {
     $response = ['worker_protocol' => ['server_capabilities' => ['activity_lease_renewal' => true]]];
 } elseif ($path === '/api/worker/heartbeat') {
     $response = ['worker_id' => 'owner', 'acknowledged' => true];
-} elseif (str_ends_with($path, '/activity-tasks/poll') && !isset($state['delivered'])) {
+} elseif (str_ends_with($path, '/activity-tasks/poll')
+    && ($state['delivery_count'] ?? 0) < ($state['activity_count'] ?? 1)) {
     $state['delivered'] = true;
-    $state['expiry'] = $now + 3;
+    $state['delivery_count'] = ($state['delivery_count'] ?? 0) + 1;
+    $suffix = $state['delivery_count'] === 1 ? '' : '-'.$state['delivery_count'];
+    $state['identity'] = ['task_id' => 'task'.$suffix, 'workflow_task_id' => 'task'.$suffix,
+        'activity_execution_id' => 'execution'.$suffix, 'activity_attempt_id' => 'attempt'.$suffix];
+    $state['closed'] = false;
+    $state['expiry'] = $now + ($state['lease_seconds'] ?? 3);
     $state['progress_at'] = $now;
     $state['business_at'] = isset($state['business_seconds']) ? $now + $state['business_seconds'] : null;
     $deadlines = [];
@@ -38,8 +44,7 @@ if (($_SERVER['HTTP_AUTHORIZATION'] ?? '') !== 'Bearer '.$expectedToken) {
     if (isset($state['heartbeat_seconds'])) {
         $deadlines['heartbeat'] = $stamp($now + $state['heartbeat_seconds']);
     }
-    $response = ['task' => ['task_id' => 'task', 'workflow_id' => 'workflow', 'run_id' => 'run',
-        'activity_execution_id' => 'execution', 'activity_attempt_id' => 'attempt', 'attempt_number' => 1,
+    $response = ['task' => $state['identity'] + ['workflow_id' => 'workflow', 'run_id' => 'run', 'attempt_number' => 1,
         'activity_type' => 'slow', 'task_queue' => 'queue', 'lease_owner' => 'owner', 'payload_codec' => 'avro',
         'namespace' => 'tenant', 'lease_expires_at' => $stamp($state['expiry']), 'deadlines' => $deadlines,
         'retry_policy' => ['heartbeat_timeout' => $state['heartbeat_seconds'] ?? null]],
@@ -53,7 +58,7 @@ if (($_SERVER['HTTP_AUTHORIZATION'] ?? '') !== 'Bearer '.$expectedToken) {
         && ($state['business_at'] === null || $now < $state['business_at'])
         && (!isset($state['heartbeat_seconds']) || $now < $state['progress_at'] + $state['heartbeat_seconds']);
     if ($live) {
-        $state['expiry'] = $now + 3;
+        $state['expiry'] = $now + ($state['lease_seconds'] ?? 3);
         if ($heartbeat) {
             $state['progress_at'] = $now;
             $state['heartbeats'] = ($state['heartbeats'] ?? 0) + 1;
@@ -61,8 +66,7 @@ if (($_SERVER['HTTP_AUTHORIZATION'] ?? '') !== 'Bearer '.$expectedToken) {
             $state['renewals'] = ($state['renewals'] ?? 0) + 1;
         }
     }
-    $response = ['task_id' => 'task', 'workflow_task_id' => 'task', 'workflow_instance_id' => 'workflow',
-        'workflow_run_id' => 'run', 'activity_execution_id' => 'execution', 'activity_attempt_id' => 'attempt',
+    $response = $state['identity'] + ['workflow_instance_id' => 'workflow', 'workflow_run_id' => 'run',
         'attempt_number' => 1, 'lease_owner' => 'owner', 'can_continue' => $live, 'cancel_requested' => false,
         'lease_renewed' => $live && !$heartbeat, 'heartbeat_recorded' => $live && $heartbeat,
         'lease_expires_at' => $stamp($state['expiry']), 'server_time' => $stamp($now),

@@ -21,7 +21,7 @@ final class ActivityLeaseMaintainer
     private readonly Client $client;
 
     /** @param array<string, mixed> $start */
-    private function __construct(private readonly array $start)
+    private function __construct(private readonly array $start, ?Client $client = null)
     {
         $configuration = $start['client'];
         if (!is_array($configuration) || !is_array($start['task'] ?? null)
@@ -29,34 +29,76 @@ final class ActivityLeaseMaintainer
             || !is_numeric($start['captured_at'] ?? null) || !is_int($start['parent_pid'] ?? null)) {
             throw new \UnexpectedValueException('Malformed private activity maintenance configuration.');
         }
-        $this->client = self::client($configuration)->withBoundedWorkerRequests();
+        $this->client = $client ?? self::client($configuration)->withBoundedWorkerRequests();
         $this->authority = new ActivityLeaseAuthority($start['task'], $this->client->namespace,
             $start['owner'], $start['queue'], $start['server_time'] ?? null, (float) $start['captured_at']);
+        $due = $start['presence_due_in'] ?? 0;
+        $this->nextPresence = (float) $start['captured_at']
+            + (is_int($due) || is_float($due) ? max(0, min(10, $due)) : 0);
     }
 
     public static function run(): void
     {
-        $first = fgets(STDIN, 65537);
-        $start = [];
-        try {
-            if ($first === false || !str_ends_with($first, "\n")) {
+        stream_set_blocking(STDIN, false);
+        $parent = null;
+        $configuration = null;
+        $client = null;
+        $proven = false;
+        while (true) {
+            $start = [];
+            try {
+                $start = self::awaitStart($parent);
+                $key = json_encode($start['client'] ?? null, JSON_THROW_ON_ERROR);
+                if ($start === null || ($start['operation'] ?? null) !== 'start'
+                    || ($configuration !== null && $key !== $configuration)
+                    || ($parent !== null && ($start['parent_pid'] ?? null) !== $parent)) {
+                    return;
+                }
+                $maintainer = new self($start, $client);
+                $parent = $start['parent_pid'];
+                $configuration = $key;
+                $client = $maintainer->client;
+                $maintainer->maintainInitialGrant($proven);
+                $proven = true;
+                $maintainer->respond($start);
+                if (!$maintainer->loop()) {
+                    return;
+                }
+            } catch (Throwable) {
+                // Bootstrap exceptions can contain application secrets. Only a
+                // bounded protocol reason is ever written to the parent pipe.
+                self::write(['id' => $start['id'] ?? 0,
+                    'can_continue' => false, 'reason' => 'activity_maintenance_bootstrap_failed']);
                 return;
             }
-            $start = json_decode($first, true, 32, JSON_THROW_ON_ERROR);
-            if (!is_array($start) || ($start['operation'] ?? null) !== 'start') {
-                return;
-            }
-            $maintainer = new self($start);
-            stream_set_blocking(STDIN, false);
-            $maintainer->maintainInitialGrant();
-            $maintainer->respond($start);
-            $maintainer->loop();
-        } catch (Throwable) {
-            // Bootstrap exceptions can contain application secrets. Only a
-            // bounded protocol reason is ever written to the parent pipe.
-            self::write(['id' => is_array($start) ? ($start['id'] ?? 0) : 0,
-                'can_continue' => false, 'reason' => 'activity_maintenance_bootstrap_failed']);
         }
+    }
+
+    /** @return array<string, mixed>|null */
+    private static function awaitStart(?int $parent): ?array
+    {
+        $buffer = '';
+        while (!str_contains($buffer, "\n")) {
+            if ($parent !== null && function_exists('posix_getppid') && posix_getppid() !== $parent) {
+                return null;
+            }
+            $read = [STDIN];
+            $write = $except = null;
+            if (@stream_select($read, $write, $except, 1) === false) {
+                // Windows process pipes are not selectable; keep the existing
+                // bounded nonblocking-read path on that platform and on EINTR.
+                usleep(10000);
+            }
+            $part = stream_get_contents(STDIN, 65537 - strlen($buffer));
+            if ($part === false || strlen($part) + strlen($buffer) > 65536 || feof(STDIN)) {
+                return null;
+            }
+            $buffer .= $part;
+        }
+        [$line, $remaining] = explode("\n", $buffer, 2);
+        $command = $remaining === '' ? json_decode($line, true, 32, JSON_THROW_ON_ERROR) : null;
+
+        return is_array($command) ? $command : null;
     }
 
     /** @param array<string, mixed> $configuration */
@@ -111,7 +153,7 @@ final class ActivityLeaseMaintainer
             workerRequestTimeoutSeconds: $workerRequestTimeout === null ? null : (float) $workerRequestTimeout);
     }
 
-    private function loop(): void
+    private function loop(): bool
     {
         while (!feof(STDIN) && $this->parentPresent()) {
             $started = hrtime(true) / 1e9;
@@ -121,20 +163,43 @@ final class ActivityLeaseMaintainer
             $commands = $this->readCommands();
             $this->applyProgressCommands($commands);
             $this->applyRenewal($reply, $started);
-            foreach ($commands as $command) {
+            foreach ($commands as $index => $command) {
+                if (($command['operation'] ?? null) === 'finish') {
+                    if ($index !== array_key_last($commands) || $this->buffer !== '') {
+                        return false;
+                    }
+                    self::write(['id' => $command['id'] ?? 0, 'finished' => true]);
+                    return true;
+                }
                 if (!in_array($command['operation'] ?? null, ['check', 'progress'], true)) {
                     $this->lostReason = 'activity_maintenance_invalid_command';
                 }
                 $this->respond($command);
             }
-            usleep(10000);
+            $this->waitForCommand();
+        }
+
+        return false;
+    }
+
+    private function waitForCommand(): void
+    {
+        $due = ($this->start['registered'] ?? false) === true
+            ? min($this->nextRenewal, $this->nextPresence) : $this->nextRenewal;
+        $delay = $this->lostReason === null ? max(0, min(1, $due - hrtime(true) / 1e9)) : 1;
+        $read = [STDIN];
+        $write = $except = null;
+        if (@stream_select($read, $write, $except, (int) $delay, (int) (($delay - (int) $delay) * 1e6)) === false) {
+            usleep((int) min(10000, $delay * 1e6));
         }
     }
 
     /** @return array<string, mixed>|null */
     private function renewWhenDue(float $started): ?array
     {
-        if ($this->lostReason !== null || $started < $this->nextRenewal) {
+        $due = ($this->start['registered'] ?? false) === true
+            ? min($this->nextRenewal, $this->nextPresence) : $this->nextRenewal;
+        if ($this->lostReason !== null || $started < $due) {
             return null;
         }
         try {
@@ -175,8 +240,13 @@ final class ActivityLeaseMaintainer
         }
     }
 
-    private function maintainInitialGrant(): void
+    private function maintainInitialGrant(bool $proven): void
     {
+        $age = hrtime(true) / 1e9 - (float) $this->start['captured_at'];
+        if ($proven && $age >= 0 && $age < 1 && $this->authority->remaining() >= 3) {
+            $this->scheduleRenewal();
+            return;
+        }
         $started = hrtime(true) / 1e9;
         $this->authority->acknowledge($this->requestRenewal(), $started);
         $this->scheduleRenewal();
@@ -220,6 +290,7 @@ final class ActivityLeaseMaintainer
             || $error->isTransientUpstreamFailure() || $error->isStorageAdmissionFailure())) {
             // Unavailability adds no time. Retry only within the preceding grant.
             $this->nextRenewal = hrtime(true) / 1e9 + 0.1;
+            $this->nextPresence = max($this->nextPresence, $this->nextRenewal);
 
             return;
         }

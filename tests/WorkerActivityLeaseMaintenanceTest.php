@@ -20,6 +20,8 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
     private $tlsServer = null;
     private string $directory;
     private string $uri;
+    /** @var list<Worker> */
+    private array $workers = [];
 
     protected function setUp(): void
     {
@@ -52,6 +54,10 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
 
     protected function tearDown(): void
     {
+        foreach ($this->workers as $worker) {
+            $worker->requestShutdown();
+        }
+        $this->workers = [];
         if (is_resource($this->tlsServer)) {
             proc_terminate($this->tlsServer);
             proc_close($this->tlsServer);
@@ -71,6 +77,7 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
     public function testBlockingCallbackStaysInTheOriginalProcessAndOutlastsTheRuntimeLease(): void
     {
         $worker = $this->worker();
+        (new \ReflectionProperty($worker, 'heartbeatIntervalSeconds'))->setValue($worker, 2);
         $captured = 0;
         $parent = getmypid();
         $worker->registerActivity('slow', static function (ActivityContext $context) use (&$captured, $parent): int {
@@ -98,6 +105,169 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
         $renewals = $state['renewals'];
         usleep(150000);
         self::assertSame($renewals, $this->state()['renewals'], 'Joined maintenance must stop after execution.');
+    }
+
+    public function testOneHelperServesDistinctActivitiesWithoutPerActivityBootstrapOrRenewal(): void
+    {
+        $worker = $this->worker(['activity_count' => 3, 'lease_seconds' => 6]);
+        $helpers = [];
+        $worker->registerActivity('slow', function (ActivityContext $context) use ($worker, &$helpers): int {
+            $helpers[] = $this->helperPid($worker);
+            return count($helpers);
+        });
+        for ($activity = 0; $activity < 3; ++$activity) {
+            self::assertTrue($worker->tick(0));
+        }
+        self::assertCount(1, array_unique($helpers));
+        $state = $this->state();
+        self::assertCount(3, $state['outcomes']);
+        self::assertSame(['attempt', 'attempt-2', 'attempt-3'], array_column($state['outcomes'], 'activity_attempt_id'));
+        self::assertSame(1, $state['renewals']);
+        self::assertCount(2, array_filter($state['requests'],
+            static fn (array $request): bool => $request['path'] === '/api/cluster/info'));
+        self::assertSame([], array_filter($state['requests'],
+            static fn (array $request): bool => $request['path'] === '/api/worker/heartbeat'));
+    }
+
+    public function testAHelperKilledBetweenActivitiesIsReplacedAndProvesItsClientAgain(): void
+    {
+        if (!function_exists('posix_kill')) {
+            self::markTestSkipped('This helper-death control needs POSIX process observation.');
+        }
+        $worker = $this->worker(['activity_count' => 2, 'lease_seconds' => 6]);
+        $worker->registerActivity('slow', static fn (ActivityContext $context): int => 1);
+        self::assertTrue($worker->tick(0));
+        $helper = $this->helperPid($worker);
+        self::assertTrue(posix_kill($helper, 9));
+        $handle = $this->helperHandle($worker);
+        $until = microtime(true) + 2;
+        while (proc_get_status($handle)['running'] && microtime(true) < $until) {
+            usleep(1000);
+        }
+        self::assertFalse(proc_get_status($handle)['running']);
+        self::assertTrue($worker->tick(0));
+        self::assertNotSame($helper, $this->helperPid($worker));
+        self::assertSame(2, $this->state()['renewals']);
+        self::assertCount(2, $this->state()['outcomes']);
+    }
+
+    public function testWorkersWithTheSameClientDoNotShareAnIdleHelper(): void
+    {
+        $worker = $this->worker(['activity_count' => 2, 'lease_seconds' => 6]);
+        $other = new Worker(new Client($this->uri, namespace: 'tenant', workerToken: 'fixture-worker'),
+            'queue', workerId: 'owner');
+        $this->workers[] = $other;
+        foreach (['registered' => true, 'lastHeartbeatAt' => microtime(true), 'activityLeaseRenewalSupported' => true] as $name => $value) {
+            (new \ReflectionProperty($other, $name))->setValue($other, $value);
+        }
+        foreach ([$worker, $other] as $current) {
+            $current->registerActivity('slow', static fn (ActivityContext $context): int => 1);
+            self::assertTrue($current->tick(0));
+        }
+        self::assertNotSame($this->helperPid($worker), $this->helperPid($other));
+    }
+
+    public function testShutdownClosesTheIdleHelper(): void
+    {
+        if (!function_exists('posix_kill')) {
+            self::markTestSkipped('This shutdown control needs POSIX process observation.');
+        }
+        $worker = $this->worker();
+        $worker->registerActivity('slow', static fn (ActivityContext $context): int => 1);
+        self::assertTrue($worker->tick(0));
+        $helper = $this->helperPid($worker);
+        self::assertTrue(posix_kill($helper, 0));
+        $worker->requestShutdown();
+        self::assertFalse(posix_kill($helper, 0));
+    }
+
+    public function testForkedCallbackCannotUseOrTerminateItsParentsHelper(): void
+    {
+        if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid')) {
+            self::markTestSkipped('This callback isolation control needs pcntl.');
+        }
+        $worker = $this->worker(['activity_count' => 2, 'lease_seconds' => 6]);
+        $result = $this->directory.'/fork-result';
+        $worker->registerActivity('slow', static function (ActivityContext $context) use ($worker, $result): int {
+            $supervisor = (new \ReflectionProperty($worker, 'activityLeaseProcess'))->getValue($worker);
+            $child = pcntl_fork();
+            if ($child === 0) {
+                try {
+                    $supervisor->check();
+                    file_put_contents($result, 'incorrectly accepted');
+                } catch (\DurableWorkflow\Worker\WorkflowClaimRevoked $error) {
+                    file_put_contents($result, $error->reason);
+                } finally {
+                    $supervisor->stop();
+                }
+                exit(0);
+            }
+            self::assertGreaterThan(0, $child);
+            pcntl_waitpid($child, $status);
+            self::assertTrue(pcntl_wifexited($status));
+            self::assertSame(0, pcntl_wexitstatus($status));
+            self::assertSame('activity_supervisor_process_mismatch', file_get_contents($result));
+            return 1;
+        });
+        self::assertTrue($worker->tick(0));
+        $helper = $this->helperPid($worker);
+        self::assertTrue($worker->tick(0));
+        self::assertSame($helper, $this->helperPid($worker));
+        self::assertCount(2, $this->state()['outcomes']);
+    }
+
+    public function testExpiredActivityAuthorityDoesNotCarryIntoTheNextClaim(): void
+    {
+        $worker = $this->worker(['activity_count' => 2, 'business_seconds' => 2]);
+        $calls = 0;
+        $worker->registerActivity('slow', static function (ActivityContext $context) use (&$calls): int {
+            if (++$calls === 1) {
+                usleep(2300000);
+            }
+            return $calls;
+        });
+        self::assertTrue($worker->tick(0));
+        self::assertSame([], $this->state()['outcomes'] ?? []);
+        self::assertTrue($worker->tick(0));
+        self::assertSame(2, $calls);
+        self::assertCount(1, $this->state()['outcomes']);
+        self::assertSame('attempt-2', $this->state()['outcomes'][0]['activity_attempt_id']);
+    }
+
+    public function testAnUnconfirmedFinishTerminatesTheHelper(): void
+    {
+        if (!function_exists('posix_kill') || !defined('SIGSTOP')) {
+            self::markTestSkipped('This lost-finish control needs POSIX stop signals.');
+        }
+        $client = new Client($this->uri, namespace: 'tenant', workerToken: 'fixture-worker');
+        $poll = $client->pollActivityTaskResponse('owner', 'queue', 0);
+        $process = new \DurableWorkflow\Worker\ActivityLeaseProcess($client, $poll['task'], 'owner', 'queue',
+            $poll['server_time'], hrtime(true) / 1e9, ['registered' => false, 'heartbeat_interval' => 10]);
+        $property = new \ReflectionProperty($process, 'process');
+        $helper = proc_get_status($property->getValue($process))['pid'];
+        try {
+            self::assertTrue(posix_kill($helper, SIGSTOP));
+            $started = hrtime(true);
+            $process->finish();
+            self::assertLessThan(3, (hrtime(true) - $started) / 1e9);
+            self::assertNull($property->getValue($process));
+            self::assertFalse(posix_kill($helper, 0));
+        } finally {
+            $process->stop();
+        }
+    }
+
+    /** @return resource */
+    private function helperHandle(Worker $worker)
+    {
+        $helper = (new \ReflectionProperty($worker, 'activityLeaseProcess'))->getValue($worker)
+            ?? (new \ReflectionProperty($worker, 'activityLeaseHelper'))->getValue($worker);
+        return (new \ReflectionProperty($helper, 'process'))->getValue($helper);
+    }
+
+    private function helperPid(Worker $worker): int
+    {
+        return proc_get_status($this->helperHandle($worker))['pid'];
     }
 
     #[DataProvider('lateOutcomes')]
@@ -363,6 +533,7 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
         (new \ReflectionProperty($worker, 'lastHeartbeatAt'))->setValue($worker, microtime(true));
         (new \ReflectionMethod($worker, 'captureRegistrationFence'))->invoke($worker,
             ['server_capabilities' => ['activity_lease_renewal' => true]]);
+        $this->workers[] = $worker;
 
         return $worker;
     }

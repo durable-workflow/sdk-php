@@ -9,7 +9,7 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Transport\RequestBudget;
 use Throwable;
 
-/** @internal A fresh PHP process maintains leases while the original callback stays inline. */
+/** @internal One Worker's reusable helper. Activity authority is replaced only after confirmed finish. */
 final class ActivityLeaseProcess
 {
     public static function available(): bool
@@ -26,18 +26,32 @@ final class ActivityLeaseProcess
     private int $parentPid = 0;
     private float $lastTransferCheck = 0;
     private ?string $lostReason = null;
-    private float $until;
-    private readonly float $fixedUntil;
+    private float $until = 0;
+    private float $fixedUntil = 0;
+    private bool $active = false;
+    private string $configurationKey = '';
     /** @var array<string, string|int> */
-    private readonly array $identity;
+    private array $identity = [];
 
     /** @param array<string, mixed> $task
-     * @param array{registered: bool, heartbeat_interval: int} $presence
+     * @param array{registered: bool, heartbeat_interval: int, presence_due_in?: float} $presence
      */
     public function __construct(Client $client, array $task, string $owner, string $queue,
         mixed $serverTime, float $captured, array $presence)
     {
         $this->parentPid = getmypid();
+        $this->start($client, $task, $owner, $queue, $serverTime, $captured, $presence);
+    }
+
+    /** @param array<string, mixed> $task
+     * @param array{registered: bool, heartbeat_interval: int, presence_due_in?: float} $presence
+     */
+    public function start(Client $client, array $task, string $owner, string $queue,
+        mixed $serverTime, float $captured, array $presence): void
+    {
+        if ($this->parentPid !== getmypid() || $this->active) {
+            throw new ActivityLeaseMaintenanceException('Only the original idle Worker can start activity maintenance.');
+        }
         $authority = new ActivityLeaseAuthority($task, $client->namespace, $owner, $queue, $serverTime, $captured);
         $this->identity = $authority->identity();
         $this->until = hrtime(true) / 1e9 + $authority->remaining();
@@ -56,17 +70,23 @@ final class ActivityLeaseProcess
         if ($autoload === null) {
             throw new ActivityLeaseMaintenanceException('Activity maintenance requires this SDK\'s Composer autoloader.');
         }
-        $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'],
-            2 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'w']];
-        $this->process = proc_open([PHP_BINARY, '-d', 'auto_prepend_file=', '-d', 'auto_append_file=',
-            __DIR__.'/activity-lease-maintainer.php', $autoload],
-            $descriptors, $this->pipes, options: ['bypass_shell' => true]);
-        if (!is_resource($this->process)) {
-            throw new ActivityLeaseMaintenanceException('Could not start independent activity lease maintenance.');
+        $key = hash('sha256', json_encode([$configuration, $autoload], JSON_THROW_ON_ERROR));
+        if (!$this->running() || $key !== $this->configurationKey) {
+            $this->stop();
+            $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'],
+                2 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'w']];
+            $this->process = proc_open([PHP_BINARY, '-d', 'auto_prepend_file=', '-d', 'auto_append_file=',
+                __DIR__.'/activity-lease-maintainer.php', $autoload],
+                $descriptors, $this->pipes, options: ['bypass_shell' => true]);
+            if (!is_resource($this->process)) {
+                throw new ActivityLeaseMaintenanceException('Could not start independent activity lease maintenance.');
+            }
+            array_walk($this->pipes, static fn ($pipe): bool => stream_set_blocking($pipe, false));
+            $this->configurationKey = $key;
         }
-        foreach ($this->pipes as $pipe) {
-            stream_set_blocking($pipe, false);
-        }
+        $this->lostReason = null;
+        $this->lastTransferCheck = 0;
+        $this->active = true;
         try {
             $this->exchange('start', ['client' => $configuration, 'task' => array_intersect_key($task,
                 array_flip(['task_id', 'workflow_id', 'run_id', 'activity_execution_id', 'activity_attempt_id',
@@ -82,7 +102,7 @@ final class ActivityLeaseProcess
 
     public function governs(string $path): bool
     {
-        return in_array($path, array_map(fn (string $action): string => '/worker/activity-tasks/'
+        return $this->active && in_array($path, array_map(fn (string $action): string => '/worker/activity-tasks/'
             .rawurlencode((string) $this->identity['task_id']).'/'.$action,
             ['complete', 'fail', 'heartbeat', 'renew-lease']), true);
     }
@@ -134,6 +154,8 @@ final class ActivityLeaseProcess
 
     public function stop(): void
     {
+        $this->active = false;
+        $this->buffer = '';
         foreach ($this->pipes as $pipe) {
             if (is_resource($pipe)) {
                 fclose($pipe);
@@ -162,6 +184,32 @@ final class ActivityLeaseProcess
         $this->process = null;
     }
 
+    /** Stop this claim; retain the process only after an unambiguous idle acknowledgment. */
+    public function finish(): void
+    {
+        if (!$this->active) {
+            return;
+        }
+        if ($this->parentPid !== getmypid() || $this->lostReason !== null
+            || $this->buffer !== '' || !$this->running()) {
+            $this->stop();
+            return;
+        }
+        try {
+            $id = ++$this->sequence;
+            $deadline = hrtime(true) / 1e9 + 1;
+            $this->writeMessage(json_encode(['id' => $id, 'operation' => 'finish'], JSON_THROW_ON_ERROR)."\n", $deadline);
+            $reply = $this->readReply($deadline);
+            if (!is_array($reply) || ($reply['id'] ?? null) !== $id
+                || ($reply['finished'] ?? null) !== true || $this->buffer !== '') {
+                $this->stop();
+            }
+        } catch (Throwable) {
+            $this->stop();
+        }
+        $this->active = false;
+    }
+
     private function waitForStop(): void
     {
         $until = hrtime(true) / 1e9 + 0.25;
@@ -187,6 +235,9 @@ final class ActivityLeaseProcess
         if ($this->parentPid !== getmypid()) {
             throw new WorkflowClaimRevoked('activity_supervisor_process_mismatch',
                 'Only the original Worker process can use its activity maintenance channel.');
+        }
+        if (!$this->active) {
+            $this->refuse('activity_maintenance_idle');
         }
         if ($this->lostReason !== null) {
             $this->refuse($this->lostReason);
