@@ -9,6 +9,7 @@ use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Exception\ReplayClockUnavailable;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
+use DurableWorkflow\Worker\GroupReplayClockEvidence;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -62,23 +63,12 @@ final class GroupBusinessReplayClockTest extends TestCase
         self::assertSame(['original-0', $expected], $this->replay(self::failureHandler(), $history));
     }
 
-    /** Frozen from Carbon 3.15.1 ce0e5636 getTimestampMs/createFromTimestampMs, not a floor operation. */
+    /** Canonical-v1 source table is distinct from the preserved legacy Carbon observations. */
     public static function failureInstants(): array
     {
-        return [
-            ['2026-11-06T00:00:00.123499Z', '2026-11-06T00:00:00.123000+00:00'],
-            ['2026-11-06T00:00:00.123500Z', '2026-11-06T00:00:00.124000+00:00'],
-            ['2026-11-06T00:00:00.123501Z', '2026-11-06T00:00:00.124000+00:00'],
-            ['2026-11-06T00:00:00.124499Z', '2026-11-06T00:00:00.124000+00:00'],
-            ['2026-11-06T00:00:00.124500Z', '2026-11-06T00:00:00.125000+00:00'],
-            ['2026-11-06T00:00:00.124501Z', '2026-11-06T00:00:00.125000+00:00'],
-            ['2026-11-06T00:00:00.000499Z', '2026-11-06T00:00:00.000000+00:00'],
-            ['2026-11-06T00:00:00.000500Z', '2026-11-06T00:00:00.001000+00:00'],
-            ['1969-12-31T23:59:59.999499Z', '1969-12-31T23:59:59.999000+00:00'],
-            ['1969-12-31T23:59:59.999500Z', '1969-12-31T23:59:59.999000+00:00'],
-            ['1969-12-31T23:59:59.999501Z', '1970-01-01T00:00:00.000000+00:00'],
-            ['1969-12-31T23:59:59.123500Z', '1969-12-31T23:59:59.123000+00:00'],
-        ];
+        $table = json_decode((string) file_get_contents(__DIR__.'/fixtures/replay-clock/canonical-v1.json'), true, flags: JSON_THROW_ON_ERROR);
+
+        return array_map(static fn (array $row): array => [$row['input'], $row['failure_time']], $table['vectors']);
     }
 
     public function testConflictingFailureOrderKeepsTheLegacyExceptionAndRefusesClock(): void
@@ -149,6 +139,16 @@ final class GroupBusinessReplayClockTest extends TestCase
 
             return [$values, self::read($context)];
         }, $history));
+    }
+
+    public function testUnrepresentableMicrosecondArithmeticRefusesInsteadOfWrapping(): void
+    {
+        foreach ([PHP_INT_MIN, PHP_INT_MAX] as $seconds) {
+            $time = new \DateTimeImmutable('@'.$seconds);
+            $candidate = [['time' => $time, 'offset' => 0, 'order' => 0]];
+            self::assertNull(GroupReplayClockEvidence::time($candidate, null));
+            self::assertNull(GroupReplayClockEvidence::time($candidate, 0));
+        }
     }
 
     private static function failureHandler(): callable

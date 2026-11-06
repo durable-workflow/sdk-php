@@ -1,0 +1,138 @@
+{
+  "contract": "additive-replay-clock-canonical-v1",
+  "decision": "https://github.com/durable-workflow/.github/issues/215#issuecomment-6679568700",
+  "vectors": [
+    {
+      "input": "2026-11-06T00:00:00.123499Z",
+      "utc_microseconds": "1793923200123499",
+      "milliseconds": "1793923200123",
+      "failure_time": "2026-11-06T00:00:00.123000+00:00"
+    },
+    {
+      "input": "2026-11-06T00:00:00.123500Z",
+      "utc_microseconds": "1793923200123500",
+      "milliseconds": "1793923200124",
+      "failure_time": "2026-11-06T00:00:00.124000+00:00"
+    },
+    {
+      "input": "2026-11-06T00:00:00.123501Z",
+      "utc_microseconds": "1793923200123501",
+      "milliseconds": "1793923200124",
+      "failure_time": "2026-11-06T00:00:00.124000+00:00"
+    },
+    {
+      "input": "2026-11-06T00:00:00.124499Z",
+      "utc_microseconds": "1793923200124499",
+      "milliseconds": "1793923200124",
+      "failure_time": "2026-11-06T00:00:00.124000+00:00"
+    },
+    {
+      "input": "2026-11-06T00:00:00.124500Z",
+      "utc_microseconds": "1793923200124500",
+      "milliseconds": "1793923200125",
+      "failure_time": "2026-11-06T00:00:00.125000+00:00"
+    },
+    {
+      "input": "2026-11-06T00:00:00.124501Z",
+      "utc_microseconds": "1793923200124501",
+      "milliseconds": "1793923200125",
+      "failure_time": "2026-11-06T00:00:00.125000+00:00"
+    },
+    {
+      "input": "2026-11-06T00:00:00.000499Z",
+      "utc_microseconds": "1793923200000499",
+      "milliseconds": "1793923200000",
+      "failure_time": "2026-11-06T00:00:00.000000+00:00"
+    },
+    {
+      "input": "2026-11-06T00:00:00.000500Z",
+      "utc_microseconds": "1793923200000500",
+      "milliseconds": "1793923200001",
+      "failure_time": "2026-11-06T00:00:00.001000+00:00"
+    },
+    {
+      "input": "1969-12-31T23:59:59.999499Z",
+      "utc_microseconds": "-501",
+      "milliseconds": "-1",
+      "failure_time": "1969-12-31T23:59:59.999000+00:00"
+    },
+    {
+      "input": "1969-12-31T23:59:59.999500Z",
+      "utc_microseconds": "-500",
+      "milliseconds": "-1",
+      "failure_time": "1969-12-31T23:59:59.999000+00:00"
+    },
+    {
+      "input": "1969-12-31T23:59:59.999501Z",
+      "utc_microseconds": "-499",
+      "milliseconds": "0",
+      "failure_time": "1970-01-01T00:00:00.000000+00:00"
+    },
+    {
+      "input": "1969-12-31T23:59:59.123500Z",
+      "utc_microseconds": "-876500",
+      "milliseconds": "-877",
+      "failure_time": "1969-12-31T23:59:59.123000+00:00"
+    },
+    {
+      "input": "1970-01-01T00:00:00.000499Z",
+      "utc_microseconds": "499",
+      "milliseconds": "0",
+      "failure_time": "1970-01-01T00:00:00.000000+00:00"
+    },
+    {
+      "input": "1970-01-01T00:00:00.000500Z",
+      "utc_microseconds": "500",
+      "milliseconds": "1",
+      "failure_time": "1970-01-01T00:00:00.001000+00:00"
+    },
+    {
+      "input": "1969-12-31T23:59:59.999999Z",
+      "utc_microseconds": "-1",
+      "milliseconds": "0",
+      "failure_time": "1970-01-01T00:00:00.000000+00:00"
+    },
+    {
+      "input": "1970-01-01T01:00:00.000500+01:00",
+      "utc_microseconds": "500",
+      "milliseconds": "1",
+      "failure_time": "1970-01-01T00:00:00.001000+00:00"
+    },
+    {
+      "input": "0001-01-01T00:00:00.999499Z",
+      "utc_microseconds": "-62135596799000501",
+      "milliseconds": "-62135596799001",
+      "failure_time": "0001-01-01T00:00:00.999000+00:00"
+    },
+    {
+      "input": "1600-01-01T00:00:00.123499Z",
+      "utc_microseconds": "-11676095999876501",
+      "milliseconds": "-11676095999877",
+      "failure_time": "1600-01-01T00:00:00.123000+00:00"
+    },
+    {
+      "input": "2255-01-01T00:00:00.123499Z",
+      "utc_microseconds": "8993721600123499",
+      "milliseconds": "8993721600123",
+      "failure_time": "2255-01-01T00:00:00.123000+00:00"
+    },
+    {
+      "input": "2500-01-01T00:00:00.123499Z",
+      "utc_microseconds": "16725225600123499",
+      "milliseconds": "16725225600123",
+      "failure_time": "2500-01-01T00:00:00.123000+00:00"
+    },
+    {
+      "input": "9999-01-01T00:00:00.123499Z",
+      "utc_microseconds": "253370764800123499",
+      "milliseconds": "253370764800123",
+      "failure_time": "9999-01-01T00:00:00.123000+00:00"
+    },
+    {
+      "input": "9999-01-01T00:00:00.123500Z",
+      "utc_microseconds": "253370764800123500",
+      "milliseconds": "253370764800124",
+      "failure_time": "9999-01-01T00:00:00.124000+00:00"
+    }
+  ]
+}
