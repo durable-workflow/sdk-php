@@ -44,8 +44,10 @@ setting-only refusals with a refusing transport spy and no worker loop. It will
 not run a runtime smoke suite, acquire tools or manage a runtime/controller.
 
 The pure preflight, core fixture matrix and refusal controls have source
-coverage. Positive Laravel/Symfony execution on the proposed complete dependency
-graph and installed metadata acceptance remain future work. The template
+coverage. The existing framework compatibility cells also run the corresponding
+full fixture matrix on their source consumers and report that source scope.
+Execution on the proposed complete dependency graph and installed metadata
+acceptance remain future work. The template
 intentionally has no future immutable references and must refuse before consumer
 autoload. A source result on the repository's cached vendor does not qualify the
 proposed consumer graph.
