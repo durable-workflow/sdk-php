@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 3.9.x]
   workflow_dispatch:
     inputs:
       cooperative_qualification:
