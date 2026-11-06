@@ -796,7 +796,7 @@ final class Replayer
                     if ($step['resolved']) {
                         $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($step));
                         $consumedConditionTail = $this->conditionTailAfterConsumption($step, $suspended, $step['value'] === true);
-                        $suspended = $this->resumeExecution($execution, $businessReplayClock, $step['value']);
+                        $suspended = $this->resumeExecution($execution, $businessReplayClock, $step['value'], $step);
                         continue;
                     }
                     if ($suspended->conditionSatisfied()) {

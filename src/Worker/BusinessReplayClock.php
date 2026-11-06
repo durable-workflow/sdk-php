@@ -78,7 +78,7 @@ final class BusinessReplayClock
         $this->time = null;
         if (!ReplayClockHistory::identity($this->workflowId) || !ReplayClockHistory::identity($this->runId)
             || ($this->redriveClaimed && $this->sourceRun === null)
-            || $step === null || !in_array($step['shape'] ?? null, ['activity', 'timer', self::CHILD_SHAPE], true)
+            || $step === null || !in_array($step['shape'] ?? null, ['activity', 'timer', self::CHILD_SHAPE, 'condition_wait'], true)
             || !is_int($step['sequence'] ?? null) || !is_int($step['resolution_order'] ?? null)) {
             return;
         }
@@ -89,7 +89,8 @@ final class BusinessReplayClock
         }
         $payload = $event['payload'];
         $reusedPrefix = $this->sourceRun !== null && $this->resumeStep !== null && $step['sequence'] < $this->resumeStep;
-        if (in_array(ReplayClockHistory::kind($event), ['ActivityCompleted', 'TimerFired'], true)
+        if (in_array($step['shape'], ['activity', 'timer'], true)
+            && in_array(ReplayClockHistory::kind($event), ['ActivityCompleted', 'TimerFired'], true)
             && ($reusedPrefix || array_key_exists('reused_recorded_at', $payload) || array_key_exists('reused_from_run_id', $payload))) {
             $this->time = $this->reusedTime($payload, $step['shape'], $step['sequence']);
         } elseif (!$reusedPrefix) {
@@ -99,8 +100,11 @@ final class BusinessReplayClock
 
     private function matchesBoundary(int $index, string $family, int $sequence): bool
     {
-        return $family === self::CHILD_SHAPE
-            ? ChildReplayClockEvidence::matches($this->history, $this->bySequence[$sequence] ?? [], $index, $sequence) : $this->scalarBoundary($index, $family, $sequence);
+        return match ($family) {
+            self::CHILD_SHAPE => ChildReplayClockEvidence::matches($this->history, $this->bySequence[$sequence] ?? [], $index, $sequence),
+            'condition_wait' => ConditionReplayClockEvidence::matches($this->history, $index, $sequence),
+            default => $this->scalarBoundary($index, $family, $sequence),
+        };
     }
 
     /** @param array<string, mixed> $payload */
