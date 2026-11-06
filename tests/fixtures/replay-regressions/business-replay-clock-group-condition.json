@@ -1,0 +1,139 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-business-replay-clock-group-condition",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.business-replay-clock-group-condition",
+    "input": []
+  },
+  "history": [
+    {
+      "event_type": "ConditionWaitOpened",
+      "recorded_at": "2026-11-05T23:59:58Z",
+      "payload": {
+        "sequence": 1,
+        "parallel_group_id": "parallel-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ],
+        "condition_wait_id": "clock-wait-1",
+        "condition_key": "clock-condition",
+        "condition_definition_fingerprint": "dwphp2:sha256:04cd1ecb5cb316516273dd0f29ef8fd313c87e1a32be60e839db44adbb9f9d1b"
+      },
+      "sequence": 1
+    },
+    {
+      "event_type": "TimerScheduled",
+      "recorded_at": "2026-11-05T23:59:58Z",
+      "payload": {
+        "sequence": 2,
+        "parallel_group_id": "parallel-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ],
+        "timer_id": "clock-group-timer-2",
+        "delay_seconds": 2,
+        "fire_at": "2026-11-06T00:00:00Z"
+      },
+      "sequence": 2
+    },
+    {
+      "event_type": "ConditionWaitSatisfied",
+      "recorded_at": "2026-11-06T00:00:00.123400Z",
+      "payload": {
+        "sequence": 1,
+        "parallel_group_id": "parallel-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ],
+        "condition_wait_id": "clock-wait-1",
+        "condition_key": "clock-condition",
+        "condition_definition_fingerprint": "dwphp2:sha256:04cd1ecb5cb316516273dd0f29ef8fd313c87e1a32be60e839db44adbb9f9d1b"
+      },
+      "sequence": 3
+    },
+    {
+      "event_type": "TimerFired",
+      "recorded_at": "2026-11-06T00:00:00.123499Z",
+      "payload": {
+        "sequence": 2,
+        "parallel_group_id": "parallel-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ],
+        "timer_id": "clock-group-timer-2",
+        "delay_seconds": 2,
+        "fire_at": "2026-11-06T00:00:00Z"
+      },
+      "sequence": 4
+    }
+  ],
+  "workflow_tasks": [
+    {
+      "workflow_id": "clock-parent",
+      "run_id": "clock-parent-run"
+    }
+  ],
+  "expected": {
+    "workflow_tasks": [
+      {
+        "command_sequence": [
+          {
+            "type": "complete_workflow",
+            "result": {
+              "values": [
+                true,
+                null
+              ],
+              "time": "2026-11-06T00:00:00.123400+00:00"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
