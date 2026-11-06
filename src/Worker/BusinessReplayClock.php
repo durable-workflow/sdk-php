@@ -154,11 +154,9 @@ final class BusinessReplayClock
         }
         $event = $this->history[$index];
         $prefix = $this->sourceRun !== null && $this->resumeStep !== null && $sequence < $this->resumeStep;
-        $proved = !$prefix || ($family === 'activity' && ReplayClockHistory::kind($event) === 'ActivityCompleted'
-            && $this->reusedTime($event['payload'], $family, $sequence) !== null);
 
-        // Group dispatch uses its event time, not scalar's reused_recorded_at.
-        return $proved ? ReplayClockHistory::recordedTime($event) : null;
+        // Reused-prefix group metadata is not qualified; suffix dispatch uses its own event time.
+        return $prefix ? null : ReplayClockHistory::recordedTime($event);
     }
 
     /** @param array<string, mixed> $body

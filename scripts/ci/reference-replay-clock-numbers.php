@@ -8,7 +8,7 @@ use Composer\InstalledVersions;
 use DurableWorkflow\Worker\GroupReplayClockEvidence;
 use DurableWorkflow\Worker\ReplayClockHistory;
 
-require dirname(__DIR__, 2).'/vendor/autoload.php';
+require_once dirname(__DIR__, 2).'/vendor/autoload.php';
 
 $tablePath = dirname(__DIR__, 2).'/tests/fixtures/replay-clock/canonical-v1.json';
 $table = json_decode((string) file_get_contents($tablePath), true, flags: JSON_THROW_ON_ERROR);
@@ -21,7 +21,7 @@ $pass = true;
 foreach ($table['vectors'] as $row) {
     $time = ReplayClockHistory::parseTime($row['input']);
     if ($time === null) {
-        throw new RuntimeException('Canonical numeric table contains an unsupported timestamp.');
+        throw new UnexpectedValueException('Canonical numeric table contains an unsupported timestamp.');
     }
     $actual = $conversion->invoke(null, $time);
     $microseconds = $normalization->invoke(null, $time);
