@@ -117,6 +117,7 @@ final class Worker
     private ?ActivityLeaseProcess $activityLeaseHelper = null;
     private ?WorkflowPollGrant $workflowPollGrant = null;
     private ?float $workflowPollStartedAt = null;
+    private ?float $activityPollStartedAt = null;
     /** @var (\Closure(): void)|null */
     private ?\Closure $unbindActivityLease = null;
     private ?CancellationRequest $claimCancellation = null;
@@ -1153,6 +1154,9 @@ final class Worker
      */
     private function observePoll(string $taskKind, \Closure $operation): array
     {
+        if ($taskKind === 'activity') {
+            $this->activityPollStartedAt = hrtime(true) / 1e9;
+        }
         if ($taskKind === 'workflow') {
             $this->workflowPollGrant = null;
             $this->workflowPollStartedAt = hrtime(true) / 1e9;
@@ -1648,7 +1652,9 @@ final class Worker
                     throw new WorkflowClaimRevoked('activity_supervisor_conflict', 'A previous activity supervisor is still active.');
                 }
                 $presence = ['registered' => $this->registered, 'heartbeat_interval' => $this->heartbeatIntervalSeconds,
-                    'presence_due_in' => max(0.0, $this->heartbeatIntervalSeconds - $this->elapsedSinceHeartbeat())];
+                    'presence_due_in' => max(0.0, $this->heartbeatIntervalSeconds - $this->elapsedSinceHeartbeat()),
+                    'poll_started_at' => $this->activityPollStartedAt];
+                $this->activityPollStartedAt = null;
                 if ($this->activityLeaseHelper === null) {
                     $this->activityLeaseHelper = new ActivityLeaseProcess($this->client, $task, $this->workerId,
                         $this->taskQueue, $response['server_time'] ?? null, hrtime(true) / 1e9, $presence);

@@ -34,7 +34,7 @@ final class ActivityLeaseProcess
     private array $identity = [];
 
     /** @param array<string, mixed> $task
-     * @param array{registered: bool, heartbeat_interval: int, presence_due_in?: float} $presence
+     * @param array{registered: bool, heartbeat_interval: int, presence_due_in?: float, poll_started_at?: float|null} $presence
      */
     public function __construct(Client $client, array $task, string $owner, string $queue,
         mixed $serverTime, float $captured, array $presence)
@@ -44,7 +44,7 @@ final class ActivityLeaseProcess
     }
 
     /** @param array<string, mixed> $task
-     * @param array{registered: bool, heartbeat_interval: int, presence_due_in?: float} $presence
+     * @param array{registered: bool, heartbeat_interval: int, presence_due_in?: float, poll_started_at?: float|null} $presence
      */
     public function start(Client $client, array $task, string $owner, string $queue,
         mixed $serverTime, float $captured, array $presence): void
@@ -52,7 +52,8 @@ final class ActivityLeaseProcess
         if ($this->parentPid !== getmypid() || $this->active) {
             throw new ActivityLeaseMaintenanceException('Only the original idle Worker can start activity maintenance.');
         }
-        $authority = new ActivityLeaseAuthority($task, $client->namespace, $owner, $queue, $serverTime, $captured);
+        [$authority, $captured, $fresh] = $this->captureGrant($client, $task, $owner, $queue,
+            $serverTime, $captured, $presence['poll_started_at'] ?? null);
         $this->identity = $authority->identity();
         $this->until = hrtime(true) / 1e9 + $authority->remaining();
         $this->fixedUntil = $authority->fixedBound();
@@ -92,12 +93,39 @@ final class ActivityLeaseProcess
                 array_flip(['task_id', 'workflow_id', 'run_id', 'activity_execution_id', 'activity_attempt_id',
                     'attempt_number', 'lease_owner', 'task_queue', 'namespace', 'lease_expires_at',
                     'deadlines', 'retry_policy', 'worker_session'])),
-                'server_time' => $serverTime, 'captured_at' => $captured, 'owner' => $owner, 'queue' => $queue,
+                'server_time' => $serverTime, 'captured_at' => $captured, 'fresh_poll_grant' => $fresh,
+                'owner' => $owner, 'queue' => $queue,
                 'parent_pid' => getmypid()] + $presence);
         } catch (Throwable $error) {
             $this->stop();
             throw $error;
         }
+    }
+
+    /** Unknown or slow deliveries retain confirmation; a fast grant charges the
+     * entire poll before its lease, business and heartbeat bounds are captured.
+     * @param array<string, mixed> $task
+     * @return array{ActivityLeaseAuthority, float, bool}
+     */
+    private function captureGrant(Client $client, array $task, string $owner, string $queue,
+        mixed $serverTime, float $received, mixed $started): array
+    {
+        $authority = new ActivityLeaseAuthority($task, $client->namespace, $owner, $queue, $serverTime, $received);
+        if ((!is_int($started) && !is_float($started)) || !is_finite($started)
+            || $started < 0 || $started > $received || $received - $started >= 1) {
+            return [$authority, $received, false];
+        }
+        try {
+            $original = new ActivityLeaseAuthority($task, $client->namespace, $owner, $queue, $serverTime, (float) $started);
+            if ($original->remaining() >= 3) {
+                return [$original, (float) $started, true];
+            }
+        } catch (WorkflowClaimRevoked) {
+            // The response can arrive after the conservative original bound.
+            // A renewal must confirm it before an application callback starts.
+        }
+
+        return [$authority, $received, false];
     }
 
     public function governs(string $path): bool
