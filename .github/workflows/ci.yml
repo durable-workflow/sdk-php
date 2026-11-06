@@ -597,7 +597,7 @@ jobs:
             --root-dir build/site
             build/site
       - name: Install the locked Chromium browser
-        run: '"$DOCS_TOOLING_DIRECTORY/node_modules/.bin/playwright" install --with-deps chromium'
+        run: '"$DOCS_TOOLING_DIRECTORY/node_modules/.bin/playwright" install chromium'
       - name: Verify missing-resource browser evidence
         run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-browser-failures
       - name: Check portal and API layouts in Chromium
