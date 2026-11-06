@@ -211,7 +211,7 @@ final class Replayer
         $commands = [];
         /** @var array<string, array{version: int, sequence: ?int}> $versionDecisions */
         $versionDecisions = [];
-        $suspended = $execution->start();
+        $suspended = $businessReplayClock->invoke($execution->start(...));
         $nextSequence = 1;
         $cancellationConsumed = false;
         $consumedScopeDeliveries = [];
@@ -2526,7 +2526,7 @@ final class Replayer
     {
         $clock->consume($step);
 
-        return $execution->resume($value);
+        return $clock->invoke(static fn (): mixed => $execution->resume($value));
     }
 
     /**
@@ -2537,7 +2537,7 @@ final class Replayer
     {
         $clock->consume($step);
 
-        return $execution->throw($failure);
+        return $clock->invoke(static fn (): mixed => $execution->throw($failure));
     }
 
     /**

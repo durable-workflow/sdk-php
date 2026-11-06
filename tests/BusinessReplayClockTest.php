@@ -258,6 +258,30 @@ final class BusinessReplayClockTest extends TestCase
         }, $this->activity(1, self::FIRST));
     }
 
+    public function testForceClosedFinallyHasNoActiveBusinessClock(): void
+    {
+        $observed = null;
+        (new Replayer(new AvroPayloadCodec()))->replay(
+            static function (WorkflowContext $context) use (&$observed): void {
+                $context->activity('anchor');
+                try {
+                    $context->sleep(5);
+                } finally {
+                    try {
+                        $observed = $context->replayNow()->format('c');
+                    } catch (ReplayClockUnavailable) {
+                        $observed = 'unavailable';
+                    }
+                }
+            },
+            $this->activity(1, self::FIRST), [], 'php-workers',
+            ['workflow_id' => 'workflow', 'run_id' => 'run'],
+        );
+        gc_collect_cycles();
+
+        self::assertSame('unavailable', $observed);
+    }
+
     /** @return list<array<string, mixed>> */
     private function activity(int $sequence, string $timestamp): array
     {

@@ -17,6 +17,7 @@ final class BusinessReplayClock
     private array $bySequence = [];
 
     private ?DateTimeImmutable $time = null;
+    private bool $active = false;
     private ?string $sourceRun = null;
     private ?int $resumeStep = null;
     private ?DateTimeImmutable $redriveInserted = null;
@@ -41,7 +42,26 @@ final class BusinessReplayClock
 
     public function time(): DateTimeImmutable
     {
-        return $this->time ?? throw new ReplayClockUnavailable('Business replay time requires an active, validated consumed boundary.');
+        if (!$this->active || $this->time === null) {
+            throw new ReplayClockUnavailable('Business replay time requires an active, validated consumed boundary.');
+        }
+
+        return $this->time;
+    }
+
+    /** The engine leaves this scope before suspension teardown can run finally.
+     * @template TResult
+     * @param callable(): TResult $callback
+     * @return TResult
+     */
+    public function invoke(callable $callback): mixed
+    {
+        $this->active = true;
+        try {
+            return $callback();
+        } finally {
+            $this->active = false;
+        }
     }
 
     /** Every resume resets authority, including unsupported or unrecorded calls.
@@ -91,20 +111,8 @@ final class BusinessReplayClock
             || !$this->startPrefix($index, $payload)) {
             return;
         }
-        foreach (['workflow_instance_id', 'workflow_run_id', 'workflow_command_id', 'continued_from_run_id', 'workflow_link_id'] as $key) {
-            if (!self::identity($payload[$key] ?? null)) {
-                return;
-            }
-        }
-        if ($workflowId === '' || $runId === '' || $payload['workflow_instance_id'] !== $workflowId
-            || $payload['workflow_run_id'] !== $runId || $payload['continued_from_run_id'] === $runId
-            || !is_int($payload['resume_step_sequence'] ?? null) || $payload['resume_step_sequence'] < 1) {
+        if (!$this->redriveIdentity($payload, $workflowId, $runId) || !$this->orderedHistory()) {
             return;
-        }
-        foreach ($this->history as $position => $event) {
-            if (($event['sequence'] ?? null) !== $position + 1) {
-                return;
-            }
         }
         $inserted = self::recordedTime($this->history[$index]);
         $original = self::parseTime($payload['replayed_started_at'] ?? null);
@@ -117,6 +125,31 @@ final class BusinessReplayClock
         $this->time = $original;
     }
 
+    /** @param array<string, mixed> $payload */
+    private function redriveIdentity(array $payload, string $workflowId, string $runId): bool
+    {
+        foreach (['workflow_instance_id', 'workflow_run_id', 'workflow_command_id', 'continued_from_run_id', 'workflow_link_id'] as $key) {
+            if (!self::identity($payload[$key] ?? null)) {
+                return false;
+            }
+        }
+
+        return $workflowId !== '' && $runId !== '' && $payload['workflow_instance_id'] === $workflowId
+            && $payload['workflow_run_id'] === $runId && $payload['continued_from_run_id'] !== $runId
+            && is_int($payload['resume_step_sequence'] ?? null) && $payload['resume_step_sequence'] >= 1;
+    }
+
+    private function orderedHistory(): bool
+    {
+        foreach ($this->history as $position => $event) {
+            if (($event['sequence'] ?? null) !== $position + 1) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /** The shared StartAccepted prefix proves correlation, never producer identity.
      * @param array<string, mixed> $payload
      */
@@ -125,13 +158,20 @@ final class BusinessReplayClock
         if ($index === 0) {
             return true;
         }
-        if ($index !== 1 || self::kind($this->history[0]) !== 'StartAccepted') {
-            return false;
-        }
-        $accepted = $this->history[0]['payload'] ?? null;
+        $accepted = $index === 1 && self::kind($this->history[0]) === 'StartAccepted'
+            ? ($this->history[0]['payload'] ?? null) : null;
         if (!is_array($accepted) || ($accepted['outcome'] ?? null) !== 'redriven') {
             return false;
         }
+
+        return $this->acceptedIdentity($accepted, $payload);
+    }
+
+    /** @param array<string, mixed> $accepted
+     * @param array<string, mixed> $payload
+     */
+    private function acceptedIdentity(array $accepted, array $payload): bool
+    {
         foreach (['workflow_instance_id', 'workflow_run_id', 'workflow_command_id'] as $key) {
             if (!self::identity($payload[$key] ?? null) || ($accepted[$key] ?? null) !== $payload[$key]) {
                 return false;
@@ -154,14 +194,20 @@ final class BusinessReplayClock
         if (!in_array(self::kind($event), $terminals, true) || !self::identity($identity)) {
             return false;
         }
+        return $this->scalarLifecycle($index, $family, $sequence, $resource, $identity, $terminals, $payload);
+    }
+
+    /** @param list<string> $terminals
+     * @param array<string, mixed> $payload
+     */
+    private function scalarLifecycle(int $index, string $family, int $sequence, string $resource, string $identity, array $terminals, array $payload): bool
+    {
         $opening = $family === 'activity' ? 'ActivityScheduled' : 'TimerScheduled';
         $allowed = [$opening, ...$terminals];
         if ($family === 'activity') {
             $allowed[] = 'ActivityStarted';
         }
-        $openings = [];
-        $starts = [];
-        $closures = [];
+        $positions = [];
         foreach ($this->bySequence[$sequence] ?? [] as $position) {
             $row = $this->history[$position];
             $body = $row['payload'];
@@ -170,20 +216,28 @@ final class BusinessReplayClock
                 || !$this->scalarRow($body, $family)) {
                 return false;
             }
-            if ($kind === $opening) { $openings[] = $position; }
-            if ($kind === 'ActivityStarted') { $starts[] = $position; }
-            if (in_array($kind, $terminals, true)) { $closures[] = $position; }
+            $positions[$kind][] = $position;
         }
+        $openings = $positions[$opening] ?? [];
+        $starts = $positions['ActivityStarted'] ?? [];
+        $closures = array_merge(...array_values(array_intersect_key($positions, array_flip($terminals))));
+        $reusedActivity = $family === 'activity' && self::kind($this->history[$index]) === 'ActivityCompleted'
+            && array_key_exists('reused_recorded_at', $payload) && $this->sourceRun !== null;
+
+        return $this->scalarOrder($openings, $starts, $closures, $index, $reusedActivity);
+    }
+
+    /** @param list<int> $openings
+     * @param list<int> $starts
+     * @param list<int> $closures
+     */
+    private function scalarOrder(array $openings, array $starts, array $closures, int $index, bool $reusedActivity): bool
+    {
         if ($closures !== [$index] || count($starts) > 1 || ($starts !== [] && ($openings === [] || $starts[0] < $openings[0]))) {
             return false;
         }
-        $reusedActivity = $family === 'activity' && self::kind($event) === 'ActivityCompleted'
-            && array_key_exists('reused_recorded_at', $payload) && $this->sourceRun !== null;
-        if (count($openings) !== 1 && !($reusedActivity && $this->bySequence[$sequence] === [$index])) {
-            return false;
-        }
 
-        return $openings === [] || $openings[0] < $index;
+        return (count($openings) === 1 && $openings[0] < $index) || ($reusedActivity && $openings === [] && $starts === []);
     }
 
     /** @param array<string, mixed> $body */
@@ -247,10 +301,7 @@ final class BusinessReplayClock
             return null;
         }
         $errors = DateTimeImmutable::getLastErrors();
-        if ($errors !== false && ($errors['warning_count'] !== 0 || $errors['error_count'] !== 0)) {
-            return null;
-        }
-
-        return $time->setTimezone(new DateTimeZone('UTC'));
+        return $errors !== false && ($errors['warning_count'] !== 0 || $errors['error_count'] !== 0)
+            ? null : $time->setTimezone(new DateTimeZone('UTC'));
     }
 }
