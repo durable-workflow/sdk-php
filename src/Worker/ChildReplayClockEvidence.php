@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Worker;
 
-/** @internal Correlates a scalar child terminal with its immutable parent lifecycle. */
+use Closure;
+
+/** @internal Correlates a child terminal with its immutable parent lifecycle. */
 final class ChildReplayClockEvidence
 {
     private const CHILD_TERMINALS = ['ChildRunCompleted', 'ChildRunFailed', 'ChildRunCancelled', 'ChildRunTerminated'];
@@ -14,8 +16,9 @@ final class ChildReplayClockEvidence
     /** Only the selected parent terminal supplies child business time.
      * @param list<array<string, mixed>> $history
      * @param list<int> $indices
+     * @param (Closure(array<string, mixed>, string): bool)|null $rowMatches
      */
-    public static function matches(array $history, array $indices, int $index, int $sequence): bool
+    public static function matches(array $history, array $indices, int $index, int $sequence, ?Closure $rowMatches = null): bool
     {
         $event = $history[$index];
         $payload = $event['payload'] ?? null;
@@ -31,7 +34,7 @@ final class ChildReplayClockEvidence
             $kind = ReplayClockHistory::kind($row);
             if ($position > $index || ReplayClockHistory::sequence($body) !== $sequence
                 || !in_array($kind, $allowed, true) || self::childIdentity($body) !== $identity
-                || !ReplayClockHistory::scalarRow($body, 'child_workflow')) {
+                || !($rowMatches === null ? ReplayClockHistory::scalarRow($body, 'child_workflow') : $rowMatches($body, 'child_workflow'))) {
                 return false;
             }
             $positions[$kind][] = $position;

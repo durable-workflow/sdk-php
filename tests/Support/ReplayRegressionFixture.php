@@ -686,6 +686,13 @@ final class ReplayRegressionFixture
 
                 return ['failure' => $message ?? 'missing', 'failed_time' => $failedTime, 'time' => $time];
             },
+            'golden.business-replay-clock-group-child' => static function (WorkflowContext $context): array {
+                $values = $context->all([$context->deferChildWorkflow('clock-child'), $context->deferTimer(2)]);
+                try { $time = $context->replayNow()->format('Y-m-d\TH:i:s.uP'); }
+                catch (\DurableWorkflow\Exception\ReplayClockUnavailable) { $time = null; }
+
+                return ['values' => $values, 'time' => $time];
+            },
             'golden.business-replay-clock-group' => static function (WorkflowContext $context): array {
                 $values = $context->all([$context->deferActivity('first'), $context->deferTimer(2)]);
                 try { $time = $context->replayNow()->format('Y-m-d\TH:i:s.uP'); }

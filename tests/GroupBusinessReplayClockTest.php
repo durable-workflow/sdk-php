@@ -18,7 +18,7 @@ final class GroupBusinessReplayClockTest extends TestCase
     private const FORMAT = 'Y-m-d\TH:i:s.uP';
 
     #[DataProvider('successInstants')]
-    public function testConsumedGroupFoldsAuthoredOrderWithCoreMilliseconds(string $first, string $second, string $expected): void
+    public function testConsumedGroupFoldsAuthoredOrderWithCanonicalMilliseconds(string $first, string $second, string $expected): void
     {
         $history = self::history(['activity', 'timer'], [$first, $second]);
         $handler = static function (WorkflowContext $context): array {
@@ -56,7 +56,7 @@ final class GroupBusinessReplayClockTest extends TestCase
     }
 
     #[DataProvider('failureInstants')]
-    public function testCaughtFailureUsesCoreCarbonReconstructionAndPreservesException(string $input, string $expected): void
+    public function testCaughtFailureUsesCanonicalReconstructionAndPreservesException(string $input, string $expected): void
     {
         $history = self::history(['activity', 'activity'], [$input, '2099-01-01T00:00:00Z'], [0]);
 
