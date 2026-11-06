@@ -18,6 +18,7 @@ final class BusinessReplayClock
 
     private ?DateTimeImmutable $time = null;
     private bool $active = false;
+    private bool $redriveClaimed = false;
     private ?string $sourceRun = null;
     private ?int $resumeStep = null;
     private ?DateTimeImmutable $redriveInserted = null;
@@ -31,6 +32,10 @@ final class BusinessReplayClock
                 $starts[] = $index;
             }
             $payload = $event['payload'] ?? null;
+            if (is_array($payload) && ((self::kind($event) === 'WorkflowStarted' && ($payload['recovery_kind'] ?? null) === 'redrive')
+                || (self::kind($event) === 'StartAccepted' && ($payload['outcome'] ?? null) === 'redriven'))) {
+                $this->redriveClaimed = true;
+            }
             if (is_array($payload) && ($sequence = self::sequence($payload)) !== null) {
                 $this->bySequence[$sequence][] = $index;
             }
@@ -70,7 +75,9 @@ final class BusinessReplayClock
     public function consume(?array $step): void
     {
         $this->time = null;
-        if (!self::identity($this->workflowId) || !self::identity($this->runId) || $step === null || !in_array($step['shape'] ?? null, ['activity', 'timer'], true)
+        if (!self::identity($this->workflowId) || !self::identity($this->runId)
+            || ($this->redriveClaimed && $this->sourceRun === null)
+            || $step === null || !in_array($step['shape'] ?? null, ['activity', 'timer'], true)
             || !is_int($step['sequence'] ?? null) || !is_int($step['resolution_order'] ?? null)) {
             return;
         }
@@ -80,10 +87,11 @@ final class BusinessReplayClock
             return;
         }
         $payload = $event['payload'];
+        $reusedPrefix = $this->sourceRun !== null && $this->resumeStep !== null && $step['sequence'] < $this->resumeStep;
         if (in_array(self::kind($event), ['ActivityCompleted', 'TimerFired'], true)
-            && (array_key_exists('reused_recorded_at', $payload) || array_key_exists('reused_from_run_id', $payload))) {
+            && ($reusedPrefix || array_key_exists('reused_recorded_at', $payload) || array_key_exists('reused_from_run_id', $payload))) {
             $this->time = $this->reusedTime($payload, $step['shape'], $step['sequence']);
-        } else {
+        } elseif (!$reusedPrefix) {
             $this->time = self::recordedTime($event);
         }
     }

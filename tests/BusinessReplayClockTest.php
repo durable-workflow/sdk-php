@@ -351,6 +351,9 @@ final class BusinessReplayClockTest extends TestCase
                 $expected[1] = null; break;
             case 'missing-timer-source': unset($fixture['history'][3]['payload']['reused_from_run_id']); $expected[2] = null; break;
             case 'missing-timer-time': unset($fixture['history'][3]['payload']['reused_recorded_at']); $expected[2] = null; break;
+            case 'missing-reuse-pair':
+                unset($fixture['history'][3]['payload']['reused_from_run_id'], $fixture['history'][3]['payload']['reused_recorded_at']);
+                $expected[2] = null; break;
             case 'future-original-time': $fixture['history'][3]['payload']['reused_recorded_at'] = '2026-11-03T00:06:00Z'; $expected[2] = null; break;
             case 'unbound-resume': $fixture['history'][0]['payload']['resume_step_sequence'] = '3'; $expected = [null, null, null]; break;
             case 'at-resume-step': $fixture['history'][0]['payload']['resume_step_sequence'] = 2; $expected[2] = null; break;
@@ -365,7 +368,7 @@ final class BusinessReplayClockTest extends TestCase
     {
         return array_map(static fn (string $mutation): array => [$mutation], [
             'wrong-source', 'missing-original-activity', 'same-original-activity', 'missing-timer-source',
-            'missing-timer-time', 'future-original-time', 'unbound-resume', 'at-resume-step', 'wrong-run', 'ordinary-start',
+            'missing-timer-time', 'missing-reuse-pair', 'future-original-time', 'unbound-resume', 'at-resume-step', 'wrong-run', 'ordinary-start',
         ]);
     }
 
