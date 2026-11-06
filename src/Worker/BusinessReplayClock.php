@@ -13,6 +13,12 @@ final class BusinessReplayClock
 {
     private const ACTIVITY_TERMINALS = ['ActivityCompleted', 'ActivityFailed', 'ActivityTimedOut', 'ActivityCancelled'];
 
+    private const CHILD_SHAPE = 'child_workflow';
+
+    private const CHILD_TERMINALS = ['ChildRunCompleted', 'ChildRunFailed', 'ChildRunCancelled', 'ChildRunTerminated'];
+
+    private const CHILD_IDENTITY = ['child_call_id', 'child_workflow_instance_id', 'child_workflow_run_id', 'child_workflow_type'];
+
     /** @var array<int, list<int>> */
     private array $bySequence = [];
 
@@ -77,13 +83,13 @@ final class BusinessReplayClock
         $this->time = null;
         if (!self::identity($this->workflowId) || !self::identity($this->runId)
             || ($this->redriveClaimed && $this->sourceRun === null)
-            || $step === null || !in_array($step['shape'] ?? null, ['activity', 'timer'], true)
+            || $step === null || !in_array($step['shape'] ?? null, ['activity', 'timer', self::CHILD_SHAPE], true)
             || !is_int($step['sequence'] ?? null) || !is_int($step['resolution_order'] ?? null)) {
             return;
         }
         $index = $step['resolution_order'];
         $event = $this->history[$index] ?? null;
-        if (!is_array($event) || !$this->scalarBoundary($index, $step['shape'], $step['sequence'])) {
+        if (!is_array($event) || !$this->matchesBoundary($index, $step['shape'], $step['sequence'])) {
             return;
         }
         $payload = $event['payload'];
@@ -94,6 +100,55 @@ final class BusinessReplayClock
         } elseif (!$reusedPrefix) {
             $this->time = self::recordedTime($event);
         }
+    }
+
+    private function matchesBoundary(int $index, string $family, int $sequence): bool
+    {
+        return $family === self::CHILD_SHAPE
+            ? $this->childBoundary($index, $sequence) : $this->scalarBoundary($index, $family, $sequence);
+    }
+
+    /** Only the selected parent terminal supplies child business time. */
+    private function childBoundary(int $index, int $sequence): bool
+    {
+        $event = $this->history[$index];
+        $payload = $event['payload'] ?? null;
+        $identity = is_array($payload) ? self::childIdentity($payload) : null;
+        if ($identity === null || self::sequence($payload) !== $sequence || !in_array(self::kind($event), self::CHILD_TERMINALS, true)) {
+            return false;
+        }
+        $positions = [];
+        $allowed = ['ChildWorkflowScheduled', 'ChildRunStarted', ...self::CHILD_TERMINALS];
+        foreach ($this->bySequence[$sequence] ?? [] as $position) {
+            $row = $this->history[$position];
+            $body = $row['payload'];
+            $kind = self::kind($row);
+            if ($position > $index || !in_array($kind, $allowed, true) || self::childIdentity($body) !== $identity
+                || !$this->scalarRow($body, self::CHILD_SHAPE)) {
+                return false;
+            }
+            $positions[$kind][] = $position;
+        }
+        $closures = array_merge(...array_values(array_intersect_key($positions, array_flip(self::CHILD_TERMINALS))));
+
+        return $this->scalarOrder($positions['ChildWorkflowScheduled'] ?? [], $positions['ChildRunStarted'] ?? [], $closures, $index, false);
+    }
+
+    /** @param array<string, mixed> $payload
+     * @return array<string, string>|null
+     */
+    private static function childIdentity(array $payload): ?array
+    {
+        $identity = [];
+        foreach (self::CHILD_IDENTITY as $field) {
+            $value = $payload[$field] ?? null;
+            if (!self::identity($value)) {
+                return null;
+            }
+            $identity[$field] = $value;
+        }
+
+        return $identity;
     }
 
     /** @param array<string, mixed> $payload */
