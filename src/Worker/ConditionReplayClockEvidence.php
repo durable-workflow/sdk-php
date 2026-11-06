@@ -4,13 +4,17 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Worker;
 
+use Closure;
+
 /** @internal Proves one consumed physical condition wait, including its timeout pair. */
 final class ConditionReplayClockEvidence
 {
     private const TERMINALS = ['ConditionWaitSatisfied', 'ConditionWaitTimedOut'];
 
-    /** @param list<array<string, mixed>> $history */
-    public static function matches(array $history, int $index, int $sequence): bool
+    /** @param list<array<string, mixed>> $history
+     * @param (Closure(array<string, mixed>, string): bool)|null $rowMatches
+     */
+    public static function matches(array $history, int $index, int $sequence, ?Closure $rowMatches = null): bool
     {
         $event = $history[$index];
         $payload = $event['payload'] ?? null;
@@ -18,7 +22,7 @@ final class ConditionReplayClockEvidence
         if (!is_array($payload) || !ReplayClockHistory::identity($waitId) || ReplayClockHistory::sequence($payload) !== $sequence) {
             return false;
         }
-        $rows = self::linkedRows($history, $sequence, $waitId);
+        $rows = self::linkedRows($history, $sequence, $waitId, $rowMatches ?? ReplayClockHistory::scalarRow(...));
 
         return $rows !== null && self::lifecycle($history, $rows, $index);
     }
@@ -41,9 +45,10 @@ final class ConditionReplayClockEvidence
     }
 
     /** @param list<array<string, mixed>> $history
+     * @param Closure(array<string, mixed>, string): bool $rowMatches
      * @return array<string, list<int>>|null
      */
-    private static function linkedRows(array $history, int $sequence, string $waitId): ?array
+    private static function linkedRows(array $history, int $sequence, string $waitId, Closure $rowMatches): ?array
     {
         $positions = [];
         $allowed = ['ConditionWaitOpened', ...self::TERMINALS, 'TimerScheduled', 'TimerFired', 'TimerCancelled'];
@@ -55,8 +60,13 @@ final class ConditionReplayClockEvidence
                 || (ReplayClockHistory::legacySequenceClaim($body) !== $sequence && ($body['condition_wait_id'] ?? null) !== $waitId)) {
                 continue;
             }
+            // Core's condition-timeout timers carry the wait identity, without
+            // the owning condition's parallel path. The complete timer pair
+            // must remain scalar and correlate with that validated wait.
+            $rowQualified = str_starts_with((string) $kind, 'Timer')
+                ? ReplayClockHistory::scalarRow($body, 'condition_wait') : $rowMatches($body, 'condition_wait');
             if (!in_array($kind, $allowed, true) || ReplayClockHistory::sequence($body) !== $sequence
-                || ($body['condition_wait_id'] ?? null) !== $waitId || !ReplayClockHistory::scalarRow($body, 'condition_wait')
+                || ($body['condition_wait_id'] ?? null) !== $waitId || !$rowQualified
                 || ($body['cancellation_scope'] ?? null) !== null) {
                 return null;
             }

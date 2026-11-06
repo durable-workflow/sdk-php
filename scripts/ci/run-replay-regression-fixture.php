@@ -1005,6 +1005,13 @@ final class ReplayRegressionConsumer
 
                 return ['failure' => $message ?? 'missing', 'failed_time' => $failedTime, 'time' => $time];
             },
+            'golden.business-replay-clock-group-condition' => static function (WorkflowContext $context): array {
+                $values = $context->all([$context->deferCondition(static fn (): bool => true, 'clock-condition'), $context->deferTimer(2)]);
+                try { $time = $context->replayNow()->format(self::CLOCK_FORMAT); }
+                catch (\DurableWorkflow\Exception\ReplayClockUnavailable) { $time = null; }
+
+                return ['values' => $values, 'time' => $time];
+            },
             'golden.business-replay-clock-group-child' => static function (WorkflowContext $context): array {
                 $values = $context->all([$context->deferChildWorkflow('clock-child'), $context->deferTimer(2)]);
                 try { $time = $context->replayNow()->format(self::CLOCK_FORMAT); }
