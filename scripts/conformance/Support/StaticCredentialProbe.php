@@ -17,6 +17,7 @@ require_once __DIR__.'/StaticCredentialProbeFailure.php';
 /** Construction/header inspection only; no client request or worker loop. */
 final class StaticCredentialProbe
 {
+    public const ENDPOINT = 'https://fixture.invalid';
     public const ENVIRONMENT = ['shared' => 'DURABLE_WORKFLOW_TOKEN', 'control' => 'DURABLE_WORKFLOW_CLIENT_TOKEN',
         'worker' => 'DURABLE_WORKFLOW_WORKER_TOKEN'];
     private const CONFIGURATION = ['shared' => 'token', 'control' => 'control_token', 'worker' => 'worker_token'];
@@ -37,7 +38,7 @@ final class StaticCredentialProbe
                 controlToken: $options['control'] ?? null, workerToken: $options['worker'] ?? null);
         } else {
             $client = match ($target) {
-                'Client' => new Client('https://fixture.invalid', transport: $transport,
+                'Client' => new Client(self::ENDPOINT, transport: $transport,
                     token: $options['shared'] ?? null, controlToken: $options['control'] ?? null, workerToken: $options['worker'] ?? null),
                 'ServiceConfiguration', 'ServiceConfigurationAlias' =>
                     self::configured($target, $options, $plane, $transport),
@@ -64,7 +65,7 @@ final class StaticCredentialProbe
      */
     public static function constructor(array $options): array
     {
-        $configuration = new ServiceConfiguration('https://fixture.invalid', 'fixture', 'fixture', [],
+        $configuration = new ServiceConfiguration(self::ENDPOINT, 'fixture', 'fixture', [],
             $options['shared'] ?? null, $options['control'] ?? null, $options['worker'] ?? null);
         return ['token' => $configuration->token, 'controlToken' => $configuration->controlToken,
             'workerToken' => $configuration->workerToken];
@@ -111,7 +112,7 @@ final class StaticCredentialProbe
         foreach ($options as $role => $value) {
             $credentials[self::CONFIGURATION[$role]] = $value;
         }
-        $configuration = ServiceConfiguration::fromArray(['endpoint' => 'https://fixture.invalid',
+        $configuration = ServiceConfiguration::fromArray(['endpoint' => self::ENDPOINT,
             'namespace' => 'fixture', 'task_queue' => 'fixture', 'handlers' => [], 'credentials' => $credentials]);
         if ($target === 'ServiceConfigurationAlias') {
             if ($plane !== 'control') {
@@ -129,7 +130,7 @@ final class StaticCredentialProbe
     private static function process(array $options, array $values, string $plane, Transport $transport): Client
     {
         $values = self::processValues($options, $values);
-        $configuration = ServiceConfiguration::fromArray(['endpoint' => 'https://fixture.invalid', 'task_queue' => 'fixture']);
+        $configuration = ServiceConfiguration::fromArray(['endpoint' => self::ENDPOINT, 'task_queue' => 'fixture']);
         return self::environment($values, static fn (): Client => $plane === 'worker'
             ? ProcessCredentialResolver::workerClient($configuration, $transport)
             : ProcessCredentialResolver::applicationClient($configuration, $transport));

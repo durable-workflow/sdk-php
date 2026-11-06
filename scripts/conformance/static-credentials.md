@@ -5,6 +5,11 @@ This source work prepares the caller-owned check proposed in
 It has not solved or installed its dependency intent and is not an installed
 package, HTTP authentication or Server result.
 
+The runner and its instrumentation live under `scripts/conformance`, the
+repository's configured test-source scope. The probes inspect clients they
+construct from canonical synthetic inputs and attach refusing handlers to those
+fixture clients. Production credential validation remains in `src`.
+
 The shared `Support/StaticCredentialFixture.php` loader is also used by the
 existing source regressions. It verifies the canonical fixture's complete
 60,716 bytes, SHA-256 and 319 unique IDs before decoding its PHP inputs.
@@ -38,17 +43,19 @@ worker-factory paths. It compares the fixture's original bytes and exact
 setting-only refusals with a refusing transport spy and no worker loop. It will
 not run a runtime smoke suite, acquire tools or manage a runtime/controller.
 
-The source checkpoint is preserved while the P0 documentation redesign (#315)
-takes priority. The pure preflight, core fixture matrix and refusal controls have
-source coverage. Positive Laravel/Symfony execution on the proposed complete
-dependency graph, installed metadata acceptance, final runner documentation and
-normal current-head qualification remain unfinished. The template intentionally
-has no future immutable references and must refuse before consumer autoload.
+The pure preflight, core fixture matrix and refusal controls have source
+coverage. Positive Laravel/Symfony execution on the proposed complete dependency
+graph and installed metadata acceptance remain future work. The template
+intentionally has no future immutable references and must refuse before consumer
+autoload. A source result on the repository's cached vendor does not qualify the
+proposed consumer graph.
 
 The offline loader/regression controls use an existing source vendor:
 
 ```sh
-vendor/bin/phpunit tests/StaticCredentialFixtureTest.php tests/StaticCredentialValidationTest.php
+vendor/bin/phpunit tests/StaticCredentialFixtureTest.php \
+  tests/StaticCredentialValidationTest.php tests/StaticCredentialProbeTest.php \
+  tests/StaticCredentialSubjectTest.php tests/StaticCredentialQualificationTest.php
 ```
 
 For eventual installed execution, the caller must separately freeze the runner
@@ -60,6 +67,28 @@ reflected implementation paths must bind the installed package. Synthetic
 credential values remain internal to comparisons; only case/target/role,
 verdict and setting names may be reported. No real credential or endpoint is
 needed or selected by this source work.
+
+The caller-owned packet preserves these repository-relative paths:
+
+- `scripts/conformance/qualify-static-credentials.php`
+- `scripts/conformance/Support/StaticCredential*.php`
+- `tests/fixtures/static-credential-consumer/dependency-intent.json`
+- `tests/fixtures/auth-configuration/static-credentials-v1.json`
+
+The future invocation is:
+
+```sh
+php scripts/conformance/qualify-static-credentials.php \
+  /consumer/vendor/autoload.php /packet/subject.json "$SUBJECT_SHA256"
+```
+
+The external caller binds that subject hash and runner revision before execution.
+The subject records the SDK reference, exact lock hash and packet-local archive
+receipt names/hashes. The runner verifies those bytes, the registry distribution
+identity, installed versions/references and implementation origins. Its final
+output explicitly leaves the complete advisory-enforced graph, full archive and
+installed-file seal, execution admission and real runtime authentication to the
+caller. It does not turn its own inputs into operating permission.
 
 The final combined-minor publication gates on #293 remain independent:
 published Workflow support authority, published native flat-child-all and the

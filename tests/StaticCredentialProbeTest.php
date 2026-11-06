@@ -14,8 +14,8 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Throwable;
 
-require_once dirname(__DIR__).'/scripts/Support/StaticCredentialProbe.php';
-require_once dirname(__DIR__).'/scripts/Support/StaticCredentialTransportSpy.php';
+require_once dirname(__DIR__).'/scripts/conformance/Support/StaticCredentialProbe.php';
+require_once dirname(__DIR__).'/scripts/conformance/Support/StaticCredentialTransportSpy.php';
 
 final class StaticCredentialProbeTest extends TestCase
 {

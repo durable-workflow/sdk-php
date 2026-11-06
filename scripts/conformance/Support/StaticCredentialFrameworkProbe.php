@@ -30,6 +30,7 @@ require_once __DIR__.'/StaticCredentialTransportSpy.php';
 /** Real provider/bundle construction; no handler execution, worker make/run or runtime request. */
 final class StaticCredentialFrameworkProbe
 {
+    private const BOOTSTRAP_DIRECTORY = '/bootstrap';
     /** @return array<string, array{framework: string, plane: string, surface: string, cached: bool}> */
     public static function targets(): array
     {
@@ -142,12 +143,12 @@ final class StaticCredentialFrameworkProbe
     /** @param array<string, mixed> $values */
     private static function cachedConfiguration(Application $app, string $base, array $values): void
     {
-        $app->useBootstrapPath($base.'/bootstrap');
+        $app->useBootstrapPath($base.self::BOOTSTRAP_DIRECTORY);
         $path = $app->getCachedConfigPath();
         if ($path !== $base.'/bootstrap/cache/config.php' || array_key_exists('credentials', $values)) {
             throw new StaticCredentialProbeFailure('Unexpected fixture configuration cache boundary.');
         }
-        if (!mkdir($base.'/bootstrap', 0700) || !mkdir($base.'/bootstrap/cache', 0700)) {
+        if (!mkdir($base.self::BOOTSTRAP_DIRECTORY, 0700) || !mkdir($base.'/bootstrap/cache', 0700)) {
             throw new StaticCredentialProbeFailure('Fixture cache directory creation failed.');
         }
         $bytes = '<?php return '.var_export(['durable-workflow' => $values,
@@ -215,7 +216,7 @@ final class StaticCredentialFrameworkProbe
 
     private static function removeDirectory(string $base): void
     {
-        foreach ([$base.'/bootstrap/cache/config.php', $base.'/bootstrap/cache', $base.'/bootstrap', $base] as $path) {
+        foreach ([$base.'/bootstrap/cache/config.php', $base.'/bootstrap/cache', $base.self::BOOTSTRAP_DIRECTORY, $base] as $path) {
             if (is_file($path)) {
                 unlink($path);
             } elseif (is_dir($path)) {

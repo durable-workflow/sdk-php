@@ -14,7 +14,7 @@ use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
-require_once dirname(__DIR__).'/scripts/Support/StaticCredentialQualification.php';
+require_once dirname(__DIR__).'/scripts/conformance/Support/StaticCredentialQualification.php';
 
 final class StaticCredentialQualificationTest extends TestCase
 {

@@ -52,9 +52,13 @@ final class StaticCredentialQualification
             'mode-refusal' => self::modeRefusal($case, $error),
             default => false,
         };
+        $failure = $pass ? null : 'fixture_mismatch';
+        if ($attempts !== 0) {
+            $failure = 'transport_attempted';
+        }
         return ['id' => $case['id'], 'target' => $case['target'], 'role' => $case['role'], 'plane' => $case['plane'],
             'verdict' => $pass ? 'PASS' : 'FAIL', 'setting' => $setting, 'transport_attempts' => $attempts,
-            'failure' => $pass ? null : ($attempts === 0 ? 'fixture_mismatch' : 'transport_attempted')];
+            'failure' => $failure];
     }
 
     private static function setting(?Throwable $error): ?string

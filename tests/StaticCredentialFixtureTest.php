@@ -9,7 +9,7 @@ use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
-require_once dirname(__DIR__).'/scripts/Support/StaticCredentialFixture.php';
+require_once dirname(__DIR__).'/scripts/conformance/Support/StaticCredentialFixture.php';
 
 final class StaticCredentialFixtureTest extends TestCase
 {

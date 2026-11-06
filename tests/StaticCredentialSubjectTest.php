@@ -11,7 +11,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Throwable;
 
-require_once dirname(__DIR__).'/scripts/Support/StaticCredentialSubject.php';
+require_once dirname(__DIR__).'/scripts/conformance/Support/StaticCredentialSubject.php';
 
 /** Inert input/refusal controls; no consumer autoload, solve or installed-subject success. */
 final class StaticCredentialSubjectTest extends TestCase
@@ -39,6 +39,40 @@ final class StaticCredentialSubjectTest extends TestCase
         self::assertTrue(class_exists(Client::class));
         $this->expectException(StaticCredentialProbeFailure::class);
         StaticCredentialSubject::assertFreshProcess();
+    }
+
+    public function testCliRefusesUnclosedInputsBeforeExecutingConsumerAutoload(): void
+    {
+        $directory = tempnam(sys_get_temp_dir(), 'sdk-php-credential-cli-');
+        self::assertIsString($directory);
+        unlink($directory);
+        mkdir($directory, 0700);
+        mkdir($directory.'/vendor', 0700);
+        $autoload = $directory.'/vendor/autoload.php';
+        file_put_contents($autoload, '<?php file_put_contents(__DIR__."/autoload-executed", "fixture-only");');
+        $subject = __DIR__.'/fixtures/static-credential-consumer/subject-template.json';
+        try {
+            foreach ([(string) hash_file('sha256', $subject), str_repeat('0', 64)] as $hash) {
+                $process = proc_open([PHP_BINARY, '-n', dirname(__DIR__).'/scripts/conformance/qualify-static-credentials.php',
+                    $autoload, $subject, $hash], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+                self::assertIsResource($process);
+                $stdout = stream_get_contents($pipes[1]);
+                $stderr = stream_get_contents($pipes[2]);
+                fclose($pipes[1]);
+                fclose($pipes[2]);
+                self::assertSame(2, proc_close($process));
+                self::assertSame('', $stdout);
+                self::assertSame(['qualification' => 'static-credential-fixtures-only', 'verdict' => 'REFUSED',
+                    'phase' => 'preflight'], json_decode($stderr, true, flags: JSON_THROW_ON_ERROR));
+                self::assertFileDoesNotExist($directory.'/vendor/autoload-executed');
+            }
+        } finally {
+            foreach (glob($directory.'/vendor/*') ?: [] as $file) {
+                unlink($file);
+            }
+            rmdir($directory.'/vendor');
+            rmdir($directory);
+        }
     }
 
     #[DataProvider('changedInputs')]

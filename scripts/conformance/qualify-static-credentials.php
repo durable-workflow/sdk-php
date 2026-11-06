@@ -9,7 +9,7 @@ use DurableWorkflow\Qualification\StaticCredentialQualification;
 use DurableWorkflow\Qualification\StaticCredentialSubject;
 
 if (PHP_SAPI !== 'cli' || $argc !== 4) {
-    fwrite(STDERR, "Usage: php scripts/qualify-static-credentials.php AUTOLOAD SUBJECT_JSON SUBJECT_SHA256\n");
+    fwrite(STDERR, "Usage: php scripts/conformance/qualify-static-credentials.php AUTOLOAD SUBJECT_JSON SUBJECT_SHA256\n");
     exit(2);
 }
 
@@ -18,13 +18,13 @@ require_once __DIR__.'/Support/StaticCredentialSubject.php';
 $phase = 'preflight';
 try {
     StaticCredentialSubject::assertFreshProcess();
-    $subject = StaticCredentialSubject::read($argv[1], dirname(__DIR__).'/tests/fixtures/static-credential-consumer/dependency-intent.json',
+    $subject = StaticCredentialSubject::read($argv[1], dirname(__DIR__, 2).'/tests/fixtures/static-credential-consumer/dependency-intent.json',
         $argv[2], $argv[3]);
     if (PHP_VERSION !== $subject->intent['requirements']['php']) {
         throw new StaticCredentialProbeFailure('The proposed PHP interpreter differs.');
     }
-    $fixture = new StaticCredentialFixture(dirname(__DIR__).'/tests/fixtures/auth-configuration/static-credentials-v1.json');
-    require $argv[1];
+    $fixture = new StaticCredentialFixture(dirname(__DIR__, 2).'/tests/fixtures/auth-configuration/static-credentials-v1.json');
+    require_once $argv[1];
     $facts = $subject->installed();
     require_once __DIR__.'/Support/StaticCredentialQualification.php';
     $phase = 'fixtures';

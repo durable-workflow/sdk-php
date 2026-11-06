@@ -14,6 +14,9 @@ require_once __DIR__.'/StaticCredentialProbeFailure.php';
 /** Binds caller-owned receipt bytes and installed identity; it does not solve, install or seal a graph. */
 final class StaticCredentialSubject
 {
+    private const SDK_PACKAGE = 'durable-workflow/sdk';
+    private const LARAVEL_PACKAGE = 'laravel/framework';
+    private const SYMFONY_PACKAGE = 'symfony/framework-bundle';
     /**
      * @param array<string, mixed> $intent
      * @param array<string, mixed> $data
@@ -40,7 +43,7 @@ final class StaticCredentialSubject
     public static function intent(string $path): array
     {
         $intent = self::json($path);
-        $names = ['php', 'durable-workflow/sdk', 'laravel/framework', 'symfony/framework-bundle'];
+        $names = ['php', self::SDK_PACKAGE, self::LARAVEL_PACKAGE, self::SYMFONY_PACKAGE];
         if (($intent['schema'] ?? null) !== 'durable-workflow.php-static-credential-intent/v1'
             || !is_array($intent['requirements'] ?? null) || count($intent['requirements']) !== count($names)
             || array_diff(array_keys($intent['requirements']), $names) !== []
@@ -53,7 +56,7 @@ final class StaticCredentialSubject
                 throw new StaticCredentialProbeFailure('Dependency intent requires exact stable versions.');
             }
         }
-        foreach (['laravel/framework', 'symfony/framework-bundle'] as $name) {
+        foreach ([self::LARAVEL_PACKAGE, self::SYMFONY_PACKAGE] as $name) {
             self::digest($intent['framework_source_references'][$name] ?? null, 40);
         }
         return $intent;
@@ -101,11 +104,11 @@ final class StaticCredentialSubject
             throw new StaticCredentialProbeFailure('Installed metadata came from another consumer.');
         }
         $packages = [];
-        foreach (['durable-workflow/sdk', 'laravel/framework', 'symfony/framework-bundle'] as $name) {
+        foreach ([self::SDK_PACKAGE, self::LARAVEL_PACKAGE, self::SYMFONY_PACKAGE] as $name) {
             $expected = $this->intent['requirements'][$name];
             $actual = InstalledVersions::getPrettyVersion($name);
             $reference = InstalledVersions::getReference($name);
-            $selected = $name === 'durable-workflow/sdk' ? $this->data['sdk_reference']
+            $selected = $name === self::SDK_PACKAGE ? $this->data['sdk_reference']
                 : $this->intent['framework_source_references'][$name];
             $path = InstalledVersions::getInstallPath($name);
             if (!in_array($actual, [$expected, 'v'.$expected], true) || $reference !== $selected
@@ -116,8 +119,8 @@ final class StaticCredentialSubject
         }
         $paths = $this->implementations();
         $manifest = self::json($this->vendor.'/durable-workflow/sdk/composer.json');
-        if (($manifest['extra']['durable-workflow']['product-train'] ?? null) !== $this->intent['requirements']['durable-workflow/sdk']
-            || SdkIdentity::version() !== $this->intent['requirements']['durable-workflow/sdk']) {
+        if (($manifest['extra']['durable-workflow']['product-train'] ?? null) !== $this->intent['requirements'][self::SDK_PACKAGE]
+            || SdkIdentity::version() !== $this->intent['requirements'][self::SDK_PACKAGE]) {
             throw new StaticCredentialProbeFailure('Installed release metadata differs.');
         }
         return ['packages' => $packages, 'implementation_paths' => $paths, 'caller_runner_reference' => $this->data['runner_reference'],
@@ -134,27 +137,35 @@ final class StaticCredentialSubject
             'DurableWorkflow\\Bridge\\Laravel\\DurableWorkflowServiceProvider',
             'DurableWorkflow\\Bridge\\Symfony\\DurableWorkflowBundle', 'DurableWorkflow\\Transport\\Psr18Transport'];
         foreach ($classes as $class) {
-            $file = (new ReflectionClass($class))->getFileName();
-            $actual = is_string($file) ? realpath($file) : false;
-            if ($actual === false || !str_starts_with($actual, $this->vendor.'/durable-workflow/sdk/src/')) {
+            $actual = self::implementationFile($class);
+            if (!str_starts_with($actual, $this->vendor.'/durable-workflow/sdk/src/')) {
                 throw new StaticCredentialProbeFailure('A credential implementation came from outside the installed SDK.');
             }
             $paths[$class] = substr($actual, strlen($this->vendor) + 1);
         }
-        $frameworks = ['Illuminate\\Foundation\\Application' => 'laravel/framework',
-            'Symfony\\Bundle\\FrameworkBundle\\FrameworkBundle' => 'symfony/framework-bundle'];
+        $frameworks = ['Illuminate\\Foundation\\Application' => self::LARAVEL_PACKAGE,
+            'Symfony\\Bundle\\FrameworkBundle\\FrameworkBundle' => self::SYMFONY_PACKAGE];
         foreach ($frameworks as $class => $package) {
-            if (!class_exists($class)) {
-                throw new StaticCredentialProbeFailure('A required framework implementation is absent.');
-            }
-            $file = (new ReflectionClass($class))->getFileName();
-            $actual = is_string($file) ? realpath($file) : false;
-            if ($actual === false || !str_starts_with($actual, $this->vendor.'/'.$package.'/')) {
+            $actual = self::implementationFile($class);
+            if (!str_starts_with($actual, $this->vendor.'/'.$package.'/')) {
                 throw new StaticCredentialProbeFailure('A framework implementation came from another package.');
             }
             $paths[$class] = substr($actual, strlen($this->vendor) + 1);
         }
         return $paths;
+    }
+
+    private static function implementationFile(string $class): string
+    {
+        if (!class_exists($class)) {
+            throw new StaticCredentialProbeFailure('A required consumer implementation is absent.');
+        }
+        $file = (new ReflectionClass($class))->getFileName();
+        $actual = is_string($file) ? realpath($file) : false;
+        if ($actual === false) {
+            throw new StaticCredentialProbeFailure('A consumer implementation has no regular source file.');
+        }
+        return $actual;
     }
 
     /**
@@ -178,8 +189,8 @@ final class StaticCredentialSubject
             throw new StaticCredentialProbeFailure('Consumer intent or normal advisory policy differs.');
         }
         foreach ($lock['packages'] ?? [] as $package) {
-            if (($package['name'] ?? null) === 'durable-workflow/sdk'
-                && ($package['version'] ?? null) === $intent['requirements']['durable-workflow/sdk']
+            if (($package['name'] ?? null) === self::SDK_PACKAGE
+                && ($package['version'] ?? null) === $intent['requirements'][self::SDK_PACKAGE]
                 && ($package['dist']['type'] ?? null) === 'zip'
                 && ($package['dist']['reference'] ?? null) === $subject['sdk_reference']
                 && ($package['dist']['url'] ?? null) === 'https://api.github.com/repos/durable-workflow/sdk-php/zipball/'.$subject['sdk_reference']) {
