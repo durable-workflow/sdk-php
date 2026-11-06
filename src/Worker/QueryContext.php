@@ -4,9 +4,18 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Worker;
 
+use DateTimeImmutable;
+use DurableWorkflow\Exception\ReplayClockUnavailable;
+
 /** Immutable committed state supplied to query and update handlers. */
 final class QueryContext
 {
+    /** Query and update clocks require a separately validated consumed prefix. */
+    public function replayNow(): DateTimeImmutable
+    {
+        throw new ReplayClockUnavailable('This callback has no validated consumed replay-time prefix.');
+    }
+
     /**
      * @param list<array<string, mixed>> $history
      * @param array<string, mixed> $task
