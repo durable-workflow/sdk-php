@@ -19,13 +19,21 @@ final class PollTransport
         $path = parse_url($uri, PHP_URL_PATH);
         if (strtoupper($method) === 'POST' && is_string($path)) {
             foreach (self::KINDS as $kind) {
-                if (str_ends_with($path, '/worker/'.$kind.'-tasks/poll')) {
+                if (str_ends_with($path, '/worker/'.$kind.'-tasks/poll')
+                    || str_ends_with($path, '/worker/'.$kind.'-tasks/offers')) {
                     return $kind;
                 }
             }
         }
 
         return null;
+    }
+
+    /** Payload observers and claim supervision use the original logical poll. */
+    public static function logicalPath(string $path): string
+    {
+        return self::taskKind('POST', $path) !== null && str_ends_with($path, '/offers')
+            ? substr($path, 0, -7).'/poll' : $path;
     }
 
     /** @return array{status: int, headers: array<string, string>, body: array<string, mixed>} */

@@ -51,6 +51,27 @@ final class WorkerPollTransportTest extends TestCase
         return [['workflow'], ['activity'], ['query'], ['update-validation']];
     }
 
+    #[DataProvider('pollKinds')]
+    public function testOfferAndAcceptanceKeepProgressNegotiationAndTheirAbsoluteBudgets(string $kind): void
+    {
+        $calls = [];
+        $http = new GuzzleClient(['handler' => static function (RequestInterface $request, array $options) use (&$calls) {
+            $calls[] = [$request, $options];
+            return Create::promiseFor(new Response(200, ['Content-Type' => self::MEDIA_TYPE], self::frame(200)));
+        }]);
+        $transport = new Psr18Transport($http);
+        $uri = 'https://server.example/api/worker/'.$kind.'-tasks/offers';
+        $transport->send('POST', $uri, [], ['timeout_seconds' => 4, 'poll_request_id' => 'same-poll']);
+        $transport->send('POST', $uri, [], ['timeout_seconds' => 0, 'poll_request_id' => 'same-poll', 'task_offer_token' => 'same-packet']);
+        self::assertSame(9, $calls[0][1]['timeout']);
+        self::assertSame(5, $calls[1][1]['timeout']);
+        foreach ($calls as [$request, $options]) {
+            self::assertSame(self::MEDIA_TYPE.', application/json;q=0.9', $request->getHeaderLine('Accept'));
+            self::assertFalse($options['stream']);
+        }
+        self::assertSame('same-packet', json_decode((string) $calls[1][0]->getBody(), true)['task_offer_token']);
+    }
+
     public function testAShorterInjectedGuzzleDeadlineIsPreserved(): void
     {
         $observed = null;

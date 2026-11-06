@@ -119,6 +119,7 @@ final class ClientContractTest extends TestCase
                     'memo_upserts',
                     'typed_search_attributes',
                     'durable_selection',
+                    'task_delivery_offers',
                 ],
                 'capability_manifest' => [
                     'local_activities' => [
@@ -140,6 +141,7 @@ final class ClientContractTest extends TestCase
                 'max_concurrent_workflow_tasks' => 1,
                 'max_concurrent_activity_tasks' => 1,
                 'max_concurrent_worker_sessions' => 10,
+                'process_metrics' => ['process_id' => getmypid(), 'process_uptime_seconds' => 0],
             ],
         ], $transport->requests[0]);
     }

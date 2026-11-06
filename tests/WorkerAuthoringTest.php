@@ -182,6 +182,7 @@ final class WorkerAuthoringTest extends TestCase
                     'worker_sessions',
                     'sticky_execution',
                     'cross_kind_poll_wake',
+                    'task_delivery_offers',
                 ],
                 'capability_manifest' => [
                     'local_activities' => [
@@ -204,6 +205,7 @@ final class WorkerAuthoringTest extends TestCase
                 'max_concurrent_activity_tasks' => 1,
                 'max_concurrent_worker_sessions' => 10,
                 'build_id' => 'release-a',
+                'process_metrics' => ['process_id' => getmypid(), 'process_uptime_seconds' => 0],
             ],
         ], $transport->requests[0]);
     }

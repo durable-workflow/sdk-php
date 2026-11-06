@@ -145,7 +145,11 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
                 bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout, control: $control);
             $this->responseStatus = $response->getStatusCode();
 
-            return $this->decodeJsonResponse($response, $poll);
+            $acceptance = PollTransport::taskKind($method, $uri) !== null
+                && str_ends_with((string) parse_url($uri, PHP_URL_PATH), '/offers')
+                && is_string($body['task_offer_token'] ?? null) && $body['task_offer_token'] !== '';
+
+            return $this->decodeJsonResponse($response, $poll, $acceptance);
         } catch (TransportException $exception) {
             throw $exception;
         } catch (JsonException $exception) {
@@ -169,15 +173,16 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     }
 
     /** @return array<string, mixed>|list<mixed>|null */
-    private function decodeJsonResponse(ResponseInterface $response, bool $poll = false): ?array
+    private function decodeJsonResponse(ResponseInterface $response, bool $poll = false, bool $acceptance = false): ?array
     {
         $rawBody = (string) $response->getBody();
         $status = $response->getStatusCode();
         $mediaType = strtolower(trim(explode(';', $response->getHeaderLine('Content-Type'), 2)[0]));
+        $proof = $acceptance ? TaskDeliveryRefusal::fromJson($status, $rawBody, $poll && $mediaType === PollTransport::MEDIA_TYPE) : null;
         if ($poll && $mediaType === PollTransport::MEDIA_TYPE) {
             $frame = PollTransport::decode($rawBody, $status);
             if ($frame['status'] >= 300) {
-                throw TransportException::fromResponse($frame['status'], $frame['body'], $rawBody, $frame['headers']);
+                throw $this->responseFailure($frame['status'], $frame['body'], $rawBody, $frame['headers'], $acceptance, $proof);
             }
 
             return $frame['body'];
@@ -186,7 +191,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             // An upstream proxy can return HTML or an empty body. Preserve
             // its status without interpreting it as a successful protocol reply.
             $decoded = json_decode($rawBody, true);
-            throw TransportException::fromResponse($status, is_array($decoded) ? $decoded : null, $rawBody);
+            throw $this->responseFailure($status, is_array($decoded) ? $decoded : null, $rawBody, [], $acceptance, $proof);
         }
 
         $decoded = $rawBody === '' ? null : json_decode($rawBody, true, 512, JSON_THROW_ON_ERROR);
@@ -195,6 +200,17 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         }
 
         return $decoded;
+    }
+
+    /**
+     * @param array<string, mixed>|list<mixed>|null $body
+     * @param array<string, string> $headers
+     */
+    private function responseFailure(int $status, ?array $body, string $raw, array $headers, bool $acceptance, ?TaskDeliveryRefusal $proof): TransportException
+    {
+        return $acceptance
+            ? new TransportException('Task acceptance is not confirmed.', $status, $body, headers: $headers, taskDeliveryRefusal: $proof)
+            : TransportException::fromResponse($status, $body, $raw, $headers);
     }
 
     /**

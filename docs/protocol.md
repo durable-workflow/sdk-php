@@ -198,6 +198,32 @@ may have committed a claim before the connection disappeared, so `task=null`
 does not establish that no lease exists. This does not make arbitrary database
 errors or unrelated structured HTTP 500/503 responses retryable.
 
+With negotiated `task_delivery`, worker polls use `/offers`. An offer alone
+grants no execution authority. Positive acceptance includes the original
+registration token and selected offer packet; its request body remains fixed
+through uncertain replies. Managed workers retain this state across client
+clones and honor the normal retry backoff. If using the low-level
+`poll*TaskResponse()` methods, catch `TaskDeliveryUncertain` and retry with its
+`details['poll_request_id']` on the same Client. An ordinary empty response to
+an acceptance does not prove that no claim committed. Definitive refusal requires
+HTTP `409` and exactly `task`, `poll_status`, and `reason`, with literal
+`task: null`. The only accepted status/reason pairs are
+`task_offer_expired` / `task_offer_expired` and
+`stale_worker_registration` / `worker_registration_lost_authority`.
+Expiry releases only the selected packet; authority loss ends only its original
+registration incarnation. Other pending requests and replacement registrations
+remain separate. The Server must establish these outcomes from receipt-first
+reconciliation and authoritative claim/registration state.
+
+The default transport checks the complete original UTF-8 JSON response for
+duplicate decoded member names before associative decoding. This also applies
+inside a progress envelope. Invalid bytes, trailing data, extra fields, mixed
+pairs, conflicting exception fields and successful terminal hints retain the
+selected packet without running a handler. Discovery before selection keeps its
+existing poll classification. A custom transport must provide original-byte
+validation through `Transport\TaskDeliveryRefusal::fromJson()` and attach that
+evidence to `TransportException`; a decoded-only refusal remains uncertain.
+
 Before replaying or completing a workflow task, the managed worker requires a
 successful lease-renewal response whose task ID, attempt, and lease owner match
 the current claim. A typed `renewed=false`, `retryable=true` response is retried

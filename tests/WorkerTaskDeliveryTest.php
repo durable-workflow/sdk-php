@@ -1,0 +1,422 @@
+<?php
+
+declare(strict_types=1);
+
+namespace DurableWorkflow\Tests;
+
+use DurableWorkflow\Client;
+use DurableWorkflow\Exception\ServerException;
+use DurableWorkflow\Exception\TaskDeliveryUncertain;
+use DurableWorkflow\Exception\TransportException;
+use DurableWorkflow\Tests\Support\FakeTransport;
+use DurableWorkflow\Tests\Support\RecordingMetricsRecorder;
+use DurableWorkflow\Transport\PollTransport;
+use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\PollResponse;
+use DurableWorkflow\Worker\TaskDelivery;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\TestCase;
+
+final class WorkerTaskDeliveryTest extends TestCase
+{
+    #[DataProvider('metricReceipts')]
+    public function testMetricsKeepOneLogicalPollAndValidateBeforePayloadObservation(bool $invalidFirst): void
+    {
+        $first = self::claimed('workflow');
+        if ($invalidFirst) {
+            unset($first['task']['task_kind']);
+        }
+        $transport = new FakeTransport([self::registration(), self::offer('workflow'), $first, self::claimed('workflow')]);
+        $recorder = new RecordingMetricsRecorder();
+        $observed = 0;
+        $client = (new Client('https://server.example', transport: $transport, metrics: $recorder))->withWorkerPayloadObserver(
+            static function (string $path, ?array $body, array $response) use (&$observed): ?\Closure {
+                if ($response['task'] ?? null) { ++$observed; }
+                return null;
+            });
+        $client->registerWorker('worker', 'orders', [], []);
+        if ($invalidFirst) {
+            try { self::poll($client, 'workflow'); self::fail('The selected receipt must carry its kind.'); }
+            catch (TaskDeliveryUncertain) {}
+            self::assertSame(0, $observed);
+            self::assertSame(self::claimed('workflow'), self::poll(clone $client, 'workflow'));
+            self::assertSame($transport->requests[2], $transport->requests[3]);
+        } else {
+            self::assertSame(self::claimed('workflow'), self::poll($client, 'workflow'));
+        }
+        self::assertSame(1, $observed);
+        $polls = array_values(array_filter($recorder->events, static fn (array $event): bool =>
+            $event['name'] === 'durable_workflow_client_requests' && $event['tags']['route'] === '/worker/workflow-tasks/poll'));
+        self::assertCount($invalidFirst ? 2 : 1, $polls);
+        self::assertCount($invalidFirst ? 4 : 3, $transport->requests);
+        self::assertStringNotContainsString('opaque-first-packet', json_encode($recorder->events, JSON_THROW_ON_ERROR));
+    }
+
+    /** @return array<array{bool}> */
+    public static function metricReceipts(): array { return [[false], [true]]; }
+
+    #[DataProvider('kinds')]
+    public function testOnlyPositiveAcceptanceReturnsAnExecutableTask(string $kind): void
+    {
+        $transport = new FakeTransport([self::registration(), self::offer($kind), self::claimed($kind)]);
+        $observed = [];
+        $client = (new Client('https://server.example', transport: $transport))->withWorkerPayloadObserver(
+            static function (string $path, ?array $body, array $response) use (&$observed): ?\Closure {
+                if ($response['task'] ?? null) {
+                    $observed[] = $path;
+                }
+                return null;
+            });
+        $client->registerWorker('worker', 'orders', [], []);
+        self::assertSame(self::claimed($kind), self::poll($client, $kind));
+        self::assertCount(3, $transport->requests);
+        self::assertSame(['/worker/'.$kind.'-tasks/poll'], $observed);
+        $initial = $transport->requests[1];
+        $accept = $transport->requests[2];
+        self::assertStringEndsWith('/worker/'.$kind.'-tasks/offers', $initial['uri']);
+        self::assertSame($initial['uri'], $accept['uri']);
+        self::assertSame(TaskDelivery::VERSION, $initial['headers'][TaskDelivery::HEADER]);
+        self::assertSame($initial['headers'], $accept['headers']);
+        self::assertSame(4, $initial['body']['timeout_seconds']);
+        self::assertSame(array_replace($initial['body'], ['timeout_seconds' => 0, 'task_offer_token' => 'opaque-first-packet']), $accept['body']);
+        self::assertSame(str_repeat('a', 32), $initial['body']['registration_token']);
+        self::assertSame(getmypid(), $transport->requests[0]['body']['process_metrics']['process_id']);
+        self::assertArrayNotHasKey(TaskDelivery::HEADER, $transport->requests[0]['headers']);
+    }
+
+    #[DataProvider('uncertainOutcomes')]
+    public function testUncertainRepliesRetryOnlyTheFirstSelectedPacket(TransportException|array|null $outcome): void
+    {
+        $transport = new FakeTransport([self::registration(), self::offer('workflow'), $outcome, self::claimed('workflow')]);
+        $client = new Client('https://server.example', transport: $transport);
+        $client->registerWorker('worker', 'orders', [], []);
+        try {
+            self::poll($client, 'workflow');
+            self::fail('The uncertain acceptance must not authorize execution or start another poll.');
+        } catch (TaskDeliveryUncertain $error) {
+            self::assertTrue(PollResponse::isTransientFailure($error));
+            self::assertSame('fixed-poll', $error->details['poll_request_id']);
+            self::assertArrayNotHasKey('task_offer_token', $error->details);
+        }
+        // A clone and changed wait/page inputs cannot replace an unresolved packet.
+        $clone = $client->withWorkerPollCutoffObserver(static function (): void {});
+        self::assertSame(self::claimed('workflow'), $clone->pollWorkflowTaskResponse('worker', 'orders', 19, 'fixed-poll', 30));
+        self::assertCount(4, $transport->requests);
+        self::assertSame($transport->requests[2], $transport->requests[3]);
+        self::assertSame('opaque-first-packet', $transport->requests[3]['body']['task_offer_token']);
+    }
+
+    public static function uncertainOutcomes(): iterable
+    {
+        yield 'lost response' => [new TransportException('Connection reset.', transientConnectionFailure: true)];
+        yield 'gateway timeout' => [new TransportException('Gateway timeout.', 504)];
+        yield 'older node' => [new TransportException('Not found.', 404)];
+        yield 'structured backend failure' => [new TransportException('Backend unavailable.', 503,
+            ['task' => null, 'reason' => 'backend_unavailable', 'retryable' => true])];
+        yield 'lock pressure' => [new TransportException('Lock pressure.', 503,
+            ['task' => null, 'reason' => 'backend_lock_pressure', 'poll_status' => 'backend_lock_pressure', 'retry_after_seconds' => 1])];
+        yield 'packet unavailable on another node' => [new TransportException('Unavailable.', 409,
+            ['task' => null, 'reason' => 'task_offer_unavailable'])];
+        yield 'empty is not proof of no claim' => [['task' => null, 'poll_status' => 'empty']];
+        yield 'malformed response' => [null];
+        yield 'wrong task' => [['task' => ['task_id' => 'other', 'lease_owner' => 'worker']]];
+        yield 'wrong owner' => [['task' => ['task_id' => 'task', 'lease_owner' => 'other']]];
+    }
+
+    #[DataProvider('overlappingPolls')]
+    public function testOverlappingPollsHaveOnlyOneAcceptanceOwner(string $kind, bool $clone, string $pauseAt): void
+    {
+        $offers = $acceptances = 0;
+        $transport = new FakeTransport(handler: static function (string $method, string $uri, array $headers, ?array $body) use ($kind, $pauseAt, &$offers, &$acceptances): array {
+            if (str_ends_with($uri, '/worker/register')) { return self::registration(); }
+            if (isset($body['task_offer_token'])) {
+                if (++$acceptances === 1 && $pauseAt === 'accept') { \Fiber::suspend('accept'); }
+                return self::claimed($kind);
+            }
+            if (++$offers === 1 && $pauseAt === 'offer') { \Fiber::suspend('offer'); }
+            return self::offer($kind);
+        });
+        $client = new Client('https://server.example', transport: $transport);
+        $client->registerWorker('worker', 'orders', [], []);
+        $other = $clone ? clone $client : $client;
+        $owner = new \Fiber(static fn (): array => self::poll($client, $kind));
+        self::assertSame($pauseAt, $owner->start());
+        $contender = new \Fiber(static fn (): array => self::poll($other, $kind));
+        $contender->start();
+        self::assertTrue($contender->isTerminated());
+        $owner->resume();
+        self::assertSame(self::claimed($kind), $owner->getReturn());
+        self::assertSame(['task' => null], $contender->getReturn());
+        self::assertSame(1, $offers);
+        self::assertSame(1, $acceptances);
+    }
+
+    #[DataProvider('overlappingClients')]
+    public function testUncertainAcceptanceOwnerReleasesTheGateWithoutReplacingItsPacket(string $kind, bool $clone): void
+    {
+        $offers = $acceptances = 0;
+        $transport = new FakeTransport(handler: static function (string $method, string $uri, array $headers, ?array $body) use ($kind, &$offers, &$acceptances): array {
+            if (str_ends_with($uri, '/worker/register')) { return self::registration(); }
+            if (!isset($body['task_offer_token'])) { return self::offer($kind, 'packet-'.++$offers); }
+            if (++$acceptances === 1) {
+                \Fiber::suspend('accept');
+                throw new TransportException('Gateway timeout.', 504);
+            }
+            return self::claimed($kind);
+        });
+        $client = new Client('https://server.example', transport: $transport);
+        $client->registerWorker('worker', 'orders', [], []);
+        $other = $clone ? clone $client : $client;
+        $owner = new \Fiber(static function () use ($client, $kind): ?TaskDeliveryUncertain {
+            try { self::poll($client, $kind); }
+            catch (TaskDeliveryUncertain $error) { return $error; }
+            return null;
+        });
+        self::assertSame('accept', $owner->start());
+        $contender = new \Fiber(static fn (): array => self::poll($other, $kind));
+        $contender->start();
+        $owner->resume();
+        self::assertInstanceOf(TaskDeliveryUncertain::class, $owner->getReturn());
+        self::assertSame(['task' => null], $contender->getReturn());
+        self::assertSame(self::claimed($kind), self::poll($other, $kind));
+        self::assertSame(1, $offers);
+        self::assertSame(2, $acceptances);
+        self::assertSame($transport->requests[2], $transport->requests[3]);
+    }
+
+    public static function overlappingClients(): iterable
+    {
+        foreach (['workflow', 'activity', 'query'] as $kind) {
+            yield $kind.' same client' => [$kind, false];
+            yield $kind.' clone' => [$kind, true];
+        }
+    }
+
+    #[DataProvider('overlappingClients')]
+    public function testAnAcceptanceOwnerDoesNotBlockAnotherLogicalPoll(string $kind, bool $clone): void
+    {
+        $acceptances = 0;
+        $idField = $kind === 'query' ? 'query_task_id' : 'task_id';
+        $transport = new FakeTransport(handler: static function (string $method, string $uri, array $headers, ?array $body) use ($kind, $idField, &$acceptances): array {
+            if (str_ends_with($uri, '/worker/register')) { return self::registration(); }
+            if (!isset($body['task_offer_token'])) {
+                $response = self::offer($kind);
+                $response['task_offer']['task_id'] = $body['poll_request_id'];
+                return $response;
+            }
+            if (++$acceptances === 1) { \Fiber::suspend('accept'); }
+            $response = self::claimed($kind);
+            $response['task'][$idField] = $body['poll_request_id'];
+            return $response;
+        });
+        $client = new Client('https://server.example', transport: $transport);
+        $client->registerWorker('worker', 'orders', [], []);
+        $other = $clone ? clone $client : $client;
+        $owner = new \Fiber(static fn (): array => self::poll($client, $kind));
+        self::assertSame('accept', $owner->start());
+        self::assertSame('other-poll', self::poll($other, $kind, 'other-poll')['task'][$idField]);
+        $owner->resume();
+        self::assertSame('fixed-poll', $owner->getReturn()['task'][$idField]);
+        self::assertSame(2, $acceptances);
+    }
+
+    public static function overlappingPolls(): iterable
+    {
+        foreach (self::overlappingClients() as $name => $arguments) {
+            foreach (['offer', 'accept'] as $phase) {
+                yield $name.' during '.$phase => [...$arguments, $phase];
+            }
+        }
+    }
+
+    public function testAnOlderNodeCannotDowngradeTheNegotiatedEndpoint(): void
+    {
+        $transport = new FakeTransport([self::registration(), new TransportException('Not found.', 404), ['task' => null]]);
+        $client = new Client('https://server.example', transport: $transport);
+        $client->registerWorker('worker', 'orders', [], []);
+        try {
+            self::poll($client, 'activity');
+            self::fail('Negotiated delivery cannot fall back to a legacy immediate claim.');
+        } catch (TaskDeliveryUncertain) {
+            self::assertSame(['task' => null], self::poll($client, 'activity'));
+        }
+        self::assertSame($transport->requests[1], $transport->requests[2]);
+        self::assertStringEndsWith('/activity-tasks/offers', $transport->requests[2]['uri']);
+    }
+
+    private static function refusal(string $status, string $reason): TransportException
+    {
+        $body = ['task' => null, 'poll_status' => $status, 'reason' => $reason];
+        return new TransportException('Synthetic refusal.', 409, $body,
+            taskDeliveryRefusal: \DurableWorkflow\Transport\TaskDeliveryRefusal::fromJson(409, json_encode($body, JSON_THROW_ON_ERROR)));
+    }
+
+    public function testAConfirmedExpiryReleasesTheSelectedPacket(): void
+    {
+        $transport = new FakeTransport([self::registration(), self::offer('workflow'),
+            self::refusal('task_offer_expired', 'task_offer_expired'),
+            self::offer('workflow', 'second-packet'), self::claimed('workflow')]);
+        $client = new Client('https://server.example', transport: $transport);
+        $client->registerWorker('worker', 'orders', [], []);
+        self::assertSame('empty', self::poll($client, 'workflow')['poll_status']);
+        self::assertSame(self::claimed('workflow'), self::poll($client, 'workflow'));
+        self::assertArrayNotHasKey('task_offer_token', $transport->requests[3]['body']);
+        self::assertSame('second-packet', $transport->requests[4]['body']['task_offer_token']);
+    }
+
+    public function testRegistrationCannotDowngradeAnUnresolvedAcceptance(): void
+    {
+        $transport = new FakeTransport([self::registration(), self::offer('workflow'),
+            new TransportException('Gateway timeout.', 504), ['registered' => true], self::claimed('workflow')]);
+        $client = new Client('https://server.example', transport: $transport);
+        $client->registerWorker('worker', 'orders', [], []);
+        try { self::poll($client, 'workflow'); self::fail('Expected an uncertain acceptance.'); }
+        catch (TaskDeliveryUncertain) {}
+        try { $client->registerWorker('worker', 'orders', [], []); self::fail('Expected a rejected downgrade.'); }
+        catch (ServerException $error) { self::assertSame('invalid_task_delivery_capability', $error->reason); }
+        self::assertSame(self::claimed('workflow'), self::poll($client, 'workflow'));
+        self::assertSame($transport->requests[2], $transport->requests[4]);
+    }
+
+    public function testAnAuthoritativeDiscoveryWorkerStopNeedsNoAcceptance(): void
+    {
+        $terminal = ['task' => null, 'poll_status' => 'draining', 'reason' => 'worker_draining'];
+        $transport = new FakeTransport([self::registration(),
+            new TransportException('Worker is draining.', 409, $terminal)]);
+        $client = new Client('https://server.example', transport: $transport);
+        $client->registerWorker('worker', 'orders', [], []);
+        self::assertSame($terminal, self::poll($client, 'workflow'));
+        self::assertTrue(PollResponse::isTerminal($terminal));
+        self::assertCount(2, $transport->requests);
+        self::assertArrayNotHasKey('task_offer_token', $transport->requests[1]['body']);
+    }
+
+    public function testReplacementRegistrationDiscardsOnlyTheOldIncarnationsPacket(): void
+    {
+        $replacement = self::registration();
+        $replacement['registration_token'] = str_repeat('b', 32);
+        $transport = new FakeTransport([self::registration(), self::offer('activity'),
+            new TransportException('Gateway timeout.', 504), $replacement, self::offer('activity', 'replacement-packet'), self::claimed('activity')]);
+        $client = new Client('https://server.example', transport: $transport);
+        $client->registerWorker('worker', 'orders', [], []);
+        try { self::poll($client, 'activity'); self::fail('Expected an uncertain acceptance.'); }
+        catch (TaskDeliveryUncertain) {}
+        $client->registerWorker('worker', 'orders', [], []);
+        self::assertSame(self::claimed('activity'), self::poll($client, 'activity'));
+        self::assertSame(str_repeat('b', 32), $transport->requests[4]['body']['registration_token']);
+        self::assertArrayNotHasKey('task_offer_token', $transport->requests[4]['body']);
+        self::assertSame('replacement-packet', $transport->requests[5]['body']['task_offer_token']);
+    }
+
+    #[DataProvider('legacyRegistrations')]
+    public function testLegacyDeliveryIsChosenOnlyAtRegistration(array $registration, string $protocol, ?array $capabilities): void
+    {
+        $transport = new FakeTransport([$registration, ['task' => null]]);
+        $client = new Client('https://server.example', transport: $transport, workerProtocolVersion: $protocol);
+        if ($capabilities === null) {
+            $client->registerWorker('worker', 'orders', [], []);
+        } else {
+            $client->registerWorker('worker', 'orders', [], [], $capabilities);
+        }
+        self::poll($client, 'workflow');
+        self::assertStringEndsWith('/workflow-tasks/poll', $transport->requests[1]['uri']);
+        self::assertArrayNotHasKey(TaskDelivery::HEADER, $transport->requests[1]['headers']);
+        if ($protocol === '1.19') {
+            self::assertNotContains(TaskDelivery::CAPABILITY, $transport->requests[0]['body']['capabilities']);
+        }
+    }
+
+    public static function legacyRegistrations(): iterable
+    {
+        yield 'no server feature' => [['registered' => true], '1.20', null];
+        yield 'explicit worker opt-out' => [self::registration(), '1.20', ['query_tasks']];
+        yield 'older protocol' => [self::registration(), '1.19', null];
+    }
+
+    public function testAContradictoryOfferCannotReachPayloadOrExecutionObservers(): void
+    {
+        $contradictory = self::claimed('workflow') + ['task_offer' => self::offer('workflow')['task_offer']];
+        $transport = new FakeTransport([self::registration(), $contradictory]);
+        $claims = 0;
+        $client = (new Client('https://server.example', transport: $transport))->withWorkerPayloadObserver(
+            static function (string $path, ?array $body, array $response) use (&$claims): ?\Closure {
+                if ($response['task'] ?? null) { ++$claims; }
+                return null;
+            });
+        $client->registerWorker('worker', 'orders', [], []);
+        try {
+            self::poll($client, 'workflow');
+            self::fail('A contradictory offer cannot authorize a task.');
+        } catch (ServerException $error) {
+            self::assertSame('invalid_task_delivery_response', $error->reason);
+        }
+        self::assertSame(0, $claims);
+        self::assertCount(2, $transport->requests);
+    }
+
+    public function testTheManagedWorkerRetainsItsLogicalPollAfterAnUncertainAcceptance(): void
+    {
+        $now = 0.0;
+        $retries = [];
+        $transport = new FakeTransport([self::registration(), self::offer('workflow'),
+            new TransportException('Not found.', 404),
+            self::refusal('stale_worker_registration', 'worker_registration_lost_authority')]);
+        $worker = new Worker(new Client('https://server.example', transport: $transport), 'orders', workerId: 'worker',
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $microseconds) use (&$now): void { $now += $microseconds / 1_000_000; },
+            transientPollRetryObserver: static function (string $kind, int $attempt, float $delay, ServerException $error) use (&$retries): void {
+                $retries[] = [$kind, $attempt, $error::class];
+            });
+        $worker->run(4);
+        self::assertSame([['workflow', 1, TaskDeliveryUncertain::class]], $retries);
+        self::assertSame($transport->requests[2], $transport->requests[3]);
+        self::assertContains(TaskDelivery::CAPABILITY, $transport->requests[0]['body']['capabilities']);
+        self::assertCount(4, $transport->requests);
+    }
+
+    public function testOfferTransportUsesTheSameProgressAndLogicalPathForAllKinds(): void
+    {
+        foreach (['workflow', 'activity', 'query', 'update-validation'] as $kind) {
+            $path = '/worker/'.$kind.'-tasks/offers';
+            self::assertSame($kind, PollTransport::taskKind('POST', $path));
+            self::assertSame('/worker/'.$kind.'-tasks/poll', PollTransport::logicalPath($path));
+            self::assertNull(PollTransport::taskKind('GET', $path));
+        }
+    }
+
+    public static function kinds(): array { return [['workflow'], ['activity'], ['query']]; }
+
+    private static function poll(Client $client, string $kind, string $pollId = 'fixed-poll'): array
+    {
+        return match ($kind) {
+            'workflow' => $client->pollWorkflowTaskResponse('worker', 'orders', 4, $pollId),
+            'activity' => $client->pollActivityTaskResponse('worker', 'orders', 4, $pollId),
+            'query' => $client->pollQueryTaskResponse('worker', 'orders', 4, $pollId),
+        };
+    }
+
+    private static function offer(string $kind, string $token = 'opaque-first-packet'): array
+    {
+        return ['task' => null, 'poll_status' => 'offered', 'task_offer' => [
+            'schema' => TaskDelivery::SCHEMA, 'task_kind' => $kind, 'task_id' => 'task',
+            'token' => $token, 'expires_at_ms' => 1000,
+        ]];
+    }
+
+    private static function claimed(string $kind): array
+    {
+        return ['task' => [($kind === 'query' ? 'query_task_id' : 'task_id') => 'task', 'lease_owner' => 'worker', 'task_kind' => $kind]];
+    }
+
+    private static function registration(): array
+    {
+        return ['registered' => true, 'registration_token' => str_repeat('a', 32), 'heartbeat_interval_seconds' => 10,
+            'server_capabilities' => ['task_delivery' => [
+                'schema' => TaskDelivery::SCHEMA, 'supported' => true, 'minimum_protocol_version' => '1.20',
+                'worker_capability' => TaskDelivery::CAPABILITY, 'header' => TaskDelivery::HEADER,
+                'version' => TaskDelivery::VERSION, 'endpoint_suffix' => '/offers',
+                'acceptance_timeout_seconds' => 2, 'unaccepted_offer_reserves_task' => false,
+            ], 'worker_deregistration_fencing' => ['schema' => 'durable-workflow.v2.worker-deregistration.v1',
+                'supported' => true, 'endpoint' => '/worker/registrations/{workerId}/deregister', 'receipt_retention_seconds' => 600]]];
+    }
+}
