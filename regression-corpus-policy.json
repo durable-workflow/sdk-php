@@ -151,6 +151,9 @@
         },
         {
           "glob": "src/Worker/ChildReplayClockEvidence.php"
+        },
+        {
+          "glob": "src/Worker/ConditionReplayClockEvidence.php"
         }
       ]
     }

@@ -675,6 +675,18 @@ final class ReplayRegressionFixture
 
                 return $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name, $token, $version]);
             },
+            'golden.business-replay-clock-condition' => static function (WorkflowContext $context): array {
+                $predicate = static fn (): bool => true;
+                $outcomes = [];
+                for ($index = 0; $index < 2; ++$index) {
+                    $value = $context->waitCondition($predicate, key: 'clock-condition', timeout: 5);
+                    try { $time = $context->replayNow()->format('Y-m-d\TH:i:s.uP'); }
+                    catch (\DurableWorkflow\Exception\ReplayClockUnavailable) { $time = null; }
+                    $outcomes[] = ['outcome' => $value, 'time' => $time];
+                }
+
+                return $outcomes;
+            },
             'golden.business-replay-clock-child' => static function (WorkflowContext $context, int $count = 4): array {
                 $outcomes = [];
                 for ($index = 0; $index < $count; ++$index) {
