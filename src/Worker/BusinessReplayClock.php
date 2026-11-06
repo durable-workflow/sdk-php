@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace DurableWorkflow\Worker;
 
 use DateTimeImmutable;
+use Closure;
 use DurableWorkflow\Exception\ReplayClockUnavailable;
+use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use Throwable;
 
 /** @internal Business time is separate from cancellation's monotonic budget clock. */
 final class BusinessReplayClock
@@ -107,6 +110,85 @@ final class BusinessReplayClock
         };
     }
 
+    /** @param list<array{step: array<string, mixed>, path: list<array<string, mixed>>, offset: int}> $members
+     * @param Closure(array<string, mixed>, list<array<string, mixed>>): bool $pathMatches
+     */
+    public function consumeGroup(array $members, int $size, Closure $pathMatches, ?int $failedOrder = null): void
+    {
+        $this->time = null;
+        if (!ReplayClockHistory::identity($this->workflowId) || !ReplayClockHistory::identity($this->runId)
+            || ($this->redriveClaimed && $this->sourceRun === null)
+            || ($failedOrder === null && count($members) !== $size)) {
+            return;
+        }
+        $candidates = [];
+        foreach ($members as $member) {
+            if ($failedOrder !== null && !($member['step']['failure'] instanceof Throwable)) {
+                continue;
+            }
+            $time = $this->groupMemberTime($member['step'], $member['path'], $pathMatches);
+            if ($time === null) {
+                return;
+            }
+            $candidates[] = ['time' => $time, 'offset' => $member['offset'], 'order' => $member['step']['resolution_order']];
+        }
+        $this->time = GroupReplayClockEvidence::time($candidates, $failedOrder);
+    }
+
+    /** @param array<string, mixed> $step
+     * @param list<array<string, mixed>> $path
+     * @param Closure(array<string, mixed>, list<array<string, mixed>>): bool $pathMatches
+     */
+    private function groupMemberTime(array $step, array $path, Closure $pathMatches): ?DateTimeImmutable
+    {
+        $family = $step['shape'] ?? null;
+        $index = $step['resolution_order'] ?? null;
+        $sequence = $step['sequence'] ?? null;
+        if (!in_array($family, ['activity', 'timer'], true) || !is_int($index) || !is_int($sequence)
+            || !isset($this->history[$index]) || $path === []) {
+            return null;
+        }
+        $rowMatches = fn (array $body, string $kind): bool => $this->groupRow($body, $kind, $path, $pathMatches);
+        if (!$this->scalarBoundary($index, $family, $sequence, $rowMatches)) {
+            return null;
+        }
+        $event = $this->history[$index];
+        $prefix = $this->sourceRun !== null && $this->resumeStep !== null && $sequence < $this->resumeStep;
+        $proved = !$prefix || ($family === 'activity' && ReplayClockHistory::kind($event) === 'ActivityCompleted'
+            && $this->reusedTime($event['payload'], $family, $sequence) !== null);
+
+        // Group dispatch uses its event time, not scalar's reused_recorded_at.
+        return $proved ? ReplayClockHistory::recordedTime($event) : null;
+    }
+
+    /** @param array<string, mixed> $body
+     * @param list<array<string, mixed>> $path
+     * @param Closure(array<string, mixed>, list<array<string, mixed>>): bool $pathMatches
+     */
+    private function groupRow(array $body, string $family, array $path, Closure $pathMatches): bool
+    {
+        foreach ($path as $entry) {
+            if (($entry['parallel_group_mode'] ?? 'all') !== 'all') {
+                return false;
+            }
+        }
+        try {
+            $matches = $pathMatches($body, $path);
+        } catch (NonDeterministicWorkflow) {
+            $matches = false;
+        }
+        $selection = array_filter(array_keys($body), static fn (mixed $field): bool => str_starts_with((string) $field, 'selection_member_'));
+        if (!$matches || $selection !== []) {
+            return false;
+        }
+        foreach (['parallel_group_id', 'parallel_group_kind', 'parallel_group_mode', 'parallel_group_base_sequence',
+            'parallel_group_size', 'parallel_group_index', 'parallel_group_path'] as $field) {
+            unset($body[$field]);
+        }
+
+        return ReplayClockHistory::scalarRow($body, $family);
+    }
+
     /** @param array<string, mixed> $payload */
     private function reusedTime(array $payload, string $family, int $sequence): ?DateTimeImmutable
     {
@@ -200,7 +282,7 @@ final class BusinessReplayClock
         return true;
     }
 
-    private function scalarBoundary(int $index, string $family, int $sequence): bool
+    private function scalarBoundary(int $index, string $family, int $sequence, ?Closure $rowMatches = null): bool
     {
         $event = $this->history[$index];
         $payload = $event['payload'] ?? null;
@@ -213,14 +295,16 @@ final class BusinessReplayClock
         if (!in_array(ReplayClockHistory::kind($event), $terminals, true) || !ReplayClockHistory::identity($identity)) {
             return false;
         }
-        return $this->scalarLifecycle($index, $family, $sequence, $resource, $identity, $terminals, $payload);
+        return $this->scalarLifecycle($index, $family, $sequence, $resource, $identity, $terminals, $rowMatches);
     }
 
     /** @param list<string> $terminals
-     * @param array<string, mixed> $payload
+     * @param Closure(array<string, mixed>, string): bool|null $rowMatches
      */
-    private function scalarLifecycle(int $index, string $family, int $sequence, string $resource, string $identity, array $terminals, array $payload): bool
+    private function scalarLifecycle(int $index, string $family, int $sequence, string $resource, string $identity, array $terminals, ?Closure $rowMatches): bool
     {
+        $payload = $this->history[$index]['payload'];
+        $rowMatches ??= ReplayClockHistory::scalarRow(...);
         $opening = $family === 'activity' ? 'ActivityScheduled' : 'TimerScheduled';
         $allowed = [$opening, ...$terminals];
         if ($family === 'activity') {
@@ -233,7 +317,7 @@ final class BusinessReplayClock
             $kind = ReplayClockHistory::kind($row);
             if ($position > $index || ReplayClockHistory::sequence($body) !== $sequence
                 || !in_array($kind, $allowed, true) || ($body[$resource] ?? null) !== $identity
-                || !ReplayClockHistory::scalarRow($body, $family)) {
+                || !$rowMatches($body, $family)) {
                 return false;
             }
             $positions[$kind][] = $position;

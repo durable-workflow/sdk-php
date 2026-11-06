@@ -395,6 +395,7 @@ final class Replayer
                 $failure = null;
                 $failures = [];
                 $resolvedOrders = [];
+                $clockMembers = [];
                 $missingMember = false;
 
                 foreach ($descriptors as $offset => $descriptor) {
@@ -470,6 +471,7 @@ final class Replayer
                     foreach ($this->blockingResolutionOrders($step) as $order) {
                         $resolvedOrders[] = $order;
                     }
+                    $clockMembers[] = ['step' => $step, 'path' => $path, 'offset' => $offset];
                     if ($step['failure'] instanceof Throwable) {
                         $failures[$offset] = $step['failure'];
                         if ($failure === null
@@ -564,7 +566,8 @@ final class Replayer
                 if ($failure !== null) {
                     $this->advanceCancellationClock($context, $history, array_values(array_filter($resolvedOrders,
                         static fn (int $order): bool => $order <= $failure['resolution_order'])));
-                    $suspended = $this->throwIntoExecution($execution, $businessReplayClock, $failure['exception']);
+                    $suspended = $this->throwGroupIntoExecution($execution, $businessReplayClock, $failure['exception'],
+                        $clockMembers, count($descriptors), $failure['resolution_order']);
                     continue;
                 }
                 if ($preparedCalls !== []) {
@@ -578,7 +581,8 @@ final class Replayer
 
                 ksort($results);
                 $this->advanceCancellationClock($context, $history, $resolvedOrders);
-                $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->nestedResults(array_values($results)));
+                $suspended = $this->resumeGroupExecution($execution, $businessReplayClock,
+                    $suspended->nestedResults(array_values($results)), $clockMembers, count($descriptors));
                 continue;
             }
 
@@ -2538,6 +2542,36 @@ final class Replayer
         $clock->consume($step);
 
         return $clock->invoke(static fn (): mixed => $execution->throw($failure));
+    }
+
+    /** @param Fiber<mixed, mixed, mixed, mixed> $execution
+     * @param list<array{step: array<string, mixed>, path: list<array<string, mixed>>, offset: int}> $members
+     */
+    private function resumeGroupExecution(Fiber $execution, BusinessReplayClock $clock, mixed $value, array $members, int $size): mixed
+    {
+        $clock->consumeGroup($members, $size, $this->groupClockPathMatches(...));
+
+        return $clock->invoke(static fn (): mixed => $execution->resume($value));
+    }
+
+    /** @param Fiber<mixed, mixed, mixed, mixed> $execution
+     * @param list<array{step: array<string, mixed>, path: list<array<string, mixed>>, offset: int}> $members
+     */
+    private function throwGroupIntoExecution(Fiber $execution, BusinessReplayClock $clock, Throwable $failure, array $members, int $size, int $order): mixed
+    {
+        $clock->consumeGroup($members, $size, $this->groupClockPathMatches(...), $order);
+
+        return $clock->invoke(static fn (): mixed => $execution->throw($failure));
+    }
+
+    /** @param array<string, mixed> $body
+     * @param list<array<string, mixed>> $expected
+     */
+    private function groupClockPathMatches(array $body, array $expected): bool
+    {
+        $sequence = $body['sequence'] ?? null;
+
+        return is_int($sequence) && $this->parallelPath($body, $sequence) === $expected;
     }
 
     /**

@@ -1,0 +1,238 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-business-replay-clock-group-failure-order",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.business-replay-clock-group-failure",
+    "input": []
+  },
+  "history": [
+    {
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-11-06T00:00:00Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "failure-activity-0",
+        "activity_type": "first",
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ]
+      },
+      "sequence": 1
+    },
+    {
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-11-06T00:00:00Z",
+      "payload": {
+        "sequence": 2,
+        "activity_execution_id": "failure-activity-1",
+        "activity_type": "second",
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ]
+      },
+      "sequence": 2
+    },
+    {
+      "event_type": "ActivityFailed",
+      "recorded_at": "2026-11-06T00:00:06Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "failure-activity-0",
+        "activity_type": "first",
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ],
+        "message": "original-0"
+      },
+      "sequence": 3
+    },
+    {
+      "event_type": "ActivityFailed",
+      "recorded_at": "2026-11-06T00:00:05Z",
+      "payload": {
+        "sequence": 2,
+        "activity_execution_id": "failure-activity-1",
+        "activity_type": "second",
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ],
+        "message": "original-1"
+      },
+      "sequence": 4
+    },
+    {
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-11-06T00:00:06Z",
+      "payload": {
+        "sequence": 3,
+        "parallel_group_id": "parallel-calls:3:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:3:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ],
+        "activity_execution_id": "clock-group-activity-3",
+        "activity_type": "first"
+      },
+      "sequence": 5
+    },
+    {
+      "event_type": "TimerScheduled",
+      "recorded_at": "2026-11-06T00:00:06Z",
+      "payload": {
+        "sequence": 4,
+        "parallel_group_id": "parallel-calls:3:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:3:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ],
+        "timer_id": "clock-group-timer-4",
+        "delay_seconds": 2,
+        "fire_at": "2026-11-06T00:00:08Z"
+      },
+      "sequence": 6
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "recorded_at": "2026-11-06T00:00:07Z",
+      "payload": {
+        "sequence": 3,
+        "parallel_group_id": "parallel-calls:3:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:3:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ],
+        "activity_execution_id": "clock-group-activity-3",
+        "activity_type": "first",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoKZmlyc3Q="
+        },
+        "payload_codec": "avro"
+      },
+      "sequence": 7
+    },
+    {
+      "event_type": "TimerFired",
+      "recorded_at": "2026-11-06T00:00:08Z",
+      "payload": {
+        "sequence": 4,
+        "parallel_group_id": "parallel-calls:3:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:3:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ],
+        "timer_id": "clock-group-timer-4",
+        "delay_seconds": 2,
+        "fire_at": "2026-11-06T00:00:08Z"
+      },
+      "sequence": 8
+    }
+  ],
+  "workflow_tasks": [
+    {
+      "workflow_id": "clock-parent",
+      "run_id": "clock-parent-run"
+    }
+  ],
+  "expected": {
+    "workflow_tasks": [
+      {
+        "command_sequence": [
+          {
+            "type": "complete_workflow",
+            "result": {
+              "failure": "original-0",
+              "failed_time": null,
+              "time": "2026-11-06T00:00:08.000000+00:00"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
