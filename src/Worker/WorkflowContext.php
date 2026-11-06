@@ -23,7 +23,13 @@ final class WorkflowContext
     /** The recorded time at this invocation's consumed replay boundary. */
     public function replayNow(): DateTimeImmutable
     {
-        throw new ReplayClockUnavailable('Business replay time requires an active, validated consumed boundary.');
+        if ($this->execution === null || Fiber::getCurrent() !== $this->execution || $this->isCapturing()
+            || $this->deliveredCancellationRequestId !== null || $this->cancellationContext() !== null
+            || $this->businessReplayClock === null) {
+            throw new ReplayClockUnavailable('Business replay time requires an active, validated consumed boundary.');
+        }
+
+        return $this->businessReplayClock->time();
     }
 
     public const MESSAGE_STREAM_SIGNAL = '__durable_workflow_message_stream';
@@ -128,6 +134,7 @@ final class WorkflowContext
         private readonly bool $allowCancellationScopeAuthoring = false,
         private bool $hasAuthoredCancellationScopes = false,
         private readonly bool $allowScopedPreparedLocalActivities = false,
+        private readonly ?BusinessReplayClock $businessReplayClock = null,
     ) {
         $this->execution = $execution;
         $this->loadMessageStreamMessages();

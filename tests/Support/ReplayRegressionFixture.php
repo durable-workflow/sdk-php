@@ -675,6 +675,21 @@ final class ReplayRegressionFixture
 
                 return $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name, $token, $version]);
             },
+            'golden.business-replay-clock' => static function (WorkflowContext $context, mixed $name, mixed $seconds): array {
+                // Test-only compatibility observation: an old product has no accessor.
+                $read = static function () use ($context): ?string {
+                    if (!method_exists($context, 'replayNow')) { return null; }
+                    try { return $context->replayNow()->format('Y-m-d\TH:i:s.uP'); }
+                    catch (\DurableWorkflow\Exception\ReplayClockUnavailable) { return null; }
+                };
+                $times = [$read()];
+                $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name]);
+                $times[] = $read();
+                $context->sleep((int) $seconds);
+                $times[] = $read();
+
+                return $times;
+            },
             'golden.redrive-reused-timer' => static function (WorkflowContext $context, mixed $name, mixed $seconds): mixed {
                 $greeting = $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name]);
                 $context->sleep((int) $seconds);

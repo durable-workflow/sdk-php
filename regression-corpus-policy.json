@@ -136,6 +136,15 @@
           "content_patterns": [
             "function\\s+workflowTaskHistory\\s*\\("
           ]
+        },
+        {
+          "glob": "src/Worker/BusinessReplayClock.php"
+        },
+        {
+          "glob": "src/Worker/QueryContext.php"
+        },
+        {
+          "glob": "src/Exception/ReplayClockUnavailable.php"
         }
       ]
     }
