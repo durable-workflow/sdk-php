@@ -145,6 +145,12 @@
         },
         {
           "glob": "src/Exception/ReplayClockUnavailable.php"
+        },
+        {
+          "glob": "src/Worker/ReplayClockHistory.php"
+        },
+        {
+          "glob": "src/Worker/ChildReplayClockEvidence.php"
         }
       ]
     }

@@ -752,8 +752,8 @@ final class Replayer
                 }
                 $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($awaited));
                 $suspended = $awaited['failure'] instanceof Throwable
-                    ? $this->throwIntoExecution($execution, $businessReplayClock, $awaited['failure'])
-                    : $this->resumeExecution($execution, $businessReplayClock, $awaited['value']);
+                    ? $this->throwIntoExecution($execution, $businessReplayClock, $awaited['failure'], $awaited)
+                    : $this->resumeExecution($execution, $businessReplayClock, $awaited['value'], $awaited);
                 continue;
             }
 
