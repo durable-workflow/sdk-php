@@ -84,11 +84,27 @@ jobs:
           mkdir -p build/consumer build/rust-worker/src build/published-evidence
           composer init --working-dir=build/consumer --name=durable-workflow/published-cancellation --no-interaction
           composer require --working-dir=build/consumer "durable-workflow/sdk:$PHP_SDK_VERSION" 'phpunit/phpunit:^10.5' --no-scripts --no-interaction --prefer-dist --no-progress
-          python -m pip install packaging==25.0 "durable-workflow==$PYTHON_SDK_VERSION"
+          python -m pip install --only-binary=:all: packaging==25.0 "durable-workflow==$PYTHON_SDK_VERSION"
           python -m pip freeze > build/python-packages.txt
           cp tests/Integration/polyglot-rust/src/main.rs build/rust-worker/src/main.rs
           sed -E "s/^(durable-workflow = )\"=[^\"]+\"$/\1\"=$RUST_SDK_VERSION\"/" tests/Integration/polyglot-rust/Cargo.toml > build/rust-worker/Cargo.toml
-          cargo build --manifest-path build/rust-worker/Cargo.toml --message-format=json > build/rust-build.json
+          # Resolve once for the selected input, retain that graph, then compile without resolution or downloads.
+          cargo generate-lockfile --manifest-path build/rust-worker/Cargo.toml
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+          packages = tomllib.loads(Path('build/rust-worker/Cargo.lock').read_text())['package']
+          sdk = [p for p in packages if p['name'] == 'durable-workflow']
+          assert len(sdk) == 1 and sdk[0]['version'] == os.environ['RUST_SDK_VERSION']
+          assert sdk[0]['source'].startswith('registry+') and len(sdk[0]['checksum']) == 64
+          PY
+          cp build/rust-worker/Cargo.toml build/published-evidence/rust-Cargo.toml
+          cp build/rust-worker/Cargo.lock build/published-evidence/rust-Cargo.lock
+          sha256sum build/rust-worker/Cargo.lock > build/published-evidence/rust-Cargo.lock.sha256
+          cargo fetch --manifest-path build/rust-worker/Cargo.toml --locked
+          cargo build --manifest-path build/rust-worker/Cargo.toml --frozen --jobs 2 --message-format=json > build/rust-build.json
+          sha256sum --check build/published-evidence/rust-Cargo.lock.sha256
           binary="$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "dw-polyglot-cancellation-activity") | .executable // empty' build/rust-build.json)"
           test -x "$binary"
           curl --proto '=https' --proto-redir '=https' -fsSL "https://github.com/durable-workflow/cli/releases/download/$CLI_VERSION/dw.phar" -o build/dw.phar
@@ -125,15 +141,6 @@ jobs:
           import os
           from packaging.version import Version
           assert Version(importlib.metadata.version('durable-workflow')) == Version(os.environ['PYTHON_SDK_VERSION'])
-          PY
-          python - <<'PY'
-          import os
-          import tomllib
-          from pathlib import Path
-          packages = tomllib.loads(Path('build/rust-worker/Cargo.lock').read_text())['package']
-          sdk = [p for p in packages if p['name'] == 'durable-workflow']
-          assert len(sdk) == 1 and sdk[0]['version'] == os.environ['RUST_SDK_VERSION']
-          assert sdk[0]['source'].startswith('registry+') and len(sdk[0]['checksum']) == 64
           PY
           jq -n --arg runner "$GITHUB_SHA" --arg server "$DW_PUBLISHED_SERVER_IMAGE" --arg server_version "$SERVER_VERSION" --arg php "$PHP_SDK_VERSION" --arg python "$PYTHON_SDK_VERSION" --arg rust "$RUST_SDK_VERSION" --arg cli "$CLI_VERSION" '{qualification:"published",runner_commit:$runner,server_image:$server,server_version:$server_version,php_sdk:$php,python_sdk:$python,rust_sdk:$rust,cli:$cli}' > build/published-tuple.json
       - name: Start only the immutable published Server
