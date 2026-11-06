@@ -57,6 +57,32 @@ final class ActivityLeaseAuthority
         $this->remaining();
     }
 
+    /** Unknown or slow deliveries retain confirmation; a fast grant charges the
+     * entire poll before its lease, business and heartbeat bounds are captured.
+     * @param array<string, mixed> $task
+     * @return array{self, float, bool}
+     */
+    public static function capturePollGrant(array $task, string $namespace, string $owner, string $queue,
+        mixed $serverTime, float $received, mixed $started): array
+    {
+        $authority = new self($task, $namespace, $owner, $queue, $serverTime, $received);
+        if ((!is_int($started) && !is_float($started)) || !is_finite($started)
+            || $started < 0 || $started > $received || $received - $started >= 1) {
+            return [$authority, $received, false];
+        }
+        try {
+            $original = new self($task, $namespace, $owner, $queue, $serverTime, (float) $started);
+            if ($original->remaining() >= 3) {
+                return [$original, (float) $started, true];
+            }
+        } catch (WorkflowClaimRevoked) {
+            // The response can arrive after the conservative original bound.
+            // A renewal must confirm it before an application callback starts.
+        }
+
+        return [$authority, $received, false];
+    }
+
     /** @param array<string, mixed> $task
      * @return array<string, string|int>
      */

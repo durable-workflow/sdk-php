@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Client;
+use DurableWorkflow\Tests\Support\ActivityGrantScenario;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Transport\Psr18Transport;
@@ -127,6 +128,24 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
             static fn (array $request): bool => $request['path'] === '/api/cluster/info'));
         self::assertSame([], array_filter($state['requests'],
             static fn (array $request): bool => $request['path'] === '/api/worker/heartbeat'));
+    }
+
+    public function testTransportDelayCannotMakeAnExpiredGrantLookFreshToAReusedHelper(): void
+    {
+        $observed = ActivityGrantScenario::run($this->uri, $this->directory.'/state.json');
+        self::assertSame(1, $observed['callbacks'], 'A grant consumed by response transit cannot authorize another callback.');
+        self::assertCount(1, $observed['commands']);
+    }
+
+    public function testPollTransitConsumesTheFreshGrantMargin(): void
+    {
+        $worker = $this->worker(['activity_count' => 2, 'lease_seconds' => 3.4,
+            'delay_poll_delivery' => 2, 'poll_reply_delay_micros' => 600_000]);
+        $worker->registerActivity('slow', static fn (ActivityContext $context): int => 1);
+        self::assertTrue($worker->tick(0));
+        self::assertTrue($worker->tick(0));
+        self::assertCount(2, $this->state()['outcomes']);
+        self::assertSame(2, $this->state()['renewals'], 'A short remaining grant needs confirmation after charging transit.');
     }
 
     public function testAHelperKilledBetweenActivitiesIsReplacedAndProvesItsClientAgain(): void
