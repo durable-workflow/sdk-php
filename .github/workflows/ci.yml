@@ -417,6 +417,7 @@ jobs:
             compatibility_scripts=("tests/compat/${COMPAT_SCRIPT}")
           fi
           compatibility_scripts+=(tests/compat/history-cache.php tests/compat/execution-telemetry.php)
+          php tests/compat/static-credentials.php "$consumer/vendor/autoload.php" "$COMPAT_SCRIPT"
           "$consumer/vendor/bin/phpstan" analyse -c phpstan-framework.neon \
             --autoload-file="$consumer/vendor/autoload.php" \
             src/Bridge/FrameworkRuntimeException.php \

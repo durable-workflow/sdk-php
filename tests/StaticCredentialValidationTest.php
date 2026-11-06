@@ -7,14 +7,18 @@ namespace DurableWorkflow\Tests;
 use DurableWorkflow\Auth\Authentication;
 use DurableWorkflow\Auth\TokenAuthentication;
 use DurableWorkflow\Bridge\Laravel\ProcessCredentialResolver;
-use DurableWorkflow\Bridge\ServiceConfiguration;
 use DurableWorkflow\Client;
+use DurableWorkflow\Qualification\StaticCredentialFixture;
+use DurableWorkflow\Qualification\StaticCredentialProbe;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use InvalidArgumentException;
 use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use ReflectionProperty;
+
+require_once dirname(__DIR__).'/scripts/conformance/Support/StaticCredentialFixture.php';
+require_once dirname(__DIR__).'/scripts/conformance/Support/StaticCredentialProbe.php';
 
 final class StaticCredentialValidationTest extends TestCase
 {
@@ -225,56 +229,7 @@ final class StaticCredentialValidationTest extends TestCase
      */
     private static function exercise(string $target, array $options, string $plane, FakeTransport $transport, array $process = []): array
     {
-        if ($target === 'TokenAuthentication') {
-            $authentication = new TokenAuthentication(
-                token: $options['shared'] ?? null, controlToken: $options['control'] ?? null, workerToken: $options['worker'] ?? null,
-            );
-        } else {
-            $client = match ($target) {
-                'Client' => new Client('https://server.example', transport: $transport,
-                    token: $options['shared'] ?? null, controlToken: $options['control'] ?? null, workerToken: $options['worker'] ?? null),
-                'ServiceConfiguration' => self::configuredClient($options, $plane, $transport),
-                'ProcessCredentialResolver' => self::processClient($options, $process, $plane, $transport),
-                default => throw new LogicException('The canonical credential target must be supported.'),
-            };
-            // Inspect the constructed auth object without issuing a request or
-            // claiming arbitrary-Unicode HTTP-header/authentication success.
-            $authentication = (new ReflectionProperty(Client::class, 'authentication'))->getValue($client);
-            self::assertTrue($authentication === null || $authentication instanceof Authentication);
-        }
-
-        return $authentication?->headers($plane === 'worker') ?? [];
-    }
-
-    /** @param array<string, ?string> $options */
-    private static function configuredClient(array $options, string $plane, FakeTransport $transport): Client
-    {
-        $credentials = [];
-        foreach ($options as $role => $value) {
-            $credentials[self::CONFIGURATION[$role]] = $value;
-        }
-        $configuration = ServiceConfiguration::fromArray(['endpoint' => 'https://server.example',
-            'namespace' => 'fixture', 'task_queue' => 'fixture', 'handlers' => [], 'credentials' => $credentials]);
-
-        return $plane === 'worker' ? $configuration->workerClient($transport) : $configuration->controlClient($transport);
-    }
-
-    /**
-     * @param array<string, ?string> $options
-     * @param array<string, string> $process
-     */
-    private static function processClient(array $options, array $process, string $plane, FakeTransport $transport): Client
-    {
-        foreach ($options as $role => $value) {
-            if ($value !== null) {
-                $process[self::ENVIRONMENT[$role]] = $value;
-            }
-        }
-        $configuration = ServiceConfiguration::fromArray(['endpoint' => 'https://server.example', 'task_queue' => 'fixture']);
-
-        return self::withEnvironment($process, static fn (): Client => $plane === 'worker'
-            ? ProcessCredentialResolver::workerClient($configuration, $transport)
-            : ProcessCredentialResolver::applicationClient($configuration, $transport));
+        return StaticCredentialProbe::headers($target, $options, $plane, $transport, $process);
     }
 
     /**
@@ -321,16 +276,16 @@ final class StaticCredentialValidationTest extends TestCase
         };
     }
 
+    private static function canonical(): StaticCredentialFixture
+    {
+        static $fixture = null;
+        return $fixture ??= new StaticCredentialFixture(self::fixturePath());
+    }
+
     /** @return array<string, mixed> */
     private static function fixture(): array
     {
-        static $fixture = null;
-        $fixture ??= json_decode((string) file_get_contents(self::fixturePath()), true, flags: JSON_THROW_ON_ERROR);
-        if (!is_array($fixture)) {
-            throw new LogicException('The frozen credential fixture must be an object.');
-        }
-
-        return $fixture;
+        return self::canonical()->data;
     }
 
     private static function fixturePath(): string
@@ -341,53 +296,23 @@ final class StaticCredentialValidationTest extends TestCase
     /** @return array<string, mixed> */
     private static function case(string $id): array
     {
-        foreach (['common_scalar_cases', 'php_byte_loader_cases'] as $group) {
-            foreach (self::fixture()[$group] as $case) {
-                if ($case['id'] === $id) {
-                    return $case;
-                }
-            }
-        }
-        throw new LogicException('The canonical scalar reference must exist.');
+        return self::canonical()->scalar($id);
     }
 
     /** @return array<string, mixed> */
     private static function adapterCase(string $id): array
     {
-        foreach (['pre_selection_cases', 'php_adapter_cases'] as $group) {
-            foreach (self::fixture()[$group] as $case) {
-                if ($case['id'] === $id) {
-                    return $case;
-                }
-            }
-        }
-        throw new LogicException('The canonical adapter reference must exist.');
+        return self::canonical()->adapter($id);
     }
 
     private static function value(string $id): string
     {
-        $case = self::case($id);
-        if (isset($case['input_hex'])) {
-            $bytes = hex2bin($case['input_hex']);
-            if ($bytes === false) {
-                throw new LogicException('The canonical byte fixture must contain hex.');
-            }
-
-            return $bytes;
-        }
-
-        return self::fromPoints($case['input_code_points']);
+        return self::canonical()->value($id);
     }
 
     /** @param list<int> $points */
     private static function fromPoints(array $points): string
     {
-        return implode('', array_map(static fn (int $point): string => match (true) {
-            $point <= 0x7f => chr($point),
-            $point <= 0x7ff => chr(0xc0 | ($point >> 6)).chr(0x80 | ($point & 0x3f)),
-            $point <= 0xffff => chr(0xe0 | ($point >> 12)).chr(0x80 | (($point >> 6) & 0x3f)).chr(0x80 | ($point & 0x3f)),
-            default => chr(0xf0 | ($point >> 18)).chr(0x80 | (($point >> 12) & 0x3f))
-                .chr(0x80 | (($point >> 6) & 0x3f)).chr(0x80 | ($point & 0x3f)),
-        }, $points));
+        return StaticCredentialFixture::points($points);
     }
 }
