@@ -9,7 +9,7 @@
   "workflow": {
     "type": "golden.business-replay-clock-child",
     "input": [
-      1
+      2
     ]
   },
   "history": [
@@ -76,6 +76,51 @@
         "payload_codec": "avro",
         "message": "source child failure"
       }
+    },
+    {
+      "sequence": 5,
+      "event_type": "ChildWorkflowScheduled",
+      "recorded_at": "2026-11-06T03:00:02.123456+00:00",
+      "payload": {
+        "sequence": 2,
+        "child_call_id": "child-call-2",
+        "workflow_link_id": "child-call-2",
+        "child_workflow_instance_id": "child-instance-2",
+        "child_workflow_run_id": "child-run-2",
+        "child_workflow_type": "clock-child"
+      }
+    },
+    {
+      "sequence": 6,
+      "event_type": "ChildRunStarted",
+      "recorded_at": "2026-11-06T03:00:02.123456+00:00",
+      "payload": {
+        "sequence": 2,
+        "child_call_id": "child-call-2",
+        "workflow_link_id": "child-call-2",
+        "child_workflow_instance_id": "child-instance-2",
+        "child_workflow_run_id": "child-run-2",
+        "child_workflow_type": "clock-child"
+      }
+    },
+    {
+      "sequence": 7,
+      "event_type": "ChildRunFailed",
+      "recorded_at": "2026-11-06T03:00:02.123456+00:00",
+      "payload": {
+        "sequence": 2,
+        "child_call_id": "child-call-2",
+        "workflow_link_id": "child-call-2",
+        "child_workflow_instance_id": "child-instance-2",
+        "child_workflow_run_id": "child-run-2",
+        "child_workflow_type": "clock-child",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoWY2hpbGQtdmFsdWU="
+        },
+        "payload_codec": "avro",
+        "message": "source child failure"
+      }
     }
   ],
   "workflow_tasks": [
@@ -94,6 +139,10 @@
               {
                 "outcome": "child-value",
                 "time": null
+              },
+              {
+                "outcome": "ChildRunFailed",
+                "time": "2026-11-06T03:00:02.123456+00:00"
               }
             ]
           }
