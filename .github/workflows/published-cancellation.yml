@@ -84,7 +84,7 @@ jobs:
           mkdir -p build/consumer build/rust-worker/src build/published-evidence
           composer init --working-dir=build/consumer --name=durable-workflow/published-cancellation --no-interaction
           composer require --working-dir=build/consumer "durable-workflow/sdk:$PHP_SDK_VERSION" 'phpunit/phpunit:^10.5' --no-scripts --no-interaction --prefer-dist --no-progress
-          python -m pip install --only-binary=:all: packaging==25.0 "durable-workflow==$PYTHON_SDK_VERSION"
+          python -m pip install --only-binary :all: packaging==25.0 "durable-workflow==$PYTHON_SDK_VERSION"
           python -m pip freeze > build/python-packages.txt
           cp tests/Integration/polyglot-rust/src/main.rs build/rust-worker/src/main.rs
           sed -E "s/^(durable-workflow = )\"=[^\"]+\"$/\1\"=$RUST_SDK_VERSION\"/" tests/Integration/polyglot-rust/Cargo.toml > build/rust-worker/Cargo.toml
