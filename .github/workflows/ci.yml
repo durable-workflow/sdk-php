@@ -141,7 +141,16 @@ jobs:
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - run: |
           mkdir -p build
+          php scripts/ci/reference-replay-clock-numbers.php > build/replay-clock-numbers.json
           composer test -- --log-junit build/phpunit.xml
+      - name: Retain source numeric observations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: replay-clock-numbers-php-${{ matrix.php }}
+          path: build/replay-clock-numbers.json
+          if-no-files-found: error
+          retention-days: 90
       - name: Retain PHP 8.3 source test evidence
         if: always() && matrix.php == '8.3'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
@@ -201,7 +210,18 @@ jobs:
             exit(str_starts_with($version, "2.") ? 0 : 1);'
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
-      - run: composer test
+      - run: |
+          mkdir -p build
+          php scripts/ci/reference-replay-clock-numbers.php > build/replay-clock-numbers.json
+          composer test
+      - name: Retain Carbon 2 source numeric observations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: replay-clock-numbers-php-8.1-carbon-2
+          path: build/replay-clock-numbers.json
+          if-no-files-found: error
+          retention-days: 90
 
   framework-compat:
     name: ${{ matrix.framework }} ${{ matrix.version }}

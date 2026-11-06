@@ -977,6 +977,24 @@ final class ReplayRegressionConsumer
 
                 return $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name, $token, $version]);
             },
+            'golden.business-replay-clock-group-failure' => static function (WorkflowContext $context): array {
+                try { $context->all([$context->deferActivity('first'), $context->deferActivity('second')]); }
+                catch (\DurableWorkflow\Exception\ActivityFailed $failure) { $message = $failure->getMessage(); }
+                try { $failedTime = $context->replayNow()->format(self::CLOCK_FORMAT); }
+                catch (\DurableWorkflow\Exception\ReplayClockUnavailable) { $failedTime = null; }
+                $context->all([$context->deferActivity('first'), $context->deferTimer(2)]);
+                try { $time = $context->replayNow()->format(self::CLOCK_FORMAT); }
+                catch (\DurableWorkflow\Exception\ReplayClockUnavailable) { $time = null; }
+
+                return ['failure' => $message ?? 'missing', 'failed_time' => $failedTime, 'time' => $time];
+            },
+            'golden.business-replay-clock-group' => static function (WorkflowContext $context): array {
+                $values = $context->all([$context->deferActivity('first'), $context->deferTimer(2)]);
+                try { $time = $context->replayNow()->format(self::CLOCK_FORMAT); }
+                catch (\DurableWorkflow\Exception\ReplayClockUnavailable) { $time = null; }
+
+                return ['values' => $values, 'time' => $time];
+            },
             'golden.business-replay-clock-condition' => static function (WorkflowContext $context): array {
                 $predicate = static fn (): bool => true;
                 $outcomes = [];
