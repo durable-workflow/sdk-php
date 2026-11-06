@@ -19,22 +19,25 @@ final class ConditionReplayClockEvidence
             return false;
         }
         $rows = self::linkedRows($history, $sequence, $waitId);
-        if ($rows === null || count($rows['ConditionWaitOpened'] ?? []) !== 1) {
-            return false;
-        }
+
+        return $rows !== null && self::lifecycle($history, $rows, $index);
+    }
+
+    /** @param list<array<string, mixed>> $history
+     * @param array<string, list<int>> $rows
+     */
+    private static function lifecycle(array $history, array $rows, int $index): bool
+    {
         $terminals = array_merge(...array_values(array_intersect_key($rows, array_flip(self::TERMINALS))));
-        if (count($terminals) !== 1) {
+        if (count($rows['ConditionWaitOpened'] ?? []) !== 1 || count($terminals) !== 1) {
             return false;
         }
         $opened = $rows['ConditionWaitOpened'][0];
         $terminal = $terminals[0];
-        if ($opened >= $terminal || !self::sameDefinition($history[$opened]['payload'], $history[$terminal]['payload'])
-            || (ReplayClockHistory::kind($history[$terminal]) === 'ConditionWaitTimedOut'
-                && !is_int($history[$opened]['payload']['timeout_seconds'] ?? null))) {
-            return false;
-        }
-
-        return self::timerPair($history, $rows, $opened, $terminal, $index);
+        return $opened < $terminal && self::sameDefinition($history[$opened]['payload'], $history[$terminal]['payload'])
+            && (ReplayClockHistory::kind($history[$terminal]) !== 'ConditionWaitTimedOut'
+                || is_int($history[$opened]['payload']['timeout_seconds'] ?? null))
+            && self::timerPair($history, $rows, $opened, $terminal, $index);
     }
 
     /** @param list<array<string, mixed>> $history
@@ -102,18 +105,31 @@ final class ConditionReplayClockEvidence
             return false;
         }
         $timerEnd = ($fired ?: $cancelled)[0];
-        $timer = $history[$scheduled[0]]['payload'];
+
+        return self::timerLink($history, $scheduled[0], $timerEnd, $opened, $terminal)
+            && self::selectedInstant($history, $terminal, $selected, $timerEnd, $fired !== []);
+    }
+
+    /** @param list<array<string, mixed>> $history */
+    private static function timerLink(array $history, int $scheduled, int $timerEnd, int $opened, int $terminal): bool
+    {
+        $terminalBody = $history[$terminal]['payload'];
+        $timer = $history[$scheduled]['payload'];
         $opening = $history[$opened]['payload'];
         $timeout = $opening['timeout_seconds'] ?? null;
-        if ($scheduled[0] <= $opened || $timerEnd <= $scheduled[0] || $timerEnd >= $terminal
-            || !is_int($timeout) || ($timer['delay_seconds'] ?? null) !== $timeout
-            || ($terminalBody['timer_id'] ?? null) !== $timer['timer_id']
-            || $history[$timerEnd]['payload']['timer_id'] !== $timer['timer_id']
-            || !self::timerDefinition($opening, $timer) || !self::timerDefinition($opening, $history[$timerEnd]['payload'])) {
-            return false;
-        }
+
+        return $scheduled > $opened && $timerEnd > $scheduled && $timerEnd < $terminal
+            && is_int($timeout) && ($timer['delay_seconds'] ?? null) === $timeout
+            && ($terminalBody['timer_id'] ?? null) === $timer['timer_id']
+            && $history[$timerEnd]['payload']['timer_id'] === $timer['timer_id']
+            && self::timerDefinition($opening, $timer) && self::timerDefinition($opening, $history[$timerEnd]['payload']);
+    }
+
+    /** @param list<array<string, mixed>> $history */
+    private static function selectedInstant(array $history, int $terminal, int $selected, int $timerEnd, bool $fired): bool
+    {
         $timedOut = ReplayClockHistory::kind($history[$terminal]) === 'ConditionWaitTimedOut';
-        if ($timedOut !== ($fired !== [])) {
+        if ($timedOut !== $fired) {
             return false;
         }
         if ($selected === $terminal) {

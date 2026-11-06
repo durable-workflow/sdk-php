@@ -1,0 +1,146 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-business-replay-clock-condition-refuses-timer-reuse",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.business-replay-clock-condition",
+    "input": []
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestRedriveTimerWorkflow",
+        "workflow_type": "golden.business-replay-clock-condition",
+        "workflow_instance_id": "regression-corpus-redrive-successor-timer",
+        "workflow_run_id": "regression-corpus-run",
+        "workflow_command_id": "01JBREDRIVECOMMAND00000000",
+        "continued_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "resume_step_sequence": 2,
+        "recovery_kind": "redrive",
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
+        "replayed_started_at": "2026-11-03T00:00:00+00:00",
+        "workflow_link_id": "01JBREDRIVELINK00000000000"
+      }
+    },
+    {
+      "sequence": 2,
+      "event_type": "ConditionWaitOpened",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "sequence": 1,
+        "condition_wait_id": "clock-wait-1",
+        "condition_key": "clock-condition",
+        "condition_definition_fingerprint": "dwphp2:sha256:04cd1ecb5cb316516273dd0f29ef8fd313c87e1a32be60e839db44adbb9f9d1b",
+        "condition_wait_occurrence_id": "php:condition-wait:0",
+        "timeout_seconds": 5
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "TimerScheduled",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "sequence": 1,
+        "condition_wait_id": "clock-wait-1",
+        "condition_key": "clock-condition",
+        "condition_definition_fingerprint": "dwphp2:sha256:04cd1ecb5cb316516273dd0f29ef8fd313c87e1a32be60e839db44adbb9f9d1b",
+        "condition_wait_occurrence_id": "php:condition-wait:0",
+        "timer_id": "clock-timer-1",
+        "timer_kind": "condition_timeout",
+        "delay_seconds": 5
+      }
+    },
+    {
+      "sequence": 4,
+      "event_type": "TimerFired",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "sequence": 1,
+        "condition_wait_id": "clock-wait-1",
+        "condition_key": "clock-condition",
+        "condition_definition_fingerprint": "dwphp2:sha256:04cd1ecb5cb316516273dd0f29ef8fd313c87e1a32be60e839db44adbb9f9d1b",
+        "condition_wait_occurrence_id": "php:condition-wait:0",
+        "timer_id": "clock-timer-1",
+        "timer_kind": "condition_timeout",
+        "delay_seconds": 5,
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      }
+    },
+    {
+      "sequence": 5,
+      "event_type": "ConditionWaitTimedOut",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "sequence": 1,
+        "condition_wait_id": "clock-wait-1",
+        "condition_key": "clock-condition",
+        "condition_definition_fingerprint": "dwphp2:sha256:04cd1ecb5cb316516273dd0f29ef8fd313c87e1a32be60e839db44adbb9f9d1b",
+        "condition_wait_occurrence_id": "php:condition-wait:0",
+        "timeout_seconds": 5,
+        "timer_id": "clock-timer-1"
+      }
+    },
+    {
+      "sequence": 6,
+      "event_type": "ConditionWaitOpened",
+      "recorded_at": "2026-11-03T00:05:06.123456+00:00",
+      "payload": {
+        "sequence": 2,
+        "condition_wait_id": "clock-wait-2",
+        "condition_key": "clock-condition",
+        "condition_definition_fingerprint": "dwphp2:sha256:04cd1ecb5cb316516273dd0f29ef8fd313c87e1a32be60e839db44adbb9f9d1b",
+        "condition_wait_occurrence_id": "php:condition-wait:1",
+        "timeout_seconds": 5
+      }
+    },
+    {
+      "sequence": 7,
+      "event_type": "ConditionWaitSatisfied",
+      "recorded_at": "2026-11-03T00:05:06.123456+00:00",
+      "payload": {
+        "sequence": 2,
+        "condition_wait_id": "clock-wait-2",
+        "condition_key": "clock-condition",
+        "condition_definition_fingerprint": "dwphp2:sha256:04cd1ecb5cb316516273dd0f29ef8fd313c87e1a32be60e839db44adbb9f9d1b",
+        "condition_wait_occurrence_id": "php:condition-wait:1",
+        "timeout_seconds": 5
+      }
+    }
+  ],
+  "workflow_tasks": [
+    {
+      "workflow_id": "regression-corpus-redrive-successor-timer",
+      "run_id": "regression-corpus-run"
+    }
+  ],
+  "expected": {
+    "workflow_tasks": [
+      {
+        "command_sequence": [
+          {
+            "type": "complete_workflow",
+            "result": [
+              {
+                "outcome": false,
+                "time": null
+              },
+              {
+                "outcome": true,
+                "time": "2026-11-03T00:05:06.123456+00:00"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

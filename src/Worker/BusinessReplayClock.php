@@ -89,7 +89,8 @@ final class BusinessReplayClock
         }
         $payload = $event['payload'];
         $reusedPrefix = $this->sourceRun !== null && $this->resumeStep !== null && $step['sequence'] < $this->resumeStep;
-        if (in_array(ReplayClockHistory::kind($event), ['ActivityCompleted', 'TimerFired'], true)
+        if (in_array($step['shape'], ['activity', 'timer'], true)
+            && in_array(ReplayClockHistory::kind($event), ['ActivityCompleted', 'TimerFired'], true)
             && ($reusedPrefix || array_key_exists('reused_recorded_at', $payload) || array_key_exists('reused_from_run_id', $payload))) {
             $this->time = $this->reusedTime($payload, $step['shape'], $step['sequence']);
         } elseif (!$reusedPrefix) {

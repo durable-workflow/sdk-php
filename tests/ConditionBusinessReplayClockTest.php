@@ -73,6 +73,30 @@ final class ConditionBusinessReplayClockTest extends TestCase
         self::assertSame([true, true, 'unavailable'], $observed);
     }
 
+    public function testAConditionTimeoutCannotInheritPlainTimerRedriveAuthority(): void
+    {
+        $fixture = json_decode((string) file_get_contents(
+            __DIR__.'/fixtures/replay-regressions/business-replay-clock-canonical-redrive.json',
+        ), true, flags: JSON_THROW_ON_ERROR);
+        $start = $fixture['history'][0];
+        $predicate = self::predicate();
+        $history = self::history($predicate, 'ConditionWaitTimedOut', true);
+        foreach ($history as &$row) { $row['recorded_at'] = $start['recorded_at']; }
+        unset($row);
+        $history[2]['payload']['reused_from_run_id'] = $start['payload']['continued_from_run_id'];
+        $history[2]['payload']['reused_recorded_at'] = $start['payload']['replayed_started_at'];
+        array_unshift($history, $start);
+        foreach ($history as $index => &$row) { $row['sequence'] = $index + 1; }
+        unset($row);
+
+        $this->expectException(ReplayClockUnavailable::class);
+        $this->replay(static function (WorkflowContext $context) use ($predicate): string {
+            self::assertFalse($context->waitCondition($predicate, key: 'clock-condition', timeout: 5));
+
+            return $context->replayNow()->format('c');
+        }, $history, $fixture['workflow_tasks'][0]);
+    }
+
     #[DataProvider('unprovedHistories')]
     public function testAmbiguousConditionEvidencePreservesTheResultAndRefusesTime(string $mutation): void
     {
@@ -151,10 +175,10 @@ final class ConditionBusinessReplayClockTest extends TestCase
     }
 
     /** @param list<array<string, mixed>> $history */
-    private function replay(callable $handler, array $history): mixed
+    private function replay(callable $handler, array $history, array $task = ['workflow_id' => 'parent', 'run_id' => 'run']): mixed
     {
         $codec = new AvroPayloadCodec();
-        $result = (new Replayer($codec))->replay($handler, $history, [], 'php-workers', ['workflow_id' => 'parent', 'run_id' => 'run']);
+        $result = (new Replayer($codec))->replay($handler, $history, [], 'php-workers', $task);
 
         return $codec->decodeEnvelope($result->commands[array_key_last($result->commands)]['result']);
     }

@@ -376,6 +376,8 @@ final class ReplayRegressionAttributedNestedWorkflow
 
 final class ReplayRegressionConsumer
 {
+    private const CLOCK_FORMAT = 'Y-m-d\TH:i:s.uP';
+
     private const FIXTURE_SCHEMA = 'durable-workflow.replay-regression/v1';
     private const BOUNDED_LOCAL_FAILURE = 'golden.bounded-local-failure';
 
@@ -980,7 +982,7 @@ final class ReplayRegressionConsumer
                 $outcomes = [];
                 for ($index = 0; $index < 2; ++$index) {
                     $value = $context->waitCondition($predicate, key: 'clock-condition', timeout: 5);
-                    try { $time = $context->replayNow()->format('Y-m-d\TH:i:s.uP'); }
+                    try { $time = $context->replayNow()->format(self::CLOCK_FORMAT); }
                     catch (\DurableWorkflow\Exception\ReplayClockUnavailable) { $time = null; }
                     $outcomes[] = ['outcome' => $value, 'time' => $time];
                 }
@@ -992,7 +994,7 @@ final class ReplayRegressionConsumer
                 for ($index = 0; $index < $count; ++$index) {
                     try { $value = $context->childWorkflow('clock-child'); }
                     catch (\DurableWorkflow\Exception\ChildWorkflowFailed $failure) { $value = $failure->failureType; }
-                    try { $time = $context->replayNow()->format('Y-m-d\TH:i:s.uP'); }
+                    try { $time = $context->replayNow()->format(self::CLOCK_FORMAT); }
                     catch (\DurableWorkflow\Exception\ReplayClockUnavailable) { $time = null; }
                     $outcomes[] = ['outcome' => $value, 'time' => $time];
                 }
@@ -1003,7 +1005,7 @@ final class ReplayRegressionConsumer
                 // Test-only compatibility observation: an old product has no accessor.
                 $read = static function () use ($context): ?string {
                     if (!method_exists($context, 'replayNow')) { return null; }
-                    try { return $context->replayNow()->format('Y-m-d\TH:i:s.uP'); }
+                    try { return $context->replayNow()->format(self::CLOCK_FORMAT); }
                     catch (\DurableWorkflow\Exception\ReplayClockUnavailable) { return null; }
                 };
                 $times = [$read()];
