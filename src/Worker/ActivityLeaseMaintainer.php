@@ -48,11 +48,9 @@ final class ActivityLeaseMaintainer
             $start = [];
             try {
                 $start = self::awaitStart($parent);
-                if ($start === null || ($start['operation'] ?? null) !== 'start') {
-                    return;
-                }
                 $key = json_encode($start['client'] ?? null, JSON_THROW_ON_ERROR);
-                if (($configuration !== null && $key !== $configuration)
+                if ($start === null || ($start['operation'] ?? null) !== 'start'
+                    || ($configuration !== null && $key !== $configuration)
                     || ($parent !== null && ($start['parent_pid'] ?? null) !== $parent)) {
                     return;
                 }
@@ -98,10 +96,7 @@ final class ActivityLeaseMaintainer
             $buffer .= $part;
         }
         [$line, $remaining] = explode("\n", $buffer, 2);
-        if ($remaining !== '') {
-            return null;
-        }
-        $command = json_decode($line, true, 32, JSON_THROW_ON_ERROR);
+        $command = $remaining === '' ? json_decode($line, true, 32, JSON_THROW_ON_ERROR) : null;
 
         return is_array($command) ? $command : null;
     }

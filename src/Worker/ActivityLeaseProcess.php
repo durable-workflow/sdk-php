@@ -73,7 +73,17 @@ final class ActivityLeaseProcess
         $key = hash('sha256', json_encode([$configuration, $autoload], JSON_THROW_ON_ERROR));
         if (!$this->running() || $key !== $this->configurationKey) {
             $this->stop();
-            $this->launch($autoload);
+            $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'],
+                2 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'w']];
+            $this->process = proc_open([PHP_BINARY, '-d', 'auto_prepend_file=', '-d', 'auto_append_file=',
+                __DIR__.'/activity-lease-maintainer.php', $autoload],
+                $descriptors, $this->pipes, options: ['bypass_shell' => true]);
+            if (!is_resource($this->process)) {
+                throw new ActivityLeaseMaintenanceException('Could not start independent activity lease maintenance.');
+            }
+            foreach ($this->pipes as $pipe) {
+                stream_set_blocking($pipe, false);
+            }
             $this->configurationKey = $key;
         }
         $this->lostReason = null;
@@ -89,21 +99,6 @@ final class ActivityLeaseProcess
         } catch (Throwable $error) {
             $this->stop();
             throw $error;
-        }
-    }
-
-    private function launch(string $autoload): void
-    {
-        $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'],
-            2 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'w']];
-        $this->process = proc_open([PHP_BINARY, '-d', 'auto_prepend_file=', '-d', 'auto_append_file=',
-            __DIR__.'/activity-lease-maintainer.php', $autoload],
-            $descriptors, $this->pipes, options: ['bypass_shell' => true]);
-        if (!is_resource($this->process)) {
-            throw new ActivityLeaseMaintenanceException('Could not start independent activity lease maintenance.');
-        }
-        foreach ($this->pipes as $pipe) {
-            stream_set_blocking($pipe, false);
         }
     }
 
