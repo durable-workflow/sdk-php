@@ -1,0 +1,1 @@
+Shared self-hosted Inter400/500/600, JetBrainsMono400/500/600 and SpaceGrotesk600 WOFF2 bytes match durable-workflow/durable-workflow.github.io commit 222d13ef1f04afdaa6784687c94023177adb3b81, static/identity/fonts. The adjacent original font manifest and OFL licenses retain sources and hashes. Local fonts.css only adjusts the relative URL mount.

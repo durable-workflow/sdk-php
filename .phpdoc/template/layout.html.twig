@@ -1,15 +1,74 @@
-{% extends 'base::layout.html.twig' %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    {% block head %}
+        <title>{% block title %}{{ project.name }}{% endblock %}</title>
+    {% endblock %}
 
-{% block stylesheets %}
-    <link rel="stylesheet" href="css/template.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.23.0/themes/prism-okaidia.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.23.0/plugins/line-numbers/prism-line-numbers.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.23.0/plugins/line-highlight/prism-line-highlight.css">
-    <link rel="stylesheet" href="/assets/api-reference.css">
-{% endblock %}
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {{ renderBaseUrlHeader() }}
+    <link rel="icon" type="image/png" sizes="32x32" href="images/favicon-32x32.png"/>
+    <link rel="icon" type="image/png" sizes="16x16" href="images/favicon-16x16.png"/>
+    <link rel="icon" href="images/favicon.ico"/>
+    <link rel="apple-touch-icon" href="images/apple-touch-icon.png"/>
+    <link rel="stylesheet" href="css/normalize.css">
+    <link rel="stylesheet" href="css/base.css">
+    <script src="/assets/theme.js"></script>
+    {% block stylesheets %}
+        <link rel="stylesheet" href="css/template.css">
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.23.0/themes/prism-okaidia.css">
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.23.0/plugins/line-numbers/prism-line-numbers.css">
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.23.0/plugins/line-highlight/prism-line-highlight.css">
+        <link rel="stylesheet" href="/assets/identity.css">
+        <link rel="stylesheet" href="/assets/api-reference.css">
+    {% endblock %}
+    {% block javascripts %}
+        <script src="https://cdn.jsdelivr.net/npm/fuse.js@3.4.6"></script>
+        <script src="https://cdn.jsdelivr.net/npm/css-vars-ponyfill@2"></script>
+        <script src="js/template.js"></script>
+        <script src="js/search.js"></script>
+        <script defer src="js/searchIndex.js"></script>
+        <script defer src="/assets/portal.js"></script>
+        <script type="module" src="/assets/status.js"></script>
+        <script type="module" src="/assets/api-reference.js"></script>
+        <script type="module" src="/analytics/analytics.js"></script>
+    {% endblock %}
+</head>
+<body id="top">
+    <a class="skip-link" href="#api-main-content">Skip to content</a>
+    {% include 'components/identity-header.html.twig' %}
+    {% include 'components/header.html.twig' %}
 
-{% block javascripts %}
-    {{ parent() }}
-    <script type="module" src="/assets/api-reference.js"></script>
-    <script type="module" src="/analytics/analytics.js"></script>
-{% endblock %}
+    <main id="api-main-content" class="phpdocumentor">
+        <div class="phpdocumentor-section">
+            {% include 'components/sidebar.html.twig' %}
+
+            <div class="phpdocumentor-column -nine phpdocumentor-content">
+                {% if block('on_this_page') is defined %}
+                <section>
+                {% endif %}
+                    {% block content %}{% endblock %}
+                {% if block('on_this_page') is defined %}
+                </section>
+                <section class="phpdocumentor-on-this-page__sidebar">
+                    {{ block('on_this_page') }}
+                </section>
+                {% endif %}
+            </div>
+            {% include 'components/search-results.html.twig' %}
+        </div>
+        {{ include('components/back-to-top.html.twig') }}
+    </main>
+
+    {% include 'components/identity-footer.html.twig' %}
+
+    <script>
+        cssVars({});
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.23.0/prism.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.23.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.23.0/plugins/line-numbers/prism-line-numbers.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.23.0/plugins/line-highlight/prism-line-highlight.min.js"></script>
+</body>
+</html>

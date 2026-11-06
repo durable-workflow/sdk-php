@@ -1,5 +1,7 @@
-const composer = require('../../../composer.json');
-const quickstart = require('../../quickstart-contract.json');
+const path = require('node:path');
+const source = process.env.DOCS_SOURCE_DIRECTORY || path.resolve(__dirname, '../../..');
+const composer = require(path.join(source, 'composer.json'));
+const quickstart = require(path.join(source, 'docs/quickstart-contract.json'));
 
 const release = composer.extra['durable-workflow'];
 const sdkVersion = release['product-train'];
