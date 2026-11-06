@@ -444,6 +444,16 @@ final class ReplayRegressionConsumer
             throw new RuntimeException("{$identity}.history must not be empty.");
         }
 
+        if ($workflowType === 'golden.activity-poll-transit') {
+            require_once __DIR__.'/../../tests/Support/ActivityGrantScenario.php';
+            $observed = \DurableWorkflow\Tests\Support\ActivityGrantScenario::runIsolated();
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
+            self::assertMatches($fixture['expected'], $observed['commands'][0]
+                + ['activity_callback_count' => $observed['callbacks']], $identity.'.expected');
+
+            return;
+        }
+
         $workflowTasks = $fixture['workflow_tasks'] ?? null;
         if ($workflowTasks !== null) {
             if (array_key_exists('command_sequence', $fixture)) {

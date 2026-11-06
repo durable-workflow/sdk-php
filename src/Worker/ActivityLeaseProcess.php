@@ -34,7 +34,7 @@ final class ActivityLeaseProcess
     private array $identity = [];
 
     /** @param array<string, mixed> $task
-     * @param array{registered: bool, heartbeat_interval: int, presence_due_in?: float} $presence
+     * @param array{registered: bool, heartbeat_interval: int, presence_due_in?: float, poll_started_at?: float|null} $presence
      */
     public function __construct(Client $client, array $task, string $owner, string $queue,
         mixed $serverTime, float $captured, array $presence)
@@ -44,7 +44,7 @@ final class ActivityLeaseProcess
     }
 
     /** @param array<string, mixed> $task
-     * @param array{registered: bool, heartbeat_interval: int, presence_due_in?: float} $presence
+     * @param array{registered: bool, heartbeat_interval: int, presence_due_in?: float, poll_started_at?: float|null} $presence
      */
     public function start(Client $client, array $task, string $owner, string $queue,
         mixed $serverTime, float $captured, array $presence): void
@@ -52,7 +52,8 @@ final class ActivityLeaseProcess
         if ($this->parentPid !== getmypid() || $this->active) {
             throw new ActivityLeaseMaintenanceException('Only the original idle Worker can start activity maintenance.');
         }
-        $authority = new ActivityLeaseAuthority($task, $client->namespace, $owner, $queue, $serverTime, $captured);
+        [$authority, $captured, $fresh] = ActivityLeaseAuthority::capturePollGrant($task, $client->namespace, $owner, $queue,
+            $serverTime, $captured, $presence['poll_started_at'] ?? null);
         $this->identity = $authority->identity();
         $this->until = hrtime(true) / 1e9 + $authority->remaining();
         $this->fixedUntil = $authority->fixedBound();
@@ -92,7 +93,8 @@ final class ActivityLeaseProcess
                 array_flip(['task_id', 'workflow_id', 'run_id', 'activity_execution_id', 'activity_attempt_id',
                     'attempt_number', 'lease_owner', 'task_queue', 'namespace', 'lease_expires_at',
                     'deadlines', 'retry_policy', 'worker_session'])),
-                'server_time' => $serverTime, 'captured_at' => $captured, 'owner' => $owner, 'queue' => $queue,
+                'server_time' => $serverTime, 'captured_at' => $captured, 'fresh_poll_grant' => $fresh,
+                'owner' => $owner, 'queue' => $queue,
                 'parent_pid' => getmypid()] + $presence);
         } catch (Throwable $error) {
             $this->stop();
