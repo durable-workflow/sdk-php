@@ -48,6 +48,29 @@ final class ChildReplayClockEvidence
             && ($starts === [] || ($starts[0] > $openings[0] && $starts[0] < $index));
     }
 
+    /** @param list<array<string, mixed>> $history
+     * @param list<array{step: array<string, mixed>, path: list<array<string, mixed>>, offset: int}> $members
+     */
+    public static function uniqueGroupCalls(array $history, array $members): bool
+    {
+        $calls = [];
+        foreach ($members as $member) {
+            $step = $member['step'];
+            if (($step['shape'] ?? null) !== 'child_workflow') {
+                continue;
+            }
+            $index = $step['resolution_order'] ?? null;
+            $body = is_int($index) ? ($history[$index]['payload'] ?? null) : null;
+            $identity = is_array($body) ? self::childIdentity($body) : null;
+            if ($identity === null || isset($calls[$identity['child_call_id']])) {
+                return false;
+            }
+            $calls[$identity['child_call_id']] = true;
+        }
+
+        return true;
+    }
+
     /** @param array<string, mixed> $payload
      * @return array<string, string>|null
      */

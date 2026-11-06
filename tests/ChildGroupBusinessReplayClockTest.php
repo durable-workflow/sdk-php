@@ -128,6 +128,46 @@ final class ChildGroupBusinessReplayClockTest extends TestCase
         $retained->replayNow();
     }
 
+    public function testTwoAuthoredChildrenCannotBorrowOnePhysicalCallIdentity(): void
+    {
+        $handler = self::handler(true);
+        $history = self::history($handler);
+        foreach ($history as &$event) {
+            if (($event['payload']['sequence'] ?? null) === 2) {
+                $event['payload']['child_call_id'] = 'call-1';
+            }
+        }
+        unset($event);
+        self::assertSame([['child-1', 'child-2'], null], $this->replay($handler, $history));
+    }
+
+    public function testDuplicateCallIdentityCannotSupplyACaughtFailureClock(): void
+    {
+        $handler = self::handler(true);
+        $history = self::history($handler, 'ChildRunFailed');
+        foreach ($history as &$event) {
+            if (($event['payload']['sequence'] ?? null) === 2) {
+                $event['payload']['child_call_id'] = 'call-1';
+            }
+        }
+        unset($event);
+        self::assertSame([['ChildRunFailed', 'source child failure'], null], $this->replay($handler, $history));
+    }
+
+    public function testDistinctCallsMayReuseTheSameChildRun(): void
+    {
+        $handler = self::handler(true);
+        $history = self::history($handler);
+        foreach ($history as &$event) {
+            if (($event['payload']['sequence'] ?? null) === 2) {
+                $event['payload']['child_workflow_instance_id'] = 'child-1';
+                $event['payload']['child_workflow_run_id'] = 'run-1';
+            }
+        }
+        unset($event);
+        self::assertSame([['child-1', 'child-2'], self::FIRST], $this->replay($handler, $history));
+    }
+
     private static function handler(bool $childrenOnly = false): callable
     {
         return static function (WorkflowContext $context) use ($childrenOnly): array {

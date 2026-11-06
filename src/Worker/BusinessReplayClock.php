@@ -118,7 +118,8 @@ final class BusinessReplayClock
         $this->time = null;
         if (!ReplayClockHistory::identity($this->workflowId) || !ReplayClockHistory::identity($this->runId)
             || ($this->redriveClaimed && $this->sourceRun === null)
-            || ($failedOrder === null && count($members) !== $size)) {
+            || ($failedOrder === null && count($members) !== $size)
+            || !ChildReplayClockEvidence::uniqueGroupCalls($this->history, $members)) {
             return;
         }
         $candidates = [];
