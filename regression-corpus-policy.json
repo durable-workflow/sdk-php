@@ -157,6 +157,17 @@
         },
         {
           "glob": "src/Worker/GroupReplayClockEvidence.php"
+        },
+        {
+          "glob": "src/Worker/WorkflowPollGrant.php"
+        },
+        {
+          "glob": "src/Worker.php",
+          "content_patterns": [
+            "function\\s+confirmWorkflowPollGrant\\s*\\(",
+            "function\\s+observePoll\\s*\\(",
+            "function\\s+workerPayloadProgress\\s*\\("
+          ]
         }
       ]
     }

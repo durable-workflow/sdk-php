@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-workflow-poll-fresh-grant",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.workflow-fresh-grant",
+    "input": []
+  },
+  "expected": {
+    "type": "complete_workflow",
+    "result": "fresh-grant",
+    "initial_workflow_renewals": 0
+  },
+  "command_sequence": [
+    {
+      "type": "complete_workflow",
+      "result": "fresh-grant"
+    }
+  ]
+}
