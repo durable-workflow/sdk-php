@@ -6,6 +6,7 @@ namespace DurableWorkflow\Worker;
 
 use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Exception\ReplayClockUnavailable;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Model\ServiceOperationOptions;
@@ -19,6 +20,18 @@ use WeakReference;
 /** Straight-line deterministic operations available while a workflow Fiber is replayed. */
 final class WorkflowContext
 {
+    /** The recorded time at this invocation's consumed replay boundary. */
+    public function replayNow(): DateTimeImmutable
+    {
+        if ($this->execution === null || Fiber::getCurrent() !== $this->execution || $this->isCapturing()
+            || $this->cancellationRequested || $this->deliveredCancellationRequestId !== null || $this->cancellationContext() !== null
+            || $this->businessReplayClock === null) {
+            throw new ReplayClockUnavailable('Business replay time requires an active, validated consumed boundary.');
+        }
+
+        return $this->businessReplayClock->time();
+    }
+
     public const MESSAGE_STREAM_SIGNAL = '__durable_workflow_message_stream';
 
     public const MESSAGE_STREAM_SCHEMA = 'durable-workflow.v2.message-stream.message';
@@ -121,6 +134,7 @@ final class WorkflowContext
         private readonly bool $allowCancellationScopeAuthoring = false,
         private bool $hasAuthoredCancellationScopes = false,
         private readonly bool $allowScopedPreparedLocalActivities = false,
+        private readonly ?BusinessReplayClock $businessReplayClock = null,
     ) {
         $this->execution = $execution;
         $this->loadMessageStreamMessages();

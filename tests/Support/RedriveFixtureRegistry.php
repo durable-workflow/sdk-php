@@ -23,6 +23,7 @@ final class RedriveFixtureRegistry
      * @var array<string, list<string>>
      */
     public const SUCCESSORS = [
+        'business-replay-clock-canonical-redrive' => ['ActivityCompleted', 'TimerScheduled', 'TimerFired'],
         'redrive-reused-upserts-clock' => ['MemoUpserted', 'SearchAttributesUpserted'],
         'redrive-successor-reused-upserts-cancellation-clock' => ['MemoUpserted', 'SearchAttributesUpserted'],
         'redrive-reused-signal-wait-clock' => ['SignalWaitOpened', 'SignalReceived', 'SignalApplied'],

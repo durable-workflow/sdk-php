@@ -1,0 +1,100 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-business-replay-clock-canonical-redrive",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.business-replay-clock",
+    "input": [
+      "Taylor",
+      5
+    ]
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestRedriveTimerWorkflow",
+        "workflow_type": "golden.business-replay-clock",
+        "workflow_instance_id": "regression-corpus-redrive-successor-timer",
+        "workflow_run_id": "regression-corpus-run",
+        "workflow_command_id": "01JBREDRIVECOMMAND00000000",
+        "continued_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "resume_step_sequence": 3,
+        "recovery_kind": "redrive",
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
+        "replayed_started_at": "2026-11-03T00:00:00+00:00",
+        "workflow_link_id": "01JBREDRIVELINK00000000000"
+      }
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityCompleted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "activity_execution_id": "01JBREDRIVESUCCESSORACT000",
+        "activity_class": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "sequence": 1,
+        "result": "wwHioz3/VYAiNwocSGVsbG8sIFRheWxvciE=",
+        "payload_codec": "avro",
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_activity_execution_id": "01JBREDRIVESOURCEACTIVITY0",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "TimerScheduled",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "timer_id": "01JBREDRIVESUCCESSORTIMER0",
+        "sequence": 2,
+        "delay_seconds": 5,
+        "fire_at": "2026-11-03T00:00:05.000000Z"
+      }
+    },
+    {
+      "sequence": 4,
+      "event_type": "TimerFired",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "timer_id": "01JBREDRIVESUCCESSORTIMER0",
+        "sequence": 2,
+        "delay_seconds": 5,
+        "fire_at": "2026-11-03T00:00:05.000000Z",
+        "fired_at": "2026-11-03T00:00:06.000000Z",
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:06+00:00"
+      }
+    }
+  ],
+  "workflow_tasks": [
+    {
+      "workflow_id": "regression-corpus-redrive-successor-timer",
+      "run_id": "regression-corpus-run"
+    }
+  ],
+  "expected": {
+    "workflow_tasks": [
+      {
+        "command_sequence": [
+          {
+            "type": "complete_workflow",
+            "result": [
+              "2026-11-03T00:00:00.000000+00:00",
+              "2026-11-03T00:00:00.000000+00:00",
+              "2026-11-03T00:00:06.000000+00:00"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

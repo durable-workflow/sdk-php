@@ -173,7 +173,8 @@ final class Replayer
         $allowScopeAuthoring = $allowCancellationScopeAuthoring
             && ($cancellation->request === null || $replayCommittedCancellationScopes);
         $context = null;
-        $execution = new Fiber(ExecutionTelemetry::bind(function () use ($handler, $history, $input, $task, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, $allowScopedPreparedLocalActivities, &$context): mixed {
+        $businessReplayClock = new BusinessReplayClock($history, (string) ($task['workflow_id'] ?? ''), (string) ($task['run_id'] ?? ''));
+        $execution = new Fiber(ExecutionTelemetry::bind(function () use ($handler, $history, $input, $task, $businessReplayClock, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, $allowScopedPreparedLocalActivities, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -195,6 +196,7 @@ final class Replayer
                 $allowScopeAuthoring,
                 $scopes->openings !== [],
                 $allowScopedPreparedLocalActivities,
+                $businessReplayClock,
             );
 
             try {
@@ -209,7 +211,7 @@ final class Replayer
         $commands = [];
         /** @var array<string, array{version: int, sequence: ?int}> $versionDecisions */
         $versionDecisions = [];
-        $suspended = $execution->start();
+        $suspended = $businessReplayClock->invoke($execution->start(...));
         $nextSequence = 1;
         $cancellationConsumed = false;
         $consumedScopeDeliveries = [];
@@ -225,7 +227,7 @@ final class Replayer
             }
             if ($suspended instanceof WorkflowCommand && !isset($cancelledConditionSequences[$nextSequence])
                 && ($conditionResult = $this->unrecordedConditionResult($suspended, $steps[$stepCursor] ?? null)) !== null) {
-                $suspended = $execution->resume($conditionResult);
+                $suspended = $this->resumeExecution($execution, $businessReplayClock, $conditionResult);
                 continue;
             }
             if (!$cancellationConsumed && $cancellation->delivery?->sequence === $nextSequence
@@ -263,7 +265,7 @@ final class Replayer
                 $nextSequence = $scopeSequence + $delivery->sequenceSpan;
                 $consumedScopeDeliveries[$scopeSequence] = true;
                 $context->observeCancellationReplayTime($scopeDelivery['event']);
-                $suspended = $execution->throw($context->deliveredScopeCascade(array_map(
+                $suspended = $this->throwIntoExecution($execution, $businessReplayClock, $context->deliveredScopeCascade(array_map(
                     static fn (array $state): ScopedCancellationContext => $state['context'], $scopeDelivery['states'],
                 ), array_map(static fn (array $state): array => CancellationScopeTimerCleanup::snapshot(
                     $state['context'], $state['authority_deadline_at'], $scopeDelivery['event'],
@@ -336,7 +338,7 @@ final class Replayer
                     $cancellationConsumed = true;
                     $context->observeCancellationReplayTime($cancellation->deliveryIndex === null
                         ? null : ($history[$cancellation->deliveryIndex] ?? null));
-                    $suspended = $execution->throw($context->deliveredCancellation($delivery->requestId, $cancellation->request->context));
+                    $suspended = $this->throwIntoExecution($execution, $businessReplayClock, $context->deliveredCancellation($delivery->requestId, $cancellation->request->context));
                     continue;
                 }
                 if ($delivery === null && $boundary !== null && !$context->isCancellationShielded()
@@ -554,7 +556,7 @@ final class Replayer
                             $selectionCancellations,
                         );
                         $this->advanceCancellationClock($context, $history, [$selectionResolutionOrders[(string) $groupId]]);
-                        $suspended = $execution->resume($selection);
+                        $suspended = $this->resumeExecution($execution, $businessReplayClock, $selection);
                         continue;
                     }
                     return $this->result($commands, $context);
@@ -562,7 +564,7 @@ final class Replayer
                 if ($failure !== null) {
                     $this->advanceCancellationClock($context, $history, array_values(array_filter($resolvedOrders,
                         static fn (int $order): bool => $order <= $failure['resolution_order'])));
-                    $suspended = $execution->throw($failure['exception']);
+                    $suspended = $this->throwIntoExecution($execution, $businessReplayClock, $failure['exception']);
                     continue;
                 }
                 if ($preparedCalls !== []) {
@@ -576,7 +578,7 @@ final class Replayer
 
                 ksort($results);
                 $this->advanceCancellationClock($context, $history, $resolvedOrders);
-                $suspended = $execution->resume($suspended->nestedResults(array_values($results)));
+                $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->nestedResults(array_values($results)));
                 continue;
             }
 
@@ -593,8 +595,8 @@ final class Replayer
                 }
                 $this->advanceCancellationClock($context, $history, $resolution['resolution_orders']);
                 $suspended = $resolution['failure'] instanceof Throwable
-                    ? $execution->throw($resolution['failure'])
-                    : $execution->resume($resolution['value']);
+                    ? $this->throwIntoExecution($execution, $businessReplayClock, $resolution['failure'])
+                    : $this->resumeExecution($execution, $businessReplayClock, $resolution['value']);
                 continue;
             }
 
@@ -603,7 +605,7 @@ final class Replayer
                 if ($this->selectionCancellationForHandle($suspended->handle, $selectionCancellations) === null) {
                     $commands[] = $suspended->toWire();
                 }
-                $suspended = $execution->resume(null);
+                $suspended = $this->resumeExecution($execution, $businessReplayClock, null);
                 continue;
             }
 
@@ -630,7 +632,7 @@ final class Replayer
                 }
                 ++$stepCursor;
                 ++$nextSequence;
-                $suspended = $execution->resume($step['value']);
+                $suspended = $this->resumeExecution($execution, $businessReplayClock, $step['value']);
                 continue;
             }
             if ($suspended->type === 'continue_as_new') {
@@ -653,7 +655,7 @@ final class Replayer
                 $decision = $versionDecisions[$changeId] ?? null;
                 if ($decision !== null) {
                     $this->assertVersionDecisionCompatible($changeId, $decision, $suspended);
-                    $suspended = $execution->resume($suspended->versionResult($decision['version']));
+                    $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->versionResult($decision['version']));
                     continue;
                 }
 
@@ -672,7 +674,7 @@ final class Replayer
                             'version' => $version,
                             'sequence' => $step['sequence'],
                         ];
-                        $suspended = $execution->resume($suspended->versionResult($version));
+                        $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->versionResult($version));
                         continue;
                     }
                     if ($step['detail'] !== $changeId) {
@@ -698,7 +700,7 @@ final class Replayer
                         'version' => $version,
                         'sequence' => $step['sequence'],
                     ];
-                    $suspended = $execution->resume($suspended->versionResult($version));
+                    $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->versionResult($version));
                     continue;
                 }
 
@@ -715,7 +717,7 @@ final class Replayer
                         'version' => $version,
                         'sequence' => null,
                     ];
-                    $suspended = $execution->resume($suspended->versionResult($version));
+                    $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->versionResult($version));
                     continue;
                 }
 
@@ -733,7 +735,7 @@ final class Replayer
                     'version' => $version,
                     'sequence' => null,
                 ];
-                $suspended = $execution->resume($suspended->versionResult($version));
+                $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->versionResult($version));
                 continue;
             }
 
@@ -750,8 +752,8 @@ final class Replayer
                 }
                 $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($awaited));
                 $suspended = $awaited['failure'] instanceof Throwable
-                    ? $execution->throw($awaited['failure'])
-                    : $execution->resume($awaited['value']);
+                    ? $this->throwIntoExecution($execution, $businessReplayClock, $awaited['failure'])
+                    : $this->resumeExecution($execution, $businessReplayClock, $awaited['value']);
                 continue;
             }
 
@@ -781,7 +783,7 @@ final class Replayer
                         throw new NonDeterministicWorkflow('A committed child start lacks its child call, instance or run identity.',
                             $step['sequence'], reason: 'child_start_identity_missing');
                     }
-                    $suspended = $execution->resume(new ChildWorkflowHandle($context, $step['sequence'], $identity));
+                    $suspended = $this->resumeExecution($execution, $businessReplayClock, new ChildWorkflowHandle($context, $step['sequence'], $identity));
                     continue;
                 }
                 if ($suspended->type === 'open_condition_wait') {
@@ -794,12 +796,12 @@ final class Replayer
                     if ($step['resolved']) {
                         $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($step));
                         $consumedConditionTail = $this->conditionTailAfterConsumption($step, $suspended, $step['value'] === true);
-                        $suspended = $execution->resume($step['value']);
+                        $suspended = $this->resumeExecution($execution, $businessReplayClock, $step['value']);
                         continue;
                     }
                     if ($suspended->conditionSatisfied()) {
                         $consumedConditionTail = $this->conditionTailAfterConsumption($step, $suspended, true);
-                        $suspended = $execution->resume(true);
+                        $suspended = $this->resumeExecution($execution, $businessReplayClock, true);
                         continue;
                     }
 
@@ -828,7 +830,7 @@ final class Replayer
                 }
                 if ($step['failure'] instanceof Throwable) {
                     try {
-                        $suspended = $execution->throw($step['failure']);
+                        $suspended = $this->throwIntoExecution($execution, $businessReplayClock, $step['failure'], $step);
                     } catch (Throwable $failure) {
                         $activityId = $failure instanceof ActivityFailed && is_array($failure->failure)
                             ? ($failure->failure['activity_execution_id'] ?? null)
@@ -845,7 +847,7 @@ final class Replayer
                         throw $failure;
                     }
                 } else {
-                    $suspended = $execution->resume($step['value']);
+                    $suspended = $this->resumeExecution($execution, $businessReplayClock, $step['value'], $step);
                 }
                 continue;
             }
@@ -875,9 +877,9 @@ final class Replayer
                 ++$nextSequence;
                 try {
                     if ($suspended->localResult instanceof Throwable) {
-                        $suspended = $execution->throw($suspended->localResult);
+                        $suspended = $this->throwIntoExecution($execution, $businessReplayClock, $suspended->localResult);
                     } else {
-                        $suspended = $execution->resume($suspended->localResult);
+                        $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->localResult);
                     }
                 } catch (Throwable $failure) {
                     return $this->result($commands, $context, $failure);
@@ -894,7 +896,7 @@ final class Replayer
             }
             ++$nextSequence;
             if (in_array($suspended->type, ['record_side_effect', 'upsert_memo', 'upsert_search_attributes'], true)) {
-                $suspended = $execution->resume($suspended->localResult);
+                $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->localResult);
                 continue;
             }
 
@@ -2514,6 +2516,28 @@ final class Replayer
         foreach ($orders as $order) {
             $context->observeCancellationReplayTime($history[$order] ?? null);
         }
+    }
+
+    /**
+     * @param Fiber<mixed, mixed, mixed, mixed> $execution
+     * @param array<string, mixed>|null $step
+     */
+    private function resumeExecution(Fiber $execution, BusinessReplayClock $clock, mixed $value, ?array $step = null): mixed
+    {
+        $clock->consume($step);
+
+        return $clock->invoke(static fn (): mixed => $execution->resume($value));
+    }
+
+    /**
+     * @param Fiber<mixed, mixed, mixed, mixed> $execution
+     * @param array<string, mixed>|null $step
+     */
+    private function throwIntoExecution(Fiber $execution, BusinessReplayClock $clock, Throwable $failure, ?array $step = null): mixed
+    {
+        $clock->consume($step);
+
+        return $clock->invoke(static fn (): mixed => $execution->throw($failure));
     }
 
     /**
