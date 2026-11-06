@@ -53,6 +53,78 @@ final class ChildBusinessReplayClockTest extends TestCase
         self::assertSame(['unavailable', 'child-value', self::TERMINAL_TIME], $observed);
     }
 
+    public function testScheduledAndTerminalAreSufficientWithoutAStartedRow(): void
+    {
+        $history = self::history('ChildRunCompleted');
+        array_splice($history, 1, 1);
+
+        self::assertSame(self::TERMINAL_TIME, $this->replayResult(self::timeHandler(), $history));
+    }
+
+    #[DataProvider('terminalInstants')]
+    public function testTheExactParentInstantIsPreserved(string $input, string $expected): void
+    {
+        $history = self::history('ChildRunCompleted');
+        $history[2]['recorded_at'] = $input;
+
+        self::assertSame($expected, $this->replayResult(self::timeHandler(), $history));
+    }
+
+    public static function terminalInstants(): array
+    {
+        return [
+            ['2026-11-06T01:00:00Z', '2026-11-06T01:00:00.000000+00:00'],
+            ['2026-11-06T00:59:59.000001Z', '2026-11-06T00:59:59.000001+00:00'],
+            ['2026-11-06T03:00:00.654321+01:00', '2026-11-06T02:00:00.654321+00:00'],
+        ];
+    }
+
+    public function testOnlyTheConsumedChildCanSupplyTime(): void
+    {
+        $history = self::history('ChildRunCompleted');
+        $second = self::history('ChildRunCompleted');
+        foreach ($second as &$event) {
+            $event['payload']['sequence'] = 2;
+            $event['payload']['child_call_id'] = 'second-call';
+            $event['payload']['child_workflow_instance_id'] = 'second-child';
+            $event['payload']['child_workflow_run_id'] = 'second-run';
+            $event['recorded_at'] = 'invalid future clock';
+        }
+        unset($event);
+        $result = $this->replayResult(static function (WorkflowContext $context): array {
+            $context->childWorkflow('clock-child');
+            $first = $context->replayNow()->format('Y-m-d\TH:i:s.uP');
+            $context->childWorkflow('clock-child');
+            try { $context->replayNow(); } catch (ReplayClockUnavailable) { return [$first, 'unavailable']; }
+            self::fail('Invalid consumed time must not retain the prior child clock.');
+        }, [...$history, ...$second]);
+
+        self::assertSame([self::TERMINAL_TIME, 'unavailable'], $result);
+    }
+
+    public function testChildCallsDoNotCreateATimeWithoutAnActiveCallback(): void
+    {
+        $retained = null;
+        $this->replayResult(static function (WorkflowContext $context) use (&$retained): string {
+            $context->childWorkflow('clock-child');
+            $retained = $context;
+
+            return $context->replayNow()->format('c');
+        }, self::history('ChildRunCompleted'));
+
+        $this->expectException(ReplayClockUnavailable::class);
+        $retained->replayNow();
+    }
+
+    private static function timeHandler(): callable
+    {
+        return static function (WorkflowContext $context): string {
+            $context->childWorkflow('clock-child');
+
+            return $context->replayNow()->format('Y-m-d\TH:i:s.uP');
+        };
+    }
+
     #[DataProvider('unprovedLifecycles')]
     public function testUnprovedChildIdentityAndLifecycleCannotSupplyTime(string $mutation): void
     {
