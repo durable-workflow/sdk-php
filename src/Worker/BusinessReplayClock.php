@@ -118,7 +118,8 @@ final class BusinessReplayClock
         $this->time = null;
         if (!ReplayClockHistory::identity($this->workflowId) || !ReplayClockHistory::identity($this->runId)
             || ($this->redriveClaimed && $this->sourceRun === null)
-            || ($failedOrder === null && count($members) !== $size)) {
+            || ($failedOrder === null && count($members) !== $size)
+            || !ChildReplayClockEvidence::uniqueGroupCalls($this->history, $members)) {
             return;
         }
         $candidates = [];
@@ -144,12 +145,15 @@ final class BusinessReplayClock
         $family = $step['shape'] ?? null;
         $index = $step['resolution_order'] ?? null;
         $sequence = $step['sequence'] ?? null;
-        if (!in_array($family, ['activity', 'timer'], true) || !is_int($index) || !is_int($sequence)
+        if (!in_array($family, ['activity', 'timer', self::CHILD_SHAPE], true) || !is_int($index) || !is_int($sequence)
             || !isset($this->history[$index]) || $path === []) {
             return null;
         }
         $rowMatches = fn (array $body, string $kind): bool => $this->groupRow($body, $kind, $path, $pathMatches);
-        if (!$this->scalarBoundary($index, $family, $sequence, $rowMatches)) {
+        $matches = $family === self::CHILD_SHAPE
+            ? ChildReplayClockEvidence::matches($this->history, $this->bySequence[$sequence] ?? [], $index, $sequence, $rowMatches)
+            : $this->scalarBoundary($index, $family, $sequence, $rowMatches);
+        if (!$matches) {
             return null;
         }
         $event = $this->history[$index];

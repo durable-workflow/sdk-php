@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Worker;
 
-/** @internal Correlates a scalar child terminal with its immutable parent lifecycle. */
+use Closure;
+
+/** @internal Correlates a child terminal with its immutable parent lifecycle. */
 final class ChildReplayClockEvidence
 {
     private const CHILD_TERMINALS = ['ChildRunCompleted', 'ChildRunFailed', 'ChildRunCancelled', 'ChildRunTerminated'];
@@ -14,8 +16,9 @@ final class ChildReplayClockEvidence
     /** Only the selected parent terminal supplies child business time.
      * @param list<array<string, mixed>> $history
      * @param list<int> $indices
+     * @param (Closure(array<string, mixed>, string): bool)|null $rowMatches
      */
-    public static function matches(array $history, array $indices, int $index, int $sequence): bool
+    public static function matches(array $history, array $indices, int $index, int $sequence, ?Closure $rowMatches = null): bool
     {
         $event = $history[$index];
         $payload = $event['payload'] ?? null;
@@ -31,7 +34,7 @@ final class ChildReplayClockEvidence
             $kind = ReplayClockHistory::kind($row);
             if ($position > $index || ReplayClockHistory::sequence($body) !== $sequence
                 || !in_array($kind, $allowed, true) || self::childIdentity($body) !== $identity
-                || !ReplayClockHistory::scalarRow($body, 'child_workflow')) {
+                || !($rowMatches === null ? ReplayClockHistory::scalarRow($body, 'child_workflow') : $rowMatches($body, 'child_workflow'))) {
                 return false;
             }
             $positions[$kind][] = $position;
@@ -43,6 +46,29 @@ final class ChildReplayClockEvidence
 
         return $closures === [$index] && count($openings) === 1 && $openings[0] < $index && count($starts) <= 1
             && ($starts === [] || ($starts[0] > $openings[0] && $starts[0] < $index));
+    }
+
+    /** @param list<array<string, mixed>> $history
+     * @param list<array{step: array<string, mixed>, path: list<array<string, mixed>>, offset: int}> $members
+     */
+    public static function uniqueGroupCalls(array $history, array $members): bool
+    {
+        $calls = [];
+        foreach ($members as $member) {
+            $step = $member['step'];
+            if (($step['shape'] ?? null) !== 'child_workflow') {
+                continue;
+            }
+            $index = $step['resolution_order'] ?? null;
+            $body = is_int($index) ? ($history[$index]['payload'] ?? null) : null;
+            $identity = is_array($body) ? self::childIdentity($body) : null;
+            if ($identity === null || isset($calls[$identity['child_call_id']])) {
+                return false;
+            }
+            $calls[$identity['child_call_id']] = true;
+        }
+
+        return true;
     }
 
     /** @param array<string, mixed> $payload
