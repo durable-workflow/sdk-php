@@ -82,6 +82,10 @@ final class ReplayRegressionFixture
             throw new RuntimeException("{$identity}.history must not be empty.");
         }
 
+        if ($workflowType === 'golden.workflow-fresh-grant') {
+            return self::executeFreshWorkflowPoll($identity, $input, $history, $fixture);
+        }
+
         $workflowTasks = $fixture['workflow_tasks'] ?? null;
         if ($workflowTasks !== null) {
             if (!is_array($workflowTasks) || !array_is_list($workflowTasks) || $workflowTasks === []) {
@@ -799,6 +803,62 @@ final class ReplayRegressionFixture
         self::assertMatches($fixture['expected'], ['workflow_tasks' => $observed], "{$identity}.expected");
 
         return $observed;
+    }
+
+    /**
+     * @param list<mixed> $input
+     * @param list<array<string, mixed>> $history
+     * @param array<string, mixed> $fixture
+     * @return list<array<string, mixed>>
+     */
+    private static function executeFreshWorkflowPoll(string $identity, array $input, array $history, array $fixture): array
+    {
+        $codec = new AvroPayloadCodec();
+        $fence = ['task_id' => 'fresh-task', 'workflow_task_attempt' => 1, 'lease_owner' => 'fresh-worker'];
+        $commands = null;
+        $renewals = 0;
+        $transport = new FakeTransport(handler: static function (string $method, string $uri, array $headers, ?array $body) use (
+            $input, $history, $codec, $fence, &$commands, &$renewals,
+        ): array {
+            if (str_ends_with($uri, '/workflow-tasks/poll')) {
+                return ['poll_status' => 'leased', 'server_time' => '2026-07-18T00:00:00.000000Z',
+                    'task' => $fence + ['workflow_id' => 'fresh-workflow', 'run_id' => 'fresh-run',
+                        'workflow_type' => 'golden.workflow-fresh-grant', 'payload_codec' => 'avro',
+                        'arguments' => $codec->envelope($input), 'history_events' => $history,
+                        'lease_expires_at' => '2026-07-18T00:00:30.000000Z']];
+            }
+            if (str_ends_with($uri, '/fresh-task/heartbeat')) {
+                ++$renewals;
+
+                return $fence + ['renewed' => true];
+            }
+            if (str_ends_with($uri, '/fresh-task/complete')) {
+                if (($body['lease_owner'] ?? null) !== $fence['lease_owner']
+                    || ($body['workflow_task_attempt'] ?? null) !== $fence['workflow_task_attempt']) {
+                    throw new RuntimeException('Fresh poll completion changed its original fence.');
+                }
+                $commands = $body['commands'] ?? null;
+
+                return ['completed' => true];
+            }
+            if (str_ends_with($uri, '/poll')) {
+                return ['task' => null, 'poll_status' => 'empty'];
+            }
+
+            throw new RuntimeException('Unexpected fresh workflow poll request: '.$method.' '.$uri);
+        });
+        $worker = new Worker(new Client('https://replay.invalid', transport: $transport, codec: $codec),
+            'regression-corpus', workerId: 'fresh-worker');
+        $worker->registerWorkflow('golden.workflow-fresh-grant', static fn (WorkflowContext $context): string => 'fresh-grant');
+        $worker->tick(0);
+        if (!is_array($commands)) {
+            throw new RuntimeException('Fresh poll did not complete its workflow task.');
+        }
+        $commands = array_map(static fn (array $command): array => self::decodeEnvelopes($command, $codec), $commands);
+        $observed = ['command_sequence' => $commands, 'initial_workflow_renewals' => $renewals] + $commands[0];
+        self::assertMatches($fixture['expected'], $observed, "{$identity}.expected");
+
+        return $commands;
     }
 
     /** @return array<string, mixed> */

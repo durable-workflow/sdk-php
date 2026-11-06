@@ -84,6 +84,7 @@ final class ReplayRegressionTransport implements Transport
     private ?array $activityCompletionBody = null;
     private bool $activityCompleted = false;
     private bool $workflowClaimRepaired = false;
+    private int $workflowRenewals = 0;
 
     /**
      * @param list<array<string, mixed>> $tasks
@@ -112,7 +113,13 @@ final class ReplayRegressionTransport implements Transport
                 $task['workflow_task_attempt'] = 2;
             }
 
-            return ['task' => $task, 'poll_status' => 'leased'];
+            $reply = ['task' => $task, 'poll_status' => 'leased'];
+            if ($task['workflow_type'] === 'golden.workflow-fresh-grant') {
+                $reply['server_time'] = '2026-07-18T00:00:00.000000Z';
+                $reply['task']['lease_expires_at'] = '2026-07-18T00:00:30.000000Z';
+            }
+
+            return $reply;
         }
 
         $task = $this->taskFor($uri, 'history');
@@ -130,6 +137,7 @@ final class ReplayRegressionTransport implements Transport
 
         $task = $this->taskFor($uri, 'heartbeat');
         if ($task !== null) {
+            ++$this->workflowRenewals;
             if ($this->workflowLeaseRecovery && !$this->workflowClaimRepaired) {
                 $this->workflowClaimRepaired = true;
                 --$this->workflowPoll;
@@ -313,6 +321,11 @@ final class ReplayRegressionTransport implements Transport
         }
 
         return $this->completedCommands;
+    }
+
+    public function workflowRenewals(): int
+    {
+        return $this->workflowRenewals;
     }
 
     /** @return array<string, mixed>|null */
@@ -609,6 +622,9 @@ final class ReplayRegressionConsumer
         }
 
         $observed = ['command_sequence' => $commands];
+        if ($workflowType === 'golden.workflow-fresh-grant') {
+            $observed['initial_workflow_renewals'] = $transport->workflowRenewals();
+        }
         if (count($commands) === 1) {
             $observed = array_merge($observed, $commands[0]);
         }
@@ -804,6 +820,7 @@ final class ReplayRegressionConsumer
                 return 'not-cancelled';
             },
             'golden.worker-update' => static fn (WorkflowContext $context): array => [],
+            'golden.workflow-fresh-grant' => static fn (WorkflowContext $context): string => 'fresh-grant',
             'golden.workflow-stream' => static function (WorkflowContext $context): string {
                 $context->appendWorkflowStream('tokens', [
                     new WorkflowStreamAppendItem(['token' => 'hello']),

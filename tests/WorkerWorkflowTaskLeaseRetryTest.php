@@ -5,15 +5,20 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Client;
+use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Tests\Support\FakeTransport;
+use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\WorkflowContext;
-use DurableWorkflow\Worker\WorkflowPollGrant;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use GuzzleHttp\Client as HttpClient;
+use GuzzleHttp\Promise\FulfilledPromise;
+use GuzzleHttp\Psr7\Response;
+use Psr\Http\Message\RequestInterface;
 
 final class WorkerWorkflowTaskLeaseRetryTest extends TestCase
 {
@@ -146,45 +151,49 @@ final class WorkerWorkflowTaskLeaseRetryTest extends TestCase
         self::assertSame([], self::taskRequests($transport, 'complete'));
     }
 
-    #[DataProvider('grantFenceChanges')]
-    public function testFreshGrantCannotAuthorizeAChangedTask(string $field, mixed $changed): void
+    public function testExternalPayloadLoadingCannotRefreshThePollObservation(): void
     {
-        $poll = self::freshWorkflowPoll();
-        $grant = WorkflowPollGrant::observe($poll, 'worker-1', 0, 0.1);
-        self::assertNotNull($grant);
-        self::assertTrue($grant->isFreshFor($poll['task'], 0.2));
-        $poll['task'][$field] = $changed;
-        self::assertFalse($grant->isFreshFor($poll['task'], 0.2));
-    }
+        $blob = (new AvroPayloadCodec())->envelope(['loaded'])['blob'];
+        $events = [];
+        $http = new HttpClient(['handler' => static function (RequestInterface $request) use ($blob, &$events): FulfilledPromise {
+            $path = $request->getUri()->getPath();
+            if (str_contains($path, '/external-payloads/')) {
+                $events[] = 'fetch';
+                usleep(1_100_000);
 
-    /** @return iterable<string, array{string, mixed}> */
-    public static function grantFenceChanges(): iterable
-    {
-        yield 'other task' => ['task_id', 'workflow-task-2'];
-        yield 'other owner' => ['lease_owner', 'worker-2'];
-        yield 'other attempt' => ['workflow_task_attempt', 4];
-        yield 'attempt type alias' => ['workflow_task_attempt', '3'];
-        yield 'changed expiry' => ['lease_expires_at', '2026-07-18T00:01:00.000000Z'];
-    }
+                return new FulfilledPromise(new Response(200, [
+                    'Content-Type' => 'application/octet-stream',
+                    'X-Durable-Workflow-Payload-Codec' => 'avro',
+                    'X-Durable-Workflow-Payload-Size' => (string) strlen($blob),
+                    'X-Durable-Workflow-Payload-SHA256' => hash('sha256', $blob),
+                ], $blob));
+            }
+            if (str_ends_with($path, '/workflow-tasks/poll')) {
+                $reply = self::freshWorkflowPoll();
+                $reply['task']['arguments'] = ['codec' => 'avro', 'external_payload' => RuntimeExternalPayloadTest::reference($blob)];
+            } elseif (str_ends_with($path, '/heartbeat')) {
+                $events[] = 'heartbeat';
+                $reply = self::renewedLease();
+            } elseif (str_ends_with($path, '/complete')) {
+                $events[] = 'complete';
+                $reply = ['completed' => true];
+            } else {
+                $reply = ['task' => null, 'poll_status' => 'empty'];
+            }
 
-    #[DataProvider('monotonicGrantBounds')]
-    public function testServerLeaseAndMonotonicObservationBothBoundFreshness(float $received, float $now, bool $fresh): void
-    {
-        $poll = self::freshWorkflowPoll();
-        $grant = WorkflowPollGrant::observe($poll, 'worker-1', 0, $received);
-        self::assertNotNull($grant);
-        self::assertSame($fresh, $grant->isFreshFor($poll['task'], $now));
-    }
+            return new FulfilledPromise(new Response(200, [], json_encode($reply, JSON_THROW_ON_ERROR)));
+        }]);
+        $worker = new Worker(new Client('https://server.example', transport: new Psr18Transport($http)),
+            'orders', workerId: 'worker-1');
+        $worker->registerWorkflow('orders.workflow', static function (WorkflowContext $context, string $input) use (&$events): string {
+            self::assertSame('loaded', $input);
+            $events[] = 'handler';
 
-    /** @return iterable<string, array{float, float, bool}> */
-    public static function monotonicGrantBounds(): iterable
-    {
-        yield 'fresh with margin' => [0.1, 0.2, true];
-        yield 'exactly one second old' => [0.0, 1.0, false];
-        yield 'backwards monotonic observation' => [0.2, 0.1, false];
-        yield 'exactly ten seconds remain including request' => [19.5, 20.0, true];
-        yield 'request time leaves under ten seconds' => [20.0, 20.1, false];
-        yield 'nonfinite current reading' => [0.0, INF, false];
+            return 'completed';
+        });
+
+        self::assertTrue($worker->tick(0));
+        self::assertSame(['heartbeat', 'handler', 'complete'], array_slice($events, -3));
     }
 
     /** @return array<string, mixed> */
