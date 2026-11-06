@@ -44,6 +44,7 @@ use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkflowClaimDeferred;
 use DurableWorkflow\Worker\WorkflowClaimRevoked;
 use DurableWorkflow\Worker\WorkflowContext;
+use DurableWorkflow\Worker\WorkflowPollGrant;
 use DurableWorkflow\Worker\WorkflowEntryArguments;
 use DurableWorkflow\Worker\StickyWorkflowCache;
 use DurableWorkflow\Worker\WorkerSession;
@@ -113,6 +114,8 @@ final class Worker
     private bool $activityLeaseRenewalSupported = false;
     private ?ActivityLeaseProcess $activityLeaseProcess = null;
     private ?ActivityLeaseProcess $activityLeaseHelper = null;
+    private ?WorkflowPollGrant $workflowPollGrant = null;
+    private ?float $workflowPollStartedAt = null;
     /** @var (\Closure(): void)|null */
     private ?\Closure $unbindActivityLease = null;
     private ?CancellationRequest $claimCancellation = null;
@@ -1147,6 +1150,10 @@ final class Worker
      */
     private function observePoll(string $taskKind, \Closure $operation): array
     {
+        if ($taskKind === 'workflow') {
+            $this->workflowPollGrant = null;
+            $this->workflowPollStartedAt = hrtime(true) / 1e9;
+        }
         if (!$this->metricsObserver->enabled()) {
             return $operation();
         }
@@ -1410,7 +1417,7 @@ final class Worker
                 $this->observeClaimCancellation($task['cancellation_request']);
             }
             $history = $this->completeHistory($task, $leaseOwner, $attempt);
-            if (!$this->renewWorkflowTaskLease($taskId, $leaseOwner, $attempt)) {
+            if (!$this->confirmWorkflowPollGrant($task, $taskId, $leaseOwner, $attempt)) {
                 return;
             }
             if ($this->client->observabilityContextAvailable()) {
@@ -1517,6 +1524,7 @@ final class Worker
                 $attempt,
             );
         } finally {
+            $this->workflowPollGrant = null;
             $traceScope?->__invoke();
             $this->claimCancellation = null;
             $this->claimDeliveredCancellationId = null;
@@ -1538,6 +1546,19 @@ final class Worker
             && ($details['run_id'] ?? null) === $runId
             && ($details['task_id'] ?? null) === ($task['task_id'] ?? '')
             && ($details['workflow_task_attempt'] ?? null) === (int) ($task['workflow_task_attempt'] ?? 1);
+    }
+
+    /** @param array<string, mixed> $task */
+    private function confirmWorkflowPollGrant(array $task, string $taskId, string $owner, int $attempt): bool
+    {
+        $grant = $this->workflowPollGrant;
+        $this->workflowPollGrant = null;
+        if ($this->shutdownRequested) {
+            return false;
+        }
+
+        return ($grant?->isFreshFor($task, hrtime(true) / 1e9) ?? false)
+            || $this->renewWorkflowTaskLease($taskId, $owner, $attempt);
     }
 
     private function renewWorkflowTaskLease(string $taskId, string $leaseOwner, int $taskAttempt): bool
@@ -1671,6 +1692,9 @@ final class Worker
             };
         }
         if ($path === '/worker/workflow-tasks/poll') {
+            // Capture metadata before external payload loading and history paging.
+            $this->workflowPollGrant = $this->workflowPollStartedAt === null ? null
+                : WorkflowPollGrant::observe($response, $this->workerId, $this->workflowPollStartedAt, hrtime(true) / 1e9);
             $task = $response['task'] ?? null;
             if (!is_array($task)) {
                 return null;
