@@ -5,16 +5,254 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Client;
+use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Tests\Support\FakeTransport;
+use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\WorkflowContext;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use GuzzleHttp\Client as HttpClient;
+use GuzzleHttp\Promise\FulfilledPromise;
+use GuzzleHttp\Psr7\Response;
+use Psr\Http\Message\RequestInterface;
 
 final class WorkerWorkflowTaskLeaseRetryTest extends TestCase
 {
+    #[DataProvider('workerWallClocks')]
+    public function testFreshWorkflowPollCompletesWithItsOriginalFenceWithoutInitialRenewal(float $wallClock): void
+    {
+        $transport = self::grantTransport(self::freshWorkflowPoll());
+        $worker = self::grantWorker($transport, $wallClock);
+
+        self::assertTrue($worker->tick(0));
+        self::assertSame([], self::taskRequests($transport, 'heartbeat'));
+        $completions = self::taskRequests($transport, 'complete');
+        self::assertCount(1, $completions);
+        self::assertSame('worker-1', $completions[0]['body']['lease_owner']);
+        self::assertSame(3, $completions[0]['body']['workflow_task_attempt']);
+        self::assertSame('complete_workflow', $completions[0]['body']['commands'][0]['type']);
+    }
+
+    /** @return iterable<string, array{float}> */
+    public static function workerWallClocks(): iterable
+    {
+        yield 'worker clock behind Server' => [0.0];
+        yield 'worker clock ahead of Server' => [4_000_000_000.0];
+    }
+
+    /** @param array<string, mixed> $poll */
+    #[DataProvider('unqualifiedWorkflowPolls')]
+    public function testUnqualifiedWorkflowPollRetainsInitialRenewal(array $poll): void
+    {
+        $transport = self::grantTransport($poll);
+
+        self::assertTrue(self::grantWorker($transport)->tick(0));
+        self::assertCount(1, self::taskRequests($transport, 'heartbeat'));
+        self::assertCount(1, self::taskRequests($transport, 'complete'));
+    }
+
+    /** @return iterable<string, array{array<string, mixed>}> */
+    public static function unqualifiedWorkflowPolls(): iterable
+    {
+        yield 'older Server' => [self::leasedWorkflowTask()];
+        foreach ([null, 123, 'not-a-clock', '2026-07-18T00:00:00Z',
+            '2026-02-30T00:00:00.000000Z', "2026-07-18T00:00:00.000000Z\n"] as $index => $clock) {
+            yield 'invalid Server clock '.$index => [array_replace(self::freshWorkflowPoll(), ['server_time' => $clock])];
+        }
+        foreach ([null, '2026-07-18T00:00:09.999999Z', '2026-07-18T00:00:00.000000Z',
+            '2026-07-17T23:59:59.000000Z', '2026-02-30T00:00:30.000000Z'] as $index => $expiry) {
+            $poll = self::freshWorkflowPoll();
+            $poll['task']['lease_expires_at'] = $expiry;
+            yield 'unusable lease '.$index => [$poll];
+        }
+    }
+
+    public function testHistoryPagingTimeMakesThePollObservationStale(): void
+    {
+        $poll = self::freshWorkflowPoll();
+        $poll['task']['next_history_page_token'] = 'history-page';
+        $transport = self::grantTransport($poll, history: static function (): array {
+            usleep(1_100_000);
+
+            return ['history_events' => [], 'next_history_page_token' => null];
+        });
+
+        self::assertTrue(self::grantWorker($transport)->tick(0));
+        self::assertCount(1, self::taskRequests($transport, 'heartbeat'));
+        self::assertCount(1, self::taskRequests($transport, 'complete'));
+    }
+
+    public function testPollRoundTripConsumesTheRemainingServerLeaseMargin(): void
+    {
+        $poll = self::freshWorkflowPoll();
+        $poll['task']['lease_expires_at'] = '2026-07-18T00:00:10.050000Z';
+        $transport = self::grantTransport($poll, beforePoll: static function (): void {
+            usleep(120_000);
+        });
+
+        self::assertTrue(self::grantWorker($transport)->tick(0));
+        self::assertCount(1, self::taskRequests($transport, 'heartbeat'));
+    }
+
+    public function testFreshPollCompletionStillObeysTheServerFence(): void
+    {
+        $transport = self::grantTransport(self::freshWorkflowPoll(), completion: static function (): never {
+            throw self::leaseExpiredConflict();
+        });
+
+        self::assertTrue(self::grantWorker($transport)->tick(0));
+        self::assertSame([], self::taskRequests($transport, 'heartbeat'));
+        self::assertCount(1, self::taskRequests($transport, 'complete'));
+        self::assertSame([], self::taskRequests($transport, 'fail'));
+    }
+
+    public function testFreshPollDoesNotSkipLocalActivityProgressRenewal(): void
+    {
+        $transport = self::grantTransport(self::freshWorkflowPoll());
+        $worker = self::grantWorker($transport, handler: static fn (WorkflowContext $context): mixed =>
+            $context->localActivity('local.receipt'));
+        $worker->registerActivity('local.receipt', static function (ActivityContext $context): string {
+            $context->heartbeat(['step' => 1]);
+
+            return 'done';
+        });
+        self::assertTrue($worker->tick(0));
+        $heartbeats = self::taskRequests($transport, 'heartbeat');
+        self::assertCount(1, $heartbeats);
+        self::assertSame(['lease_owner' => 'worker-1', 'workflow_task_attempt' => 3], $heartbeats[0]['body']);
+        $completion = self::taskRequests($transport, 'complete');
+        self::assertSame('record_local_activity', $completion[0]['body']['commands'][0]['type']);
+    }
+
+    public function testShutdownDuringHistoryLoadingCannotUseTheFreshGrant(): void
+    {
+        $poll = self::freshWorkflowPoll();
+        $poll['task']['next_history_page_token'] = 'history-page';
+        $worker = null;
+        $executions = 0;
+        $transport = self::grantTransport($poll, history: static function () use (&$worker): array {
+            $worker->requestShutdown();
+
+            return ['history_events' => [], 'next_history_page_token' => null];
+        });
+        $worker = self::grantWorker($transport, handler: static function (WorkflowContext $context) use (&$executions): string {
+            ++$executions;
+
+            return 'must-not-run';
+        });
+
+        self::assertTrue($worker->tick(0));
+        self::assertSame(0, $executions);
+        self::assertSame([], self::taskRequests($transport, 'heartbeat'));
+        self::assertSame([], self::taskRequests($transport, 'complete'));
+    }
+
+    public function testExternalPayloadLoadingCannotRefreshThePollObservation(): void
+    {
+        $blob = (new AvroPayloadCodec())->envelope(['loaded'])['blob'];
+        $events = [];
+        $http = new HttpClient(['handler' => static function (RequestInterface $request) use ($blob, &$events): FulfilledPromise {
+            $path = $request->getUri()->getPath();
+            if (str_contains($path, '/external-payloads/')) {
+                $events[] = 'fetch';
+                usleep(1_100_000);
+
+                return new FulfilledPromise(new Response(200, [
+                    'Content-Type' => 'application/octet-stream',
+                    'X-Durable-Workflow-Payload-Codec' => 'avro',
+                    'X-Durable-Workflow-Payload-Size' => (string) strlen($blob),
+                    'X-Durable-Workflow-Payload-SHA256' => hash('sha256', $blob),
+                ], $blob));
+            }
+            if (str_ends_with($path, '/workflow-tasks/poll')) {
+                $reply = self::freshWorkflowPoll();
+                $reply['task']['arguments'] = ['codec' => 'avro', 'external_payload' => RuntimeExternalPayloadTest::reference($blob)];
+            } elseif (str_ends_with($path, '/heartbeat')) {
+                $events[] = 'heartbeat';
+                $reply = self::renewedLease();
+            } elseif (str_ends_with($path, '/complete')) {
+                $events[] = 'complete';
+                $reply = ['completed' => true];
+            } else {
+                $reply = ['task' => null, 'poll_status' => 'empty'];
+            }
+
+            return new FulfilledPromise(new Response(200, [], json_encode($reply, JSON_THROW_ON_ERROR)));
+        }]);
+        $worker = new Worker(new Client('https://server.example', transport: new Psr18Transport($http)),
+            'orders', workerId: 'worker-1');
+        $worker->registerWorkflow('orders.workflow', static function (WorkflowContext $context, string $input) use (&$events): string {
+            self::assertSame('loaded', $input);
+            $events[] = 'handler';
+
+            return 'completed';
+        });
+
+        self::assertTrue($worker->tick(0));
+        self::assertSame(['heartbeat', 'handler', 'complete'], array_slice($events, -3));
+    }
+
+    /** @return array<string, mixed> */
+    private static function freshWorkflowPoll(): array
+    {
+        $poll = self::leasedWorkflowTask();
+        $poll['server_time'] = '2026-07-18T00:00:00.000000Z';
+        $poll['task']['lease_expires_at'] = '2026-07-18T00:00:30.000000Z';
+
+        return $poll;
+    }
+
+    /** @param array<string, mixed> $poll */
+    private static function grantTransport(
+        array $poll,
+        ?\Closure $beforePoll = null,
+        ?\Closure $history = null,
+        ?\Closure $completion = null,
+    ): FakeTransport {
+        return new FakeTransport(handler: static function (string $method, string $uri) use (
+            $poll, $beforePoll, $history, $completion,
+        ): array {
+            if (str_ends_with($uri, '/workflow-tasks/poll')) {
+                $beforePoll?->__invoke();
+
+                return $poll;
+            }
+            if (str_ends_with($uri, '/workflow-task-1/heartbeat')) {
+                return self::renewedLease();
+            }
+            if (str_ends_with($uri, '/workflow-task-1/history') && $history !== null) {
+                return $history();
+            }
+            if (str_ends_with($uri, '/workflow-task-1/complete')) {
+                return $completion === null ? ['completed' => true] : $completion();
+            }
+            if (str_ends_with($uri, '/poll')) {
+                return ['task' => null, 'poll_status' => 'empty'];
+            }
+
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        });
+    }
+
+    private static function grantWorker(FakeTransport $transport, float $wallClock = 0.0, ?\Closure $handler = null): Worker
+    {
+        $worker = new Worker(new Client('https://server.example', transport: $transport), 'orders',
+            workerId: 'worker-1', clock: static fn (): float => $wallClock);
+
+        return $worker->registerWorkflow('orders.workflow', $handler ?? static fn (WorkflowContext $context): string => 'completed');
+    }
+
+    /** @return list<array{method: string, uri: string, headers: array<string, string>, body: ?array<string, mixed>}> */
+    private static function taskRequests(FakeTransport $transport, string $operation): array
+    {
+        return array_values(array_filter($transport->requests,
+            static fn (array $request): bool => str_ends_with($request['uri'], '/workflow-task-1/'.$operation)));
+    }
+
     public function testTransientLeaseRenewalThenSuccessExecutesAndCompletesExactlyOnce(): void
     {
         $now = 0.0;
