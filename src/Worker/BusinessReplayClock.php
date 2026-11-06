@@ -247,7 +247,8 @@ final class BusinessReplayClock
             || ($body['parallel_group'] ?? null) !== null || !in_array($body['parallel_group_path'] ?? null, [null, []], true)
             || ($body['selection_group'] ?? null) !== null || ($body['selection_group_id'] ?? null) !== null
             || ($body['parallel_group_id'] ?? null) !== null || ($body['parallel_group_base_sequence'] ?? null) !== null
-            || ($body['parallel_group_size'] ?? null) !== null || !in_array($body['cancellation_scope_id'] ?? null, [null, 'root'], true)) {
+            || ($body['parallel_group_size'] ?? null) !== null || ($body['cancellation_cleanup'] ?? null) !== null
+            || !in_array($body['cancellation_scope_id'] ?? null, [null, 'root'], true)) {
             return false;
         }
 

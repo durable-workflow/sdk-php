@@ -24,7 +24,7 @@ final class WorkflowContext
     public function replayNow(): DateTimeImmutable
     {
         if ($this->execution === null || Fiber::getCurrent() !== $this->execution || $this->isCapturing()
-            || $this->deliveredCancellationRequestId !== null || $this->cancellationContext() !== null
+            || $this->cancellationRequested || $this->deliveredCancellationRequestId !== null || $this->cancellationContext() !== null
             || $this->businessReplayClock === null) {
             throw new ReplayClockUnavailable('Business replay time requires an active, validated consumed boundary.');
         }

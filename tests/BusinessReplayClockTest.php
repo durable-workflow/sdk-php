@@ -137,10 +137,11 @@ final class BusinessReplayClockTest extends TestCase
         }, $this->activity(1, self::FIRST));
     }
 
-    public function testFailureDeliveryKeepsItsOwnTimeAndOriginalError(): void
+    #[DataProvider('activityFailureTypes')]
+    public function testFailureDeliveryKeepsItsOwnTimeAndOriginalError(string $eventType): void
     {
         $history = $this->activity(1, self::FIRST);
-        $history[1]['event_type'] = 'ActivityFailed';
+        $history[1]['event_type'] = $eventType;
         $history[1]['payload']['message'] = 'original activity failure';
         $history[1]['payload']['reused_recorded_at'] = '2026-01-01T00:00:00Z';
         $observed = $this->replayResult(static function (WorkflowContext $context): array {
@@ -151,6 +152,37 @@ final class BusinessReplayClockTest extends TestCase
         }, $history);
 
         self::assertSame(['original activity failure', self::FIRST], $observed);
+    }
+
+    public static function activityFailureTypes(): array
+    {
+        return [['ActivityFailed'], ['ActivityTimedOut'], ['ActivityCancelled']];
+    }
+
+    public function testLocalExecutorAndItsInlineResultCannotBorrowBusinessTime(): void
+    {
+        $retained = null;
+        $insideUnavailable = false;
+        $codec = new AvroPayloadCodec();
+        $result = (new Replayer($codec))->replay(
+            static function (WorkflowContext $context) use (&$retained): string {
+                $context->activity('anchor');
+                $retained = $context;
+                $context->localActivity('local-anchor');
+                try { $context->replayNow(); } catch (ReplayClockUnavailable) { return 'unavailable'; }
+                self::fail('An inline local result cannot retain its preceding business instant.');
+            },
+            $this->activity(1, self::FIRST), [], 'php-workers', ['workflow_id' => 'workflow', 'run_id' => 'run'],
+            static function () use (&$retained, &$insideUnavailable): array {
+                try { $retained->replayNow(); } catch (ReplayClockUnavailable) { $insideUnavailable = true; }
+
+                return ['outcome' => 'completed', 'result' => 'fixed',
+                    'attempts' => [['attempt_number' => 1, 'outcome' => 'completed', 'heartbeats' => []]]];
+            },
+        );
+
+        self::assertTrue($insideUnavailable);
+        self::assertSame('unavailable', $codec->decodeEnvelope($result->commands[array_key_last($result->commands)]['result']));
     }
 
     public function testRetainedContextCannotBeReadAfterScopeExit(): void
@@ -282,6 +314,94 @@ final class BusinessReplayClockTest extends TestCase
         self::assertSame('unavailable', $observed);
     }
 
+    public function testExplicitRedriveEntryAndReusedStepsUseOriginalTimes(): void
+    {
+        $fixture = self::redriveFixture();
+        $times = $this->replayResult(self::redriveHandler(), $fixture['history'], $fixture['workflow_tasks'][0]);
+
+        self::assertSame(['2026-11-03T00:00:00.000000+00:00', '2026-11-03T00:00:00.000000+00:00', '2026-11-03T00:00:06.000000+00:00'], $times);
+    }
+
+    public function testCorrelatedStartAcceptedPrefixDoesNotChangeRedriveTimes(): void
+    {
+        $fixture = self::redriveFixture();
+        $start = $fixture['history'][0];
+        foreach ($fixture['history'] as &$event) { ++$event['sequence']; }
+        unset($event);
+        array_unshift($fixture['history'], [
+            'sequence' => 1, 'event_type' => 'StartAccepted', 'recorded_at' => $start['recorded_at'],
+            'payload' => ['outcome' => 'redriven', ...array_intersect_key($start['payload'],
+                array_flip(['workflow_instance_id', 'workflow_run_id', 'workflow_command_id']))],
+        ]);
+
+        self::assertSame($this->replayResult(self::redriveHandler(), self::redriveFixture()['history'], $fixture['workflow_tasks'][0]),
+            $this->replayResult(self::redriveHandler(), $fixture['history'], $fixture['workflow_tasks'][0]));
+    }
+
+    #[DataProvider('invalidRedriveEvidence')]
+    public function testUncorrelatedRedriveEvidenceRemainsUnavailable(string $mutation): void
+    {
+        $fixture = self::redriveFixture();
+        $expected = ['2026-11-03T00:00:00.000000+00:00', '2026-11-03T00:00:00.000000+00:00', '2026-11-03T00:00:06.000000+00:00'];
+        switch ($mutation) {
+            case 'wrong-source': $fixture['history'][1]['payload']['reused_from_run_id'] = 'other-source'; $expected[1] = null; break;
+            case 'missing-original-activity': unset($fixture['history'][1]['payload']['reused_activity_execution_id']); $expected[1] = null; break;
+            case 'same-original-activity':
+                $fixture['history'][1]['payload']['reused_activity_execution_id'] = $fixture['history'][1]['payload']['activity_execution_id'];
+                $expected[1] = null; break;
+            case 'missing-timer-source': unset($fixture['history'][3]['payload']['reused_from_run_id']); $expected[2] = null; break;
+            case 'missing-timer-time': unset($fixture['history'][3]['payload']['reused_recorded_at']); $expected[2] = null; break;
+            case 'future-original-time': $fixture['history'][3]['payload']['reused_recorded_at'] = '2026-11-03T00:06:00Z'; $expected[2] = null; break;
+            case 'unbound-resume': $fixture['history'][0]['payload']['resume_step_sequence'] = '3'; $expected = [null, null, null]; break;
+            case 'at-resume-step': $fixture['history'][0]['payload']['resume_step_sequence'] = 2; $expected[2] = null; break;
+            case 'wrong-run': $fixture['history'][0]['payload']['workflow_run_id'] = 'other-run'; $expected = [null, null, null]; break;
+            case 'ordinary-start': unset($fixture['history'][0]['payload']['recovery_kind']); $expected = [null, null, null]; break;
+        }
+
+        self::assertSame($expected, $this->replayResult(self::redriveHandler(), $fixture['history'], $fixture['workflow_tasks'][0]));
+    }
+
+    public static function invalidRedriveEvidence(): array
+    {
+        return array_map(static fn (string $mutation): array => [$mutation], [
+            'wrong-source', 'missing-original-activity', 'same-original-activity', 'missing-timer-source',
+            'missing-timer-time', 'future-original-time', 'unbound-resume', 'at-resume-step', 'wrong-run', 'ordinary-start',
+        ]);
+    }
+
+    public function testLegacyCancellationFlagKeepsBusinessTimeUnavailable(): void
+    {
+        $this->expectException(ReplayClockUnavailable::class);
+        $this->replayResult(static function (WorkflowContext $context): string {
+            $context->activity('anchor');
+            self::assertTrue($context->isCancellationRequested());
+
+            return $context->replayNow()->format('c');
+        }, $this->activity(1, self::FIRST), ['workflow_id' => 'workflow', 'run_id' => 'run', 'cancel_requested' => true]);
+    }
+
+    private static function redriveFixture(): array
+    {
+        return json_decode((string) file_get_contents(__DIR__.'/fixtures/replay-regressions/business-replay-clock-canonical-redrive.json'), true, flags: JSON_THROW_ON_ERROR);
+    }
+
+    private static function redriveHandler(): callable
+    {
+        return static function (WorkflowContext $context): array {
+            $read = static function () use ($context): ?string {
+                try { return $context->replayNow()->format('Y-m-d\TH:i:s.uP'); }
+                catch (ReplayClockUnavailable) { return null; }
+            };
+            $times = [$read()];
+            $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', ['Taylor']);
+            $times[] = $read();
+            $context->sleep(5);
+            $times[] = $read();
+
+            return $times;
+        };
+    }
+
     /** @return list<array<string, mixed>> */
     private function activity(int $sequence, string $timestamp): array
     {
@@ -306,10 +426,10 @@ final class BusinessReplayClockTest extends TestCase
     }
 
     /** @param list<array<string, mixed>> $history */
-    private function replayResult(callable $handler, array $history): mixed
+    private function replayResult(callable $handler, array $history, array $task = ['workflow_id' => 'workflow', 'run_id' => 'run']): mixed
     {
         $codec = new AvroPayloadCodec();
-        $result = (new Replayer($codec))->replay($handler, $history, [], 'php-workers', ['workflow_id' => 'workflow', 'run_id' => 'run']);
+        $result = (new Replayer($codec))->replay($handler, $history, [], 'php-workers', $task);
 
         return $codec->decodeEnvelope($result->commands[array_key_last($result->commands)]['result']);
     }
