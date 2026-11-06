@@ -242,6 +242,31 @@ final class BusinessReplayClockTest extends TestCase
         ]);
     }
 
+    #[DataProvider('coercedTerminalFamilies')]
+    public function testANumericStringDuplicateCannotDisappearFromTheClockProof(string $family): void
+    {
+        $history = $family === 'activity' ? $this->activity(1, self::FIRST) : self::timer(1, self::FIRST);
+        $duplicate = $history[1];
+        $duplicate['payload']['sequence'] = '1';
+        $history[] = $duplicate;
+
+        $this->expectException(ReplayClockUnavailable::class);
+        $this->replayResult(static function (WorkflowContext $context) use ($family): string {
+            if ($family === 'activity') {
+                self::assertSame('fixed', $context->activity('anchor'));
+            } else {
+                $context->sleep(2);
+            }
+
+            return $context->replayNow()->format('c');
+        }, $history);
+    }
+
+    public static function coercedTerminalFamilies(): array
+    {
+        return [['activity'], ['timer']];
+    }
+
     public function testNestedInvocationCannotBorrowParentTimeAndAnErrorRestoresParentScope(): void
     {
         $failure = new \LogicException('original nested error');

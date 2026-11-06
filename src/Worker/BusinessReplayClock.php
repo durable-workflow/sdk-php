@@ -37,7 +37,7 @@ final class BusinessReplayClock
                 || (ReplayClockHistory::kind($event) === 'StartAccepted' && ($payload['outcome'] ?? null) === 'redriven'))) {
                 $this->redriveClaimed = true;
             }
-            if (is_array($payload) && ($sequence = ReplayClockHistory::sequence($payload)) !== null) {
+            if (is_array($payload) && ($sequence = ReplayClockHistory::legacySequenceClaim($payload)) !== null) {
                 $this->bySequence[$sequence][] = $index;
             }
         }
@@ -227,7 +227,8 @@ final class BusinessReplayClock
             $row = $this->history[$position];
             $body = $row['payload'];
             $kind = ReplayClockHistory::kind($row);
-            if ($position > $index || !in_array($kind, $allowed, true) || ($body[$resource] ?? null) !== $identity
+            if ($position > $index || ReplayClockHistory::sequence($body) !== $sequence
+                || !in_array($kind, $allowed, true) || ($body[$resource] ?? null) !== $identity
                 || !ReplayClockHistory::scalarRow($body, $family)) {
                 return false;
             }

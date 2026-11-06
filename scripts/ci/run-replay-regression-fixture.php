@@ -975,9 +975,9 @@ final class ReplayRegressionConsumer
 
                 return $context->activity('Tests\\Fixtures\\V2\\TestRedriveFirstActivity', [$name, $token, $version]);
             },
-            'golden.business-replay-clock-child' => static function (WorkflowContext $context): array {
+            'golden.business-replay-clock-child' => static function (WorkflowContext $context, int $count = 4): array {
                 $outcomes = [];
-                for ($index = 0; $index < 4; ++$index) {
+                for ($index = 0; $index < $count; ++$index) {
                     try { $value = $context->childWorkflow('clock-child'); }
                     catch (\DurableWorkflow\Exception\ChildWorkflowFailed $failure) { $value = $failure->failureType; }
                     try { $time = $context->replayNow()->format('Y-m-d\TH:i:s.uP'); }

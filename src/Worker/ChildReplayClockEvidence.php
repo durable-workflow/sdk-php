@@ -29,7 +29,8 @@ final class ChildReplayClockEvidence
             $row = $history[$position];
             $body = $row['payload'];
             $kind = ReplayClockHistory::kind($row);
-            if ($position > $index || !in_array($kind, $allowed, true) || self::childIdentity($body) !== $identity
+            if ($position > $index || ReplayClockHistory::sequence($body) !== $sequence
+                || !in_array($kind, $allowed, true) || self::childIdentity($body) !== $identity
                 || !ReplayClockHistory::scalarRow($body, 'child_workflow')) {
                 return false;
             }

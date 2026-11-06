@@ -48,6 +48,16 @@ final class ReplayClockHistory
         return $value;
     }
 
+    /** Index every sequence the legacy resolver can claim, solely to refuse ambiguous evidence.
+     * @param array<string, mixed> $payload
+     */
+    public static function legacySequenceClaim(array $payload): ?int
+    {
+        $value = $payload['sequence'] ?? $payload['workflow_sequence'] ?? null;
+
+        return is_numeric($value) && (int) $value > 0 ? (int) $value : null;
+    }
+
     public static function identity(mixed $value): bool
     {
         return is_string($value) && trim($value) !== '';

@@ -139,6 +139,8 @@ final class ChildBusinessReplayClockTest extends TestCase
                 unset($history[2]['payload']['child_workflow_run_id']); break;
             case 'conflicting-alias': $history[2]['payload']['workflow_run_id'] = 'other-run'; break;
             case 'coerced-sequence': foreach ($history as &$row) { $row['payload']['sequence'] = '1'; } unset($row); break;
+            case 'coerced-duplicate':
+                $duplicate = $history[2]; $duplicate['payload']['sequence'] = '1'; $history[] = $duplicate; break;
             case 'duplicate-terminal': $history[] = $history[2]; break;
             case 'conflicting-terminal': $history[] = [...$history[2], 'event_type' => 'ChildRunFailed']; break;
             case 'missing-opening': array_shift($history); break;
@@ -165,7 +167,7 @@ final class ChildBusinessReplayClockTest extends TestCase
     {
         return array_map(static fn (string $mutation): array => [$mutation], [
             'missing-call', 'wrong-call', 'wrong-run', 'wrong-instance', 'alias-only', 'conflicting-alias', 'coerced-sequence',
-            'duplicate-terminal', 'conflicting-terminal', 'missing-opening', 'duplicate-opening',
+            'coerced-duplicate', 'duplicate-terminal', 'conflicting-terminal', 'missing-opening', 'duplicate-opening',
             'duplicate-started', 'started-after-terminal', 'replacement-run', 'bad-time',
         ]);
     }
