@@ -595,8 +595,8 @@ jobs:
             --offline
             --root-dir build/site
             build/site
-      - name: Select the runner-provided Chrome browser
-        run: bash "$DOCS_TOOLING_DIRECTORY/scripts/ci/use-installed-chrome.sh"
+      - name: Install the locked Chromium browser
+        run: '"$DOCS_TOOLING_DIRECTORY/node_modules/.bin/playwright" install chromium'
       - name: Verify missing-resource browser evidence
         run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-browser-failures
       - name: Check portal and API layouts in Chromium
