@@ -2,9 +2,9 @@ name: SonarQube
 
 on:
   push:
-    branches: [main]
+    branches: [main, 3.9.x]
   pull_request:
-    branches: [main]
+    branches: [main, 3.9.x]
 
 permissions:
   contents: read

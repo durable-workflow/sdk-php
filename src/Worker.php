@@ -44,6 +44,7 @@ use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkflowClaimDeferred;
 use DurableWorkflow\Worker\WorkflowClaimRevoked;
 use DurableWorkflow\Worker\WorkflowContext;
+use DurableWorkflow\Worker\WorkflowPollGrant;
 use DurableWorkflow\Worker\WorkflowEntryArguments;
 use DurableWorkflow\Worker\StickyWorkflowCache;
 use DurableWorkflow\Worker\WorkerSession;
@@ -112,6 +113,9 @@ final class Worker
     private ?QueryTaskAuthority $queryTaskAuthority = null;
     private bool $activityLeaseRenewalSupported = false;
     private ?ActivityLeaseProcess $activityLeaseProcess = null;
+    private ?ActivityLeaseProcess $activityLeaseHelper = null;
+    private ?WorkflowPollGrant $workflowPollGrant = null;
+    private ?float $workflowPollStartedAt = null;
     /** @var (\Closure(): void)|null */
     private ?\Closure $unbindActivityLease = null;
     private ?CancellationRequest $claimCancellation = null;
@@ -354,6 +358,9 @@ final class Worker
             return;
         }
         $this->shutdownRequested = true;
+        if ($this->activityLeaseProcess === null) {
+            $this->activityLeaseHelper?->stop();
+        }
         $this->diagnostic('worker.shutdown_requested', ['worker_id' => $this->workerId]);
     }
 
@@ -419,6 +426,8 @@ final class Worker
             throw $exception;
         } finally {
             $this->stopActivityLease();
+            $this->activityLeaseHelper?->stop();
+            $this->activityLeaseHelper = null;
             $this->closeWorkerSessions();
             $this->stickyCache->clear();
             if ($this->registered) {
@@ -1141,6 +1150,10 @@ final class Worker
      */
     private function observePoll(string $taskKind, \Closure $operation): array
     {
+        if ($taskKind === 'workflow') {
+            $this->workflowPollGrant = null;
+            $this->workflowPollStartedAt = hrtime(true) / 1e9;
+        }
         if (!$this->metricsObserver->enabled()) {
             return $operation();
         }
@@ -1404,7 +1417,7 @@ final class Worker
                 $this->observeClaimCancellation($task['cancellation_request']);
             }
             $history = $this->completeHistory($task, $leaseOwner, $attempt);
-            if (!$this->renewWorkflowTaskLease($taskId, $leaseOwner, $attempt)) {
+            if (!$this->confirmWorkflowPollGrant($task, $taskId, $leaseOwner, $attempt)) {
                 return;
             }
             if ($this->client->observabilityContextAvailable()) {
@@ -1511,6 +1524,7 @@ final class Worker
                 $attempt,
             );
         } finally {
+            $this->workflowPollGrant = null;
             $traceScope?->__invoke();
             $this->claimCancellation = null;
             $this->claimDeliveredCancellationId = null;
@@ -1532,6 +1546,19 @@ final class Worker
             && ($details['run_id'] ?? null) === $runId
             && ($details['task_id'] ?? null) === ($task['task_id'] ?? '')
             && ($details['workflow_task_attempt'] ?? null) === (int) ($task['workflow_task_attempt'] ?? 1);
+    }
+
+    /** @param array<string, mixed> $task */
+    private function confirmWorkflowPollGrant(array $task, string $taskId, string $owner, int $attempt): bool
+    {
+        $grant = $this->workflowPollGrant;
+        $this->workflowPollGrant = null;
+        if ($this->shutdownRequested) {
+            return false;
+        }
+
+        return ($grant?->isFreshFor($task, hrtime(true) / 1e9) ?? false)
+            || $this->renewWorkflowTaskLease($taskId, $owner, $attempt);
     }
 
     private function renewWorkflowTaskLease(string $taskId, string $leaseOwner, int $taskAttempt): bool
@@ -1595,9 +1622,16 @@ final class Worker
                 if ($this->activityLeaseProcess !== null) {
                     throw new WorkflowClaimRevoked('activity_supervisor_conflict', 'A previous activity supervisor is still active.');
                 }
-                $this->activityLeaseProcess = new ActivityLeaseProcess($this->client, $task, $this->workerId,
-                    $this->taskQueue, $response['server_time'] ?? null, hrtime(true) / 1e9,
-                    ['registered' => $this->registered, 'heartbeat_interval' => $this->heartbeatIntervalSeconds]);
+                $presence = ['registered' => $this->registered, 'heartbeat_interval' => $this->heartbeatIntervalSeconds,
+                    'presence_due_in' => max(0.0, $this->heartbeatIntervalSeconds - $this->elapsedSinceHeartbeat())];
+                if ($this->activityLeaseHelper === null) {
+                    $this->activityLeaseHelper = new ActivityLeaseProcess($this->client, $task, $this->workerId,
+                        $this->taskQueue, $response['server_time'] ?? null, hrtime(true) / 1e9, $presence);
+                } else {
+                    $this->activityLeaseHelper->start($this->client, $task, $this->workerId,
+                        $this->taskQueue, $response['server_time'] ?? null, hrtime(true) / 1e9, $presence);
+                }
+                $this->activityLeaseProcess = $this->activityLeaseHelper;
                 $this->unbindActivityLease = $this->client->bindActivityLease($this->activityLeaseProcess);
 
                 $process = $this->activityLeaseProcess;
@@ -1658,6 +1692,9 @@ final class Worker
             };
         }
         if ($path === '/worker/workflow-tasks/poll') {
+            // Capture metadata before external payload loading and history paging.
+            $this->workflowPollGrant = $this->workflowPollStartedAt === null ? null
+                : WorkflowPollGrant::observe($response, $this->workerId, $this->workflowPollStartedAt, hrtime(true) / 1e9);
             $task = $response['task'] ?? null;
             if (!is_array($task)) {
                 return null;
@@ -3674,8 +3711,11 @@ final class Worker
             ($this->unbindActivityLease)();
             $this->unbindActivityLease = null;
         }
-        $this->activityLeaseProcess?->stop();
+        $this->activityLeaseProcess?->finish();
         $this->activityLeaseProcess = null;
+        if ($this->shutdownRequested) {
+            $this->activityLeaseHelper?->stop();
+        }
     }
 
     private function heartbeat(?RequestBudget $budget = null): void
