@@ -243,7 +243,8 @@ final class ActivityLeaseMaintainer
     private function maintainInitialGrant(bool $proven): void
     {
         $age = hrtime(true) / 1e9 - (float) $this->start['captured_at'];
-        if ($proven && $age >= 0 && $age < 1 && $this->authority->remaining() >= 3) {
+        if ($proven && ($this->start['fresh_poll_grant'] ?? false) === true
+            && $age >= 0 && $age < 1 && $this->authority->remaining() >= 3) {
             $this->scheduleRenewal();
             return;
         }
