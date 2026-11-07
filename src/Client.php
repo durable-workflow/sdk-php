@@ -2394,18 +2394,27 @@ final class Client implements WorkflowClientInterface
         return isset($response['task']) && is_array($response['task']) ? $response['task'] : null;
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int, history_page_size: int, task_kinds: list<string>}|null $workflowPoll
+     * @return array<string, mixed>
+     */
     public function completeActivityTask(
         string $taskId,
         string $activityAttemptId,
         string $leaseOwner,
         mixed $result,
+        ?array $workflowPoll = null,
     ): array {
-        return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/complete', [
+        $body = [
             'activity_attempt_id' => $activityAttemptId,
             'lease_owner' => $leaseOwner,
             'result' => $this->codec->envelope($result),
-        ]);
+        ];
+        if ($workflowPoll !== null) {
+            $body['workflow_poll'] = $workflowPoll;
+        }
+
+        return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/complete', $body);
     }
 
     /**
@@ -2994,8 +3003,29 @@ final class Client implements WorkflowClientInterface
      */
     public function carriedActivityPollResponse(array $answer, array $request): array
     {
+        return $this->carriedPollResponse($answer, $request, '/worker/activity-tasks/poll');
+    }
+
+    /**
+     * @internal Use normal workflow hydration, history and grant supervision without a poll request.
+     * @param array<string, mixed> $answer
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    public function carriedWorkflowPollResponse(array $answer, array $request): array
+    {
+        return $this->carriedPollResponse($answer, $request, '/worker/workflow-tasks/poll');
+    }
+
+    /**
+     * @param array<string, mixed> $answer
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    private function carriedPollResponse(array $answer, array $request, string $path): array
+    {
         try {
-            return $this->resolveResponsePayloads($answer, '/worker/activity-tasks/poll', true, $request,
+            return $this->resolveResponsePayloads($answer, $path, true, $request,
                 $this->requestHeaders(true), $this->boundedWorkerRequests ? new RequestBudget(5) : null,
                 null, true, null);
         } catch (TransportException $exception) {

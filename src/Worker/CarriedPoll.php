@@ -16,10 +16,11 @@ final class CarriedPoll
     /** @var array<string, mixed>|null */
     private ?array $answer = null;
 
-    /** @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int} $request */
+    /** @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int, history_page_size?: int, task_kinds?: list<string>} $request */
     public function __construct(
         public readonly array $request,
         public readonly float $startedAt,
+        private readonly bool $workflow = false,
     ) {
     }
 
@@ -79,6 +80,7 @@ final class CarriedPoll
             || array_diff(array_keys($answer), $keys) !== []
             || !is_array($answer['task']) || array_is_list($answer['task'])
             || ($answer['task']['lease_owner'] ?? null) !== $this->request['worker_id']
+            || ($this->workflow && ($answer['task']['task_kind'] ?? 'workflow') !== 'workflow')
             || $answer['poll_status'] !== 'leased'
             || $answer['protocol_version'] !== '1.20' || !is_array($answer['server_capabilities'])
             || !is_string($answer['server_time'])) {

@@ -120,6 +120,9 @@ final class Worker
     private ?float $workflowPollStartedAt = null;
     private ?float $activityPollStartedAt = null;
     private bool $workflowCompletionActivityPollSupported = false;
+    private bool $activityCompletionWorkflowPollSupported = false;
+    private ?CarriedPoll $carriedWorkflowPoll = null;
+    private int $workflowTasksInFlight = 0;
     private ?CarriedPoll $carriedActivityPoll = null;
     private int $activityTasksInFlight = 0;
     private bool $drainingCarriedLease = false;
@@ -801,6 +804,7 @@ final class Worker
         }
 
         $handled = false;
+        $carriedWorkflow = $this->carriedWorkflowPoll;
         $workflowPoll = $this->pollWithRetry(
             'workflow',
             fn (string $requestId, int $timeoutSeconds): array => $this->client->pollWorkflowTaskResponse(
@@ -811,22 +815,18 @@ final class Worker
                 self::WORKFLOW_HISTORY_PAGE_SIZE,
             ),
             $pollTimeoutSeconds,
+            $carriedWorkflow,
         );
+        if ($this->carriedWorkflowPoll === $carriedWorkflow) {
+            $this->carriedWorkflowPoll = null;
+        }
         if ($workflowPoll === null) {
             return false;
         }
         if ($this->stopForTerminalPoll($workflowPoll)) {
             return false;
         }
-        $this->rememberWorkflowMemoCapability($workflowPoll);
-        $capabilities = $workflowPoll['server_capabilities'] ?? null;
-        $this->workflowCompletionActivityPollSupported = is_array($capabilities)
-            && ($capabilities['workflow_task_completion_activity_poll'] ?? null) === true;
-        $supportedCommands = is_array($capabilities) ? ($capabilities['supported_workflow_task_commands'] ?? null) : null;
-        $this->serviceOperationsSupported = is_array($supportedCommands)
-            && in_array('start_service_operation', $supportedCommands, true);
-        $this->childStartTurnSupported = is_array($capabilities)
-            && ($capabilities['child_workflow_start_turn'] ?? null) === true;
+        $this->rememberWorkflowPollCapabilities($workflowPoll);
         $this->heartbeatIfDue();
         if ($this->crossKindPollWakeReceived($workflowPoll)) {
             $pollTimeoutSeconds = 0;
@@ -867,6 +867,7 @@ final class Worker
             if ($this->stopForTerminalPoll($activityPoll)) {
                 return $handled;
             }
+            $this->rememberCarriedPollCapabilities($activityPoll);
             $this->heartbeatIfDue();
             if ($this->crossKindPollWakeReceived($activityPoll)) {
                 $pollTimeoutSeconds = 0;
@@ -881,8 +882,9 @@ final class Worker
             $this->shutdownRequested = $stopAfterCarriedLease || $this->shutdownRequested;
             $this->drainingCarriedLease = false;
         }
+        $this->observeCarriedWorkflowCompletion();
         if ($this->shutdownRequested) {
-            return $handled;
+            return $this->drainCarriedWorkflowLease() || $handled;
         }
 
         $queryPoll = $this->pollWithRetry(
@@ -924,6 +926,68 @@ final class Worker
         return true;
     }
 
+    /** @param array<string, mixed> $response */
+    private function rememberWorkflowPollCapabilities(array $response): void
+    {
+        $this->rememberWorkflowMemoCapability($response);
+        $capabilities = $response['server_capabilities'] ?? null;
+        $this->rememberCarriedPollCapabilities($response);
+        $supportedCommands = is_array($capabilities) ? ($capabilities['supported_workflow_task_commands'] ?? null) : null;
+        $this->serviceOperationsSupported = is_array($supportedCommands)
+            && in_array('start_service_operation', $supportedCommands, true);
+        $this->childStartTurnSupported = is_array($capabilities)
+            && ($capabilities['child_workflow_start_turn'] ?? null) === true;
+    }
+
+    /** @param array<string, mixed> $response */
+    private function rememberCarriedPollCapabilities(array $response): void
+    {
+        $capabilities = $response['server_capabilities'] ?? null;
+        $this->workflowCompletionActivityPollSupported = is_array($capabilities)
+            && ($capabilities['workflow_task_completion_activity_poll'] ?? null) === true;
+        $this->activityCompletionWorkflowPollSupported = is_array($capabilities)
+            && ($capabilities['activity_completion_workflow_poll'] ?? null) === true;
+    }
+
+    private function observeCarriedWorkflowCompletion(): void
+    {
+        if ($this->carriedWorkflowPoll !== null && !$this->carriedWorkflowPoll->observeCompletion('workflow_poll')) {
+            $this->carriedWorkflowPoll = null;
+        }
+    }
+
+    private function drainCarriedWorkflowLease(): bool
+    {
+        if (!($this->carriedWorkflowPoll?->hasLease() ?? false)) {
+            return false;
+        }
+        $stop = $this->shutdownRequested;
+        $this->shutdownRequested = false;
+        $this->drainingCarriedLease = true;
+        try {
+            $response = $this->pollWithRetry('workflow',
+                fn (string $id, int $timeout): array => $this->client->pollWorkflowTaskResponse(
+                    $this->workerId, $this->taskQueue, $timeout, $id, self::WORKFLOW_HISTORY_PAGE_SIZE),
+                0, $this->carriedWorkflowPoll);
+            $this->carriedWorkflowPoll = null;
+            if ($response !== null && !$this->stopForTerminalPoll($response)) {
+                $this->rememberWorkflowPollCapabilities($response);
+                $task = $this->taskFromPoll($response);
+                if ($task !== null) {
+                    $this->executePolledTask('workflow', $task);
+
+                    return true;
+                }
+            }
+
+            return false;
+        } finally {
+            $this->carriedWorkflowPoll = null;
+            $this->shutdownRequested = $stop || $this->shutdownRequested;
+            $this->drainingCarriedLease = false;
+        }
+    }
+
     /**
      * @param \Closure(string, int): array<string, mixed> $poll
      * @return array<string, mixed>|null
@@ -944,6 +1008,12 @@ final class Worker
                 if ($carried !== null && $answer !== null) {
                     $currentAnswer = $answer;
                     $answer = null;
+                    if ($taskKind === 'workflow') {
+                        $this->workflowPollGrant = null;
+                        $this->workflowPollStartedAt = $carried->startedAt;
+
+                        return $this->client->carriedWorkflowPollResponse($currentAnswer, $carried->request);
+                    }
                     $this->activityPollStartedAt = $carried->startedAt;
 
                     return $this->client->carriedActivityPollResponse($currentAnswer, $carried->request);
@@ -1195,7 +1265,7 @@ final class Worker
         }
         if ($taskKind === 'workflow') {
             $this->workflowPollGrant = null;
-            $this->workflowPollStartedAt = hrtime(true) / 1e9;
+            $this->workflowPollStartedAt = $originalStartedAt ?? hrtime(true) / 1e9;
         }
         if (!$this->metricsObserver->enabled()) {
             return $operation();
@@ -1334,6 +1404,8 @@ final class Worker
     {
         if ($taskKind === 'activity') {
             ++$this->activityTasksInFlight;
+        } elseif ($taskKind === 'workflow') {
+            ++$this->workflowTasksInFlight;
         }
         try {
             if ($this->telemetry === null || $this->client->observabilityContextAvailable()) {
@@ -1347,6 +1419,8 @@ final class Worker
             if ($taskKind === 'activity') {
                 --$this->activityTasksInFlight;
                 $this->stopActivityLease();
+            } elseif ($taskKind === 'workflow') {
+                --$this->workflowTasksInFlight;
             }
         }
     }
@@ -1615,6 +1689,21 @@ final class Worker
             'worker_id' => $this->workerId, 'task_queue' => $this->taskQueue,
             'poll_request_id' => 'php-activity-poll-'.bin2hex(random_bytes(16)), 'timeout_seconds' => 0,
         ], hrtime(true) / 1e9);
+    }
+
+    private function reserveWorkflowPoll(string $leaseOwner): ?CarriedPoll
+    {
+        if (!$this->activityCompletionWorkflowPollSupported || $this->workflows === []
+            || $leaseOwner !== $this->workerId || $this->shutdownRequested || $this->drainingCarriedLease
+            || $this->workflowTasksInFlight !== 0 || $this->carriedWorkflowPoll !== null) {
+            return null;
+        }
+
+        return $this->carriedWorkflowPoll = new CarriedPoll([
+            'worker_id' => $this->workerId, 'task_queue' => $this->taskQueue,
+            'poll_request_id' => 'php-workflow-poll-'.bin2hex(random_bytes(16)), 'timeout_seconds' => 0,
+            'history_page_size' => self::WORKFLOW_HISTORY_PAGE_SIZE, 'task_kinds' => ['workflow'],
+        ], hrtime(true) / 1e9, workflow: true);
     }
 
     /** @param array<string, mixed> $task */
@@ -2710,15 +2799,26 @@ final class Worker
                 $result = $this->invokeActivity($handler, $context, $arguments,
                     ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), authorizedTask: $task);
             }
-            $this->retryStorageAdmission(
+            $carried = $this->reserveWorkflowPoll($leaseOwner);
+            $completion = $this->retryStorageAdmission(
                 'activity_complete',
-                fn (): array => $this->client->completeActivityTask($taskId, $attemptId, $leaseOwner, $result),
+                function () use ($taskId, $attemptId, $leaseOwner, $result, $carried): array {
+                    try {
+                        return $this->client->completeActivityTask($taskId, $attemptId, $leaseOwner, $result, $carried?->request);
+                    } catch (ServerException $error) {
+                        $carried?->uncertainCompletion();
+                        throw $error;
+                    }
+                },
                 activityTaskLease: [
                     'task_id' => $taskId,
                     'activity_attempt_id' => $attemptId,
                     'lease_owner' => $leaseOwner,
                 ],
             );
+            if ($carried !== null) {
+                $carried->completion = $completion;
+            }
         } catch (Throwable $exception) {
             if ($exception instanceof ServerException && $this->discardClosedActivityAttempt($task, $exception)) {
                 return;
@@ -3835,7 +3935,7 @@ final class Worker
         try {
             $heartbeatClient = $budget === null ? $this->client : $this->client->withBoundedWorkerRequests();
             $acknowledgement = $heartbeatClient->heartbeatWorker($this->workerId, [
-                'workflow_available' => 1,
+                'workflow_available' => $this->carriedWorkflowPoll === null ? 1 : 0,
                 'activity_available' => $this->carriedActivityPoll === null ? 1 : 0,
             ], $budget);
         } catch (ServerException $exception) {
