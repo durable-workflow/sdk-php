@@ -94,9 +94,10 @@ own copied files. The caller must supply the actual publication/index,
 container inspection and runner-file binding alongside the result. The
 program's `pass` covers only its declared installed-consumer scenario.
 
-Keep the runner, `Support/CompletionPoll*.php`, the relay and the existing
-`tests/Support/CompletionPipelineScenario.php` process helper in their relative
-paths. Repository PHPStan includes these new source files. The pure subject
+Keep the runner, `Support/CompletionPoll*.php`, the relay and both existing
+process helpers, `tests/Support/CompletionPipelineScenario.php` and
+`tests/Support/completion-pipeline-server.php`, in their relative paths.
+Repository PHPStan includes these new source files. The pure subject
 and evidence unit tests use synthetic metadata only. Relay controls forward
 fixed HTTP data to test byte/role forwarding, error preservation and one
 successful-answer loss. They create no Server, package installation, profile

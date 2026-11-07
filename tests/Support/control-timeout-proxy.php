@@ -10,7 +10,8 @@ $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $error, STREAM_SERVE
 if ($server === false) {
     exit(1);
 }
-file_put_contents($directory.'/proxy-address', stream_socket_get_name($server, false));
+file_put_contents($directory.'/proxy-address.tmp', stream_socket_get_name($server, false));
+rename($directory.'/proxy-address.tmp', $directory.'/proxy-address');
 while (($peer = @stream_socket_accept($server, 5)) !== false) {
     stream_set_timeout($peer, 2);
     if ($certificate !== '' && @stream_socket_enable_crypto($peer, true, STREAM_CRYPTO_METHOD_TLS_SERVER) !== true) {
