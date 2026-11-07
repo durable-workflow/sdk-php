@@ -27,6 +27,7 @@ use DurableWorkflow\Worker\CancellationScopeDeliveryClaim;
 use DurableWorkflow\Worker\CarriedPoll;
 use DurableWorkflow\Worker\CompletionPipeline;
 use DurableWorkflow\Worker\WorkflowPrefetch;
+use DurableWorkflow\Worker\WorkflowPollRetry;
 use DurableWorkflow\Worker\CooperativeCancellationObserved;
 use DurableWorkflow\Worker\CooperativeActivityExecutor;
 use DurableWorkflow\Worker\DiscoveredHandlers;
@@ -433,8 +434,7 @@ final class Worker
                 'heartbeat_interval_seconds' => $this->heartbeatIntervalSeconds,
             ]);
 
-            if ($this->enableCompletionPipelining && !$this->enableCooperativeCancellation
-                && $this->telemetry === null && !$this->metricsObserver->enabled() && $this->client->supportsCompletionPipelining()) {
+            if ($this->completionPipeliningAvailable()) {
                 $this->completionPipeline = new CompletionPipeline($this->pipelineTick(...), $this->capturePipelineState(...),
                     $this->resetPipelineState(...), $this->resumePipelineFiber(...), $this->client->disarmWorkflowCompletion(...));
             }
@@ -832,7 +832,9 @@ final class Worker
         $stop = $this->shutdownRequested && $this->completionPipeline?->prefetched !== null;
         $this->pipelineManagedTick = true;
         $this->drainingCarriedLease = $stop;
-        if ($stop) $this->shutdownRequested = false;
+        if ($stop) {
+            $this->shutdownRequested = false;
+        }
         try {
             return $this->performTick($pollTimeoutSeconds);
         } finally {
@@ -854,34 +856,7 @@ final class Worker
         }
 
         $handled = false;
-        $carriedWorkflow = $this->carriedWorkflowPoll;
-        if ($this->pipelineManagedTick && $this->completionPipeline?->recovery !== null) {
-            $carriedWorkflow = $this->completionPipeline->recovery;
-            $this->completionPipeline->recovery = null;
-        }
-        $prefetch = $this->pipelineManagedTick ? $this->completionPipeline?->prefetched : null;
-        if ($prefetch !== null) {
-            $this->completionPipeline->prefetched = null;
-            $this->workflowPollGrant = $prefetch->grant;
-            $this->workflowPollStartedAt = $prefetch->startedAt;
-            $workflowPoll = $prefetch->response;
-        } else {
-            $workflowPoll = $this->pollWithRetry(
-                'workflow',
-                fn (string $requestId, int $timeoutSeconds): array => $this->client->pollWorkflowTaskResponse(
-                    $this->workerId,
-                    $this->taskQueue,
-                    $timeoutSeconds,
-                    $requestId,
-                    self::WORKFLOW_HISTORY_PAGE_SIZE,
-                ),
-                $pollTimeoutSeconds,
-                $carriedWorkflow,
-            );
-        }
-        if ($this->carriedWorkflowPoll === $carriedWorkflow) {
-            $this->carriedWorkflowPoll = null;
-        }
+        $workflowPoll = $this->pollWorkflowForTick($pollTimeoutSeconds);
         if ($workflowPoll === null) {
             return false;
         }
@@ -980,6 +955,68 @@ final class Worker
         return $handled;
     }
 
+    private function completionPipeliningAvailable(): bool
+    {
+        return $this->enableCompletionPipelining && !$this->enableCooperativeCancellation
+            && $this->telemetry === null && !$this->metricsObserver->enabled()
+            && $this->client->supportsCompletionPipelining();
+    }
+
+    /** @return array<string, mixed>|null */
+    private function pollWorkflowForTick(int $pollTimeoutSeconds): ?array
+    {
+        $retry = $this->pipelineManagedTick ? $this->completionPipeline?->recovery : null;
+        try {
+            $carriedWorkflow = $this->carriedWorkflowPoll;
+            $retryResponse = null;
+            $previousAttempts = 0;
+            if ($retry !== null) {
+                $this->waitForPollRetry('workflow', 1, $retry->error);
+                if ($this->shutdownRequested) {
+                    return null;
+                }
+                $previousAttempts = 1;
+                if ($this->isPollCapacityRefusal($retry->error)) {
+                    $retryResponse = $retry->error->details;
+                } else {
+                    $carriedWorkflow = $retry->carried;
+                }
+            }
+            $prefetch = $this->pipelineManagedTick ? $this->completionPipeline?->prefetched : null;
+            if ($retryResponse !== null) {
+                $workflowPoll = $retryResponse;
+            } elseif ($prefetch !== null) {
+                $this->completionPipeline->prefetched = null;
+                $this->workflowPollGrant = $prefetch->grant;
+                $this->workflowPollStartedAt = $prefetch->startedAt;
+                $workflowPoll = $prefetch->response;
+            } else {
+                $workflowPoll = $this->pollWithRetry(
+                    'workflow',
+                    fn (string $requestId, int $timeoutSeconds): array => $this->client->pollWorkflowTaskResponse(
+                        $this->workerId,
+                        $this->taskQueue,
+                        $timeoutSeconds,
+                        $requestId,
+                        self::WORKFLOW_HISTORY_PAGE_SIZE,
+                    ),
+                    $pollTimeoutSeconds,
+                    $carriedWorkflow,
+                    $previousAttempts,
+                );
+            }
+            if ($this->carriedWorkflowPoll === $carriedWorkflow) {
+                $this->carriedWorkflowPoll = null;
+            }
+            return $workflowPoll;
+        } finally {
+            // Heartbeats must keep this unresolved slot busy throughout backoff and recovery.
+            if ($retry !== null && $this->completionPipeline?->recovery === $retry) {
+                $this->completionPipeline->recovery = null;
+            }
+        }
+    }
+
     /** @param array<string, mixed> $response */
     private function crossKindPollWakeReceived(array $response): bool
     {
@@ -1060,9 +1097,9 @@ final class Worker
      * @param \Closure(string, int): array<string, mixed> $poll
      * @return array<string, mixed>|null
      */
-    private function pollWithRetry(string $taskKind, \Closure $poll, int $requestedTimeoutSeconds, ?CarriedPoll $carried = null): ?array
+    private function pollWithRetry(string $taskKind, \Closure $poll, int $requestedTimeoutSeconds, ?CarriedPoll $carried = null, int $previousAttempts = 0): ?array
     {
-        $attempt = 0;
+        $attempt = $previousAttempts;
         $requestId = $carried === null ? 'php-'.$taskKind.'-poll-'.bin2hex(random_bytes(16))
             : $carried->request['poll_request_id'];
         $answer = $carried?->takeAnswer();
@@ -1116,24 +1153,8 @@ final class Worker
                 }
 
                 ++$attempt;
-                $delaySeconds = $this->transientRetryDelay(
-                    $attempt,
-                    $exception->details['retry_after_seconds'] ?? null,
-                );
-                if ($this->transientPollRetryObserver !== null) {
-                    ($this->transientPollRetryObserver)($taskKind, $attempt, $delaySeconds, $exception);
-                }
-                $this->diagnostic('worker.retrying', [
-                    'worker_id' => $this->workerId,
-                    'operation' => "{$taskKind}_poll",
-                    'attempt' => $attempt,
-                    'delay_seconds' => $delaySeconds,
-                    'exception' => $exception,
-                ], 'warning');
-                $this->waitForTransientRetry($delaySeconds);
-                if ($exception->status === 429
-                    && $exception->reason === 'long_poll_capacity_exhausted'
-                    && ($exception->details['poll_status'] ?? null) === 'long_poll_capacity_exhausted') {
+                $this->waitForPollRetry($taskKind, $attempt, $exception);
+                if ($this->isPollCapacityRefusal($exception)) {
                     // This explicit empty-task refusal acquired no lease. Give
                     // other task kinds a turn instead of retrying only this one.
                     return $this->shutdownRequested ? null : $exception->details;
@@ -1147,6 +1168,21 @@ final class Worker
         }
 
         return null;
+    }
+
+    private function isPollCapacityRefusal(ServerException $error): bool
+    {
+        return $error->status === 429 && $error->reason === 'long_poll_capacity_exhausted'
+            && ($error->details['poll_status'] ?? null) === 'long_poll_capacity_exhausted';
+    }
+
+    private function waitForPollRetry(string $kind, int $attempt, ServerException $error): void
+    {
+        $delay = $this->transientRetryDelay($attempt, $error->details['retry_after_seconds'] ?? null);
+        ($this->transientPollRetryObserver)?->__invoke($kind, $attempt, $delay, $error);
+        $this->diagnostic('worker.retrying', ['worker_id' => $this->workerId, 'operation' => "{$kind}_poll",
+            'attempt' => $attempt, 'delay_seconds' => $delay, 'exception' => $error], 'warning');
+        $this->waitForTransientRetry($delay);
     }
 
     /** @return array{retry: bool, retain: bool} */
@@ -1832,7 +1868,9 @@ final class Worker
         $this->installPipelineState($state);
         $this->shutdownRequested = $this->shutdownRequested || ($this->completionPipeline?->stopping() ?? false);
         try {
-            while ($parent->isSuspended()) $parent->resume();
+            while ($parent->isSuspended()) {
+                $parent->resume();
+            }
         } finally {
             $this->installPipelineState($child);
         }
@@ -1855,7 +1893,8 @@ final class Worker
         }
         foreach ($commands as $command) {
             if (in_array($command['type'] ?? null, ['schedule_activity', 'fail_workflow', 'cancel_workflow'], true)
-                || (($command['type'] ?? null) === 'record_local_activity' && ($command['outcome'] ?? null) !== 'completed')) {
+                || (($command['type'] ?? null) === 'record_local_activity' && (($command['outcome'] ?? null) !== 'completed'
+                    || array_filter($command['attempts'] ?? [], static fn (array $attempt): bool => ($attempt['outcome'] ?? null) !== 'completed') !== []))) {
                 return;
             }
         }
@@ -1867,9 +1906,11 @@ final class Worker
                 $this->workerId, $this->taskQueue, 0, $requestId, self::WORKFLOW_HISTORY_PAGE_SIZE));
         } catch (Throwable $error) {
             if ($error instanceof ServerException && $this->pollFailurePolicy('workflow', $requestId, $error)['retry']) {
-                $pipeline->recovery = new CarriedPoll(['worker_id' => $this->workerId, 'task_queue' => $this->taskQueue,
+                $retain = $this->pollFailurePolicy('workflow', $requestId, $error)['retain'];
+                $carried = $retain ? new CarriedPoll(['worker_id' => $this->workerId, 'task_queue' => $this->taskQueue,
                     'poll_request_id' => $requestId, 'timeout_seconds' => 0,
-                    'history_page_size' => self::WORKFLOW_HISTORY_PAGE_SIZE, 'task_kinds' => ['workflow']], $startedAt, workflow: true);
+                    'history_page_size' => self::WORKFLOW_HISTORY_PAGE_SIZE, 'task_kinds' => ['workflow']], $startedAt, workflow: true) : null;
+                $pipeline->recovery = new WorkflowPollRetry($error, $carried);
                 $pipeline->prefetchPending = false;
             } else {
                 $pipeline->defer($error);
@@ -1883,7 +1924,9 @@ final class Worker
         }
         $pipeline->prefetched = new WorkflowPrefetch($answer, $this->workflowPollGrant, $startedAt);
         $owner = \Fiber::getCurrent();
-        if ($owner !== null) $this->client->armWorkflowCompletion($owner, $task['task_id']);
+        if ($owner !== null) {
+            $this->client->armWorkflowCompletion($owner, $task['task_id']);
+        }
     }
 
     private function reserveWorkflowPoll(string $leaseOwner, bool $workflowCompletion = false): ?CarriedPoll

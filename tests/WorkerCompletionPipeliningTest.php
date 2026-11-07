@@ -62,7 +62,7 @@ final class WorkerCompletionPipeliningTest extends TestCase
     public static function synchronousModes(): iterable
     {
         foreach (['tick', 'client_metrics', 'worker_metrics', 'worker_telemetry', 'client_telemetry',
-            'schedule_activity', 'kept_failure', 'no_local', 'cooperative'] as $mode) yield $mode => [$mode];
+            'schedule_activity', 'kept_failure', 'retried_failure', 'no_local', 'cooperative'] as $mode) yield $mode => [$mode];
     }
 
     public function testAnEarlierColdDiscoveryRequestPreventsSuspensionWithoutLosingThePrefetch(): void
@@ -103,6 +103,18 @@ final class WorkerCompletionPipeliningTest extends TestCase
         $polls = array_values(array_filter($observed['requests'], static fn (array $request): bool => str_ends_with($request['path'], '/workflow-tasks/poll')));
         self::assertSame($polls[2]['body']['poll_request_id'], $polls[3]['body']['poll_request_id']);
         self::assertArrayNotHasKey('workflow_poll', $observed['completions'][2]);
+    }
+
+    public function testConsecutiveUncertainProbeFailuresKeepTheirIdentityAndBackoffAttemptCount(): void
+    {
+        $observed = WorkerPipelineScenario::run(true, ['prefetch_error_status' => 502, 'prefetch_failures' => 2]);
+        if ($observed['error'] !== null) throw $observed['error'];
+        self::assertSame([1, 2, 3], $observed['callbacks']);
+        $polls = array_values(array_filter($observed['requests'], static fn (array $request): bool => str_ends_with($request['path'], '/workflow-tasks/poll')));
+        self::assertSame($polls[2]['body']['poll_request_id'], $polls[3]['body']['poll_request_id']);
+        self::assertSame($polls[2]['body']['poll_request_id'], $polls[4]['body']['poll_request_id']);
+        self::assertSame([['kind' => 'workflow', 'attempt' => 1, 'delay' => 0.1],
+            ['kind' => 'workflow', 'attempt' => 2, 'delay' => 0.2]], $observed['retries']);
     }
 
     public function testAParentRegistrationRefusalIsThrownAfterUsefulWorkAndPreventsItsPublication(): void
@@ -172,6 +184,55 @@ final class WorkerCompletionPipeliningTest extends TestCase
         if ($observed['error'] !== null) throw $observed['error'];
         self::assertSame(['parent_sent', 'next_work', 'parent_answer', 'next_completion'], WorkerPipelineScenario::completionOrder($observed));
         foreach ($observed['completions'] as $completion) self::assertArrayNotHasKey('workflow_poll', $completion);
+    }
+
+    #[DataProvider('prefetchRefusals')]
+    public function testAPreClaimRefusalWaitsAndUsesAFreshPollIdentityWithoutInventingALease(string $kind): void
+    {
+        $observed = WorkerPipelineScenario::run(true, ['prefetch_refusal' => $kind]);
+        if ($observed['error'] !== null) throw $observed['error'];
+        self::assertSame([1, 2, 3], $observed['callbacks']);
+        $polls = array_filter($observed['requests'], static fn (array $request): bool => str_ends_with($request['path'], '/workflow-tasks/poll'));
+        $indices = array_keys($polls);
+        self::assertNotSame($polls[$indices[2]]['body']['poll_request_id'], $polls[$indices[3]]['body']['poll_request_id']);
+        self::assertGreaterThanOrEqual(0.95, $observed['request_times'][$indices[3]] - $observed['refusal_time']);
+        self::assertCount(1, array_filter($observed['events'], static fn (array $event): bool => $event === ['kind' => 'leased', 'task' => 3]));
+        self::assertArrayNotHasKey('workflow_poll', $observed['completions'][2]);
+        $between = array_slice($observed['requests'], $indices[2] + 1, $indices[3] - $indices[2] - 1);
+        self::assertNotEmpty(array_filter($between, static fn (array $request): bool => str_ends_with($request['path'], '/activity-tasks/poll')));
+        self::assertNotEmpty(array_filter($between, static fn (array $request): bool => str_ends_with($request['path'], '/query-tasks/poll')));
+    }
+
+    public static function prefetchRefusals(): iterable
+    {
+        yield 'explicit capacity no lease' => ['capacity'];
+        yield 'structured lock pressure does not retain identity' => ['lock'];
+    }
+
+    public function testAClientSideRefusalBeforeTheArmedRequestReleasesOwnership(): void
+    {
+        $observed = WorkerPipelineScenario::run(true, ['oversized_parent_result' => true]);
+        self::assertInstanceOf(ServerException::class, $observed['error']);
+        self::assertSame('external_payload_oversized', $observed['error']->reason);
+        self::assertSame([1, 2, 3], $observed['callbacks']);
+        self::assertArrayNotHasKey(2, $observed['completions']);
+        self::assertArrayHasKey(3, $observed['completions']);
+        self::assertTrue($observed['arm_reusable']);
+    }
+
+    public function testAnIdentityBoundCutoverRetryKeepsTheWorkflowSlotBusyDuringHeartbeatAwareBackoff(): void
+    {
+        $observed = WorkerPipelineScenario::run(true, ['prefetch_normalization_pending' => true, 'heartbeat_interval' => 1]);
+        if ($observed['error'] !== null) throw $observed['error'];
+        self::assertSame([1, 2, 3], $observed['callbacks']);
+        $polls = array_filter($observed['requests'], static fn (array $request): bool => str_ends_with($request['path'], '/workflow-tasks/poll'));
+        $indices = array_keys($polls);
+        self::assertSame($polls[$indices[2]]['body']['poll_request_id'], $polls[$indices[3]]['body']['poll_request_id']);
+        self::assertGreaterThanOrEqual(0.95, $observed['request_times'][$indices[3]] - $observed['refusal_time']);
+        $heartbeats = array_filter(array_slice($observed['requests'], $indices[2] + 1, $indices[3] - $indices[2] - 1),
+            static fn (array $request): bool => str_ends_with($request['path'], '/worker/heartbeat'));
+        self::assertNotEmpty($heartbeats);
+        foreach ($heartbeats as $request) self::assertSame(0, $request['body']['task_slots']['workflow_available']);
     }
 
     public function testAnAgedPrefetchMustConfirmItsOriginalFenceBeforeTheCallback(): void

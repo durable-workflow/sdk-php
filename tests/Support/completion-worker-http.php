@@ -24,6 +24,7 @@ $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $body = json_decode(file_get_contents('php://input') ?: 'null', true, flags: JSON_THROW_ON_ERROR);
 $state = $mutate(static function (array &$state) use ($path, $body): void {
     $state['requests'][] = ['path' => $path, 'body' => $body];
+    $state['request_times'][] = microtime(true);
 });
 $options = $state['options'] ?? [];
 $caps = ['workflow_task_completion_workflow_poll' => ($options['workflow_carrier'] ?? false) === true];
@@ -31,8 +32,9 @@ $envelope = static fn (array $reply): array => $reply + ['protocol_version' => '
 if ($path === '/api/cluster/info') {
     $reply = ['namespace' => ['external_payload_storage' => ['status' => 'disabled']],
         'worker_protocol' => ['version' => '1.20', 'server_capabilities' => ['cooperative_cancellation' => ($options['mode'] ?? null) === 'cooperative']]];
+    if ($options['oversized_parent_result'] ?? false) $reply['limits'] = ['max_payload_bytes' => 1024];
 } elseif ($path === '/api/worker/register') {
-    $reply = ['registered' => true, 'heartbeat_interval_seconds' => 10, 'server_capabilities' => $caps];
+    $reply = ['registered' => true, 'heartbeat_interval_seconds' => $options['heartbeat_interval'] ?? 10, 'server_capabilities' => $caps];
 } elseif ($path === '/api/worker/heartbeat') {
     $reply = ['acknowledged' => true];
 } elseif (str_contains($path, '/api/worker/registrations/')) {
@@ -50,7 +52,27 @@ if ($path === '/api/cluster/info') {
     $index = $state['next_task'];
     if ($state['empty_probe']) {
         $reply = ['task' => null, 'poll_status' => 'empty'];
-    } elseif (($options['prefetch_error_status'] ?? null) !== null && $state['workflow_polls'] === 3) {
+    } elseif (($options['prefetch_normalization_pending'] ?? false) && $state['workflow_polls'] === 3) {
+        http_response_code(503);
+        $reply = ['task' => null, 'poll_status' => 'workflow_poll_normalization_pending', 'reason' => 'workflow_poll_normalization_pending',
+            'message' => 'workflow_poll_normalization_pending', 'retryable' => true, 'retry_after_seconds' => 1,
+            'poll_request_id' => $body['poll_request_id'], 'retry_same_poll_request_id' => true, 'claim_admitted' => false];
+        $mutate(static function (array &$state) use ($body): void {
+            $state['recover_poll_id'] = $body['poll_request_id'];
+            $state['refusal_time'] = microtime(true);
+        });
+    } elseif (($options['prefetch_refusal'] ?? null) !== null && $state['workflow_polls'] === 3) {
+        $capacity = $options['prefetch_refusal'] === 'capacity';
+        $reason = $capacity ? 'long_poll_capacity_exhausted' : 'backend_lock_pressure';
+        http_response_code($capacity ? 429 : 503);
+        $reply = ['task' => null, 'poll_status' => $reason, 'reason' => $reason,
+            'retryable' => true, 'retry_after_seconds' => 1, 'task_kind' => 'workflow_task'];
+        $mutate(static function (array &$state): void {
+            $state['next_task'] = 2;
+            $state['refusal_time'] = microtime(true);
+        });
+    } elseif (($options['prefetch_error_status'] ?? null) !== null && $state['workflow_polls'] >= 3
+        && $state['workflow_polls'] < 3 + ($options['prefetch_failures'] ?? 1)) {
         $mutate(static function (array &$state) use ($body): void {
             $state['recover_poll_id'] = $body['poll_request_id'];
         });

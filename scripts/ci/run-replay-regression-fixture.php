@@ -389,6 +389,8 @@ final class ReplayRegressionAttributedNestedWorkflow
 
 final class ReplayRegressionConsumer
 {
+    private const COMMAND_SEQUENCE_CONTEXT = '.command_sequence';
+    private const EXPECTED_CONTEXT = '.expected';
     private const CLOCK_FORMAT = 'Y-m-d\TH:i:s.uP';
 
     private const FIXTURE_SCHEMA = 'durable-workflow.replay-regression/v1';
@@ -449,12 +451,14 @@ final class ReplayRegressionConsumer
             require_once __DIR__.'/../../tests/Support/RecordingMetricsRecorder.php';
             require_once __DIR__.'/../../tests/Support/WorkerPipelineScenario.php';
             $observed = \DurableWorkflow\Tests\Support\WorkerPipelineScenario::run(true);
-            if ($observed['error'] !== null) throw $observed['error'];
+            if ($observed['error'] !== null) {
+                throw $observed['error'];
+            }
             $commands = array_map(static fn (array $command): array => self::decodeEnvelopes($command, new AvroPayloadCodec()),
                 $observed['completions'][2]['commands']);
-            self::assertMatches($fixture['command_sequence'], $commands, $identity.'.command_sequence');
+            self::assertMatches($fixture['command_sequence'], $commands, $identity.self::COMMAND_SEQUENCE_CONTEXT);
             $commands[0]['completion_order'] = \DurableWorkflow\Tests\Support\WorkerPipelineScenario::completionOrder($observed);
-            self::assertMatches($fixture['expected'], ['command_sequence' => $commands], $identity.'.expected');
+            self::assertMatches($fixture['expected'], ['command_sequence' => $commands], $identity.self::EXPECTED_CONTEXT);
 
             return;
         }
@@ -463,8 +467,8 @@ final class ReplayRegressionConsumer
             require_once __DIR__.'/../../tests/Support/FakeTransport.php';
             require_once __DIR__.'/../../tests/Support/WorkflowCompletionPollScenario.php';
             $observed = \DurableWorkflow\Tests\Support\WorkflowCompletionPollScenario::run();
-            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
-            self::assertMatches($fixture['expected'], $observed['commands'][0] + $observed, $identity.'.expected');
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.self::COMMAND_SEQUENCE_CONTEXT);
+            self::assertMatches($fixture['expected'], $observed['commands'][0] + $observed, $identity.self::EXPECTED_CONTEXT);
 
             return;
         }
@@ -473,8 +477,8 @@ final class ReplayRegressionConsumer
             require_once __DIR__.'/../../tests/Support/FakeTransport.php';
             require_once __DIR__.'/../../tests/Support/CarriedWorkflowScenario.php';
             $observed = \DurableWorkflow\Tests\Support\CarriedWorkflowScenario::run();
-            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
-            self::assertMatches($fixture['expected'], $observed['commands'][0] + $observed, $identity.'.expected');
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.self::COMMAND_SEQUENCE_CONTEXT);
+            self::assertMatches($fixture['expected'], $observed['commands'][0] + $observed, $identity.self::EXPECTED_CONTEXT);
 
             return;
         }
@@ -483,8 +487,8 @@ final class ReplayRegressionConsumer
             require_once __DIR__.'/../../tests/Support/FakeTransport.php';
             require_once __DIR__.'/../../tests/Support/CarriedActivityScenario.php';
             $observed = \DurableWorkflow\Tests\Support\CarriedActivityScenario::run();
-            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
-            self::assertMatches($fixture['expected'], $observed['commands'][0] + $observed, $identity.'.expected');
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.self::COMMAND_SEQUENCE_CONTEXT);
+            self::assertMatches($fixture['expected'], $observed['commands'][0] + $observed, $identity.self::EXPECTED_CONTEXT);
 
             return;
         }
@@ -492,9 +496,9 @@ final class ReplayRegressionConsumer
         if ($workflowType === 'golden.activity-poll-transit') {
             require_once __DIR__.'/../../tests/Support/ActivityGrantScenario.php';
             $observed = \DurableWorkflow\Tests\Support\ActivityGrantScenario::runIsolated();
-            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.self::COMMAND_SEQUENCE_CONTEXT);
             self::assertMatches($fixture['expected'], $observed['commands'][0]
-                + ['activity_callback_count' => $observed['callbacks']], $identity.'.expected');
+                + ['activity_callback_count' => $observed['callbacks']], $identity.self::EXPECTED_CONTEXT);
 
             return;
         }

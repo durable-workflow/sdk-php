@@ -14,7 +14,7 @@ use Throwable;
 final class CompletionPipeline
 {
     public ?WorkflowPrefetch $prefetched = null;
-    public ?CarriedPoll $recovery = null;
+    public ?WorkflowPollRetry $recovery = null;
     public bool $prefetchPending = false;
     /** @var Fiber<mixed, mixed, mixed, mixed>|null */
     private ?Fiber $current = null;
@@ -94,7 +94,9 @@ final class CompletionPipeline
     public function join(): void
     {
         $parent = $this->pending;
-        if ($parent === null) return;
+        if ($parent === null) {
+            return;
+        }
         $this->pending = null;
         $this->resuming = true;
         try {
@@ -127,6 +129,11 @@ final class CompletionPipeline
                 }
             } catch (Throwable $error) {
                 $this->defer($error);
+            } finally {
+                if (($this->pending['fiber'] ?? null) !== $fiber) {
+                    // Client-side validation may fail before the armed HTTP request begins.
+                    ($this->disarm)($fiber);
+                }
             }
             $this->join();
             $timeout = 0;
