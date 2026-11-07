@@ -49,7 +49,7 @@ Fixed identities:
 | Build script | `scripts/conformance/php-pcntl-build.sh`, 1,167 B, SHA-256 `6ec44aaaa1cc287b4345286623cd9ffbca8ba4b02e78eff434f67398b07d057b`, taken from its exact Git blob |
 | Expected `pcntl.so` | 70,128 B, SHA-256 `caeb0d94d6b8b1853aed199acd575dac92d1bb74e6b3de2cfba56befdcdfa8de`. The script refuses any other result before installing it. |
 | Expected ini | `extension=pcntl\n`, SHA-256 `93099d97d237257a925ee62ecf79886c2afa5bfc6731006ac631f2c622db7677` |
-| Controller | `scripts/conformance/build-php-pcntl-image.sh`, 11,255 B, SHA-256 `d6a3da8d0c54e665271ddcdf7cc6a14a1aeaf957444a0cd592f3f9d51cb5418b`, taken from its exact Git blob |
+| Controller | `scripts/conformance/build-php-pcntl-image.sh`, 12,800 B, SHA-256 `6a987628fc427f34a27a6bcf954e56c55abd5ceb570fce72f959452c4c4ce5e5`, taken from its exact Git blob |
 | Container | `sdk-php-cpq-p-build`, label `durable-workflow.owner=sdk-php` |
 | Tag | `sdk-php-runner-php:8.4.27-pcntl-6ec44aaaa1cc` |
 
@@ -66,12 +66,18 @@ Steps, one owner, in order:
 The controller:
 
 - **Preflight, with no Docker write.** It checks:
-  - the build script bytes (`6ec44aaa…`);
+  - the build script bytes (`6ec44aaa…`), read **once**: the same bytes are
+    hashed and passed to the container;
   - that the work directory is owned and empty;
   - the base image's exact identity, ten layers and configuration;
-  - that neither container name (`sdk-php-cpq-p-build`, `sdk-php-cpq-p-verify`) nor the tag exists.
+  - that neither container name (`sdk-php-cpq-p-build`, `sdk-php-cpq-p-verify`)
+    nor the tag exists.
 
   Any refusal exits 2.
+- **Three-state probes.** An object is *absent* only when Docker answers with
+  an explicit "No such container/image/object" error. A timeout, daemon error
+  or capped output is *unknown*. Unknown refuses in preflight and counts as
+  residue in cleanup. It is never treated as absence.
 - **Bounded commands.** Every Docker command runs under its own wall bound
   (create 60 s, start 300 s, inspect/diff/tag/probe 30 s, commit 120 s,
   verification runs 60 s, removals 30–60 s). Its stdout and stderr go to
@@ -83,9 +89,11 @@ The controller:
   the markers, so an unknown create or commit outcome is still cleaned up.
 - **Exact ownership.** Each run gets a random run identity, attached as the
   label `durable-workflow.phase-p-run=<run>` to the build container, the
-  committed image and the verify container. Cleanup removes only containers
-  by their exact names, and only images carrying this run's label. Nothing
-  else is touched, and nothing is pruned.
+  committed image and the verify container. Before removing anything, cleanup
+  resolves the container name or tag to an ID and reads that object's labels.
+  It removes only objects carrying this run's exact label, by ID, then proves
+  each ID absent. Under its name or tag, a foreign object is left untouched.
+  Nothing is pruned.
 - **Build.** One container with cgroup bounds:
   - `--cpus 2 --memory 1g --memory-swap 1g --pids-limit 256`;
   - network none, all capabilities dropped, no-new-privileges;
@@ -114,20 +122,26 @@ The controller:
     success or as a clean failure.
 
 Controls:
-- **Fake Docker CLI** (`tests/PhpPcntlImageControllerTest.php`, 22 cases), each
+- **Fake Docker CLI** (`tests/PhpPcntlImageControllerTest.php`, 28 cases), each
   checking exit code, stdout and remaining containers, images and tag:
-  - success;
-  - six preflight refusals with no Docker write: foreign tag, foreign
+  - success, plus a check that the consumed `-c` script equals `6ec44aaa…`;
+  - seven preflight refusals with no Docker write: foreign tag, foreign
     container name, base identity, changed script, non-empty work directory,
-    raised start bound;
+    raised start bound, and a daemon error while probing names (not absence);
   - twelve post-effect failures with no residue and no false success:
     partial create, build failure, wall timeout (container killed), output
     flood, oversized writable layer, extra diff path, commit failure, partial
     commit, configuration drift, label drift, extra layer, failed pcntl check;
-  - two residue cases: container or image removal failing → exit 3.
+  - a foreign container holding the build name after a failed create: exit 1,
+    no removal attempted, foreign container untouched;
+  - five residue cases → exit 3: container removal fails; container state
+    unknown after removal; image listing fails; image removal fails; image
+    state unknown after removal.
 - **Real Docker on the selected host, stopping before any commit:**
-  - a 2-second start bound against the ~6-second build gave exit 1, killed
-    the container, and left no container or image;
+  - a 2-second start bound against the ~6-second build gave exit 1 and killed
+    the container. Cleanup resolved the name to an ID and matched this run's
+    label, removed the container by ID, and proved it absent from Docker's
+    "No such container" answer. No container or image was left.
   - a foreign container already holding the build name gave exit 2, with no
     create attempted and the foreign container untouched.
 
@@ -350,8 +364,8 @@ These are the only values not yet available. Everything else above is fixed.
 
 | Value | Source |
 | --- | --- |
-| `$RUNNER_REF`, `$RUNNER_MANIFEST_SHA256` | Merge commit of this runner change on main and its canonical manifest |
-| `$SDK_TAG_COMMIT`, Packagist row, dist ZIP SHA-256/size/inventory | General's 3.10.0 tag and release; normal Packagist availability |
+| `$RUNNER_REF` | Merge commit of this runner change on main. `$RUNNER_MANIFEST_SHA256` is already fixed at `94a9604fa33f029c7f6b37b2a6889dd9268cb6cc8ba5f47747cce595474a614a` and must recompute equal at that commit. |
+| `$SDK_TAG_COMMIT`, Packagist row, dist ZIP SHA-256/size/inventory | General's 3.10.0 tag and release, then normal Packagist availability. Proposed: tag the same main commit as `$RUNNER_REF`, so one commit serves as both the SDK release and the runner source. |
 | `$LOCK_SHA256`, `$VENDOR_INVENTORY_SHA256`, `$SDK_INVENTORY_SHA256` | Phase B output |
 | Native 3.2.0 qualifier acceptance | Server's corpus run 42407065494 and the four Compose receipts, with independent acceptance |
 | SQLite and PostgreSQL Server settings | Confirm `DB_CONNECTION=sqlite`/`pgsql` and their variables against the accepted Compose receipts. The published Compose file shows only the MySQL settings. |

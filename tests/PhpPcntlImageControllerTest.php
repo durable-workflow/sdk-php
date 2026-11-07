@@ -93,6 +93,25 @@ final class PhpPcntlImageControllerTest extends TestCase
         yield 'changed build script bytes' => ['', 'changed-script'];
         yield 'non-empty work directory' => ['', 'nonempty-work'];
         yield 'raised start bound' => ['', 'raised-timeout'];
+        yield 'daemon error while probing names is not absence' => ['probe_error', ''];
+    }
+
+    public function testAForeignContainerHoldingTheNameAfterAFailedCreateIsNotRemoved(): void
+    {
+        [$status, $stdout] = $this->control('create_foreign');
+        self::assertSame(1, $status);
+        self::assertSame('', $stdout);
+        self::assertSame(['sdk-php-cpq-p-build'], $this->containers());
+        self::assertSame('foreign', trim((string) file_get_contents($this->state.'/containers/sdk-php-cpq-p-build')));
+        self::assertFalse($this->called('rm '));
+    }
+
+    public function testTheConsumedScriptIsTheHashedScript(): void
+    {
+        [$status] = $this->control('');
+        self::assertSame(0, $status);
+        self::assertSame(hash_file('sha256', self::SCRIPT), hash_file('sha256', $this->state.'/create_script'));
+        self::assertSame('6ec44aaaa1cc287b4345286623cd9ffbca8ba4b02e78eff434f67398b07d057b', hash_file('sha256', $this->state.'/create_script'));
     }
 
     #[DataProvider('failures')]
@@ -141,6 +160,9 @@ final class PhpPcntlImageControllerTest extends TestCase
     public static function residues(): iterable
     {
         yield 'container removal failed' => ['start_fail,rm_fail'];
+        yield 'container state unknown after removal' => ['start_fail,probe_error_after_rm'];
+        yield 'image listing failed' => ['check_wrong,images_error'];
+        yield 'image state unknown after removal' => ['check_wrong,image_probe_error'];
         yield 'image removal failed' => ['check_wrong,rmi_fail'];
     }
 

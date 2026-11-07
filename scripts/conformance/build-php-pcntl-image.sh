@@ -82,30 +82,65 @@ bounded() {
 
 out() { cat "$WORK/$1.out"; }
 
-exists_container() { bounded 30 "$SMALL" "probe-$2" "$DOCKER" container inspect --format '{{.Id}}' "$1"; }
-exists_image() { bounded 30 "$SMALL" "probe-$2" "$DOCKER" image inspect --format '{{.Id}}' "$1"; }
+# probe <container|image> <reference> <label>: prints present, absent or unknown.
+# Only Docker's explicit "no such object" answer counts as absent; a timeout,
+# daemon error or capped output is unknown, never absence.
+probe() {
+    local status
+    bounded 30 "$SMALL" "probe-$3" "$DOCKER" "$1" inspect --format '{{.Id}}' "$2"
+    status=$?
+    if [ "$status" -eq 0 ] && [ -s "$WORK/probe-$3.out" ]; then
+        echo present
+    elif [ "$status" -eq 1 ] && grep -qiE '^Error( response from daemon)?: No such (object|container|image)' "$WORK/probe-$3.err"; then
+        echo absent
+    else
+        echo unknown
+    fi
+}
+
+# owned <container|image> <reference> <label>: prints "owned <id>", foreign,
+# absent or unknown. Owned means it carries this run's exact label.
+owned() {
+    local state id
+    state=$(probe "$1" "$2" "$3")
+    [ "$state" = present ] || { echo "$state"; return; }
+    id=$(head -n 1 "$WORK/probe-$3.out")
+    bounded 30 "$SMALL" "labels-$3" "$DOCKER" "$1" inspect --format '{{json .Config}}' "$id" || { echo unknown; return; }
+    if grep -qF "\"durable-workflow.phase-p-run\":\"$RUN\"" "$WORK/labels-$3.out"; then echo "owned $id"; else echo foreign; fi
+}
 
 cleanup() {
-    local residue=0 id
+    local residue=0 id state
     trap - EXIT
     set +e
     if [ -n "$WORK" ] && [ -e "$WORK/marker.create" ]; then
         for name in "$NAME" "$VERIFY_NAME"; do
-            bounded 30 "$SMALL" "cleanup-rm-$name" "$DOCKER" rm -f "$name"
-            if exists_container "$name" "cleanup-$name"; then residue=1; fi
+            state=$(owned container "$name" "cleanup-$name")
+            case $state in
+            absent|foreign) ;;
+            owned\ *)
+                id=${state#owned }
+                bounded 30 "$SMALL" "cleanup-rm-$name" "$DOCKER" rm -f "$id"
+                [ "$(probe container "$id" "cleanup-after-$name")" = absent ] || residue=1
+                ;;
+            *) residue=1 ;;
+            esac
         done
     fi
     if [ -n "$WORK" ] && [ -e "$WORK/marker.commit" ] && [ "$OUTCOME" != 'success' ]; then
         # Only images labeled with this run's random identity are owned.
-        bounded 30 "$SMALL" cleanup-images "$DOCKER" images -q --no-trunc --filter "label=durable-workflow.phase-p-run=$RUN"
+        bounded 30 "$SMALL" cleanup-images "$DOCKER" images -q --no-trunc --filter "label=durable-workflow.phase-p-run=$RUN" || residue=1
         for id in $(out cleanup-images); do
             bounded 60 "$SMALL" "cleanup-rmi-${id#sha256:}" "$DOCKER" rmi -f "$id"
+            [ "$(probe image "$id" "cleanup-image-${id#sha256:}")" = absent ] || residue=1
         done
-        bounded 30 "$SMALL" cleanup-images-after "$DOCKER" images -q --no-trunc --filter "label=durable-workflow.phase-p-run=$RUN"
-        if [ -s "$WORK/cleanup-images-after.out" ] || [ "$(stat -c %s "$WORK/cleanup-images-after.err")" -gt 0 ]; then residue=1; fi
-        if exists_image "$TAG" cleanup-tag; then
-            [ "$(out probe-cleanup-tag)" = "$(cat "$WORK/image.id" 2>/dev/null)" ] && residue=1
-        fi
+        bounded 30 "$SMALL" cleanup-images-after "$DOCKER" images -q --no-trunc --filter "label=durable-workflow.phase-p-run=$RUN" || residue=1
+        if [ -s "$WORK/cleanup-images-after.out" ] || [ -s "$WORK/cleanup-images-after.err" ]; then residue=1; fi
+        state=$(owned image "$TAG" cleanup-tag)
+        case $state in
+        absent|foreign) ;;
+        *) residue=1 ;;
+        esac
     fi
     if [ "$residue" -ne 0 ]; then
         say "phase-p residue: an owned container or image could not be proven removed"
@@ -123,8 +158,11 @@ if [ -n "${PHASE_P_START_TIMEOUT:-}" ]; then
     START_TIMEOUT=$PHASE_P_START_TIMEOUT
 fi
 [ -f "$1" ] && [ ! -L "$1" ] || refuse 'build script must be a regular file'
-SCRIPT=$(head -c 65537 "$1") || refuse 'build script unreadable'
-[ "$(head -c 65537 "$1" | sha256sum | cut -d' ' -f1)" = "$SCRIPT_SHA256" ] || refuse 'build script differs from the reviewed bytes'
+# One read supplies both the hashed and the consumed bytes. The trailing
+# sentinel keeps a final newline; a NUL byte cannot survive and so fails the hash.
+SCRIPT=$(head -c 65537 "$1"; printf x) || refuse 'build script unreadable'
+SCRIPT=${SCRIPT%x}
+[ "$(printf '%s' "$SCRIPT" | sha256sum | cut -d' ' -f1)" = "$SCRIPT_SHA256" ] || refuse 'build script differs from the reviewed bytes'
 [ -d "$2" ] && [ ! -L "$2" ] && [ -O "$2" ] || refuse 'work directory must be an owned directory'
 [ -z "$(ls -A "$2")" ] || refuse 'work directory must be empty'
 WORK=$(cd "$2" && pwd -P)
@@ -133,9 +171,9 @@ trap cleanup EXIT
 
 bounded 30 "$SMALL" base-id "$DOCKER" image inspect --format '{{.Id}}' "$BASE" || refuse 'base image is not present'
 [ "$(out base-id)" = "$BASE_ID" ] || refuse 'base image identity differs'
-if exists_container "$NAME" pre-name; then refuse 'build container name already exists'; fi
-if exists_container "$VERIFY_NAME" pre-verify; then refuse 'verify container name already exists'; fi
-if exists_image "$TAG" pre-tag; then refuse 'image tag already exists'; fi
+[ "$(probe container "$NAME" pre-name)" = absent ] || refuse 'build container name is present or unknown'
+[ "$(probe container "$VERIFY_NAME" pre-verify)" = absent ] || refuse 'verify container name is present or unknown'
+[ "$(probe image "$TAG" pre-tag)" = absent ] || refuse 'image tag is present or unknown'
 bounded 30 "$SMALL" base-config "$DOCKER" image inspect --format \
     '{{json .Config.Env}}|{{json .Config.Entrypoint}}|{{json .Config.Cmd}}|{{json .Config.User}}|{{json .Config.WorkingDir}}' "$BASE" \
     || refuse 'base configuration unreadable'
