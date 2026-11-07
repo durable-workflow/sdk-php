@@ -2,6 +2,11 @@ parameters:
     level: 6
     paths:
         - src
+        - scripts/conformance/qualify-completion-polls.php
+        - scripts/conformance/Support/CompletionPollSubject.php
+        - scripts/conformance/Support/CompletionPollTrace.php
+        - scripts/conformance/Support/CompletionPollEvidence.php
+        - scripts/conformance/Support/completion-poll-relay.php
     excludePaths:
         analyse:
             - src/Bridge/Laravel
