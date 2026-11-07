@@ -121,6 +121,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     public function disarmCompletionSuspension(\Fiber $owner): void
     {
         if ($this->completionOwner === $owner) {
+            $this->completionHandler?->cancel($owner);
             $this->completionOwner = null;
             $this->completionUri = null;
             $this->completionArmed = false;

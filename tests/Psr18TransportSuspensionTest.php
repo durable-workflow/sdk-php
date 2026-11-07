@@ -160,4 +160,33 @@ final class Psr18TransportSuspensionTest extends TestCase
         self::assertTrue($transport->armCompletionSuspension($other, 'https://server.example/complete'));
         $transport->disarmCompletionSuspension($other);
     }
+
+    public function testAbandonmentCancelsTheOwnedTransferAndAllowsAnotherOwner(): void
+    {
+        CompletionPipelineScenario::run(static function (string $uri, string $state): void {
+            $transport = new Psr18Transport();
+            $owner = new Fiber(static fn (): ?array => $transport->send('POST', $uri.'/complete', [], ['hold' => true]));
+            self::assertTrue($transport->armCompletionSuspension($owner, $uri.'/complete'));
+            self::assertInstanceOf(RequestBodySent::class, $owner->start());
+            $transport->disarmCompletionSuspension(new Fiber(static fn () => null));
+            self::assertTrue($owner->isSuspended(), 'Another Fiber cannot cancel the owned transfer.');
+            $transport->disarmCompletionSuspension($owner);
+            CompletionPipelineScenario::allowAnswer($state);
+            try {
+                $owner->resume();
+                self::fail('An abandoned transfer must not publish a successful answer.');
+            } catch (TransportException $error) {
+                self::assertStringContainsString('cancel', strtolower($error->getMessage()));
+            }
+            self::assertTrue($owner->isTerminated());
+            $next = new Fiber(static fn (): ?array => $transport->send('POST', $uri.'/complete', [], ['next' => true]));
+            self::assertTrue($transport->armCompletionSuspension($next, $uri.'/complete'));
+            $yielded = $next->start();
+            if ($next->isSuspended()) {
+                self::assertInstanceOf(RequestBodySent::class, $yielded);
+                $next->resume();
+            }
+            self::assertSame(['accepted' => true], $next->getReturn());
+        });
+    }
 }

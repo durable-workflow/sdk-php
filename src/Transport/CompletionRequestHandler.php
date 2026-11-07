@@ -15,6 +15,8 @@ use Throwable;
 final class CompletionRequestHandler
 {
     private readonly CurlMultiHandler $multi;
+    /** @var array{owner: Fiber<mixed, mixed, mixed, mixed>, transfer: PromiseInterface, operation: object}|null */
+    private ?array $active = null;
 
     public function __construct()
     {
@@ -28,6 +30,9 @@ final class CompletionRequestHandler
      */
     public function __invoke(RequestInterface $request, array $options, Fiber $owner): PromiseInterface
     {
+        if ($this->active !== null) {
+            throw new \LogicException('A suspended native completion transfer is already owned.');
+        }
         $bytes = $request->getBody()->getSize();
         if ($bytes === null || $bytes < 1 || isset($options['progress'])) {
             return ($this->multi)($request, $options);
@@ -37,8 +42,10 @@ final class CompletionRequestHandler
             $sent = $sent || ($uploadTotal >= $bytes && $uploaded >= $bytes);
         };
         $transfer = ($this->multi)($request, $options);
+        $operation = new \stdClass();
+        $this->active = ['owner' => $owner, 'transfer' => $transfer, 'operation' => $operation];
         $result = null;
-        $result = new Promise(function () use ($transfer, $owner, &$sent, &$result): void {
+        $result = new Promise(function () use ($transfer, $owner, $operation, &$sent, &$result): void {
             $yielded = false;
             try {
                 while ($transfer->getState() === PromiseInterface::PENDING) {
@@ -57,12 +64,24 @@ final class CompletionRequestHandler
                 if ($transfer->getState() === PromiseInterface::PENDING) {
                     $transfer->cancel();
                 }
+                if (($this->active['operation'] ?? null) === $operation) {
+                    $this->active = null;
+                }
             }
         }, static function () use ($transfer): void {
             $transfer->cancel();
         });
 
         return $result;
+    }
+
+    /** @param Fiber<mixed, mixed, mixed, mixed> $owner */
+    public function cancel(Fiber $owner): void
+    {
+        if (($this->active['owner'] ?? null) === $owner) {
+            $this->active['transfer']->cancel();
+            $this->active = null;
+        }
     }
 
     private function tickPending(PromiseInterface $transfer): bool
