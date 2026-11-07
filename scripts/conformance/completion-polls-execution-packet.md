@@ -49,7 +49,7 @@ Fixed identities:
 | Build script | `scripts/conformance/php-pcntl-build.sh`, 1,167 B, SHA-256 `6ec44aaaa1cc287b4345286623cd9ffbca8ba4b02e78eff434f67398b07d057b`, taken from its exact Git blob |
 | Expected `pcntl.so` | 70,128 B, SHA-256 `caeb0d94d6b8b1853aed199acd575dac92d1bb74e6b3de2cfba56befdcdfa8de`. The script refuses any other result before installing it. |
 | Expected ini | `extension=pcntl\n`, SHA-256 `93099d97d237257a925ee62ecf79886c2afa5bfc6731006ac631f2c622db7677` |
-| Controller | `scripts/conformance/build-php-pcntl-image.sh`, 12,800 B, SHA-256 `6a987628fc427f34a27a6bcf954e56c55abd5ceb570fce72f959452c4c4ce5e5`, taken from its exact Git blob |
+| Controller | `scripts/conformance/build-php-pcntl-image.sh`, 12,883 B, SHA-256 `003c415e8f2c63eab54a60b457a847b2c40cf04b0c208d4b9bc0d3b716c2fec3`, taken from its exact Git blob |
 | Container | `sdk-php-cpq-p-build`, label `durable-workflow.owner=sdk-php` |
 | Tag | `sdk-php-runner-php:8.4.27-pcntl-6ec44aaaa1cc` |
 
@@ -89,7 +89,9 @@ The controller:
   the markers, so an unknown create or commit outcome is still cleaned up.
 - **Exact ownership.** Each run gets a random run identity, attached as the
   label `durable-workflow.phase-p-run=<run>` to the build container, the
-  committed image and the verify container. Before removing anything, cleanup
+  committed image, and both verification containers (image check and base
+  check). `docker create` and both `docker run` checks pass `--pull=never`, so
+  the daemon cannot pull an image even if one disappears after preflight. Before removing anything, cleanup
   resolves the container name or tag to an ID and reads that object's labels.
   It removes only objects carrying this run's exact label, by ID, then proves
   each ID absent. Under its name or tag, a foreign object is left untouched.
@@ -122,9 +124,14 @@ The controller:
     success or as a clean failure.
 
 Controls:
-- **Fake Docker CLI** (`tests/PhpPcntlImageControllerTest.php`, 28 cases), each
-  checking exit code, stdout and remaining containers, images and tag:
-  - success, plus a check that the consumed `-c` script equals `6ec44aaa…`;
+- **Fake Docker CLI** (`tests/PhpPcntlImageControllerTest.php`, 31 cases), each
+  checking exit code, stdout and remaining containers, images and tag. The fake
+  refuses any `create` or `run` without `--pull=never`.
+  - success, plus checks that:
+    - the consumed `-c` script equals `6ec44aaa…`;
+    - all three container commands carry `--pull=never` and this run's label;
+  - an image check or base check that fails and leaves its container: exit 1,
+    with the container removed by its run label;
   - seven preflight refusals with no Docker write: foreign tag, foreign
     container name, base identity, changed script, non-empty work directory,
     raised start bound, and a daemon error while probing names (not absence);

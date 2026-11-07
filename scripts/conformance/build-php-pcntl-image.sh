@@ -185,7 +185,7 @@ bounded 30 "$SMALL" base-layers "$DOCKER" image inspect --format '{{range .RootF
 STAGE='create'
 OUTCOME='failed'
 : > "$WORK/marker.create"
-bounded 60 "$SMALL" create "$DOCKER" create --name "$NAME" \
+bounded 60 "$SMALL" create "$DOCKER" create --name "$NAME" --pull=never \
     --label durable-workflow.owner=sdk-php --label "durable-workflow.phase-p-run=$RUN" \
     --network none --cap-drop ALL --security-opt no-new-privileges \
     --cpus 2 --memory 1g --memory-swap 1g --pids-limit 256 \
@@ -234,10 +234,10 @@ bounded 30 "$SMALL" image-layers "$DOCKER" image inspect --format '{{range .Root
 [ "$(cut -d' ' -f1-10 "$WORK/image-layers.out")" = "$(cut -d' ' -f1-10 "$WORK/base-layers.out")" ] || fail 'image does not extend the base layers'
 
 check='sha256sum '"$SO $INI"' | cut -d" " -f1; php -m | grep -cx pcntl; php-config --configure-options | sha256sum | cut -d" " -f1; php -r '"'"'$p = pcntl_fork(); if ($p === -1) exit(3); if ($p === 0) exit(7); pcntl_waitpid($p, $s); echo pcntl_wexitstatus($s), PHP_EOL;'"'"''
-bounded 60 "$SMALL" image-check "$DOCKER" run --rm --name "$VERIFY_NAME" --label "durable-workflow.phase-p-run=$RUN" \
+bounded 60 "$SMALL" image-check "$DOCKER" run --rm --pull=never --name "$VERIFY_NAME" --label "durable-workflow.phase-p-run=$RUN" \
     --network none --read-only --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges \
     --cpus 1 --memory 256m --pids-limit 64 --entrypoint /bin/sh "$IMAGE" -c "$check" || fail 'image check'
-bounded 60 "$SMALL" base-check "$DOCKER" run --rm --name "$VERIFY_NAME" \
+bounded 60 "$SMALL" base-check "$DOCKER" run --rm --pull=never --name "$VERIFY_NAME" --label "durable-workflow.phase-p-run=$RUN" \
     --network none --read-only --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges \
     --cpus 1 --memory 256m --pids-limit 64 --entrypoint /bin/sh "$BASE" -c 'php-config --configure-options | sha256sum | cut -d" " -f1' || fail 'base check'
 expected_check=$(printf '%s\n%s\n1\n%s\n7' "$SO_SHA256" "$INI_SHA256" "$(out base-check | tr -d '\n')")

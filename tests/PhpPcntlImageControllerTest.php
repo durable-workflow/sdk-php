@@ -57,6 +57,21 @@ final class PhpPcntlImageControllerTest extends TestCase
         self::assertSame($receipt['run'], trim((string) file_get_contents($this->state.'/images/'.substr($receipt['image'], 7))));
     }
 
+    public function testEveryContainerCommandForbidsPullingAndCarriesTheRunLabel(): void
+    {
+        [$status, $stdout] = $this->control('');
+        self::assertSame(0, $status);
+        $run = json_decode($stdout, true, flags: JSON_THROW_ON_ERROR)['run'];
+        $commands = array_values(array_filter($this->calls(),
+            static fn (string $call): bool => str_starts_with($call, 'create ') || str_starts_with($call, 'run ')));
+        self::assertCount(3, $commands);
+        foreach ($commands as $command) {
+            self::assertStringContainsString(' --pull=never ', $command);
+            self::assertStringContainsString(' --label durable-workflow.phase-p-run='.$run.' ', $command);
+        }
+        self::assertFileDoesNotExist($this->state.'/pull_possible');
+    }
+
     #[DataProvider('refusals')]
     public function testRefusalsMakeNoDockerWrite(string $scenario, string $setup): void
     {
@@ -140,6 +155,8 @@ final class PhpPcntlImageControllerTest extends TestCase
         yield 'committed image labels differ' => ['labels_wrong', true];
         yield 'committed image adds more than one layer' => ['layers_wrong', true];
         yield 'committed image fails its pcntl check' => ['check_wrong', true];
+        yield 'image check fails and leaves its container' => ['image_check_partial', true];
+        yield 'base check fails and leaves its container' => ['base_check_partial', true];
     }
 
     public function testATimeoutKillsTheBuildContainer(): void

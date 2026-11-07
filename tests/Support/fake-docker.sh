@@ -37,6 +37,13 @@ missing() { echo "Error response from daemon: No such $1: $2" >&2; exit 1; }
 daemon_error() { echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock.' >&2; exit 1; }
 config_json() { printf '{"Env":[],"Labels":{"durable-workflow.owner":"sdk-php","durable-workflow.phase-p-run":"%s"}}\n' "$1"; }
 
+pulls_never() { local value; for value in "$@"; do [ "$value" = --pull=never ] && return 0; done; return 1; }
+if { [ "$1" = create ] || [ "$1" = run ]; } && ! pulls_never "$@"; then
+    echo "fake docker: $1 without --pull=never could pull an image" >&2
+    : > "$S/pull_possible"
+    exit 64
+fi
+
 case "$1 ${2:-}" in
 'image inspect')
     format=$(option --format "$@"); ref=$(last "$@")
@@ -100,7 +107,13 @@ case "$1 ${2:-}" in
 'run --rm')
     image=''
     for value in "$@"; do [[ $value == sha256:* || $value == php@* ]] && image=$value; done
-    if [ "$image" = "$BASE" ]; then echo "$CONF"; exit 0; fi
+    verify=$(option --name "$@")
+    if [ "$image" = "$BASE" ]; then
+        # A partially failed --rm run can leave its named container behind.
+        if has base_check_partial; then run_label "$@" > "$S/containers/$verify"; exit 1; fi
+        echo "$CONF"; exit 0
+    fi
+    if has image_check_partial; then run_label "$@" > "$S/containers/$verify"; exit 1; fi
     so=caeb0d94d6b8b1853aed199acd575dac92d1bb74e6b3de2cfba56befdcdfa8de
     has check_wrong && so=0000000000000000000000000000000000000000000000000000000000000000
     printf '%s\n%s\n1\n%s\n7\n' "$so" 93099d97d237257a925ee62ecf79886c2afa5bfc6731006ac631f2c622db7677 "$CONF"
