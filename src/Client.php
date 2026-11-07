@@ -79,6 +79,7 @@ final class Client implements WorkflowClientInterface
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_TYPE = 'WorkflowTaskWaitingForHistory';
     private const ACTIVITY_TASK_PATH = '/worker/activity-tasks/';
     private const CLUSTER_INFO_PATH = '/cluster/info';
+    private const TASK_COMPLETION_SUFFIX = '/complete';
 
     private readonly string $baseUri;
     private readonly ?Authentication $authentication;
@@ -218,6 +219,35 @@ final class Client implements WorkflowClientInterface
         $copy->activityLeaseBootstrap = $resolved;
 
         return $copy;
+    }
+
+    /** @internal Completion pipelining never replaces custom HTTP, tracing or metrics policy. */
+    public function supportsCompletionPipelining(): bool
+    {
+        return $this->transport instanceof Psr18Transport && $this->transport->supportsCompletionSuspension()
+            && !$this->metricsObserver->enabled() && $this->executionTelemetry === null;
+    }
+
+    /**
+     * @internal
+     * @param \Fiber<mixed, mixed, mixed, mixed> $owner
+     */
+    public function armWorkflowCompletion(\Fiber $owner, string $taskId): bool
+    {
+        return $this->supportsCompletionPipelining() && $this->transport instanceof Psr18Transport
+            && $this->transport->armCompletionSuspension($owner,
+                $this->baseUri.'/api/worker/workflow-tasks/'.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX);
+    }
+
+    /**
+     * @internal
+     * @param \Fiber<mixed, mixed, mixed, mixed> $owner
+     */
+    public function disarmWorkflowCompletion(\Fiber $owner): void
+    {
+        if ($this->transport instanceof Psr18Transport) {
+            $this->transport->disarmCompletionSuspension($owner);
+        }
     }
 
     /** @internal Credentials travel only over the private helper input pipe.
@@ -2327,7 +2357,7 @@ final class Client implements WorkflowClientInterface
             unset($command);
         }
 
-        return $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/complete', array_filter([
+        return $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX, array_filter([
             'lease_owner' => $leaseOwner,
             'workflow_task_attempt' => $attempt,
             'commands' => $commands,
@@ -2417,7 +2447,7 @@ final class Client implements WorkflowClientInterface
             $body['workflow_poll'] = $workflowPoll;
         }
 
-        return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/complete', $body);
+        return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX, $body);
     }
 
     /**
@@ -2587,7 +2617,7 @@ final class Client implements WorkflowClientInterface
     public function completeQueryTask(string $taskId, string $leaseOwner, int $attempt, mixed $result, ?RequestBudget $budget = null): array
     {
         $client = $budget === null ? $this : $this->withBoundedWorkerRequests();
-        return $client->worker('POST', '/worker/query-tasks/'.$this->segment($taskId).'/complete', [
+        return $client->worker('POST', '/worker/query-tasks/'.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX, [
             'lease_owner' => $leaseOwner,
             'query_task_attempt' => $attempt,
             'result' => $result,
