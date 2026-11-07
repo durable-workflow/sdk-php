@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-carried-activity-poll-inline-delivery",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.carried-activity-poll",
+    "input": []
+  },
+  "expected": {
+    "type": "complete_workflow",
+    "result": "carried-activity",
+    "activity_callback_count": 1,
+    "activity_poll_requests": 0
+  },
+  "command_sequence": [
+    {
+      "type": "complete_workflow",
+      "result": "carried-activity"
+    }
+  ]
+}

@@ -2289,6 +2289,7 @@ final class Client implements WorkflowClientInterface
      *     ttl_seconds: int,
      *     metrics: array{hit: int, miss: int, eviction: int, forced_cold_replay: int}
      * }|null $stickyCache
+     * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int}|null $activityPoll
      * @return array<string, mixed>
      */
     public function completeWorkflowTask(
@@ -2299,6 +2300,7 @@ final class Client implements WorkflowClientInterface
         array $messageStreamCursors = [],
         array $messageStreamWaits = [],
         ?array $stickyCache = null,
+        ?array $activityPoll = null,
     ): array {
         if (($messageStreamCursors !== [] || $messageStreamWaits !== []) && !Version::supportsMessageStreams()) {
             throw new InvalidArgumentException('Message stream completion metadata requires worker protocol 1.15 or newer.');
@@ -2330,6 +2332,7 @@ final class Client implements WorkflowClientInterface
             'message_stream_cursors' => $messageStreamCursors,
             'message_stream_waits' => $messageStreamWaits,
             'sticky_cache' => $stickyCache,
+            'activity_poll' => $activityPoll,
         ], static fn (mixed $value): bool => $value !== [] && $value !== null));
     }
 
@@ -2959,25 +2962,8 @@ final class Client implements WorkflowClientInterface
             }
 
             $budget?->remainingSeconds();
-            // Control I/O and supervised payload I/O have separate bounds.
-            // Explicit caller/cleanup budgets still cover their entire request.
-            $responseBudget = $budget !== null && $poll && $callerBudget === null ? new RequestBudget(5) : $budget;
-            $canStreamBounded = $worker && ($this->boundedWorkerRequests || $path === '/worker/query-tasks/poll')
-                && $this->transport instanceof \DurableWorkflow\Transport\BoundedProgressPayloadTransport
-                && $this->transport instanceof BoundedTransport && $this->transport->supportsBoundedRequests();
-            $observerBudget = $canStreamBounded && $callerBudget === null ? null : $responseBudget;
-            $progress = $worker && $this->workerPayloadObserver !== null && is_array($response) && !array_is_list($response)
-                ? ($this->workerPayloadObserver)($path, $body, $response, $observerBudget) : null;
-            $streamBounded = $canStreamBounded && $progress !== null;
-            if ($streamBounded && $callerBudget === null) {
-                $responseBudget = null;
-            }
-            $result = is_array($response) && !array_is_list($response)
-                ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes, $responseBudget, $progress, $streamBounded))->response($response, $path, $worker, $payloadPaths?->__invoke($response))
-                : [];
-            $responseBudget?->remainingSeconds();
-
-            return $result;
+            return $this->resolveResponsePayloads($response, $path, $worker, $body, $headers,
+                $budget, $callerBudget, $poll, $payloadPaths);
         } catch (TransportException $exception) {
             if ($exception instanceof FailureReportRefused) {
                 throw $exception;
@@ -2998,6 +2984,61 @@ final class Client implements WorkflowClientInterface
 
             throw new ServerException($message, $status, $reason, $details, $exception);
         }
+    }
+
+    /**
+     * @internal Reuse normal poll hydration and supervision without inventing an HTTP request.
+     * @param array<string, mixed> $answer
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    public function carriedActivityPollResponse(array $answer, array $request): array
+    {
+        try {
+            return $this->resolveResponsePayloads($answer, '/worker/activity-tasks/poll', true, $request,
+                $this->requestHeaders(true), $this->boundedWorkerRequests ? new RequestBudget(5) : null,
+                null, true, null);
+        } catch (TransportException $exception) {
+            if ($exception instanceof FailureReportRefused) {
+                throw $exception;
+            }
+            $details = $exception->response;
+            $reason = is_array($details) && isset($details['reason']) ? (string) $details['reason'] : null;
+
+            throw new ServerException($exception->getMessage(), $exception->status ?? 0, $reason, $details, $exception);
+        }
+    }
+
+    /**
+     * @param array<string, mixed>|list<mixed>|null $response
+     * @param array<string, mixed>|null $body
+     * @param array<string, string> $headers
+     * @param (\Closure(array<string, mixed>): list<list<int|string>>)|null $payloadPaths
+     * @return array<string, mixed>
+     */
+    private function resolveResponsePayloads(
+        ?array $response, string $path, bool $worker, ?array $body, array $headers,
+        ?RequestBudget $budget, ?RequestBudget $callerBudget, bool $poll, ?\Closure $payloadPaths,
+    ): array {
+        // Control I/O and supervised payload I/O have separate bounds.
+        // Explicit caller/cleanup budgets still cover their entire request.
+        $responseBudget = $budget !== null && $poll && $callerBudget === null ? new RequestBudget(5) : $budget;
+        $canStreamBounded = $worker && ($this->boundedWorkerRequests || $path === '/worker/query-tasks/poll')
+            && $this->transport instanceof \DurableWorkflow\Transport\BoundedProgressPayloadTransport
+            && $this->transport instanceof BoundedTransport && $this->transport->supportsBoundedRequests();
+        $observerBudget = $canStreamBounded && $callerBudget === null ? null : $responseBudget;
+        $progress = $worker && $this->workerPayloadObserver !== null && is_array($response) && !array_is_list($response)
+            ? ($this->workerPayloadObserver)($path, $body, $response, $observerBudget) : null;
+        $streamBounded = $canStreamBounded && $progress !== null;
+        if ($streamBounded && $callerBudget === null) {
+            $responseBudget = null;
+        }
+        $result = is_array($response) && !array_is_list($response)
+            ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes, $responseBudget, $progress, $streamBounded))->response($response, $path, $worker, $payloadPaths?->__invoke($response))
+            : [];
+        $responseBudget?->remainingSeconds();
+
+        return $result;
     }
 
     /** @param array<string, mixed> $response */

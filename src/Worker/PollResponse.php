@@ -97,6 +97,25 @@ final class PollResponse
             && (!array_key_exists('retryable', $response) || $response['retryable'] === true));
     }
 
+    /** The closed pre-claim refusal retains the request identity through the key cutover. */
+    public static function isNormalizationPendingFailure(ServerException $exception, string $requestId): bool
+    {
+        $response = $exception->details;
+        $keys = ['task', 'poll_status', 'reason', 'message', 'retryable', 'retry_after_seconds',
+            'poll_request_id', 'retry_same_poll_request_id', 'claim_admitted', 'protocol_version', 'server_capabilities'];
+
+        return $exception->status === 503 && $exception->reason === 'workflow_poll_normalization_pending'
+            && is_array($response) && array_diff($keys, array_keys($response)) === []
+            && array_diff(array_keys($response), $keys) === []
+            && $response['task'] === null
+            && $response['poll_status'] === 'workflow_poll_normalization_pending'
+            && $response['reason'] === $exception->reason && $response['message'] === $exception->reason
+            && $response['retryable'] === true && $response['retry_after_seconds'] === 1
+            && $response['poll_request_id'] === $requestId && $response['retry_same_poll_request_id'] === true
+            && $response['claim_admitted'] === false && $response['protocol_version'] === '1.20'
+            && is_array($response['server_capabilities']) && !array_is_list($response['server_capabilities']);
+    }
+
     private function __construct()
     {
     }
