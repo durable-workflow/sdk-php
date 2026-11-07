@@ -19,7 +19,7 @@ selection after the inputs in [Remaining values](#remaining-values) exist.
 | PostgreSQL 16 (load) | index `sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657`, amd64 manifest `sha256:43f9275df91e012c3da3d86bea5d7bb5e67a473296cc906c5f9e80b8176b1a37`, config `sha256:ba07bdb15f0f2ac1ba7a88891da731cae65ac36d663fdb7de8f698ea47e0e381`, 16.15 |
 | Composer | public PHAR SHA-256 `7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17c8d6`, CA bundle SHA-256 `50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785`, canonical verifier source `242c` run before each Composer request |
 | Embedded framework support | Workflow `^2.21`; 2.21.0 authority `cb9420019476d400e1df329f063cfb1a3b86ab18` stays in force until General hands off a published 2.21.1 |
-| Host | lab4, linux/amd64, confirmed with fresh `grafana machines --json` and `grafana docker` at each admission |
+| Host | the selected linux/amd64 lab host, confirmed with a fresh capacity and Docker sample at each admission; `$CPQ` is one owner-created private working directory (mode 0700) on it, named only in the effect decision |
 
 ## Phases
 
@@ -49,62 +49,91 @@ Fixed identities:
 | Build script | `scripts/conformance/php-pcntl-build.sh`, 1,167 B, SHA-256 `6ec44aaaa1cc287b4345286623cd9ffbca8ba4b02e78eff434f67398b07d057b`, taken from its exact Git blob |
 | Expected `pcntl.so` | 70,128 B, SHA-256 `caeb0d94d6b8b1853aed199acd575dac92d1bb74e6b3de2cfba56befdcdfa8de`. The script refuses any other result before installing it. |
 | Expected ini | `extension=pcntl\n`, SHA-256 `93099d97d237257a925ee62ecf79886c2afa5bfc6731006ac631f2c622db7677` |
+| Controller | `scripts/conformance/build-php-pcntl-image.sh`, 11,255 B, SHA-256 `d6a3da8d0c54e665271ddcdf7cc6a14a1aeaf957444a0cd592f3f9d51cb5418b`, taken from its exact Git blob |
 | Container | `sdk-php-cpq-p-build`, label `durable-workflow.owner=sdk-php` |
 | Tag | `sdk-php-runner-php:8.4.27-pcntl-6ec44aaaa1cc` |
 
-Steps, one owner, in order. Any failure stops the phase and runs the cleanup
-in step 6.
+Steps, one owner, in order:
 
-1. Fresh `grafana machines --json` and `grafana docker` sample on lab4,
-   requiring at least 4 free CPUs, 4 GiB available memory and 2 GiB free Docker
-   storage. Require the base present locally with the exact manifest digest
-   above. Refuse if the container name or the tag already exists.
-2. Create the container with every bound enforced by its cgroup:
-   ```
-   docker create --name sdk-php-cpq-p-build --label durable-workflow.owner=sdk-php \
-     --network none --cap-drop ALL --security-opt no-new-privileges \
-     --cpus 2 --memory 1g --memory-swap 1g --pids-limit 256 \
-     --tmpfs /tmp:rw,exec,nosuid,nodev,size=512m \
-     --log-driver json-file --log-opt max-size=1m --log-opt max-file=1 \
-     --interactive --entrypoint /bin/sh <base> -s
-   ```
-   The script arrives on standard input, so no mount or mount point enters the
-   container's filesystem. All compilation happens in the 512 MiB `/tmp`
-   tmpfs. Output is capped at 1 MiB of log.
-3. `timeout 300 docker start -a -i sdk-php-cpq-p-build < php-pcntl-build.sh`.
-   Require exit 0 and `OOMKilled=false`. On timeout, `docker kill` the exact
-   container.
-4. Verify the container **before** committing:
-   - `docker diff` lists exactly the two added files
-     `/usr/local/lib/php/extensions/no-debug-non-zts-20240924/pcntl.so` and
-     `/usr/local/etc/php/conf.d/docker-php-ext-pcntl.ini`, plus the `C` entries
-     for their parent directories, and nothing else;
-   - `docker container inspect --size` `SizeRw` ≤ 1 MiB;
-   - `docker cp` of the two files gives exactly the hashes above.
-5. Commit and verify the image:
-   ```
-   docker commit --change 'ENTRYPOINT ["docker-php-entrypoint"]' --change 'CMD ["php","-a"]' \
-     --change 'LABEL durable-workflow.owner=sdk-php' sdk-php-cpq-p-build sdk-php-runner-php:8.4.27-pcntl-6ec44aaaa1cc
-   ```
-   - The image's `RootFS.Layers` equal the base's ten layers plus exactly one.
-   - `Env`, `Entrypoint`, `Cmd`, `User` and `WorkingDir` equal the base's.
-   - `Labels` equal the base's plus the owner label.
-   - In a network-none, read-only, uid-1000 container from the image:
-     `pcntl.so` has the expected hash, the module list equals the base's plus
-     `pcntl`, `php -i` configure options are unchanged, and a fork/wait passes.
-   - Record the image ID; later phases use it by ID.
-6. Cleanup:
-   - **Always:** `docker rm -f` the exact container name.
-   - **On any non-success after step 5 started:** `docker rmi` the exact
-     committed image ID and tag.
-   - There is no builder, cache or context to remove. Prove absence with
-     `docker ps -a` and `docker images`, both filtered by the owner label.
-   - On success, the one image is retained by exact ID for phases D–E, then
-     removed in phase F.
+1. Fresh capacity and Docker sample on the selected host: at least 4 free
+   CPUs, 4 GiB available memory and 2 GiB free Docker storage.
+2. Stage `php-pcntl-build.sh` and `build-php-pcntl-image.sh` from their exact
+   Git blobs, create one empty owned work directory, and run:
+   `timeout 900 scripts/conformance/build-php-pcntl-image.sh php-pcntl-build.sh <work-dir>`.
+   The controller is the reviewed executable for this phase. The outer
+   `timeout 900` bounds the whole controller, including cleanup.
+
+The controller:
+
+- **Preflight, with no Docker write.** It checks:
+  - the build script bytes (`6ec44aaa…`);
+  - that the work directory is owned and empty;
+  - the base image's exact identity, ten layers and configuration;
+  - that neither container name (`sdk-php-cpq-p-build`, `sdk-php-cpq-p-verify`) nor the tag exists.
+
+  Any refusal exits 2.
+- **Bounded commands.** Every Docker command runs under its own wall bound
+  (create 60 s, start 300 s, inspect/diff/tag/probe 30 s, commit 120 s,
+  verification runs 60 s, removals 30–60 s). Its stdout and stderr go to
+  capped files in the work directory: 1 MiB for the build log and 64 KiB for
+  everything else. Output over a cap counts as failure. This bounds the bytes
+  delivered by `docker start -a`, not just the daemon's log file.
+- **Markers before effects.** `marker.create` is written before
+  `docker create`, and `marker.commit` before `docker commit`. Cleanup acts on
+  the markers, so an unknown create or commit outcome is still cleaned up.
+- **Exact ownership.** Each run gets a random run identity, attached as the
+  label `durable-workflow.phase-p-run=<run>` to the build container, the
+  committed image and the verify container. Cleanup removes only containers
+  by their exact names, and only images carrying this run's label. Nothing
+  else is touched, and nothing is pruned.
+- **Build.** One container with cgroup bounds:
+  - `--cpus 2 --memory 1g --memory-swap 1g --pids-limit 256`;
+  - network none, all capabilities dropped, no-new-privileges;
+  - a 512 MiB `/tmp` tmpfs;
+  - a 1 MiB json-file log.
+
+  The script is passed as the `sh -c` argument, so no mount and no
+  interactive-stdin flag enters the container or the committed image. A start
+  timeout kills the container.
+- **Before commit.** Exit code 0 and no OOM; `SizeRw` ≤ 1 MiB; `docker diff`
+  exactly the two files and their parent directories.
+- **After commit.**
+  - The tag names the committed image ID.
+  - `Env`, `Entrypoint`, `Cmd`, `User` and `WorkingDir` equal the base's.
+  - The labels are exactly owner plus run.
+  - The layers are the base's ten plus exactly one.
+  - A network-none, read-only, uid-1000 container from the image reports, in
+    order: `pcntl.so` `caeb0d94…`, ini `93099d97…`, `pcntl` loaded once, the
+    base's own `php-config --configure-options` hash, and fork/wait child exit 7.
+- **Outcome.**
+  - Exit 0: the receipt JSON (image ID, tag, run, hashes, `SizeRw`, layers)
+    goes to stdout, and only the image is retained.
+  - Exit 1: any failure after an effect. The container, verify container and
+    any run-labeled image are removed and proven absent.
+  - Exit 3: a removal cannot be proven. This is residue: it never reports as
+    success or as a clean failure.
+
+Controls:
+- **Fake Docker CLI** (`tests/PhpPcntlImageControllerTest.php`, 22 cases), each
+  checking exit code, stdout and remaining containers, images and tag:
+  - success;
+  - six preflight refusals with no Docker write: foreign tag, foreign
+    container name, base identity, changed script, non-empty work directory,
+    raised start bound;
+  - twelve post-effect failures with no residue and no false success:
+    partial create, build failure, wall timeout (container killed), output
+    flood, oversized writable layer, extra diff path, commit failure, partial
+    commit, configuration drift, label drift, extra layer, failed pcntl check;
+  - two residue cases: container or image removal failing → exit 3.
+- **Real Docker on the selected host, stopping before any commit:**
+  - a 2-second start bound against the ~6-second build gave exit 1, killed
+    the container, and left no container or image;
+  - a foreign container already holding the build name gave exit 2, with no
+    create attempted and the foreign container untouched.
 
 Nothing is pushed or published, and the image never gets a public registry name.
 
-Candidate control on lab4 (this exact create/start primitive, without
+Candidate control on the selected host (this exact create/start primitive, without
 commit, so no image was produced):
 - 6 s;
 - exit 0, no OOM;
@@ -128,7 +157,7 @@ in the diff. Passing it on standard input removed that stub.
 
 ### Phase B — consumer root assembly (effect)
 
-One held root at `$ROOT=/srv/sdk-php-cpq/consumer` (owner-created, mode 0700).
+One held root at `$ROOT=$CPQ/consumer` (owner-created, mode 0700).
 
 1. Stage the 22 sealed runner files into `$ROOT` from the exact reviewed Git
    blobs: for each path in `CompletionPollSubject::RUNNER_FILES`,
@@ -142,18 +171,18 @@ One held root at `$ROOT=/srv/sdk-php-cpq/consumer` (owner-created, mode 0700).
 
    | Input | Exact identity |
    | --- | --- |
-   | Composer PHAR | General's retained authenticated copy `/tmp/general-sdk395-verification-context-20261107/composer.phar`, 3,642,137 B, SHA-256 `7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17c8d6`; the verifier requires Composer 2.10.3 or newer on the 2 line |
-   | CA bundle | General's retained authenticated copy `/tmp/general-sdk395-verification-context-20261107/ca.pem`, 238,856 B, SHA-256 `50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785` |
+   | Composer PHAR | the retained authenticated Composer PHAR, 3,642,137 B, SHA-256 `7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17c8d6`; the verifier requires Composer 2.10.3 or newer on the 2 line |
+   | CA bundle | the retained authenticated CI CA bundle, 238,856 B, SHA-256 `50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785` |
    | Extra-roots directory | one owned **empty** directory |
    | Verifier | `durable-workflow/.github` `.github/actions/verify-composer-trust/verify.php` at `242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5`: blob `1783f0620e585c4c4998744216bd8fce418de637`, 5,969 B, SHA-256 `d7eea290e04e4eef382cc977584a736b1781b18994c5f462f600c0c47e8c5371` |
 
-   Copy the PHAR and CA bundle into an owned held directory
-   `/srv/sdk-php-cpq/trust` (mode 0500): refuse unless each source is a
-   regular file and not a symlink (`test -f` and `! test -L`); copy with
-   `cp --no-dereference`; check the copy's byte count and SHA-256 against the
-   table; then `chmod 0444`. No re-download. General retains the originals
-   until the installed P0 tail finishes or until 2026-11-08 20:30 UTC,
-   whichever comes first, and hands them off before removal if still needed.
+   The phase-B effect decision names the retained sources privately; they are
+   never downloaded again. Copy the PHAR and CA bundle into an owned held
+   directory `$CPQ/trust` (mode 0500):
+   1. Refuse unless each source is a regular file and not a symlink (`test -f` and `! test -L`).
+   2. Copy with `cp --no-dereference`.
+   3. Check each copy's byte count and SHA-256 against the table.
+   4. `chmod 0444`.
 
    Environment for every Composer process:
    - `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO` and `COMPOSER_CAFILE` all name the CA bundle.
@@ -173,7 +202,7 @@ One held root at `$ROOT=/srv/sdk-php-cpq/consumer` (owner-created, mode 0700).
    No `repositories`, `scripts`, `minimum-stability` or platform overrides.
 4. In container `sdk-php-cpq-b-install` (`$PHP_IMAGE`, 2 CPU, 2 GiB, 256 PIDs,
    network to `repo.packagist.org`, `api.github.com`, `codeload.github.com`
-   only, owned `COMPOSER_HOME`, cache and `TMPDIR` under `/srv/sdk-php-cpq/composer`,
+   only, owned `COMPOSER_HOME`, cache and `TMPDIR` under `$CPQ/composer`,
    no auth/proxy/token variables, trust environment from step 2): run the verifier, then
    `php composer.phar install --no-dev --no-plugins --no-scripts --no-interaction --prefer-dist`
    (after `require`, with the verifier before each request). 240 s active, 30 s
@@ -272,10 +301,10 @@ claimed.
 
 ### Phase F — cleanup (effect)
 
-Remove every `sdk-php-cpq-*` container, network and volume, `/srv/sdk-php-cpq`,
+Remove every `sdk-php-cpq-*` container, network and volume, `$CPQ`,
 and the four images if they were not present before phase A. Prove absence with
 `docker ps -a`, `docker network ls` and `docker volume ls` filtered by the
-owner label, and record the final `grafana docker` sample.
+owner label, and record a final Docker sample.
 
 ## Outcomes
 
