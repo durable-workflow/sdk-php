@@ -86,6 +86,14 @@ final class ReplayRegressionFixture
             return self::executeFreshWorkflowPoll($identity, $input, $history, $fixture);
         }
 
+        if ($workflowType === 'golden.carried-activity-poll') {
+            $observed = CarriedActivityScenario::run();
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
+            self::assertMatches($fixture['expected'], $observed['commands'][0] + $observed, $identity.'.expected');
+
+            return $observed['commands'];
+        }
+
         if ($workflowType === 'golden.activity-poll-transit') {
             $observed = ActivityGrantScenario::runIsolated();
             self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
