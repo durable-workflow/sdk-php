@@ -12,7 +12,9 @@ use RuntimeException;
 final class CompletionPollSubject
 {
     public const SCHEMA = 'durable-workflow.php-completion-polls-subject/v1';
-    public const SCENARIOS = ['carriers', 'pipeline', 'pipeline-loss', 'fallback'];
+    public const SCENARIOS = ['carriers', 'pipeline', 'pipeline-loss', 'fallback', 'capacity',
+        'carrier-loss-activity', 'carrier-loss-workflow', 'carrier-loss-workflow-completion', 'completion-transit',
+        'carrier-expiry', 'carrier-refence', 'pipeline-buffer-age', 'prefetch-loss', 'default-off', 'explicit-off', 'packet-defaults', 'opposite-slots'];
 
     /** @param array<string, mixed> $data */
     private function __construct(public readonly array $data, public readonly string $vendor, public readonly string $sha256)

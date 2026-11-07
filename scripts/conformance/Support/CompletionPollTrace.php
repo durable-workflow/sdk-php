@@ -6,6 +6,8 @@ namespace DurableWorkflow\Qualification;
 
 use RuntimeException;
 
+require_once __DIR__.'/CompletionPollFaults.php';
+
 /** Bounded synthetic wire metadata only. Credential headers and payloads are never retained. */
 final class CompletionPollTrace
 {
@@ -69,10 +71,16 @@ final class CompletionPollTrace
      */
     public static function task(?array $task): ?array
     {
-        return $task === null ? null : array_intersect_key($task, array_flip([
+        if ($task === null) return null;
+        $result = array_intersect_key($task, array_flip([
             'task_id', 'task_kind', 'workflow_id', 'run_id', 'lease_owner', 'workflow_task_attempt',
-            'activity_attempt_id', 'lease_expires_at',
+            'activity_attempt_id', 'attempt_number', 'lease_expires_at',
         ]));
+        if (is_string($task['task_id'] ?? null) && is_string($task['lease_owner'] ?? null)
+            && is_string($task['lease_expires_at'] ?? null)) {
+            $result['identity_sha256'] = CompletionPollFaults::identity(['task' => $task]);
+        }
+        return $result;
     }
 
     /** @param array<string, mixed> $body
@@ -98,10 +106,16 @@ final class CompletionPollTrace
      */
     public static function answer(array $body): array
     {
-        $result = array_intersect_key($body, array_flip(['poll_status', 'reason', 'server_time', 'protocol_version']));
+        $result = array_intersect_key($body, array_flip(['poll_status', 'reason', 'server_time', 'protocol_version',
+            'task_id', 'lease_owner', 'workflow_task_attempt', 'activity_attempt_id', 'lease_expires_at',
+            'renewed', 'recorded', 'outcome', 'worker_id', 'task_status', 'run_status', 'can_continue', 'current_attempt']));
+        if (is_string($body['registration_token'] ?? null) && preg_match('/\A[a-f0-9]{32}\z/', $body['registration_token']) === 1) {
+            $result['registration_sha256'] = hash('sha256', $body['registration_token']);
+        }
         $result['task'] = self::task(is_array($body['task'] ?? null) ? $body['task'] : null);
         $result['capabilities'] = array_intersect_key($body['server_capabilities'] ?? [], array_flip([
             'workflow_task_completion_activity_poll', 'activity_completion_workflow_poll', 'workflow_task_completion_workflow_poll',
+            'worker_deregistration_fencing',
         ]));
         foreach (['activity_poll', 'workflow_poll'] as $key) {
             if (!array_key_exists($key, $body)) {
@@ -109,6 +123,7 @@ final class CompletionPollTrace
             }
             $answer = $body[$key]['answer'] ?? null;
             $result[$key] = ['leased' => $body[$key]['leased'] ?? null,
+                'poll_status' => $answer['poll_status'] ?? null, 'server_time' => $answer['server_time'] ?? null,
                 'task' => self::task(is_array($answer['task'] ?? null) ? $answer['task'] : null)];
         }
         return $result;

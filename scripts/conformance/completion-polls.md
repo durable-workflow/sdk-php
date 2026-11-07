@@ -52,7 +52,7 @@ responses. It records bounded task/attempt/owner/expiry metadata, carrier IDs,
 callback order and hashes of actual request bytes. The relay implements no
 Server endpoint or durable transition. An upstream error stays an error.
 
-The initial scenarios are:
+The basic scenarios are:
 
 - `carriers`: three remote-activity workflows must exercise all three carried
   paths with inline lease answers and actual callbacks. Polling those same
@@ -69,10 +69,9 @@ The initial scenarios are:
   producer lacks support.
 
 The controlled answer delay and loss are identified explicitly. They are not
-an undelayed load comparison or a speedup measurement. Actual expiry/refencing,
-additional opposite-slot/refusal controls and honest undelayed backend/load
-comparisons remain required in the selected published-artifact acceptance.
-The initial driver is not the complete #328–#332 release matrix.
+an undelayed load comparison or a speedup measurement. The additional controls below are connected at Source scope. Undelayed load
+support is still being prepared. Every selected row needs its own actual
+published-artifact result before the #328–#332 matrix is complete.
 
 Each invocation has a selected 15–120 second product deadline, bounded HTTP
 requests and a 15 second Worker shutdown grace within a 30 second cleanup
@@ -95,8 +94,9 @@ container inspection and runner-file binding alongside the result. The
 program's `pass` covers only its declared installed-consumer scenario.
 
 Keep the runner, `Support/CompletionPoll*.php`, the relay and both existing
-process helpers, `tests/Support/CompletionPipelineScenario.php` and
-`tests/Support/completion-pipeline-server.php`, in their relative paths.
+process helpers in their relative paths: `tests/Support/CompletionPipelineScenario.php`,
+`tests/Support/completion-pipeline-server.php`, `tests/Support/WorkerPipelineScenario.php`,
+`tests/Support/completion-pipeline-http.php` and `tests/Support/RecordingMetricsRecorder.php`.
 Repository PHPStan includes these new source files. The pure subject
 and evidence unit tests use synthetic metadata only. Relay controls forward
 fixed HTTP data to test byte/role forwarding, error preservation and one
@@ -104,23 +104,29 @@ successful-answer loss. They create no Server, package installation, profile
 or published-product acceptance.
 
 The remaining matrix is being prepared against the same accepted schema63
-API. The initial four scenario names remain the only executable selections
-until their successors are connected and qualified. Delay selection uses the
+API. All controls except the pending load cells have executable selections.
+They remain unexecuted against an installed package and Native runtime. Delay selection uses the
 actual normal-poll `server_time` and original `lease_expires_at`. An absent
 clock, unsuitable grant window or insufficient caller budget blocks that
 control rather than substituting a worker clock or changing Server state.
 
 | Control | Actual operation and required observation |
 | --- | --- |
-| Carried-answer loss, each of three paths | Withhold one actual successful completion answer. Recover its original poll ID and complete task/history identity. |
-| Original completion transit | Delay the real completion request before its carried claim. Require original-request charging and confirmation before callback when the reported reserve is insufficient. |
-| Expired carried lease | Hold the real answer past its reported original expiry. Require fenced confirmation/refusal and no callback or publication under that expired generation. |
-| Registration replacement | Re-register this invocation's same synthetic worker through the public worker API. Retain only token digests and require old-grant refusal; clean the owned replacement with its actual fenced receipt. |
-| Buffered lease age | Delay a real registration-heartbeat reply after prefetch. Require workflow lease confirmation before the aged task executes. Registration heartbeat does not renew task authority. |
-| Opposite slot and missing result | Hold actual opposite-kind leases through public polls/completions. Observe real carrier omission, then reservation release and later work without disabling the capability. |
-| Lost ordinary prefetch | Withhold one real successful prefetch answer. Preserve the original ID, backoff and lease/history on recovery without another reservation. |
-| Default OFF | Exercise omitted and explicit-false options against the actual runtime. Keep the installed fixed-socket packet regression separate from native producer acceptance. |
+| `carrier-loss-activity`, `carrier-loss-workflow`, `carrier-loss-workflow-completion` | Withhold one actual successful completion answer. Recover its original poll ID and complete task/history identity. |
+| `completion-transit` | Delay the real completion request before its carried claim. Require original-request charging and confirmation before callback when the reported reserve is insufficient. |
+| `carrier-expiry` | Hold the real answer past its reported original expiry. Require fenced confirmation/refusal and no callback or publication under that expired generation. |
+| `carrier-refence` | Re-register this invocation's same synthetic worker through the public worker API. Retain only token digests and require original activity-poll recovery to return the actual `poll_cached_task_expired` refusal; clean the owned replacement with its actual fenced receipt. |
+| `pipeline-buffer-age` | Delay a real registration-heartbeat reply after prefetch. Require workflow lease confirmation before the aged task executes. Registration heartbeat does not renew task authority. |
+| `opposite-slots`, `capacity` | Hold actual opposite-kind leases through public polls/completions. Observe real carrier omission, then reservation release and later work without disabling the capability. |
+| `prefetch-loss` | Withhold one real successful prefetch answer. Preserve the original ID, backoff and lease/history on recovery without another reservation. |
+| `default-off`, `explicit-off`, `packet-defaults` | Exercise omitted and explicit-false options against the actual runtime. Keep the installed fixed-socket packet regression separate from native producer acceptance. |
 | Bounded load | Direct runtime calls with no relay delay or per-request trace. Compare explicit OFF/ON cells for six workers, 200 workflows and five 20ms local or remote steps. Retain all three repetitions and regressions. |
+
+The registration control does not assert that replacement revokes an already
+granted workflow lease. That distinct producer vector is requested in Server
+#1067. `packet-defaults` runs the installed SDK against the fixed HTTP fixture
+only and explicitly reports `runtime_observed: false`. `opposite-slots` uses
+public Client polls/completions rather than managed Worker capacity.
 
 Load cells require caller evidence for fresh isolated databases and the actual
 backend, image, host and resource settings. The runner does not create a

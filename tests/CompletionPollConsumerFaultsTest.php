@@ -14,7 +14,6 @@ final class CompletionPollConsumerFaultsTest extends TestCase
     public function testTransitAndExpiryAreSelectedFromTheOriginalProducerWindow(): void
     {
         self::assertSame(22.0, CompletionPollFaults::delay(self::grant(), 'transit', 60));
-        self::assertSame(22.0, CompletionPollFaults::delay(self::grant(), 'refence', 60));
         self::assertSame(30.25, CompletionPollFaults::delay(self::grant(), 'expiry', 60));
     }
 

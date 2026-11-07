@@ -8,6 +8,10 @@ parameters:
         - scripts/conformance/Support/CompletionPollEvidence.php
         - scripts/conformance/Support/CompletionPollFailure.php
         - scripts/conformance/Support/CompletionPollFaults.php
+        - scripts/conformance/Support/CompletionPollRelayFaults.php
+        - scripts/conformance/Support/CompletionPollMatrixEvidence.php
+        - scripts/conformance/Support/CompletionPollPacketDefaults.php
+        - scripts/conformance/Support/CompletionPollOppositeSlots.php
         - scripts/conformance/Support/completion-poll-relay.php
     excludePaths:
         analyse:

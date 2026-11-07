@@ -17,13 +17,13 @@ final class CompletionPollFaults
     public static function delay(array $answer, string $fault, float $maximumSeconds): float
     {
         $window = self::window($answer);
-        // Transit/refence cases must cross the installed SDK's ten-second
+        // Transit cases must cross the installed SDK's ten-second
         // confirmation reserve while the original lease is still live.
         if ($window < 12 || !is_finite($maximumSeconds) || $maximumSeconds <= 0) {
             throw new RuntimeException('completion_fault_grant_not_targetable');
         }
         $delay = match ($fault) {
-            'transit', 'refence' => $window - 8,
+            'transit' => $window - 8,
             'expiry' => $window + 0.25,
             default => throw new RuntimeException('completion_fault_unknown'),
         };

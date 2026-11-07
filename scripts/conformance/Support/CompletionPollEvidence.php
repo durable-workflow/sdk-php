@@ -7,6 +7,7 @@ namespace DurableWorkflow\Qualification;
 use RuntimeException;
 
 require_once __DIR__.'/CompletionPollFailure.php';
+require_once __DIR__.'/CompletionPollMatrixEvidence.php';
 
 /** Assertions over actual relay observations, not a producer or source-test acceptance substitute. */
 final class CompletionPollEvidence
@@ -19,6 +20,9 @@ final class CompletionPollEvidence
      */
     public static function verify(array $events, string $scenario, string $worker, string $prefix): array
     {
+        if (in_array($scenario, CompletionPollMatrixEvidence::SCENARIOS, true)) {
+            return CompletionPollMatrixEvidence::verify($events, $scenario, $worker, $prefix);
+        }
         if ($events === [] || !in_array($scenario, CompletionPollSubject::SCENARIOS, true)) {
             throw new RuntimeException('completion_evidence_empty');
         }

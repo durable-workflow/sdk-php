@@ -5,9 +5,11 @@ declare(strict_types=1);
 // A loopback test relay forwards the actual runtime answer; it never implements a Server response.
 require_once __DIR__.'/CompletionPollSubject.php';
 require_once __DIR__.'/CompletionPollTrace.php';
+require_once __DIR__.'/CompletionPollRelayFaults.php';
 
 use DurableWorkflow\Qualification\CompletionPollSubject;
 use DurableWorkflow\Qualification\CompletionPollTrace;
+use DurableWorkflow\Qualification\CompletionPollRelayFaults;
 
 try {
     $trace = new CompletionPollTrace((string) getenv('PIPELINE_TEST_STATE'));
@@ -32,6 +34,7 @@ try {
         $trace->record(['kind' => 'request', 'request' => $requestId, 'path' => $tracePath,
             'body' => CompletionPollTrace::request($body, $raw)]);
     }
+    CompletionPollRelayFaults::before($trace, $path, $body, $requestId);
     $headers = [];
     foreach (getallheaders() as $key => $value) {
         if (!in_array(strtolower($key), ['host', 'content-length', 'connection', 'transfer-encoding'], true)) {
@@ -67,8 +70,13 @@ try {
         $trace->record(['kind' => 'upstream', 'request' => $requestId, 'status' => $status,
             'answer' => is_array($answer) ? CompletionPollTrace::answer($answer) : null]);
     }
+    if (is_array($answer) && CompletionPollRelayFaults::after($trace, $path, $answer, $status, $requestId)) {
+        $status = 502;
+        $response = 'The test relay deliberately withheld a successful upstream answer.';
+        $contentType = 'text/plain';
+    }
     $parent = $trace->change(static function (array &$state) use ($path, $status, $requestId): void {
-        if (!in_array($state['scenario'], ['pipeline', 'pipeline-loss'], true)
+        if (!in_array($state['scenario'], ['pipeline', 'pipeline-loss', 'pipeline-buffer-age', 'default-off', 'explicit-off'], true)
             || !preg_match('~/workflow-tasks/([^/]+)/complete$~', $path, $match)) {
             return;
         }
