@@ -51,6 +51,17 @@ final class CompletionPollConsumerSubjectTest extends TestCase
         self::assertSame(hash_file('sha256', $this->directory.'/subject.json'), $subject->sha256);
     }
 
+    public function testLoadSelectionRequiresClosedCallerDatabaseAndConditionsBindings(): void
+    {
+        $this->data['scenario'] = 'load-remote-on';
+        $this->data['load'] = ['backend' => 'postgresql', 'database_identity' => 'fresh-source-fixture',
+            'repetition' => 1, 'conditions_sha256' => str_repeat('a', 64)];
+        self::assertSame($this->data, $this->read()->data);
+        $this->data['load']['reset_database'] = true;
+        $this->expectExceptionMessage('completion_subject_load');
+        $this->read();
+    }
+
     #[DataProvider('replacedDocuments')]
     public function testPathReplacementCannotChangeTheAuthenticatedDocument(string $document): void
     {
