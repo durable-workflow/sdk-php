@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.10.0] - Unreleased
+
 ### Upgrade notes
 
 - The Laravel service-mode bridge now follows published Workflow 2.21.0:
