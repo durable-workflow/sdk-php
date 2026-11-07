@@ -520,7 +520,7 @@ heartbeats. Prepared local activities use supervised callback processes.
 
 ## Inspect retry budget and the owning workflow
 
-The unreleased `ActivityContext::activityExecutionId` property contains the
+The `ActivityContext::activityExecutionId` property contains the
 logical `activity_execution_id` received with the claim. Ordinary and
 cooperatively supervised remote callbacks expose that same execution identity
 across retry attempts, while `activityAttemptId` identifies each attempt.

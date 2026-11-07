@@ -56,7 +56,7 @@ result, a retry decision, a deadline or task authority.
 | `durable_workflow_worker_poll_duration_seconds` | histogram | `s` | same as above |
 | `durable_workflow_worker_tasks` | counter | `1` | `task_kind`, `task_queue`, `outcome` |
 | `durable_workflow_worker_task_duration_seconds` | histogram | `s` | same as above |
-| `durable_workflow_worker_task_schedule_to_start_seconds` (unreleased) | histogram | `s` | `task_kind`, `task_queue` |
+| `durable_workflow_worker_task_schedule_to_start_seconds` | histogram | `s` | `task_kind`, `task_queue` |
 
 Each request, poll or processing observation increments its counter by one and records one nonnegative
 duration with the same tags. A client observation covers one logical request,
@@ -65,7 +65,7 @@ describe this worker process, not durable execution counts, workflow completion
 or schedule-to-start latency. A missing observation does not mean zero work or
 a healthy process.
 
-## Schedule-to-start timing (unreleased)
+## Schedule-to-start timing
 
 The revision-2 dispatch histogram records only workflow and activity tasks that
 this worker actually dispatches. The runtime must explicitly advertise Boolean
