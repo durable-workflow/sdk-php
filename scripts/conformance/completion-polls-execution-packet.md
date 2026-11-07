@@ -30,6 +30,59 @@ uses `--pull never` after acquisition, and publishes no host port. One cell
 runs at a time. Times below are hard ceilings enforced with `timeout`; a
 breach stops the phase.
 
+### Phase P — runner PHP image, build only (effect)
+
+The runner needs `pcntl`, which the cached official PHP 8.4.27 image lacks.
+`php-pcntl.Dockerfile` adds only `pcntl`, compiled from the source tarball the
+base image already contains. This phase is independent of the producer
+receipts.
+
+Verified read-only on lab4 before this packet (no image created):
+
+- Base `php@sha256:dd0e2b902f1edfb6ca02fbcb391c28b1554c7d35a4e36e5925876b90aa804851`
+  (OCI image manifest, 2,878 B, linux/amd64, Debian 12, created
+  2026-10-28T01:25:32Z, ten layers ending `c500804b…`).
+- PHP 8.4.27 NTS, non-debug, API `20240924`. Modules include `curl` and `posix`, not `pcntl`.
+- Present in the base: `gcc`, `g++`, `make`, `autoconf`, `re2c`, `pkg-config`,
+  `phpize`, `php-config`, the PHP headers, the libc headers, and
+  `/usr/src/php.tar.xz`, whose SHA-256 equals the image's
+  `PHP_SHA256=dcf93923…f0`. No dependency is missing.
+- Trial compile in a tmpfs container (network none, uid 1000): `ext/pcntl`
+  source tree SHA-256 `4ef93fb1…72e1`. `pcntl.so` was 70,128 B,
+  `caeb0d94d6b8b1853aed199acd575dac92d1bb74e6b3de2cfba56befdcdfa8de`. It
+  loaded, and a fork/wait returned the child's exit code 7.
+- Dry run of the Dockerfile's exact `RUN` body in a throwaway root container
+  (network none, `--cap-drop ALL`, no image produced): it succeeded and
+  produced the same `pcntl.so` (`caeb0d94…`), so the compile is reproducible.
+  A second run refused because `pcntl` was already present.
+- `php-pcntl.Dockerfile`: 1,307 B, SHA-256
+  `6ef1784edc5db980f59e797ca2401eb2e193ccb731a45ea944893ba30e63a704`.
+
+Build steps (one owner, in order):
+
+1. Fresh `grafana machines --json` / `grafana docker` sample on lab4. Require the
+   base image present locally with the exact manifest digest above. Refuse if
+   the tag `sdk-php-runner-php:8.4.27-pcntl-<dockerfile-sha256-12>` already exists.
+2. In an empty owned context directory containing only the Dockerfile, run:
+   `timeout 300 docker build --builder default --network none --pull=false --no-cache --provenance=false --sbom=false --label durable-workflow.owner=sdk-php --label durable-workflow.dockerfile-sha256=<sha256> -t <tag> -f php-pcntl.Dockerfile <context>`.
+   The default builder is the daemon's built-in BuildKit (v0.26.2); no new
+   builder, daemon or entitlement is used. A build log line that resolves or
+   pulls anything from a registry stops the phase.
+3. Verify the result:
+   - the image's first ten layers equal the base's;
+   - exactly one added layer;
+   - `PHP_VERSION`, the extension dir and `php -i` configure options unchanged;
+   - modules equal the base's plus `pcntl`;
+   - the installed `pcntl.so` SHA-256 recorded;
+   - in a network-none, read-only, uid-1000 container, `pcntl` loads and a fork/wait passes;
+   - image size recorded.
+4. Bounds: 2 CPU-equivalent build steps (`make -j2`), 300 s wall time, build
+   output limited to the image. Cleanup: remove the owned context directory
+   and any dangling build cache entries for this build. The image is retained,
+   by its exact tag and ID, for phases D–E, then removed in phase F.
+5. Nothing is pushed or published. The image is never tagged with a public
+   registry name.
+
 ### Phase A — acquisition (effect)
 
 1. Pull the four images above by digest only. Record each local image ID and
@@ -43,9 +96,13 @@ breach stops the phase.
 
 One held root at `$ROOT=/srv/sdk-php-cpq/consumer` (owner-created, mode 0700).
 
-1. Copy the 22 sealed runner files from `$RUNNER_REF` into `$ROOT`
-   (`git archive "$RUNNER_REF" -- <the 22 paths in CompletionPollSubject::RUNNER_FILES> | tar -x -C "$ROOT"`).
-   Recompute the canonical runner manifest and require
+1. Stage the 22 sealed runner files into `$ROOT` from the exact reviewed Git
+   blobs: for each path in `CompletionPollSubject::RUNNER_FILES`,
+   `git cat-file blob "$RUNNER_REF:<path>" > "$ROOT/<path>"`. Do not use
+   `git archive`, which honors `/tests export-ignore` and drops the six
+   `tests/Support` runner files. Do not take them from the installed
+   SDK distribution, which excludes `tests/`, or from a source checkout's
+   vendor tree. Recompute the canonical runner manifest and require
    `$RUNNER_MANIFEST_SHA256` before PHP is started.
 2. Write `$ROOT/composer.json`:
    `{"require":{"durable-workflow/sdk":"3.10.0"},"config":{"allow-plugins":false,"audit":{"block-insecure":true}}}`.
@@ -183,5 +240,5 @@ These are the only values not yet available. Everything else above is fixed.
 | Native 3.2.0 qualifier acceptance | Server's corpus run 42407065494 and the four Compose receipts, with independent acceptance |
 | SQLite and PostgreSQL Server settings | Confirm `DB_CONNECTION=sqlite`/`pgsql` and their variables against the accepted Compose receipts. The published Compose file shows only the MySQL settings. |
 | `default` namespace on 3.2.0 and 3.0.5 | Confirm it exists without bootstrap, from the same receipts |
-| `$PHP_IMAGE` | A PHP 8.4 CLI image **with `pcntl`, `posix` and `curl`**, pinned by digest. The cached official `php` 8.4.27 image lacks `pcntl`, and the runner refuses to start without `pcntl_fork`. This needs a decision: an existing pinned image that has it, or a reviewed derived image (`docker-php-ext-install pcntl`) built as its own effect. |
-| Per-phase selections | General's fresh selection with literal windows for phases A, B, D, E (×3) and F, after independent review |
+| `$PHP_IMAGE` | Image ID and tag from phase P (General chose the derived-image path) |
+| Per-phase selections | General's fresh selection with literal windows for phases P, A, B, D, E (×3) and F, after independent review |
