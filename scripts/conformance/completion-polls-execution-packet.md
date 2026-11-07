@@ -480,9 +480,9 @@ These are the only values not yet available. Everything else above is fixed.
 
 | Value | Source |
 | --- | --- |
-| `$RUNNER_REF` | **Fixed:** `4e6c6b7b4318010b73233377ad36be805828fedd`, the merge of #354, which General froze as the 3.10.0 target. `$RUNNER_MANIFEST_SHA256` = `94a9604fa33f029c7f6b37b2a6889dd9268cb6cc8ba5f47747cce595474a614a`, recomputed equal there. |
+| `$RUNNER_REF` | **Advances** to the reviewed merge that carries the opposite-slots activity-claim correction (phase D3 row 17). The corrected 22-file `$RUNNER_MANIFEST_SHA256` is `76ab2cf5b3265a36cca48e53e092d2df5ab2497ff699df8247e061a572aa7d93`. The runner reference is independent of the published SDK: the package, lock, vendor and SDK inventories stay those of 3.10.0 at `4e6c6b7b`. The consumer is reassembled read-only from the approved runner files at `$RUNNER_REF`, without another Composer install. The superseded runner reference `4e6c6b7b` sealed `94a9604fa33f029c7f6b37b2a6889dd9268cb6cc8ba5f47747cce595474a614a`. |
 | Tag, Packagist row, dist ZIP SHA-256/size/inventory | General's 3.10.0 tag and release at the frozen target `4e6c6b7b`, after canonical Native 3.2.0 acceptance, then normal Packagist availability |
 | `$LOCK_SHA256`, `$VENDOR_INVENTORY_SHA256`, `$SDK_INVENTORY_SHA256` | Phase B output |
-| Native 3.2.0 qualifier acceptance | Server's corpus run 42407065494 and the four Compose receipts, with independent acceptance |
+| Native 3.2.0 qualifier acceptance | **Accepted:** Server's corpus run 42417935878 attempt 1 (server#325/6713724172) and the four Compose cells in run 42419750327 attempt 1, with Native acceptance at server#325/6713776065 |
 | `$PHP_IMAGE` | **Fixed:** `sha256:80a91784a0ae46c4cecd33b72f30188285fc32be8087af7caa7fa00b0fe8a5f0` (phase P PASS) |
 | Per-phase selections | General's fresh selection, with literal windows, for phases A, B, D, E (×3) and F, after independent review. Phase P is done. |
