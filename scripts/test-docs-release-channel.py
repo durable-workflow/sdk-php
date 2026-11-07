@@ -8,8 +8,10 @@ import os
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 GUARD = Path(__file__).with_name("check-docs-release-channel.py").resolve()
@@ -240,6 +242,52 @@ class DocumentationChannelTest(unittest.TestCase):
         for inputs in [{"STABLE_TAG": "3.9.4-rc.1"}, {"STABLE_TAG": "../main"}, {"STABLE_SOURCE": self.published}, {"STABLE_TAG": "3.9.4", "STABLE_SOURCE": "HEAD"}, {"STABLE_TAG": "3.9.4", "STABLE_SOURCE": self.published.upper()}, {"STABLE_TAG": "3.9.3"}]:
             with self.subTest(inputs=inputs):
                 self.channel(None, **inputs)
+
+
+class DocumentationSystemPythonSelectionTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        workflow = Path(__file__).resolve().parents[1] / ".github/workflows/docs.yml"
+        step = workflow.read_text().split("      - name: Select the trusted system Python\n", 1)[1]
+        cls.script = textwrap.dedent(step.split("<<'PYTHON'\n", 1)[1].split("          PYTHON\n", 1)[0])
+
+    def selection(self, *, version=(3, 12, 3), location="", foreign_alias=False):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "github-path"
+            output.touch(mode=0o600)
+            def canonical(path, strict=False):
+                if foreign_alias and str(path) == "/usr/bin/python":
+                    return Path("/opt/shared/python")
+                return Path("/usr/bin/python3.12")
+            with patch.dict(os.environ, {"GITHUB_PATH": str(output), "pythonLocation": location}, clear=True), \
+                    patch.object(sys, "version_info", version), \
+                    patch.object(sys, "executable", "/usr/bin/python3"), \
+                    patch.object(Path, "resolve", autospec=True, side_effect=canonical):
+                try:
+                    exec(compile(self.script, "actual-docs-system-python-step", "exec"), {})
+                except ValueError as error:
+                    return output.read_text(), str(error)
+            return output.read_text(), None
+
+    def test_exact_system_alias_is_selected(self):
+        output, error = self.selection()
+        self.assertEqual("/usr/bin\n", output)
+        self.assertIsNone(error)
+
+    def test_toolcache_selection_refuses_before_path_change(self):
+        output, error = self.selection(location="/opt/hostedtoolcache/Python/3.12.16/x64")
+        self.assertEqual("", output)
+        self.assertIn("without toolcache", error)
+
+    def test_foreign_alias_refuses_before_path_change(self):
+        output, error = self.selection(foreign_alias=True)
+        self.assertEqual("", output)
+        self.assertIn("exact reviewed origin", error)
+
+    def test_other_version_refuses_before_path_change(self):
+        output, error = self.selection(version=(3, 13, 0))
+        self.assertEqual("", output)
+        self.assertIn("Ubuntu 24 system Python", error)
 
 
 if __name__ == "__main__":
