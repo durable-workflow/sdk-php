@@ -605,6 +605,36 @@ Grant freshness includes the original completion transit and
 time spent waiting to dispatch. Shutdown finishes a known delivered lease before
 returning. Runtimes without the capability keep the ordinary polling path.
 
+## Completion pipelining (unreleased, opt-in)
+
+`Worker::create($client, $taskQueue, enableCompletionPipelining: true)` allows
+managed `run()` to overlap a completion response with useful work on one
+already-leased workflow. The option defaults to `false` in both `create()` and
+the constructor. Public `tick()` remains synchronous.
+
+After successful local activity work, the Worker first makes an ordinary
+zero-timeout workflow poll. If it leases a task, the owned default cURL transport
+may suspend the current completion after sending its full request body. The
+Worker runs the leased task, then joins the original response before publishing
+the next task's completion or failure. It retains the original lease owner,
+attempt, grant deadline and poll transit time. A held or uncertain workflow
+slot prevents another completion-carried workflow poll.
+
+Activity-scheduling, cancellation, retained local failures, telemetry and metrics
+keep their synchronous behavior. Cooperative cancellation mode, injected HTTP
+clients, streamed requests, progress callbacks and an earlier discovery or
+payload request also keep completion I/O synchronous. The transport arm belongs
+to one Fiber and is consumed by its first request; retries cannot suspend it
+again.
+
+Opting in changes when a completion refusal becomes visible: useful work on the
+next leased task may have run before the refusal arrives. Worker registration
+or authentication refusal prevents that task's publication. An identity-bound
+lost claim is released as usual; other deferred failures remain errors. Shutdown
+settles a known leased task and creates no further prefetch. This source feature
+still requires published-package/runtime qualification and realistic load
+evidence. No throughput improvement or default change is claimed.
+
 ## Activity runtime lease maintenance
 
 The managed Worker starts a separate PHP CLI maintenance process when the

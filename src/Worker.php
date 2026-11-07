@@ -25,6 +25,8 @@ use DurableWorkflow\Worker\CancellationDelivery;
 use DurableWorkflow\Worker\CancellationRequest;
 use DurableWorkflow\Worker\CancellationScopeDeliveryClaim;
 use DurableWorkflow\Worker\CarriedPoll;
+use DurableWorkflow\Worker\CompletionPipeline;
+use DurableWorkflow\Worker\WorkflowPrefetch;
 use DurableWorkflow\Worker\CooperativeCancellationObserved;
 use DurableWorkflow\Worker\CooperativeActivityExecutor;
 use DurableWorkflow\Worker\DiscoveredHandlers;
@@ -127,6 +129,9 @@ final class Worker
     private ?CarriedPoll $carriedActivityPoll = null;
     private int $activityTasksInFlight = 0;
     private bool $drainingCarriedLease = false;
+    private ?CompletionPipeline $completionPipeline = null;
+    private bool $pipelineManagedTick = false;
+    private bool $workflowExecutedLocalActivity = false;
     /** @var (\Closure(): void)|null */
     private ?\Closure $unbindActivityLease = null;
     private ?CancellationRequest $claimCancellation = null;
@@ -165,6 +170,8 @@ final class Worker
         private readonly bool $requireQueryTaskAuthority = false,
         private readonly ?ExecutionTelemetry $telemetry = null,
         ?MetricsRecorder $metrics = null,
+        /** Opt-in. Changes when completion failures become visible; never applies to public tick(). */
+        private readonly bool $enableCompletionPipelining = false,
     ) {
         if ($enableCancellationScopes && !$enableCooperativeCancellation) {
             throw new \InvalidArgumentException('Cancellation scopes require the cooperative worker opt-in.');
@@ -215,6 +222,7 @@ final class Worker
         bool $requireQueryTaskAuthority = false,
         ?ExecutionTelemetry $telemetry = null,
         ?MetricsRecorder $metrics = null,
+        bool $enableCompletionPipelining = false,
     ): self {
         return new self(
             $client,
@@ -227,6 +235,7 @@ final class Worker
             requireQueryTaskAuthority: $requireQueryTaskAuthority,
             telemetry: $telemetry,
             metrics: $metrics,
+            enableCompletionPipelining: $enableCompletionPipelining,
         );
     }
 
@@ -369,6 +378,7 @@ final class Worker
             return;
         }
         $this->shutdownRequested = true;
+        $this->completionPipeline?->requestStop();
         if ($this->activityLeaseProcess === null) {
             $this->activityLeaseHelper?->stop();
         }
@@ -423,8 +433,17 @@ final class Worker
                 'heartbeat_interval_seconds' => $this->heartbeatIntervalSeconds,
             ]);
 
+            if ($this->enableCompletionPipelining && !$this->enableCooperativeCancellation
+                && $this->telemetry === null && !$this->metricsObserver->enabled() && $this->client->supportsCompletionPipelining()) {
+                $this->completionPipeline = new CompletionPipeline($this->pipelineTick(...), $this->capturePipelineState(...),
+                    $this->resetPipelineState(...), $this->resumePipelineFiber(...), $this->client->disarmWorkflowCompletion(...));
+            }
             while (!$this->shutdownRequested) {
-                $this->tick($pollTimeoutSeconds);
+                if ($this->completionPipeline !== null) {
+                    $this->completionPipeline->tick($pollTimeoutSeconds);
+                } else {
+                    $this->tick($pollTimeoutSeconds);
+                }
                 $this->heartbeatIfDue();
             }
         } catch (Throwable $exception) {
@@ -436,6 +455,8 @@ final class Worker
             ], 'error');
             throw $exception;
         } finally {
+            $this->completionPipeline?->finish();
+            $this->completionPipeline = null;
             $this->stopActivityLease();
             $this->activityLeaseHelper?->stop();
             $this->activityLeaseHelper = null;
@@ -797,6 +818,32 @@ final class Worker
      */
     public function tick(int $pollTimeoutSeconds = 1): bool
     {
+        $managed = $this->pipelineManagedTick;
+        $this->pipelineManagedTick = false;
+        try {
+            return $this->performTick($pollTimeoutSeconds);
+        } finally {
+            $this->pipelineManagedTick = $managed;
+        }
+    }
+
+    private function pipelineTick(int $pollTimeoutSeconds): bool
+    {
+        $stop = $this->shutdownRequested && $this->completionPipeline?->prefetched !== null;
+        $this->pipelineManagedTick = true;
+        $this->drainingCarriedLease = $stop;
+        if ($stop) $this->shutdownRequested = false;
+        try {
+            return $this->performTick($pollTimeoutSeconds);
+        } finally {
+            $this->pipelineManagedTick = false;
+            $this->drainingCarriedLease = false;
+            $this->shutdownRequested = $stop || $this->shutdownRequested;
+        }
+    }
+
+    private function performTick(int $pollTimeoutSeconds): bool
+    {
         if ($this->shutdownRequested) {
             return false;
         }
@@ -808,18 +855,30 @@ final class Worker
 
         $handled = false;
         $carriedWorkflow = $this->carriedWorkflowPoll;
-        $workflowPoll = $this->pollWithRetry(
-            'workflow',
-            fn (string $requestId, int $timeoutSeconds): array => $this->client->pollWorkflowTaskResponse(
-                $this->workerId,
-                $this->taskQueue,
-                $timeoutSeconds,
-                $requestId,
-                self::WORKFLOW_HISTORY_PAGE_SIZE,
-            ),
-            $pollTimeoutSeconds,
-            $carriedWorkflow,
-        );
+        if ($this->pipelineManagedTick && $this->completionPipeline?->recovery !== null) {
+            $carriedWorkflow = $this->completionPipeline->recovery;
+            $this->completionPipeline->recovery = null;
+        }
+        $prefetch = $this->pipelineManagedTick ? $this->completionPipeline?->prefetched : null;
+        if ($prefetch !== null) {
+            $this->completionPipeline->prefetched = null;
+            $this->workflowPollGrant = $prefetch->grant;
+            $this->workflowPollStartedAt = $prefetch->startedAt;
+            $workflowPoll = $prefetch->response;
+        } else {
+            $workflowPoll = $this->pollWithRetry(
+                'workflow',
+                fn (string $requestId, int $timeoutSeconds): array => $this->client->pollWorkflowTaskResponse(
+                    $this->workerId,
+                    $this->taskQueue,
+                    $timeoutSeconds,
+                    $requestId,
+                    self::WORKFLOW_HISTORY_PAGE_SIZE,
+                ),
+                $pollTimeoutSeconds,
+                $carriedWorkflow,
+            );
+        }
         if ($this->carriedWorkflowPoll === $carriedWorkflow) {
             $this->carriedWorkflowPoll = null;
         }
@@ -1048,27 +1107,11 @@ final class Worker
                 if ($taskKind === 'activity') {
                     $this->stopActivityLease();
                 }
-                $databaseUnavailable = $this->isTransientDatabaseFailure(
-                    $exception,
-                    "poll_{$taskKind}_task",
-                    $requestId,
-                );
-                $storageAdmission = $exception->isStorageAdmissionFailure($requestId);
-                $retryable = match ($exception->reason) {
-                    'backend_unavailable' => $databaseUnavailable,
-                    'storage_pressure', 'storage_admission_unavailable' => $storageAdmission,
-                    'workflow_poll_normalization_pending' => $taskKind === 'workflow'
-                        && PollResponse::isNormalizationPendingFailure($exception, $requestId),
-                    default => PollResponse::isTransientFailure($exception),
-                };
-                if (!$retryable) {
+                $policy = $this->pollFailurePolicy($taskKind, $requestId, $exception);
+                if (!$policy['retry']) {
                     throw $exception;
                 }
-
-                if ($carried === null && !$exception->isTransientConnectionFailure() && !$exception->isTransientUpstreamFailure()
-                    && !PollResponse::isTransientPayloadFailure($exception)
-                    && !PollResponse::isNormalizationPendingFailure($exception, $requestId)
-                    && !$databaseUnavailable && !$storageAdmission) {
+                if ($carried === null && !$policy['retain']) {
                     $requestId = 'php-'.$taskKind.'-poll-'.bin2hex(random_bytes(16));
                 }
 
@@ -1104,6 +1147,24 @@ final class Worker
         }
 
         return null;
+    }
+
+    /** @return array{retry: bool, retain: bool} */
+    private function pollFailurePolicy(string $kind, string $requestId, ServerException $error): array
+    {
+        $database = $this->isTransientDatabaseFailure($error, "poll_{$kind}_task", $requestId);
+        $storage = $error->isStorageAdmissionFailure($requestId);
+        $normalization = $kind === 'workflow' && PollResponse::isNormalizationPendingFailure($error, $requestId);
+        $retry = match ($error->reason) {
+            'backend_unavailable' => $database,
+            'storage_pressure', 'storage_admission_unavailable' => $storage,
+            'workflow_poll_normalization_pending' => $normalization,
+            default => PollResponse::isTransientFailure($error),
+        };
+
+        return ['retry' => $retry, 'retain' => $database || $storage || $normalization
+            || $error->isTransientConnectionFailure() || $error->isTransientUpstreamFailure()
+            || PollResponse::isTransientPayloadFailure($error)];
     }
 
     /**
@@ -1339,6 +1400,12 @@ final class Worker
             return false;
         }
 
+        $this->completionPipeline?->requestStop();
+        $prefetched = $this->completionPipeline?->prefetched;
+        if ($prefetched !== null) {
+            // A terminal runtime observation overrides the earlier fast-grant shortcut.
+            $this->completionPipeline->prefetched = new WorkflowPrefetch($prefetched->response, null, $prefetched->startedAt);
+        }
         $this->shutdownRequested = true;
         $this->registered = false;
         $this->diagnostic('worker.stopped_by_server', [
@@ -1556,6 +1623,8 @@ final class Worker
     private function executeWorkflowTask(array $task): void
     {
         $traceScope = null;
+        $previousLocalActivity = $this->workflowExecutedLocalActivity;
+        $this->workflowExecutedLocalActivity = false;
         $this->claimCancellation = null;
         $this->claimDeliveredCancellationId = null;
         $taskId = (string) ($task['task_id'] ?? '');
@@ -1621,11 +1690,15 @@ final class Worker
                     $commands = [$this->workflowFailureCommand($exception)];
                 }
             }
+            $this->completionPipeline?->join();
+            $this->assertPipelineAuthority();
             $this->assertWorkflowMemoUpdatesAvailable($commands);
             $this->assertServiceOperationsAvailable($commands);
             $this->assertChildStartTurnAvailable($commands);
             $this->assertCancellationPoliciesAvailable($commands);
             $stickyClaim = $this->stickyCacheClaim($task);
+            $this->prepareCompletionPipeline($task, $commands);
+            $this->assertPipelineAuthority();
             $carried = $this->reserveActivityPoll($leaseOwner, $commands !== []);
             $workflowCarried = $commands === [] ? null : $this->reserveWorkflowPoll($leaseOwner, workflowCompletion: true);
             $completion = $this->retryStorageAdmission('workflow_complete', function () use (
@@ -1637,6 +1710,9 @@ final class Worker
                 } catch (ServerException $error) {
                     $carried?->uncertainCompletion();
                     $workflowCarried?->uncertainCompletion();
+                    if ($this->completionPipeline?->abandoningCurrent() ?? false) {
+                        throw new WorkflowClaimDeferred('The owned completion request was abandoned during pipeline cleanup.');
+                    }
                     throw $error;
                 }
             }, ['task_id' => $taskId, 'lease_owner' => $leaseOwner, 'attempt' => $attempt]);
@@ -1685,6 +1761,7 @@ final class Worker
             );
         } finally {
             $this->workflowPollGrant = null;
+            $this->workflowExecutedLocalActivity = $previousLocalActivity;
             $traceScope?->__invoke();
             $this->claimCancellation = null;
             $this->claimDeliveredCancellationId = null;
@@ -1705,12 +1782,117 @@ final class Worker
         ], hrtime(true) / 1e9);
     }
 
+    private function assertPipelineAuthority(): void
+    {
+        if ($this->completionPipeline?->authorityLost() ?? false) {
+            $this->requestShutdown();
+            throw new WorkflowClaimRevoked('pipeline_worker_fenced', 'The completion reply invalidated Worker authority.');
+        }
+    }
+
+    /** @return array<string, mixed> */
+    private function capturePipelineState(): array
+    {
+        return ['cancellation' => $this->claimCancellation, 'delivered' => $this->claimDeliveredCancellationId,
+            'grant' => $this->workflowPollGrant, 'started' => $this->workflowPollStartedAt,
+            'local' => $this->workflowExecutedLocalActivity, 'managed' => $this->pipelineManagedTick,
+            'draining' => $this->drainingCarriedLease];
+    }
+
+    private function resetPipelineState(): void
+    {
+        $this->claimCancellation = null;
+        $this->claimDeliveredCancellationId = null;
+        $this->workflowPollGrant = null;
+        $this->workflowPollStartedAt = null;
+        $this->workflowExecutedLocalActivity = false;
+        $this->pipelineManagedTick = false;
+        $this->drainingCarriedLease = false;
+    }
+
+    /** @param array<string, mixed> $state */
+    private function installPipelineState(array $state): void
+    {
+        $this->claimCancellation = $state['cancellation'];
+        $this->claimDeliveredCancellationId = $state['delivered'];
+        $this->workflowPollGrant = $state['grant'];
+        $this->workflowPollStartedAt = $state['started'];
+        $this->workflowExecutedLocalActivity = $state['local'];
+        $this->pipelineManagedTick = $state['managed'];
+        $this->drainingCarriedLease = $state['draining'];
+    }
+
+    /**
+     * @param \Fiber<mixed, mixed, mixed, mixed> $parent
+     * @param array<string, mixed> $state
+     */
+    private function resumePipelineFiber(\Fiber $parent, array $state): void
+    {
+        $child = $this->capturePipelineState();
+        $this->installPipelineState($state);
+        $this->shutdownRequested = $this->shutdownRequested || ($this->completionPipeline?->stopping() ?? false);
+        try {
+            while ($parent->isSuspended()) $parent->resume();
+        } finally {
+            $this->installPipelineState($child);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $task
+     * @param list<array<string, mixed>> $commands
+     */
+    private function prepareCompletionPipeline(array $task, array $commands): void
+    {
+        $pipeline = $this->completionPipeline;
+        if ($pipeline === null || !$pipeline->canPrefetch() || !$this->pipelineManagedTick
+            || !$this->workflowExecutedLocalActivity || $this->claimCancellation !== null
+            || $this->shutdownRequested || $this->drainingCarriedLease || $this->carriedWorkflowPoll !== null
+            || ($task['lease_owner'] ?? null) !== $this->workerId
+            || !is_int($task['workflow_task_attempt'] ?? null) || $task['workflow_task_attempt'] < 1
+            || !is_string($task['task_id'] ?? null) || $task['task_id'] === '') {
+            return;
+        }
+        foreach ($commands as $command) {
+            if (in_array($command['type'] ?? null, ['schedule_activity', 'fail_workflow', 'cancel_workflow'], true)
+                || (($command['type'] ?? null) === 'record_local_activity' && ($command['outcome'] ?? null) !== 'completed')) {
+                return;
+            }
+        }
+        $startedAt = hrtime(true) / 1e9;
+        $requestId = 'php-workflow-poll-'.bin2hex(random_bytes(16));
+        $pipeline->prefetchPending = true;
+        try {
+            $answer = $this->observePoll('workflow', fn (): array => $this->client->pollWorkflowTaskResponse(
+                $this->workerId, $this->taskQueue, 0, $requestId, self::WORKFLOW_HISTORY_PAGE_SIZE));
+        } catch (Throwable $error) {
+            if ($error instanceof ServerException && $this->pollFailurePolicy('workflow', $requestId, $error)['retry']) {
+                $pipeline->recovery = new CarriedPoll(['worker_id' => $this->workerId, 'task_queue' => $this->taskQueue,
+                    'poll_request_id' => $requestId, 'timeout_seconds' => 0,
+                    'history_page_size' => self::WORKFLOW_HISTORY_PAGE_SIZE, 'task_kinds' => ['workflow']], $startedAt, workflow: true);
+                $pipeline->prefetchPending = false;
+            } else {
+                $pipeline->defer($error);
+            }
+            return;
+        }
+        $pipeline->prefetchPending = false;
+        if ($this->taskFromPoll($answer) === null) {
+            $this->stopForTerminalPoll($answer);
+            return;
+        }
+        $pipeline->prefetched = new WorkflowPrefetch($answer, $this->workflowPollGrant, $startedAt);
+        $owner = \Fiber::getCurrent();
+        if ($owner !== null) $this->client->armWorkflowCompletion($owner, $task['task_id']);
+    }
+
     private function reserveWorkflowPoll(string $leaseOwner, bool $workflowCompletion = false): ?CarriedPoll
     {
         $supported = $workflowCompletion ? $this->workflowCompletionWorkflowPollSupported : $this->activityCompletionWorkflowPollSupported;
         if (!$supported || $this->workflows === []
             || $leaseOwner !== $this->workerId || $this->shutdownRequested || $this->drainingCarriedLease
-            || $this->workflowTasksInFlight !== ($workflowCompletion ? 1 : 0) || $this->carriedWorkflowPoll !== null) {
+            || $this->workflowTasksInFlight !== ($workflowCompletion ? 1 : 0) || $this->carriedWorkflowPoll !== null
+            || ($this->completionPipeline?->hasAhead() ?? false)) {
             return null;
         }
 
@@ -3134,6 +3316,12 @@ final class Worker
         callable $failureAcknowledgement,
         ?int $workflowTaskAttempt = null,
     ): void {
+        $this->completionPipeline?->join();
+        if ($this->completionPipeline?->authorityLost() ?? false) {
+            $this->taskObservation?->outcome('aborted');
+            $this->requestShutdown();
+            return;
+        }
         if ($taskFailure instanceof FailureReportRefused) {
             throw $taskFailure;
         }
@@ -3348,6 +3536,7 @@ final class Worker
         array $arguments,
         array $options,
     ): array {
+        $this->workflowExecutedLocalActivity = true;
         $options = WorkflowCommand::canonicalLocalActivityOptions($options);
         $handler = $this->activities[$activityType] ?? null;
         if ($handler === null) {
@@ -3950,7 +4139,7 @@ final class Worker
         try {
             $heartbeatClient = $budget === null ? $this->client : $this->client->withBoundedWorkerRequests();
             $acknowledgement = $heartbeatClient->heartbeatWorker($this->workerId, [
-                'workflow_available' => $this->carriedWorkflowPoll === null ? 1 : 0,
+                'workflow_available' => $this->carriedWorkflowPoll === null && !($this->completionPipeline?->hasAhead() ?? false) ? 1 : 0,
                 'activity_available' => $this->carriedActivityPoll === null ? 1 : 0,
             ], $budget);
         } catch (ServerException $exception) {
@@ -4021,7 +4210,10 @@ final class Worker
         }
         pcntl_async_signals(true);
         foreach ([SIGINT, SIGTERM] as $signal) {
-            pcntl_signal($signal, fn (): bool => $this->shutdownRequested = true);
+            pcntl_signal($signal, function (): void {
+                $this->shutdownRequested = true;
+                $this->completionPipeline?->requestStop();
+            });
         }
     }
 

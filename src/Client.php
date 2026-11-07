@@ -220,6 +220,35 @@ final class Client implements WorkflowClientInterface
         return $copy;
     }
 
+    /** @internal Completion pipelining never replaces custom HTTP, tracing or metrics policy. */
+    public function supportsCompletionPipelining(): bool
+    {
+        return $this->transport instanceof Psr18Transport && $this->transport->supportsCompletionSuspension()
+            && !$this->metricsObserver->enabled() && $this->executionTelemetry === null;
+    }
+
+    /**
+     * @internal
+     * @param \Fiber<mixed, mixed, mixed, mixed> $owner
+     */
+    public function armWorkflowCompletion(\Fiber $owner, string $taskId): bool
+    {
+        return $this->supportsCompletionPipelining() && $this->transport instanceof Psr18Transport
+            && $this->transport->armCompletionSuspension($owner,
+                $this->baseUri.'/api/worker/workflow-tasks/'.$this->segment($taskId).'/complete');
+    }
+
+    /**
+     * @internal
+     * @param \Fiber<mixed, mixed, mixed, mixed> $owner
+     */
+    public function disarmWorkflowCompletion(\Fiber $owner): void
+    {
+        if ($this->transport instanceof Psr18Transport) {
+            $this->transport->disarmCompletionSuspension($owner);
+        }
+    }
+
     /** @internal Credentials travel only over the private helper input pipe.
      * @return array<string, mixed>
      */

@@ -444,6 +444,21 @@ final class ReplayRegressionConsumer
             throw new RuntimeException("{$identity}.history must not be empty.");
         }
 
+        if ($workflowType === 'golden.completion-pipeline') {
+            require_once __DIR__.'/../../tests/Support/CompletionPipelineScenario.php';
+            require_once __DIR__.'/../../tests/Support/RecordingMetricsRecorder.php';
+            require_once __DIR__.'/../../tests/Support/WorkerPipelineScenario.php';
+            $observed = \DurableWorkflow\Tests\Support\WorkerPipelineScenario::run(true);
+            if ($observed['error'] !== null) throw $observed['error'];
+            $commands = array_map(static fn (array $command): array => self::decodeEnvelopes($command, new AvroPayloadCodec()),
+                $observed['completions'][2]['commands']);
+            self::assertMatches($fixture['command_sequence'], $commands, $identity.'.command_sequence');
+            self::assertMatches($fixture['expected'], ['completion_order' =>
+                \DurableWorkflow\Tests\Support\WorkerPipelineScenario::completionOrder($observed)], $identity.'.expected');
+
+            return;
+        }
+
         if ($workflowType === 'golden.workflow-completion-poll') {
             require_once __DIR__.'/../../tests/Support/FakeTransport.php';
             require_once __DIR__.'/../../tests/Support/WorkflowCompletionPollScenario.php';

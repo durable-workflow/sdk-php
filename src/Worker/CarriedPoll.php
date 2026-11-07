@@ -6,7 +6,7 @@ namespace DurableWorkflow\Worker;
 
 use DurableWorkflow\Exception\ServerException;
 
-/** @internal One reserved slot and its original completion-request identity. */
+/** @internal One reserved slot and its original request identity. */
 final class CarriedPoll
 {
     /** @var array<string, mixed>|null */

@@ -13,10 +13,13 @@ final class CompletionPipelineScenario
      * @param callable(string, string): T $scenario
      * @return T
      */
-    public static function run(callable $scenario): mixed
+    public static function run(callable $scenario, ?string $router = null, bool $concurrent = false): mixed
     {
         if (!extension_loaded('curl') || !function_exists('proc_open')) {
             throw new RuntimeException('The completion pipeline socket fixture requires cURL and proc_open.');
+        }
+        if ($concurrent && (!function_exists('posix_setsid') || !function_exists('posix_kill') || !function_exists('pcntl_exec'))) {
+            throw new RuntimeException('The concurrent Worker socket fixture requires Unix process groups.');
         }
         $directory = sys_get_temp_dir().'/sdk-php-completion-'.bin2hex(random_bytes(8));
         mkdir($directory, 0700);
@@ -28,9 +31,14 @@ final class CompletionPipelineScenario
             if (!is_resource($socket)) throw new RuntimeException('The completion fixture could not reserve a loopback port.');
             $address = stream_socket_get_name($socket, false);
             fclose($socket);
-            $process = proc_open([PHP_BINARY, '-S', $address, __DIR__.'/completion-pipeline-http.php'],
+            $router ??= __DIR__.'/completion-pipeline-http.php';
+            $command = $concurrent ? [PHP_BINARY, __DIR__.'/completion-pipeline-server.php', $address, $router]
+                : [PHP_BINARY, '-S', $address, $router];
+            $environment = ['PIPELINE_TEST_STATE' => $state];
+            if ($concurrent) $environment['PHP_CLI_SERVER_WORKERS'] = '2';
+            $process = proc_open($command,
                 [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
-                $pipes, env_vars: ['PIPELINE_TEST_STATE' => $state]);
+                $pipes, env_vars: $environment);
             if (!is_resource($process)) throw new RuntimeException('The completion fixture could not start.');
             $deadline = microtime(true) + 2;
             do {
@@ -44,8 +52,18 @@ final class CompletionPipelineScenario
             throw new RuntimeException('The completion fixture did not become ready.');
         } finally {
             if (is_resource($process)) {
-                proc_terminate($process);
+                $pid = proc_get_status($process)['pid'];
+                if ($concurrent) {
+                    posix_kill(-$pid, SIGTERM);
+                } else {
+                    proc_terminate($process);
+                }
                 proc_close($process);
+                if ($concurrent) {
+                    $deadline = microtime(true) + 1;
+                    while (posix_kill(-$pid, 0) && microtime(true) < $deadline) usleep(1000);
+                    if (posix_kill(-$pid, 0)) posix_kill(-$pid, SIGKILL);
+                }
             }
             if (is_file($state)) unlink($state);
             rmdir($directory);
