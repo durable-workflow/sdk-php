@@ -5,9 +5,13 @@ RoadRunner. The [qualification report](qualification/report.md) records the
 tested configuration, resource costs and limits.
 
 The report's measurements were taken with SDK 2.4.2 against Server 2.8.7. The
-application now installs the current SDK release pinned in `composer.json`; it
-installs, boots and keeps the same routes, but the load, recovery and cache runs
-have not been repeated on the new tuple yet.
+application installs the published SDK version pinned in `composer.json` and
+`composer.lock`. That locked package retains its own released 3.9.x support
+metadata. The next-minor Laravel bridge boundary in the repository is a separate
+release contract. After that SDK is published, the [release follow-through](https://github.com/durable-workflow/sdk-php/issues/293)
+updates this example through the normal registry and verifies installation,
+boot and routes. Load, recovery and cache measurements retain their original
+tuple until repeated qualification.
 
 Start with FPM for this recipe. Both documented two-CLI-worker profiles pass
 functional/recovery controls, three short comparison pairs, a baseline recheck

@@ -1,7 +1,7 @@
 ---
 layout: layout.njk
 title: Laravel adoption
-description: Move a Laravel Workflow v1 application to Durable Workflow 2.0 embedded or service mode without changing Laravel merely to change runtime ownership.
+description: Move a Laravel Workflow v1 application to embedded v2 or service mode on the supported Laravel and PHP platform.
 lead: Keep the Laravel application experience. Choose who owns durable state first, then migrate starts and open runs deliberately.
 previous:
   label: Testing
@@ -17,22 +17,27 @@ next:
   <div class="choice"><h3>Cloud or Server</h3><p><code>durable-workflow/sdk</code> connects the same Laravel application structure to a separately operated namespace. The Laravel bridge keeps container resolution, configuration, Artisan, logging, events, and testing.</p></div>
 </div>
 
-The service-mode bridge supports Laravel 10.50.4, 11.56.1, 12.69.0, and
-13.30.0, and later releases of each major, on the PHP versions supported by the
-SDK (`^10.50.4|^11.56.1|^12.69.0|^13.30.0`). These are the patched minimum
-releases for GHSA-f9x3-7vq9-cph6, and the same Laravel range that embedded v2
-requires from Workflow 2.17.0, so changing state ownership does not force a
-Laravel upgrade. Earlier Laravel 10, 11, 12, and 13 releases, and every Laravel
-9 release, are outside the supported service-mode boundary. The SDK does not
-block installing them, so upgrade Laravel before adopting either v2 destination.
+The service-mode bridge supports Laravel 12.69.0 and 13.30.0, and later
+releases of each major (`^12.69.0|^13.30.0`). The Laravel bridge requires PHP
+8.2 or newer, with PHP 8.3 or newer for Laravel 13. These are the same patched
+framework and PHP floors published by Workflow 2.21.0 for embedded v2. The
+bare HTTP SDK continues to support PHP 8.1.
 
-Laravel 10 and 11 are past their upstream end of life. Some published
-Laravel advisories affect every release of those majors and have no fixed
-10.x or 11.x release. The SDK keeps them only for bounded 3.8.x transition
-compatibility, matching Workflow 2.17.1, and removes them in the next SDK minor
-([#239](https://github.com/durable-workflow/sdk-php/issues/239)). Move
-applications to a maintained Laravel release (12 or 13) before or with
-adopting service mode.
+SDK 3.10 removes Laravel 10 and 11 from service-mode framework support. Those
+majors are past their upstream end of life and have published advisories with
+no fixed release. Existing SDK 3.9.x and Workflow 2.20.x applications keep their
+existing support contract while they upgrade PHP and Laravel. Upgrade the
+platform before adopting SDK 3.10 or Workflow 2.21. The SDK does not change an
+application's Laravel resolution through a global Composer conflict.
+
+Auto-discovery checks the installed framework version and running PHP before
+registering bridge configuration, clients or workers. Unsupported, pre-floor
+and unknown versions refuse with an upgrade diagnostic instead of activating
+the bridge on an unqualified platform.
+
+The supported cells are Laravel 12 on PHP 8.2, 8.3 and 8.4, and Laravel 13 on
+PHP 8.3 and 8.4. Stable v1 retains its own published support authority; removing
+a framework from the v2 destinations does not reinterpret or move v1 history.
 
 Do not install the two packages as interchangeable storage adapters. They have
 different authoritative histories, worker lifecycles, queue boundaries,
@@ -93,7 +98,7 @@ This path keeps state ownership in Laravel.
 1. Install the v2 channel in the existing application and run its migrations:
 
    ```bash
-   composer require 'durable-workflow/workflow:^2.0' --with-all-dependencies
+   composer require 'durable-workflow/workflow:^2.21' --with-all-dependencies
    php artisan migrate --force
    ```
 

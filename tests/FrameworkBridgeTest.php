@@ -277,7 +277,7 @@ final class FrameworkBridgeTest extends TestCase
             $manifest['extra']['laravel']['providers'],
         );
         self::assertSame(
-            '^10.50.4|^11.56.1|^12.69.0|^13.30.0',
+            '^12.69.0|^13.30.0',
             $manifest['extra']['durable-workflow']['frameworks']['laravel'],
         );
         self::assertSame('^6.4|^7.0|^8.0', $manifest['extra']['durable-workflow']['frameworks']['symfony']);
