@@ -59,6 +59,16 @@ final class ActivityGrantScenario
      */
     public static function runIsolated(): array
     {
+        return self::runWithRouter(self::run(...), __DIR__.'/activity-lease-http.php');
+    }
+
+    /**
+     * @template T
+     * @param callable(string, string): T $scenario
+     * @return T
+     */
+    public static function runWithRouter(callable $scenario, string $router): mixed
+    {
         if (!function_exists('proc_open') || !extension_loaded('curl')) {
             throw new RuntimeException('The activity grant fixture requires CLI proc_open and cURL.');
         }
@@ -87,7 +97,7 @@ final class ActivityGrantScenario
             }
             $address = stream_socket_get_name($socket, false);
             fclose($socket);
-            $server = proc_open([PHP_BINARY, '-S', $address, __DIR__.'/activity-lease-http.php'],
+            $server = proc_open([PHP_BINARY, '-S', $address, $router],
                 [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
                 $pipes, env_vars: ['LEASE_TEST_STATE' => $directory.'/state.json']);
             if (!is_resource($server)) {
@@ -99,7 +109,7 @@ final class ActivityGrantScenario
                 if (is_resource($ready)) {
                     fclose($ready);
 
-                    return self::run('http://'.$address, $directory.'/state.json');
+                    return $scenario('http://'.$address, $directory.'/state.json');
                 }
                 usleep(10000);
             } while (microtime(true) < $until);

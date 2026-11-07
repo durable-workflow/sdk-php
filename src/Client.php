@@ -79,6 +79,7 @@ final class Client implements WorkflowClientInterface
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_TYPE = 'WorkflowTaskWaitingForHistory';
     private const ACTIVITY_TASK_PATH = '/worker/activity-tasks/';
     private const CLUSTER_INFO_PATH = '/cluster/info';
+    private const TASK_COMPLETION_SUFFIX = '/complete';
 
     private readonly string $baseUri;
     private readonly ?Authentication $authentication;
@@ -218,6 +219,35 @@ final class Client implements WorkflowClientInterface
         $copy->activityLeaseBootstrap = $resolved;
 
         return $copy;
+    }
+
+    /** @internal Completion pipelining never replaces custom HTTP, tracing or metrics policy. */
+    public function supportsCompletionPipelining(): bool
+    {
+        return $this->transport instanceof Psr18Transport && $this->transport->supportsCompletionSuspension()
+            && !$this->metricsObserver->enabled() && $this->executionTelemetry === null;
+    }
+
+    /**
+     * @internal
+     * @param \Fiber<mixed, mixed, mixed, mixed> $owner
+     */
+    public function armWorkflowCompletion(\Fiber $owner, string $taskId): bool
+    {
+        return $this->supportsCompletionPipelining() && $this->transport instanceof Psr18Transport
+            && $this->transport->armCompletionSuspension($owner,
+                $this->baseUri.'/api/worker/workflow-tasks/'.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX);
+    }
+
+    /**
+     * @internal
+     * @param \Fiber<mixed, mixed, mixed, mixed> $owner
+     */
+    public function disarmWorkflowCompletion(\Fiber $owner): void
+    {
+        if ($this->transport instanceof Psr18Transport) {
+            $this->transport->disarmCompletionSuspension($owner);
+        }
     }
 
     /** @internal Credentials travel only over the private helper input pipe.
@@ -2289,6 +2319,8 @@ final class Client implements WorkflowClientInterface
      *     ttl_seconds: int,
      *     metrics: array{hit: int, miss: int, eviction: int, forced_cold_replay: int}
      * }|null $stickyCache
+     * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int}|null $activityPoll
+     * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int, history_page_size: int, task_kinds: list<string>}|null $workflowPoll
      * @return array<string, mixed>
      */
     public function completeWorkflowTask(
@@ -2299,6 +2331,8 @@ final class Client implements WorkflowClientInterface
         array $messageStreamCursors = [],
         array $messageStreamWaits = [],
         ?array $stickyCache = null,
+        ?array $activityPoll = null,
+        ?array $workflowPoll = null,
     ): array {
         if (($messageStreamCursors !== [] || $messageStreamWaits !== []) && !Version::supportsMessageStreams()) {
             throw new InvalidArgumentException('Message stream completion metadata requires worker protocol 1.15 or newer.');
@@ -2323,13 +2357,15 @@ final class Client implements WorkflowClientInterface
             unset($command);
         }
 
-        return $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/complete', array_filter([
+        return $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX, array_filter([
             'lease_owner' => $leaseOwner,
             'workflow_task_attempt' => $attempt,
             'commands' => $commands,
             'message_stream_cursors' => $messageStreamCursors,
             'message_stream_waits' => $messageStreamWaits,
             'sticky_cache' => $stickyCache,
+            'activity_poll' => $activityPoll,
+            'workflow_poll' => $workflowPoll,
         ], static fn (mixed $value): bool => $value !== [] && $value !== null));
     }
 
@@ -2391,18 +2427,27 @@ final class Client implements WorkflowClientInterface
         return isset($response['task']) && is_array($response['task']) ? $response['task'] : null;
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int, history_page_size: int, task_kinds: list<string>}|null $workflowPoll
+     * @return array<string, mixed>
+     */
     public function completeActivityTask(
         string $taskId,
         string $activityAttemptId,
         string $leaseOwner,
         mixed $result,
+        ?array $workflowPoll = null,
     ): array {
-        return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/complete', [
+        $body = [
             'activity_attempt_id' => $activityAttemptId,
             'lease_owner' => $leaseOwner,
             'result' => $this->codec->envelope($result),
-        ]);
+        ];
+        if ($workflowPoll !== null) {
+            $body['workflow_poll'] = $workflowPoll;
+        }
+
+        return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX, $body);
     }
 
     /**
@@ -2572,7 +2617,7 @@ final class Client implements WorkflowClientInterface
     public function completeQueryTask(string $taskId, string $leaseOwner, int $attempt, mixed $result, ?RequestBudget $budget = null): array
     {
         $client = $budget === null ? $this : $this->withBoundedWorkerRequests();
-        return $client->worker('POST', '/worker/query-tasks/'.$this->segment($taskId).'/complete', [
+        return $client->worker('POST', '/worker/query-tasks/'.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX, [
             'lease_owner' => $leaseOwner,
             'query_task_attempt' => $attempt,
             'result' => $result,
@@ -2959,25 +3004,8 @@ final class Client implements WorkflowClientInterface
             }
 
             $budget?->remainingSeconds();
-            // Control I/O and supervised payload I/O have separate bounds.
-            // Explicit caller/cleanup budgets still cover their entire request.
-            $responseBudget = $budget !== null && $poll && $callerBudget === null ? new RequestBudget(5) : $budget;
-            $canStreamBounded = $worker && ($this->boundedWorkerRequests || $path === '/worker/query-tasks/poll')
-                && $this->transport instanceof \DurableWorkflow\Transport\BoundedProgressPayloadTransport
-                && $this->transport instanceof BoundedTransport && $this->transport->supportsBoundedRequests();
-            $observerBudget = $canStreamBounded && $callerBudget === null ? null : $responseBudget;
-            $progress = $worker && $this->workerPayloadObserver !== null && is_array($response) && !array_is_list($response)
-                ? ($this->workerPayloadObserver)($path, $body, $response, $observerBudget) : null;
-            $streamBounded = $canStreamBounded && $progress !== null;
-            if ($streamBounded && $callerBudget === null) {
-                $responseBudget = null;
-            }
-            $result = is_array($response) && !array_is_list($response)
-                ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes, $responseBudget, $progress, $streamBounded))->response($response, $path, $worker, $payloadPaths?->__invoke($response))
-                : [];
-            $responseBudget?->remainingSeconds();
-
-            return $result;
+            return $this->resolveResponsePayloads($response, $path, $worker, $body, $headers,
+                $budget, $callerBudget, $poll, $payloadPaths);
         } catch (TransportException $exception) {
             if ($exception instanceof FailureReportRefused) {
                 throw $exception;
@@ -2998,6 +3026,82 @@ final class Client implements WorkflowClientInterface
 
             throw new ServerException($message, $status, $reason, $details, $exception);
         }
+    }
+
+    /**
+     * @internal Reuse normal poll hydration and supervision without inventing an HTTP request.
+     * @param array<string, mixed> $answer
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    public function carriedActivityPollResponse(array $answer, array $request): array
+    {
+        return $this->carriedPollResponse($answer, $request, '/worker/activity-tasks/poll');
+    }
+
+    /**
+     * @internal Use normal workflow hydration, history and grant supervision without a poll request.
+     * @param array<string, mixed> $answer
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    public function carriedWorkflowPollResponse(array $answer, array $request): array
+    {
+        return $this->carriedPollResponse($answer, $request, '/worker/workflow-tasks/poll');
+    }
+
+    /**
+     * @param array<string, mixed> $answer
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    private function carriedPollResponse(array $answer, array $request, string $path): array
+    {
+        try {
+            return $this->resolveResponsePayloads($answer, $path, true, $request,
+                $this->requestHeaders(true), $this->boundedWorkerRequests ? new RequestBudget(5) : null,
+                null, true, null);
+        } catch (TransportException $exception) {
+            if ($exception instanceof FailureReportRefused) {
+                throw $exception;
+            }
+            $details = $exception->response;
+            $reason = is_array($details) && isset($details['reason']) ? (string) $details['reason'] : null;
+
+            throw new ServerException($exception->getMessage(), $exception->status ?? 0, $reason, $details, $exception);
+        }
+    }
+
+    /**
+     * @param array<string, mixed>|list<mixed>|null $response
+     * @param array<string, mixed>|null $body
+     * @param array<string, string> $headers
+     * @param (\Closure(array<string, mixed>): list<list<int|string>>)|null $payloadPaths
+     * @return array<string, mixed>
+     */
+    private function resolveResponsePayloads(
+        ?array $response, string $path, bool $worker, ?array $body, array $headers,
+        ?RequestBudget $budget, ?RequestBudget $callerBudget, bool $poll, ?\Closure $payloadPaths,
+    ): array {
+        // Control I/O and supervised payload I/O have separate bounds.
+        // Explicit caller/cleanup budgets still cover their entire request.
+        $responseBudget = $budget !== null && $poll && $callerBudget === null ? new RequestBudget(5) : $budget;
+        $canStreamBounded = $worker && ($this->boundedWorkerRequests || $path === '/worker/query-tasks/poll')
+            && $this->transport instanceof \DurableWorkflow\Transport\BoundedProgressPayloadTransport
+            && $this->transport instanceof BoundedTransport && $this->transport->supportsBoundedRequests();
+        $observerBudget = $canStreamBounded && $callerBudget === null ? null : $responseBudget;
+        $progress = $worker && $this->workerPayloadObserver !== null && is_array($response) && !array_is_list($response)
+            ? ($this->workerPayloadObserver)($path, $body, $response, $observerBudget) : null;
+        $streamBounded = $canStreamBounded && $progress !== null;
+        if ($streamBounded && $callerBudget === null) {
+            $responseBudget = null;
+        }
+        $result = is_array($response) && !array_is_list($response)
+            ? (new RuntimePayloads($this->transport, $this->baseUri, $headers, $this->maxExternalPayloadBytes, $responseBudget, $progress, $streamBounded))->response($response, $path, $worker, $payloadPaths?->__invoke($response))
+            : [];
+        $responseBudget?->remainingSeconds();
+
+        return $result;
     }
 
     /** @param array<string, mixed> $response */

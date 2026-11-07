@@ -1,0 +1,45 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-opt-in-completion-pipeline-one-leased-task",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.completion-pipeline",
+    "input": []
+  },
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "record_local_activity",
+        "activity_type": "pipeline.local",
+        "outcome": "completed",
+        "result": 2,
+        "completion_order": [
+          "parent_sent",
+          "next_work",
+          "parent_answer",
+          "next_completion"
+        ]
+      },
+      {
+        "type": "complete_workflow",
+        "result": 2
+      }
+    ]
+  },
+  "command_sequence": [
+    {
+      "type": "record_local_activity",
+      "activity_type": "pipeline.local",
+      "outcome": "completed",
+      "result": 2
+    },
+    {
+      "type": "complete_workflow",
+      "result": 2
+    }
+  ]
+}

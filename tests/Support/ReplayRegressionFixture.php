@@ -86,6 +86,42 @@ final class ReplayRegressionFixture
             return self::executeFreshWorkflowPoll($identity, $input, $history, $fixture);
         }
 
+        if ($workflowType === 'golden.completion-pipeline') {
+            $observed = WorkerPipelineScenario::run(true);
+            if ($observed['error'] !== null) throw $observed['error'];
+            $commands = array_map(static fn (array $command): array => self::decodeEnvelopes($command, new AvroPayloadCodec()),
+                $observed['completions'][2]['commands']);
+            self::assertMatches($fixture['command_sequence'], $commands, $identity.'.command_sequence');
+            $commands[0]['completion_order'] = WorkerPipelineScenario::completionOrder($observed);
+            self::assertMatches($fixture['expected'], ['command_sequence' => $commands], $identity.'.expected');
+
+            return $commands;
+        }
+
+        if ($workflowType === 'golden.workflow-completion-poll') {
+            $observed = WorkflowCompletionPollScenario::run();
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
+            self::assertMatches($fixture['expected'], $observed['commands'][0] + $observed, $identity.'.expected');
+
+            return $observed['commands'];
+        }
+
+        if ($workflowType === 'golden.carried-workflow-poll') {
+            $observed = CarriedWorkflowScenario::run();
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
+            self::assertMatches($fixture['expected'], $observed['commands'][0] + $observed, $identity.'.expected');
+
+            return $observed['commands'];
+        }
+
+        if ($workflowType === 'golden.carried-activity-poll') {
+            $observed = CarriedActivityScenario::run();
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
+            self::assertMatches($fixture['expected'], $observed['commands'][0] + $observed, $identity.'.expected');
+
+            return $observed['commands'];
+        }
+
         if ($workflowType === 'golden.activity-poll-transit') {
             $observed = ActivityGrantScenario::runIsolated();
             self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
