@@ -9,13 +9,15 @@ use PHPUnit\Framework\TestCase;
 
 /**
  * The embedded-v2 to service-mode transition check CI runs against the
- * installed Workflow package. The fixture is Workflow 2.17.1's
+ * installed Workflow package. The positive fixture is published Workflow 2.21.0's
  * resources/laravel-embedded-upgrade-contract.json, byte for byte
- * (git blob 19d9cf84669a3f88b51016a078d3c731d90c0e1d).
+ * (SHA-256 1e65a6ffa6f2a1feba53ff0b5f7782a9ac8d7a3560f31c44c040767c592308c6).
  */
 final class LaravelTransitionAuthorityTest extends TestCase
 {
     private const WORKFLOW_2_17_1 = __DIR__.'/fixtures/laravel-transition/workflow-2.17.1';
+
+    private const WORKFLOW_2_21_0 = __DIR__.'/fixtures/laravel-transition/workflow-2.21.0';
 
     private string $directory;
 
@@ -39,6 +41,26 @@ final class LaravelTransitionAuthorityTest extends TestCase
 
         self::assertSame('', $errors);
         self::assertSame(0, $status);
+    }
+
+    public function testPublishedAuthorityFixtureRetainsItsExactPackageBytesAndStableV1Scope(): void
+    {
+        $path = self::WORKFLOW_2_21_0.'/resources/laravel-embedded-upgrade-contract.json';
+        self::assertSame('1e65a6ffa6f2a1feba53ff0b5f7782a9ac8d7a3560f31c44c040767c592308c6', hash_file('sha256', $path));
+        $published = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+        $previous = json_decode((string) file_get_contents(self::WORKFLOW_2_17_1.'/resources/laravel-embedded-upgrade-contract.json'),
+            true, 512, JSON_THROW_ON_ERROR);
+        self::assertSame($previous['supported_intersection']['authority']['stable_v1'],
+            $published['supported_intersection']['authority']['stable_v1']);
+    }
+
+    public function testPreviousEmbeddedSupportBoundaryDoesNotAuthorizeTheNewServiceFloor(): void
+    {
+        [$status, $errors] = $this->check(dirname(__DIR__).'/docs/laravel-adoption-contract.json', self::WORKFLOW_2_17_1);
+
+        self::assertSame(1, $status);
+        self::assertStringContainsString('Embedded and service modes publish different Laravel constraints.', $errors);
+        self::assertStringContainsString('Embedded and service modes publish different PHP constraints.', $errors);
     }
 
     /** @param callable(array<string, mixed>): array<string, mixed> $change */
@@ -74,27 +96,27 @@ final class LaravelTransitionAuthorityTest extends TestCase
             return $contract;
         }, 'Embedded and service modes publish different Laravel constraints.'];
         yield 'major-only qualification package' => [static function (array $contract): array {
-            $contract['framework']['qualification_matrix'][0]['package'] = 'laravel/framework:^10.0';
+            $contract['framework']['qualification_matrix'][0]['package'] = 'laravel/framework:^12.0';
 
             return $contract;
-        }, 'Laravel 10 on PHP 8.1 does not qualify the published floor.'];
+        }, 'Laravel 12 on PHP 8.2 does not qualify the published floor.'];
         yield 'cell exercises a later release than its floor' => [static function (array $contract): array {
-            $contract['framework']['qualification_matrix'][2]['exercised_package'] = 'laravel/framework:11.57.1';
+            $contract['framework']['qualification_matrix'][0]['exercised_package'] = 'laravel/framework:12.70.0';
 
             return $contract;
-        }, 'Laravel 11 on PHP 8.2 does not exercise exactly the published floor.'];
+        }, 'Laravel 12 on PHP 8.2 does not exercise exactly the published floor.'];
         yield 'cell exercises its caret range' => [static function (array $contract): array {
-            $contract['framework']['qualification_matrix'][3]['exercised_package'] = 'laravel/framework:^12.69.0';
+            $contract['framework']['qualification_matrix'][0]['exercised_package'] = 'laravel/framework:^12.69.0';
 
             return $contract;
         }, 'Laravel 12 on PHP 8.2 does not exercise exactly the published floor.'];
         yield 'pre-fix floor' => [static function (array $contract): array {
-            $contract['framework']['constraint'] = '^10.50.3|^11.56.1|^12.69.0|^13.30.0';
+            $contract['framework']['constraint'] = '^12.68.0|^13.30.0';
 
             return $contract;
         }, 'Embedded and service modes publish different Laravel constraints.'];
         yield 'PHP constraint drift' => [static function (array $contract): array {
-            $contract['framework']['php_constraint'] = '^8.2';
+            $contract['framework']['php_constraint'] = '^8.1';
 
             return $contract;
         }, 'Embedded and service modes publish different PHP constraints.'];
@@ -119,10 +141,10 @@ final class LaravelTransitionAuthorityTest extends TestCase
     }
 
     /** @return array{int, string} */
-    private function check(string $contract): array
+    private function check(string $contract, string $workflow = self::WORKFLOW_2_21_0): array
     {
         $process = proc_open([PHP_BINARY, dirname(__DIR__).'/scripts/ci/check-laravel-transition-authority.php',
-            $contract, self::WORKFLOW_2_17_1], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+            $contract, $workflow], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
         self::assertIsResource($process);
         stream_get_contents($pipes[1]);
         $errors = (string) stream_get_contents($pipes[2]);

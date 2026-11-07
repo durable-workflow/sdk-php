@@ -27,22 +27,14 @@ final class LaravelAdoptionContractTest extends TestCase
             $this->composer['extra']['durable-workflow']['frameworks']['laravel'],
             $this->contract['framework']['constraint'],
         );
-        self::assertSame(
-            $this->composer['require']['php'],
-            $this->contract['framework']['php_constraint'],
-        );
+        self::assertSame('^8.2', $this->contract['framework']['php_constraint']);
+        self::assertSame('^8.1', $this->composer['require']['php'],
+            'The optional Laravel bridge floor must not raise the bare HTTP SDK floor.');
         self::assertSame(
             [
-                ['laravel' => '10', 'php' => '8.1', 'package' => 'laravel/framework:^10.50.4', 'exercised_package' => 'laravel/framework:10.50.4', 'bootstrap' => 'existing_supported_lock'],
-                ['laravel' => '10', 'php' => '8.2', 'package' => 'laravel/framework:^10.50.4', 'exercised_package' => 'laravel/framework:10.50.4', 'bootstrap' => 'existing_supported_lock'],
-                ['laravel' => '11', 'php' => '8.2', 'package' => 'laravel/framework:^11.56.1', 'exercised_package' => 'laravel/framework:11.56.1', 'bootstrap' => 'existing_supported_lock'],
                 ['laravel' => '12', 'php' => '8.2', 'package' => 'laravel/framework:^12.69.0', 'exercised_package' => 'laravel/framework:12.69.0', 'bootstrap' => 'fresh_supported_install'],
-                ['laravel' => '10', 'php' => '8.3', 'package' => 'laravel/framework:^10.50.4', 'exercised_package' => 'laravel/framework:10.50.4', 'bootstrap' => 'existing_supported_lock'],
-                ['laravel' => '11', 'php' => '8.3', 'package' => 'laravel/framework:^11.56.1', 'exercised_package' => 'laravel/framework:11.56.1', 'bootstrap' => 'existing_supported_lock'],
                 ['laravel' => '12', 'php' => '8.3', 'package' => 'laravel/framework:^12.69.0', 'exercised_package' => 'laravel/framework:12.69.0', 'bootstrap' => 'fresh_supported_install'],
                 ['laravel' => '13', 'php' => '8.3', 'package' => 'laravel/framework:^13.30.0', 'exercised_package' => 'laravel/framework:13.30.0', 'bootstrap' => 'fresh_supported_install'],
-                ['laravel' => '10', 'php' => '8.4', 'package' => 'laravel/framework:^10.50.4', 'exercised_package' => 'laravel/framework:10.50.4', 'bootstrap' => 'existing_supported_lock'],
-                ['laravel' => '11', 'php' => '8.4', 'package' => 'laravel/framework:^11.56.1', 'exercised_package' => 'laravel/framework:11.56.1', 'bootstrap' => 'existing_supported_lock'],
                 ['laravel' => '12', 'php' => '8.4', 'package' => 'laravel/framework:^12.69.0', 'exercised_package' => 'laravel/framework:12.69.0', 'bootstrap' => 'fresh_supported_install'],
                 ['laravel' => '13', 'php' => '8.4', 'package' => 'laravel/framework:^13.30.0', 'exercised_package' => 'laravel/framework:13.30.0', 'bootstrap' => 'fresh_supported_install'],
             ],
@@ -58,11 +50,11 @@ final class LaravelAdoptionContractTest extends TestCase
 
     public function testServiceModePublishesThePatchedLaravelFloorsForGhsaF9x37vq9Cph6(): void
     {
-        // The minimum Laravel releases with the TokenGuard fix, as Workflow 2.17.1 records them.
-        $floors = '^10.50.4|^11.56.1|^12.69.0|^13.30.0';
+        // The maintained majors and patched floors published by Workflow 2.21.0.
+        $floors = '^12.69.0|^13.30.0';
         self::assertSame($floors, $this->contract['framework']['constraint']);
         self::assertSame($floors, $this->composer['extra']['durable-workflow']['frameworks']['laravel']);
-        foreach (['10.50.4', '11.56.1', '12.69.0', '13.30.0'] as $floor) {
+        foreach (['12.69.0', '13.30.0'] as $floor) {
             self::assertStringContainsString($floor, $this->composer['suggest']['laravel/framework']);
         }
         self::assertArrayNotHasKey('laravel/framework', $this->composer['conflict'] ?? [],
@@ -122,12 +114,12 @@ final class LaravelAdoptionContractTest extends TestCase
             'composer require "$FRAMEWORK_PACKAGE" \\',
         ), 'The Laravel consumer must install exactly $FRAMEWORK_EXERCISED_PACKAGE.'];
         yield 'exact minimum removed from a cell' => [$first(
-            "            exercised_package: 'laravel/framework:11.56.1'\n",
+            "            exercised_package: 'laravel/framework:12.69.0'\n",
             '',
         ), 'The CI Laravel cells differ from the adoption contract.'];
-        yield 'cell exercises a later 11.x release' => [$first(
-            "exercised_package: 'laravel/framework:11.56.1'",
-            "exercised_package: 'laravel/framework:11.57.1'",
+        yield 'cell exercises a later 12.x release' => [$first(
+            "exercised_package: 'laravel/framework:12.69.0'",
+            "exercised_package: 'laravel/framework:12.70.0'",
         ), 'The CI Laravel cells differ from the adoption contract.'];
         yield 'cell exercises a caret range' => [$first(
             "exercised_package: 'laravel/framework:12.69.0'",

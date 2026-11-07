@@ -8,7 +8,12 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Upgrade notes
 
-- PHP `^8.1`, Laravel 10–13 and Symfony 6.4/7/8 support remain unchanged.
+- The Laravel service-mode bridge now follows published Workflow 2.21.0:
+  PHP `^8.2`, patched Laravel `^12.69.0|^13.30.0`, and the five supported
+  framework/PHP qualification cells. SDK 3.10 removes Laravel 10 and 11 support;
+  existing SDK 3.9.x and Workflow 2.20.x applications retain their contracts
+  while upgrading their platform. Stable-v1 authority is unchanged (#239).
+- The bare HTTP SDK retains PHP `^8.1`; Symfony 6.4/7/8 support is unchanged.
   Upgrade the complete task queue before recording v2 condition fingerprints;
   legacy fingerprints still require their exact source-line match. Read the
   [upgrade guide](docs/portal/operate/upgrading.md) before deployment, including
