@@ -67,7 +67,9 @@ file_put_contents($root.'/composer.json', json_encode(['require' => ['durable-wo
     'config' => ['allow-plugins' => false]], JSON_THROW_ON_ERROR));
 $subject = ['schema' => CompletionPollSubject::SCHEMA, 'runner_reference' => str_repeat('b', 40),
     'sdk_version' => '9.0.0', 'sdk_reference' => $reference,
-    'lock_sha256' => hash_file('sha256', $root.'/composer.lock'), 'server_version' => '9.0.0',
+    'lock_sha256' => hash_file('sha256', $root.'/composer.lock'), 'runner_manifest_sha256' => str_repeat('e', 64),
+    'vendor_inventory_sha256' => str_repeat('e', 64), 'sdk_inventory_sha256' => str_repeat('e', 64),
+    'admission_expires_at' => time() + 600, 'server_version' => '9.0.0',
     'server_image' => 'ghcr.io/durable-workflow/server@sha256:'.str_repeat('c', 64),
     'endpoint' => 'http://127.0.0.1:12345', 'namespace' => 'fixture', 'scenario' => 'carriers', 'deadline_seconds' => 30];
 $bytes = json_encode($subject, JSON_THROW_ON_ERROR);
