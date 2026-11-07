@@ -32,7 +32,7 @@ final class LaravelPlatform
                 ? (int) $matches[1] : null;
         $platform = $major === null ? null : (self::PLATFORMS[$major] ?? null);
 
-        if ($platform !== null && $laravelVersion !== null
+        if ($platform !== null
             && $phpVersionId >= $platform['php'] && $phpVersionId < 90000
             && version_compare($laravelVersion, $platform['floor'], '>=')) {
             return;
