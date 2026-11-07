@@ -1,0 +1,13 @@
+{
+  "schema": "durable-workflow.php-completion-polls-subject/v1",
+  "runner_reference": null,
+  "sdk_version": null,
+  "sdk_reference": null,
+  "lock_sha256": null,
+  "server_version": null,
+  "server_image": null,
+  "endpoint": null,
+  "namespace": null,
+  "scenario": null,
+  "deadline_seconds": 60
+}
