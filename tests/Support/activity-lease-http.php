@@ -114,4 +114,8 @@ flock($handle, LOCK_UN);
 fclose($handle);
 http_response_code($status);
 header('Content-Type: application/json');
+if (($response['poll_status'] ?? null) === 'leased'
+    && ($state['delivery_count'] ?? 0) === ($state['delay_poll_delivery'] ?? null)) {
+    usleep($state['poll_reply_delay_micros'] ?? 0);
+}
 echo json_encode($response, JSON_THROW_ON_ERROR);
