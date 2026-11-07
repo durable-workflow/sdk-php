@@ -48,8 +48,14 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     env:
       DOCS_SOURCE_DIRECTORY: ${{ github.workspace }}
+      GITHUB_TOKEN: ''
+      GH_TOKEN: ''
+      GITHUB_ENTERPRISE_TOKEN: ''
+      GH_ENTERPRISE_TOKEN: ''
+      COMPOSER_AUTH: ''
     outputs:
       stable: ${{ steps.release-channel.outputs.stable }}
     steps:
@@ -79,17 +85,63 @@ jobs:
         with:
           ref: ${{ inputs.stable_source || (inputs.stable_tag != '' && format('refs/tags/{0}', inputs.stable_tag)) || github.sha }}
           fetch-depth: 0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+          persist-credentials: false
+      - name: Check out the accepted PHP terminal control source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
-          python-version: '3.12'
+          repository: durable-workflow/.github
+          ref: ed15002a156725523b23eefb935a243cb1f84952
+          path: .php-setup-control
+          persist-credentials: false
+      - name: Select the trusted system Python
+        env:
+          LD_PRELOAD: ''
+          LD_LIBRARY_PATH: ''
+          LD_AUDIT: ''
+        run: |
+          /usr/bin/python3 -I -S -B - <<'PYTHON'
+          import os,pathlib,sys
+          if sys.version_info[:2] != (3,12) or os.environ.get('pythonLocation'):
+              raise ValueError('Expected the Ubuntu 24 system Python without toolcache selection')
+          selected=pathlib.Path('/usr/bin/python').resolve(strict=True)
+          if (selected != pathlib.Path(sys.executable).resolve(strict=True)
+                  or selected != pathlib.Path('/usr/bin/python3.12')):
+              raise ValueError('System Python aliases do not share the exact reviewed origin')
+          with open(os.environ['GITHUB_PATH'],'a') as output:
+              output.write('/usr/bin\n')
+          PYTHON
+      - name: Create caller-owned Composer home, cache and scratch
+        id: composer_state
+        run: |
+          /usr/bin/python3 -I -S -B - <<'PY'
+          import json,os,pathlib,shutil,stat,tempfile
+          root=pathlib.Path(tempfile.mkdtemp(prefix='php-docs-composer-',dir=os.environ['RUNNER_TEMP']))
+          try:
+              for name in ('home','cache','tmp'):
+                  (root/name).mkdir(mode=0o700)
+              metadata=root.lstat()
+              identity=[metadata.st_dev,metadata.st_ino,metadata.st_uid,stat.S_IMODE(metadata.st_mode)]
+              with open(os.environ['GITHUB_ENV'],'a') as output:
+                  for name,child in (('COMPOSER_HOME','home'),('COMPOSER_CACHE_DIR','cache'),('TMPDIR','tmp')):
+                      output.write(f'{name}={root/child}\n')
+              with open(os.environ['GITHUB_OUTPUT'],'a') as output:
+                  output.write(f'directory={root}\nidentity={json.dumps(identity)}\n')
+          except BaseException:
+              shutil.rmtree(root)
+              raise
+          PY
       - name: Select authenticated dependency trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        id: pip_trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           clients: pip,python,composer,curl,git,npm
-      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+      - name: Set up the exact accepted initial PHP profile
+        id: php_setup
+        uses: durable-workflow/.github/.github/actions/setup-php-linux@ed15002a156725523b23eefb935a243cb1f84952  # bound-linux-php
         with:
           php-version: '8.3'
-          tools: composer:2.10.3
+          ini-file: production
+          tools: composer:2.10.3,phpunit:11.5.57
           coverage: none
       - name: Select the temporary tooling directory
         run: echo "DOCS_TOOLING_DIRECTORY=$RUNNER_TEMP/docs-tooling" >> "$GITHUB_ENV"
@@ -119,7 +171,9 @@ jobs:
         with:
           node-version: '24'
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
+        with:
+          working-directory: ${{ env.DOCS_TOOLING_DIRECTORY }}
       - run: composer --working-dir="$DOCS_TOOLING_DIRECTORY" install --no-interaction --prefer-dist
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" ci --ignore-scripts
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" audit --audit-level=moderate
@@ -138,7 +192,9 @@ jobs:
             --root-dir .
             README.md docs/*.md
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
+        with:
+          working-directory: ${{ env.DOCS_TOOLING_DIRECTORY }}
       - name: Build authored portal and generated API reference
         env:
           DOCS_REQUIRE_ANALYTICS_TOKEN: 'true'
@@ -158,7 +214,7 @@ jobs:
             --offline
             --root-dir build/site
             build/site
-      - run: '"$DOCS_TOOLING_DIRECTORY/node_modules/.bin/playwright" install --with-deps chromium'
+      - run: '"$DOCS_TOOLING_DIRECTORY/node_modules/.bin/playwright" install chromium'
       - name: Test missing-resource browser evidence
         run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-browser-failures
       - name: Check portal and API layouts in Chromium
@@ -178,6 +234,79 @@ jobs:
         run: |
           test "$(git -C "$DOCS_TOOLING_DIRECTORY" rev-parse HEAD)" = "$GITHUB_WORKFLOW_SHA"
           python "$DOCS_TOOLING_DIRECTORY/scripts/bind-docs-artifact.py" "$EXPECTED_SOURCE_REVISION"
+      - name: Revalidate PHP after product commands and clean owned state
+        if: ${{ always() && steps.composer_state.outcome != 'skipped' }}
+        env:
+          SETUP_RECEIPT: ${{ steps.php_setup.outputs.bootstrap-receipt }}
+          PIP_RECEIPT: ${{ steps.pip_trust.outputs.pip-state }}
+          PIP_CREATED: ${{ steps.pip_trust.outputs.pip-created }}
+          PIP_ROOT_IDENTITY: ${{ steps.pip_trust.outputs.pip-root-identity }}
+          PIP_RECEIPT_IDENTITY: ${{ steps.pip_trust.outputs.pip-receipt-identity }}
+          COMPOSER_DIRECTORY: ${{ steps.composer_state.outputs.directory }}
+          COMPOSER_DIRECTORY_IDENTITY: ${{ steps.composer_state.outputs.identity }}
+          PRODUCT_STATUS: ${{ job.status }}
+          LD_PRELOAD: ''
+          LD_LIBRARY_PATH: ''
+          LD_AUDIT: ''
+        run: |
+          /usr/bin/python3 -I -S -B - <<'PY'
+          import json,os,pathlib,shutil,stat,subprocess,sys,tempfile
+          runner_temp=pathlib.Path(os.environ['RUNNER_TEMP'])
+          composer_text=os.environ.get('COMPOSER_DIRECTORY','')
+          composer_root=pathlib.Path(composer_text) if composer_text else None
+          composer_identity=os.environ.get('COMPOSER_DIRECTORY_IDENTITY','')
+          try:
+              control_source='ed15002a156725523b23eefb935a243cb1f84952'
+              control_directory=pathlib.Path.cwd()/'.php-setup-control'
+              def control_git(*arguments):
+                  return subprocess.check_output(['/usr/bin/git','-C',str(control_directory),*arguments],text=True).strip()
+              if control_git('rev-parse','HEAD')!=control_source:
+                  raise ValueError('PHP terminal control source differs from its immutable binding')
+              subprocess.run(['/usr/bin/git','-C',str(control_directory),'diff','--exit-code',control_source,'--'],check=True,stdout=subprocess.DEVNULL)
+              if control_git('ls-files','--others'):
+                  raise ValueError('PHP terminal control source contains untracked files')
+              sys.path.insert(0,str(control_directory))
+              from scripts import php_linux_bootstrap as bootstrap
+              from scripts import php_linux_qualification as qualification
+              pip_state={key:os.environ.get(name,'') for key,name in (
+                  ('receipt','PIP_RECEIPT'),('created','PIP_CREATED'),
+                  ('root_identity','PIP_ROOT_IDENTITY'),('receipt_identity','PIP_RECEIPT_IDENTITY'))}
+              receipt_text=os.environ.get('SETUP_RECEIPT','')
+              receipt=pathlib.Path(receipt_text) if receipt_text else None
+              product_status=os.environ['PRODUCT_STATUS']
+              context={key:os.environ[key] for key in ('GITHUB_REPOSITORY','GITHUB_WORKFLOW_SHA',
+                  'GITHUB_SHA','GITHUB_REF','GITHUB_EVENT_NAME','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT')}
+              with tempfile.TemporaryDirectory(prefix='php-docs-terminal-',dir=runner_temp) as directory:
+                  private=pathlib.Path(directory)
+                  (private/'home').mkdir(mode=0o700)
+                  (private/'tmp').mkdir(mode=0o700)
+                  closed=bootstrap.clean_environment(dict(os.environ),str(private/'home'))
+                  os.environ.clear()
+                  os.environ.update(closed)
+                  def publish(evidence):
+                      evidence.update(source=control_source,php_helper_source=control_source,
+                          pip_predecessor_source='242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5',control=context,
+                          caller_product_status=product_status)
+                      text=json.dumps(evidence,sort_keys=True)
+                      if len(text.encode())>65536:
+                          raise ValueError('PHP terminal evidence exceeds its fixed bound')
+                      print(text)
+                      with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as output:
+                          output.write('PHP docs post-product terminal qualification\n\n'+text+'\n')
+                  qualification.qualify(receipt,runner_temp,closed,publish,pip_state=pip_state)
+          finally:
+              if composer_root is not None:
+                  metadata=composer_root.lstat()
+                  actual=[metadata.st_dev,metadata.st_ino,metadata.st_uid,stat.S_IMODE(metadata.st_mode)]
+                  if (composer_root.parent!=runner_temp or not composer_root.name.startswith('php-docs-composer-')
+                      or not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid!=os.getuid()
+                      or actual!=json.loads(composer_identity)):
+                      raise ValueError('Exact caller-owned Composer state changed; cleanup refused')
+                  shutil.rmtree(composer_root)
+                  if os.path.lexists(composer_root):
+                      raise ValueError('Caller-owned Composer state remains after cleanup')
+                  print(json.dumps({'composer_state_cleanup':'pass'}))
+          PY
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5
         if: github.server_url == 'https://github.com'
         with:
