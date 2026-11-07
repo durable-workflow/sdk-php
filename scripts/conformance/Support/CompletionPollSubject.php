@@ -8,13 +8,16 @@ use Composer\InstalledVersions;
 use ReflectionClass;
 use RuntimeException;
 
+require_once __DIR__.'/CompletionPollLoadProfile.php';
+
 /** Caller-selected identity, not a package installer or runtime admission authority. */
 final class CompletionPollSubject
 {
     public const SCHEMA = 'durable-workflow.php-completion-polls-subject/v1';
     public const SCENARIOS = ['carriers', 'pipeline', 'pipeline-loss', 'fallback', 'capacity',
         'carrier-loss-activity', 'carrier-loss-workflow', 'carrier-loss-workflow-completion', 'completion-transit',
-        'carrier-expiry', 'carrier-refence', 'pipeline-buffer-age', 'prefetch-loss', 'default-off', 'explicit-off', 'packet-defaults', 'opposite-slots'];
+        'carrier-expiry', 'carrier-refence', 'pipeline-buffer-age', 'prefetch-loss', 'default-off', 'explicit-off', 'packet-defaults', 'opposite-slots', 'workflow-refence',
+        ...CompletionPollLoadProfile::SCENARIOS];
 
     /** @param array<string, mixed> $data */
     private function __construct(public readonly array $data, public readonly string $vendor, public readonly string $sha256)
@@ -49,6 +52,7 @@ final class CompletionPollSubject
         $data = json_decode($bytes, true, flags: JSON_THROW_ON_ERROR);
         $fields = ['schema', 'runner_reference', 'sdk_version', 'sdk_reference', 'lock_sha256',
             'server_version', 'server_image', 'endpoint', 'namespace', 'scenario', 'deadline_seconds'];
+        if (is_array($data) && in_array($data['scenario'] ?? null, CompletionPollLoadProfile::SCENARIOS, true)) $fields[] = 'load';
         if (!is_array($data) || array_is_list($data) || ($data['schema'] ?? null) !== self::SCHEMA
             || array_diff(array_keys($data), $fields) !== [] || array_diff($fields, array_keys($data)) !== []) {
             throw new RuntimeException('completion_subject_shape');
@@ -71,6 +75,7 @@ final class CompletionPollSubject
             throw new RuntimeException('completion_subject_runtime');
         }
         self::loopback($data['endpoint']);
+        CompletionPollLoadProfile::validate($data);
         $vendor = realpath(dirname($autoload));
         if ($vendor === false || basename($vendor) !== 'vendor' || realpath($autoload) !== $vendor.'/autoload.php') {
             throw new RuntimeException('completion_subject_autoload');

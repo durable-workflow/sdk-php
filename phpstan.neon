@@ -12,6 +12,11 @@ parameters:
         - scripts/conformance/Support/CompletionPollMatrixEvidence.php
         - scripts/conformance/Support/CompletionPollPacketDefaults.php
         - scripts/conformance/Support/CompletionPollOppositeSlots.php
+        - scripts/conformance/Support/CompletionPollLoadProfile.php
+        - scripts/conformance/Support/CompletionPollLoadEvidence.php
+        - scripts/conformance/Support/CompletionPollLoad.php
+        - scripts/conformance/Support/CompletionPollWorkflowRefence.php
+        - scripts/conformance/compare-completion-poll-load.php
         - scripts/conformance/Support/completion-poll-relay.php
     excludePaths:
         analyse:

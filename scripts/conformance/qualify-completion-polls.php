@@ -8,6 +8,8 @@ use DurableWorkflow\Qualification\CompletionPollEvidence;
 use DurableWorkflow\Qualification\CompletionPollFailure;
 use DurableWorkflow\Qualification\CompletionPollPacketDefaults;
 use DurableWorkflow\Qualification\CompletionPollOppositeSlots;
+use DurableWorkflow\Qualification\CompletionPollLoad;
+use DurableWorkflow\Qualification\CompletionPollLoadProfile;
 use DurableWorkflow\Qualification\CompletionPollSubject;
 use DurableWorkflow\Qualification\CompletionPollTrace;
 use DurableWorkflow\Tests\Support\CompletionPipelineScenario;
@@ -245,8 +247,9 @@ function completionScenario(CompletionPollSubject $subject, string $clientToken,
             }
             if ($waited === -1) {
                 $failure = new RuntimeException('completion_worker_reap_failed', previous: $failure);
-            } elseif (!pcntl_wifexited($status) || pcntl_wexitstatus($status) !== 0) {
-                if (!$expectedStop) $failure ??= new RuntimeException('completion_worker_failed');
+            } elseif (!pcntl_wifexited($status) || (pcntl_wexitstatus($status) !== 0
+                && !($expectedStop && pcntl_wexitstatus($status) === 1))) {
+                $failure ??= new RuntimeException('completion_worker_failed');
             }
             if (posix_kill(-$pid, 0)) {
                 posix_kill(-$pid, SIGKILL);
@@ -254,7 +257,7 @@ function completionScenario(CompletionPollSubject $subject, string $clientToken,
             }
             if ($failure !== null || $expectedStop) {
                 foreach ($handles as $handle) {
-                    if (microtime(true) >= $cleanupDeadline - 2) {
+                    if (microtime(true) >= $cleanupDeadline - 5) {
                         $trace->record(['kind' => 'cleanup_error']);
                         $failure = new RuntimeException('completion_workflow_cleanup_deadline', previous: $failure);
                         break;
@@ -263,6 +266,10 @@ function completionScenario(CompletionPollSubject $subject, string $clientToken,
                         $description = $cleanup->describeWorkflow($handle->workflowId, $handle->selectedRunId);
                         if (!in_array($description->status, ['completed', 'failed', 'cancelled', 'terminated', 'timed_out'], true)) {
                             $cleanup->terminateWorkflow($handle->workflowId, 'Completion qualification cleanup', $handle->selectedRunId);
+                            if (!in_array($cleanup->describeWorkflow($handle->workflowId, $handle->selectedRunId)->status,
+                                ['completed', 'failed', 'cancelled', 'terminated', 'timed_out'], true)) {
+                                throw new RuntimeException('completion_workflow_cleanup_unconfirmed');
+                            }
                         }
                     } catch (Throwable $cleanupError) {
                         if ($cleanupError instanceof ServerException && $cleanupError->status === 404 && $handle->selectedRunId === null) continue;
@@ -283,7 +290,8 @@ function completionScenario(CompletionPollSubject $subject, string $clientToken,
             return ['scenario' => $data['scenario'], 'outcome' => CompletionPollFailure::diagnostic($failure)['outcome'],
                 'diagnostic' => CompletionPollFailure::diagnostic($failure), 'events' => $trace->state()['events']];
         }
-        if (($cleanup->listWorkers($queue)['workers'] ?? []) !== []) {
+        $workers = $cleanup->listWorkers($queue)['workers'] ?? null;
+        if (!is_array($workers) || $workers !== []) {
             throw new RuntimeException('completion_worker_registration_survived');
         }
         $events = $trace->state()['events'];
@@ -320,7 +328,10 @@ try {
     if (!is_string($clientToken) || $clientToken === '' || !is_string($workerToken) || $workerToken === '' || $clientToken === $workerToken) {
         throw new RuntimeException('completion_scoped_test_tokens');
     }
-    if ($subject->data['scenario'] === 'opposite-slots') {
+    if (in_array($subject->data['scenario'], CompletionPollLoadProfile::SCENARIOS, true)) {
+        require_once __DIR__.'/Support/CompletionPollLoad.php';
+        $result = CompletionPollLoad::run($subject, $clientToken, $workerToken);
+    } elseif (in_array($subject->data['scenario'], ['opposite-slots', 'workflow-refence'], true)) {
         require_once __DIR__.'/Support/CompletionPollOppositeSlots.php';
         $result = CompletionPollOppositeSlots::run($subject, $clientToken, $workerToken);
     } else {

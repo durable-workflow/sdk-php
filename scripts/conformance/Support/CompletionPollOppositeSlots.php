@@ -13,6 +13,7 @@ use RuntimeException;
 require_once __DIR__.'/CompletionPollSubject.php';
 require_once __DIR__.'/CompletionPollTrace.php';
 require_once __DIR__.'/CompletionPollFailure.php';
+require_once __DIR__.'/CompletionPollWorkflowRefence.php';
 require_once dirname(__DIR__, 3).'/tests/Support/CompletionPipelineScenario.php';
 
 /** Public installed Client calls only. No administrative clock, SQL or producer implementation. */
@@ -23,11 +24,12 @@ final class CompletionPollOppositeSlots
     {
         return CompletionPipelineScenario::run(static function (string $relay, string $file) use ($subject, $clientToken, $workerToken): array {
             $data = $subject->data;
-            $prefix = 'opposite-'.bin2hex(random_bytes(8));
+            $refence = $data['scenario'] === 'workflow-refence';
+            $prefix = ($refence ? 'refence-' : 'opposite-').bin2hex(random_bytes(8));
             $worker = $prefix.'-worker';
             $queue = $prefix.'-queue';
             file_put_contents($file, json_encode(['events' => [], 'endpoint' => $data['endpoint'],
-                'scenario' => 'opposite-slots', 'prefix' => $prefix], JSON_THROW_ON_ERROR));
+                'scenario' => $data['scenario'], 'prefix' => $prefix], JSON_THROW_ON_ERROR));
             $trace = new CompletionPollTrace($file);
             $control = new Client($relay, namespace: $data['namespace'], controlToken: $clientToken, requestTimeoutSeconds: 2);
             $actor = new Client($relay, namespace: $data['namespace'], workerToken: $workerToken, workerRequestTimeoutSeconds: 2);
@@ -41,7 +43,7 @@ final class CompletionPollOppositeSlots
             $assertions = [];
             $terminated = 0;
             $handles = [];
-            for ($i = 1; $i <= 3; ++$i) $handles[$i] = $control->workflowHandle($prefix.'-'.$i);
+            for ($i = 1; $i <= ($refence ? 1 : 3); ++$i) $handles[$i] = $control->workflowHandle($prefix.'-'.$i);
             try {
                 if ($control->clusterInfo()->version !== $data['server_version']) throw new RuntimeException('completion_runtime_version');
                 $registered = $actor->registerWorker($worker, $queue, ['qualification.wire'], ['qualification.remote'],
@@ -58,34 +60,41 @@ final class CompletionPollOppositeSlots
                     $handles[$index] = $control->startWorkflow('qualification.wire', $handle->workflowId, $queue,
                         input: [$index], executionTimeoutSeconds: 180, runTimeoutSeconds: 150);
                 }
-                $workflowOne = self::claim($actor->pollWorkflowTaskResponse($worker, $queue, 0, $prefix.'-wf1'), $worker, 'workflow');
-                $workflowTwo = self::claim($actor->pollWorkflowTaskResponse($worker, $queue, 0, $prefix.'-wf2'), $worker, 'workflow');
-                if ($workflowOne['task_id'] === $workflowTwo['task_id']) throw CompletionPollFailure::product('completion_opposite_distinct_leases');
-                $check();
-                $activityId = $prefix.'-carried-activity';
-                $answer = $actor->completeWorkflowTask($workflowOne['task_id'], $worker, $workflowOne['workflow_task_attempt'],
-                    self::schedule($actor), activityPoll: self::carrier($worker, $queue, $activityId));
-                self::omitted($answer, 'activity_poll');
-                // The other original workflow is still leased. A same-ID
-                // ordinary activity poll proves eligible work was present.
-                $activityOne = self::claim($actor->pollActivityTaskResponse($worker, $queue, 0, $activityId), $worker, 'activity');
-                $actor->completeWorkflowTask($workflowTwo['task_id'], $worker, $workflowTwo['workflow_task_attempt'], self::schedule($actor));
-                $activityTwo = self::claim($actor->pollActivityTaskResponse($worker, $queue, 0, $prefix.'-act2'), $worker, 'activity');
-                if ($activityOne['task_id'] === $activityTwo['task_id']) throw CompletionPollFailure::product('completion_opposite_distinct_leases');
-                $check();
-                $workflowId = $prefix.'-carried-workflow';
-                $workflowCarrier = self::carrier($worker, $queue, $workflowId) + ['history_page_size' => 100, 'task_kinds' => ['workflow']];
-                $answer = $actor->completeActivityTask($activityTwo['task_id'], $activityTwo['activity_attempt_id'], $worker, 2,
-                    workflowPoll: $workflowCarrier);
-                self::omitted($answer, 'workflow_poll');
-                // There is both a third original workflow and the activity's
-                // next workflow task ready. Release the held activity normally,
-                // then recover with the omitted carrier's exact original ID.
-                $actor->completeActivityTask($activityOne['task_id'], $activityOne['activity_attempt_id'], $worker, 1);
-                $recovered = self::claim($actor->pollWorkflowTaskResponse($worker, $queue, 0, $workflowId), $worker, 'workflow');
-                $assertions = ['scope' => 'installed Client public-API opposite-slot control; managed Worker capacity is a separate row',
-                    'live_workflow_declined_activity_carrier' => true, 'live_activity_declined_workflow_carrier' => true,
-                    'eligible_work_and_original_id_followup' => true, 'recovered_workflow_task' => CompletionPollTrace::task($recovered)];
+                if ($refence) {
+                    $assertions = CompletionPollWorkflowRefence::run($actor, $worker, $queue, $prefix, $check, $token);
+                    if ($handles[1]->resultOfSelectedRun(timeoutSeconds: 1, pollIntervalSeconds: 0.1) !== 1) {
+                        throw CompletionPollFailure::product('completion_refence_workflow_result');
+                    }
+                } else {
+                    $workflowOne = self::claim($actor->pollWorkflowTaskResponse($worker, $queue, 0, $prefix.'-wf1'), $worker, 'workflow');
+                    $workflowTwo = self::claim($actor->pollWorkflowTaskResponse($worker, $queue, 0, $prefix.'-wf2'), $worker, 'workflow');
+                    if ($workflowOne['task_id'] === $workflowTwo['task_id']) throw CompletionPollFailure::product('completion_opposite_distinct_leases');
+                    $check();
+                    $activityId = $prefix.'-carried-activity';
+                    $answer = $actor->completeWorkflowTask($workflowOne['task_id'], $worker, $workflowOne['workflow_task_attempt'],
+                        self::schedule($actor), activityPoll: self::carrier($worker, $queue, $activityId));
+                    self::omitted($answer, 'activity_poll');
+                    // The other original workflow is still leased. A same-ID
+                    // ordinary activity poll proves eligible work was present.
+                    $activityOne = self::claim($actor->pollActivityTaskResponse($worker, $queue, 0, $activityId), $worker, 'activity');
+                    $actor->completeWorkflowTask($workflowTwo['task_id'], $worker, $workflowTwo['workflow_task_attempt'], self::schedule($actor));
+                    $activityTwo = self::claim($actor->pollActivityTaskResponse($worker, $queue, 0, $prefix.'-act2'), $worker, 'activity');
+                    if ($activityOne['task_id'] === $activityTwo['task_id']) throw CompletionPollFailure::product('completion_opposite_distinct_leases');
+                    $check();
+                    $workflowId = $prefix.'-carried-workflow';
+                    $workflowCarrier = self::carrier($worker, $queue, $workflowId) + ['history_page_size' => 100, 'task_kinds' => ['workflow']];
+                    $answer = $actor->completeActivityTask($activityTwo['task_id'], $activityTwo['activity_attempt_id'], $worker, 2,
+                        workflowPoll: $workflowCarrier);
+                    self::omitted($answer, 'workflow_poll');
+                    // There is both a third original workflow and the activity's
+                    // next workflow task ready. Release the held activity normally,
+                    // then recover with the omitted carrier's exact original ID.
+                    $actor->completeActivityTask($activityOne['task_id'], $activityOne['activity_attempt_id'], $worker, 1);
+                    $recovered = self::claim($actor->pollWorkflowTaskResponse($worker, $queue, 0, $workflowId), $worker, 'workflow');
+                    $assertions = ['scope' => 'installed Client public-API opposite-slot control; managed Worker capacity is a separate row',
+                        'live_workflow_declined_activity_carrier' => true, 'live_activity_declined_workflow_carrier' => true,
+                        'eligible_work_and_original_id_followup' => true, 'recovered_workflow_task' => CompletionPollTrace::task($recovered)];
+                }
             } catch (Throwable $error) {
                 $failure = $error;
             } finally {
@@ -116,10 +125,14 @@ final class CompletionPollOppositeSlots
                     }
                 }
             }
-            if ($failure === null && ($cleanup->listWorkers($queue)['workers'] ?? []) !== []) {
-                $failure = new RuntimeException('completion_worker_registration_survived');
+            if ($failure === null) {
+                $workers = $cleanup->listWorkers($queue)['workers'] ?? null;
+                if (!is_array($workers) || $workers !== []) $failure = new RuntimeException('completion_worker_registration_survived');
+                if (array_filter($trace->state()['events'], static fn (array $event): bool => $event['kind'] === 'relay_error') !== []) {
+                    $failure = new RuntimeException('completion_relay_failed');
+                }
             }
-            return ['scenario' => 'opposite-slots', 'outcome' => $failure === null ? 'pass' : CompletionPollFailure::diagnostic($failure)['outcome'],
+            return ['scenario' => $data['scenario'], 'outcome' => $failure === null ? 'pass' : CompletionPollFailure::diagnostic($failure)['outcome'],
                 'diagnostic' => $failure === null ? null : CompletionPollFailure::diagnostic($failure),
                 'assertions' => $assertions, 'workflows_intentionally_terminated' => $terminated, 'events' => $trace->state()['events']];
         }, __DIR__.'/completion-poll-relay.php', true);
