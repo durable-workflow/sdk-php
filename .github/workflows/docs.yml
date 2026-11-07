@@ -48,6 +48,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     env:
       DOCS_SOURCE_DIRECTORY: ${{ github.workspace }}
       GITHUB_TOKEN: ''
@@ -243,6 +244,10 @@ jobs:
           PIP_RECEIPT_IDENTITY: ${{ steps.pip_trust.outputs.pip-receipt-identity }}
           COMPOSER_DIRECTORY: ${{ steps.composer_state.outputs.directory }}
           COMPOSER_DIRECTORY_IDENTITY: ${{ steps.composer_state.outputs.identity }}
+          PRODUCT_STATUS: ${{ job.status }}
+          LD_PRELOAD: ''
+          LD_LIBRARY_PATH: ''
+          LD_AUDIT: ''
         run: |
           /usr/bin/python3 -I -S -B - <<'PY'
           import json,os,pathlib,shutil,stat,subprocess,sys,tempfile
@@ -268,6 +273,7 @@ jobs:
                   ('root_identity','PIP_ROOT_IDENTITY'),('receipt_identity','PIP_RECEIPT_IDENTITY'))}
               receipt_text=os.environ.get('SETUP_RECEIPT','')
               receipt=pathlib.Path(receipt_text) if receipt_text else None
+              product_status=os.environ['PRODUCT_STATUS']
               context={key:os.environ[key] for key in ('GITHUB_REPOSITORY','GITHUB_WORKFLOW_SHA',
                   'GITHUB_SHA','GITHUB_REF','GITHUB_EVENT_NAME','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT')}
               with tempfile.TemporaryDirectory(prefix='php-docs-terminal-',dir=runner_temp) as directory:
@@ -279,7 +285,8 @@ jobs:
                   os.environ.update(closed)
                   def publish(evidence):
                       evidence.update(source=control_source,php_helper_source=control_source,
-                          pip_predecessor_source='242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5',control=context)
+                          pip_predecessor_source='242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5',control=context,
+                          caller_product_status=product_status)
                       text=json.dumps(evidence,sort_keys=True)
                       if len(text.encode())>65536:
                           raise ValueError('PHP terminal evidence exceeds its fixed bound')

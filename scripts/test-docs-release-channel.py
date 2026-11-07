@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 import subprocess
 import sys
 import tempfile
 import textwrap
+import types
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -288,6 +291,90 @@ class DocumentationSystemPythonSelectionTest(unittest.TestCase):
         output, error = self.selection(version=(3, 13, 0))
         self.assertEqual("", output)
         self.assertIn("Ubuntu 24 system Python", error)
+
+
+class DocumentationTerminalCollectorTest(unittest.TestCase):
+    """Caller orchestration only; shared setup/pip guards are not implemented here."""
+
+    @classmethod
+    def setUpClass(cls):
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/docs.yml").read_text()
+        step = workflow.split("      - name: Revalidate PHP after product commands and clean owned state\n", 1)[1]
+        cls.environment = step.split("        run: |\n", 1)[0]
+        cls.script = textwrap.dedent(step.split("<<'PY'\n", 1)[1].split("          PY\n", 1)[0])
+
+    def collect(self, product_status="success", refusal=False, oversized=False):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scratch = root / "runner"
+            scratch.mkdir()
+            composer = scratch / "php-docs-composer-fixture"
+            composer.mkdir(mode=0o700)
+            info = composer.lstat()
+            identity = [info.st_dev, info.st_ino, info.st_uid, info.st_mode & 0o7777]
+            environment = {"RUNNER_TEMP": str(scratch), "COMPOSER_DIRECTORY": str(composer),
+                "COMPOSER_DIRECTORY_IDENTITY": json.dumps(identity), "PRODUCT_STATUS": product_status,
+                "GITHUB_STEP_SUMMARY": str(root / "summary"), "SETUP_RECEIPT": str(root / "setup"),
+                "PIP_RECEIPT": str(root / "pip"), "PIP_CREATED": "true",
+                "PIP_ROOT_IDENTITY": "fixture-root", "PIP_RECEIPT_IDENTITY": "fixture-receipt"}
+            environment.update({key: "fixture" for key in ("GITHUB_REPOSITORY", "GITHUB_WORKFLOW_SHA", "GITHUB_SHA",
+                "GITHUB_REF", "GITHUB_EVENT_NAME", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")})
+            package = types.ModuleType("scripts")
+            package.php_linux_bootstrap = types.ModuleType("bootstrap")
+            package.php_linux_qualification = types.ModuleType("qualification")
+            # Model the closed environment dropping unrecognized caller metadata.
+            package.php_linux_bootstrap.clean_environment = lambda env, home: {
+                key: value for key, value in env.items() if key != "PRODUCT_STATUS"}
+            calls = []
+            def qualify(receipt, runner_temp, closed, publish, *, pip_state):
+                calls.append((receipt, runner_temp, pip_state))
+                self.assertNotIn("PRODUCT_STATUS", os.environ)
+                publish({"outcome": "refused" if refusal else "pass", "cleanup": "pass",
+                         "private_pip_cleanup": "pass", "detail": "x" * (65537 if oversized else 0)})
+                if refusal:
+                    raise ValueError("canonical fixture refusal")
+            package.php_linux_qualification.qualify = qualify
+            source = "ed15002a156725523b23eefb935a243cb1f84952"
+            def git_output(arguments, **options):
+                return source if arguments[-2:] == ["rev-parse", "HEAD"] else ""
+            output = io.StringIO()
+            error = None
+            with patch.dict(os.environ, environment, clear=True), patch.dict(sys.modules, {"scripts": package}), \
+                    patch.object(sys, "path", list(sys.path)), patch.object(subprocess, "check_output", side_effect=git_output), \
+                    patch.object(subprocess, "run"), redirect_stdout(output):
+                try:
+                    exec(compile(self.script, "actual-docs-terminal-step", "exec"), {})
+                except ValueError as failure:
+                    error = str(failure)
+            records = [json.loads(line) for line in output.getvalue().splitlines()]
+            self.assertFalse(composer.exists(), "Caller Composer cleanup must survive qualification/publication refusal.")
+            self.assertEqual(1, len(calls))
+            self.assertEqual("fixture-root", calls[0][2]["root_identity"])
+            return records, error
+
+    def test_product_status_is_retained_before_environment_clear(self):
+        for status in ("success", "failure"):
+            with self.subTest(status=status):
+                records, error = self.collect(status)
+                self.assertIsNone(error)
+                self.assertEqual(status, records[0]["caller_product_status"])
+                self.assertEqual("pass", records[-1]["composer_state_cleanup"])
+
+    def test_canonical_refusal_remains_a_refusal_and_cleans_composer(self):
+        records, error = self.collect("failure", refusal=True)
+        self.assertEqual("canonical fixture refusal", error)
+        self.assertEqual("refused", records[0]["outcome"])
+        self.assertEqual("failure", records[0]["caller_product_status"])
+        self.assertEqual("pass", records[-1]["composer_state_cleanup"])
+
+    def test_evidence_bound_refuses_without_losing_composer_cleanup(self):
+        records, error = self.collect(oversized=True)
+        self.assertIn("exceeds its fixed bound", error)
+        self.assertEqual([{"composer_state_cleanup": "pass"}], records)
+
+    def test_terminal_interpreter_loader_inputs_are_explicitly_blank(self):
+        for key in ("LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT"):
+            self.assertIn(f"          {key}: ''\n", self.environment)
 
 
 if __name__ == "__main__":
