@@ -398,7 +398,7 @@ jobs:
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Exercise optional tracing in framework workers
         if: >-
-          (matrix.framework == 'Laravel' && matrix.version == '10' && matrix.php == '8.1') ||
+          (matrix.framework == 'Laravel' && matrix.version == '12' && matrix.php == '8.2') ||
           (matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4') ||
           (matrix.framework == 'Symfony' && matrix.version == '6.4')
         env:

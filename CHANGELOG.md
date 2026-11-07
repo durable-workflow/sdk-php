@@ -13,6 +13,8 @@ project follows [Semantic Versioning](https://semver.org/).
   framework/PHP qualification cells. SDK 3.10 removes Laravel 10 and 11 support;
   existing SDK 3.9.x and Workflow 2.20.x applications retain their contracts
   while upgrading their platform. Stable-v1 authority is unchanged (#239).
+  Provider auto-discovery now refuses unsupported or unknown framework/PHP
+  versions before registering bridge configuration, clients or workers.
 - The bare HTTP SDK retains PHP `^8.1`; Symfony 6.4/7/8 support is unchanged.
   Upgrade the complete task queue before recording v2 condition fingerprints;
   legacy fingerprints still require their exact source-line match. Read the

@@ -30,6 +30,11 @@ existing support contract while they upgrade PHP and Laravel. Upgrade the
 platform before adopting SDK 3.10 or Workflow 2.21. The SDK does not change an
 application's Laravel resolution through a global Composer conflict.
 
+Auto-discovery checks the installed framework version and running PHP before
+registering bridge configuration, clients or workers. Unsupported, pre-floor
+and unknown versions refuse with an upgrade diagnostic instead of activating
+the bridge on an unqualified platform.
+
 The supported cells are Laravel 12 on PHP 8.2, 8.3 and 8.4, and Laravel 13 on
 PHP 8.3 and 8.4. Stable v1 retains its own published support authority; removing
 a framework from the v2 destinations does not reinterpret or move v1 history.

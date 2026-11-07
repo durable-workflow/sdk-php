@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Bridge\Laravel;
 
+use Composer\InstalledVersions;
 use DurableWorkflow\Bridge\ServiceConfiguration;
 use DurableWorkflow\Client;
 use DurableWorkflow\WorkflowClientInterface;
@@ -17,6 +18,10 @@ final class DurableWorkflowServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        $version = InstalledVersions::isInstalled('laravel/framework')
+            ? InstalledVersions::getVersion('laravel/framework') : null;
+        LaravelPlatform::assertSupported($version, PHP_VERSION_ID);
+
         $this->mergeConfigFrom($this->configPath(), 'durable-workflow');
 
         $this->app->singleton(ServiceConfiguration::class, function (): ServiceConfiguration {
