@@ -312,7 +312,10 @@ try {
     }
     CompletionPollSubject::freshProcess();
     $subject = CompletionPollSubject::read($argv[1], $argv[2], $argv[3]);
-    require $argv[1];
+    $subject->admit();
+    CompletionPipelineScenario::gate($subject->routerGate());
+    // The admitted held root supplies the autoloader; argv only had to name the same file.
+    require $subject->vendor.'/autoload.php';
     $identity = $subject->installed();
     if (!function_exists('pcntl_fork') || !function_exists('posix_kill') || !extension_loaded('curl')) {
         throw new RuntimeException('completion_toolchain');

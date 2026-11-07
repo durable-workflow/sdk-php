@@ -23,9 +23,54 @@ address alone does not establish operating permission.
 Invoke from a fresh process after the caller has bound the complete packet:
 
 ```sh
-php scripts/conformance/qualify-completion-polls.php \
+php /consumer/scripts/conformance/qualify-completion-polls.php \
   /consumer/vendor/autoload.php /packet/subject.json "$SUBJECT_SHA256"
 ```
+
+## Held consumer root
+
+The sealed runner files and the normally installed `vendor/` tree must share
+one read-only consumer root (`/consumer` above). The autoloader argument must
+be that root's `vendor/autoload.php`, so it is the same file that
+`tests/Support/completion-worker-http.php` loads by its fixed relative path.
+Before any consumer code loads, the runner admits the root and refuses:
+
+- a root reached through a symlink, or a `vendor/` outside the runner's root,
+  such as a source checkout (`completion_admission_root`);
+- a missing, substituted or symlinked file among the 22 sealed runner files in
+  `CompletionPollSubject::RUNNER_FILES` (`completion_admission_runner`);
+- an installed graph (`vendor/composer/installed.json`) that differs from the
+  lock in package names, versions or distributions, a development install,
+  development packages in the lock, any path distribution, or an SDK installed
+  outside `vendor/durable-workflow/sdk` (`completion_admission_graph`);
+- an installed SDK package whose file inventory differs from the selected one
+  (`completion_admission_package`), or any other vendor change, including a
+  symlinked package (`completion_admission_vendor`);
+- an expired authority, or one that extends more than
+  `CompletionPollSubject::AUTHORITY_SECONDS` (two hours) into the future
+  (`completion_admission_expired`);
+- a writable root, `vendor/`, `vendor/composer` or SDK package directory
+  (`completion_admission_writable`).
+
+The runner then holds the device and inode of those four directories. Loading
+installed identity, and every router launch, re-checks them, the read-only state
+and the authority window (`completion_admission_replaced`,
+`completion_admission_expired`). A launch may use only the three sealed routers
+in `CompletionPollSubject::ROUTERS`, by their exact unaliased paths in the held
+root, with the sealed concurrent server helper (`completion_admission_router`).
+
+The four admission fields in the subject are:
+
+| Field | Value |
+| --- | --- |
+| `runner_manifest_sha256` | SHA-256 of the canonical runner manifest: the 22 files as `{"bytes","path","sha256"}` objects sorted by path, compact JSON without escaped slashes, plus one newline. |
+| `vendor_inventory_sha256` | The same canonical form over every regular file under `vendor/`, with paths relative to `vendor/`. |
+| `sdk_inventory_sha256` | The same form over `vendor/durable-workflow/sdk/`, with package-relative paths. The caller compares it with the inventory of the selected registry ZIP. |
+| `admission_expires_at` | Unix time at which this admission stops. |
+
+These in-process checks bind the result to what was on disk. They cannot prove
+the runner's own integrity: the caller must verify the runner manifest before
+it starts PHP, and mount the root read-only.
 
 The consumer project must require the exact selected SDK, have no repository
 overrides or scripts, disable plugins and retain normal advisory policy. Its

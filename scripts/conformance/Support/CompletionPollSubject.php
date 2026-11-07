@@ -10,14 +10,61 @@ use RuntimeException;
 
 require_once __DIR__.'/CompletionPollLoadProfile.php';
 
-/** Caller-selected identity, not a package installer or runtime admission authority. */
+/**
+ * Caller-selected identity plus the in-process admission of one held consumer root.
+ *
+ * It installs nothing. The caller seals the runner and installs the package; this
+ * class refuses a root, runner, package, graph or authority that differs from the
+ * selected subject before consumer code loads, and before each router launch.
+ */
 final class CompletionPollSubject
 {
-    public const SCHEMA = 'durable-workflow.php-completion-polls-subject/v1';
+    public const SCHEMA = 'durable-workflow.php-completion-polls-subject/v2';
+    /** Sealed runner files, relative to the held consumer root. */
+    public const RUNNER_FILES = [
+        'scripts/conformance/Support/CompletionPollEvidence.php',
+        'scripts/conformance/Support/CompletionPollFailure.php',
+        'scripts/conformance/Support/CompletionPollFaults.php',
+        'scripts/conformance/Support/CompletionPollLoad.php',
+        'scripts/conformance/Support/CompletionPollLoadEvidence.php',
+        'scripts/conformance/Support/CompletionPollLoadProfile.php',
+        'scripts/conformance/Support/CompletionPollMatrixEvidence.php',
+        'scripts/conformance/Support/CompletionPollOppositeSlots.php',
+        'scripts/conformance/Support/CompletionPollPacketDefaults.php',
+        'scripts/conformance/Support/CompletionPollRelayFaults.php',
+        'scripts/conformance/Support/CompletionPollSubject.php',
+        'scripts/conformance/Support/CompletionPollTrace.php',
+        'scripts/conformance/Support/CompletionPollWorkflowRefence.php',
+        'scripts/conformance/Support/completion-poll-relay.php',
+        'scripts/conformance/compare-completion-poll-load.php',
+        'scripts/conformance/qualify-completion-polls.php',
+        'tests/Support/CompletionPipelineScenario.php',
+        'tests/Support/RecordingMetricsRecorder.php',
+        'tests/Support/WorkerPipelineScenario.php',
+        'tests/Support/completion-pipeline-http.php',
+        'tests/Support/completion-pipeline-server.php',
+        'tests/Support/completion-worker-http.php',
+    ];
+    /** The only routers a held runner may launch. */
+    public const ROUTERS = [
+        'scripts/conformance/Support/completion-poll-relay.php',
+        'tests/Support/completion-pipeline-http.php',
+        'tests/Support/completion-worker-http.php',
+    ];
+    public const ROUTER_SERVER = 'tests/Support/completion-pipeline-server.php';
+    public const AUTHORITY_SECONDS = 7200;
+    private const INVENTORY_FILES = 50000;
+    private const INVENTORY_BYTES = 1073741824;
     public const SCENARIOS = ['carriers', 'pipeline', 'pipeline-loss', 'fallback', 'capacity',
         'carrier-loss-activity', 'carrier-loss-workflow', 'carrier-loss-workflow-completion', 'completion-transit',
         'carrier-expiry', 'carrier-refence', 'pipeline-buffer-age', 'prefetch-loss', 'default-off', 'explicit-off', 'packet-defaults', 'opposite-slots', 'workflow-refence',
         ...CompletionPollLoadProfile::SCENARIOS];
+
+    private ?string $root = null;
+    /** @var array<string, array{int, int}> */
+    private array $held = [];
+    /** @var array<string, mixed> */
+    private array $admission = [];
 
     /** @param array<string, mixed> $data */
     private function __construct(public readonly array $data, public readonly string $vendor, public readonly string $sha256)
@@ -51,6 +98,7 @@ final class CompletionPollSubject
         }
         $data = json_decode($bytes, true, flags: JSON_THROW_ON_ERROR);
         $fields = ['schema', 'runner_reference', 'sdk_version', 'sdk_reference', 'lock_sha256',
+            'runner_manifest_sha256', 'vendor_inventory_sha256', 'sdk_inventory_sha256', 'admission_expires_at',
             'server_version', 'server_image', 'endpoint', 'namespace', 'scenario', 'deadline_seconds'];
         if (is_array($data) && in_array($data['scenario'] ?? null, CompletionPollLoadProfile::SCENARIOS, true)) $fields[] = 'load';
         if (!is_array($data) || array_is_list($data) || ($data['schema'] ?? null) !== self::SCHEMA
@@ -61,6 +109,14 @@ final class CompletionPollSubject
             if (!is_string($data[$key]) || preg_match('/\A[a-f0-9]{40}\z/', $data[$key]) !== 1) {
                 throw new RuntimeException('completion_subject_reference');
             }
+        }
+        foreach (['runner_manifest_sha256', 'vendor_inventory_sha256', 'sdk_inventory_sha256'] as $key) {
+            if (!is_string($data[$key]) || preg_match('/\A[a-f0-9]{64}\z/', $data[$key]) !== 1) {
+                throw new RuntimeException('completion_subject_admission');
+            }
+        }
+        if (!is_int($data['admission_expires_at']) || $data['admission_expires_at'] < 1) {
+            throw new RuntimeException('completion_subject_admission');
         }
         foreach (['sdk_version', 'server_version'] as $key) {
             if (!is_string($data[$key]) || preg_match('/\A[0-9]+\.[0-9]+\.[0-9]+(?:-(?:alpha|beta|rc)\.[1-9][0-9]*)?\z/', $data[$key]) !== 1) {
@@ -142,6 +198,7 @@ final class CompletionPollSubject
     /** @return array<string, mixed> */
     public function installed(): array
     {
+        $this->verifyHeld();
         $metadata = (new ReflectionClass(InstalledVersions::class))->getFileName();
         if (!is_string($metadata) || realpath($metadata) !== $this->vendor.'/composer/InstalledVersions.php'
             || InstalledVersions::getPrettyVersion('durable-workflow/sdk') !== $this->data['sdk_version']
@@ -165,6 +222,227 @@ final class CompletionPollSubject
         return ['sdk_version' => $this->data['sdk_version'], 'sdk_reference' => $this->data['sdk_reference'],
             'subject_sha256' => $this->sha256,
             'caller_runner_reference' => $this->data['runner_reference'], 'lock_sha256' => $this->data['lock_sha256'],
-            'implementation_paths' => $implementations];
+            'implementation_paths' => $implementations, 'admission' => $this->admission];
+    }
+
+    /**
+     * Admit the held consumer root before any consumer code loads.
+     *
+     * The runner scripts and the normally installed vendor tree must share one
+     * read-only root, so the argv autoloader and the fixed-relative autoloader in
+     * tests/Support/completion-worker-http.php are the same file.
+     *
+     * @return array<string, mixed>
+     */
+    public function admit(?string $root = null): array
+    {
+        if ($this->root !== null) {
+            throw new RuntimeException('completion_admission_repeated');
+        }
+        $root ??= dirname(__DIR__, 3);
+        if (realpath($root) !== $root || $this->vendor !== $root.'/vendor') {
+            throw new RuntimeException('completion_admission_root');
+        }
+        self::authority($this->data['admission_expires_at']);
+        $runner = self::runnerManifest($root);
+        if (!hash_equals($this->data['runner_manifest_sha256'], $runner['sha256'])) {
+            throw new RuntimeException('completion_admission_runner');
+        }
+        $lockBytes = self::bytes($root.'/composer.lock', 4194304, 'completion_subject_lock');
+        if (!hash_equals($this->data['lock_sha256'], hash('sha256', $lockBytes))) {
+            throw new RuntimeException('completion_subject_lock');
+        }
+        self::graph(json_decode($lockBytes, true, flags: JSON_THROW_ON_ERROR), $this->vendor, $this->data);
+        $inventory = self::inventory($this->vendor);
+        if (!hash_equals($this->data['sdk_inventory_sha256'], $inventory['sdk_sha256'])) {
+            throw new RuntimeException('completion_admission_package');
+        }
+        if (!hash_equals($this->data['vendor_inventory_sha256'], $inventory['vendor_sha256'])) {
+            throw new RuntimeException('completion_admission_vendor');
+        }
+        $held = [];
+        foreach ([$root, $this->vendor, $this->vendor.'/composer', $this->vendor.'/durable-workflow/sdk'] as $path) {
+            if (is_writable($path)) {
+                throw new RuntimeException('completion_admission_writable');
+            }
+            $held[$path] = self::node($path);
+        }
+        $this->root = $root;
+        $this->held = $held;
+        $this->admission = ['consumer_root' => $root, 'runner_manifest_sha256' => $runner['sha256'],
+            'runner_files' => count(self::RUNNER_FILES), 'vendor_inventory_sha256' => $inventory['vendor_sha256'],
+            'vendor_files' => $inventory['vendor_files'], 'sdk_inventory_sha256' => $inventory['sdk_sha256'],
+            'sdk_files' => $inventory['sdk_files'], 'admission_expires_at' => $this->data['admission_expires_at']];
+        return $this->admission;
+    }
+
+    /** Refuse a replaced, writable or expired root after admission. */
+    public function verifyHeld(): void
+    {
+        if ($this->root === null) {
+            throw new RuntimeException('completion_admission_required');
+        }
+        self::authority($this->data['admission_expires_at']);
+        foreach ($this->held as $path => $node) {
+            clearstatcache(true, $path);
+            if (is_writable($path) || self::node($path) !== $node) {
+                throw new RuntimeException('completion_admission_replaced');
+            }
+        }
+    }
+
+    /** @return callable(string, ?string): void */
+    public function routerGate(): callable
+    {
+        if ($this->root === null) {
+            throw new RuntimeException('completion_admission_required');
+        }
+        $root = $this->root;
+        return function (string $router, ?string $server) use ($root): void {
+            $this->verifyHeld();
+            $routers = array_map(static fn (string $path): string => $root.'/'.$path, self::ROUTERS);
+            if (!in_array($router, $routers, true) || realpath($router) !== $router
+                || ($server !== null && ($server !== $root.'/'.self::ROUTER_SERVER || realpath($server) !== $server))) {
+                throw new RuntimeException('completion_admission_router');
+            }
+        };
+    }
+
+    /** @return array{sha256: string, bytes: int} */
+    public static function runnerManifest(string $root): array
+    {
+        $entries = [];
+        foreach (self::RUNNER_FILES as $path) {
+            if (realpath($root.'/'.$path) !== $root.'/'.$path) {
+                throw new RuntimeException('completion_admission_runner');
+            }
+            $bytes = self::bytes($root.'/'.$path, 1048576, 'completion_admission_runner');
+            $entries[] = ['bytes' => strlen($bytes), 'path' => $path, 'sha256' => hash('sha256', $bytes)];
+        }
+        $manifest = self::canonical($entries);
+        return ['sha256' => hash('sha256', $manifest), 'bytes' => strlen($manifest)];
+    }
+
+    /**
+     * Canonical inventories of every installed file and of the SDK package alone.
+     * The SDK inventory uses package-relative paths, so the caller can compare it
+     * with the selected registry archive.
+     *
+     * @return array{vendor_sha256: string, vendor_files: int, sdk_sha256: string, sdk_files: int}
+     */
+    public static function inventory(string $vendor): array
+    {
+        $vendorEntries = [];
+        $sdkEntries = [];
+        $total = 0;
+        $pending = [''];
+        while ($pending !== []) {
+            $relative = array_pop($pending);
+            $names = @scandir($relative === '' ? $vendor : $vendor.'/'.$relative);
+            if ($names === false) {
+                throw new RuntimeException('completion_admission_vendor');
+            }
+            foreach ($names as $name) {
+                if ($name === '.' || $name === '..') {
+                    continue;
+                }
+                $path = $relative === '' ? $name : $relative.'/'.$name;
+                $metadata = @lstat($vendor.'/'.$path);
+                $type = $metadata === false ? 0 : $metadata['mode'] & 0170000;
+                if ($type === 0040000) {
+                    $pending[] = $path;
+                    continue;
+                }
+                if ($type !== 0100000 || count($vendorEntries) >= self::INVENTORY_FILES) {
+                    throw new RuntimeException('completion_admission_vendor');
+                }
+                $total += $metadata['size'];
+                $digest = $total > self::INVENTORY_BYTES ? false : hash_file('sha256', $vendor.'/'.$path);
+                if ($digest === false) {
+                    throw new RuntimeException('completion_admission_vendor');
+                }
+                $vendorEntries[] = ['bytes' => $metadata['size'], 'path' => $path, 'sha256' => $digest];
+                if (str_starts_with($path, 'durable-workflow/sdk/')) {
+                    $sdkEntries[] = ['bytes' => $metadata['size'], 'path' => substr($path, 21), 'sha256' => $digest];
+                }
+            }
+        }
+        if ($sdkEntries === []) {
+            throw new RuntimeException('completion_admission_package');
+        }
+        return ['vendor_sha256' => hash('sha256', self::canonical($vendorEntries)), 'vendor_files' => count($vendorEntries),
+            'sdk_sha256' => hash('sha256', self::canonical($sdkEntries)), 'sdk_files' => count($sdkEntries)];
+    }
+
+    /**
+     * Sorted compact JSON plus one newline, matching the published runner seal.
+     *
+     * @param list<array{bytes: int, path: string, sha256: string}> $entries
+     */
+    private static function canonical(array $entries): string
+    {
+        usort($entries, static fn (array $left, array $right): int => strcmp($left['path'], $right['path']));
+        return json_encode($entries, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n";
+    }
+
+    private static function authority(int $expiresAt): void
+    {
+        $now = time();
+        if ($expiresAt <= $now || $expiresAt - $now > self::AUTHORITY_SECONDS) {
+            throw new RuntimeException('completion_admission_expired');
+        }
+    }
+
+    /**
+     * The installed graph must equal the registry lock, without development
+     * packages, path distributions or a relocated SDK.
+     *
+     * @param mixed $lock
+     * @param array<string, mixed> $data
+     */
+    private static function graph(mixed $lock, string $vendor, array $data): void
+    {
+        $installed = json_decode(self::bytes($vendor.'/composer/installed.json', 16777216, 'completion_admission_graph'),
+            true, flags: JSON_THROW_ON_ERROR);
+        if (!is_array($lock) || !is_array($installed) || ($installed['dev'] ?? null) !== false
+            || ($installed['dev-package-names'] ?? null) !== [] || !is_array($installed['packages'] ?? null)
+            || ($lock['packages-dev'] ?? []) !== [] || !is_array($lock['packages'] ?? null)) {
+            throw new RuntimeException('completion_admission_graph');
+        }
+        $identity = static function (array $packages): array {
+            $result = [];
+            foreach ($packages as $package) {
+                if (!is_array($package) || !is_string($package['name'] ?? null) || isset($result[$package['name']])
+                    || ($package['dist']['type'] ?? null) === 'path' || ($package['source']['type'] ?? null) === 'path') {
+                    throw new RuntimeException('completion_admission_graph');
+                }
+                $result[$package['name']] = [$package['version'] ?? null, $package['dist']['type'] ?? null,
+                    $package['dist']['reference'] ?? null, $package['dist']['shasum'] ?? null];
+            }
+            ksort($result);
+            return $result;
+        };
+        if ($identity($lock['packages']) !== $identity($installed['packages'])) {
+            throw new RuntimeException('completion_admission_graph');
+        }
+        foreach ($installed['packages'] as $package) {
+            if ($package['name'] === 'durable-workflow/sdk'
+                && (($package['install-path'] ?? null) !== '../durable-workflow/sdk'
+                    || ($package['version'] ?? null) !== $data['sdk_version']
+                    || ($package['dist']['reference'] ?? null) !== $data['sdk_reference'])) {
+                throw new RuntimeException('completion_admission_graph');
+            }
+        }
+    }
+
+    /** @return array{int, int} */
+    private static function node(string $path): array
+    {
+        clearstatcache(true, $path);
+        $metadata = @lstat($path);
+        if ($metadata === false || ($metadata['mode'] & 0170000) !== 0040000) {
+            throw new RuntimeException('completion_admission_replaced');
+        }
+        return [$metadata['dev'], $metadata['ino']];
     }
 }

@@ -8,6 +8,18 @@ use RuntimeException;
 
 final class CompletionPipelineScenario
 {
+    /** @var (callable(string, ?string): void)|null */
+    private static $launchGate = null;
+
+    /** A held qualification runner refuses every router launch the gate does not admit. */
+    public static function gate(callable $gate): void
+    {
+        if (self::$launchGate !== null) {
+            throw new RuntimeException('The completion fixture launch gate is already held.');
+        }
+        self::$launchGate = $gate;
+    }
+
     /**
      * @template T
      * @param callable(string, string): T $scenario
@@ -21,6 +33,11 @@ final class CompletionPipelineScenario
         if ($concurrent && (!function_exists('posix_setsid') || !function_exists('posix_kill') || !function_exists('pcntl_exec'))) {
             throw new RuntimeException('The concurrent Worker socket fixture requires Unix process groups.');
         }
+        $router ??= __DIR__.'/completion-pipeline-http.php';
+        $server = $concurrent ? __DIR__.'/completion-pipeline-server.php' : null;
+        if (self::$launchGate !== null) {
+            (self::$launchGate)($router, $server);
+        }
         $directory = sys_get_temp_dir().'/sdk-php-completion-'.bin2hex(random_bytes(8));
         mkdir($directory, 0700);
         $state = $directory.'/state.json';
@@ -31,8 +48,7 @@ final class CompletionPipelineScenario
             if (!is_resource($socket)) throw new RuntimeException('The completion fixture could not reserve a loopback port.');
             $address = stream_socket_get_name($socket, false);
             fclose($socket);
-            $router ??= __DIR__.'/completion-pipeline-http.php';
-            $command = $concurrent ? [PHP_BINARY, __DIR__.'/completion-pipeline-server.php', $address, $router]
+            $command = $server !== null ? [PHP_BINARY, $server, $address, $router]
                 : [PHP_BINARY, '-S', $address, $router];
             $environment = ['PIPELINE_TEST_STATE' => $state];
             if ($concurrent) $environment['PHP_CLI_SERVER_WORKERS'] = '2';

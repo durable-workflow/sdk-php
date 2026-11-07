@@ -30,6 +30,8 @@ final class CompletionPollConsumerSubjectTest extends TestCase
         $this->data = ['schema' => CompletionPollSubject::SCHEMA, 'runner_reference' => str_repeat('b', 40),
             'sdk_version' => '9.0.0', 'sdk_reference' => str_repeat('a', 40),
             'lock_sha256' => hash_file('sha256', $this->directory.'/composer.lock'),
+            'runner_manifest_sha256' => str_repeat('e', 64), 'vendor_inventory_sha256' => str_repeat('e', 64),
+            'sdk_inventory_sha256' => str_repeat('e', 64), 'admission_expires_at' => time() + 600,
             'server_version' => '9.0.0', 'server_image' => 'ghcr.io/durable-workflow/server@sha256:'.str_repeat('c', 64),
             'endpoint' => 'http://127.0.0.1:12345', 'namespace' => 'fixture', 'scenario' => 'carriers', 'deadline_seconds' => 30];
     }
@@ -127,6 +129,10 @@ final class CompletionPollConsumerSubjectTest extends TestCase
         yield 'path override' => ['endpoint', 'http://127.0.0.1:8080/api', 'completion_subject_loopback'];
         yield 'unknown field' => ['execute', true, 'completion_subject_shape'];
         yield 'wrong lock seal' => ['lock_sha256', str_repeat('d', 64), 'completion_subject_lock'];
+        yield 'unsealed runner' => ['runner_manifest_sha256', 'main', 'completion_subject_admission'];
+        yield 'unsealed vendor' => ['vendor_inventory_sha256', '', 'completion_subject_admission'];
+        yield 'unsealed package' => ['sdk_inventory_sha256', null, 'completion_subject_admission'];
+        yield 'open-ended authority' => ['admission_expires_at', '2026-11-07', 'completion_subject_admission'];
     }
 
     public function testASubjectMutationDoesNotPassItsPreviouslySelectedHash(): void
@@ -149,10 +155,10 @@ final class CompletionPollConsumerSubjectTest extends TestCase
         $this->read();
     }
 
-    public function testTheCurrentSourceVendorCannotQualifyAsInstalledPackageIdentity(): void
+    public function testInstalledIdentityRequiresTheHeldRootAdmissionFirst(): void
     {
         $subject = $this->read();
-        $this->expectExceptionMessage('completion_subject_installed_identity');
+        $this->expectExceptionMessage('completion_admission_required');
         $subject->installed();
     }
 
