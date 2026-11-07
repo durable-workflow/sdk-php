@@ -18,7 +18,7 @@ final class PhpPcntlImageControllerTest extends TestCase
     private const SCRIPT = __DIR__.'/../scripts/conformance/php-pcntl-build.sh';
     private const FAKE = __DIR__.'/Support/fake-docker.sh';
 
-    private string $base;
+    private string $base = '';
     private string $state;
     private string $work;
 
@@ -39,7 +39,7 @@ final class PhpPcntlImageControllerTest extends TestCase
 
     protected function tearDown(): void
     {
-        exec('rm -rf '.escapeshellarg($this->base));
+        if ($this->base !== '') exec('rm -rf '.escapeshellarg($this->base));
     }
 
     public function testSuccessRetainsExactlyOneLabeledImageAndRemovesTheContainer(): void

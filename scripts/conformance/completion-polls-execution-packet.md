@@ -169,12 +169,75 @@ in the diff. Passing it on standard input removed that stub.
 
 ### Phase A — acquisition (effect)
 
-1. Pull the four images above by digest only. Record each local image ID and
-   `docker image inspect` config digest. A local image ID that is a platform
-   manifest, not a config, must be linked to the listed config by manifest
-   read. An alias is not accepted.
-2. Bounds: 300 s total, network to Docker Hub and GHCR only.
-3. Cleanup: none (images are retained for the run, then removed in phase F).
+Run `timeout 330 scripts/conformance/acquire-cell-images.sh <empty-owned-work-dir>`,
+staged from its exact Git blob, with the same clean environment as phase P
+(fixed system `PATH`, empty owned `DOCKER_CONFIG`, local daemon, no
+`PHASE_A_*` overrides). The script pulls each image by its exact linux/amd64
+**platform manifest** digest:
+
+| Name | Pull reference (platform manifest) | Config | Index | Layers | Compressed |
+| --- | --- | --- | --- | ---: | ---: |
+| server-3.2.0 | `ghcr.io/durable-workflow/server@sha256:2a1c9659…1a95653` | `3979dbc8…63b2` | `6916f6f3…3d62` | 4 | 50,034,939 |
+| server-3.0.5 | `ghcr.io/durable-workflow/server@sha256:2659280f…eed551e` | `0abb6928…4800` | `3cb6e5bf…8b72` | 4 | 49,469,666 |
+| mysql-8.0.46 | `docker.io/library/mysql@sha256:62fb722c…2497b` | `6cd09145…8b39` | — | 11 | 233,581,538 |
+| postgres-16.15 | `docker.io/library/postgres@sha256:43f9275d…b1a37` | `ba07bdb1…e381` | `f9a7b9eb…9657` | 14 | 160,301,047 |
+
+The script:
+
+1. **Reads metadata only before any pull.** For each image it reads the raw
+   manifest from the registry (`docker buildx imagetools inspect --raw`) and
+   requires:
+   - its SHA-256 equals the pinned digest;
+   - it is a single-platform image manifest, not an index;
+   - its `config.digest` equals the pinned config.
+
+   This is the manifest-to-config link: Docker's containerd image store does
+   not report the config digest locally.
+2. **Probes each local reference three-state.** Unknown refuses. Present
+   means pre-existing: it is not pulled and is never owned or removed.
+3. **Checks free storage.** Docker storage must have at least 3 × the total
+   compressed bytes plus 2 GiB free.
+4. **Pulls each absent image once** (`docker pull --quiet --platform linux/amd64 <ref>`).
+   - Each pull is bounded by the time left in the 300-second total; the whole
+     script is also wrapped in `timeout 330`.
+   - Output is capped at 64 KiB.
+   - A pull marker naming the exact reference is written before each pull.
+   - There is no controller retry. The daemon's own per-request transport
+     retries are not controllable from the CLI and are not claimed absent.
+5. **Verifies each local image:** ID and `Descriptor.digest` equal the
+   manifest digest, linux/amd64, layer count equal to the manifest's.
+6. **On any failure,** removes exactly the references this run pulled
+   (`docker image rm <ref>`) and proves each absent; otherwise it exits 3.
+   Partial layer content that a failed pull left in the shared containerd
+   store has no per-run identity. It is neither claimed removed nor pruned:
+   containerd's own garbage collection owns it, and its bound is the total
+   compressed size above.
+
+Exit 0 prints a receipt (per image: reference, manifest, config, index,
+layers, pulled or pre-existing). Exit 2 means refused before any pull, 1 a
+clean failure, and 3 residue.
+
+**Metadata-only check on the selected host** (`--metadata-only`, pulls nothing):
+all four manifests matched their digests and configs; total compressed
+493,387,190 B; free Docker storage 896 GB; all four images absent locally.
+
+**Controls** (`tests/AcquireCellImagesTest.php` with `tests/Support/fake-docker-acquire.sh`).
+The fake replays the four real captured manifests from `tests/fixtures/phase-a`,
+whose SHA-256 values equal the pinned digests.
+- **Metadata-only:** no pull.
+- **Success:** four exact manifest pulls on linux/amd64.
+- **Pre-existing image:** neither pulled nor removed, even after a later pull fails.
+- **Refusals with no pull:** tampered manifest bytes; unknown local state; a raised total bound.
+- **Failures that leave nothing this run pulled:** a pull that fails after
+  creating its reference; a pull past the total bound; a later pull failing;
+  local identity differing from the manifest.
+- **Residue (exit 3):** removal fails; state unknown after removal.
+
+All of these ran with the identical fake on the selected host. The PHPUnit
+form needs `python3`, as the script does.
+
+The four images are retained for phases D–E and removed in phase F by exact
+reference, but only those this run pulled.
 
 ### Phase B — consumer root assembly (effect)
 
@@ -252,14 +315,38 @@ never more than 7,200 s ahead. Record each packet's SHA-256.
 
 Per cell, in table order:
 
-1. Start `sdk-php-cpq-d-<n>-server` from the cell's producer image with
-   `DB_CONNECTION=sqlite`, `DB_DATABASE=/app/storage/database.sqlite` on a
-   per-cell tmpfs `/app/storage`, `DW_AUTH_DRIVER=token`, and fresh random
-   `DW_AUTH_TOKEN`, `DW_OPERATOR_TOKEN` and `DW_WORKER_TOKEN` (32 bytes each,
-   held only in the owner's process environment). `--network none`: the
-   runner joins this container's loopback, and nothing else can reach it.
-   2 CPU, 2 GiB, 256 PIDs. Wait for `/api/ready` 200 through the image's own
-   bash `/dev/tcp` health probe (`docker exec`), startup ceiling 60 s.
+1. Start `sdk-php-cpq-d-<n>-server` from the cell's producer image, by its
+   manifest digest, with `--pull=never --read-only --cap-drop ALL
+   --security-opt no-new-privileges` and the owner label. The settings below
+   come from the frozen Server source (3.2.0 `3c6f1eda`, 3.0.5 `bc24589d`):
+   `rust/src/main.rs` serve path, `Dockerfile.native`, `rust/src/runtime/namespaces.rs`.
+   - **User and mounts.** The image runs as `1000:1000` and declares
+     `VOLUME ["/app/database", "/app/storage"]`. Mount both as owned tmpfs:
+     `--tmpfs /app/database:rw,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=0700`
+     and `--tmpfs /app/storage:rw,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=0700`.
+     With every declared volume path covered by a tmpfs, Docker creates no
+     anonymous volume. The cell checks `.Mounts` shows only `tmpfs` types,
+     and removes any `volume` mount by its exact name at teardown.
+   - **Database.** `DB_CONNECTION` defaults to `sqlite`, and the image sets
+     `DB_DATABASE=/app/database/database.sqlite`. Set both explicitly
+     anyway. The schema is created at startup.
+   - **Auth.**
+     - `DW_AUTH_DRIVER=token`; a release build refuses `none`.
+     - `DW_AUTH_TOKEN` is required, must not be empty, and is accepted for every role.
+     - Optional role tokens: `DW_WORKER_TOKEN` and `DW_OPERATOR_TOKEN`.
+     - Each token is fresh, random and 32 bytes, held only in the owner's
+       process environment.
+     - Release builds need no `DW_RUST_EXPERIMENTAL`.
+   - **Namespace.** Runtime open seeds the `default` namespace when it is
+     absent, in both versions (`initialize_namespace_registry`), so
+     `namespace=default` needs no bootstrap.
+   - **Network.** `DW_BIND_ADDRESS=0.0.0.0:8080` (image default). Use
+     `--network none`: the runner joins this container's loopback, and
+     nothing else can reach it.
+   - **Limits.** 2 CPU, 2 GiB, 256 PIDs. `SIGTERM` stops it gracefully.
+   - **Readiness.** Wait for `GET /api/ready` 200 through the image's own bash
+     `/dev/tcp` probe (`docker exec`), as the published Compose health check
+     at `3c6f1eda` does. Startup ceiling 60 s.
 2. Run `sdk-php-cpq-d-<n>-runner` from `$PHP_IMAGE` (by image ID) with:
    - `--network container:sdk-php-cpq-d-<n>-server`, so `127.0.0.1:8080` is the cell's Server;
    - `--read-only --cap-drop ALL --security-opt no-new-privileges`;
@@ -298,16 +385,38 @@ Per-cell ceiling 240 s; phase ceiling 18 × 240 s = 72 min, under one
 ### Phase E — load cells (effect, 36 invocations)
 
 Three sub-phases, one per backend, each 12 cells (4 scenarios × 3
-repetitions) with its own selection and authority (12 × 240 s = 48 min).
+repetitions) with its own selection and authority: 12 × 240 s = 48 min for
+SQLite, and 12 × 270 s = 54 min for MySQL and for PostgreSQL.
 
 - **SQLite**: as phase D, fresh tmpfs database per cell.
-- **MySQL**: per cell, an owned `docker network create --internal
-  sdk-php-cpq-e-<n>-net`, then `sdk-php-cpq-e-<n>-mysql` on it (1 CPU, 1 GiB,
-  128 PIDs, tmpfs data dir) with fresh random credentials, then the Server on
-  the same network (instead of `--network none`) with `DB_CONNECTION=mysql`, `DB_HOST`, `DB_PORT=3306`,
-  `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`.
-- **PostgreSQL**: as MySQL with `sdk-php-cpq-e-<n>-postgres` and
-  `DB_CONNECTION=pgsql`, `DB_PORT=5432`.
+- **MySQL.** Per cell:
+  1. `docker network create --internal --label durable-workflow.owner=sdk-php sdk-php-cpq-e-<n>-net`.
+  2. Start `sdk-php-cpq-e-<n>-mysql` on that network:
+     - `--pull=never --read-only`, the owner label;
+     - 1 CPU, 1 GiB, 128 PIDs;
+     - `--cap-drop ALL --cap-add CHOWN,SETUID,SETGID,DAC_OVERRIDE,FOWNER --security-opt no-new-privileges`, because the official entrypoint starts as root and drops to the `mysql` user with `gosu`;
+     - tmpfs at the declared `VOLUME /var/lib/mysql` (size 1g), plus `/var/run/mysqld` and `/tmp`;
+     - fresh random `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_ROOT_PASSWORD`.
+  3. Start the Server on the same network instead of `--network none`, with:
+     - `DB_CONNECTION=mysql`;
+     - `DB_HOST=sdk-php-cpq-e-<n>-mysql`, `DB_PORT=3306`;
+     - `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`;
+     - `DB_SSLMODE=disable`. Unset, the driver default applies; the network
+       is internal only, and MySQL accepts `disable`, `require` and
+       `verify-full`.
+
+  The Server waits for the database to become reachable at startup. The
+  startup ceiling for MySQL and PostgreSQL cells is 90 s, which allows first
+  initialization on tmpfs, so their per-cell ceiling is 270 s.
+- **PostgreSQL.** The same, with `sdk-php-cpq-e-<n>-postgres`:
+  - tmpfs at the declared `VOLUME /var/lib/postgresql/data` (size 1g, which
+    is `PGDATA`), plus `/var/run/postgresql` and `/tmp`;
+  - `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD`;
+  - Server settings `DB_CONNECTION=pgsql`, `DB_PORT=5432` and `DB_SSLMODE=disable`.
+
+Each database's declared volume path is a tmpfs, so no anonymous volume is
+created. Each cell's teardown removes its containers, its network and any
+`volume` mount it finds, by exact name, and proves them absent.
 
 `load.database_identity` is the per-cell database container name;
 `load.conditions_sha256` is the SHA-256 of the recorded host/resource/durability
@@ -371,11 +480,9 @@ These are the only values not yet available. Everything else above is fixed.
 
 | Value | Source |
 | --- | --- |
-| `$RUNNER_REF` | Merge commit of this runner change on main. `$RUNNER_MANIFEST_SHA256` is already fixed at `94a9604fa33f029c7f6b37b2a6889dd9268cb6cc8ba5f47747cce595474a614a` and must recompute equal at that commit. |
-| `$SDK_TAG_COMMIT`, Packagist row, dist ZIP SHA-256/size/inventory | General's 3.10.0 tag and release, then normal Packagist availability. Proposed: tag the same main commit as `$RUNNER_REF`, so one commit serves as both the SDK release and the runner source. |
+| `$RUNNER_REF` | **Fixed:** `4e6c6b7b4318010b73233377ad36be805828fedd`, the merge of #354, which General froze as the 3.10.0 target. `$RUNNER_MANIFEST_SHA256` = `94a9604fa33f029c7f6b37b2a6889dd9268cb6cc8ba5f47747cce595474a614a`, recomputed equal there. |
+| Tag, Packagist row, dist ZIP SHA-256/size/inventory | General's 3.10.0 tag and release at the frozen target `4e6c6b7b`, after canonical Native 3.2.0 acceptance, then normal Packagist availability |
 | `$LOCK_SHA256`, `$VENDOR_INVENTORY_SHA256`, `$SDK_INVENTORY_SHA256` | Phase B output |
 | Native 3.2.0 qualifier acceptance | Server's corpus run 42407065494 and the four Compose receipts, with independent acceptance |
-| SQLite and PostgreSQL Server settings | Confirm `DB_CONNECTION=sqlite`/`pgsql` and their variables against the accepted Compose receipts. The published Compose file shows only the MySQL settings. |
-| `default` namespace on 3.2.0 and 3.0.5 | Confirm it exists without bootstrap, from the same receipts |
-| `$PHP_IMAGE` | Image ID and tag from phase P (General chose the derived-image path) |
-| Per-phase selections | General's fresh selection with literal windows for phases P, A, B, D, E (×3) and F, after independent review |
+| `$PHP_IMAGE` | **Fixed:** `sha256:80a91784a0ae46c4cecd33b72f30188285fc32be8087af7caa7fa00b0fe8a5f0` (phase P PASS) |
+| Per-phase selections | General's fresh selection, with literal windows, for phases A, B, D, E (×3) and F, after independent review. Phase P is done. |
