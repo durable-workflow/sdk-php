@@ -7,6 +7,7 @@ parameters:
         - scripts/conformance/Support/CompletionPollTrace.php
         - scripts/conformance/Support/CompletionPollEvidence.php
         - scripts/conformance/Support/CompletionPollFailure.php
+        - scripts/conformance/Support/CompletionPollFaults.php
         - scripts/conformance/Support/completion-poll-relay.php
     excludePaths:
         analyse:

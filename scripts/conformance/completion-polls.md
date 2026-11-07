@@ -102,3 +102,27 @@ and evidence unit tests use synthetic metadata only. Relay controls forward
 fixed HTTP data to test byte/role forwarding, error preservation and one
 successful-answer loss. They create no Server, package installation, profile
 or published-product acceptance.
+
+The remaining matrix is being prepared against the same accepted schema63
+API. The initial four scenario names remain the only executable selections
+until their successors are connected and qualified. Delay selection uses the
+actual normal-poll `server_time` and original `lease_expires_at`. An absent
+clock, unsuitable grant window or insufficient caller budget blocks that
+control rather than substituting a worker clock or changing Server state.
+
+| Control | Actual operation and required observation |
+| --- | --- |
+| Carried-answer loss, each of three paths | Withhold one actual successful completion answer. Recover its original poll ID and complete task/history identity. |
+| Original completion transit | Delay the real completion request before its carried claim. Require original-request charging and confirmation before callback when the reported reserve is insufficient. |
+| Expired carried lease | Hold the real answer past its reported original expiry. Require fenced confirmation/refusal and no callback or publication under that expired generation. |
+| Registration replacement | Re-register this invocation's same synthetic worker through the public worker API. Retain only token digests and require old-grant refusal; clean the owned replacement with its actual fenced receipt. |
+| Buffered lease age | Delay a real registration-heartbeat reply after prefetch. Require workflow lease confirmation before the aged task executes. Registration heartbeat does not renew task authority. |
+| Opposite slot and missing result | Hold actual opposite-kind leases through public polls/completions. Observe real carrier omission, then reservation release and later work without disabling the capability. |
+| Lost ordinary prefetch | Withhold one real successful prefetch answer. Preserve the original ID, backoff and lease/history on recovery without another reservation. |
+| Default OFF | Exercise omitted and explicit-false options against the actual runtime. Keep the installed fixed-socket packet regression separate from native producer acceptance. |
+| Bounded load | Direct runtime calls with no relay delay or per-request trace. Compare explicit OFF/ON cells for six workers, 200 workflows and five 20ms local or remote steps. Retain all three repetitions and regressions. |
+
+Load cells require caller evidence for fresh isolated databases and the actual
+backend, image, host and resource settings. The runner does not create a
+database, invent an administrative reset or infer backend identity from a
+label. Descriptive timings alone are not a speedup or release acceptance.
