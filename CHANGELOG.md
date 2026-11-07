@@ -6,7 +6,7 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [3.10.0] - Unreleased
+## [3.10.0] - 2026-11-07
 
 ### Upgrade notes
 
@@ -46,11 +46,10 @@ project follows [Semantic Versioning](https://semver.org/).
   before publishing that task's completion or failure. Public `tick()`,
   activity scheduling, cancellation, local failures, cooperative mode, custom
   transports, telemetry and metrics retain synchronous behavior. Opting in
-  changes when completion errors become visible. These source features still
-  require published-package/runtime and load qualification under #293; no
-  throughput improvement or default change is claimed.
+  changes when completion errors become visible. No throughput improvement or
+  default change is claimed.
 
-- An unreleased schedule-to-start histogram for workflow/activity dispatch uses
+- A schedule-to-start histogram for workflow/activity dispatch uses
   the runtime's capability-gated `ready_age_ms` claim metadata (shared metrics
   revision 2, central #233). Valid zero is retained; missing, unsupported or
   malformed ages are omitted. Existing instruments keep their names and tags.
@@ -107,6 +106,12 @@ project follows [Semantic Versioning](https://semver.org/).
   workers using OPcache.
 
 ### Fixed
+
+- Composer distribution archives no longer include the test tree, avoiding the
+  `tests/Fixtures` and `tests/fixtures` directory collision when vendor files
+  are copied to a case-insensitive filesystem. Source checkouts keep the
+  complete test corpus; runtime code, `resources/`, `docs/` and `examples/`
+  remain in the archive.
 
 - Static shared, control and worker credentials are validated in their original
   form before role selection and fallback, including framework configuration

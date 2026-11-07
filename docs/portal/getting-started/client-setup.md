@@ -67,7 +67,7 @@ The workflow ID is the stable instance identity. The run ID identifies one execu
 ## Read complete lists and histories
 
 `listWorkflows()` and `workflowHistory()` each return one bounded page. The
-following iterator methods are unreleased:
+following iterator methods read every page lazily:
 
 ```php
 foreach ($controlClient->iterateWorkflows(status: 'running', pageSize: 100) as $execution) {
