@@ -6,7 +6,7 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [3.9.5] - 2026-11-06
+## [3.9.5] - 2026-11-07
 
 ### Fixed
 
@@ -15,6 +15,8 @@ project follows [Semantic Versioning](https://semver.org/).
   each callback (#326). Every claim retains its own lease, business deadline and
   heartbeat authority. Dead or unconfirmed helpers are replaced, forked callbacks
   cannot use their parent's helper, and shutdown closes the idle process.
+  Poll transit consumes the fresh activity grant's margin; slow, unknown or short
+  grants require confirmation before another callback starts.
 - Skip the initial workflow-task renewal for a fresh, fully fenced poll grant
   with a valid Server clock and sufficient remaining lease (#327). Request time,
   payload loading and history paging consume that margin. Servers without a
