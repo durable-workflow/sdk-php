@@ -33,55 +33,89 @@ breach stops the phase.
 ### Phase P — runner PHP image, build only (effect)
 
 The runner needs `pcntl`, which the cached official PHP 8.4.27 image lacks.
-`php-pcntl.Dockerfile` adds only `pcntl`, compiled from the source tarball the
-base image already contains. This phase is independent of the producer
-receipts.
+`php-pcntl-build.sh` adds only `pcntl`, compiled from the source tarball the
+base image already contains. Phase P runs it in **one ordinary bounded
+container** and commits that container. It does not use BuildKit or any
+builder cache, so every resource bound is the container's cgroup, and the
+container plus the committed image are the only things it owns. This phase
+is independent of the producer receipts.
 
-Verified read-only on lab4 before this packet (no image created):
+Fixed identities:
 
-- Base `php@sha256:dd0e2b902f1edfb6ca02fbcb391c28b1554c7d35a4e36e5925876b90aa804851`
-  (OCI image manifest, 2,878 B, linux/amd64, Debian 12, created
-  2026-10-28T01:25:32Z, ten layers ending `c500804b…`).
-- PHP 8.4.27 NTS, non-debug, API `20240924`. Modules include `curl` and `posix`, not `pcntl`.
-- Present in the base: `gcc`, `g++`, `make`, `autoconf`, `re2c`, `pkg-config`,
-  `phpize`, `php-config`, the PHP headers, the libc headers, and
-  `/usr/src/php.tar.xz`, whose SHA-256 equals the image's
-  `PHP_SHA256=dcf93923…f0`. No dependency is missing.
-- Trial compile in a tmpfs container (network none, uid 1000): `ext/pcntl`
-  source tree SHA-256 `4ef93fb1…72e1`. `pcntl.so` was 70,128 B,
-  `caeb0d94d6b8b1853aed199acd575dac92d1bb74e6b3de2cfba56befdcdfa8de`. It
-  loaded, and a fork/wait returned the child's exit code 7.
-- Dry run of the Dockerfile's exact `RUN` body in a throwaway root container
-  (network none, `--cap-drop ALL`, no image produced): it succeeded and
-  produced the same `pcntl.so` (`caeb0d94…`), so the compile is reproducible.
-  A second run refused because `pcntl` was already present.
-- `php-pcntl.Dockerfile`: 1,307 B, SHA-256
-  `6ef1784edc5db980f59e797ca2401eb2e193ccb731a45ea944893ba30e63a704`.
+| Item | Value |
+| --- | --- |
+| Base | `php@sha256:dd0e2b902f1edfb6ca02fbcb391c28b1554c7d35a4e36e5925876b90aa804851` (OCI image manifest, 2,878 B, linux/amd64, Debian 12, created 2026-10-28T01:25:32Z, ten layers ending `c500804b…`); PHP 8.4.27 NTS, non-debug, API `20240924`; modules include `curl` and `posix`, not `pcntl` |
+| Bundled source | `/usr/src/php.tar.xz`, SHA-256 equal to the image's `PHP_SHA256=dcf93923b0e38e0d5252b25b796520b5a47761a08b3488b6d0b5d1115764d3f0` |
+| Build script | `scripts/conformance/php-pcntl-build.sh`, 1,167 B, SHA-256 `6ec44aaaa1cc287b4345286623cd9ffbca8ba4b02e78eff434f67398b07d057b`, taken from its exact Git blob |
+| Expected `pcntl.so` | 70,128 B, SHA-256 `caeb0d94d6b8b1853aed199acd575dac92d1bb74e6b3de2cfba56befdcdfa8de`. The script refuses any other result before installing it. |
+| Expected ini | `extension=pcntl\n`, SHA-256 `93099d97d237257a925ee62ecf79886c2afa5bfc6731006ac631f2c622db7677` |
+| Container | `sdk-php-cpq-p-build`, label `durable-workflow.owner=sdk-php` |
+| Tag | `sdk-php-runner-php:8.4.27-pcntl-6ec44aaaa1cc` |
 
-Build steps (one owner, in order):
+Steps, one owner, in order. Any failure stops the phase and runs the cleanup
+in step 6.
 
-1. Fresh `grafana machines --json` / `grafana docker` sample on lab4. Require the
-   base image present locally with the exact manifest digest above. Refuse if
-   the tag `sdk-php-runner-php:8.4.27-pcntl-<dockerfile-sha256-12>` already exists.
-2. In an empty owned context directory containing only the Dockerfile, run:
-   `timeout 300 docker build --builder default --network none --pull=false --no-cache --provenance=false --sbom=false --label durable-workflow.owner=sdk-php --label durable-workflow.dockerfile-sha256=<sha256> -t <tag> -f php-pcntl.Dockerfile <context>`.
-   The default builder is the daemon's built-in BuildKit (v0.26.2); no new
-   builder, daemon or entitlement is used. A build log line that resolves or
-   pulls anything from a registry stops the phase.
-3. Verify the result:
-   - the image's first ten layers equal the base's;
-   - exactly one added layer;
-   - `PHP_VERSION`, the extension dir and `php -i` configure options unchanged;
-   - modules equal the base's plus `pcntl`;
-   - the installed `pcntl.so` SHA-256 recorded;
-   - in a network-none, read-only, uid-1000 container, `pcntl` loads and a fork/wait passes;
-   - image size recorded.
-4. Bounds: 2 CPU-equivalent build steps (`make -j2`), 300 s wall time, build
-   output limited to the image. Cleanup: remove the owned context directory
-   and any dangling build cache entries for this build. The image is retained,
-   by its exact tag and ID, for phases D–E, then removed in phase F.
-5. Nothing is pushed or published. The image is never tagged with a public
-   registry name.
+1. Fresh `grafana machines --json` and `grafana docker` sample on lab4,
+   requiring at least 4 free CPUs, 4 GiB available memory and 2 GiB free Docker
+   storage. Require the base present locally with the exact manifest digest
+   above. Refuse if the container name or the tag already exists.
+2. Create the container with every bound enforced by its cgroup:
+   ```
+   docker create --name sdk-php-cpq-p-build --label durable-workflow.owner=sdk-php \
+     --network none --cap-drop ALL --security-opt no-new-privileges \
+     --cpus 2 --memory 1g --memory-swap 1g --pids-limit 256 \
+     --tmpfs /tmp:rw,exec,nosuid,nodev,size=512m \
+     --log-driver json-file --log-opt max-size=1m --log-opt max-file=1 \
+     --interactive --entrypoint /bin/sh <base> -s
+   ```
+   The script arrives on standard input, so no mount or mount point enters the
+   container's filesystem. All compilation happens in the 512 MiB `/tmp`
+   tmpfs. Output is capped at 1 MiB of log.
+3. `timeout 300 docker start -a -i sdk-php-cpq-p-build < php-pcntl-build.sh`.
+   Require exit 0 and `OOMKilled=false`. On timeout, `docker kill` the exact
+   container.
+4. Verify the container **before** committing:
+   - `docker diff` lists exactly the two added files
+     `/usr/local/lib/php/extensions/no-debug-non-zts-20240924/pcntl.so` and
+     `/usr/local/etc/php/conf.d/docker-php-ext-pcntl.ini`, plus the `C` entries
+     for their parent directories, and nothing else;
+   - `docker container inspect --size` `SizeRw` ≤ 1 MiB;
+   - `docker cp` of the two files gives exactly the hashes above.
+5. Commit and verify the image:
+   ```
+   docker commit --change 'ENTRYPOINT ["docker-php-entrypoint"]' --change 'CMD ["php","-a"]' \
+     --change 'LABEL durable-workflow.owner=sdk-php' sdk-php-cpq-p-build sdk-php-runner-php:8.4.27-pcntl-6ec44aaaa1cc
+   ```
+   - The image's `RootFS.Layers` equal the base's ten layers plus exactly one.
+   - `Env`, `Entrypoint`, `Cmd`, `User` and `WorkingDir` equal the base's.
+   - `Labels` equal the base's plus the owner label.
+   - In a network-none, read-only, uid-1000 container from the image:
+     `pcntl.so` has the expected hash, the module list equals the base's plus
+     `pcntl`, `php -i` configure options are unchanged, and a fork/wait passes.
+   - Record the image ID; later phases use it by ID.
+6. Cleanup:
+   - **Always:** `docker rm -f` the exact container name.
+   - **On any non-success after step 5 started:** `docker rmi` the exact
+     committed image ID and tag.
+   - There is no builder, cache or context to remove. Prove absence with
+     `docker ps -a` and `docker images`, both filtered by the owner label.
+   - On success, the one image is retained by exact ID for phases D–E, then
+     removed in phase F.
+
+Nothing is pushed or published, and the image never gets a public registry name.
+
+Candidate control on lab4 (this exact create/start primitive, without
+commit, so no image was produced):
+- 6 s;
+- exit 0, no OOM;
+- limits read back as 2 CPUs / 1 GiB memory and swap / 256 PIDs / network none / all capabilities dropped / `/tmp` 512 MiB;
+- `SizeRw` 147,456 B;
+- `docker diff` exactly the two files and their parent directories;
+- `pcntl.so` `caeb0d94…`, ini `93099d97…`;
+- container removed, nothing left.
+
+An earlier variant mounted the script and left a `/phase-p` mount-point stub
+in the diff. Passing it on standard input removed that stub.
 
 ### Phase A — acquisition (effect)
 
@@ -149,8 +183,10 @@ One held root at `$ROOT=/srv/sdk-php-cpq/consumer` (owner-created, mode 0700).
    size; the ZIP's package-relative inventory in the canonical form, which must
    equal `$SDK_INVENTORY_SHA256` computed from `vendor/durable-workflow/sdk`;
    and the canonical `vendor/` inventory (`$VENDOR_INVENTORY_SHA256`).
-6. `chmod -R a-w "$ROOT"`. Every later container mounts it read-only at
-   `/consumer`.
+6. `chmod -R a=rX "$ROOT"`: readable by everyone, including the runner's uid
+   10001, and writable by no one. Every later container mounts it read-only at
+   `/consumer` only as the source of its private copy (phase D step 2). This
+   host directory is not the execution boundary.
 
 ### Phase C — subject packets (no effect)
 
@@ -174,13 +210,35 @@ Per cell, in table order:
    runner joins this container's loopback, and nothing else can reach it.
    2 CPU, 2 GiB, 256 PIDs. Wait for `/api/ready` 200 through the image's own
    bash `/dev/tcp` health probe (`docker exec`), startup ceiling 60 s.
-2. Run `sdk-php-cpq-d-<n>-runner` from `$PHP_IMAGE` with
-   `--network container:sdk-php-cpq-d-<n>-server` (so `127.0.0.1:8080` is the
-   cell's Server), `/consumer` read-only, the packet directory read-only, and
-   `COMPLETION_TEST_CLIENT_TOKEN=$DW_OPERATOR_TOKEN`,
-   `COMPLETION_TEST_WORKER_TOKEN=$DW_WORKER_TOKEN`:
-   `php /consumer/scripts/conformance/qualify-completion-polls.php /consumer/vendor/autoload.php /packets/<n>.json <sha256>`.
-   2 CPU, 2 GiB, 256 PIDs. Ceiling: deadline + 30 s cleanup.
+2. Run `sdk-php-cpq-d-<n>-runner` from `$PHP_IMAGE` (by image ID) with:
+   - `--network container:sdk-php-cpq-d-<n>-server`, so `127.0.0.1:8080` is the cell's Server;
+   - `--read-only --cap-drop ALL --security-opt no-new-privileges`;
+   - `--user 10001:10001`, a uid with no account on the host (check `getent passwd 10001` is empty at admission);
+   - `/consumer` and the packet directory as read-only binds;
+   - a container-private execution root
+     `--tmpfs /held:rw,exec,nosuid,nodev,size=512m,uid=10001,gid=10001,mode=0700`;
+   - `COMPLETION_TEST_CLIENT_TOKEN=$DW_OPERATOR_TOKEN` and `COMPLETION_TEST_WORKER_TOKEN=$DW_WORKER_TOKEN`.
+
+   The command copies the consumer root into the private tmpfs and runs only
+   from that copy:
+
+   `sh -c 'cp -R /consumer/. /held/ && chmod -R a-w /held && exec php /held/scripts/conformance/qualify-completion-polls.php /held/vendor/autoload.php /packets/<n>.json <sha256>'`
+
+   This is the execution boundary. The tmpfs exists only in this container's
+   mount namespace. A host file writer cannot reach it: it would need root, or
+   the runner's uid (10001), which no host user has. The runner then:
+   - refuses unless its root is exactly such a tmpfs mount with nothing mounted
+     beneath it (`completion_admission_boundary`);
+   - authenticates every copied byte (`admit()`);
+   - re-hashes the runner, lock and full vendor inventory immediately before
+     requiring the autoloader, when reading installed identity, before every
+     router launch, and before reporting a result (`completion_admission_changed`).
+
+   A change to `/consumer` during the copy is caught by admission. A change
+   after the copy cannot reach `/held`.
+
+   Limits: 2 CPU, 2 GiB (the tmpfs counts against it), 256 PIDs. Ceiling:
+   deadline + 30 s cleanup.
 3. Stop and remove both containers and the network (teardown ceiling 30 s).
    Prove absence by name and label.
 

@@ -312,9 +312,11 @@ try {
     }
     CompletionPollSubject::freshProcess();
     $subject = CompletionPollSubject::read($argv[1], $argv[2], $argv[3]);
+    CompletionPollSubject::privateRoot(dirname(__DIR__, 2), (string) file_get_contents('/proc/self/mountinfo'));
     $subject->admit();
     CompletionPipelineScenario::gate($subject->routerGate());
-    // The admitted held root supplies the autoloader; argv only had to name the same file.
+    // Re-hash immediately before the admitted root's autoloader is required.
+    $subject->verifyHeld();
     require $subject->vendor.'/autoload.php';
     $identity = $subject->installed();
     if (!function_exists('pcntl_fork') || !function_exists('posix_kill') || !extension_loaded('curl')) {
@@ -322,8 +324,10 @@ try {
     }
     if ($subject->data['scenario'] === 'packet-defaults') {
         require_once __DIR__.'/Support/CompletionPollPacketDefaults.php';
+        $result = CompletionPollPacketDefaults::run();
+        $subject->verifyHeld();
         echo json_encode(['schema' => 'durable-workflow.php-completion-polls-result/v1', 'outcome' => 'pass',
-            'identity' => $identity, 'result' => CompletionPollPacketDefaults::run()], JSON_THROW_ON_ERROR).PHP_EOL;
+            'identity' => $identity, 'result' => $result], JSON_THROW_ON_ERROR).PHP_EOL;
         exit(0);
     }
     $clientToken = getenv('COMPLETION_TEST_CLIENT_TOKEN');
@@ -340,6 +344,8 @@ try {
     } else {
         $result = completionScenario($subject, $clientToken, $workerToken);
     }
+    // A result over bytes that changed during the run is not reported.
+    $subject->verifyHeld();
     $outcome = $result['outcome'];
     echo json_encode(['schema' => 'durable-workflow.php-completion-polls-result/v1', 'outcome' => $outcome,
         'scope' => 'installed SDK on caller-owned loopback runtime; image publication/digest and execution admission are caller evidence',

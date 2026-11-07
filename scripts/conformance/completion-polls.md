@@ -30,7 +30,12 @@ php /consumer/scripts/conformance/qualify-completion-polls.php \
 ## Held consumer root
 
 The sealed runner files and the normally installed `vendor/` tree must share
-one read-only consumer root (`/consumer` above). The autoloader argument must
+one consumer root. The runner executes only from a container-private tmpfs
+copy of it: a tmpfs mount at exactly the runner's root, with nothing mounted
+beneath it, which no host file writer can reach
+(`completion_admission_boundary`). The execution packet copies the read-only
+`/consumer` bind into `/held` and runs `/held/scripts/...` as a uid that has no
+host account. The autoloader argument must
 be that root's `vendor/autoload.php`, so it is the same file that
 `tests/Support/completion-worker-http.php` loads by its fixed relative path.
 Before any consumer code loads, the runner admits the root and refuses:
@@ -52,10 +57,16 @@ Before any consumer code loads, the runner admits the root and refuses:
 - a writable root, `vendor/`, `vendor/composer` or SDK package directory
   (`completion_admission_writable`).
 
-The runner then holds the device and inode of those four directories. Loading
-installed identity, and every router launch, re-checks them, the read-only state
-and the authority window (`completion_admission_replaced`,
-`completion_admission_expired`). A launch may use only the three sealed routers
+The runner then holds the device and inode of those four directories. It
+re-checks them, their read-only state, the authority window, and the bytes of
+the 22 runner files, the lock and every vendor file:
+- immediately before the autoloader is required;
+- when installed identity is read;
+- before every router launch;
+- before a result is reported.
+
+The codes are `completion_admission_replaced`, `completion_admission_expired`
+and `completion_admission_changed`. A launch may use only the three sealed routers
 in `CompletionPollSubject::ROUTERS`, by their exact unaliased paths in the held
 root, with the sealed concurrent server helper (`completion_admission_router`).
 
@@ -68,9 +79,9 @@ The four admission fields in the subject are:
 | `sdk_inventory_sha256` | The same form over `vendor/durable-workflow/sdk/`, with package-relative paths. The caller compares it with the inventory of the selected registry ZIP. |
 | `admission_expires_at` | Unix time at which this admission stops. |
 
-These in-process checks bind the result to what was on disk. They cannot prove
-the runner's own integrity: the caller must verify the runner manifest before
-it starts PHP, and mount the root read-only.
+These in-process checks bind the result to the admitted bytes. They cannot
+prove the runner's own integrity, which rests on the private execution root
+and on the caller verifying the runner manifest before it starts PHP.
 
 The consumer project must require the exact selected SDK, have no repository
 overrides or scripts, disable plugins and retain normal advisory policy. Its

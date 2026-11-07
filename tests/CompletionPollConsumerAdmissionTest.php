@@ -213,6 +213,84 @@ final class CompletionPollConsumerAdmissionTest extends TestCase
         $subject->routerGate()($this->root.'/'.CompletionPollSubject::ROUTERS[0], null);
     }
 
+    /**
+     * A host writer can change a file's bytes in place while every held directory
+     * keeps its identity and read-only mode. The changed bytes must be refused
+     * before they can be required, launched or reported.
+     */
+    #[DataProvider('postAdmissionChanges')]
+    public function testPostAdmissionInPlaceChangesRefuseBeforeUse(string $path, string $consumer): void
+    {
+        $this->requireNonRoot();
+        $subject = $this->read();
+        $this->hold();
+        $subject->admit($this->root);
+        $file = $this->root.'/'.$path;
+        $mode = fileperms($file) & 0777;
+        chmod($file, 0644);
+        file_put_contents($file, "\n// changed after admission\n", FILE_APPEND);
+        chmod($file, $mode);
+        $this->expectExceptionMessage('completion_admission_changed');
+        if ($consumer === 'launch') {
+            $subject->routerGate()($this->root.'/'.CompletionPollSubject::ROUTERS[2],
+                $this->root.'/'.CompletionPollSubject::ROUTER_SERVER);
+        } else {
+            $subject->verifyHeld();
+        }
+    }
+
+    public static function postAdmissionChanges(): iterable
+    {
+        yield 'worker HTTP router before launch' => ['tests/Support/completion-worker-http.php', 'launch'];
+        yield 'relay router before launch' => ['scripts/conformance/Support/completion-poll-relay.php', 'launch'];
+        yield 'pipeline server helper before launch' => ['tests/Support/completion-pipeline-server.php', 'launch'];
+        yield 'subject reader before launch' => ['scripts/conformance/Support/CompletionPollSubject.php', 'launch'];
+        yield 'autoloader before require' => ['vendor/autoload.php', 'require'];
+        yield 'class loader before require' => ['vendor/composer/ClassLoader.php', 'require'];
+        yield 'installed metadata before identity' => ['vendor/composer/installed.json', 'require'];
+        yield 'installed SDK source before launch' => ['vendor/durable-workflow/sdk/src/Client.php', 'launch'];
+        yield 'dependency source before result' => ['vendor/psr/log/src/LoggerInterface.php', 'require'];
+        yield 'lock before result' => ['composer.lock', 'require'];
+    }
+
+    public function testAFileAddedToTheVendorTreeAfterAdmissionRefuses(): void
+    {
+        $this->requireNonRoot();
+        $subject = $this->read();
+        $this->hold();
+        $subject->admit($this->root);
+        chmod($this->root.'/vendor/psr/log/src', 0755);
+        file_put_contents($this->root.'/vendor/psr/log/src/Injected.php', "<?php // injected\n");
+        $this->expectExceptionMessage('completion_admission_changed');
+        $subject->verifyHeld();
+    }
+
+    #[DataProvider('mountTables')]
+    public function testOnlyAContainerPrivateTmpfsRootIsAnExecutionBoundary(string $root, string $mountinfo, bool $accepted): void
+    {
+        if (!$accepted) {
+            $this->expectExceptionMessage('completion_admission_boundary');
+        }
+        CompletionPollSubject::privateRoot($root, $mountinfo);
+        self::assertTrue($accepted);
+    }
+
+    public static function mountTables(): iterable
+    {
+        $base = "1 0 0:31 / / ro,relatime - overlay overlay rw\n2 1 0:33 / /tmp rw - tmpfs tmpfs rw,size=262144k\n";
+        $held = "50 1 0:60 / /held rw,nosuid,nodev - tmpfs tmpfs rw,size=524288k,uid=10001,gid=10001,mode=700\n";
+        yield 'private tmpfs root' => ['/held', $base.$held, true];
+        yield 'host directory bound at the root' => ['/held', $base."50 1 8:1 /srv/sdk-php-cpq/consumer /held ro - ext4 /dev/sda1 rw\n", false];
+        yield 'directory inside a tmpfs, not its mount point' => ['/tmp/consumer', $base, false];
+        yield 'host vendor bound beneath the root' => ['/held', $base.$held."51 50 8:1 /srv/vendor /held/vendor ro - ext4 /dev/sda1 rw\n", false];
+        yield 'tmpfs later overmounted by a host bind' => ['/held', $base.$held."52 1 8:1 /srv/consumer /held ro - ext4 /dev/sda1 rw\n", false];
+        yield 'subtree of a shared tmpfs' => ['/held', $base."50 1 0:60 /shared /held rw - tmpfs tmpfs rw\n", false];
+        yield 'no mount at the root' => ['/held', $base, false];
+        yield 'unparsable table' => ['/held', "garbage\n", false];
+        yield 'relative root' => ['held', $base.$held, false];
+        yield 'escaped root path' => ['/held\\040x', $base.$held, false];
+    }
+
     #[DataProvider('routers')]
     public function testOnlyTheThreeSealedRoutersCanLaunch(string $router, ?string $server): void
     {

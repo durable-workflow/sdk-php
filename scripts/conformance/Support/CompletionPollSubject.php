@@ -276,7 +276,14 @@ final class CompletionPollSubject
         return $this->admission;
     }
 
-    /** Refuse a replaced, writable or expired root after admission. */
+    /**
+     * Refuse a replaced, writable, expired or changed root after admission.
+     *
+     * The entrypoint calls this immediately before the autoloader is required,
+     * when installed identity is read, before every router launch and before a
+     * result is reported. Each call re-hashes the runner files, the lock and
+     * every vendor file against the admitted subject.
+     */
     public function verifyHeld(): void
     {
         if ($this->root === null) {
@@ -288,6 +295,46 @@ final class CompletionPollSubject
             if (is_writable($path) || self::node($path) !== $node) {
                 throw new RuntimeException('completion_admission_replaced');
             }
+        }
+        $inventory = self::inventory($this->vendor);
+        $lock = self::bytes($this->root.'/composer.lock', 4194304, 'completion_admission_changed');
+        if (!hash_equals($this->data['runner_manifest_sha256'], self::runnerManifest($this->root)['sha256'])
+            || !hash_equals($this->data['lock_sha256'], hash('sha256', $lock))
+            || !hash_equals($this->data['sdk_inventory_sha256'], $inventory['sdk_sha256'])
+            || !hash_equals($this->data['vendor_inventory_sha256'], $inventory['vendor_sha256'])) {
+            throw new RuntimeException('completion_admission_changed');
+        }
+    }
+
+    /**
+     * Require the runner root to be a container-private tmpfs mount with nothing
+     * mounted beneath it, so no host file writer can reach the admitted bytes.
+     *
+     * @param string $mountinfo contents of /proc/self/mountinfo
+     */
+    public static function privateRoot(string $root, string $mountinfo): void
+    {
+        if (preg_match('~\A/[A-Za-z0-9._/-]+\z~', $root) !== 1 || str_contains($root, '//') || str_ends_with($root, '/')) {
+            throw new RuntimeException('completion_admission_boundary');
+        }
+        $own = null;
+        foreach (explode("\n", trim($mountinfo)) as $line) {
+            $separator = strpos($line, ' - ');
+            $fields = explode(' ', $separator === false ? '' : substr($line, 0, $separator));
+            $tail = explode(' ', $separator === false ? '' : substr($line, $separator + 3));
+            if (count($fields) < 6 || count($tail) < 2) {
+                throw new RuntimeException('completion_admission_boundary');
+            }
+            $point = $fields[4];
+            if (str_starts_with($point, $root.'/')) {
+                throw new RuntimeException('completion_admission_boundary');
+            }
+            if ($point === $root) {
+                $own = ['root' => $fields[3], 'type' => $tail[0]];
+            }
+        }
+        if ($own !== ['root' => '/', 'type' => 'tmpfs']) {
+            throw new RuntimeException('completion_admission_boundary');
         }
     }
 
