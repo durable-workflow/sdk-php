@@ -108,10 +108,18 @@ One held root at `$ROOT=/srv/sdk-php-cpq/consumer` (owner-created, mode 0700).
 
    | Input | Exact identity |
    | --- | --- |
-   | Composer PHAR | the retained, already authenticated `composer.phar`, SHA-256 `7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17c8d6`; the verifier requires Composer 2.10.3 or newer on the 2 line |
-   | CA bundle | the retained authenticated CI bundle, SHA-256 `50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785` |
+   | Composer PHAR | General's retained authenticated copy `/tmp/general-sdk395-verification-context-20261107/composer.phar`, 3,642,137 B, SHA-256 `7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17c8d6`; the verifier requires Composer 2.10.3 or newer on the 2 line |
+   | CA bundle | General's retained authenticated copy `/tmp/general-sdk395-verification-context-20261107/ca.pem`, 238,856 B, SHA-256 `50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785` |
    | Extra-roots directory | one owned **empty** directory |
    | Verifier | `durable-workflow/.github` `.github/actions/verify-composer-trust/verify.php` at `242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5`: blob `1783f0620e585c4c4998744216bd8fce418de637`, 5,969 B, SHA-256 `d7eea290e04e4eef382cc977584a736b1781b18994c5f462f600c0c47e8c5371` |
+
+   Copy the PHAR and CA bundle into an owned held directory
+   `/srv/sdk-php-cpq/trust` (mode 0500): refuse unless each source is a
+   regular file and not a symlink (`test -f` and `! test -L`); copy with
+   `cp --no-dereference`; check the copy's byte count and SHA-256 against the
+   table; then `chmod 0444`. No re-download. General retains the originals
+   until the installed P0 tail finishes or until 2026-11-08 20:30 UTC,
+   whichever comes first, and hands them off before removal if still needed.
 
    Environment for every Composer process:
    - `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO` and `COMPOSER_CAFILE` all name the CA bundle.
@@ -262,5 +270,4 @@ These are the only values not yet available. Everything else above is fixed.
 | SQLite and PostgreSQL Server settings | Confirm `DB_CONNECTION=sqlite`/`pgsql` and their variables against the accepted Compose receipts. The published Compose file shows only the MySQL settings. |
 | `default` namespace on 3.2.0 and 3.0.5 | Confirm it exists without bootstrap, from the same receipts |
 | `$PHP_IMAGE` | Image ID and tag from phase P (General chose the derived-image path) |
-| Retained Composer PHAR and CA bundle files | General's retained, authenticated copies (`7a2d379d…` and `50f79f98…`). Neither is kept anywhere sdk-php can read on lab4; only a stale hash file (`/tmp/cli-297-tool-composer.phar.sha256sum`) remains. They are not re-downloaded. |
 | Per-phase selections | General's fresh selection with literal windows for phases P, A, B, D, E (×3) and F, after independent review |
