@@ -69,12 +69,17 @@ comparisons remain required in the selected published-artifact acceptance.
 The initial driver is not the complete #328–#332 release matrix.
 
 Each invocation has a selected 15–120 second product deadline, bounded HTTP
-requests and a 15 second Worker shutdown grace. The Worker owns a separate
+requests and a 15 second Worker shutdown grace within a 30 second cleanup
+tail. Cleanup uses one-second requests directly to the selected loopback
+runtime, bound to this invocation's workflow and selected run IDs. The Worker owns a separate
 process group so maintenance helpers cannot survive forced cleanup. Workflow
 termination on failure is limited to this invocation's unique handles. The
 caller must budget the additional cleanup tail and remove its isolated
 runtime/database independently; the runner never removes a caller's Server.
-Failures and surviving registrations prevent a successful result.
+Failures and surviving registrations prevent a successful result. A violated
+consumer assertion reports `product-fail`. Unclassified failures, unusable
+observations, relay/process errors and incomplete cleanup report
+`runner-blocked`. Neither outcome qualifies the scenario.
 
 The output's image and runner references remain **caller-bound inputs**.
 The program verifies endpoint version and installed package identity; it does
@@ -86,5 +91,7 @@ program's `pass` covers only its declared installed-consumer scenario.
 Keep the runner, `Support/CompletionPoll*.php`, the relay and the existing
 `tests/Support/CompletionPipelineScenario.php` process helper in their relative
 paths. Repository PHPStan includes these new source files. The pure subject
-and evidence unit tests use synthetic metadata only and create no Server,
-package installation, profile or published-product acceptance.
+and evidence unit tests use synthetic metadata only. Relay controls forward
+fixed HTTP data to test byte/role forwarding, error preservation and one
+successful-answer loss. They create no Server, package installation, profile
+or published-product acceptance.

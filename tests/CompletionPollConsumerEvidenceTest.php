@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Qualification\CompletionPollEvidence;
+use DurableWorkflow\Qualification\CompletionPollFailure;
 use DurableWorkflow\Qualification\CompletionPollTrace;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -96,6 +97,30 @@ final class CompletionPollConsumerEvidenceTest extends TestCase
         CompletionPollEvidence::verify($events, 'pipeline', 'fixture-worker', 'fixture');
     }
 
+    public function testAnUndeliveredPrefetchCannotProveOriginalLeaseAdmission(): void
+    {
+        $events = self::pipeline();
+        $events[5]['status'] = 502;
+        $this->expectExceptionMessage('completion_evidence_pipeline_order');
+        CompletionPollEvidence::verify($events, 'pipeline', 'fixture-worker', 'fixture');
+    }
+
+    public function testPrefetchMustBeDeliveredBeforeTheParentCompletionIsSent(): void
+    {
+        $events = self::pipeline();
+        [$events[5], $events[6]] = [$events[6], $events[5]];
+        $this->expectExceptionMessage('completion_evidence_pipeline_order');
+        CompletionPollEvidence::verify($events, 'pipeline', 'fixture-worker', 'fixture');
+    }
+
+    public function testOriginalParentLeaseMustBeDeliveredBeforeTheFreshPrefetchRequest(): void
+    {
+        $events = self::pipeline();
+        [$events[2], $events[3]] = [$events[3], $events[2]];
+        $this->expectExceptionMessage('completion_evidence_pipeline_order');
+        CompletionPollEvidence::verify($events, 'pipeline', 'fixture-worker', 'fixture');
+    }
+
     public function testAnotherWorkflowPollWhileAParentAnswerIsPendingFailsTheBound(): void
     {
         $events = self::pipeline();
@@ -173,6 +198,32 @@ final class CompletionPollConsumerEvidenceTest extends TestCase
         $first = CompletionPollTrace::request(['lease_owner' => 'fixture-worker'], '{"lease_owner":"fixture-worker"}');
         $second = CompletionPollTrace::request(['lease_owner' => 'fixture-worker'], '{ "lease_owner" : "fixture-worker" }');
         self::assertNotSame($first['body_sha256'], $second['body_sha256']);
+    }
+
+    public function testExplicitConsumerViolationIsAProductFailure(): void
+    {
+        try {
+            CompletionPollEvidence::verify(self::carriers(), 'fallback', 'fixture-worker', 'fixture');
+            self::fail('An advertised capability cannot qualify the absent-capability fallback.');
+        } catch (RuntimeException $failure) {
+            self::assertSame('product-fail', CompletionPollFailure::diagnostic($failure)['outcome']);
+        }
+    }
+
+    public function testRelayAndUnknownExecutionErrorsStayRunnerBlockedWithoutLeakingMessages(): void
+    {
+        $events = self::carriers();
+        $events[] = ['kind' => 'relay_error'];
+        try {
+            CompletionPollEvidence::verify($events, 'carriers', 'fixture-worker', 'fixture');
+            self::fail('A relay error prevents qualification.');
+        } catch (RuntimeException $failure) {
+            self::assertSame('runner-blocked', CompletionPollFailure::diagnostic($failure)['outcome']);
+        }
+        $diagnostic = CompletionPollFailure::diagnostic(new RuntimeException('synthetic-payload-and-role-canary'));
+        self::assertSame('runner-blocked', $diagnostic['outcome']);
+        self::assertSame('completion_consumer_failed', $diagnostic['code']);
+        self::assertStringNotContainsString('synthetic-payload-and-role-canary', json_encode($diagnostic, JSON_THROW_ON_ERROR));
     }
 
     private static function carriers(): array

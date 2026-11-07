@@ -6,6 +6,8 @@ namespace DurableWorkflow\Qualification;
 
 use RuntimeException;
 
+require_once __DIR__.'/CompletionPollFailure.php';
+
 /** Assertions over actual relay observations, not a producer or source-test acceptance substitute. */
 final class CompletionPollEvidence
 {
@@ -23,7 +25,7 @@ final class CompletionPollEvidence
         $requests = $answers = $delivered = $deliveryStatus = $ordinary = $callbacks = $current = $callbackLeases = [];
         $advertised = array_fill_keys(self::CAPABILITIES, false);
         foreach ($events as $position => $event) {
-            if (in_array($event['kind'], ['worker_error', 'cleanup_error'], true)) {
+            if (in_array($event['kind'], ['worker_error', 'cleanup_error', 'relay_error'], true)) {
                 throw new RuntimeException('completion_evidence_process_failure');
             }
             switch ($event['kind']) {
@@ -70,20 +72,20 @@ final class CompletionPollEvidence
         }
         if ($scenario === 'fallback') {
             if (in_array(true, $advertised, true)) {
-                throw new RuntimeException('completion_evidence_fallback_capability');
+                throw CompletionPollFailure::product('completion_evidence_fallback_capability');
             }
             if ($ordinary === [] || $callbacks === []) {
-                throw new RuntimeException('completion_evidence_fallback_no_work');
+                throw CompletionPollFailure::product('completion_evidence_fallback_no_work');
             }
             foreach ($requests as $request) {
                 if (isset($request['body']['workflow_poll']) || isset($request['body']['activity_poll'])) {
-                    throw new RuntimeException('completion_evidence_fallback_carrier');
+                    throw CompletionPollFailure::product('completion_evidence_fallback_carrier');
                 }
             }
             return ['capabilities_absent' => true, 'carrier_requests' => 0];
         }
         if (in_array(false, $advertised, true)) {
-            throw new RuntimeException('completion_evidence_missing_capability');
+            throw CompletionPollFailure::product('completion_evidence_missing_capability');
         }
         if ($scenario === 'carriers') {
             $paths = array_fill_keys(['workflow-activity', 'activity-workflow', 'workflow-workflow'], 0);
@@ -102,17 +104,17 @@ final class CompletionPollEvidence
                         || !is_string($request['body'][$key]['poll_request_id'] ?? null)
                         || trim($request['body'][$key]['poll_request_id']) === ''
                         || isset($ordinary[self::key($task, $kind)]) || !isset($delivered[$id]) || ($deliveryStatus[$id] ?? null) !== 200) {
-                        throw new RuntimeException('completion_evidence_inline_delivery');
+                        throw CompletionPollFailure::product('completion_evidence_inline_delivery');
                     }
                     $kindCallbacks = $callbackLeases[self::key($task, $kind)] ?? [];
                     if (array_filter($kindCallbacks, static fn (int $position): bool => $position > $delivered[$id]) === []) {
-                        throw new RuntimeException('completion_evidence_missing_callback');
+                        throw CompletionPollFailure::product('completion_evidence_missing_callback');
                     }
                     ++$paths[$parent.'-'.$kind];
                 }
             }
             if (min($paths) < 1) {
-                throw new RuntimeException('completion_evidence_missing_carrier_path');
+                throw CompletionPollFailure::product('completion_evidence_missing_carrier_path');
             }
             return ['inline_delivery_counts' => $paths];
         }
@@ -128,7 +130,7 @@ final class CompletionPollEvidence
             || !is_string($task['lease_expires_at'] ?? null) || $task['lease_expires_at'] === ''
             || ($kind === 'workflow' && (!is_int($task['workflow_task_attempt'] ?? null) || $task['workflow_task_attempt'] < 1))
             || ($kind === 'activity' && !is_string($task['activity_attempt_id'] ?? null))) {
-            throw new RuntimeException('completion_evidence_lease_identity');
+            throw CompletionPollFailure::product('completion_evidence_lease_identity');
         }
     }
 
@@ -153,17 +155,22 @@ final class CompletionPollEvidence
     {
         $taskIds = [];
         $leases = [];
+        $leaseDeliveries = [];
         $prefetch = null;
         foreach ($answers as $id => $event) {
+            if (($event['status'] ?? null) !== 200 || ($deliveryStatus[$id] ?? null) !== 200) {
+                continue;
+            }
             foreach ([$event['answer']['task'] ?? null, $event['answer']['workflow_poll']['task'] ?? null] as $task) {
                 if (!is_array($task)) {
                     continue;
                 }
                 self::lease($task, $worker, 'workflow');
-                $taskIds[$task['workflow_id']] = $task['task_id'];
-                $leases[$task['workflow_id']] = $task;
+                $taskIds[$task['workflow_id']] ??= $task['task_id'];
+                $leases[$task['workflow_id']] ??= $task;
+                $leaseDeliveries[$task['workflow_id']] ??= $delivered[$id];
                 if ($task['workflow_id'] === $prefix.'-3' && str_ends_with($requests[$id]['path'], '/workflow-tasks/poll')) {
-                    $prefetch = $requests[$id] + ['answer_position' => $event['position']];
+                    $prefetch ??= $requests[$id] + ['answer_position' => $delivered[$id]];
                 }
             }
         }
@@ -178,43 +185,46 @@ final class CompletionPollEvidence
             || !is_string($prefetch['body']['poll_request_id'] ?? null) || trim($prefetch['body']['poll_request_id']) === ''
             || ($answers[$parent[0]['request']]['status'] ?? null) !== 200
             || ($deliveryStatus[$parent[0]['request']] ?? null) !== ($scenario === 'pipeline-loss' ? 502 : 200)
+            || ($leaseDeliveries[$prefix.'-2'] ?? PHP_INT_MAX) >= $prefetch['position']
             || $prefetch['answer_position'] >= $parent[0]['position']
             || $parent[0]['position'] >= $callbacks[$prefix.'-3'][0]
             || $callbacks[$prefix.'-3'][0] >= ($delivered[$parent[0]['request']] ?? -1)
             || ($delivered[end($parent)['request']] ?? PHP_INT_MAX) >= $child[0]['position']
             || isset($parent[0]['body']['workflow_poll'])) {
-            throw new RuntimeException('completion_evidence_pipeline_order');
+            throw CompletionPollFailure::product('completion_evidence_pipeline_order');
         }
         if (array_filter($useful, static fn (int $position): bool => $position > $parent[0]['position']
             && $position < $delivered[$parent[0]['request']]) === []) {
-            throw new RuntimeException('completion_evidence_no_overlapped_work');
+            throw CompletionPollFailure::product('completion_evidence_no_overlapped_work');
         }
         foreach ([[$parent[0], $prefix.'-2'], [$child[0], $prefix.'-3']] as [$request, $workflow]) {
             if (($request['body']['lease_owner'] ?? null) !== $worker
                 || ($request['body']['workflow_task_attempt'] ?? null) !== ($leases[$workflow]['workflow_task_attempt'] ?? null)) {
-                throw new RuntimeException('completion_evidence_publication_fence');
+                throw CompletionPollFailure::product('completion_evidence_publication_fence');
             }
         }
         foreach ($requests as $request) {
             if ($request['position'] < $prefetch['position']) {
                 foreach ([$request['body']['poll_request_id'] ?? null, $request['body']['workflow_poll']['poll_request_id'] ?? null] as $prior) {
                     if ($prior === $prefetch['body']['poll_request_id']) {
-                        throw new RuntimeException('completion_evidence_prefetch_identity_reused');
+                        throw CompletionPollFailure::product('completion_evidence_prefetch_identity_reused');
                     }
                 }
             }
             if ($request['position'] > $parent[0]['position'] && $request['position'] < $delivered[$parent[0]['request']]
                 && (str_ends_with($request['path'], '/workflow-tasks/poll') || isset($request['body']['workflow_poll']))) {
-                throw new RuntimeException('completion_evidence_extra_workflow_reservation');
+                throw CompletionPollFailure::product('completion_evidence_extra_workflow_reservation');
             }
         }
         if ($scenario === 'pipeline-loss') {
-            if (count($parent) !== 2 || $parent[0]['body'] !== $parent[1]['body'] || count($callbacks[$prefix.'-2'] ?? []) !== 1) {
-                throw new RuntimeException('completion_evidence_lost_answer_retry');
+            if (count($parent) !== 2 || $parent[0]['body'] !== $parent[1]['body'] || count($callbacks[$prefix.'-2'] ?? []) !== 1
+                || ($answers[$parent[1]['request']]['status'] ?? null) !== 200
+                || ($deliveryStatus[$parent[1]['request']] ?? null) !== 200) {
+                throw CompletionPollFailure::product('completion_evidence_lost_answer_retry');
             }
             $locals = array_filter($events, static fn (array $event): bool => $event['kind'] === 'local' && $event['index'] === 2);
             if (count($locals) !== 5) {
-                throw new RuntimeException('completion_evidence_local_reexecution');
+                throw CompletionPollFailure::product('completion_evidence_local_reexecution');
             }
         }
         return ['controlled_answer_overlap' => true, 'joined_before_next_completion' => true,

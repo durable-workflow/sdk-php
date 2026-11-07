@@ -67,7 +67,7 @@ try {
         $trace->record(['kind' => 'upstream', 'request' => $requestId, 'status' => $status,
             'answer' => is_array($answer) ? CompletionPollTrace::answer($answer) : null]);
     }
-    $parent = $trace->change(static function (array &$state) use ($path): void {
+    $parent = $trace->change(static function (array &$state) use ($path, $status, $requestId): void {
         if (!in_array($state['scenario'], ['pipeline', 'pipeline-loss'], true)
             || !preg_match('~/workflow-tasks/([^/]+)/complete$~', $path, $match)) {
             return;
@@ -86,13 +86,16 @@ try {
             if (($task['task_id'] ?? null) === rawurldecode($match[1])
                 && ($task['workflow_id'] ?? null) === $state['prefix'].'-2') {
                 $state['parent_attempts'] = ($state['parent_attempts'] ?? 0) + 1;
+                if ($status === 200 && !isset($state['held_parent_request'])) {
+                    $state['held_parent_request'] = $requestId;
+                }
                 $state['parent_path'] = $path;
                 return;
             }
         }
     });
-    // Use the path and first attempt, never a guessed task ID or generated response.
-    if ($status === 200 && ($parent['parent_path'] ?? null) === $path && ($parent['parent_attempts'] ?? null) === 1) {
+    // Hold only the first successful answer, never a refusal or a generated response.
+    if ($status === 200 && ($parent['held_parent_request'] ?? null) === $requestId) {
         $deadline = microtime(true) + 2;
         while (!(($trace->state())['release_parent'] ?? false) && microtime(true) < $deadline) {
             usleep(1000);
@@ -110,6 +113,13 @@ try {
     header('Content-Type: '.(is_string($contentType) ? $contentType : 'application/octet-stream'));
     echo $response;
 } catch (Throwable $error) {
+    if (isset($trace)) {
+        try {
+            $trace->record(['kind' => 'relay_error']);
+        } catch (Throwable) {
+            // A full or unusable trace remains a runner failure, never an empty poll.
+        }
+    }
     http_response_code(502);
     header('Content-Type: application/json');
     // A relay failure is fatal and distinguishable from the selected lost-answer experiment.

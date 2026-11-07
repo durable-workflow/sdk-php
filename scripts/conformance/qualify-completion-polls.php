@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use DurableWorkflow\Client;
 use DurableWorkflow\Qualification\CompletionPollEvidence;
+use DurableWorkflow\Qualification\CompletionPollFailure;
 use DurableWorkflow\Qualification\CompletionPollSubject;
 use DurableWorkflow\Qualification\CompletionPollTrace;
 use DurableWorkflow\Tests\Support\CompletionPipelineScenario;
@@ -63,6 +64,7 @@ function completionScenario(CompletionPollSubject $subject, string $clientToken,
         if ($control->clusterInfo()->version !== $data['server_version']) {
             throw new RuntimeException('completion_runtime_version');
         }
+        $cleanup = new Client($data['endpoint'], namespace: $data['namespace'], controlToken: $clientToken, requestTimeoutSeconds: 1);
         $deadline = microtime(true) + $data['deadline_seconds'];
         $pid = pcntl_fork();
         if ($pid === -1) {
@@ -142,40 +144,51 @@ function completionScenario(CompletionPollSubject $subject, string $clientToken,
             foreach ($handles as $index => $handle) {
                 $remaining = (int) floor($deadline - microtime(true));
                 if ($remaining < 1 || $handle->result(timeoutSeconds: $remaining, pollIntervalSeconds: 0.1) !== $index) {
-                    throw new RuntimeException('completion_workflow_result');
+                    throw CompletionPollFailure::product('completion_workflow_result');
                 }
             }
         } catch (Throwable $error) {
             $failure = $error;
         } finally {
+            $cleanupDeadline = microtime(true) + 30;
             // The child owns this new process group, including its SDK maintenance helpers.
-            posix_kill(-$pid, SIGTERM);
+            if (!posix_kill(-$pid, SIGTERM)) {
+                posix_kill($pid, SIGTERM);
+            }
             $until = microtime(true) + 15;
-            while (pcntl_waitpid($pid, $status, WNOHANG) === 0) {
+            $status = 0;
+            while (($waited = pcntl_waitpid($pid, $status, WNOHANG)) === 0) {
                 if (microtime(true) >= $until) {
                     posix_kill(-$pid, SIGKILL);
+                    posix_kill($pid, SIGKILL);
                     pcntl_waitpid($pid, $status);
-                    $failure ??= new RuntimeException('completion_worker_cleanup_deadline');
+                    $failure = new RuntimeException('completion_worker_cleanup_deadline', previous: $failure);
                     break;
                 }
                 usleep(50_000);
             }
-            if (!pcntl_wifexited($status) || pcntl_wexitstatus($status) !== 0) {
+            if ($waited === -1 || !pcntl_wifexited($status) || pcntl_wexitstatus($status) !== 0) {
                 $failure ??= new RuntimeException('completion_worker_failed');
             }
             if (posix_kill(-$pid, 0)) {
                 posix_kill(-$pid, SIGKILL);
-                $failure ??= new RuntimeException('completion_worker_helper_survived');
+                $failure = new RuntimeException('completion_worker_helper_survived', previous: $failure);
             }
             if ($failure !== null) {
                 foreach ($handles as $handle) {
-                    try {
-                        $description = $handle->describe();
-                        if (!in_array($description->status, ['completed', 'failed', 'cancelled', 'terminated', 'timed_out'], true)) {
-                            $handle->terminate('Completion qualification cleanup');
-                        }
-                    } catch (Throwable) {
+                    if (microtime(true) >= $cleanupDeadline - 2) {
                         $trace->record(['kind' => 'cleanup_error']);
+                        $failure = new RuntimeException('completion_workflow_cleanup_deadline', previous: $failure);
+                        break;
+                    }
+                    try {
+                        $description = $cleanup->describeWorkflow($handle->workflowId, $handle->selectedRunId);
+                        if (!in_array($description->status, ['completed', 'failed', 'cancelled', 'terminated', 'timed_out'], true)) {
+                            $cleanup->terminateWorkflow($handle->workflowId, 'Completion qualification cleanup', $handle->selectedRunId);
+                        }
+                    } catch (Throwable $cleanupError) {
+                        $trace->record(['kind' => 'cleanup_error']);
+                        $failure = new RuntimeException('completion_workflow_cleanup_failed', previous: $cleanupError);
                     }
                 }
             }
@@ -183,7 +196,7 @@ function completionScenario(CompletionPollSubject $subject, string $clientToken,
         if ($failure !== null) {
             throw $failure;
         }
-        if (($control->listWorkers($queue)['workers'] ?? []) !== []) {
+        if (($cleanup->listWorkers($queue)['workers'] ?? []) !== []) {
             throw new RuntimeException('completion_worker_registration_survived');
         }
         $events = $trace->state()['events'];
@@ -214,8 +227,6 @@ try {
         'identity' => $identity, 'server_version' => $subject->data['server_version'],
         'caller_server_image' => $subject->data['server_image'], 'result' => $result], JSON_THROW_ON_ERROR).PHP_EOL;
 } catch (Throwable $error) {
-    $message = $error->getMessage();
-    $code = preg_match('/\Acompletion_[a-z_]+\z/', $message) === 1 ? $message : 'completion_consumer_failed';
-    fwrite(STDERR, json_encode(['outcome' => 'fail', 'code' => $code, 'class' => $error::class], JSON_THROW_ON_ERROR).PHP_EOL);
+    fwrite(STDERR, json_encode(CompletionPollFailure::diagnostic($error), JSON_THROW_ON_ERROR).PHP_EOL);
     exit(1);
 }
