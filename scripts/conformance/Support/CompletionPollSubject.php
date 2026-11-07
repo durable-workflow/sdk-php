@@ -15,7 +15,7 @@ final class CompletionPollSubject
     public const SCENARIOS = ['carriers', 'pipeline', 'pipeline-loss', 'fallback'];
 
     /** @param array<string, mixed> $data */
-    private function __construct(public readonly array $data, public readonly string $vendor)
+    private function __construct(public readonly array $data, public readonly string $vendor, public readonly string $sha256)
     {
     }
 
@@ -37,11 +37,14 @@ final class CompletionPollSubject
     /** Validate before loading any consumer package or making a request. */
     public static function read(string $autoload, string $packet, string $sha256): self
     {
-        if (preg_match('/\A[a-f0-9]{64}\z/', $sha256) !== 1 || !is_file($packet)
-            || filesize($packet) > 16384 || !hash_equals($sha256, hash_file('sha256', $packet))) {
+        if (preg_match('/\A[a-f0-9]{64}\z/', $sha256) !== 1) {
             throw new RuntimeException('completion_subject_identity');
         }
-        $data = json_decode(file_get_contents($packet), true, flags: JSON_THROW_ON_ERROR);
+        $bytes = self::bytes($packet, 16384, 'completion_subject_identity');
+        if (!hash_equals($sha256, hash('sha256', $bytes))) {
+            throw new RuntimeException('completion_subject_identity');
+        }
+        $data = json_decode($bytes, true, flags: JSON_THROW_ON_ERROR);
         $fields = ['schema', 'runner_reference', 'sdk_version', 'sdk_reference', 'lock_sha256',
             'server_version', 'server_image', 'endpoint', 'namespace', 'scenario', 'deadline_seconds'];
         if (!is_array($data) || array_is_list($data) || ($data['schema'] ?? null) !== self::SCHEMA
@@ -70,9 +73,9 @@ final class CompletionPollSubject
         if ($vendor === false || basename($vendor) !== 'vendor' || realpath($autoload) !== $vendor.'/autoload.php') {
             throw new RuntimeException('completion_subject_autoload');
         }
+        $lockBytes = self::bytes(dirname($vendor).'/composer.lock', 4194304, 'completion_subject_lock');
         if (!is_string($data['lock_sha256']) || preg_match('/\A[a-f0-9]{64}\z/', $data['lock_sha256']) !== 1
-            || !is_file(dirname($vendor).'/composer.lock')
-            || !hash_equals($data['lock_sha256'], hash_file('sha256', dirname($vendor).'/composer.lock'))) {
+            || !hash_equals($data['lock_sha256'], hash('sha256', $lockBytes))) {
             throw new RuntimeException('completion_subject_lock');
         }
         $project = json_decode(file_get_contents(dirname($vendor).'/composer.json'), true, flags: JSON_THROW_ON_ERROR);
@@ -82,7 +85,7 @@ final class CompletionPollSubject
             || ($project['require']['durable-workflow/sdk'] ?? null) !== $data['sdk_version']) {
             throw new RuntimeException('completion_subject_project');
         }
-        $lock = json_decode(file_get_contents(dirname($vendor).'/composer.lock'), true, flags: JSON_THROW_ON_ERROR);
+        $lock = json_decode($lockBytes, true, flags: JSON_THROW_ON_ERROR);
         $packages = array_values(array_filter($lock['packages'] ?? [],
             static fn (array $package): bool => ($package['name'] ?? null) === 'durable-workflow/sdk'));
         if (count($packages) !== 1 || ($packages[0]['version'] ?? null) !== $data['sdk_version']
@@ -91,7 +94,32 @@ final class CompletionPollSubject
             || ($packages[0]['dist']['url'] ?? null) !== 'https://api.github.com/repos/durable-workflow/sdk-php/zipball/'.$data['sdk_reference']) {
             throw new RuntimeException('completion_subject_registry_distribution');
         }
-        return new self($data, $vendor);
+        return new self($data, $vendor, $sha256);
+    }
+
+    /** One bounded descriptor supplies both the authenticated identity and parsed content. */
+    private static function bytes(string $path, int $limit, string $code): string
+    {
+        if (!stream_is_local($path)) {
+            throw new RuntimeException($code);
+        }
+        $stream = @fopen($path, 'rb');
+        if ($stream === false) {
+            throw new RuntimeException($code);
+        }
+        try {
+            $metadata = fstat($stream);
+            if ($metadata === false || ($metadata['mode'] & 0170000) !== 0100000) {
+                throw new RuntimeException($code);
+            }
+            $bytes = stream_get_contents($stream, $limit + 1);
+            if ($bytes === false || strlen($bytes) > $limit) {
+                throw new RuntimeException($code);
+            }
+            return $bytes;
+        } finally {
+            fclose($stream);
+        }
     }
 
     public static function loopback(mixed $endpoint): void
@@ -128,6 +156,7 @@ final class CompletionPollSubject
             throw new RuntimeException('completion_subject_release_metadata');
         }
         return ['sdk_version' => $this->data['sdk_version'], 'sdk_reference' => $this->data['sdk_reference'],
+            'subject_sha256' => $this->sha256,
             'caller_runner_reference' => $this->data['runner_reference'], 'lock_sha256' => $this->data['lock_sha256'],
             'implementation_paths' => $implementations];
     }

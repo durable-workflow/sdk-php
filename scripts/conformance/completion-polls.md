@@ -34,6 +34,12 @@ loaded consumer classes and proxy environment overrides. It does not replace
 the caller's complete archive/file seal, registry/release evidence, protected
 profile, canonical Composer verifier or execution admission.
 
+The selected subject and lock are each read once from a bounded local regular
+file descriptor. The same bytes are hashed and parsed, so a pathname replacement
+cannot select a different document after digest verification. The subject is
+limited to 16 KiB and the lock to 4 MiB. Successful identity output retains
+the authenticated `subject_sha256` alongside its lock digest.
+
 `COMPLETION_TEST_CLIENT_TOKEN` and `COMPLETION_TEST_WORKER_TOKEN` must contain
 distinct caller-provisioned synthetic runtime roles. Credential headers and
 outcome payloads never enter the trace. No credential file or vault is read.

@@ -48,6 +48,49 @@ final class CompletionPollConsumerSubjectTest extends TestCase
         $subject = $this->read();
         self::assertSame($this->data, $subject->data);
         self::assertSame($this->directory.'/vendor', $subject->vendor);
+        self::assertSame(hash_file('sha256', $this->directory.'/subject.json'), $subject->sha256);
+    }
+
+    #[DataProvider('replacedDocuments')]
+    public function testPathReplacementCannotChangeTheAuthenticatedDocument(string $document): void
+    {
+        $process = proc_open([PHP_BINARY, __DIR__.'/Support/completion-consumer-custody-fixture.php',
+            __DIR__.'/../scripts/conformance/Support/CompletionPollSubject.php', $document],
+            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        self::assertIsResource($process);
+        $output = stream_get_contents($pipes[1]);
+        $errors = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        self::assertSame(0, proc_close($process), $errors);
+        self::assertSame('', $errors);
+        $result = json_decode($output, true, flags: JSON_THROW_ON_ERROR);
+        self::assertArrayNotHasKey('error', $result);
+        self::assertSame(1, $result['reads']);
+        self::assertSame('http://127.0.0.1:12345', $result['selected']['endpoint']);
+    }
+
+    public static function replacedDocuments(): iterable
+    {
+        yield 'subject pathname replaced after the authenticated read' => ['subject'];
+        yield 'lock pathname replaced after the authenticated read' => ['lock'];
+    }
+
+    public function testAnOversizedSubjectRefusesEvenWhenItsDigestMatches(): void
+    {
+        $path = $this->directory.'/subject.json';
+        file_put_contents($path, str_repeat(' ', 16385));
+        $this->expectExceptionMessage('completion_subject_identity');
+        CompletionPollSubject::read($this->directory.'/vendor/autoload.php', $path, hash_file('sha256', $path));
+    }
+
+    public function testAnOversizedLockRefusesEvenWhenItsDigestMatches(): void
+    {
+        $path = $this->directory.'/composer.lock';
+        file_put_contents($path, str_repeat(' ', 4194305));
+        $this->data['lock_sha256'] = hash_file('sha256', $path);
+        $this->expectExceptionMessage('completion_subject_lock');
+        $this->read();
     }
 
     #[DataProvider('invalidFields')]
