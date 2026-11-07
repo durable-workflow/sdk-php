@@ -37,6 +37,11 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     private readonly ?float $workerRequestTimeoutSeconds;
     private ?GuzzleClient $nativeControlClient = null;
     private ?int $responseStatus = null;
+    /** @var \Fiber<mixed, mixed, mixed, mixed>|null */
+    private ?\Fiber $completionOwner = null;
+    private ?string $completionUri = null;
+    private bool $completionArmed = false;
+    private ?CompletionRequestHandler $completionHandler = null;
 
     public function lastResponseStatus(): ?int
     {
@@ -85,6 +90,41 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     public function supportsBoundedRequests(): bool
     {
         return $this->client instanceof GuzzleClient && extension_loaded('curl');
+    }
+
+    /** @internal Only the owned default HTTP policy can suspend a completion request. */
+    public function supportsCompletionSuspension(): bool
+    {
+        return $this->defaultProcessConfiguration && $this->supportsBoundedRequests();
+    }
+
+    /**
+     * @internal Arm exactly the sending Fiber's first request, with an exact completion URI.
+     * @param \Fiber<mixed, mixed, mixed, mixed> $owner
+     */
+    public function armCompletionSuspension(\Fiber $owner, string $uri): bool
+    {
+        if (!$this->supportsCompletionSuspension() || $this->completionOwner !== null) {
+            return false;
+        }
+        $this->completionOwner = $owner;
+        $this->completionUri = $uri;
+        $this->completionArmed = true;
+
+        return true;
+    }
+
+    /**
+     * @internal The owner releases the arm on every terminal or abandoned path.
+     * @param \Fiber<mixed, mixed, mixed, mixed> $owner
+     */
+    public function disarmCompletionSuspension(\Fiber $owner): void
+    {
+        if ($this->completionOwner === $owner) {
+            $this->completionOwner = null;
+            $this->completionUri = null;
+            $this->completionArmed = false;
+        }
     }
 
     /** @internal Custom HTTP clients require an application bootstrap in a fresh process. */
@@ -454,9 +494,22 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     {
         $connectionFailure = false;
         $timedOut = false;
+        $owner = $this->completionOwner;
+        $armed = $owner !== null && $owner === \Fiber::getCurrent() && $this->completionArmed;
+        $suspend = $armed && $request->getMethod() === 'POST' && (string) $request->getUri() === $this->completionUri
+            && !$stream && $sink === null && $progress === null;
+        if ($armed) {
+            $this->completionArmed = false;
+        }
         try {
             $http = $controlTimeout !== null && !function_exists('curl_exec') && !function_exists('curl_multi_exec')
                 ? $this->nativeControlHttpClient() : $this->client;
+            if ($suspend && $this->client instanceof GuzzleClient) {
+                $handler = $this->completionHandler ??= new CompletionRequestHandler();
+                $http = new GuzzleClient(['handler' => HandlerStack::create(
+                    static fn (RequestInterface $request, array $options) => $handler($request, $options, $owner),
+                )] + $this->client->getConfig());
+            }
             if ($http instanceof GuzzleClient) {
                 $onStats = $http->getConfig('on_stats');
 
@@ -479,6 +532,10 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             return $this->client->sendRequest($request);
         } catch (Throwable $exception) {
             throw $this->requestFailure($exception, $controlTimeout, $timedOut, $connectionFailure, $control);
+        } finally {
+            if ($armed) {
+                $this->disarmCompletionSuspension($owner);
+            }
         }
     }
 
