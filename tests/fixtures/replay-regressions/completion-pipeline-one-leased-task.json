@@ -11,11 +11,23 @@
     "input": []
   },
   "expected": {
-    "completion_order": [
-      "parent_sent",
-      "next_work",
-      "parent_answer",
-      "next_completion"
+    "command_sequence": [
+      {
+        "type": "record_local_activity",
+        "activity_type": "pipeline.local",
+        "outcome": "completed",
+        "result": 2,
+        "completion_order": [
+          "parent_sent",
+          "next_work",
+          "parent_answer",
+          "next_completion"
+        ]
+      },
+      {
+        "type": "complete_workflow",
+        "result": 2
+      }
     ]
   },
   "command_sequence": [

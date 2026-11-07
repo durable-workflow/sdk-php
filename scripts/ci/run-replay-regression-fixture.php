@@ -453,8 +453,8 @@ final class ReplayRegressionConsumer
             $commands = array_map(static fn (array $command): array => self::decodeEnvelopes($command, new AvroPayloadCodec()),
                 $observed['completions'][2]['commands']);
             self::assertMatches($fixture['command_sequence'], $commands, $identity.'.command_sequence');
-            self::assertMatches($fixture['expected'], ['completion_order' =>
-                \DurableWorkflow\Tests\Support\WorkerPipelineScenario::completionOrder($observed)], $identity.'.expected');
+            $commands[0]['completion_order'] = \DurableWorkflow\Tests\Support\WorkerPipelineScenario::completionOrder($observed);
+            self::assertMatches($fixture['expected'], ['command_sequence' => $commands], $identity.'.expected');
 
             return;
         }
