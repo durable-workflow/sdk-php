@@ -15,6 +15,7 @@ use DurableWorkflow\Tests\Support\ActivityGrantScenario;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Tests\Support\RecordingMetricsRecorder;
 use DurableWorkflow\Transport\Psr18Transport;
+use DurableWorkflow\Transport\PayloadTransport;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
@@ -354,6 +355,35 @@ final class WorkerCarriedPollTest extends TestCase
     {
         yield 'retryable payload outage' => [503, true];
         yield 'permanent payload authorization' => [403, false];
+    }
+
+    public function testCustomPayloadTransportConnectionFailureRecoversTheSameCarriedId(): void
+    {
+        $answer = self::activityAnswer();
+        $blob = (new AvroPayloadCodec())->envelope([7])['blob'];
+        $answer['task']['arguments'] = ['codec' => 'avro', 'external_payload' => RuntimeExternalPayloadTest::reference($blob)];
+        $control = self::transport(static fn (): array => ['activity_poll' => ['leased' => true, 'answer' => $answer]]);
+        $transport = new class($control) implements PayloadTransport {
+            public function __construct(private readonly FakeTransport $control) {}
+
+            public function send(string $method, string $uri, array $headers, ?array $body = null): array
+            {
+                return $this->control->send($method, $uri, $headers, $body);
+            }
+
+            public function fetchPayload(string $uri, array $headers, int $maxBytes): string
+            {
+                throw new TransportException('The custom payload connection was lost.', transientConnectionFailure: true);
+            }
+        };
+        $calls = [];
+        self::assertTrue(self::worker($transport, $calls)->tick(0));
+        self::assertSame(['workflow', 'activity:7'], $calls);
+        $completion = self::requests($control, '/workflow-tasks/workflow-task/complete');
+        self::assertCount(1, $completion);
+        self::assertSame($completion[0]['body']['activity_poll']['poll_request_id'],
+            self::requests($control, '/activity-tasks/poll')[0]['body']['poll_request_id']);
+        self::assertSame([], self::requests($control, '/workflow-tasks/workflow-task/fail'));
     }
 
     private static function normalizationTransport(array $replace = []): FakeTransport

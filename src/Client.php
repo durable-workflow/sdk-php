@@ -2994,9 +2994,19 @@ final class Client implements WorkflowClientInterface
      */
     public function carriedActivityPollResponse(array $answer, array $request): array
     {
-        return $this->resolveResponsePayloads($answer, '/worker/activity-tasks/poll', true, $request,
-            $this->requestHeaders(true), $this->boundedWorkerRequests ? new RequestBudget(5) : null,
-            null, true, null);
+        try {
+            return $this->resolveResponsePayloads($answer, '/worker/activity-tasks/poll', true, $request,
+                $this->requestHeaders(true), $this->boundedWorkerRequests ? new RequestBudget(5) : null,
+                null, true, null);
+        } catch (TransportException $exception) {
+            if ($exception instanceof FailureReportRefused) {
+                throw $exception;
+            }
+            $details = $exception->response;
+            $reason = is_array($details) && isset($details['reason']) ? (string) $details['reason'] : null;
+
+            throw new ServerException($exception->getMessage(), $exception->status ?? 0, $reason, $details, $exception);
+        }
     }
 
     /**
