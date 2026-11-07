@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "config": {
+    "mediaType": "application/vnd.oci.image.config.v1+json",
+    "digest": "sha256:6cd09145362dfe6831b14545de3d5fd6cc75c37cfd6ef8561429c1fc73518b39",
+    "size": 6946
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:edf85873f64e24f7d5f7e8a2fc498afd54aa646dbf1bc7d5a2f1bf03b096d973",
+      "size": 47309856
+    },
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:6ef6c7b50a938e4f81a40ed970b0a1b4d6409d55032d50c0d8a30042b484226f",
+      "size": 884
+    },
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:e3e5d1ac74c19e81a17008c972f1ca25e9c4dc509307c3eee1382e7301f0f7a4",
+      "size": 783558
+    },
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:0d74d296605b0eb8f94dd83441a08a413f4ae4f2aafa9e7d1e2da5adcdade645",
+      "size": 6173009
+    },
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:297d04cfe4705c95a7d1a6abb5831e3637edfebdb6b639661c8c66ff2220cd64",
+      "size": 2607
+    },
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:4c8a3e0d4e4b216b443a3125ae3f947d8d0e9df399ba4af9bbb5823703c95c1f",
+      "size": 335
+    },
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:a63160a5eda1f2bc97de740813d14908519eba5d1d59da5f7f6934126d33ce17",
+      "size": 49934187
+    },
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:7534d1db9f8dcc7acdd28f0655c93bd0b045dee128866ff2809c833a6462eaf1",
+      "size": 316
+    },
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:49ec2dab01d93d549839d59c815b48a834beca654fc9d45a86eaddc8fd82cc5a",
+      "size": 129371339
+    },
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:ab24264a27e9ec0085b30b83b81272417504c9e231d006975e9956af3526a3ab",
+      "size": 5327
+    },
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:96d30d9fbee877d823d9807f43df6c030983d61d7a645d0f5ac2c7154a8abd12",
+      "size": 120
+    }
+  ],
+  "annotations": {
+    "com.docker.official-images.bashbrew.arch": "amd64",
+    "org.opencontainers.image.base.digest": "sha256:1d2ffec1517ae20383e44e0b1de53fd05aa086c3f18097e903be79865cfae3a9",
+    "org.opencontainers.image.base.name": "oraclelinux:9-slim",
+    "org.opencontainers.image.created": "2026-05-04T22:59:17Z",
+    "org.opencontainers.image.revision": "7cf11d5360282effadb347353d5f82339506b106",
+    "org.opencontainers.image.source": "https://github.com/docker-library/mysql.git#7cf11d5360282effadb347353d5f82339506b106:8.0",
+    "org.opencontainers.image.url": "https://hub.docker.com/_/mysql",
+    "org.opencontainers.image.version": "8.0.46"
+  }
+}

@@ -151,17 +151,31 @@ final class CompletionPollOppositeSlots
             'arguments' => $client->payloadCodec()->envelope([1]), 'start_to_close_timeout' => 120]];
     }
 
-    /** @param array<string, mixed> $answer
+    /**
+     * Accept one leased task for the route the caller polled.
+     *
+     * A workflow poll task carries the `task_kind` discriminator. The published
+     * activity-poll task (worker-protocol-api ActivityTaskClaim) has no
+     * `task_kind`, so an activity claim is identified by its required activity
+     * fields and refused only if it names a workflow-route kind.
+     *
+     * @param array<string, mixed> $answer
      * @return array<string, mixed>
      */
     private static function claim(array $answer, string $worker, string $kind): array
     {
         $task = $answer['task'] ?? null;
+        $text = static fn (string $key): bool => is_string($task[$key] ?? null) && $task[$key] !== '';
         if (($answer['poll_status'] ?? null) !== 'leased' || !is_array($task)
-            || ($task['lease_owner'] ?? null) !== $worker || ($task['task_kind'] ?? null) !== $kind
+            || ($task['lease_owner'] ?? null) !== $worker
             || !is_string($task['task_id'] ?? null) || !is_string($task['lease_expires_at'] ?? null)
-            || ($kind === 'workflow' && (!is_int($task['workflow_task_attempt'] ?? null) || $task['workflow_task_attempt'] < 1))
-            || ($kind === 'activity' && (!is_string($task['activity_attempt_id'] ?? null) || $task['activity_attempt_id'] === ''))) {
+            || ($kind === 'workflow' && (($task['task_kind'] ?? null) !== 'workflow'
+                || !is_int($task['workflow_task_attempt'] ?? null) || $task['workflow_task_attempt'] < 1))
+            || ($kind === 'activity' && (in_array($task['task_kind'] ?? null, ['workflow', 'update_validation'], true)
+                || !$text('task_id') || !$text('activity_execution_id') || !$text('activity_attempt_id')
+                || !$text('activity_type') || !$text('payload_codec')
+                || !is_int($task['attempt_number'] ?? null) || $task['attempt_number'] < 1))
+            || ($kind !== 'workflow' && $kind !== 'activity')) {
             throw CompletionPollFailure::product('completion_opposite_claim_required');
         }
         return $task;
