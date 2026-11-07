@@ -5,6 +5,13 @@ boundary check for changed code. Run `composer check-http-only-platform` for
 HTTP-client dependency changes; it resolves PHP8.1/Guzzle7/PSR-message1 with
 cURL and OpenSSL disabled and exercises a real HTTP call without TLS functions.
 
+The `3.9.x` maintenance branch uses ordinary CI plus Security Source review as
+its quality evidence. Sonar runs on main pushes and pull requests targeting
+main; maintenance analysis is not required. A main-baseline Sonar result does
+not qualify a maintenance branch. Before enabling maintenance analysis, verify
+that its actual revision, analysis baseline and target match the maintained
+source. See [#342](https://github.com/durable-workflow/sdk-php/issues/342).
+
 The production graph remains independent of Laravel, Illuminate, framework
 bundles/containers, Core and Server. The owned native Guzzle handler delegates
 HTTP serialization, framing and total socket deadlines to HTTP_Request2. Its

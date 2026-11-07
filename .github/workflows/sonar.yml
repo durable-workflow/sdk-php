@@ -1,10 +1,12 @@
 name: SonarQube
 
+# Maintenance quality uses ordinary CI and Security Source review; see #342.
+# A main-baseline analysis does not qualify a maintenance branch.
 on:
   push:
-    branches: [main, 3.9.x]
+    branches: [main]
   pull_request:
-    branches: [main, 3.9.x]
+    branches: [main]
 
 permissions:
   contents: read
