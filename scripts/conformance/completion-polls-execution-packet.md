@@ -104,23 +104,44 @@ One held root at `$ROOT=/srv/sdk-php-cpq/consumer` (owner-created, mode 0700).
    SDK distribution, which excludes `tests/`, or from a source checkout's
    vendor tree. Recompute the canonical runner manifest and require
    `$RUNNER_MANIFEST_SHA256` before PHP is started.
-2. Write `$ROOT/composer.json`:
+2. Stage the Composer trust inputs, all read-only, outside `$ROOT`:
+
+   | Input | Exact identity |
+   | --- | --- |
+   | Composer PHAR | the retained, already authenticated `composer.phar`, SHA-256 `7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17c8d6`; the verifier requires Composer 2.10.3 or newer on the 2 line |
+   | CA bundle | the retained authenticated CI bundle, SHA-256 `50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785` |
+   | Extra-roots directory | one owned **empty** directory |
+   | Verifier | `durable-workflow/.github` `.github/actions/verify-composer-trust/verify.php` at `242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5`: blob `1783f0620e585c4c4998744216bd8fce418de637`, 5,969 B, SHA-256 `d7eea290e04e4eef382cc977584a736b1781b18994c5f462f600c0c47e8c5371` |
+
+   Environment for every Composer process:
+   - `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO` and `COMPOSER_CAFILE` all name the CA bundle.
+   - `SSL_CERT_DIR`, `GIT_SSL_CAPATH` and `COMPOSER_CAPATH` all name the empty directory.
+   - `DW_CI_CA_SHA256=50f79f98…0785`.
+   - Owned `COMPOSER_HOME`, `COMPOSER_CACHE_DIR` and `TMPDIR`.
+   - `COMPOSER_NO_INTERACTION=1`.
+   - No `COMPOSER_AUTH`, `COMPOSER` override, `GITHUB_TOKEN`, proxy, `REQUESTS_CA_BUNDLE`, `PIP_CERT`, `NPM_CONFIG_CAFILE` or `CARGO_*` CA variables.
+   - Run as uid 1000; no `COMPOSER_ALLOW_SUPERUSER`.
+
+   Immediately before each Composer request, run
+   `php verify.php "$PHAR" "$ROOT"` and require exit 0 with `sha256` equal to
+   the CA hash above. It refuses a different bundle, any non-empty extra-roots
+   directory, disabled TLS or a different effective `cafile`/`capath`.
+3. Write `$ROOT/composer.json`:
    `{"require":{"durable-workflow/sdk":"3.10.0"},"config":{"allow-plugins":false,"audit":{"block-insecure":true}}}`.
    No `repositories`, `scripts`, `minimum-stability` or platform overrides.
-3. In container `sdk-php-cpq-b-install` (`$PHP_IMAGE`, 2 CPU, 2 GiB, 256 PIDs,
+4. In container `sdk-php-cpq-b-install` (`$PHP_IMAGE`, 2 CPU, 2 GiB, 256 PIDs,
    network to `repo.packagist.org`, `api.github.com`, `codeload.github.com`
    only, owned `COMPOSER_HOME`, cache and `TMPDIR` under `/srv/sdk-php-cpq/composer`,
-   no auth/proxy/token variables, `SSL_CERT_FILE` and `COMPOSER_CAFILE` set to
-   the CA above): run the canonical verifier, then
+   no auth/proxy/token variables, trust environment from step 2): run the verifier, then
    `php composer.phar install --no-dev --no-plugins --no-scripts --no-interaction --prefer-dist`
    (after `require`, with the verifier before each request). 240 s active, 30 s
    cleanup.
-4. Record: lock SHA-256 (`$LOCK_SHA256`); the Packagist row and its
+5. Record: lock SHA-256 (`$LOCK_SHA256`); the Packagist row and its
    dist reference/URL; the dist ZIP from the owned cache and its SHA-256 and
    size; the ZIP's package-relative inventory in the canonical form, which must
    equal `$SDK_INVENTORY_SHA256` computed from `vendor/durable-workflow/sdk`;
    and the canonical `vendor/` inventory (`$VENDOR_INVENTORY_SHA256`).
-5. `chmod -R a-w "$ROOT"`. Every later container mounts it read-only at
+6. `chmod -R a-w "$ROOT"`. Every later container mounts it read-only at
    `/consumer`.
 
 ### Phase C — subject packets (no effect)
@@ -241,4 +262,5 @@ These are the only values not yet available. Everything else above is fixed.
 | SQLite and PostgreSQL Server settings | Confirm `DB_CONNECTION=sqlite`/`pgsql` and their variables against the accepted Compose receipts. The published Compose file shows only the MySQL settings. |
 | `default` namespace on 3.2.0 and 3.0.5 | Confirm it exists without bootstrap, from the same receipts |
 | `$PHP_IMAGE` | Image ID and tag from phase P (General chose the derived-image path) |
+| Retained Composer PHAR and CA bundle files | General's retained, authenticated copies (`7a2d379d…` and `50f79f98…`). Neither is kept anywhere sdk-php can read on lab4; only a stale hash file (`/tmp/cli-297-tool-composer.phar.sha256sum`) remains. They are not re-downloaded. |
 | Per-phase selections | General's fresh selection with literal windows for phases P, A, B, D, E (×3) and F, after independent review |
