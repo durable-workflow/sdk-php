@@ -27,6 +27,27 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Completion-carried next-task polls use the runtime's matching advertised
+  capability and a free Worker slot (#328, #329, #330). Workflow completions
+  can request an activity or workflow task; activity completions can request
+  a workflow task. An omitted `workflow_poll` delivers no lease and does not
+  mean the queue is empty. Runtimes without support keep ordinary polling.
+- A carried lease delivered in a completion answer enters the ordinary payload,
+  history and lease-supervision path without another poll (#331). Lost answers
+  retain the original poll request ID for recovery. Original completion transit
+  and buffered lease age consume the grant's remaining margin; lease owner,
+  attempt and fencing authority are preserved.
+- `Worker::create()` and the Worker constructor accept the explicit
+  `enableCompletionPipelining` option, defaulting to `false` (#332). Managed
+  `run()` can overlap a completion response after successful local activity
+  work with one already-leased workflow task. It joins the original response
+  before publishing that task's completion or failure. Public `tick()`,
+  activity scheduling, cancellation, local failures, cooperative mode, custom
+  transports, telemetry and metrics retain synchronous behavior. Opting in
+  changes when completion errors become visible. These source features still
+  require published-package/runtime and load qualification under #293; no
+  throughput improvement or default change is claimed.
+
 - An unreleased schedule-to-start histogram for workflow/activity dispatch uses
   the runtime's capability-gated `ready_age_ms` claim metadata (shared metrics
   revision 2, central #233). Valid zero is retained; missing, unsupported or
@@ -99,6 +120,24 @@ project follows [Semantic Versioning](https://semver.org/).
   Repeated physical opens still share their first deadline. Missing or reused
   wait identities and an ambiguous consumed outcome produce an explicit replay
   conflict instead of assigning a guessed deadline to the next call.
+
+## [3.9.5] - 2026-11-07
+
+### Fixed
+
+- Reuse a Worker's activity lease helper across sequential activities after a
+  confirmed finish, instead of starting a process and rebuilding its Client for
+  each callback (#326). Every claim retains its own lease, business deadline and
+  heartbeat authority. Dead or unconfirmed helpers are replaced, forked callbacks
+  cannot use their parent's helper, and shutdown closes the idle process.
+  Poll transit consumes the fresh activity grant's margin; slow, unknown or short
+  grants require confirmation before another callback starts.
+- Skip the initial workflow-task renewal for a fresh, fully fenced poll grant
+  with a valid Server clock and sufficient remaining lease (#327). Request time,
+  payload loading and history paging consume that margin. Servers without a
+  qualifying clock and stale or short grants retain the existing renewal path.
+- Update the optional Laravel HTTP example's Symfony HTTP Client, HttpFoundation,
+  HttpKernel, Routing and YAML lock entries to their accepted security patches.
 
 ## [3.9.4] - 2026-11-04
 
