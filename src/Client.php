@@ -2290,6 +2290,7 @@ final class Client implements WorkflowClientInterface
      *     metrics: array{hit: int, miss: int, eviction: int, forced_cold_replay: int}
      * }|null $stickyCache
      * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int}|null $activityPoll
+     * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int, history_page_size: int, task_kinds: list<string>}|null $workflowPoll
      * @return array<string, mixed>
      */
     public function completeWorkflowTask(
@@ -2301,6 +2302,7 @@ final class Client implements WorkflowClientInterface
         array $messageStreamWaits = [],
         ?array $stickyCache = null,
         ?array $activityPoll = null,
+        ?array $workflowPoll = null,
     ): array {
         if (($messageStreamCursors !== [] || $messageStreamWaits !== []) && !Version::supportsMessageStreams()) {
             throw new InvalidArgumentException('Message stream completion metadata requires worker protocol 1.15 or newer.');
@@ -2333,6 +2335,7 @@ final class Client implements WorkflowClientInterface
             'message_stream_waits' => $messageStreamWaits,
             'sticky_cache' => $stickyCache,
             'activity_poll' => $activityPoll,
+            'workflow_poll' => $workflowPoll,
         ], static fn (mixed $value): bool => $value !== [] && $value !== null));
     }
 

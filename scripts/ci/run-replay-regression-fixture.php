@@ -444,6 +444,16 @@ final class ReplayRegressionConsumer
             throw new RuntimeException("{$identity}.history must not be empty.");
         }
 
+        if ($workflowType === 'golden.workflow-completion-poll') {
+            require_once __DIR__.'/../../tests/Support/FakeTransport.php';
+            require_once __DIR__.'/../../tests/Support/WorkflowCompletionPollScenario.php';
+            $observed = \DurableWorkflow\Tests\Support\WorkflowCompletionPollScenario::run();
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
+            self::assertMatches($fixture['expected'], $observed['commands'][0] + $observed, $identity.'.expected');
+
+            return;
+        }
+
         if ($workflowType === 'golden.carried-workflow-poll') {
             require_once __DIR__.'/../../tests/Support/FakeTransport.php';
             require_once __DIR__.'/../../tests/Support/CarriedWorkflowScenario.php';

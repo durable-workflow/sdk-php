@@ -586,6 +586,25 @@ task kind, consecutive attempt, selected delay, and typed server exception.
 Authentication failures, malformed responses, and generic server errors remain
 fatal.
 
+## Completion-carried polls (unreleased)
+
+Unreleased main can request the next task on a task completion when the runtime
+advertises the matching capability: `workflow_task_completion_activity_poll`,
+`activity_completion_workflow_poll`, or `workflow_task_completion_workflow_poll`.
+The Worker reserves a free slot for that task kind. Workflow carriers request
+only workflow tasks; when both carriers are sent, activity dispatch has priority.
+These paths still require qualification with the published runtime and SDK.
+
+An embedded lease uses the ordinary payload, history and lease-supervision path
+without sending or recording another poll. A lease reported without its answer
+uses an ordinary follow-up with the original carried request ID. An omitted
+result in a successful completion releases the reservation unless an earlier
+attempt has an uncertain outcome. It does not mark the queue empty. Lost
+completion acknowledgements retain the original request ID for recovery.
+Grant freshness includes the original completion transit and
+time spent waiting to dispatch. Shutdown finishes a known delivered lease before
+returning. Runtimes without the capability keep the ordinary polling path.
+
 ## Activity runtime lease maintenance
 
 The managed Worker starts a separate PHP CLI maintenance process when the
@@ -828,9 +847,9 @@ $workflows->assertUpdateRequested('greeting-1', 'rename', ['Grace']);
 $workflows->assertResultRequested('greeting-1');
 ```
 
-Workflow tasks additionally require an acknowledged lease renewal before user
-code runs. Typed transient renewal pressure is retried with the original task
-ID, attempt, and lease owner; shutdown or a terminal/lost lease prevents task
+Workflow tasks require a fresh, identity-bound runtime grant or an acknowledged
+lease renewal before user code runs. Typed transient renewal pressure is retried
+with the original task ID, attempt, and lease owner; shutdown or a terminal/lost lease prevents task
 execution and completion.
 
 See [`examples/`](../examples/), the authored

@@ -121,6 +121,7 @@ final class Worker
     private ?float $activityPollStartedAt = null;
     private bool $workflowCompletionActivityPollSupported = false;
     private bool $activityCompletionWorkflowPollSupported = false;
+    private bool $workflowCompletionWorkflowPollSupported = false;
     private ?CarriedPoll $carriedWorkflowPoll = null;
     private int $workflowTasksInFlight = 0;
     private ?CarriedPoll $carriedActivityPoll = null;
@@ -789,7 +790,9 @@ final class Worker
     }
 
     /**
-     * Execute at most one task of each kind without establishing or closing registration.
+     * Execute at most one task of each kind during an ordinary tick.
+     * Shutdown also drains a lease already delivered by a completion.
+     * This does not establish or close registration.
      * Use run() for the managed worker lifecycle.
      */
     public function tick(int $pollTimeoutSeconds = 1): bool
@@ -840,9 +843,13 @@ final class Worker
         if ($this->carriedActivityPoll !== null && !$this->carriedActivityPoll->observeCompletion('activity_poll')) {
             $this->carriedActivityPoll = null;
         }
+        $this->observeCarriedWorkflowCompletion();
+        if (($this->carriedActivityPoll?->hasLease() ?? false) && ($this->carriedWorkflowPoll?->hasLease() ?? false)) {
+            throw new ServerException('A completion cannot deliver both carried task kinds.', 200, 'invalid_carried_poll_response');
+        }
         $stopAfterCarriedLease = $this->shutdownRequested;
         if ($stopAfterCarriedLease && !($this->carriedActivityPoll?->hasLease() ?? false)) {
-            return $handled;
+            return $this->drainCarriedWorkflowLease() || $handled;
         }
         $this->drainingCarriedLease = $stopAfterCarriedLease;
         if ($stopAfterCarriedLease) {
@@ -947,6 +954,8 @@ final class Worker
             && ($capabilities['workflow_task_completion_activity_poll'] ?? null) === true;
         $this->activityCompletionWorkflowPollSupported = is_array($capabilities)
             && ($capabilities['activity_completion_workflow_poll'] ?? null) === true;
+        $this->workflowCompletionWorkflowPollSupported = is_array($capabilities)
+            && ($capabilities['workflow_task_completion_workflow_poll'] ?? null) === true;
     }
 
     private function observeCarriedWorkflowCompletion(): void
@@ -1618,20 +1627,25 @@ final class Worker
             $this->assertCancellationPoliciesAvailable($commands);
             $stickyClaim = $this->stickyCacheClaim($task);
             $carried = $this->reserveActivityPoll($leaseOwner, $commands !== []);
+            $workflowCarried = $commands === [] ? null : $this->reserveWorkflowPoll($leaseOwner, workflowCompletion: true);
             $completion = $this->retryStorageAdmission('workflow_complete', function () use (
-                $taskId, $leaseOwner, $attempt, $commands, $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried,
+                $taskId, $leaseOwner, $attempt, $commands, $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried, $workflowCarried,
             ): array {
                 try {
                     return $this->client->completeWorkflowTask($taskId, $leaseOwner, $attempt, $commands,
-                        $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried?->request);
+                        $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried?->request, $workflowCarried?->request);
                 } catch (ServerException $error) {
                     $carried?->uncertainCompletion();
+                    $workflowCarried?->uncertainCompletion();
                     throw $error;
                 }
             }, ['task_id' => $taskId, 'lease_owner' => $leaseOwner, 'attempt' => $attempt]);
             if ($carried !== null) {
                 // Payload hydration belongs to the next task, never this completed parent's catch path.
                 $carried->completion = $completion;
+            }
+            if ($workflowCarried !== null) {
+                $workflowCarried->completion = $completion;
             }
         } catch (Throwable $exception) {
             if ($exception instanceof WorkflowClaimDeferred) {
@@ -1691,11 +1705,12 @@ final class Worker
         ], hrtime(true) / 1e9);
     }
 
-    private function reserveWorkflowPoll(string $leaseOwner): ?CarriedPoll
+    private function reserveWorkflowPoll(string $leaseOwner, bool $workflowCompletion = false): ?CarriedPoll
     {
-        if (!$this->activityCompletionWorkflowPollSupported || $this->workflows === []
+        $supported = $workflowCompletion ? $this->workflowCompletionWorkflowPollSupported : $this->activityCompletionWorkflowPollSupported;
+        if (!$supported || $this->workflows === []
             || $leaseOwner !== $this->workerId || $this->shutdownRequested || $this->drainingCarriedLease
-            || $this->workflowTasksInFlight !== 0 || $this->carriedWorkflowPoll !== null) {
+            || $this->workflowTasksInFlight !== ($workflowCompletion ? 1 : 0) || $this->carriedWorkflowPoll !== null) {
             return null;
         }
 
