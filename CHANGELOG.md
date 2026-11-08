@@ -6,6 +6,20 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Condition waits can keep their first open's wall-clock deadline across false
+  wakes (#269). When the Server advertises `condition_wait_occurrence_deadline`,
+  a new top-level `waitCondition()` chain opts in: each physical open of that
+  authored call sends `deadline_policy: "occurrence"` and
+  `condition_wait_timeout_budget_seconds` (the original timeout), while
+  `timeout_seconds` stays the remaining replay budget. The Server then keeps the
+  first open's deadline instead of restarting the timer at each reopen. A
+  recorded chain keeps its first open's policy, so a chain started without it
+  never gains it. Replay refuses an unknown policy, a missing or mismatched
+  budget, or a chain whose physical opens disagree. Grouped condition waits do
+  not opt in yet (#278). Without the capability, commands are unchanged.
+
 ## [3.10.0] - 2026-11-07
 
 ### Upgrade notes
