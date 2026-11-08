@@ -304,6 +304,38 @@ final class ConditionWaitNativeEvidence
         return ['second_timeout' => $secondTimeout, 'reopen_timeout' => $second[1]['timeout'], 'remaining_at_wake' => round($remaining, 3)];
     }
 
+    /**
+     * A bounded, payload-free timeline of one run's history for diagnostics:
+     * each condition-wait, timer, signal and close event's index, type and
+     * offset from the first event, with its integer timing fields only. At
+     * most 40 entries. No assertion reads it.
+     *
+     * @param list<array{type: string, at: float, payload: array<string, mixed>}> $events
+     * @return list<array<string, mixed>>
+     */
+    public static function timeline(array $events): array
+    {
+        $origin = $events[0]['at'] ?? 0.0;
+        $kept = [];
+        foreach ($events as $index => $event) {
+            if (preg_match('/^(ConditionWait|Timer|Signal|Workflow(Started|Completed|Failed|Terminated|Cancelled|ContinuedAsNew)$)/', $event['type']) !== 1) {
+                continue;
+            }
+            $entry = ['i' => $index, 'type' => $event['type'], 'offset' => round($event['at'] - $origin, 6)];
+            foreach (['timeout_seconds', 'delay_seconds', 'sequence'] as $field) {
+                if (is_int($event['payload'][$field] ?? null)) {
+                    $entry[$field] = $event['payload'][$field];
+                }
+            }
+            $kept[] = $entry;
+            if (count($kept) === 40) {
+                break;
+            }
+        }
+
+        return $kept;
+    }
+
     /** @param list<array{type: string, at: float, payload: array<string, mixed>}> $events */
     private static function count(array $events, string $type, ?float $from = null, ?float $to = null): int
     {

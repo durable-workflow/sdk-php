@@ -40,6 +40,39 @@ final class ConditionWaitNativeEvidenceTest extends TestCase
         Evidence::falseWake(Evidence::events(self::falseWake(15, firedAt: 23.5)), 20);
     }
 
+    /** Diagnostic only: the timeline is bounded, payload-free and leaves every predicate unchanged. */
+    public function testTheCheckpointTimelineIsBoundedAndPayloadFree(): void
+    {
+        $history = self::falseWake(15);
+        $history[2]['payload']['arguments'] = 'secret-payload';
+        $events = Evidence::events($history);
+        $timeline = Evidence::timeline($events);
+        self::assertSame(['i' => 0, 'type' => 'ConditionWaitOpened', 'offset' => 0.0, 'timeout_seconds' => 20, 'sequence' => 1], $timeline[0]);
+        self::assertSame(['i' => 1, 'type' => 'TimerScheduled', 'offset' => 0.0, 'delay_seconds' => 20, 'sequence' => 1], $timeline[1]);
+        self::assertSame(['i' => 2, 'type' => 'SignalReceived', 'offset' => 5.0], $timeline[2]);
+        self::assertSame(['i' => 7, 'type' => 'TimerFired', 'offset' => 20.0, 'sequence' => 2], $timeline[7]);
+        self::assertStringNotContainsString('secret', (string) json_encode($timeline));
+        self::assertCount(40, Evidence::timeline(Evidence::events(array_merge(...array_fill(0, 30, self::falseWake(15))))));
+        self::assertSame(Evidence::falseWake($events, 20), Evidence::falseWake(Evidence::events(self::falseWake(15)), 20));
+    }
+
+    /** Each history assertion runs through cwnEvidence, which checkpoints identity and timeline before asserting. */
+    public function testTheQualifierCheckpointsBeforeEveryHistoryAssertion(): void
+    {
+        $source = (string) file_get_contents(dirname(__DIR__).'/scripts/qualify-condition-wait-native.php');
+        preg_match('~function cwnEvidence\(.*?\n}\n~s', $source, $match);
+        self::assertNotEmpty($match);
+        self::assertLessThan(strpos($match[0], '$check($events)'), strpos($match[0], "fwrite(STDERR, substr('checkpoint '"));
+        self::assertStringContainsString(', 0, 4096)', $match[0]);
+        foreach (['falseWake', 'settledRun', 'closedWithOpenWait', 'ownBudget', 'waits'] as $check) {
+            preg_match_all('~Evidence::'.$check.'\(~', $source, $all);
+            preg_match_all('~fn \(array \$events\): array => Evidence::'.$check.'\(\$events~', $source, $wrapped);
+            self::assertSame(count($all[0]), count($wrapped[0]), $check.' runs only inside cwnEvidence');
+        }
+        self::assertSame(7, substr_count($source, 'cwnEvidence(\''), 'C1, C2, C3 loop, C3 successor, C3 continue, C4, C5 loop');
+        self::assertStringContainsString('Evidence::falseWake($events, 20)', $source);
+    }
+
     public function testAFalseWakeWithoutASignalIsRefused(): void
     {
         $history = array_values(array_filter(self::falseWake(15), static fn (array $e): bool => $e['event_type'] !== 'SignalReceived'));

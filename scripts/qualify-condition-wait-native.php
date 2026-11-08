@@ -174,6 +174,31 @@ function cwnSuccessorSource(Client $client, string $workflowId, string $runId): 
     return is_scalar($source) || $source === null ? $source : 'non_scalar';
 }
 
+/**
+ * Run one history check after checkpointing its evidence. Before the
+ * assertion, the case, run identity and a bounded payload-free timeline of the
+ * already-fetched history (event offsets and integer timing fields only, with
+ * the first event's absolute time; at most 4 KiB) go to stderr, so they are
+ * kept whether the check passes or fails. The assertion itself is unchanged.
+ *
+ * @param list<array<string, mixed>> $history
+ * @param \Closure(list<array{type: string, at: float, payload: array<string, mixed>}>): array<mixed> $check
+ * @return array<mixed>
+ */
+function cwnEvidence(string $case, string $workflowId, string $runId, array $history, \Closure $check): array
+{
+    $events = Evidence::events($history);
+    fwrite(STDERR, substr('checkpoint '.json_encode(['case' => $case, 'workflow_id' => $workflowId, 'run_id' => $runId,
+        'origin' => isset($events[0]) ? sprintf('%.6F', $events[0]['at']) : null, 'timeline' => Evidence::timeline($events)],
+        JSON_UNESCAPED_SLASHES), 0, 4096).PHP_EOL);
+    try {
+        return $check($events);
+    } catch (RuntimeException $error) {
+        fwrite(STDERR, substr(sprintf('%s evidence refused: %s', $case, $error->getMessage()), 0, 300).PHP_EOL);
+        throw $error;
+    }
+}
+
 /** @return array<string, mixed> */
 function cwnRun(string $workflowId, string $runId, array $history): array
 {
@@ -209,7 +234,7 @@ try {
     cwnWait(static fn (): bool => cwnStatus($client, $handle->workflowId, $run, ['completed']), 'C1 completes after the first deadline', 40);
     cwnCheck($handle->result(5) === ['satisfied' => false], 'C1 times out without a matching signal');
     $history = cwnHistory($client, $handle->workflowId, $run);
-    $cases['C1'] = ['command_contract' => $contract, 'runs' => [cwnRun($handle->workflowId, $run, $history)], 'evidence' => Evidence::falseWake(Evidence::events($history), 20)];
+    $cases['C1'] = ['command_contract' => $contract, 'runs' => [cwnRun($handle->workflowId, $run, $history)], 'evidence' => cwnEvidence('C1', $handle->workflowId, $run, $history, static fn (array $events): array => Evidence::falseWake($events, 20))];
     cwnCheck(true, 'C1 false wake keeps the first-open deadline');
     $runIds[] = $c1RunIds[] = $run;
 
@@ -223,7 +248,7 @@ try {
     cwnSignal($client, $handle->workflowId, 'go', ['right']);
     cwnWait(static fn (): bool => cwnStatus($client, $handle->workflowId, $run, ['completed']), 'C2 completes');
     $history = cwnHistory($client, $handle->workflowId, $run);
-    $cases['C2'] = ['command_contract' => $contract, 'runs' => [cwnRun($handle->workflowId, $run, $history)], 'evidence' => Evidence::settledRun(Evidence::events($history))];
+    $cases['C2'] = ['command_contract' => $contract, 'runs' => [cwnRun($handle->workflowId, $run, $history)], 'evidence' => cwnEvidence('C2', $handle->workflowId, $run, $history, static fn (array $events): array => Evidence::settledRun($events))];
     cwnCheck(true, 'C2 duplicate queued task opens no overlapping wait');
     $runIds[] = $run;
 
@@ -239,7 +264,7 @@ try {
         cwnWait(static fn (): bool => cwnStatus($client, $handle->workflowId, $run, [$status]), 'C3 '.$close.' closes');
         $history = cwnHistory($client, $handle->workflowId, $run);
         $cases['C3-'.$close] = ['command_contract' => $contract, 'runs' => [cwnRun($handle->workflowId, $run, $history)],
-            'evidence' => Evidence::closedWithOpenWait(Evidence::events($history), $close)];
+            'evidence' => cwnEvidence('C3 '.$close, $handle->workflowId, $run, $history, static fn (array $events): array => Evidence::closedWithOpenWait($events, $close))];
         cwnCheck(true, 'C3 '.$close.' cancels the open condition timer');
         $runIds[] = $run;
     }
@@ -252,10 +277,10 @@ try {
     }, 'C3 continue-as-new successor completes');
     $history = cwnHistory($client, $handle->workflowId, $first);
     $successor = cwnHistory($client, $handle->workflowId, $next);
-    cwnCheck(Evidence::waits(Evidence::events($successor)) === [], 'C3 successor run has no inherited wait');
+    cwnCheck(cwnEvidence('C3 successor', $handle->workflowId, (string) $next, $successor, static fn (array $events): array => Evidence::waits($events)) === [], 'C3 successor run has no inherited wait');
     $cases['C3-continue'] = ['command_contract' => $contract,
         'successor_contract_sources' => [cwnSuccessorSource($client, $handle->workflowId, $next)], 'runs' => [cwnRun($handle->workflowId, $first, $history), cwnRun($handle->workflowId, $next, $successor)],
-        'evidence' => Evidence::closedWithOpenWait(Evidence::events($history), 'continue')];
+        'evidence' => cwnEvidence('C3 continue', $handle->workflowId, $first, $history, static fn (array $events): array => Evidence::closedWithOpenWait($events, 'continue'))];
     cwnCheck(true, 'C3 continue-as-new after a fired timeout');
     array_push($runIds, $first, $next);
 
@@ -273,7 +298,7 @@ try {
     cwnWait(static fn (): bool => cwnStatus($client, $handle->workflowId, $run, ['completed']), 'C4 completes');
     $history = cwnHistory($client, $handle->workflowId, $run);
     $cases['C4'] = ['command_contract' => $contract, 'runs' => [cwnRun($handle->workflowId, $run, $history)],
-        'evidence' => Evidence::ownBudget(Evidence::events($history), 'first', 'second', 20)];
+        'evidence' => cwnEvidence('C4', $handle->workflowId, $run, $history, static fn (array $events): array => Evidence::ownBudget($events, 'first', 'second', 20))];
     cwnCheck(true, 'C4 newly authored wait keeps its own budget');
     $runIds[] = $run;
 
@@ -303,7 +328,8 @@ try {
     $recorded = [];
     foreach ($runs as $index => $run) {
         $history = cwnHistory($client, $handle->workflowId, $run);
-        $evidence[] = Evidence::settledRun(Evidence::events($history), $index === 0 ? 'WorkflowContinuedAsNew' : 'WorkflowCompleted');
+        $evidence[] = cwnEvidence('C5 run '.$index, $handle->workflowId, $run, $history, static fn (array $events): array => Evidence::settledRun($events,
+            $index === 0 ? 'WorkflowContinuedAsNew' : 'WorkflowCompleted'));
         $recorded[] = cwnRun($handle->workflowId, $run, $history);
     }
     $cases['C5'] = ['command_contract' => $contract,
