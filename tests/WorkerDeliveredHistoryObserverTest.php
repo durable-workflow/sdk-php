@@ -97,7 +97,27 @@ final class WorkerDeliveredHistoryObserverTest extends TestCase
         $worker->observeDeliveredWorkflowHistory($observer);
         self::assertTrue($worker->tick(0));
 
-        return [array_map(static fn (array $r): array => ['method' => $r['method'], 'uri' => $r['uri'], 'body' => $r['body']],
-            $transport->requests)];
+        return [array_map(static fn (array $r): array => ['method' => $r['method'], 'uri' => $r['uri'],
+            'body' => self::withoutRequestIds($r['body'])], $transport->requests)];
+    }
+
+    /**
+     * Poll request IDs are random per request; every other request field is compared exactly.
+     *
+     * @param array<string, mixed>|null $body
+     * @return array<string, mixed>|null
+     */
+    private static function withoutRequestIds(?array $body): ?array
+    {
+        if ($body === null) {
+            return null;
+        }
+        foreach ($body as $key => $value) {
+            if (is_string($key) && str_ends_with($key, '_request_id') && is_string($value)) {
+                $body[$key] = '<request-id>';
+            }
+        }
+
+        return $body;
     }
 }
