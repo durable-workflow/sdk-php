@@ -14,7 +14,16 @@ fixture credentials `claimed-task-admin`, `claimed-task-client` and
 `claimed-task-worker`, no host port and no production route. The script refuses
 unless the Server advertises `condition_wait_idempotent_reopen`. Its worker declares
 every signal each workflow type receives (`ConditionWaitNativeEvidence::DECLARED_SIGNALS`),
-because native refuses signals that the durable command contract does not declare.
+each with a signature matching the one argument it sends (`string`, or `int` for
+`decision`). Native refuses an undeclared signal and validates arguments against the
+declared parameters. The first run starts only after the worker is active. Right
+after each case's initial start, the script reads that run's observation and requires
+`command_contract.source == durable_history` plus exactly the expected
+`signal_contracts` parameter metadata (`ConditionWaitNativeEvidence::durableContract`).
+Continue-as-new successors carry no contract in Native 3.2.0, so for those the script
+only records the observed source (`successor_contract_sources`). A refused signal
+reports only the Server's status, reason, validation-error shape and scalar
+`signal_admission` fields (at most 600 bytes).
 
 ## Cases and history assertions
 

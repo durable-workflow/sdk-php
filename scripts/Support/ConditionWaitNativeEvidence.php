@@ -33,14 +33,81 @@ final class ConditionWaitNativeEvidence
         'cwn.turns' => ['decision'],
     ];
 
-    /** Declare the qualifier's signals through the public Worker API. */
+    /**
+     * Declare the qualifier's signals through the public Worker API, each with
+     * a signature matching the one argument the qualifier sends. Native
+     * validates the count and type of signal arguments against the declared
+     * parameters; a parameter with a default value is unsupported.
+     */
     public static function declareSignals(Worker $worker): void
     {
         foreach (self::DECLARED_SIGNALS as $workflowType => $signals) {
             foreach ($signals as $signal) {
-                $worker->declareSignal($workflowType, $signal);
+                $worker->declareSignal($workflowType, $signal, self::signature($signal));
             }
         }
+    }
+
+    /** The argument signature for one qualifier signal (never sent: no arguments). */
+    public static function signature(string $signal): ?\Closure
+    {
+        return match ($signal) {
+            'go', 'noise', 'first', 'second' => static fn (string $value): mixed => null,
+            'decision' => static fn (int $turn): mixed => null,
+            'never' => null,
+            default => throw new RuntimeException('condition_evidence_unknown_signal'),
+        };
+    }
+
+    /**
+     * The signal contracts a run of this workflow type must retain: the Worker's
+     * emitted contracts, sorted by name as Native's run observation lists them.
+     *
+     * @return list<array{name: string, parameters: list<array<string, mixed>>}>
+     */
+    public static function expectedSignalContracts(string $workflowType): array
+    {
+        $signals = self::DECLARED_SIGNALS[$workflowType] ?? throw new RuntimeException('condition_evidence_unknown_workflow_type');
+        sort($signals, SORT_STRING);
+        $parameter = static fn (string $name, string $type): array => ['name' => $name, 'position' => 0, 'required' => true,
+            'variadic' => false, 'default_available' => false, 'default' => null, 'type' => $type, 'allows_null' => false];
+
+        return array_map(static fn (string $signal): array => ['name' => $signal, 'parameters' => match ($signal) {
+            'go', 'noise', 'first', 'second' => [$parameter('value', 'string')],
+            'decision' => [$parameter('turn', 'int')],
+            'never' => [],
+        }], $signals);
+    }
+
+    /**
+     * Check an initial run's observed `command_contract`: it must come from
+     * durable history and retain exactly the expected signals and parameter
+     * metadata (types compared strictly; object key order is not significant).
+     *
+     * @return array{source: string, signals: list<string>, signal_contracts: list<array<string, mixed>>}
+     */
+    public static function durableContract(mixed $contract, string $workflowType): array
+    {
+        self::check(is_array($contract) && ($contract['source'] ?? null) === 'durable_history', 'condition_evidence_contract_not_durable');
+        $expected = self::expectedSignalContracts($workflowType);
+        self::check(($contract['signals'] ?? null) === array_column($expected, 'name'), 'condition_evidence_contract_signals');
+        self::check(is_array($contract['signal_contracts'] ?? null)
+            && self::canonical($contract['signal_contracts']) === self::canonical($expected), 'condition_evidence_contract_parameters');
+
+        return ['source' => 'durable_history', 'signals' => $contract['signals'], 'signal_contracts' => $contract['signal_contracts']];
+    }
+
+    private static function canonical(mixed $value): mixed
+    {
+        if (!is_array($value)) {
+            return $value;
+        }
+        $value = array_map(self::canonical(...), $value);
+        if (!array_is_list($value)) {
+            ksort($value, SORT_STRING);
+        }
+
+        return $value;
     }
 
     /**
