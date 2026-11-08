@@ -18,7 +18,7 @@ For repeated ordered application input, open an
 [inbound Message Stream](/build/message-streams/) from `WorkflowContext`. Its
 durable cursor resumes after replay, worker replacement, and continue-as-new.
 
-Use `WorkflowContext::waitCondition()` when progress depends on workflow state rather than an external activity. Its deterministic predicate is re-evaluated when committed signals or updates produce another workflow task. A stable key identifies the wait across replay, and the optional timeout returns `false` instead of requiring an application timer loop. The timeout runs from the first time the wait opens: a signal or update that leaves the predicate false does not restart it.
+Use `WorkflowContext::waitCondition()` when progress depends on workflow state rather than an external activity. Its deterministic predicate is re-evaluated when committed signals or updates produce another workflow task. A stable key identifies the wait across replay, and the optional timeout returns `false` instead of requiring an application timer loop. The timeout runs from the first time the wait opens: a signal or update that leaves the predicate false does not restart it. When the Server advertises `condition_wait_occurrence_deadline`, the Server also keeps that first open's wall-clock deadline for every reopen; see the [upgrade guide](/operate/upgrading/#condition-wait-occurrence-deadlines) for the rollout order.
 
 Choose a distinct stable key for each logical wait, and preserve its predicate
 and timeout across replay. An already true condition, or a false condition with

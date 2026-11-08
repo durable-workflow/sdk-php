@@ -6,6 +6,30 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.11.0] - Unreleased
+
+### Upgrade notes
+
+- Do not let older and 3.11 workers consume the same task queue on a Server
+  that advertises `condition_wait_occurrence_deadline` (native Server 3.3.0 or
+  newer). On an older Server, upgrade every worker on the queue to 3.11 first,
+  then upgrade the Server. On a Server that already advertises the capability,
+  drain or stop every older worker for the queue, including standby and
+  autoscaling pools, before any 3.11 worker starts consuming it, then start
+  only 3.11 workers. After any anchored chain exists, do not roll that queue's
+  workers below 3.11: an older worker's reopen of an anchored chain is refused
+  by the Server, nothing is written, and that worker can exit; a 3.11 worker
+  can resume the run. See the [upgrade guide](docs/portal/operate/upgrading.md).
+- Without the capability, new and legacy chains keep sending legacy commands.
+  If the Server stops advertising the capability while an existing anchored
+  chain needs a reopen, the 3.11 worker leaves that task's claim without
+  completing or failing it, and a 3.11 worker can resume the run once a capable
+  Server is back. No retry interval is promised, an in-place SQLite rollback of
+  the Server is not supported, and a chain already mixed by an older Server is
+  not repaired automatically.
+- The bare SDK keeps PHP `^8.1`; the Laravel bridge constraints, the worker
+  protocol (1.20) and control plane (2) are unchanged.
+
 ### Added
 
 - Condition waits can keep their first open's wall-clock deadline across false

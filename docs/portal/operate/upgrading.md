@@ -19,7 +19,56 @@ Laravel 10/11 bridge support. Its provider checks the installed framework and
 PHP before registering application bindings, including during auto-discovery.
 Upgrade the platform before adopting this bridge; existing SDK 3.9.x and
 Workflow 2.20.x applications retain their own support contracts while upgrading.
-Stable-v1 authority remains unchanged.
+Stable-v1 authority remains unchanged. SDK 3.11 keeps these platform contracts
+and adds the occurrence-deadline rollout below.
+
+## Condition-wait occurrence deadlines
+
+From 3.11, when the Server advertises `condition_wait_occurrence_deadline`
+(native Server 3.3.0 or newer; the PHP Server does not), a new condition wait
+keeps its first open's wall-clock deadline across false wakes: the Server
+stores that deadline and reuses it for every reopen of the same authored call.
+Without the capability, new waits and waits first opened without the policy
+send the same commands as before; an existing anchored wait defers instead
+(see below).
+
+Older and 3.11 workers must not consume the same task queue on a capable
+Server: the first 3.11 worker can anchor a wait that an older worker then
+cannot reopen. Choose the path that matches your Server.
+
+**The Server does not advertise the capability yet** (an older Server):
+
+1. Upgrade every worker that can receive work from the task queue to 3.11,
+   including standby and autoscaling pools, while the Server is still older.
+   These workers keep sending legacy commands until the capability appears.
+2. Then upgrade the Server. New waits opened afterwards are anchored; waits
+   first opened without the policy keep their per-open behavior.
+
+**The Server already advertises the capability** (for example native Server
+3.3.0 is already deployed):
+
+1. Drain or stop every older worker for the task queue, including standby and
+   autoscaling pools, so that none can claim another task.
+2. Only then start 3.11 workers for that queue, and start only 3.11 workers.
+
+Do not downgrade the Server to follow the first path; there is no setting that
+turns the capability off.
+
+On either path, do not roll the queue's workers below 3.11 once anchored waits
+exist. An older worker reopens an anchored wait without the policy; the Server
+refuses that completion and writes nothing, and the older worker can exit. A
+3.11 worker can then resume the run.
+
+If the Server stops advertising the capability while an anchored wait needs a
+reopen (for example after rolling the Server back), the 3.11 worker does not
+send the reopen. It leaves that task's claim without completing or failing it,
+so no history is written and no retry task is created; the claim stays until
+its configured lease or another ordinary authority transition ends it, and a
+3.11 worker can resume the run when a capable Server returns. There is no fixed
+retry interval.
+Rolling a Server's SQLite database back in place is not supported once anchored
+waits exist (restore the pre-upgrade backup instead), and a wait chain that an
+older Server has already recorded inconsistently is not repaired automatically.
 
 ## Condition fingerprints and replay
 
