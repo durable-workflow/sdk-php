@@ -1,0 +1,43 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-condition-wait-occurrence-deadline-capability-deferred",
+  "protocol_version": "1.20",
+  "supersedes": ["php-condition-wait-occurrence-deadline-capability-unavailable"],
+  "bindings": ["php"],
+  "workflow": {
+    "type": "golden.signal-occurrence-deferred",
+    "input": ["condition:signal"]
+  },
+  "history": [
+    {
+      "event_type": "ConditionWaitOpened",
+      "recorded_at": "2026-11-04T02:36:05.000000+00:00",
+      "payload": {
+        "sequence": 4,
+        "condition_wait_id": "condition:4",
+        "condition_key": "approval",
+        "condition_wait_occurrence_id": "php:condition-wait:0",
+        "timeout_seconds": 30,
+        "deadline_policy": "occurrence",
+        "condition_wait_timeout_budget_seconds": 30
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "recorded_at": "2026-11-04T02:36:17.000000+00:00",
+      "payload": {
+        "workflow_sequence": 4,
+        "signal_name": "reject",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCgZBZGEA"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "type": "claim_deferred",
+    "reason": "condition_wait_occurrence_deadline_unavailable"
+  }
+}

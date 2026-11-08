@@ -326,6 +326,24 @@ final class ReplayRegressionTransport implements Transport
         throw new RuntimeException("Official replay consumer received an unexpected {$method} request.");
     }
 
+    /**
+     * A claim the Worker left without completing or failing it (#269 deferral):
+     * record its stable reason as the task's outcome, only for the task most
+     * recently handed out and only if that task sent no completion or failure.
+     *
+     * @param array<string, mixed> $context the worker.claim_deferred diagnostic
+     */
+    public function recordDeferredClaim(array $context): void
+    {
+        $reason = $context['reason'] ?? null;
+        $current = $this->tasks[$this->workflowPoll - 1] ?? null;
+        if (!is_string($reason) || $reason === '' || $current === null || ($context['task_id'] ?? null) !== $current['task_id']
+            || count($this->completedCommands) !== $this->workflowPoll - 1) {
+            throw new RuntimeException('Official replay consumer received an unexpected deferred workflow claim.');
+        }
+        $this->completedCommands[] = [['type' => 'claim_deferred', 'reason' => $reason]];
+    }
+
     /** @return list<list<array<string, mixed>>> */
     public function completedCommands(): array
     {
@@ -626,6 +644,13 @@ final class ReplayRegressionConsumer
                     throw new RuntimeException('Storage recovery exceeded the fixture retry budget.');
                 }
             },
+            diagnosticListener: $workflowType === 'golden.signal-occurrence-deferred'
+                ? static function (string $event, array $context) use ($transport): void {
+                    if ($event === 'worker.claim_deferred') {
+                        $transport->recordDeferredClaim($context);
+                    }
+                }
+                : null,
         );
         if ($workflowType === 'golden.telemetry-context') {
             $worker = new Worker(new Client('https://replay.invalid', transport: $transport, codec: $codec),
@@ -769,7 +794,7 @@ final class ReplayRegressionConsumer
 
     /**
      * Whether the replayed Server advertises condition_wait_occurrence_deadline
-     * (#269). The rollback fixture withdraws it; otherwise only a history that
+     * (#269). The rollback fixtures withdraw it; otherwise only a history that
      * already holds an anchored condition-wait record (which only a capable
      * Server can produce) replays against a capable Server.
      *
@@ -777,7 +802,7 @@ final class ReplayRegressionConsumer
      */
     private static function occurrenceDeadlineAdvertised(string $workflowType, array $history): bool
     {
-        if ($workflowType === 'golden.signal-occurrence-unavailable') {
+        if (in_array($workflowType, ['golden.signal-occurrence-unavailable', 'golden.signal-occurrence-deferred'], true)) {
             return false;
         }
         foreach ($history as $event) {
@@ -794,7 +819,7 @@ final class ReplayRegressionConsumer
     private static function workflow(string $workflowType): callable
     {
         return match ($workflowType) {
-            'golden.signal-occurrence-unavailable' => self::workflow('golden.signal'),
+            'golden.signal-occurrence-unavailable', 'golden.signal-occurrence-deferred' => self::workflow('golden.signal'),
             'golden.telemetry-context' => static function (WorkflowContext $context): array {
                 $result = $context->activity('golden.greet', ['Ada']);
                 $fields = \DurableWorkflow\Telemetry\ExecutionTelemetry::current();

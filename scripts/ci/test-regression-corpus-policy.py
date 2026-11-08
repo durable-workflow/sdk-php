@@ -58,6 +58,13 @@ final class Worker
 """
 
 
+# The Worker's per-replay-pass observer statement (#269), exactly as in src/Worker.php.
+REPLAY_PASS_HISTORY_NOTIFICATION = (
+    "        $this->notifyDeliveredWorkflowHistory('history', (string) ($task['task_id'] ?? ''), "
+    "(int) ($task['workflow_task_attempt'] ?? 1), $history);"
+)
+
+
 def run(*arguments: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         list(arguments),
@@ -3152,6 +3159,87 @@ raise SystemExit(0 if "$history = ['changed'];" in source else 1)
             "(base=0, current=0)",
             result.stderr,
         )
+
+    def test_replay_pass_history_notification_is_replay_neutral(self) -> None:
+        (self.root / "src/Worker.php").write_text(
+            WORKER_SOURCE.replace(
+                "$commands = $this->replayer->replay();",
+                REPLAY_PASS_HISTORY_NOTIFICATION + "\n        $commands = $this->replayer->replay();",
+            )
+        )
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertFalse(json.loads(result.stdout)["counts"]["replay"]["related_change"])
+
+    def test_accepted_completion_notification_is_replay_neutral(self) -> None:
+        (self.root / "src/Worker.php").write_text(
+            WORKER_SOURCE.replace(
+                "$commands = $this->replayer->replay();",
+                "$commands = $this->replayer->replay();\n"
+                "        $this->notifyDeliveredWorkflowHistory('accepted', $taskId, $attempt, $commands);",
+            )
+        )
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertFalse(json.loads(result.stdout)["counts"]["replay"]["related_change"])
+
+    def test_moving_the_history_notification_into_the_replay_pass_is_neutral(self) -> None:
+        (self.root / "src/Worker.php").write_text(
+            WORKER_SOURCE.replace(
+                "$commands = $this->replayer->replay();",
+                "$this->notifyDeliveredWorkflowHistory('history', $taskId, $attempt, $history);\n"
+                "        $commands = $this->replayer->replay();",
+            )
+        )
+        self.git("add", "--all")
+        self.git(
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=pre-replay notification",
+        )
+        self.base_ref = self.git("rev-parse", "HEAD").stdout.strip()
+        (self.root / "src/Worker.php").write_text(
+            WORKER_SOURCE.replace(
+                "        $history = [];\n",
+                "        $history = [];\n" + REPLAY_PASS_HISTORY_NOTIFICATION + "\n",
+            )
+        )
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertFalse(json.loads(result.stdout)["counts"]["replay"]["related_change"])
+
+    def test_replay_pass_notification_variants_are_not_neutral(self) -> None:
+        variants = (
+            REPLAY_PASS_HISTORY_NOTIFICATION.replace("?? 1)", "?? 2)"),
+            REPLAY_PASS_HISTORY_NOTIFICATION.replace("($task['task_id'] ?? '')", "($task['task_id'] = '')"),
+        )
+        for variant in variants:
+            with self.subTest(variant=variant):
+                (self.root / "src/Worker.php").write_text(
+                    WORKER_SOURCE.replace(
+                        "$commands = $this->replayer->replay();",
+                        variant + "\n        $commands = $this->replayer->replay();",
+                    )
+                )
+
+                result = self.validate()
+
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                self.assertIn(
+                    "replay implementation changed but its corpus did not grow "
+                    "(base=0, current=0)",
+                    result.stderr,
+                )
 
     def test_worker_update_body_change_requires_replay_corpus_growth(self) -> None:
         worker = self.root / "src/Worker.php"
