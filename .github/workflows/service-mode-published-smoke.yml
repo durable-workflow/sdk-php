@@ -312,12 +312,16 @@ jobs:
             --user 1000:1000 --publish 127.0.0.1:8081:8080 \
             --env DB_CONNECTION=sqlite --env CACHE_STORE=file \
             --env DW_SERVER_KEY=base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+            --env DW_AUTH_DRIVER=token \
+            --env DW_AUTH_TOKEN=published-smoke-admin \
             --env DW_OPERATOR_TOKEN="$DURABLE_WORKFLOW_CLIENT_TOKEN" \
             --env DW_WORKER_TOKEN="$DURABLE_WORKFLOW_WORKER_TOKEN" \
             --env DW_ADMIN_TOKEN=published-smoke-admin \
             --env DW_TASK_DISPATCH_MODE=poll --env DW_WORKER_POLL_TIMEOUT=1 \
             "$COOPERATIVE_SERVER_IMAGE"
-          docker exec --user 1000:1000 published-sdk-cooperative-runtime server-bootstrap
+          if (( ${COOPERATIVE_SERVER_VERSION%%.*} < 3 )); then
+            docker exec --user 1000:1000 published-sdk-cooperative-runtime server-bootstrap
+          fi
           for attempt in {1..30}; do
             if curl --fail --silent http://127.0.0.1:8081/api/ready > /dev/null; then break; fi
             sleep 2
