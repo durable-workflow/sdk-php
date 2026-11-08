@@ -114,6 +114,8 @@ final class Worker
     private ?array $workflowMemoCapability = null;
     private bool $serviceOperationsSupported = false;
     private bool $childStartTurnSupported = false;
+    /** @var (\Closure(string, string, int, list<array<string, mixed>>): void)|null */
+    private ?\Closure $deliveredWorkflowHistoryObserver = null;
     private bool $queryTaskAuthoritySupported = false;
     private ?QueryTaskAuthority $queryTaskAuthority = null;
     private bool $activityLeaseRenewalSupported = false;
@@ -275,6 +277,23 @@ final class Worker
         }
 
         return $this;
+    }
+
+    /**
+     * @internal Qualification evidence only (#269). Observe, for each workflow
+     * task attempt, the complete history handed to the Replayer (after every
+     * history page and the sticky cache, once the claim's grant is confirmed)
+     * as kind "history", and the commands the attempt completes with as kind
+     * "completion", just before the completion request. The observer receives
+     * copies; it is inert when unset, and its failures are ignored, so the
+     * Worker's behavior never depends on it.
+     *
+     * @param (\Closure(string, string, int, list<array<string, mixed>>): void)|null $observer
+     *     called as (kind, task ID, workflow task attempt, items)
+     */
+    public function observeDeliveredWorkflowHistory(?\Closure $observer): void
+    {
+        $this->deliveredWorkflowHistoryObserver = $observer;
     }
 
     /** @param callable(WorkflowContext, mixed ...$arguments): mixed $handler */
@@ -1678,6 +1697,7 @@ final class Worker
             if (!$this->confirmWorkflowPollGrant($task, $taskId, $leaseOwner, $attempt)) {
                 return;
             }
+            $this->notifyDeliveredWorkflowHistory('history', $taskId, $attempt, $history);
             if ($this->client->observabilityContextAvailable()) {
                 $traceScope = $this->telemetry?->enterTask('workflow', $task, $this->client->namespace, $this->taskQueue);
             }
@@ -1739,6 +1759,7 @@ final class Worker
             $this->assertPipelineAuthority();
             $carried = $this->reserveActivityPoll($leaseOwner, $commands !== []);
             $workflowCarried = $commands === [] ? null : $this->reserveWorkflowPoll($leaseOwner, workflowCompletion: true);
+            $this->notifyDeliveredWorkflowHistory('completion', $taskId, $attempt, $commands);
             $completion = $this->retryStorageAdmission('workflow_complete', function () use (
                 $taskId, $leaseOwner, $attempt, $commands, $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried, $workflowCarried,
             ): array {
@@ -4050,6 +4071,25 @@ final class Worker
             }
         }
         $this->activeWorkerSessions = [];
+    }
+
+    /**
+     * Hand the qualification observer a copy of one attempt's replay input or
+     * completion commands. Inert without an observer; observer failures never
+     * change the task's outcome.
+     *
+     * @param list<array<string, mixed>> $items
+     */
+    private function notifyDeliveredWorkflowHistory(string $kind, string $taskId, int $attempt, array $items): void
+    {
+        if ($this->deliveredWorkflowHistoryObserver === null) {
+            return;
+        }
+        try {
+            ($this->deliveredWorkflowHistoryObserver)($kind, $taskId, $attempt, $items);
+        } catch (Throwable) {
+            // Evidence capture is best effort; the qualifier refuses an incomplete witness.
+        }
     }
 
     /**
