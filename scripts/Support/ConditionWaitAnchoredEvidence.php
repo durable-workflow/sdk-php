@@ -40,30 +40,40 @@ final class ConditionWaitAnchoredEvidence
     /** The first-open relation |A - (O + T)| keeps the original 1 s tolerance. */
     public const FIRST_OPEN_TOLERANCE = 1.0;
 
-    private const EVENT_KEYS = ['sequence', 'condition_wait_id', 'condition_wait_occurrence_id', 'condition_key', 'timer_id'];
+    /** Native's four routes by which a workflow task attempt receives history. */
+    public const ROUTES = ['poll', 'compressed_page', 'continuation_page', 'carried_task'];
+
+    private const EVENT_KEYS = ['condition_wait_id', 'condition_wait_occurrence_id', 'condition_key', 'timer_id'];
     private const COMMAND_KEYS = ['condition_wait_occurrence_id', 'condition_key', 'timeout_seconds', 'deadline_policy',
         'condition_wait_timeout_budget_seconds'];
 
     /**
-     * A bounded witness entry for one poll or history-page response of a
-     * workflow task: event types, the two timestamp fields and identities only.
+     * A bounded witness entry for one delivered slice of a workflow task
+     * attempt (a claimed poll, a decoded compressed page, a continuation page
+     * or a task carried in a completion response): event id, history
+     * sequence, type, both time fields, the field the Replayer reads and
+     * condition-wait identities only. The slice label identifies the page; it
+     * is never the continuation token.
      *
      * @param list<mixed> $events the delivered history events
      * @return array<string, mixed>
      */
-    public static function delivery(string $source, string $taskId, int $attempt, array $events): array
+    public static function delivery(string $source, string $taskId, int $attempt, array $events, string $slice = '0'): array
     {
-        self::check(in_array($source, ['poll', 'history_page'], true), 'anchored_witness_source');
-        $entry = ['source' => $source, 'task_id' => $taskId, 'attempt' => $attempt, 'overflow' => count($events) > self::MAX_WITNESS_EVENTS,
-            'events' => []];
+        self::check(in_array($source, self::ROUTES, true), 'anchored_witness_source');
+        $entry = ['source' => $source, 'task_id' => $taskId, 'attempt' => $attempt, 'slice' => $slice,
+            'overflow' => count($events) > self::MAX_WITNESS_EVENTS, 'events' => []];
         foreach (array_slice($events, 0, self::MAX_WITNESS_EVENTS) as $event) {
             if (!is_array($event)) {
                 $entry['overflow'] = true;
                 continue;
             }
             $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
-            $kept = ['type' => self::scalar($event['event_type'] ?? $event['type'] ?? null),
-                'timestamp' => self::scalar($event['timestamp'] ?? null), 'recorded_at' => self::scalar($event['recorded_at'] ?? null)];
+            $timestamp = self::scalar($event['timestamp'] ?? null);
+            $recorded = self::scalar($event['recorded_at'] ?? null);
+            $kept = ['id' => self::scalar($event['id'] ?? null), 'sequence' => self::scalar($event['sequence'] ?? null),
+                'type' => self::scalar($event['event_type'] ?? $event['type'] ?? null), 'timestamp' => $timestamp, 'recorded_at' => $recorded,
+                'time_field' => $timestamp !== null ? 'timestamp' : ($recorded !== null ? 'recorded_at' : null)];
             foreach (self::EVENT_KEYS as $key) {
                 $kept[$key] = self::scalar($payload[$key] ?? null);
             }
@@ -277,15 +287,12 @@ final class ConditionWaitAnchoredEvidence
         $anchor = $ordered[0]['fire_at'];
         self::check(is_string($anchor) && self::instant($anchor) !== null && $ordered[0]['opened'] !== null, 'anchored_evidence_anchor_missing');
         self::check(abs(self::instant($anchor) - ($ordered[0]['opened'] + $timeout)) <= self::FIRST_OPEN_TOLERANCE, 'anchored_evidence_first_open_relation');
-        foreach ($ordered as $position => $wait) {
+        foreach ($ordered as $wait) {
             self::check($wait['timer'] !== null, 'anchored_evidence_timer_missing');
-            self::check($wait['fire_at'] === $anchor, 'anchored_evidence_anchor_moved');
-            if ($position > 0) {
-                self::check($wait['timer_policy'] === self::POLICY, 'anchored_evidence_timer_policy');
-                self::check($wait['timer_anchor'] !== null, 'anchored_evidence_anchor_missing');
-                self::check($wait['timer_anchor'] === $anchor, 'anchored_evidence_anchor_moved');
-                self::check($wait['deadline'] === null || $wait['deadline'] === $anchor, 'anchored_evidence_anchor_moved');
-            }
+            self::check($wait['timer_policy'] === self::POLICY, 'anchored_evidence_timer_policy');
+            self::check($wait['timer_anchor'] !== null && $wait['deadline'] !== null, 'anchored_evidence_anchor_missing');
+            self::check($wait['fire_at'] === $anchor && $wait['timer_anchor'] === $anchor && $wait['deadline'] === $anchor,
+                'anchored_evidence_anchor_moved');
         }
 
         return ['occurrence' => $occurrence, 'anchor' => $anchor, 'waits' => $ordered, 'reopens' => array_slice($ordered, 1)];
@@ -324,7 +331,7 @@ final class ConditionWaitAnchoredEvidence
                 && ($command['condition_wait_timeout_budget_seconds'] ?? null) === $timeout, 'anchored_evidence_command_contract');
             $delivered = [];
             foreach ($witness as $entry) {
-                if (in_array($entry['source'] ?? null, ['poll', 'history_page'], true)
+                if (in_array($entry['source'] ?? null, self::ROUTES, true)
                     && ($entry['task_id'] ?? null) === $completion['task_id'] && ($entry['attempt'] ?? null) === $completion['attempt']) {
                     self::check(($entry['overflow'] ?? true) === false, 'anchored_evidence_witness_unproven');
                     array_push($delivered, ...($entry['events'] ?? []));
@@ -334,12 +341,18 @@ final class ConditionWaitAnchoredEvidence
             $now = null;
             $wake = null;
             $opened = null;
+            $highest = null;
             foreach ($delivered as $event) {
                 $at = self::workerInstant($event);
                 if ($at === null) {
                     continue;
                 }
-                if ($now === null || $at > $now) {
+                self::check(is_int($event['sequence'] ?? null), 'anchored_evidence_witness_unproven');
+                if ($highest === null || $event['sequence'] > $highest['sequence']) {
+                    $highest = $event;
+                }
+                // The Replayer takes the latest instant; equal instants resolve to the higher sequence.
+                if ($now === null || $at > $now || ($at === $now && $event['sequence'] > $wake['sequence'])) {
                     $now = $at;
                     $wake = $event;
                 }
@@ -349,10 +362,13 @@ final class ConditionWaitAnchoredEvidence
                 }
             }
             self::check($now !== null && $opened !== null, 'anchored_evidence_witness_unproven');
+            // The latest visible event is the highest history sequence actually delivered.
+            self::check($wake['sequence'] === $highest['sequence'], 'anchored_evidence_witness_order');
             $expected = self::authoredRemaining($timeout, $opened, $now);
             self::check(($command['timeout_seconds'] ?? null) === $expected, 'anchored_evidence_authored_remaining');
             self::check($reopen['timeout'] === $expected, 'anchored_evidence_recorded_remaining');
             $results[] = ['task_id' => $completion['task_id'], 'attempt' => $completion['attempt'], 'wake_event' => $wake['type'] ?? null,
+                'wake_sequence' => $wake['sequence'], 'wake_id' => $wake['id'] ?? null, 'time_field' => $wake['time_field'] ?? null,
                 'opened' => sprintf('%.6F', $opened), 'now' => sprintf('%.6F', $now), 'authored' => $expected,
                 'delivered_events' => count($delivered)];
         }
