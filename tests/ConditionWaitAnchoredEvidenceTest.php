@@ -27,9 +27,9 @@ final class ConditionWaitAnchoredEvidenceTest extends TestCase
 
         self::assertSame(self::stamp(20.0), $summary['anchor']);
         self::assertSame(20, $summary['budget']);
-        self::assertSame([['task_id' => 'task-2', 'attempt' => 1, 'wake_event' => 'ConditionWaitSatisfied',
-            'opened' => sprintf('%.6F', self::T0), 'now' => sprintf('%.6F', self::T0 + 5.0), 'authored' => 15, 'delivered_events' => 4]],
-            $summary['reopens']);
+        self::assertSame([['task_id' => 'task-2', 'attempt' => 1, 'wake_event' => 'TimerCancelled', 'wake_sequence' => 6,
+            'wake_id' => 'e6', 'time_field' => 'recorded_at', 'opened' => sprintf('%.6F', self::T0), 'now' => sprintf('%.6F', self::T0 + 5.0),
+            'authored' => 15, 'delivered_events' => 6]], $summary['reopens']);
         self::assertSame(0.4, $summary['fired_after_anchor']);
     }
 
@@ -84,6 +84,48 @@ final class ConditionWaitAnchoredEvidenceTest extends TestCase
         Anchored::falseWake($history, $recordedOnly, 'go', 20, 1);
     }
 
+    /** The latest visible event is the highest history sequence delivered; an out-of-order slice proves nothing. */
+    public function testTheLatestVisibleEventMustBeTheHighestDeliveredSequence(): void
+    {
+        $history = self::falseWake();
+        $delivered = self::upTo($history, 5.0);
+        $delivered[1]['recorded_at'] = self::stamp(5.5);
+        $witness = [Anchored::completion('task-1', 1, [self::command(20)]),
+            Anchored::delivery('poll', 'task-2', 1, $delivered), Anchored::completion('task-2', 1, [self::command(15)])];
+
+        $this->expectExceptionMessage('anchored_evidence_witness_order');
+        Anchored::falseWake($history, $witness, 'go', 20, 1);
+    }
+
+    /**
+     * Continuation pages read current storage: an event appended after the
+     * poll and actually delivered on a later page of the same attempt is
+     * visible, so the worker authors from it.
+     */
+    public function testALateEventDeliveredOnAContinuationPageIsVisible(): void
+    {
+        $history = self::falseWake(late: true, reopenTimeout: 14);
+        $page = array_values(array_filter($history, static fn (array $e): bool => abs(self::offset($e['recorded_at']) - 6.2) < 1e-9));
+        $witness = [Anchored::completion('task-1', 1, [self::command(20)]),
+            Anchored::delivery('poll', 'task-2', 1, self::upTo($history, 5.0), 'page-0'),
+            Anchored::delivery('continuation_page', 'task-2', 1, $page, 'page-1'),
+            Anchored::completion('task-2', 1, [self::command(14)])];
+
+        $summary = Anchored::falseWake($history, $witness, 'go', 20, 1);
+
+        self::assertSame(['SignalReceived', 14], [$summary['reopens'][0]['wake_event'], $summary['reopens'][0]['authored']]);
+    }
+
+    /** A task carried inside a completion response is a delivery route for that next task. */
+    public function testACarriedTaskIsADeliveryRoute(): void
+    {
+        $history = self::falseWake();
+        $witness = [Anchored::completion('task-1', 1, [self::command(20)]),
+            Anchored::delivery('carried_task', 'task-2', 1, self::upTo($history, 5.0)), Anchored::completion('task-2', 1, [self::command(15)])];
+
+        self::assertSame(15, Anchored::falseWake($history, $witness, 'go', 20, 1)['reopens'][0]['authored']);
+    }
+
     /**
      * @param list<array<string, mixed>> $history
      * @param list<array<string, mixed>>|null $witness
@@ -104,6 +146,8 @@ final class ConditionWaitAnchoredEvidenceTest extends TestCase
     {
         yield 'reopen timer one microsecond after the stored anchor' => [self::falseWake(reopenFireAt: 20.000001), null, 'anchored_evidence_anchor_moved'];
         yield 'reopen timer without the anchor' => [self::falseWake(reopenAnchor: false), null, 'anchored_evidence_anchor_missing'];
+        yield 'reopen timer without the policy' => [self::falseWake(reopenTimerPolicy: false), null, 'anchored_evidence_timer_policy'];
+        yield 'first open without its anchor string' => [self::falseWake(firstDeadline: false), null, 'anchored_evidence_anchor_missing'];
         yield 'reopen with another budget' => [self::falseWake(reopenBudget: 21), null, 'anchored_evidence_budget'];
         yield 'legacy subject' => [self::falseWake(anchored: false), null, 'anchored_evidence_not_anchored'];
         yield 'timer fired before the anchor' => [self::falseWake(firedAt: 19.9), null, 'anchored_evidence_fired_early'];
@@ -137,13 +181,14 @@ final class ConditionWaitAnchoredEvidenceTest extends TestCase
     /** The witness keeps types, both timestamps and identities only: no arguments, payload values or tokens. */
     public function testTheWitnessKeepsTimesAndIdentitiesOnly(): void
     {
-        $entry = Anchored::delivery('poll', 'task-9', 3, [['event_type' => 'SignalReceived', 'recorded_at' => self::stamp(1.0),
+        $entry = Anchored::delivery('poll', 'task-9', 3, [['id' => 'e7', 'sequence' => 7, 'event_type' => 'SignalReceived', 'recorded_at' => self::stamp(1.0),
             'timestamp' => self::stamp(1.0), 'payload' => ['signal_name' => 'go', 'arguments' => ['codec' => 'avro', 'blob' => 'c2VjcmV0'],
                 'token' => 'claimed-task-worker', 'sequence' => 4, 'condition_wait_id' => 'w1']]]);
 
-        self::assertSame(['source' => 'poll', 'task_id' => 'task-9', 'attempt' => 3, 'overflow' => false, 'events' => [[
-            'type' => 'SignalReceived', 'timestamp' => self::stamp(1.0), 'recorded_at' => self::stamp(1.0), 'sequence' => 4,
-            'condition_wait_id' => 'w1', 'condition_wait_occurrence_id' => null, 'condition_key' => null, 'timer_id' => null]]], $entry);
+        self::assertSame(['source' => 'poll', 'task_id' => 'task-9', 'attempt' => 3, 'slice' => '0', 'overflow' => false, 'events' => [[
+            'id' => 'e7', 'sequence' => 7, 'type' => 'SignalReceived', 'timestamp' => self::stamp(1.0), 'recorded_at' => self::stamp(1.0),
+            'time_field' => 'timestamp', 'condition_wait_id' => 'w1', 'condition_wait_occurrence_id' => null, 'condition_key' => null,
+            'timer_id' => null]]], $entry);
         self::assertStringNotContainsString('c2VjcmV0', (string) json_encode($entry));
         self::assertStringNotContainsString('claimed-task-worker', (string) json_encode($entry));
         self::assertTrue(Anchored::delivery('poll', 'task-9', 1, array_fill(0, Anchored::MAX_WITNESS_EVENTS + 1, []))['overflow']);
@@ -151,13 +196,15 @@ final class ConditionWaitAnchoredEvidenceTest extends TestCase
 
     /** @return list<array<string, mixed>> */
     private static function falseWake(bool $anchored = true, int $reopenTimeout = 15, float $reopenFireAt = 20.0, bool $reopenAnchor = true,
-        int $reopenBudget = 20, float $firedAt = 20.4, float $anchorAt = 20.0, bool $late = false, bool $second = false): array
+        int $reopenBudget = 20, float $firedAt = 20.4, float $anchorAt = 20.0, bool $late = false, bool $second = false,
+        bool $reopenTimerPolicy = true, bool $firstDeadline = true): array
     {
-        $policy = $anchored ? ['deadline_policy' => 'occurrence', 'condition_wait_timeout_budget_seconds' => 20] : [];
+        $policy = $anchored ? ['deadline_policy' => 'occurrence', 'condition_wait_timeout_budget_seconds' => 20]
+            + ($firstDeadline ? ['occurrence_deadline_at' => self::stamp($anchorAt)] : []) : [];
         $history = [
             self::event(0.0, 'WorkflowStarted'),
             self::opened(0.0, 'w1', 20, $policy),
-            self::scheduled(0.0, 't1', 'w1', $anchorAt, $anchored),
+            self::scheduled(0.0, 't1', 'w1', $anchorAt, $anchored, $anchored),
             self::event(5.0, 'SignalReceived', ['signal_name' => 'go']),
             self::event(5.0, 'ConditionWaitSatisfied', ['condition_wait_id' => 'w1', 'sequence' => 1]),
             self::event(5.0, 'TimerCancelled', ['timer_id' => 't1', 'sequence' => 1]),
@@ -166,46 +213,46 @@ final class ConditionWaitAnchoredEvidenceTest extends TestCase
             $history[] = self::event(6.2, 'SignalReceived', ['signal_name' => 'noise']);
         }
         $reopenPolicy = $anchored ? ['deadline_policy' => 'occurrence', 'condition_wait_timeout_budget_seconds' => $reopenBudget,
-            'occurrence_deadline_at' => self::stamp(20.0)] : [];
+            'occurrence_deadline_at' => self::stamp($anchorAt)] : [];
         $history[] = self::opened(6.5, 'w2', $reopenTimeout, $reopenPolicy, 2);
-        $history[] = self::scheduled(6.5, 't2', 'w2', $reopenFireAt, $anchored && $reopenAnchor, 2, $anchorAt);
+        $history[] = self::scheduled(6.5, 't2', 'w2', $reopenFireAt, $anchored && $reopenTimerPolicy, $anchored && $reopenAnchor, 2, $anchorAt);
         if ($second) {
             $history[] = self::event(10.0, 'SignalReceived', ['signal_name' => 'go']);
             $history[] = self::event(10.0, 'ConditionWaitSatisfied', ['condition_wait_id' => 'w2', 'sequence' => 2]);
             $history[] = self::event(10.0, 'TimerCancelled', ['timer_id' => 't2', 'sequence' => 2]);
             $history[] = self::opened(10.3, 'w3', 10, $reopenPolicy, 3);
-            $history[] = self::scheduled(10.3, 't3', 'w3', 20.0, true, 3);
+            $history[] = self::scheduled(10.3, 't3', 'w3', 20.0, true, true, 3);
             $last = 't3';
         }
         $history[] = self::event($firedAt, 'TimerFired', ['timer_id' => $last ?? 't2', 'fired_at' => self::stamp($firedAt)]);
         $history[] = self::event($firedAt + 0.2, 'WorkflowCompleted');
 
-        return $history;
+        return self::numbered($history);
     }
 
     /** @return array{list<array<string, mixed>>, list<array<string, mixed>>} */
     private static function ownBudget(float $secondOpenedAt): array
     {
-        $first = ['deadline_policy' => 'occurrence', 'condition_wait_timeout_budget_seconds' => 30];
-        $second = ['deadline_policy' => 'occurrence', 'condition_wait_timeout_budget_seconds' => 20];
         $anchor = $secondOpenedAt + 20.0;
-        $history = [
+        $first = ['deadline_policy' => 'occurrence', 'condition_wait_timeout_budget_seconds' => 30, 'occurrence_deadline_at' => self::stamp(30.0)];
+        $second = ['deadline_policy' => 'occurrence', 'condition_wait_timeout_budget_seconds' => 20, 'occurrence_deadline_at' => self::stamp($anchor)];
+        $history = self::numbered([
             self::event(0.0, 'WorkflowStarted'),
-            self::opened(0.0, 'a1', 30, $first, 1, 'first', 'occ-0'), self::scheduled(0.0, 'ta', 'a1', 30.0, true),
+            self::opened(0.0, 'a1', 30, $first, 1, 'first', 'occ-0'), self::scheduled(0.0, 'ta', 'a1', 30.0, true, true),
             self::event(9.0, 'SignalReceived', ['signal_name' => 'first']),
             self::event(9.0, 'ConditionWaitSatisfied', ['condition_wait_id' => 'a1', 'sequence' => 1]),
             self::event(9.0, 'TimerCancelled', ['timer_id' => 'ta', 'sequence' => 1]),
-            self::opened($secondOpenedAt, 'b1', 20, $second, 2, 'second', 'occ-1'), self::scheduled($secondOpenedAt, 'tb', 'b1', $anchor, true, 2),
+            self::opened($secondOpenedAt, 'b1', 20, $second, 2, 'second', 'occ-1'), self::scheduled($secondOpenedAt, 'tb', 'b1', $anchor, true, true, 2),
             self::event($secondOpenedAt + 5.0, 'SignalReceived', ['signal_name' => 'second']),
             self::event($secondOpenedAt + 5.0, 'ConditionWaitSatisfied', ['condition_wait_id' => 'b1', 'sequence' => 2]),
             self::event($secondOpenedAt + 5.0, 'TimerCancelled', ['timer_id' => 'tb', 'sequence' => 2]),
-            self::opened($secondOpenedAt + 5.2, 'b2', 15, $second + ['occurrence_deadline_at' => self::stamp($anchor)], 3, 'second', 'occ-1'),
-            self::scheduled($secondOpenedAt + 5.2, 'tc', 'b2', $anchor, true, 3, $anchor),
+            self::opened($secondOpenedAt + 5.2, 'b2', 15, $second, 3, 'second', 'occ-1'),
+            self::scheduled($secondOpenedAt + 5.2, 'tc', 'b2', $anchor, true, true, 3, $anchor),
             self::event($secondOpenedAt + 7.0, 'SignalReceived', ['signal_name' => 'second']),
             self::event($secondOpenedAt + 7.0, 'ConditionWaitSatisfied', ['condition_wait_id' => 'b2', 'sequence' => 3]),
             self::event($secondOpenedAt + 7.0, 'TimerCancelled', ['timer_id' => 'tc', 'sequence' => 3]),
             self::event($secondOpenedAt + 7.1, 'WorkflowCompleted'),
-        ];
+        ]);
         $witness = [
             Anchored::completion('task-1', 1, [self::command(30, 'occ-0', 30)]),
             Anchored::delivery('poll', 'task-2', 1, self::upTo($history, 9.0)),
@@ -225,7 +272,7 @@ final class ConditionWaitAnchoredEvidenceTest extends TestCase
     {
         $delivered = self::upTo($history ?? self::falseWake(), $deliveredUntil);
         if ($overflow) {
-            $delivered = array_pad($delivered, Anchored::MAX_WITNESS_EVENTS + 1, self::event(0.0, 'WorkflowTaskStarted'));
+            $delivered = array_pad($delivered, Anchored::MAX_WITNESS_EVENTS + 1, self::event(0.0, 'WorkflowTaskStarted') + ['sequence' => 0, 'id' => 'pad']);
         }
 
         return [
@@ -263,16 +310,34 @@ final class ConditionWaitAnchoredEvidenceTest extends TestCase
     }
 
     /** @return array<string, mixed> */
-    private static function scheduled(float $at, string $timer, string $wait, float $fireAt, bool $anchor, int $sequence = 1,
+    private static function scheduled(float $at, string $timer, string $wait, float $fireAt, bool $policy, bool $anchor, int $sequence = 1,
         ?float $anchorAt = null): array
     {
         $payload = ['timer_id' => $timer, 'sequence' => $sequence, 'timer_kind' => 'condition_timeout', 'condition_wait_id' => $wait,
             'fire_at' => self::stamp($fireAt)];
-        if ($anchor && $sequence > 1) {
-            $payload += ['deadline_policy' => 'occurrence', 'occurrence_deadline_at' => self::stamp($anchorAt ?? $fireAt)];
+        if ($policy) {
+            $payload['deadline_policy'] = 'occurrence';
+        }
+        if ($anchor) {
+            $payload['occurrence_deadline_at'] = self::stamp($anchorAt ?? $fireAt);
         }
 
         return self::event($at, 'TimerScheduled', $payload);
+    }
+
+    /**
+     * Native event objects carry an id and a history sequence in delivery order.
+     *
+     * @param list<array<string, mixed>> $history
+     * @return list<array<string, mixed>>
+     */
+    private static function numbered(array $history): array
+    {
+        foreach ($history as $index => $event) {
+            $history[$index] = ['id' => 'e'.($index + 1), 'sequence' => $index + 1] + $event;
+        }
+
+        return $history;
     }
 
     /**
