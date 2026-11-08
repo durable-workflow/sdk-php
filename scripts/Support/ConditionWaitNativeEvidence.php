@@ -60,6 +60,57 @@ final class ConditionWaitNativeEvidence
     }
 
     /**
+     * The signal contracts a run of this workflow type must retain: the Worker's
+     * emitted contracts, sorted by name as Native's run observation lists them.
+     *
+     * @return list<array{name: string, parameters: list<array<string, mixed>>}>
+     */
+    public static function expectedSignalContracts(string $workflowType): array
+    {
+        $signals = self::DECLARED_SIGNALS[$workflowType] ?? throw new RuntimeException('condition_evidence_unknown_workflow_type');
+        sort($signals, SORT_STRING);
+        $parameter = static fn (string $name, string $type): array => ['name' => $name, 'position' => 0, 'required' => true,
+            'variadic' => false, 'default_available' => false, 'default' => null, 'type' => $type, 'allows_null' => false];
+
+        return array_map(static fn (string $signal): array => ['name' => $signal, 'parameters' => match ($signal) {
+            'go', 'noise', 'first', 'second' => [$parameter('value', 'string')],
+            'decision' => [$parameter('turn', 'int')],
+            'never' => [],
+        }], $signals);
+    }
+
+    /**
+     * Check an initial run's observed `command_contract`: it must come from
+     * durable history and retain exactly the expected signals and parameter
+     * metadata (types compared strictly; object key order is not significant).
+     *
+     * @return array{source: string, signals: list<string>, signal_contracts: list<array<string, mixed>>}
+     */
+    public static function durableContract(mixed $contract, string $workflowType): array
+    {
+        self::check(is_array($contract) && ($contract['source'] ?? null) === 'durable_history', 'condition_evidence_contract_not_durable');
+        $expected = self::expectedSignalContracts($workflowType);
+        self::check(($contract['signals'] ?? null) === array_column($expected, 'name'), 'condition_evidence_contract_signals');
+        self::check(is_array($contract['signal_contracts'] ?? null)
+            && self::canonical($contract['signal_contracts']) === self::canonical($expected), 'condition_evidence_contract_parameters');
+
+        return ['source' => 'durable_history', 'signals' => $contract['signals'], 'signal_contracts' => $contract['signal_contracts']];
+    }
+
+    private static function canonical(mixed $value): mixed
+    {
+        if (!is_array($value)) {
+            return $value;
+        }
+        $value = array_map(self::canonical(...), $value);
+        if (!array_is_list($value)) {
+            ksort($value, SORT_STRING);
+        }
+
+        return $value;
+    }
+
+    /**
      * @param list<array<string, mixed>> $history
      * @return list<array{type: string, at: float, payload: array<string, mixed>}>
      */

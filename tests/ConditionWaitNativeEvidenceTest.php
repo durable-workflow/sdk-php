@@ -195,6 +195,102 @@ final class ConditionWaitNativeEvidenceTest extends TestCase
         }
     }
 
+    /**
+     * The qualifier's initial-run assertion accepts exactly the real Worker's
+     * emitted contract as frozen Native 3.2.0 retains and observes it (verbatim
+     * parameters, contracts sorted by name, JSON object keys in either order).
+     */
+    public function testTheInitialRunContractCheckAcceptsTheWorkersContractAsNativeObservesIt(): void
+    {
+        $contracts = self::contracts(true);
+        foreach (array_keys(Evidence::DECLARED_SIGNALS) as $workflowType) {
+            self::assertSame(Evidence::expectedSignalContracts($workflowType), self::observed($contracts[$workflowType])['signal_contracts'], $workflowType);
+            foreach ([false, true] as $sortKeys) {
+                $observed = self::observed($contracts[$workflowType], sortKeys: $sortKeys);
+                $checked = Evidence::durableContract($observed, $workflowType);
+                self::assertSame('durable_history', $checked['source']);
+                self::assertSame($observed['signal_contracts'], $checked['signal_contracts']);
+            }
+        }
+        self::assertSame('int', Evidence::expectedSignalContracts('cwn.turns')[0]['parameters'][0]['type']);
+    }
+
+    /** Causal refusals: no durable contract, the #359 names-only contract, or any parameter metadata drift. */
+    public function testTheInitialRunContractCheckRefusesAMissingOrDifferentContract(): void
+    {
+        $candidate = self::contracts(true);
+        $namesOnly = self::contracts(true, false);
+        $turns = self::observed($candidate['cwn.turns']);
+        $refusals = [
+            'no observation' => [null, 'cwn.turns', 'condition_evidence_contract_not_durable'],
+            'run started before the worker contract' => [self::observed(null), 'cwn.false_wake', 'condition_evidence_contract_not_durable'],
+            'names-only #359 contract' => [self::observed($namesOnly['cwn.duplicate']), 'cwn.duplicate', 'condition_evidence_contract_parameters'],
+            'another type\'s contract' => [self::observed($candidate['cwn.own_budget']), 'cwn.false_wake', 'condition_evidence_contract_signals'],
+            'decision typed string' => [self::mutate($turns, 'type', 'string'), 'cwn.turns', 'condition_evidence_contract_parameters'],
+            'decision position as a string' => [self::mutate($turns, 'position', '0'), 'cwn.turns', 'condition_evidence_contract_parameters'],
+            'decision nullable' => [self::mutate($turns, 'allows_null', true), 'cwn.turns', 'condition_evidence_contract_parameters'],
+            'decision with a default' => [self::mutate($turns, 'default_available', true), 'cwn.turns', 'condition_evidence_contract_parameters'],
+        ];
+        foreach ($refusals as $label => [$observed, $workflowType, $code]) {
+            try {
+                Evidence::durableContract($observed, $workflowType);
+                self::fail($label.' was accepted');
+            } catch (\RuntimeException $error) {
+                self::assertSame($code, $error->getMessage(), $label);
+            }
+        }
+    }
+
+    /**
+     * A run observation's command_contract, transcribed from frozen Native
+     * 3.2.0 (worker_contracts::declaration, children.rs start capture and
+     * run_observation::command_contract). Null is a run started with no worker
+     * contract.
+     *
+     * @param array<string, mixed>|null $entry
+     * @return array<string, mixed>
+     */
+    private static function observed(?array $entry, bool $sortKeys = false): array
+    {
+        if ($entry === null) {
+            return ['signals' => [], 'signal_contracts' => [], 'signal_targets' => [], 'source' => 'unavailable'];
+        }
+        $entry = json_decode(json_encode($entry, JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR);
+        $names = array_map('strval', $entry['signals'] ?? []);
+        $contracts = [];
+        foreach ($entry['signal_contracts'] ?? [] as $handler) {
+            $names[] = $handler['name'];
+            $contracts[$handler['name']] ??= ['name' => $handler['name'], 'parameters' => array_values(array_filter(
+                is_array($handler['parameters'] ?? null) ? $handler['parameters'] : [], 'is_array'))];
+        }
+        $names = array_values(array_unique($names));
+        sort($names, SORT_STRING);
+        ksort($contracts, SORT_STRING);
+        $observed = ['signals' => $names, 'signal_contracts' => array_values($contracts), 'source' => 'durable_history'];
+        if ($sortKeys) {
+            $sort = static function (mixed $value) use (&$sort): mixed {
+                if (!is_array($value)) {
+                    return $value;
+                }
+                $value = array_map($sort, $value);
+                array_is_list($value) || ksort($value, SORT_STRING);
+
+                return $value;
+            };
+            $observed = $sort($observed);
+        }
+
+        return $observed;
+    }
+
+    /** @param array<string, mixed> $observed */
+    private static function mutate(array $observed, string $field, mixed $value): array
+    {
+        $observed['signal_contracts'][0]['parameters'][0][$field] = $value;
+
+        return $observed;
+    }
+
     /** @return array<string, array<string, mixed>> */
     private static function contracts(bool $declare, bool $signatures = true): array
     {
