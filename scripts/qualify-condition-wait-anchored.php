@@ -140,7 +140,10 @@ function cwaCase(string $case, Client $admin, string $url, string $script, strin
     }
     $witness = json_decode((string) file_get_contents($witnessPath), true, flags: JSON_THROW_ON_ERROR);
     cwaCheck(is_array($witness) && array_is_list($witness), $case.' witness recorded');
-    $history = Anchored::freshNativeHistory($client->exportWorkflowHistory($workflowId, $runId), $runId);
+    $export = $client->exportWorkflowHistory($workflowId, $runId);
+    $encoded = json_encode($export, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT).PHP_EOL;
+    cwaCheck(file_put_contents($root.'/export-'.$case.'.json', $encoded) === strlen($encoded), $case.' raw export retained');
+    $history = Anchored::freshNativeHistory($export, $runId);
     cwaCheck(true, $case.' recorded history is the Native export of the fresh run');
     try {
         $evidence = $assert($history, $witness);
@@ -212,9 +215,9 @@ $cases['C4'] = cwaCase('C4', $admin, $url, $script, $autoload, $root, static fun
 
 } catch (Throwable $error) {
     // One bounded refusal line instead of an unhandled fatal stack; nothing is printed on stdout.
-    fwrite(STDERR, substr('refused: '.$error::class.': '.$error->getMessage(), 0, 300).PHP_EOL);
+    fwrite(STDERR, substr('refused: '.$error::class.': '.$error->getMessage().' (evidence '.$root.')', 0, 300).PHP_EOL);
     exit(1);
 }
 
-echo json_encode(['started_at' => $startedAt, 'finished_at' => gmdate(DATE_ATOM), 'php' => PHP_VERSION, 'mode' => 'anchored',
+echo json_encode(['started_at' => $startedAt, 'finished_at' => gmdate(DATE_ATOM), 'php' => PHP_VERSION, 'mode' => 'anchored', 'evidence_directory' => $root,
     'run_ids' => array_values(array_column($cases, 'run_id')), 'cases' => $cases], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT).PHP_EOL;

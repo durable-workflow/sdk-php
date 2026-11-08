@@ -20,6 +20,8 @@ before creating anything; the legacy cells stay with `qualify-condition-wait-nat
 - **Fresh Native runs only.** Each case creates its own namespace and queue, starts its
   run itself, and binds the run's Native history export through
   `ConditionWaitAnchoredEvidence::freshNativeHistory($export, $startedRunId)`.
+  The export preserves the `StartAccepted` / `WorkflowStarted` pair and its shared
+  start-command identity. All history sequences and recorded event times are checked.
 - **One worker per queue.** Each case starts exactly one worker process and waits until it
   is the only active worker on that queue, so no unobserved worker can author a recorded
   open.
@@ -41,6 +43,10 @@ before creating anything; the legacy cells stay with `qualify-condition-wait-nat
 
 **Output.** stdout carries only the final JSON document: each case's namespace, queue,
 run ID, witness size, history size and evidence. Progress lines (`ok: ...`) go to stderr.
+The private temporary evidence directory keeps each raw Native export before validation
+and the corresponding worker witness. Its path is included in successful JSON or the
+bounded refusal line. A disposable-container controller should retain this directory
+outside the container, with a file-size bound, so failed assertions remain inspectable.
 On a refused assertion the script writes the case and the helper's refusal code, then one
 `refused: ...` line, each at most 300 bytes, to stderr and exits 1; it does not end with an
 unhandled PHP fatal. The worker processes' own stdout and stderr are routed to stderr and

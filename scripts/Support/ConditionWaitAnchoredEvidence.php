@@ -118,7 +118,9 @@ final class ConditionWaitAnchoredEvidence
      * The qualifier starts each run itself and passes the started run id; the
      * Native history export of that run must not be a Waterline projection
      * (no `migration_projection`), must name that run, and must hold a timed
-     * history numbered exactly 1..n from WorkflowStarted. Imported runs that
+     * history numbered exactly 1..n from the workflow's start prefix. Native
+     * exports put StartAccepted before WorkflowStarted with one start command.
+     * Imported runs that
      * the export does not mark (embedded-v2 imports) are excluded by the
      * qualifier starting the run, not by this check; the check refuses any
      * untimed or non-contiguous history either way. Returns the export's
@@ -135,8 +137,18 @@ final class ConditionWaitAnchoredEvidence
             && is_array($events) && array_is_list($events) && $events !== [], 'anchored_evidence_not_fresh_native');
         foreach ($events as $position => $event) {
             self::check(is_array($event) && ($event['sequence'] ?? null) === $position + 1 && is_string($event['id'] ?? null)
-                && is_string($event['recorded_at'] ?? null) && self::instant($event['recorded_at']) !== null
-                && ($position > 0 || ($event['type'] ?? null) === 'WorkflowStarted'), 'anchored_evidence_not_fresh_native');
+                && is_string($event['recorded_at'] ?? null) && self::instant($event['recorded_at']) !== null,
+                'anchored_evidence_not_fresh_native');
+        }
+        if (($events[0]['type'] ?? null) === 'StartAccepted') {
+            $started = $events[1] ?? [];
+            $command = $events[0]['workflow_command_id'] ?? null;
+            self::check(($started['type'] ?? null) === 'WorkflowStarted' && is_string($command) && $command !== ''
+                && ($started['workflow_command_id'] ?? null) === $command
+                && ($events[0]['workflow_task_id'] ?? null) === null && ($started['workflow_task_id'] ?? null) === null,
+                'anchored_evidence_not_fresh_native');
+        } else {
+            self::check(($events[0]['type'] ?? null) === 'WorkflowStarted', 'anchored_evidence_not_fresh_native');
         }
 
         return $events;

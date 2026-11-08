@@ -362,6 +362,69 @@ final class ConditionWaitAnchoredEvidenceTest extends TestCase
             'go', 20, 1, true)['reopens'][0]['authored']);
     }
 
+    public function testTheNativeStartCommandPrefixPreservesTheReplayInputBinding(): void
+    {
+        [$history, $export] = self::nativeExport();
+        $recorded = Anchored::freshNativeHistory($export, 'run-1');
+
+        self::assertSame(['StartAccepted', 'WorkflowStarted'], array_column(array_slice($recorded, 0, 2), 'type'));
+        self::assertSame(15, Anchored::falseWake($recorded,
+            self::replayWitness([Anchored::replayInput('task-2', 1, self::upTo($history, 5.0))]),
+            'go', 20, 1, true)['reopens'][0]['authored']);
+    }
+
+    public function testTheNativeMicrosecondZuluExportTimesAreAccepted(): void
+    {
+        [, $export] = self::nativeExport();
+        foreach ($export['history_events'] as &$event) {
+            $event['recorded_at'] = str_replace('+00:00', 'Z', $event['recorded_at']);
+        }
+        unset($event);
+
+        $recorded = Anchored::freshNativeHistory($export, 'run-1');
+
+        self::assertStringEndsWith('.000000Z', $recorded[0]['recorded_at']);
+        self::assertSame($export['history_events'], $recorded);
+    }
+
+    /** @param array<string, mixed> $export */
+    #[DataProvider('invalidNativeStarts')]
+    public function testAnUnboundNativeStartCommandPrefixIsRefused(array $export): void
+    {
+        $this->expectExceptionMessage('anchored_evidence_not_fresh_native');
+        Anchored::freshNativeHistory($export, 'run-1');
+    }
+
+    /** @return iterable<string, array{array<string, mixed>}> */
+    public static function invalidNativeStarts(): iterable
+    {
+        [, $export] = self::nativeExport();
+        $missing = $export;
+        unset($missing['history_events'][0]['workflow_command_id']);
+        yield 'missing accepted start command' => [$missing];
+        $empty = $export;
+        $empty['history_events'][0]['workflow_command_id'] = '';
+        $empty['history_events'][1]['workflow_command_id'] = '';
+        yield 'empty start command identity' => [$empty];
+        $different = $export;
+        $different['history_events'][1]['workflow_command_id'] = 'another-command';
+        yield 'different start command identities' => [$different];
+        foreach ([0, 1] as $position) {
+            $authored = $export;
+            $authored['history_events'][$position]['workflow_task_id'] = 'task-foreign';
+            yield 'start prefix authored by a task at '.$position => [$authored];
+        }
+        $without = $export;
+        $without['history_events'][1]['type'] = 'ConditionWaitOpened';
+        yield 'accepted command without WorkflowStarted' => [$without];
+        $duplicate = $export;
+        $duplicate['history_events'][1]['type'] = 'StartAccepted';
+        yield 'two accepted starts' => [$duplicate];
+        $other = $export;
+        $other['history_events'][0]['type'] = 'SignalReceived';
+        yield 'unrelated first event' => [$other];
+    }
+
     /**
      * @param array<string, mixed> $export
      */
@@ -575,6 +638,19 @@ final class ConditionWaitAnchoredEvidenceTest extends TestCase
             'history_events' => array_map(static fn (array $event): array => ['id' => $event['id'], 'sequence' => $event['sequence'],
                 'type' => $event['event_type'], 'workflow_task_id' => $event['workflow_task_id'] ?? null, 'workflow_command_id' => null,
                 'recorded_at' => $event['recorded_at'], 'payload' => $event['payload']], $history)];
+    }
+
+    /** @return array{list<array<string, mixed>>, array<string, mixed>} */
+    private static function nativeExport(): array
+    {
+        // Native 3.3.0 records StartAccepted and WorkflowStarted for the same
+        // control-plane start command before the first worker-authored open.
+        $history = self::numbered([self::event(0.0, 'StartAccepted'), ...self::falseWake()]);
+        $export = self::export($history);
+        $export['history_events'][0]['workflow_command_id'] = 'command-start';
+        $export['history_events'][1]['workflow_command_id'] = 'command-start';
+
+        return [$history, $export];
     }
 
     /**
