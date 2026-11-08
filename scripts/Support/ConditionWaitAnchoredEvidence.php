@@ -20,12 +20,17 @@ use RuntimeException;
  * compared as the recorded value, never recomputed from rounded timestamps.
  *
  * The worker-authored remaining timeout is checked against what the worker
- * actually received: a bounded times/identities-only witness of its poll and
- * history-page responses and of its completion commands, bound to task ID and
- * attempt. The latest visible event is taken from that exact slice with the
- * Replayer's timestamp precedence and integer arithmetic; history recorded
- * before the completion is not treated as visible. No argument, payload or
- * token is kept in the witness.
+ * actually received: a bounded times/identities-only witness of its delivered
+ * history (transport slices, or the Worker's own per-pass replay input) and of
+ * its proposed and accepted completion commands, bound to task ID and attempt
+ * and, through the recorded workflow_task_id, to the open each completion
+ * authored. "Now" is the latest event instant in that exact input, read with
+ * the Replayer's own field choice and integer arithmetic; history recorded
+ * before the completion is not treated as visible. The recorded history is
+ * the Native history export of a run the qualifier started itself (see
+ * freshNativeHistory()). No argument, payload or token is kept in the witness.
+ *
+ * @phpstan-type RecordedEvent array{type: string, recorded: ?float, payload: array<string, mixed>, id: string|int|null, sequence: string|int|null, workflow_task_id: string|int|null}
  */
 final class ConditionWaitAnchoredEvidence
 {
@@ -46,7 +51,9 @@ final class ConditionWaitAnchoredEvidence
     /**
      * The Worker's own replay input for an attempt, reported by the @internal
      * Worker::observeDeliveredWorkflowHistory hook: the exact history the
-     * Replayer received after every page and refetch. One entry per attempt.
+     * Replayer received on one replay pass (after every page, the sticky cache
+     * and any in-claim refresh). An attempt that replayed more than once has
+     * more than one entry and is refused as ambiguous.
      */
     public const REPLAY_INPUT = 'replay_input';
 
@@ -86,9 +93,10 @@ final class ConditionWaitAnchoredEvidence
 
     /**
      * An observer for Worker::observeDeliveredWorkflowHistory that appends
-     * bounded witness entries: 'history' as the replay input and 'completion'
-     * as the completion commands. Any other kind is kept as an unknown entry,
-     * which the anchored checks refuse.
+     * bounded witness entries: 'history' as a replay pass's input (one per
+     * pass), 'completion' as the proposed commands and 'accepted' as the
+     * commands of a completion request that returned. Any other kind is kept
+     * as an unknown entry, which the anchored checks refuse.
      *
      * @param list<array<string, mixed>> $witness
      * @return \Closure(string, string, int, list<mixed>): void
@@ -99,9 +107,39 @@ final class ConditionWaitAnchoredEvidence
             $witness[] = match ($kind) {
                 'history' => self::replayInput($taskId, $attempt, $items),
                 'completion' => self::completion($taskId, $attempt, $items),
+                'accepted' => self::accepted($taskId, $attempt, $items),
                 default => ['source' => 'unknown', 'kind' => $kind, 'task_id' => $taskId, 'attempt' => $attempt],
             };
         };
+    }
+
+    /**
+     * Fresh-Native provenance for the recorded history (#269 qualifier scope).
+     * The qualifier starts each run itself and passes the started run id; the
+     * Native history export of that run must not be a Waterline projection
+     * (no `migration_projection`), must name that run, and must hold a timed
+     * history numbered exactly 1..n from WorkflowStarted. Imported runs that
+     * the export does not mark (embedded-v2 imports) are excluded by the
+     * qualifier starting the run, not by this check; the check refuses any
+     * untimed or non-contiguous history either way. Returns the export's
+     * history_events (id, sequence, type, workflow_task_id, recorded_at, payload).
+     *
+     * @param array<string, mixed> $export the Native history export bundle
+     * @return list<array<string, mixed>>
+     */
+    public static function freshNativeHistory(array $export, string $startedRunId): array
+    {
+        $events = $export['history_events'] ?? null;
+        self::check(!array_key_exists('migration_projection', $export)
+            && is_array($export['workflow'] ?? null) && ($export['workflow']['run_id'] ?? null) === $startedRunId
+            && is_array($events) && array_is_list($events) && $events !== [], 'anchored_evidence_not_fresh_native');
+        foreach ($events as $position => $event) {
+            self::check(is_array($event) && ($event['sequence'] ?? null) === $position + 1 && is_string($event['id'] ?? null)
+                && is_string($event['recorded_at'] ?? null) && self::instant($event['recorded_at']) !== null
+                && ($position > 0 || ($event['type'] ?? null) === 'WorkflowStarted'), 'anchored_evidence_not_fresh_native');
+        }
+
+        return $events;
     }
 
     /**
@@ -120,9 +158,13 @@ final class ConditionWaitAnchoredEvidence
             $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
             $timestamp = self::scalar($event['timestamp'] ?? null);
             $recorded = self::scalar($event['recorded_at'] ?? null);
+            // The Replayer reads `timestamp ?? recorded_at` and stops at the first non-null value, even an
+            // invalid one; keep that exact choice so a non-string timestamp never falls through to recorded_at.
+            $chosen = $event['timestamp'] ?? $event['recorded_at'] ?? null;
             $kept = ['id' => self::scalar($event['id'] ?? null), 'sequence' => self::scalar($event['sequence'] ?? null),
                 'type' => self::scalar($event['event_type'] ?? $event['type'] ?? null), 'timestamp' => $timestamp, 'recorded_at' => $recorded,
-                'time_field' => $timestamp !== null ? 'timestamp' : ($recorded !== null ? 'recorded_at' : null)];
+                'time_field' => ($event['timestamp'] ?? null) !== null ? 'timestamp' : (($event['recorded_at'] ?? null) !== null ? 'recorded_at' : null),
+                'time' => is_string($chosen) ? $chosen : null, 'workflow_task_id' => self::scalar($event['workflow_task_id'] ?? null)];
             foreach (self::EVENT_KEYS as $key) {
                 $kept[$key] = self::scalar($payload[$key] ?? null);
             }
@@ -141,7 +183,29 @@ final class ConditionWaitAnchoredEvidence
      */
     public static function completion(string $taskId, int $attempt, array $commands): array
     {
-        $entry = ['source' => 'completion', 'task_id' => $taskId, 'attempt' => $attempt, 'commands' => []];
+        return self::commands('completion', $taskId, $attempt, $commands);
+    }
+
+    /**
+     * A bounded witness entry for the commands of a completion request that
+     * returned (the Server accepted that attempt's completion), with the same
+     * kept fields as completion().
+     *
+     * @param list<mixed> $commands
+     * @return array<string, mixed>
+     */
+    public static function accepted(string $taskId, int $attempt, array $commands): array
+    {
+        return self::commands('accepted', $taskId, $attempt, $commands);
+    }
+
+    /**
+     * @param list<mixed> $commands
+     * @return array<string, mixed>
+     */
+    private static function commands(string $source, string $taskId, int $attempt, array $commands): array
+    {
+        $entry = ['source' => $source, 'task_id' => $taskId, 'attempt' => $attempt, 'commands' => []];
         foreach (array_slice($commands, 0, self::MAX_WITNESS_EVENTS) as $command) {
             if (!is_array($command)) {
                 continue;
@@ -246,7 +310,7 @@ final class ConditionWaitAnchoredEvidence
 
     /**
      * @param list<array<string, mixed>> $history
-     * @return list<array{type: string, recorded: ?float, payload: array<string, mixed>, id: string|int|null, sequence: string|int|null}>
+     * @return list<RecordedEvent>
      */
     private static function events(array $history): array
     {
@@ -257,7 +321,8 @@ final class ConditionWaitAnchoredEvidence
             $stamp = $event['recorded_at'] ?? $event['timestamp'] ?? null;
             $events[] = ['type' => $type, 'recorded' => is_string($stamp) ? self::instant($stamp) : null,
                 'payload' => is_array($event['payload'] ?? null) ? $event['payload'] : [],
-                'id' => self::scalar($event['id'] ?? null), 'sequence' => self::scalar($event['sequence'] ?? null)];
+                'id' => self::scalar($event['id'] ?? null), 'sequence' => self::scalar($event['sequence'] ?? null),
+                'workflow_task_id' => self::scalar($event['workflow_task_id'] ?? null)];
         }
 
         return $events;
@@ -266,7 +331,7 @@ final class ConditionWaitAnchoredEvidence
     /**
      * Opens grouped by condition key, in order.
      *
-     * @param list<array{type: string, recorded: ?float, payload: array<string, mixed>}> $events
+     * @param list<RecordedEvent> $events
      * @return array<string, list<int>>
      */
     private static function chains(array $events): array
@@ -287,7 +352,7 @@ final class ConditionWaitAnchoredEvidence
      * One anchored chain: the producer contract on every open, the first
      * stored anchor on every condition-timeout timer, and each wait's ending.
      *
-     * @param list<array{type: string, recorded: ?float, payload: array<string, mixed>}> $events
+     * @param list<RecordedEvent> $events
      * @param list<int> $opens
      * @return array<string, mixed>
      */
@@ -305,7 +370,8 @@ final class ConditionWaitAnchoredEvidence
                 && ($payload['condition_wait_occurrence_id'] ?? null) === $occurrence, 'anchored_evidence_occurrence');
             self::check(is_int($payload['timeout_seconds'] ?? null)
                 && ($position > 0 || $payload['timeout_seconds'] === $timeout), 'anchored_evidence_first_timeout');
-            $waits[$id] = ['id' => $id, 'index' => $index, 'opened' => $events[$index]['recorded'], 'timeout' => $payload['timeout_seconds'],
+            $waits[$id] = ['id' => $id, 'index' => $index, 'event_id' => $events[$index]['id'], 'sequence' => $events[$index]['sequence'],
+                'workflow_task_id' => $events[$index]['workflow_task_id'], 'opened' => $events[$index]['recorded'], 'timeout' => $payload['timeout_seconds'],
                 'deadline' => self::scalar($payload['occurrence_deadline_at'] ?? null), 'timer' => null, 'fire_at' => null,
                 'timer_anchor' => null, 'timer_policy' => null, 'resolution' => null, 'fired_at' => null, 'timer_cancelled' => false];
         }
@@ -352,66 +418,105 @@ final class ConditionWaitAnchoredEvidence
     }
 
     /**
-     * Bind each reopen to the one task attempt whose completion authored it,
-     * and require its timeout to be the remaining time computed from the
-     * events that attempt actually received.
+     * Bind every physical open of the chain to the one completion that
+     * authored it, through the recorded `workflow_task_id` Native stamps on
+     * each ConditionWaitOpened (the history export keeps it):
+     * - a completion is an entry whose commands hold this occurrence's
+     *   open_condition_wait (one per completion at most);
+     * - open i binds to the completions whose task id is that open's recorded
+     *   workflow_task_id, and there must be exactly one; in replay-input-only
+     *   mode only completions the Worker reported as accepted (same task,
+     *   attempt and commands) count, so a refused or abandoned proposal of an
+     *   earlier attempt of the same task cannot carry evidence; without the
+     *   accepted report, two proposals for one task are ambiguous;
+     * - every counted completion must bind to an open (no extra authorship);
+     * - completion 0 must author the first open exactly: the full budget T as
+     *   timeout_seconds, the policy and the budget;
+     * - each reopen's timeout must be the remaining time the Replayer computes
+     *   from exactly what that attempt received: "now" is the latest valid
+     *   event instant (equal instants only label the higher sequence as the
+     *   wake), and the opening instant is that of the chain's first open,
+     *   matched by its recorded id and sequence; an untimed first open is
+     *   refused.
      *
-     * @param list<array{type: string, recorded: ?float, payload: array<string, mixed>, id: string|int|null, sequence: string|int|null}> $events
+     * @param list<RecordedEvent> $events
      * @param array<string, mixed> $chain
      * @param list<array<string, mixed>> $witness
      * @return list<array<string, mixed>>
      */
     private static function authored(array $events, array $chain, array $witness, int $timeout, bool $replayInputOnly): array
     {
-        $completions = [];
+        $proposals = [];
+        $accepted = [];
         foreach ($witness as $entry) {
-            self::check(in_array($entry['source'] ?? null, [...self::ROUTES, self::REPLAY_INPUT, 'completion'], true),
+            $source = $entry['source'] ?? null;
+            self::check(in_array($source, [...self::ROUTES, self::REPLAY_INPUT, 'completion', 'accepted'], true),
                 'anchored_evidence_witness_shape');
-            if (($entry['source'] ?? null) !== 'completion') {
+            if ($source === 'accepted') {
+                self::check(is_string($entry['task_id'] ?? null) && is_int($entry['attempt'] ?? null), 'anchored_evidence_witness_shape');
+                self::check(!isset($accepted[$entry['task_id']]), 'anchored_evidence_completion_binding');
+                $accepted[$entry['task_id']] = ['attempt' => $entry['attempt'], 'commands' => $entry['commands'] ?? null];
                 continue;
             }
-            foreach ($entry['commands'] ?? [] as $command) {
-                if (($command['type'] ?? null) === 'open_condition_wait'
-                    && ($command['condition_wait_occurrence_id'] ?? null) === $chain['occurrence']) {
-                    $completions[] = ['task_id' => $entry['task_id'] ?? null, 'attempt' => $entry['attempt'] ?? null, 'command' => $command];
-                }
+            if ($source !== 'completion') {
+                continue;
             }
+            $opens = array_values(array_filter($entry['commands'] ?? [], static fn (mixed $command): bool => is_array($command)
+                && ($command['type'] ?? null) === 'open_condition_wait' && ($command['condition_wait_occurrence_id'] ?? null) === $chain['occurrence']));
+            if ($opens === []) {
+                continue;
+            }
+            self::check(count($opens) === 1 && is_string($entry['task_id'] ?? null) && is_int($entry['attempt'] ?? null),
+                'anchored_evidence_completion_binding');
+            $proposals[] = ['task_id' => $entry['task_id'], 'attempt' => $entry['attempt'], 'command' => $opens[0], 'commands' => $entry['commands']];
         }
-        self::check(count($completions) === count($chain['waits']), 'anchored_evidence_witness_unproven');
+        if ($replayInputOnly) {
+            $proposals = array_values(array_filter($proposals, static fn (array $proposal): bool => isset($accepted[$proposal['task_id']])
+                && $accepted[$proposal['task_id']]['attempt'] === $proposal['attempt']
+                && $accepted[$proposal['task_id']]['commands'] === $proposal['commands']));
+        }
+        $bound = [];
+        foreach ($chain['waits'] as $position => $wait) {
+            self::check(is_string($wait['workflow_task_id']) && $wait['workflow_task_id'] !== '', 'anchored_evidence_open_task_unbound');
+            $matches = array_values(array_filter($proposals, static fn (array $proposal): bool => $proposal['task_id'] === $wait['workflow_task_id']));
+            self::check(count($matches) === 1, 'anchored_evidence_completion_binding');
+            $bound[$position] = $matches[0];
+        }
+        self::check(count($proposals) === count($bound), 'anchored_evidence_completion_binding');
+        $first = $bound[0]['command'];
+        self::check(($first['timeout_seconds'] ?? null) === $timeout && ($first['deadline_policy'] ?? null) === self::POLICY
+            && ($first['condition_wait_timeout_budget_seconds'] ?? null) === $timeout, 'anchored_evidence_first_command');
+        $opening = $chain['waits'][0];
         $results = [];
         foreach ($chain['reopens'] as $index => $reopen) {
-            $completion = $completions[$index + 1];
+            $completion = $bound[$index + 1];
             $command = $completion['command'];
-            self::check(is_string($completion['task_id']) && is_int($completion['attempt']), 'anchored_evidence_witness_unproven');
             self::check(($command['deadline_policy'] ?? null) === self::POLICY
                 && ($command['condition_wait_timeout_budget_seconds'] ?? null) === $timeout, 'anchored_evidence_command_contract');
             $delivered = self::received($events, $witness, $completion['task_id'], $completion['attempt'], $reopen, $replayInputOnly);
             $now = null;
             $wake = null;
             $opened = null;
-            $highest = null;
+            $openingFound = false;
             foreach ($delivered as $event) {
-                $at = self::workerInstant($event);
+                if (($event['id'] ?? null) === $opening['event_id'] && ($event['sequence'] ?? null) === $opening['sequence']) {
+                    $openingFound = true;
+                    $opened = self::witnessInstant($event);
+                }
+                $at = self::witnessInstant($event);
                 if ($at === null) {
                     continue;
                 }
                 self::check(is_int($event['sequence'] ?? null), 'anchored_evidence_witness_unproven');
-                if ($highest === null || $event['sequence'] > $highest['sequence']) {
-                    $highest = $event;
-                }
-                // The Replayer takes the latest instant; equal instants resolve to the higher sequence.
+                // The Replayer takes the latest instant; an equal instant only relabels the wake as the higher sequence.
                 if ($now === null || $at > $now || ($at === $now && $event['sequence'] > $wake['sequence'])) {
                     $now = $at;
                     $wake = $event;
                 }
-                if ($opened === null && ($event['type'] ?? null) === 'ConditionWaitOpened'
-                    && ($event['condition_wait_occurrence_id'] ?? null) === $chain['occurrence']) {
-                    $opened = $at;
-                }
             }
-            self::check($now !== null && $opened !== null, 'anchored_evidence_witness_unproven');
-            // The latest visible event is the highest history sequence actually delivered.
-            self::check($wake['sequence'] === $highest['sequence'], 'anchored_evidence_witness_order');
+            self::check($openingFound, 'anchored_evidence_opened_missing');
+            self::check($opened !== null, 'anchored_evidence_opened_untimed');
+            self::check($now !== null, 'anchored_evidence_witness_unproven');
             $expected = self::authoredRemaining($timeout, $opened, $now);
             self::check(($command['timeout_seconds'] ?? null) === $expected, 'anchored_evidence_authored_remaining');
             self::check($reopen['timeout'] === $expected, 'anchored_evidence_recorded_remaining');
@@ -425,6 +530,20 @@ final class ConditionWaitAnchoredEvidence
     }
 
     /**
+     * The instant of a kept witness event: the Replayer's own chosen field
+     * (`time`), parsed with workerInstant()'s format; null when that choice was
+     * absent or not a valid string, with no fall-through to another field.
+     *
+     * @param array<string, mixed> $event
+     */
+    private static function witnessInstant(array $event): ?float
+    {
+        $time = $event['time'] ?? null;
+
+        return is_string($time) ? self::workerInstant(['timestamp' => $time]) : null;
+    }
+
+    /**
      * The events one authoring attempt received. Transport slices (the four
      * routes) are concatenated as before. The Worker's replay input is used
      * alone and must be bounded exactly:
@@ -432,13 +551,13 @@ final class ConditionWaitAnchoredEvidence
      *   for the same attempt (otherwise ambiguous);
      * - not truncated (overflow is incomplete evidence);
      * - sequences exactly 1..n, so no page or event is missing or repeated;
-     * - each event the recorded event at that position (same id, sequence and
-     *   type): the input is a prefix of the run's history;
+     * - each event the recorded event at that position (same id, sequence,
+     *   type and workflow_task_id): the input is a prefix of the run's history;
      * - it ends before the reopen this attempt authored (an input that
      *   already contains that open or anything after it is over-bound).
      * In replay-input-only mode the attempt must have a replay input.
      *
-     * @param list<array{type: string, recorded: ?float, payload: array<string, mixed>, id: string|int|null, sequence: string|int|null}> $events
+     * @param list<RecordedEvent> $events
      * @param list<array<string, mixed>> $witness
      * @param array<string, mixed> $reopen
      * @return list<array<string, mixed>>
@@ -477,7 +596,8 @@ final class ConditionWaitAnchoredEvidence
             self::check(($event['sequence'] ?? null) === $position + 1, 'anchored_evidence_replay_input_incomplete');
             $recorded = $events[$position] ?? null;
             self::check($recorded !== null && $recorded['sequence'] === $position + 1 && $recorded['id'] === ($event['id'] ?? null)
-                && $recorded['type'] === ($event['type'] ?? null), 'anchored_evidence_replay_input_mismatch');
+                && $recorded['type'] === ($event['type'] ?? null) && $recorded['workflow_task_id'] === ($event['workflow_task_id'] ?? null),
+                'anchored_evidence_replay_input_mismatch');
         }
         self::check(count($delivered) <= $reopen['index'], 'anchored_evidence_replay_input_over_bound');
 
@@ -497,7 +617,7 @@ final class ConditionWaitAnchoredEvidence
         return is_string($value) || is_int($value) ? $value : null;
     }
 
-    /** @param list<array{type: string, recorded: ?float, payload: array<string, mixed>}> $events */
+    /** @param list<RecordedEvent> $events */
     private static function count(array $events, string $type): int
     {
         return count(array_filter($events, static fn (array $e): bool => $e['type'] === $type));
