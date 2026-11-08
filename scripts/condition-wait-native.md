@@ -47,8 +47,9 @@ evidence, plus `run_ids`, `c1_run_ids` and `c1_timeout` for the physical check.
 Before each history assertion it writes one `checkpoint` line to stderr: the
 case, workflow and run IDs, the first event's absolute time, and a times-only
 timeline of that already-fetched history (each condition-wait, timer, signal and
-close event's index, type, offset and integer `timeout_seconds` /
-`delay_seconds` / `sequence`; at most 40 entries and 4 KiB, no payloads). The
+close event's index, type, offset, integer `timeout_seconds` / `delay_seconds` /
+`sequence`, and `deadline_at` / `fire_at` / `fired_at` as offsets; at most 40
+entries and 4 KiB, no payloads). The
 checkpoint is kept whether the assertion passes or fails. It does not change any
 assertion or tolerance.
 

@@ -51,6 +51,15 @@ final class ConditionWaitNativeEvidenceTest extends TestCase
         self::assertSame(['i' => 1, 'type' => 'TimerScheduled', 'offset' => 0.0, 'delay_seconds' => 20, 'sequence' => 1], $timeline[1]);
         self::assertSame(['i' => 2, 'type' => 'SignalReceived', 'offset' => 5.0], $timeline[2]);
         self::assertSame(['i' => 7, 'type' => 'TimerFired', 'offset' => 20.0, 'sequence' => 2], $timeline[7]);
+        $history[6]['payload']['fire_at'] = $history[7]['recorded_at'];
+        $history[7]['payload'] += ['fire_at' => $history[7]['recorded_at'], 'fired_at' => $history[7]['recorded_at']];
+        $history[5]['payload']['deadline_at'] = $history[7]['recorded_at'];
+        $history[5]['payload']['fire_at'] = 'not-a-time';
+        $timeline = Evidence::timeline(Evidence::events($history));
+        self::assertSame(20.0, $timeline[5]['deadline_at_offset']);
+        self::assertArrayNotHasKey('fire_at_offset', $timeline[5], 'an unparseable instant is omitted');
+        self::assertSame(20.0, $timeline[6]['fire_at_offset']);
+        self::assertSame([20.0, 20.0], [$timeline[7]['fire_at_offset'], $timeline[7]['fired_at_offset']]);
         self::assertStringNotContainsString('secret', (string) json_encode($timeline));
         self::assertCount(40, Evidence::timeline(Evidence::events(array_merge(...array_fill(0, 30, self::falseWake(15))))));
         self::assertSame(Evidence::falseWake($events, 20), Evidence::falseWake(Evidence::events(self::falseWake(15)), 20));

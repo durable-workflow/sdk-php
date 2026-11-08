@@ -123,13 +123,12 @@ final class ConditionWaitNativeEvidence
             if (!is_string($type) || !is_string($stamp)) {
                 throw new RuntimeException('condition_evidence_event_shape');
             }
-            $at = DateTimeImmutable::createFromFormat('Y-m-d\TH:i:s.uP', $stamp)
-                ?: DateTimeImmutable::createFromFormat(DATE_ATOM, $stamp);
-            if ($at === false) {
+            $at = self::instant($stamp);
+            if ($at === null) {
                 throw new RuntimeException('condition_evidence_event_time');
             }
             $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
-            $events[] = ['type' => $type, 'at' => (float) $at->format('U.u'), 'payload' => $payload];
+            $events[] = ['type' => $type, 'at' => $at, 'payload' => $payload];
         }
 
         return $events;
@@ -307,8 +306,9 @@ final class ConditionWaitNativeEvidence
     /**
      * A bounded, payload-free timeline of one run's history for diagnostics:
      * each condition-wait, timer, signal and close event's index, type and
-     * offset from the first event, with its integer timing fields only. At
-     * most 40 entries. No assertion reads it.
+     * offset from the first event, with its integer timing fields and its
+     * deadline_at / fire_at / fired_at instants as offsets. At most 40
+     * entries. No assertion reads it.
      *
      * @param list<array{type: string, at: float, payload: array<string, mixed>}> $events
      * @return list<array<string, mixed>>
@@ -327,6 +327,12 @@ final class ConditionWaitNativeEvidence
                     $entry[$field] = $event['payload'][$field];
                 }
             }
+            foreach (['deadline_at', 'fire_at', 'fired_at'] as $field) {
+                $at = is_string($event['payload'][$field] ?? null) ? self::instant($event['payload'][$field]) : null;
+                if ($at !== null) {
+                    $entry[$field.'_offset'] = round($at - $origin, 6);
+                }
+            }
             $kept[] = $entry;
             if (count($kept) === 40) {
                 break;
@@ -334,6 +340,14 @@ final class ConditionWaitNativeEvidence
         }
 
         return $kept;
+    }
+
+    private static function instant(string $stamp): ?float
+    {
+        $at = DateTimeImmutable::createFromFormat('Y-m-d\TH:i:s.uP', $stamp)
+            ?: DateTimeImmutable::createFromFormat(DATE_ATOM, $stamp);
+
+        return $at === false ? null : (float) $at->format('U.u');
     }
 
     /** @param list<array{type: string, at: float, payload: array<string, mixed>}> $events */
