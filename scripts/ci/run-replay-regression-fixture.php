@@ -20,6 +20,7 @@ use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\DurableOperationHandle;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\Saga;
+use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkflowContext;
 
 try {
@@ -98,6 +99,7 @@ final class ReplayRegressionTransport implements Transport
         private readonly bool $activityBackendUnavailable = false,
         private readonly bool $workflowLeaseRecovery = false,
         private readonly bool $completionLockPressure = false,
+        private readonly bool $occurrenceDeadline = false,
     ) {
     }
 
@@ -117,6 +119,9 @@ final class ReplayRegressionTransport implements Transport
             if ($task['workflow_type'] === 'golden.workflow-fresh-grant') {
                 $reply['server_time'] = '2026-07-18T00:00:00.000000Z';
                 $reply['task']['lease_expires_at'] = '2026-07-18T00:00:30.000000Z';
+            }
+            if ($this->occurrenceDeadline) {
+                $reply['server_capabilities'] = ['condition_wait_occurrence_deadline' => true];
             }
 
             return $reply;
@@ -225,6 +230,18 @@ final class ReplayRegressionTransport implements Transport
                     'type' => 'replay_error',
                     'reason' => 'workflow_entry_arguments_mismatch',
                     'sequence' => null,
+                ]];
+
+                return ['failed' => true];
+            }
+            $claimAborted = 'PHP workflow task execution failed: ';
+            if (is_array($failure) && ($failure['type'] ?? null) === WorkflowClaimAborted::class
+                && is_string($failure['message'] ?? null) && str_starts_with($failure['message'], $claimAborted)
+                && str_contains(substr($failure['message'], strlen($claimAborted)), ': ')) {
+                // An abandoned claim writes no command; record its stable reason prefix.
+                $this->completedCommands[] = [[
+                    'type' => 'claim_aborted',
+                    'reason' => strstr(substr($failure['message'], strlen($claimAborted)), ': ', true),
                 ]];
 
                 return ['failed' => true];
@@ -595,6 +612,7 @@ final class ReplayRegressionConsumer
             activityBackendUnavailable: $workflowType === 'golden.activity-completion-backend-loss',
             workflowLeaseRecovery: $workflowType === 'golden.workflow-lease-recovery',
             completionLockPressure: $workflowType === 'golden.completion-lock-pressure',
+            occurrenceDeadline: self::occurrenceDeadlineAdvertised($workflowType, $history),
         );
         $now = 0.0;
         $worker = new Worker(
@@ -749,10 +767,34 @@ final class ReplayRegressionConsumer
         }
     }
 
+    /**
+     * Whether the replayed Server advertises condition_wait_occurrence_deadline
+     * (#269). The rollback fixture withdraws it; otherwise only a history that
+     * already holds an anchored condition-wait record (which only a capable
+     * Server can produce) replays against a capable Server.
+     *
+     * @param list<array<string, mixed>> $history
+     */
+    private static function occurrenceDeadlineAdvertised(string $workflowType, array $history): bool
+    {
+        if ($workflowType === 'golden.signal-occurrence-unavailable') {
+            return false;
+        }
+        foreach ($history as $event) {
+            if (($event['event_type'] ?? $event['type'] ?? null) === 'ConditionWaitOpened'
+                && is_array($event['payload'] ?? null) && array_key_exists('deadline_policy', $event['payload'])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** @return callable(WorkflowContext, mixed ...$input): mixed */
     private static function workflow(string $workflowType): callable
     {
         return match ($workflowType) {
+            'golden.signal-occurrence-unavailable' => self::workflow('golden.signal'),
             'golden.telemetry-context' => static function (WorkflowContext $context): array {
                 $result = $context->activity('golden.greet', ['Ada']);
                 $fields = \DurableWorkflow\Telemetry\ExecutionTelemetry::current();

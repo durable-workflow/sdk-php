@@ -75,7 +75,7 @@ final class Replayer
     /** The occurrence-deadline opt-in on an anchored condition-wait open (#269). */
     public const CONDITION_DEADLINE_POLICY = 'occurrence';
 
-    /** Whether the Server advertises condition_wait_occurrence_deadline for new chains. */
+    /** Whether this task's Server advertises condition_wait_occurrence_deadline. */
     private bool $conditionOccurrenceDeadline = false;
 
     public function __construct(private readonly PayloadCodec $codec)
@@ -84,9 +84,11 @@ final class Replayer
 
     /**
      * @internal The Worker sets this from the Server's advertised
-     * condition_wait_occurrence_deadline capability. It decides only whether a
-     * new chain's first open opts in; a recorded chain keeps its first open's
-     * policy on every reopen.
+     * condition_wait_occurrence_deadline capability on every workflow poll. It
+     * decides whether a new chain's first open opts in. A recorded anchored
+     * chain keeps its first open's policy on every reopen, and reopens only
+     * while the capability is advertised; otherwise the claim is aborted
+     * before the reopen is sent (#269).
      */
     public function useConditionOccurrenceDeadline(bool $supported): void
     {
@@ -1523,6 +1525,15 @@ final class Replayer
     {
         $command = $this->remainingConditionReopen($command, $step, $history);
         if (($step['deadline_policy'] ?? null) === self::CONDITION_DEADLINE_POLICY && is_int($step['timeout_budget'] ?? null)) {
+            if (!$this->conditionOccurrenceDeadline) {
+                // A Server that does not advertise the capability on this task
+                // (an older binary after a rollback, or a withdrawn capability)
+                // strips the policy fields and records a legacy reopen inside
+                // the anchored chain, moving its wall deadline. Leave the claim
+                // before any command is sent; a capable Server resumes it.
+                throw new WorkflowClaimAborted('condition_wait_occurrence_deadline_unavailable: an anchored condition wait cannot reopen '
+                    .'because this Server does not advertise condition_wait_occurrence_deadline.');
+            }
             // Same chain, same policy: the Server keeps the first open's
             // deadline; timeout_seconds stays the remaining replay budget.
             return $command->withAttributes([
