@@ -43,6 +43,13 @@ final class ConditionWaitAnchoredEvidence
     /** Native's four routes by which a workflow task attempt receives history. */
     public const ROUTES = ['poll', 'compressed_page', 'continuation_page', 'carried_task'];
 
+    /**
+     * The Worker's own replay input for an attempt, reported by the @internal
+     * Worker::observeDeliveredWorkflowHistory hook: the exact history the
+     * Replayer received after every page and refetch. One entry per attempt.
+     */
+    public const REPLAY_INPUT = 'replay_input';
+
     private const EVENT_KEYS = ['condition_wait_id', 'condition_wait_occurrence_id', 'condition_key', 'timer_id'];
     private const COMMAND_KEYS = ['condition_wait_occurrence_id', 'condition_key', 'timeout_seconds', 'deadline_policy',
         'condition_wait_timeout_budget_seconds'];
@@ -61,6 +68,48 @@ final class ConditionWaitAnchoredEvidence
     public static function delivery(string $source, string $taskId, int $attempt, array $events, string $slice = '0'): array
     {
         self::check(in_array($source, self::ROUTES, true), 'anchored_witness_source');
+
+        return self::slice($source, $taskId, $attempt, $events, $slice);
+    }
+
+    /**
+     * A bounded witness entry for an attempt's complete replay input, with the
+     * same kept fields as delivery().
+     *
+     * @param list<mixed> $history the Replayer input reported by the Worker
+     * @return array<string, mixed>
+     */
+    public static function replayInput(string $taskId, int $attempt, array $history): array
+    {
+        return self::slice(self::REPLAY_INPUT, $taskId, $attempt, $history, 'replay');
+    }
+
+    /**
+     * An observer for Worker::observeDeliveredWorkflowHistory that appends
+     * bounded witness entries: 'history' as the replay input and 'completion'
+     * as the completion commands. Any other kind is kept as an unknown entry,
+     * which the anchored checks refuse.
+     *
+     * @param list<array<string, mixed>> $witness
+     * @return \Closure(string, string, int, list<mixed>): void
+     */
+    public static function observer(array &$witness): \Closure
+    {
+        return static function (string $kind, string $taskId, int $attempt, array $items) use (&$witness): void {
+            $witness[] = match ($kind) {
+                'history' => self::replayInput($taskId, $attempt, $items),
+                'completion' => self::completion($taskId, $attempt, $items),
+                default => ['source' => 'unknown', 'kind' => $kind, 'task_id' => $taskId, 'attempt' => $attempt],
+            };
+        };
+    }
+
+    /**
+     * @param list<mixed> $events
+     * @return array<string, mixed>
+     */
+    private static function slice(string $source, string $taskId, int $attempt, array $events, string $slice): array
+    {
         $entry = ['source' => $source, 'task_id' => $taskId, 'attempt' => $attempt, 'slice' => $slice,
             'overflow' => count($events) > self::MAX_WITNESS_EVENTS, 'events' => []];
         foreach (array_slice($events, 0, self::MAX_WITNESS_EVENTS) as $event) {
@@ -140,9 +189,11 @@ final class ConditionWaitAnchoredEvidence
      *
      * @param list<array<string, mixed>> $history the run's recorded history
      * @param list<array<string, mixed>> $witness delivery and completion entries
+     * @param bool $replayInputOnly require the Worker's replay input for every authoring attempt
      * @return array<string, mixed>
      */
-    public static function falseWake(array $history, array $witness, string $key, int $timeout, int $reopens): array
+    public static function falseWake(array $history, array $witness, string $key, int $timeout, int $reopens,
+        bool $replayInputOnly = false): array
     {
         $events = self::events($history);
         $chains = self::chains($events);
@@ -157,7 +208,7 @@ final class ConditionWaitAnchoredEvidence
         $anchor = self::instant($chain['anchor']);
         self::check($last['fired_at'] >= $anchor, 'anchored_evidence_fired_early');
         self::check($last['fired_at'] - $anchor <= self::DISPATCH_LATENCY, 'anchored_evidence_dispatch_latency');
-        $authored = self::authored($chain, $witness, $timeout);
+        $authored = self::authored($events, $chain, $witness, $timeout, $replayInputOnly);
         self::check(self::count($events, 'WorkflowCompleted') === 1, 'anchored_evidence_not_completed');
 
         return ['anchor' => $chain['anchor'], 'budget' => $timeout, 'reopens' => $authored,
@@ -171,10 +222,11 @@ final class ConditionWaitAnchoredEvidence
      *
      * @param list<array<string, mixed>> $history
      * @param list<array<string, mixed>> $witness
+     * @param bool $replayInputOnly require the Worker's replay input for every authoring attempt
      * @return array<string, mixed>
      */
     public static function ownBudget(array $history, array $witness, string $firstKey, int $firstTimeout,
-        string $secondKey, int $secondTimeout): array
+        string $secondKey, int $secondTimeout, bool $replayInputOnly = false): array
     {
         $events = self::events($history);
         $chains = self::chains($events);
@@ -185,7 +237,7 @@ final class ConditionWaitAnchoredEvidence
         self::check($first['occurrence'] !== $second['occurrence'], 'anchored_evidence_occurrence_reused');
         self::check($second['anchor'] !== $first['anchor'], 'anchored_evidence_anchor_reused');
         self::check(count($second['reopens']) === 1, 'anchored_evidence_reopen_count');
-        $authored = self::authored($second, $witness, $secondTimeout);
+        $authored = self::authored($events, $second, $witness, $secondTimeout, $replayInputOnly);
         self::check(self::count($events, 'WorkflowCompleted') === 1, 'anchored_evidence_not_completed');
 
         return ['first_anchor' => $first['anchor'], 'second_anchor' => $second['anchor'], 'second_budget' => $secondTimeout,
@@ -194,7 +246,7 @@ final class ConditionWaitAnchoredEvidence
 
     /**
      * @param list<array<string, mixed>> $history
-     * @return list<array{type: string, recorded: ?float, payload: array<string, mixed>}>
+     * @return list<array{type: string, recorded: ?float, payload: array<string, mixed>, id: string|int|null, sequence: string|int|null}>
      */
     private static function events(array $history): array
     {
@@ -204,7 +256,8 @@ final class ConditionWaitAnchoredEvidence
             self::check(is_string($type), 'anchored_evidence_event_shape');
             $stamp = $event['recorded_at'] ?? $event['timestamp'] ?? null;
             $events[] = ['type' => $type, 'recorded' => is_string($stamp) ? self::instant($stamp) : null,
-                'payload' => is_array($event['payload'] ?? null) ? $event['payload'] : []];
+                'payload' => is_array($event['payload'] ?? null) ? $event['payload'] : [],
+                'id' => self::scalar($event['id'] ?? null), 'sequence' => self::scalar($event['sequence'] ?? null)];
         }
 
         return $events;
@@ -252,7 +305,7 @@ final class ConditionWaitAnchoredEvidence
                 && ($payload['condition_wait_occurrence_id'] ?? null) === $occurrence, 'anchored_evidence_occurrence');
             self::check(is_int($payload['timeout_seconds'] ?? null)
                 && ($position > 0 || $payload['timeout_seconds'] === $timeout), 'anchored_evidence_first_timeout');
-            $waits[$id] = ['id' => $id, 'opened' => $events[$index]['recorded'], 'timeout' => $payload['timeout_seconds'],
+            $waits[$id] = ['id' => $id, 'index' => $index, 'opened' => $events[$index]['recorded'], 'timeout' => $payload['timeout_seconds'],
                 'deadline' => self::scalar($payload['occurrence_deadline_at'] ?? null), 'timer' => null, 'fire_at' => null,
                 'timer_anchor' => null, 'timer_policy' => null, 'resolution' => null, 'fired_at' => null, 'timer_cancelled' => false];
         }
@@ -303,14 +356,17 @@ final class ConditionWaitAnchoredEvidence
      * and require its timeout to be the remaining time computed from the
      * events that attempt actually received.
      *
+     * @param list<array{type: string, recorded: ?float, payload: array<string, mixed>, id: string|int|null, sequence: string|int|null}> $events
      * @param array<string, mixed> $chain
      * @param list<array<string, mixed>> $witness
      * @return list<array<string, mixed>>
      */
-    private static function authored(array $chain, array $witness, int $timeout): array
+    private static function authored(array $events, array $chain, array $witness, int $timeout, bool $replayInputOnly): array
     {
         $completions = [];
         foreach ($witness as $entry) {
+            self::check(in_array($entry['source'] ?? null, [...self::ROUTES, self::REPLAY_INPUT, 'completion'], true),
+                'anchored_evidence_witness_shape');
             if (($entry['source'] ?? null) !== 'completion') {
                 continue;
             }
@@ -329,15 +385,7 @@ final class ConditionWaitAnchoredEvidence
             self::check(is_string($completion['task_id']) && is_int($completion['attempt']), 'anchored_evidence_witness_unproven');
             self::check(($command['deadline_policy'] ?? null) === self::POLICY
                 && ($command['condition_wait_timeout_budget_seconds'] ?? null) === $timeout, 'anchored_evidence_command_contract');
-            $delivered = [];
-            foreach ($witness as $entry) {
-                if (in_array($entry['source'] ?? null, self::ROUTES, true)
-                    && ($entry['task_id'] ?? null) === $completion['task_id'] && ($entry['attempt'] ?? null) === $completion['attempt']) {
-                    self::check(($entry['overflow'] ?? true) === false, 'anchored_evidence_witness_unproven');
-                    array_push($delivered, ...($entry['events'] ?? []));
-                }
-            }
-            self::check($delivered !== [], 'anchored_evidence_witness_unproven');
+            $delivered = self::received($events, $witness, $completion['task_id'], $completion['attempt'], $reopen, $replayInputOnly);
             $now = null;
             $wake = null;
             $opened = null;
@@ -374,6 +422,66 @@ final class ConditionWaitAnchoredEvidence
         }
 
         return $results;
+    }
+
+    /**
+     * The events one authoring attempt received. Transport slices (the four
+     * routes) are concatenated as before. The Worker's replay input is used
+     * alone and must be bounded exactly:
+     * - exactly one replay-input entry for the attempt, and no transport slice
+     *   for the same attempt (otherwise ambiguous);
+     * - not truncated (overflow is incomplete evidence);
+     * - sequences exactly 1..n, so no page or event is missing or repeated;
+     * - each event the recorded event at that position (same id, sequence and
+     *   type): the input is a prefix of the run's history;
+     * - it ends before the reopen this attempt authored (an input that
+     *   already contains that open or anything after it is over-bound).
+     * In replay-input-only mode the attempt must have a replay input.
+     *
+     * @param list<array{type: string, recorded: ?float, payload: array<string, mixed>, id: string|int|null, sequence: string|int|null}> $events
+     * @param list<array<string, mixed>> $witness
+     * @param array<string, mixed> $reopen
+     * @return list<array<string, mixed>>
+     */
+    private static function received(array $events, array $witness, string $taskId, int $attempt, array $reopen, bool $replayInputOnly): array
+    {
+        $slices = [];
+        $inputs = [];
+        foreach ($witness as $entry) {
+            if (($entry['task_id'] ?? null) !== $taskId || ($entry['attempt'] ?? null) !== $attempt) {
+                continue;
+            }
+            if (($entry['source'] ?? null) === self::REPLAY_INPUT) {
+                $inputs[] = $entry;
+            } elseif (in_array($entry['source'] ?? null, self::ROUTES, true)) {
+                $slices[] = $entry;
+            }
+        }
+        if ($inputs === []) {
+            self::check(!$replayInputOnly, 'anchored_evidence_replay_input_missing');
+            $delivered = [];
+            foreach ($slices as $entry) {
+                self::check(($entry['overflow'] ?? true) === false, 'anchored_evidence_witness_unproven');
+                array_push($delivered, ...($entry['events'] ?? []));
+            }
+            self::check($delivered !== [], 'anchored_evidence_witness_unproven');
+
+            return $delivered;
+        }
+        self::check(count($inputs) === 1 && $slices === [], 'anchored_evidence_replay_input_ambiguous');
+        $input = $inputs[0];
+        self::check(($input['overflow'] ?? true) === false, 'anchored_evidence_replay_input_incomplete');
+        $delivered = $input['events'] ?? [];
+        self::check(is_array($delivered) && $delivered !== [], 'anchored_evidence_replay_input_incomplete');
+        foreach (array_values($delivered) as $position => $event) {
+            self::check(($event['sequence'] ?? null) === $position + 1, 'anchored_evidence_replay_input_incomplete');
+            $recorded = $events[$position] ?? null;
+            self::check($recorded !== null && $recorded['sequence'] === $position + 1 && $recorded['id'] === ($event['id'] ?? null)
+                && $recorded['type'] === ($event['type'] ?? null), 'anchored_evidence_replay_input_mismatch');
+        }
+        self::check(count($delivered) <= $reopen['index'], 'anchored_evidence_replay_input_over_bound');
+
+        return array_values($delivered);
     }
 
     private static function instant(string $stamp): ?float
