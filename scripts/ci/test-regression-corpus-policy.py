@@ -19,6 +19,44 @@ PHP_CODEC_RUNNER = VALIDATOR.with_name("run-codec-regression-fixture.php")
 PHP_REPLAY_RUNNER = VALIDATOR.with_name("run-replay-regression-fixture.php")
 PHP_PAYLOAD_PROJECTOR = VALIDATOR.with_name("project-replay-payload.php")
 
+# The synthetic repository's src/Worker.php; tests derive mutations from this constant.
+WORKER_SOURCE = """<?php
+final class Worker
+{
+    public function register(string $service): void
+    {
+        $this->services[] = $service;
+    }
+
+    private function completeHistory(): array
+    {
+        $history = [];
+
+        return $history;
+    }
+
+    private function executeWorkflowTask(): void
+    {
+        $commands = $this->replayer->replay();
+    }
+
+    private function executeUpdate(array $accepted, array $task): array
+    {
+        return $accepted['arguments'] ?? $task['arguments'] ?? [];
+    }
+
+    private function historyFromTask(array $task): array
+    {
+        return $task['history'] ?? [];
+    }
+
+    private function heartbeat(): void
+    {
+        $this->beats = 1;
+    }
+}
+"""
+
 
 def run(*arguments: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -103,44 +141,7 @@ final class WorkflowCommand
 }
 """
         )
-        (self.root / "src/Worker.php").write_text(
-            """<?php
-final class Worker
-{
-    public function register(string $service): void
-    {
-        $this->services[] = $service;
-    }
-
-    private function completeHistory(): array
-    {
-        $history = [];
-
-        return $history;
-    }
-
-    private function executeWorkflowTask(): void
-    {
-        $commands = $this->replayer->replay();
-    }
-
-    private function executeUpdate(array $accepted, array $task): array
-    {
-        return $accepted['arguments'] ?? $task['arguments'] ?? [];
-    }
-
-    private function historyFromTask(array $task): array
-    {
-        return $task['history'] ?? [];
-    }
-
-    private function heartbeat(): void
-    {
-        $this->beats = 1;
-    }
-}
-"""
-        )
+        (self.root / "src/Worker.php").write_text(WORKER_SOURCE)
         (self.root / "src/Worker/HandlerDiscovery.php").write_text(
             """<?php
 final class HandlerDiscovery
@@ -3085,7 +3086,7 @@ raise SystemExit(0 if "$history = ['changed'];" in source else 1)
     def test_delivered_history_observer_notification_is_replay_neutral(self) -> None:
         worker = self.root / "src/Worker.php"
         worker.write_text(
-            worker.read_text().replace(
+            WORKER_SOURCE.replace(
                 "$commands = $this->replayer->replay();",
                 "$commands = $this->replayer->replay();\n"
                 "        $this->notifyDeliveredWorkflowHistory('completion', $taskId, $attempt, $commands);",
@@ -3101,7 +3102,7 @@ raise SystemExit(0 if "$history = ['changed'];" in source else 1)
     def test_delivered_history_replay_input_notification_is_replay_neutral(self) -> None:
         worker = self.root / "src/Worker.php"
         worker.write_text(
-            worker.read_text().replace(
+            WORKER_SOURCE.replace(
                 "$commands = $this->replayer->replay();",
                 "$commands = $this->replayer->replay();\n"
                 "        $this->notifyDeliveredWorkflowHistory('history', $taskId, $attempt, $history);",
@@ -3117,7 +3118,7 @@ raise SystemExit(0 if "$history = ['changed'];" in source else 1)
     def test_observer_notification_with_an_argument_side_effect_is_not_neutral(self) -> None:
         worker = self.root / "src/Worker.php"
         worker.write_text(
-            worker.read_text().replace(
+            WORKER_SOURCE.replace(
                 "$commands = $this->replayer->replay();",
                 "$commands = $this->replayer->replay();\n"
                 "        $this->notifyDeliveredWorkflowHistory('history', $taskId, ++$attempt, $history);",
@@ -3136,7 +3137,7 @@ raise SystemExit(0 if "$history = ['changed'];" in source else 1)
     def test_observer_notification_does_not_hide_replay_dispatch_change(self) -> None:
         worker = self.root / "src/Worker.php"
         worker.write_text(
-            worker.read_text().replace(
+            WORKER_SOURCE.replace(
                 "$commands = $this->replayer->replay();",
                 "$commands = $this->replayer->replay($history);\n"
                 "        $this->notifyDeliveredWorkflowHistory('history', $taskId, $attempt, $history);",
