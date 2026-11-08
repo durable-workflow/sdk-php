@@ -9,13 +9,13 @@ declare(strict_types=1);
 use DurableWorkflow\Client;
 use DurableWorkflow\Exception\ChildWorkflowFailed;
 use DurableWorkflow\Exception\ServerException;
-use DurableWorkflow\Transport\BoundedTransport;
-use DurableWorkflow\Transport\Psr18Transport;
+use DurableWorkflow\Qualification\ChildLifecycleTransport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\WorkflowContext;
 
 [$script, $autoload, $url] = $argv;
 require_once $autoload;
+require_once __DIR__.'/Support/ChildLifecycleTransport.php';
 
 final class ChildLifecycleFailure extends RuntimeException
 {
@@ -23,45 +23,6 @@ final class ChildLifecycleFailure extends RuntimeException
 
 final class QualificationChildRejected extends RuntimeException
 {
-}
-
-/** Observe completion bodies without logging authentication headers. */
-final class ChildLifecycleTransport implements BoundedTransport
-{
-    private readonly Psr18Transport $http;
-
-    public function __construct(private readonly string $receipt, private readonly Closure $started)
-    {
-        $this->http = new Psr18Transport();
-    }
-
-    public function supportsBoundedRequests(): bool
-    {
-        return $this->http->supportsBoundedRequests();
-    }
-
-    public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
-    {
-        return $this->observe($uri, $body, $this->http->send($method, $uri, $headers, $body));
-    }
-
-    public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
-    {
-        return $this->observe($uri, $body, $this->http->sendBounded($method, $uri, $headers, $body, $timeoutSeconds));
-    }
-
-    private function observe(string $uri, ?array $body, ?array $response): ?array
-    {
-        if (preg_match('~/workflow-tasks/([^/]+)/complete$~', $uri, $match) === 1
-            && ($body['commands'][0]['await'] ?? null) === 'started') {
-            file_put_contents($this->receipt, json_encode([
-                'task_id' => rawurldecode($match[1]), 'body' => $body, 'response' => $response,
-            ], JSON_THROW_ON_ERROR));
-            ($this->started)();
-        }
-
-        return $response;
-    }
 }
 
 function lifecycleCheck(bool $condition, string $message): void
@@ -79,13 +40,16 @@ function lifecycleValue(): array
 }
 
 if (($argv[3] ?? null) === '--worker') {
-    [$namespace, $queue, $workerId, $stopAfterStart, $receipt, $cooperative] = array_slice($argv, 4);
+    [$namespace, $queue, $workerId, $stopAfterStart, $receipt, $cooperative, $carrier] = array_slice($argv, 4);
     $worker = null;
+    // A stop-after-start worker withholds the carried workflow poll from its
+    // start completion, so the fresh parent turn stays for the replacement,
+    // unless the carried-lease control asks to keep it.
     $transport = new ChildLifecycleTransport($receipt, static function () use (&$worker, $stopAfterStart): void {
         if ($stopAfterStart === 'yes') {
             $worker->requestShutdown();
         }
-    });
+    }, $stopAfterStart === 'yes' && $carrier !== 'keep');
     $client = new Client($url, namespace: $namespace, workerToken: 'claimed-task-worker', transport: $transport);
     $worker = new Worker($client, $queue, workerId: $workerId, enableCooperativeCancellation: $cooperative === 'yes');
     $worker->registerWorkflow('qualification.lifecycle.parent', static function (
@@ -150,12 +114,12 @@ function lifecycleWait(callable $condition, string $description, int $seconds = 
 }
 
 /** @return resource */
-function lifecycleWorker(string $namespace, string $queue, string $workerId, string $receipt, bool $once = false, bool $cooperative = false)
+function lifecycleWorker(string $namespace, string $queue, string $workerId, string $receipt, bool $once = false, bool $cooperative = false, bool $keepCarrier = false)
 {
     global $script, $autoload, $url;
     $process = proc_open([
         PHP_BINARY, $script, $autoload, $url, '--worker', $namespace, $queue, $workerId,
-        $once ? 'yes' : 'no', $receipt, $cooperative ? 'yes' : 'no',
+        $once ? 'yes' : 'no', $receipt, $cooperative ? 'yes' : 'no', $keepCarrier ? 'keep' : 'withhold',
     ], [1 => STDOUT, 2 => STDERR], $pipes);
     if (!is_resource($process)) {
         throw new ChildLifecycleFailure('Could not start a managed worker.');
@@ -220,10 +184,58 @@ function lifecycleDuplicate(Client $client, array $start, string $queue): array
     return ['duplicate_completion' => $duplicateReceipt, 'duplicate_delivery' => 'same_claim', 'released_attempt' => 'task_not_leased'];
 }
 
+/**
+ * Positive control for the carried start turn: when the stop-after-start worker
+ * keeps its carried workflow poll, the Server leases the fresh parent turn to
+ * it, another worker's poll finds nothing, and the original worker drains it.
+ *
+ * @return array<string, mixed>
+ */
+function lifecycleCarriedLease(Client $admin): array
+{
+    global $url;
+    $suffix = bin2hex(random_bytes(6));
+    $namespace = 'php-child-carried-'.$suffix;
+    $queue = 'parent-'.$suffix;
+    $receipt = sys_get_temp_dir().'/child-carried-'.$suffix.'.json';
+    $admin->createNamespace($namespace);
+    $client = new Client($url, namespace: $namespace, controlToken: 'claimed-task-client');
+    $workerClient = new Client($url, namespace: $namespace, workerToken: 'claimed-task-worker');
+    $parent = $client->startWorkflow('qualification.lifecycle.parent', 'carried-'.$suffix, $queue,
+        ['close', 'child-'.$suffix, ['parent_close_policy' => 'abandon']]);
+    $process = lifecycleWorker($namespace, $queue, $queue.'-original', $receipt, once: true, keepCarrier: true);
+    try {
+        lifecycleWait(static fn (): bool => is_file($receipt), 'carrier-keeping worker commits the start');
+        $start = json_decode((string) file_get_contents($receipt), true, flags: JSON_THROW_ON_ERROR);
+        lifecycleCheck(isset($start['body']['workflow_poll']), 'the kept start completion carries a workflow poll');
+        lifecycleCheck(($start['response']['workflow_poll']['leased'] ?? null) === true, 'the Server leases the fresh parent turn to the completing worker');
+        $workerId = $queue.'-control';
+        $registration = $workerClient->registerWorker($workerId, $queue, ['qualification.lifecycle.parent'], []);
+        try {
+            $poll = $workerClient->pollWorkflowTaskResponse($workerId, $queue, 1, $queue.'-control-poll');
+            lifecycleCheck(($poll['task'] ?? null) === null, 'another worker finds no parent turn while the carried lease is held');
+        } finally {
+            $workerClient->deregisterWorkerRegistration($workerId, $registration['registration_token'] ?? null);
+        }
+        $execution = lifecycleWait(static function () use ($client, $parent) {
+            $value = $client->describeWorkflow($parent->workflowId, (string) $parent->selectedRunId);
+
+            return $value->status === 'completed' ? $value : null;
+        }, 'the original worker drains the carried start turn');
+        lifecycleCheck($execution->status === 'completed', 'the parent completes from the carried start turn');
+    } finally {
+        lifecycleStop($process);
+        @unlink($receipt);
+    }
+
+    return ['carried_start_turn' => 'leased_to_completing_worker', 'other_worker_poll' => 'empty', 'parent' => 'completed'];
+}
+
 $startedAt = gmdate(DATE_ATOM);
 $admin = new Client($url, controlToken: 'claimed-task-admin');
 lifecycleCheck(($admin->clusterInfo()->capabilities['child_workflow_start_turn'] ?? null) === true, 'runtime advertises the committed-start turn');
 $results = [];
+$carriedLease = lifecycleCarriedLease($admin);
 $cases = [
     ['result', ['parent_close_policy' => 'abandon']],
     ['failure', []],
@@ -362,4 +374,4 @@ foreach ($cases as [$mode, $options]) {
         @unlink($receipt);
     }
 }
-echo json_encode(['started_at' => $startedAt, 'finished_at' => gmdate(DATE_ATOM), 'scenarios' => $results], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT).PHP_EOL;
+echo json_encode(['started_at' => $startedAt, 'finished_at' => gmdate(DATE_ATOM), 'carried_lease' => $carriedLease, 'scenarios' => $results], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT).PHP_EOL;
