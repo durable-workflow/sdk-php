@@ -234,12 +234,14 @@ final class ReplayRegressionTransport implements Transport
 
                 return ['failed' => true];
             }
+            $claimAborted = 'PHP workflow task execution failed: ';
             if (is_array($failure) && ($failure['type'] ?? null) === WorkflowClaimAborted::class
-                && is_string($failure['message'] ?? null) && str_contains($failure['message'], ': ')) {
+                && is_string($failure['message'] ?? null) && str_starts_with($failure['message'], $claimAborted)
+                && str_contains(substr($failure['message'], strlen($claimAborted)), ': ')) {
                 // An abandoned claim writes no command; record its stable reason prefix.
                 $this->completedCommands[] = [[
                     'type' => 'claim_aborted',
-                    'reason' => strstr($failure['message'], ': ', true),
+                    'reason' => strstr(substr($failure['message'], strlen($claimAborted)), ': ', true),
                 ]];
 
                 return ['failed' => true];

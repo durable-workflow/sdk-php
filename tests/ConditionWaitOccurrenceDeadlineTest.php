@@ -350,7 +350,7 @@ final class ConditionWaitOccurrenceDeadlineTest extends TestCase
         self::assertSame(['task-2', 'task-3'], array_keys($failed));
         foreach ($failed as [$type, $message]) {
             self::assertSame(WorkflowClaimAborted::class, $type);
-            self::assertStringStartsWith('condition_wait_occurrence_deadline_unavailable: ', (string) $message);
+            self::assertStringStartsWith('PHP workflow task execution failed: condition_wait_occurrence_deadline_unavailable: ', (string) $message);
         }
     }
 
