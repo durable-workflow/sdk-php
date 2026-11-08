@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Qualification;
 
 use DateTimeImmutable;
+use DurableWorkflow\Worker;
 use RuntimeException;
 
 /**
@@ -19,6 +20,29 @@ use RuntimeException;
  */
 final class ConditionWaitNativeEvidence
 {
+    /**
+     * Signals each qualifier workflow type receives. Native enforces the
+     * durable command contract, so a signal the worker does not declare for a
+     * workflow type is refused ("declared signals []").
+     */
+    public const DECLARED_SIGNALS = [
+        'cwn.false_wake' => ['go'],
+        'cwn.duplicate' => ['noise', 'go'],
+        'cwn.close' => ['never'],
+        'cwn.own_budget' => ['first', 'second'],
+        'cwn.turns' => ['decision'],
+    ];
+
+    /** Declare the qualifier's signals through the public Worker API. */
+    public static function declareSignals(Worker $worker): void
+    {
+        foreach (self::DECLARED_SIGNALS as $workflowType => $signals) {
+            foreach ($signals as $signal) {
+                $worker->declareSignal($workflowType, $signal);
+            }
+        }
+    }
+
     /**
      * @param list<array<string, mixed>> $history
      * @return list<array{type: string, at: float, payload: array<string, mixed>}>

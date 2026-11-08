@@ -109,6 +109,51 @@ final class ConditionWaitNativeEvidenceTest extends TestCase
         Evidence::ownBudget(Evidence::events(self::ownBudget(27)), 'first', 'second', 20);
     }
 
+    public function testEveryConsumedAndSentSignalIsDeclaredOnItsWorkflowType(): void
+    {
+        self::assertSame(['cwn.false_wake' => ['go'], 'cwn.duplicate' => ['noise', 'go'], 'cwn.close' => ['never'],
+            'cwn.own_budget' => ['first', 'second'], 'cwn.turns' => ['decision']], Evidence::DECLARED_SIGNALS);
+        $source = (string) file_get_contents(__DIR__.'/../scripts/qualify-condition-wait-native.php');
+        // Each workflow's consumed signals (context->signals('x')) are declared for that type.
+        $blocks = preg_split("/(?=\\\$worker->registerWorkflow\\('cwn\\.)/", $source) ?: [];
+        $types = 0;
+        foreach ($blocks as $block) {
+            if (preg_match("/^\\\$worker->registerWorkflow\\('(cwn\\.[a-z_]+)'/", $block, $type) !== 1) {
+                continue;
+            }
+            ++$types;
+            preg_match_all("/->signals\\('([a-z_]+)'\\)/", $block, $consumed);
+            self::assertSame([], array_diff($consumed[1], Evidence::DECLARED_SIGNALS[$type[1]]), $type[1]);
+        }
+        self::assertSame(5, $types);
+        // Every signal the qualifier sends is declared; noise is declared on the workflow it targets.
+        preg_match_all("/signalWorkflow\\(\\\$handle->workflowId, '([a-z_]+)'/", $source, $sent);
+        self::assertSame([], array_diff(array_unique($sent[1]), array_merge(...array_values(Evidence::DECLARED_SIGNALS))));
+        self::assertContains('noise', Evidence::DECLARED_SIGNALS['cwn.duplicate']);
+    }
+
+    /**
+     * The installed Worker's command contract carries the declared names; the
+     * predecessor (no declarations) sent "signals: []", which Native refused.
+     */
+    public function testTheWorkerCommandContractCarriesTheDeclaredSignals(): void
+    {
+        foreach ([false, true] as $declare) {
+            $worker = new \DurableWorkflow\Worker(new \DurableWorkflow\Client('http://127.0.0.1:9', namespace: 'default', workerToken: 'unused'), 'q', workerId: 'w');
+            foreach (array_keys(Evidence::DECLARED_SIGNALS) as $workflowType) {
+                $worker->registerWorkflow($workflowType, static fn (\DurableWorkflow\Worker\WorkflowContext $context): mixed => null);
+            }
+            if ($declare) {
+                Evidence::declareSignals($worker);
+            }
+            $contracts = (new \ReflectionMethod($worker, 'workflowCommandContracts'))->invoke($worker);
+            foreach (Evidence::DECLARED_SIGNALS as $workflowType => $signals) {
+                $expected = $declare ? $signals : [];
+                self::assertEqualsCanonicalizing($expected, $contracts[$workflowType]['signals'], ($declare ? 'candidate ' : 'predecessor ').$workflowType);
+            }
+        }
+    }
+
     public function testMalformedHistoryIsRefused(): void
     {
         $this->expectException(RuntimeException::class);

@@ -12,7 +12,9 @@ php vendor/durable-workflow/sdk/scripts/qualify-condition-wait-native.php \
 Use only a token-auth runtime that exists for one run, with the synthetic
 fixture credentials `claimed-task-admin`, `claimed-task-client` and
 `claimed-task-worker`, no host port and no production route. The script refuses
-unless the Server advertises `condition_wait_idempotent_reopen`.
+unless the Server advertises `condition_wait_idempotent_reopen`. Its worker declares
+every signal each workflow type receives (`ConditionWaitNativeEvidence::DECLARED_SIGNALS`),
+because native refuses signals that the durable command contract does not declare.
 
 ## Cases and history assertions
 
