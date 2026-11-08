@@ -383,11 +383,13 @@ caller explicitly selects a run.
 `deferChildWorkflow()` prepares an operation without starting it or providing a
 child identity. Join it at an `all()` or `parallel()` barrier on a runtime that
 supports child members in those groups, as shown in the concurrency examples
-above. Native Server currently refuses child members with
-`development_parallel_group_unqualified`.
-[Server #325](https://github.com/durable-workflow/server/issues/325) tracks this
-runtime parity gap. The runnable example uses sequential children and committed
-start handles; it does not establish deferred-group compatibility on Native.
+above. Native Server 3.2 supports a flat `all()` (or `parallel()`) barrier
+whose members are all deferred children. It refuses other child group shapes
+with `development_parallel_group_unqualified`: `select()`, nested or mixed
+groups, groups inside a cancellation scope, and committed-start handles inside
+a barrier. Earlier Native Server releases refuse child members in groups.
+The runnable example uses sequential children and committed start handles; it
+does not demonstrate a deferred group.
 
 ## Evolve workflow code with version markers
 
