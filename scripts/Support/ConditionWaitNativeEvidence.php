@@ -33,14 +33,30 @@ final class ConditionWaitNativeEvidence
         'cwn.turns' => ['decision'],
     ];
 
-    /** Declare the qualifier's signals through the public Worker API. */
+    /**
+     * Declare the qualifier's signals through the public Worker API, each with
+     * a signature matching the one argument the qualifier sends. Native
+     * validates the count and type of signal arguments against the declared
+     * parameters; a parameter with a default value is unsupported.
+     */
     public static function declareSignals(Worker $worker): void
     {
         foreach (self::DECLARED_SIGNALS as $workflowType => $signals) {
             foreach ($signals as $signal) {
-                $worker->declareSignal($workflowType, $signal);
+                $worker->declareSignal($workflowType, $signal, self::signature($signal));
             }
         }
+    }
+
+    /** The argument signature for one qualifier signal (never sent: no arguments). */
+    public static function signature(string $signal): ?\Closure
+    {
+        return match ($signal) {
+            'go', 'noise', 'first', 'second' => static fn (string $value): mixed => null,
+            'decision' => static fn (int $turn): mixed => null,
+            'never' => null,
+            default => throw new RuntimeException('condition_evidence_unknown_signal'),
+        };
     }
 
     /**

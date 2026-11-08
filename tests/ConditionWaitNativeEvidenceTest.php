@@ -154,6 +154,151 @@ final class ConditionWaitNativeEvidenceTest extends TestCase
         }
     }
 
+    /** The exact signal contracts the installed Worker emits for the five qualifier workflow types. */
+    public function testTheEmittedSignalContractsDeclareOneTypedParameterPerSentSignal(): void
+    {
+        $contracts = self::contracts(true);
+        $one = static fn (string $name, string $type): array => [['name' => $name, 'position' => 0, 'required' => true,
+            'variadic' => false, 'default_available' => false, 'default' => null, 'type' => $type, 'allows_null' => false]];
+        $expected = [
+            'cwn.false_wake' => ['go' => $one('value', 'string')],
+            'cwn.duplicate' => ['noise' => $one('value', 'string'), 'go' => $one('value', 'string')],
+            'cwn.close' => ['never' => []],
+            'cwn.own_budget' => ['first' => $one('value', 'string'), 'second' => $one('value', 'string')],
+            'cwn.turns' => ['decision' => $one('turn', 'int')],
+        ];
+        foreach ($expected as $workflowType => $signals) {
+            $emitted = array_column($contracts[$workflowType]['signal_contracts'], 'parameters', 'name');
+            self::assertSame($signals, $emitted, $workflowType);
+        }
+    }
+
+    /**
+     * Every signal the qualifier sends, checked with the frozen Native 3.2.0
+     * admission rule against the Worker's emitted contract: the candidate admits
+     * all of them; the #359 contract (no signatures) refuses the arguments, and
+     * the original (no declarations) refuses the names.
+     */
+    public function testNativeAdmitsEverySentSignalOnlyUnderTheCandidateContract(): void
+    {
+        $sent = self::sentSignals();
+        self::assertSame([['cwn.false_wake', 'go', ['wrong']], ['cwn.duplicate', 'noise', ['during-activity']], ['cwn.duplicate', 'go', ['right']],
+            ['cwn.own_budget', 'first', ['done']], ['cwn.own_budget', 'second', ['wrong']], ['cwn.own_budget', 'second', ['right']],
+            ['cwn.turns', 'decision', [999]], ['cwn.turns', 'decision', [1]]], $sent);
+        foreach (['candidate' => [true, true], 'names_only_359' => [true, false], 'undeclared_original' => [false, false]] as $variant => [$declare, $signatures]) {
+            $contracts = self::contracts($declare, $signatures);
+            foreach ($sent as [$workflowType, $name, $arguments]) {
+                $reason = self::nativeAdmission($contracts[$workflowType], $name, $arguments);
+                $expected = ['candidate' => null, 'names_only_359' => 'invalid_signal_arguments', 'undeclared_original' => 'unknown_signal'][$variant];
+                self::assertSame($expected, $reason, "{$variant} {$workflowType}.{$name}");
+            }
+        }
+    }
+
+    /** @return array<string, array<string, mixed>> */
+    private static function contracts(bool $declare, bool $signatures = true): array
+    {
+        $worker = new \DurableWorkflow\Worker(new \DurableWorkflow\Client('http://127.0.0.1:9', namespace: 'default', workerToken: 'unused'), 'q', workerId: 'w');
+        foreach (array_keys(Evidence::DECLARED_SIGNALS) as $workflowType) {
+            $worker->registerWorkflow($workflowType, static fn (\DurableWorkflow\Worker\WorkflowContext $context): mixed => null);
+        }
+        if ($declare && $signatures) {
+            Evidence::declareSignals($worker);
+        } elseif ($declare) {
+            foreach (Evidence::DECLARED_SIGNALS as $workflowType => $names) {
+                foreach ($names as $name) {
+                    $worker->declareSignal($workflowType, $name);
+                }
+            }
+        }
+
+        return (new \ReflectionMethod($worker, 'workflowCommandContracts'))->invoke($worker);
+    }
+
+    /**
+     * Each cwnSignal(...) call in the qualifier with its workflow type and literal
+     * arguments; the C5 turn variable is an int (sampled as 1).
+     *
+     * @return list<array{string, string, list<mixed>}>
+     */
+    private static function sentSignals(): array
+    {
+        $source = (string) file_get_contents(__DIR__.'/../scripts/qualify-condition-wait-native.php');
+        $types = ['go' => null, 'noise' => 'cwn.duplicate', 'first' => 'cwn.own_budget', 'second' => 'cwn.own_budget', 'decision' => 'cwn.turns'];
+        preg_match_all("/cwnSignal\\(\\\$client, \\\$handle->workflowId, '([a-z]+)', \\[([^\\]]*)\\]\\);/", $source, $calls, PREG_SET_ORDER);
+        $sent = [];
+        $goCount = 0;
+        foreach ($calls as [, $name, $argument]) {
+            $value = match (true) {
+                preg_match("/^'([^']*)'$/", $argument, $string) === 1 => $string[1],
+                preg_match('/^-?\d+$/', $argument) === 1 => (int) $argument,
+                $argument === '$turn' => 1,
+                default => throw new \RuntimeException('unrecognized signal argument '.$argument),
+            };
+            $type = $types[$name] ?? (++$goCount === 1 ? 'cwn.false_wake' : 'cwn.duplicate');
+            $sent[] = [$type, $name, [$value]];
+        }
+
+        return $sent;
+    }
+
+    /**
+     * Native 3.2.0 signal admission for a run whose WorkflowStarted payload holds
+     * this contract (durable source): server 3c6f1eda rust/src/runtime/store.rs
+     * signal path (≈1053–1095) and validate_arguments (≈5233–5290), transcribed.
+     * Returns null when admitted, otherwise the refusal reason.
+     *
+     * @param array<string, mixed> $contract
+     * @param list<mixed> $values
+     */
+    private static function nativeAdmission(array $contract, string $name, array $values): ?string
+    {
+        if (!in_array($name, $contract['signals'], true)) {
+            return 'unknown_signal';
+        }
+        $parameters = array_column($contract['signal_contracts'], 'parameters', 'name')[$name] ?? null;
+        if ($parameters === null) {
+            return null; // a declared signal without a parameter contract takes its arguments as given
+        }
+        $variadic = $parameters !== [] && end($parameters)['variadic'] === true;
+        $fixed = count($parameters) - (int) $variadic;
+        foreach ($parameters as $index => $parameter) {
+            if ($parameter['default_available'] === true || ($parameter['variadic'] === true && $index + 1 !== count($parameters))
+                || ($variadic && $index < $fixed && $parameter['required'] !== true)) {
+                return 'unsupported_signal_contract';
+            }
+        }
+        if (count($values) < $fixed || (!$variadic && count($parameters) !== count($values))) {
+            return 'invalid_signal_arguments';
+        }
+        foreach ($values as $index => $value) {
+            $parameter = $parameters[min($index, $fixed)];
+            if ($value === null) {
+                if ($parameter['allows_null'] ?? ($parameter['type'] === null || $parameter['type'] === '')) {
+                    continue;
+                }
+                return 'invalid_signal_arguments';
+            }
+            $valid = match ($parameter['type']) {
+                null, 'mixed' => true,
+                'array' => is_array($value),
+                'int' => is_int($value),
+                'float' => is_int($value) || is_float($value),
+                'bool' => is_bool($value),
+                'string' => is_string($value),
+                default => null,
+            };
+            if ($valid === null) {
+                return 'unsupported_signal_contract';
+            }
+            if (!$valid) {
+                return 'invalid_signal_arguments';
+            }
+        }
+
+        return null;
+    }
+
     public function testMalformedHistoryIsRefused(): void
     {
         $this->expectException(RuntimeException::class);
