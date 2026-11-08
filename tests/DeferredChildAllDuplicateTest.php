@@ -211,7 +211,7 @@ final class DeferredChildAllDuplicateTest extends TestCase
     private static function recordedBody(): array
     {
         return ['lease_owner' => 'worker', 'workflow_task_attempt' => 1,
-            'commands' => [['type' => 'complete_workflow', 'result' => ['codec' => 'avro', 'blob' => 'AA==']]],
+            'commands' => [['type' => 'complete_workflow', 'result' => (new AvroPayloadCodec())->envelope(['ok'])]],
             'sticky_cache' => ['cache_key' => 'k', 'history_sequence' => 4]];
     }
 }
