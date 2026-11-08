@@ -19,7 +19,36 @@ Laravel 10/11 bridge support. Its provider checks the installed framework and
 PHP before registering application bindings, including during auto-discovery.
 Upgrade the platform before adopting this bridge; existing SDK 3.9.x and
 Workflow 2.20.x applications retain their own support contracts while upgrading.
-Stable-v1 authority remains unchanged.
+Stable-v1 authority remains unchanged. SDK 3.11 keeps these platform contracts
+and adds the occurrence-deadline rollout below.
+
+## Condition-wait occurrence deadlines
+
+From 3.11, when the Server advertises `condition_wait_occurrence_deadline`
+(native Server 3.3.0 or newer; the PHP Server does not), a new condition wait
+keeps its first open's wall-clock deadline across false wakes: the Server
+stores that deadline and reuses it for every reopen of the same authored call.
+Without the capability, workers send the same commands as before.
+
+1. Upgrade every worker that can receive work from the task queue to 3.11,
+   including standby and autoscaling pools, while the Server is still older.
+   These workers keep sending legacy commands until the capability appears.
+2. Then upgrade the Server. New waits opened afterwards are anchored; waits
+   first opened without the policy keep their per-open behavior.
+3. Do not roll the queue's workers below 3.11 once anchored waits exist. An
+   older worker reopens an anchored wait without the policy; the Server refuses
+   that completion and writes nothing, and the older worker can exit. A 3.11
+   worker then completes the run.
+
+If the Server stops advertising the capability while an anchored wait needs a
+reopen (for example after rolling the Server back), the 3.11 worker does not
+send the reopen. It leaves that task's claim without completing or failing it,
+so no history is written and no retry task is created; the claim stays until
+its configured lease or another ordinary authority transition ends it, and the
+run continues when a capable Server returns. There is no fixed retry interval.
+Rolling a Server's SQLite database back in place is not supported once anchored
+waits exist (restore the pre-upgrade backup instead), and a wait chain that an
+older Server has already recorded inconsistently is not repaired automatically.
 
 ## Condition fingerprints and replay
 
