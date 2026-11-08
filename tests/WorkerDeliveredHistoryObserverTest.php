@@ -23,7 +23,7 @@ final class WorkerDeliveredHistoryObserverTest extends TestCase
     public function testTheObserverSeesTheReplayInputAcrossPagesAndTheCompletionCommands(): void
     {
         $seen = [];
-        [$requests] = self::run(static function (string $kind, string $taskId, int $attempt, array $items) use (&$seen): void {
+        [$requests] = self::runWorker(static function (string $kind, string $taskId, int $attempt, array $items) use (&$seen): void {
             $seen[] = [$kind, $taskId, $attempt, $items];
         });
 
@@ -38,10 +38,10 @@ final class WorkerDeliveredHistoryObserverTest extends TestCase
 
     public function testTheObserverIsInertAndItsFailuresAreIgnored(): void
     {
-        [$without] = self::run(null);
-        [$recording] = self::run(static function (): void {
+        [$without] = self::runWorker(null);
+        [$recording] = self::runWorker(static function (): void {
         });
-        [$throwing] = self::run(static function (): void {
+        [$throwing] = self::runWorker(static function (): void {
             throw new RuntimeException('observer failure');
         });
 
@@ -57,7 +57,7 @@ final class WorkerDeliveredHistoryObserverTest extends TestCase
      * @param (\Closure(string, string, int, list<array<string, mixed>>): void)|null $observer
      * @return array{list<array{method: string, uri: string, body: ?array<string, mixed>}>}
      */
-    private static function run(?\Closure $observer): array
+    private static function runWorker(?\Closure $observer): array
     {
         $codec = new AvroPayloadCodec();
         $signal = static fn (int $sequence, string $value): array => ['id' => 'e'.$sequence, 'sequence' => $sequence,
