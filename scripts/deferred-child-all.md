@@ -26,10 +26,18 @@ The runner uses public `Client` and managed `Worker` APIs. It assigns a differen
 valid queue to each deferred child so one worker at a time can drive a fixed
 completion order. Server's flat group contract permits independent member
 queues. Each acknowledged turn exits, and the next turn starts in a new PHP
-process without a shared replay cache. The replacement parent must return the
-exact typed result or `ChildWorkflowFailed` shape without starting another child.
-Duplicate parent and child completion attempts must be explicit no-ops or fenced
-and leave complete canonical history unchanged. After an early failure closes
+process without a shared replay cache. A one-turn worker's completion is sent
+without `workflow_poll`: on a carried-poll Server it would lease the next ready
+task on that queue (a retry or continue-as-new replacement run) to the exiting
+worker. The turn receipt records the body actually sent. The replacement parent
+must return the exact typed result or `ChildWorkflowFailed` shape without
+starting another child. Each duplicate parent and child completion replays the
+exact recorded body (`DeferredChildAllReplayTransport`) and must be the explicit
+no-op `recorded: false` / `already_completed`, leaving complete canonical history
+unchanged. A different body would be a conflicting completion that Native
+refuses by run state (`run_closed` or `task_not_leased`); that is not this
+check. A refusal reports only its status, reason, `recorded` flag and
+validation-error shape (at most 600 bytes). After an early failure closes
 the parent under default abandon, successful siblings must add no parent history
 or further ready task. The finite child ledger checks exact integer sequences,
 workflow types, one start and at most one case-appropriate terminal per run.
