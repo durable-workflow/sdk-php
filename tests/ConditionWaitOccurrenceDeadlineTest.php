@@ -104,34 +104,39 @@ final class ConditionWaitOccurrenceDeadlineTest extends TestCase
         self::assertSame($this->replay($events, capable: true), $withdrawn);
     }
 
-    /**
-     * Anchored replays that need no new physical open do not depend on the
-     * current capability: a satisfied wait completes, and a recorded anchored
-     * reopen that is still open authors nothing.
-     *
-     * @param list<array{string, string, array<string, mixed>}> $events
-     */
-    #[DataProvider('anchoredReplaysWithoutANewOpen')]
-    public function testAnAnchoredReplayThatNeedsNoNewOpenIgnoresTheCapability(array $events, ?string $command): void
+    /** An anchored replay that authors no open (the awaited signal satisfies it) does not depend on the current capability. */
+    public function testAnAnchoredReplayThatAuthorsNoOpenIgnoresTheCapability(): void
     {
-        $commands = $this->replay($events, capable: false);
-
-        self::assertSame($command, $commands[0]['type'] ?? null);
-        self::assertSame($commands, $this->replay($events, capable: true));
-    }
-
-    /** @return iterable<string, array{list<array{string, string, array<string, mixed>}>, ?string}> */
-    public static function anchoredReplaysWithoutANewOpen(): iterable
-    {
-        yield 'satisfied by the awaited signal' => [[
+        $events = [
             self::opened(300, anchored: true),
             ['SignalReceived', '2026-11-04T02:37:00.000000+00:00', ['workflow_sequence' => 4, 'signal_name' => 'approve', 'arguments' => ['yes']]],
             ['ConditionWaitSatisfied', '2026-11-04T02:37:00.100000+00:00', ['sequence' => 4, 'condition_wait_id' => 'wait-1', 'condition_key' => 'approval']],
-        ], 'complete_workflow'];
-        yield 'recorded anchored reopen still open' => [[
-            self::opened(300, anchored: true), self::wrong('2026-11-04T02:38:05.345000+00:00'),
-            self::satisfied(), self::reopened(180, anchored: true),
-        ], null];
+        ];
+        $commands = $this->replay($events, capable: false);
+
+        self::assertSame('complete_workflow', $commands[0]['type']);
+        self::assertSame($commands, $this->replay($events, capable: true));
+    }
+
+    /**
+     * The worker re-sends the open of a recorded anchored wait that is still
+     * open on every later task. The worker's delivered history cannot show
+     * whether the Server will treat it as the same wait (idempotent) or a new
+     * physical open (Native records Satisfied and the new open only when the
+     * task completes), so without the capability this send is guarded too.
+     */
+    public function testAReSentAnchoredOpenIsGuardedWithoutTheCapability(): void
+    {
+        $events = [self::opened(300, anchored: true), self::wrong('2026-11-04T02:38:05.345000+00:00'),
+            self::satisfied(), self::reopened(180, anchored: true)];
+
+        $capable = $this->replay($events, capable: true);
+        self::assertSame(['open_condition_wait', 'occurrence', 300], [$capable[0]['type'], $capable[0]['deadline_policy'],
+            $capable[0]['condition_wait_timeout_budget_seconds']]);
+
+        $this->expectException(WorkflowClaimAborted::class);
+        $this->expectExceptionMessage('condition_wait_occurrence_deadline_unavailable: ');
+        $this->replay($events, capable: false);
     }
 
     /** Every later false wake of the chain sends the same original budget; only the remaining time shrinks. */
@@ -330,7 +335,7 @@ final class ConditionWaitOccurrenceDeadlineTest extends TestCase
 
                 return ['recorded' => true];
             }
-            if (str_ends_with($uri, '/activity-tasks/poll')) {
+            if (str_ends_with($uri, '/activity-tasks/poll') || str_ends_with($uri, '/query-tasks/poll')) {
                 return ['task' => null, 'poll_status' => 'empty'];
             }
             self::fail("Unexpected request {$method} {$uri}");
