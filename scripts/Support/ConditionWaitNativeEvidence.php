@@ -123,13 +123,12 @@ final class ConditionWaitNativeEvidence
             if (!is_string($type) || !is_string($stamp)) {
                 throw new RuntimeException('condition_evidence_event_shape');
             }
-            $at = DateTimeImmutable::createFromFormat('Y-m-d\TH:i:s.uP', $stamp)
-                ?: DateTimeImmutable::createFromFormat(DATE_ATOM, $stamp);
-            if ($at === false) {
+            $at = self::instant($stamp);
+            if ($at === null) {
                 throw new RuntimeException('condition_evidence_event_time');
             }
             $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
-            $events[] = ['type' => $type, 'at' => (float) $at->format('U.u'), 'payload' => $payload];
+            $events[] = ['type' => $type, 'at' => $at, 'payload' => $payload];
         }
 
         return $events;
@@ -302,6 +301,63 @@ final class ConditionWaitNativeEvidence
         self::check(self::count($events, 'WorkflowCompleted') === 1, 'condition_evidence_not_completed');
 
         return ['second_timeout' => $secondTimeout, 'reopen_timeout' => $second[1]['timeout'], 'remaining_at_wake' => round($remaining, 3)];
+    }
+
+    /**
+     * A bounded, payload-free timeline of one run's history for diagnostics:
+     * each condition-wait, timer, signal and close event's index, type and
+     * offset from the first event, with its integer timing fields and its
+     * deadline_at / fire_at / fired_at instants as offsets. At most 40
+     * entries. No assertion reads it.
+     *
+     * @param list<array{type: string, at: float, payload: array<string, mixed>}> $events
+     * @return list<array<string, mixed>>
+     */
+    public static function timeline(array $events): array
+    {
+        $origin = $events[0]['at'] ?? 0.0;
+        $kept = [];
+        foreach ($events as $index => $event) {
+            if (preg_match('/^(?:(?:ConditionWait|Timer|Signal)\w*|Workflow(?:Started|Completed|Failed|Terminated|Cancelled|ContinuedAsNew))$/', $event['type']) !== 1) {
+                continue;
+            }
+            $kept[] = self::timelineEntry($index, $event, $origin);
+            if (count($kept) === 40) {
+                break;
+            }
+        }
+
+        return $kept;
+    }
+
+    /**
+     * @param array{type: string, at: float, payload: array<string, mixed>} $event
+     * @return array<string, mixed>
+     */
+    private static function timelineEntry(int $index, array $event, float $origin): array
+    {
+        $entry = ['i' => $index, 'type' => $event['type'], 'offset' => round($event['at'] - $origin, 6)];
+        foreach (['timeout_seconds', 'delay_seconds', 'sequence'] as $field) {
+            if (is_int($event['payload'][$field] ?? null)) {
+                $entry[$field] = $event['payload'][$field];
+            }
+        }
+        foreach (['deadline_at', 'fire_at', 'fired_at'] as $field) {
+            $at = is_string($event['payload'][$field] ?? null) ? self::instant($event['payload'][$field]) : null;
+            if ($at !== null) {
+                $entry[$field.'_offset'] = round($at - $origin, 6);
+            }
+        }
+
+        return $entry;
+    }
+
+    private static function instant(string $stamp): ?float
+    {
+        $at = DateTimeImmutable::createFromFormat('Y-m-d\TH:i:s.uP', $stamp)
+            ?: DateTimeImmutable::createFromFormat(DATE_ATOM, $stamp);
+
+        return $at === false ? null : (float) $at->format('U.u');
     }
 
     /** @param list<array{type: string, at: float, payload: array<string, mixed>}> $events */
