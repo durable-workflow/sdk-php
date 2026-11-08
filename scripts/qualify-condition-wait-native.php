@@ -77,6 +77,8 @@ if (($argv[3] ?? null) === '--worker') {
         }
         return ['decided' => $last];
     });
+    // Native refuses signals the command contract does not declare.
+    Evidence::declareSignals($worker);
     $worker->run(1);
     exit(0);
 }
