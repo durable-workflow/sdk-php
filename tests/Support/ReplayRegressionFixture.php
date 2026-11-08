@@ -20,6 +20,7 @@ use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\DurableOperationHandle;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\Saga;
+use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkflowContext;
 use RuntimeException;
 
@@ -186,7 +187,9 @@ final class ReplayRegressionFixture
             : null;
         self::$sideEffectCalls = 0;
         try {
-            $execute = static fn () => (new Replayer($codec))->replay(
+            $replayer = new Replayer($codec);
+            $replayer->useConditionOccurrenceDeadline(self::occurrenceDeadlineAdvertised($workflowType, $history));
+            $execute = static fn () => $replayer->replay(
                 self::workflow($workflowType),
                 $history,
                 $input,
@@ -243,6 +246,13 @@ final class ReplayRegressionFixture
                 'type' => 'fail_workflow',
                 'message' => $exception->getMessage(),
                 'exception_type' => $exception::class,
+            ]];
+        } catch (WorkflowClaimAborted $exception) {
+            // An abandoned claim writes no command; record its stable reason prefix.
+            $message = $exception->getMessage();
+            $commands = [[
+                'type' => 'claim_aborted',
+                'reason' => str_contains($message, ': ') ? strstr($message, ': ', true) : $message,
             ]];
         } catch (NonDeterministicWorkflow|WorkflowEntryArgumentsMismatch $exception) {
             $commands = [[
@@ -396,10 +406,34 @@ final class ReplayRegressionFixture
         return $observedTasks;
     }
 
+    /**
+     * Whether the replayed Server advertises condition_wait_occurrence_deadline
+     * (#269). The rollback fixture withdraws it; otherwise only a history that
+     * already holds an anchored condition-wait record (which only a capable
+     * Server can produce) replays against a capable Server.
+     *
+     * @param list<array<string, mixed>> $history
+     */
+    private static function occurrenceDeadlineAdvertised(string $workflowType, array $history): bool
+    {
+        if ($workflowType === 'golden.signal-occurrence-unavailable') {
+            return false;
+        }
+        foreach ($history as $event) {
+            if (is_array($event) && ($event['event_type'] ?? $event['type'] ?? null) === 'ConditionWaitOpened'
+                && is_array($event['payload'] ?? null) && array_key_exists('deadline_policy', $event['payload'])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** @return callable(WorkflowContext, mixed ...$input): mixed */
     private static function workflow(string $workflowType): callable
     {
         return match ($workflowType) {
+            'golden.signal-occurrence-unavailable' => self::workflow('golden.signal'),
             'golden.telemetry-context' => static function (WorkflowContext $context): array {
                 $result = $context->activity('golden.greet', ['Ada']);
                 $fields = \DurableWorkflow\Telemetry\ExecutionTelemetry::current();
