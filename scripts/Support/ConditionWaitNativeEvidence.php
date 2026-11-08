@@ -318,28 +318,38 @@ final class ConditionWaitNativeEvidence
         $origin = $events[0]['at'] ?? 0.0;
         $kept = [];
         foreach ($events as $index => $event) {
-            if (preg_match('/^(ConditionWait|Timer|Signal|Workflow(Started|Completed|Failed|Terminated|Cancelled|ContinuedAsNew)$)/', $event['type']) !== 1) {
+            if (preg_match('/^(?:(?:ConditionWait|Timer|Signal)\w*|Workflow(?:Started|Completed|Failed|Terminated|Cancelled|ContinuedAsNew))$/', $event['type']) !== 1) {
                 continue;
             }
-            $entry = ['i' => $index, 'type' => $event['type'], 'offset' => round($event['at'] - $origin, 6)];
-            foreach (['timeout_seconds', 'delay_seconds', 'sequence'] as $field) {
-                if (is_int($event['payload'][$field] ?? null)) {
-                    $entry[$field] = $event['payload'][$field];
-                }
-            }
-            foreach (['deadline_at', 'fire_at', 'fired_at'] as $field) {
-                $at = is_string($event['payload'][$field] ?? null) ? self::instant($event['payload'][$field]) : null;
-                if ($at !== null) {
-                    $entry[$field.'_offset'] = round($at - $origin, 6);
-                }
-            }
-            $kept[] = $entry;
+            $kept[] = self::timelineEntry($index, $event, $origin);
             if (count($kept) === 40) {
                 break;
             }
         }
 
         return $kept;
+    }
+
+    /**
+     * @param array{type: string, at: float, payload: array<string, mixed>} $event
+     * @return array<string, mixed>
+     */
+    private static function timelineEntry(int $index, array $event, float $origin): array
+    {
+        $entry = ['i' => $index, 'type' => $event['type'], 'offset' => round($event['at'] - $origin, 6)];
+        foreach (['timeout_seconds', 'delay_seconds', 'sequence'] as $field) {
+            if (is_int($event['payload'][$field] ?? null)) {
+                $entry[$field] = $event['payload'][$field];
+            }
+        }
+        foreach (['deadline_at', 'fire_at', 'fired_at'] as $field) {
+            $at = is_string($event['payload'][$field] ?? null) ? self::instant($event['payload'][$field]) : null;
+            if ($at !== null) {
+                $entry[$field.'_offset'] = round($at - $origin, 6);
+            }
+        }
+
+        return $entry;
     }
 
     private static function instant(string $stamp): ?float
