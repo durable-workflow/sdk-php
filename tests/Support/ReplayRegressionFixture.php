@@ -21,6 +21,7 @@ use DurableWorkflow\Worker\DurableOperationHandle;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\Saga;
 use DurableWorkflow\Worker\WorkflowClaimAborted;
+use DurableWorkflow\Worker\WorkflowClaimDeferred;
 use DurableWorkflow\Worker\WorkflowContext;
 use RuntimeException;
 
@@ -247,6 +248,13 @@ final class ReplayRegressionFixture
                 'message' => $exception->getMessage(),
                 'exception_type' => $exception::class,
             ]];
+        } catch (WorkflowClaimDeferred $exception) {
+            // A left (deferred) claim writes no command and is not failed; record its stable reason prefix.
+            $message = $exception->getMessage();
+            $commands = [[
+                'type' => 'claim_deferred',
+                'reason' => str_contains($message, ': ') ? strstr($message, ': ', true) : $message,
+            ]];
         } catch (WorkflowClaimAborted $exception) {
             // An abandoned claim writes no command; record its stable reason prefix.
             $message = $exception->getMessage();
@@ -408,7 +416,7 @@ final class ReplayRegressionFixture
 
     /**
      * Whether the replayed Server advertises condition_wait_occurrence_deadline
-     * (#269). The rollback fixture withdraws it; otherwise only a history that
+     * (#269). The rollback fixtures withdraw it; otherwise only a history that
      * already holds an anchored condition-wait record (which only a capable
      * Server can produce) replays against a capable Server.
      *
@@ -416,7 +424,7 @@ final class ReplayRegressionFixture
      */
     private static function occurrenceDeadlineAdvertised(string $workflowType, array $history): bool
     {
-        if ($workflowType === 'golden.signal-occurrence-unavailable') {
+        if (in_array($workflowType, ['golden.signal-occurrence-unavailable', 'golden.signal-occurrence-deferred'], true)) {
             return false;
         }
         foreach ($history as $event) {
@@ -433,7 +441,7 @@ final class ReplayRegressionFixture
     private static function workflow(string $workflowType): callable
     {
         return match ($workflowType) {
-            'golden.signal-occurrence-unavailable' => self::workflow('golden.signal'),
+            'golden.signal-occurrence-unavailable', 'golden.signal-occurrence-deferred' => self::workflow('golden.signal'),
             'golden.telemetry-context' => static function (WorkflowContext $context): array {
                 $result = $context->activity('golden.greet', ['Ada']);
                 $fields = \DurableWorkflow\Telemetry\ExecutionTelemetry::current();

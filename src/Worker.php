@@ -1789,9 +1789,13 @@ final class Worker
             }
         } catch (Throwable $exception) {
             if ($exception instanceof WorkflowClaimDeferred) {
+                // A deferral the replay itself requires names its stable reason
+                // (such as condition_wait_occurrence_deadline_unavailable); the
+                // claim is kept, not released, until its lease or authority ends.
+                $deferredReason = preg_match('/\A([a-z][a-z0-9_]*): /', $exception->getMessage(), $match) === 1 ? $match[1] : null;
                 $this->diagnostic('worker.claim_deferred', [
                     'task_id' => $taskId, 'task_kind' => 'workflow',
-                    'reason' => $this->shutdownRequested ? 'shutdown_requested' : 'claim_released',
+                    'reason' => $deferredReason ?? ($this->shutdownRequested ? 'shutdown_requested' : 'claim_released'),
                     'message' => $exception->getMessage(),
                 ], 'info');
 

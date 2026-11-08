@@ -10,7 +10,7 @@ use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\Replayer;
-use DurableWorkflow\Worker\WorkflowClaimAborted;
+use DurableWorkflow\Worker\WorkflowClaimDeferred;
 use DurableWorkflow\Worker\WorkflowContext;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -77,7 +77,7 @@ final class ConditionWaitOccurrenceDeadlineTest extends TestCase
         try {
             $this->replay($events, capable: false);
             self::fail('The anchored reopen was authored without the capability.');
-        } catch (WorkflowClaimAborted $error) {
+        } catch (WorkflowClaimDeferred $error) {
             self::assertStringStartsWith('condition_wait_occurrence_deadline_unavailable: ', $error->getMessage());
         }
     }
@@ -134,7 +134,7 @@ final class ConditionWaitOccurrenceDeadlineTest extends TestCase
         self::assertSame(['open_condition_wait', 'occurrence', 300], [$capable[0]['type'], $capable[0]['deadline_policy'],
             $capable[0]['condition_wait_timeout_budget_seconds']]);
 
-        $this->expectException(WorkflowClaimAborted::class);
+        $this->expectException(WorkflowClaimDeferred::class);
         $this->expectExceptionMessage('condition_wait_occurrence_deadline_unavailable: ');
         $this->replay($events, capable: false);
     }
@@ -290,32 +290,45 @@ final class ConditionWaitOccurrenceDeadlineTest extends TestCase
     /**
      * Worker level, through the real Client transport path: each workflow poll
      * decides the capability for its own task, so an earlier advertised value
-     * cannot hide a later absent or false one. Without it the anchored reopen
-     * is never completed: the claim is failed with the unavailable reason, no
-     * completion is sent and so no history is written for that task.
+     * cannot hide a later absent or false one. Without it an anchored reopen,
+     * or the still-open resend of a recorded anchored reopen, is never sent:
+     * the Worker leaves the claim with neither a completion nor a failure (so
+     * no history is authored and no retry task is created), reports the
+     * stable reason, and keeps serving later tasks. A capable reopen and a new
+     * legacy chain remain positive controls.
      */
-    public function testTheWorkerNeverCompletesAnAnchoredReopenAfterTheCapabilityDisappears(): void
+    public function testTheWorkerLeavesTheClaimForAnAnchoredReopenWithoutTheCapability(): void
     {
         $codec = new AvroPayloadCodec();
-        $history = self::history($codec, [self::opened(300, anchored: true), self::wrong('2026-11-04T02:38:05.345000+00:00')]);
+        $wake = self::wrong('2026-11-04T02:38:05.345000+00:00');
+        $histories = [
+            'anchored' => self::history($codec, [self::opened(300, anchored: true), $wake]),
+            'resend' => self::history($codec, [self::opened(300, anchored: true), $wake, self::satisfied(), self::reopened(180, anchored: true)]),
+            'legacy' => self::history($codec, [self::opened(300, anchored: false), $wake]),
+            'fresh' => self::history($codec, [['WorkflowStarted', '2026-11-04T02:36:00.000000+00:00', []]]),
+        ];
         $polls = [
-            ['task-1', ['condition_wait_occurrence_deadline' => true]],
-            ['task-2', null],
-            ['task-3', ['condition_wait_occurrence_deadline' => false]],
+            ['task-1', ['condition_wait_occurrence_deadline' => true], 'anchored'],
+            ['task-2', null, 'anchored'],
+            ['task-3', ['condition_wait_occurrence_deadline' => false], 'anchored'],
+            ['task-4', null, 'resend'],
+            ['task-5', ['condition_wait_occurrence_deadline' => true], 'anchored'],
+            ['task-6', null, 'legacy'],
+            ['task-7', null, 'fresh'],
         ];
         $completed = [];
         $failed = [];
         $transport = new FakeTransport(handler: static function (
             string $method, string $uri, array $headers, ?array $body,
-        ) use (&$polls, &$completed, &$failed, $history): array {
+        ) use (&$polls, &$completed, &$failed, $histories): array {
             if (str_ends_with($uri, '/workflow-tasks/poll')) {
-                [$taskId, $capabilities] = array_shift($polls) ?? [null, null];
+                [$taskId, $capabilities, $history] = array_shift($polls) ?? [null, null, null];
                 if ($taskId === null) {
                     return ['task' => null, 'poll_status' => 'empty'];
                 }
                 $response = ['poll_status' => 'leased', 'task' => ['task_id' => $taskId, 'workflow_task_attempt' => 1,
-                    'lease_owner' => 'worker-1', 'workflow_id' => 'approval', 'run_id' => 'run-1',
-                    'workflow_type' => 'approval.workflow', 'payload_codec' => 'avro', 'history_events' => $history]];
+                    'lease_owner' => 'worker-1', 'workflow_id' => 'approval-'.$taskId, 'run_id' => 'run-'.$taskId,
+                    'workflow_type' => 'approval.workflow', 'payload_codec' => 'avro', 'history_events' => $histories[$history]]];
                 if ($capabilities !== null) {
                     $response['server_capabilities'] = $capabilities;
                 }
@@ -340,22 +353,38 @@ final class ConditionWaitOccurrenceDeadlineTest extends TestCase
             }
             self::fail("Unexpected request {$method} {$uri}");
         });
-        $worker = new Worker(new Client('https://runtime.test', transport: $transport), 'approvals', workerId: 'worker-1');
+        $deferred = [];
+        $worker = new Worker(new Client('https://runtime.test', transport: $transport), 'approvals', workerId: 'worker-1',
+            diagnosticListener: static function (string $event, array $context) use (&$deferred): void {
+                if ($event === 'worker.claim_deferred') {
+                    $deferred[$context['task_id']] = [$context['reason'], $context['message']];
+                }
+            });
         $worker->registerWorkflow('approval.workflow', static fn (WorkflowContext $context): bool => $context->waitCondition(
             static fn (): bool => $context->signals('approve') !== [], key: 'approval', timeout: '5 minutes'));
 
-        self::assertTrue($worker->tick(0));
-        self::assertTrue($worker->tick(0));
-        self::assertTrue($worker->tick(0));
+        for ($task = 1; $task <= 7; ++$task) {
+            self::assertTrue($worker->tick(0), "task-{$task} is polled and processed");
+        }
 
-        self::assertSame(['task-1'], array_keys($completed), 'only the capable task completes');
-        self::assertSame(['open_condition_wait', 180, 'occurrence', 300], [$completed['task-1'][0]['type'],
-            $completed['task-1'][0]['timeout_seconds'], $completed['task-1'][0]['deadline_policy'],
-            $completed['task-1'][0]['condition_wait_timeout_budget_seconds']]);
-        self::assertSame(['task-2', 'task-3'], array_keys($failed));
-        foreach ($failed as [$type, $message]) {
-            self::assertSame(WorkflowClaimAborted::class, $type);
-            self::assertStringStartsWith('PHP workflow task execution failed: condition_wait_occurrence_deadline_unavailable: ', (string) $message);
+        self::assertSame([], $failed, 'a deferred claim is never failed, so no ordinary retry task is created');
+        self::assertSame(['task-1', 'task-5', 'task-6', 'task-7'], array_keys($completed),
+            'only capable reopens, the legacy chain and the new legacy chain complete');
+        foreach (['task-1', 'task-5'] as $capable) {
+            self::assertSame(['open_condition_wait', 180, 'occurrence', 300], [$completed[$capable][0]['type'],
+                $completed[$capable][0]['timeout_seconds'], $completed[$capable][0]['deadline_policy'],
+                $completed[$capable][0]['condition_wait_timeout_budget_seconds']]);
+        }
+        self::assertSame('open_condition_wait', $completed['task-6'][0]['type']);
+        self::assertArrayNotHasKey('deadline_policy', $completed['task-6'][0], 'a legacy chain keeps legacy commands');
+        self::assertArrayNotHasKey('condition_wait_timeout_budget_seconds', $completed['task-6'][0]);
+        self::assertSame(['open_condition_wait', 300], [$completed['task-7'][0]['type'], $completed['task-7'][0]['timeout_seconds']],
+            'a new chain without the capability sends a legacy open');
+        self::assertArrayNotHasKey('deadline_policy', $completed['task-7'][0]);
+        self::assertSame(['task-2', 'task-3', 'task-4'], array_keys($deferred));
+        foreach ($deferred as [$reason, $message]) {
+            self::assertSame('condition_wait_occurrence_deadline_unavailable', $reason);
+            self::assertStringStartsWith('condition_wait_occurrence_deadline_unavailable: ', (string) $message);
         }
     }
 
