@@ -126,6 +126,110 @@ final class ConditionWaitAnchoredEvidenceTest extends TestCase
         self::assertSame(15, Anchored::falseWake($history, $witness, 'go', 20, 1)['reopens'][0]['authored']);
     }
 
+    /** The Worker's own replay input (the observer hook) authors the reopen, in replay-input-only mode. */
+    public function testTheWorkerReplayInputAuthorsTheReopen(): void
+    {
+        $history = self::falseWake();
+
+        $summary = Anchored::falseWake($history, self::replayWitness([Anchored::replayInput('task-2', 1, self::upTo($history, 5.0))]),
+            'go', 20, 1, true);
+
+        self::assertSame([['task_id' => 'task-2', 'attempt' => 1, 'wake_event' => 'TimerCancelled', 'wake_sequence' => 6,
+            'wake_id' => 'e6', 'time_field' => 'recorded_at', 'opened' => sprintf('%.6F', self::T0), 'now' => sprintf('%.6F', self::T0 + 5.0),
+            'authored' => 15, 'delivered_events' => 6]], $summary['reopens']);
+    }
+
+    /** The observer adapter records exactly what the Worker hook reports, as bounded entries. */
+    public function testTheObserverAdapterRecordsTheReplayInputAndCompletion(): void
+    {
+        $history = self::falseWake();
+        $witness = [];
+        $observe = Anchored::observer($witness);
+        $observe('completion', 'task-1', 1, [self::command(20)]);
+        $observe('history', 'task-2', 1, self::upTo($history, 5.0));
+        $observe('completion', 'task-2', 1, [self::command(15)]);
+
+        self::assertSame([Anchored::completion('task-1', 1, [self::command(20)]), Anchored::replayInput('task-2', 1, self::upTo($history, 5.0)),
+            Anchored::completion('task-2', 1, [self::command(15)])], $witness);
+        self::assertSame(15, Anchored::falseWake($history, $witness, 'go', 20, 1, true)['reopens'][0]['authored']);
+        self::assertStringNotContainsString('not kept', (string) json_encode($witness));
+    }
+
+    /** A replay input is a prefix of history: a late event is visible only when the input contains it. */
+    public function testAReplayInputContainingTheLateEventAuthorsFromIt(): void
+    {
+        $history = self::falseWake(late: true, reopenTimeout: 14);
+
+        $summary = Anchored::falseWake($history, self::replayWitness([Anchored::replayInput('task-2', 1, self::upTo($history, 6.2))], 14),
+            'go', 20, 1, true);
+
+        self::assertSame(['SignalReceived', 7, 14], [$summary['reopens'][0]['wake_event'], $summary['reopens'][0]['wake_sequence'],
+            $summary['reopens'][0]['authored']]);
+    }
+
+    public function testAFreshCallReopenIsAuthoredFromTheReplayInput(): void
+    {
+        [$history] = self::ownBudget(secondOpenedAt: 12.0);
+        $witness = [
+            Anchored::completion('task-1', 1, [self::command(30, 'occ-0', 30)]),
+            Anchored::replayInput('task-2', 1, self::upTo($history, 9.0)),
+            Anchored::completion('task-2', 1, [self::command(20, 'occ-1', 20)]),
+            Anchored::replayInput('task-3', 1, self::upTo($history, 17.0)),
+            Anchored::completion('task-3', 1, [self::command(15, 'occ-1', 20)]),
+        ];
+
+        self::assertSame(15, Anchored::ownBudget($history, $witness, 'first', 30, 'second', 20, true)['reopens'][0]['authored']);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $witness
+     */
+    #[DataProvider('replayInputRefusals')]
+    public function testIncompleteOrOverBoundReplayInputIsRefused(array $witness, string $code): void
+    {
+        try {
+            Anchored::falseWake(self::falseWake(), $witness, 'go', 20, 1, true);
+            self::fail('The replay-input evidence was accepted.');
+        } catch (RuntimeException $error) {
+            self::assertSame($code, $error->getMessage());
+        }
+    }
+
+    /** @return iterable<string, array{list<array<string, mixed>>, string}> */
+    public static function replayInputRefusals(): iterable
+    {
+        $history = self::falseWake();
+        $input = self::upTo($history, 5.0);
+        $replay = static fn (array $events, int $attempt = 1): array => Anchored::replayInput('task-2', $attempt, $events);
+        $without = static function (array $events, int $position): array {
+            unset($events[$position]);
+
+            return array_values($events);
+        };
+        $changed = $input;
+        $changed[2]['id'] = 'e3-other';
+        $retyped = $input;
+        $retyped[3]['event_type'] = 'UpdateApplied';
+        $padded = array_pad($input, Anchored::MAX_WITNESS_EVENTS + 1, self::event(5.0, 'WorkflowTaskStarted') + ['sequence' => 7, 'id' => 'pad']);
+
+        yield 'transport slices only' => [self::witness(), 'anchored_evidence_replay_input_missing'];
+        yield 'replay input for another attempt' => [self::replayWitness([$replay($input, 2)]), 'anchored_evidence_replay_input_missing'];
+        yield 'two replay inputs for the attempt' => [self::replayWitness([$replay($input), $replay($input)]), 'anchored_evidence_replay_input_ambiguous'];
+        yield 'replay input mixed with a poll slice' => [self::replayWitness([$replay($input), Anchored::delivery('poll', 'task-2', 1, $input)]),
+            'anchored_evidence_replay_input_ambiguous'];
+        yield 'truncated replay input' => [self::replayWitness([$replay($padded)]), 'anchored_evidence_replay_input_incomplete'];
+        yield 'empty replay input' => [self::replayWitness([$replay([])]), 'anchored_evidence_replay_input_incomplete'];
+        yield 'missing first event' => [self::replayWitness([$replay($without($input, 0))]), 'anchored_evidence_replay_input_incomplete'];
+        yield 'missing middle event' => [self::replayWitness([$replay($without($input, 2))]), 'anchored_evidence_replay_input_incomplete'];
+        yield 'repeated event' => [self::replayWitness([$replay([...$input, $input[5]])]), 'anchored_evidence_replay_input_incomplete'];
+        yield 'event identity differs from history' => [self::replayWitness([$replay($changed)]), 'anchored_evidence_replay_input_mismatch'];
+        yield 'event type differs from history' => [self::replayWitness([$replay($retyped)]), 'anchored_evidence_replay_input_mismatch'];
+        yield 'replay input already contains the authored reopen' => [self::replayWitness([$replay(self::upTo($history, 6.5))]),
+            'anchored_evidence_replay_input_over_bound'];
+        yield 'unknown observer kind' => [[...self::replayWitness([$replay($input)]), ['source' => 'unknown', 'kind' => 'query', 'task_id' => 'task-2',
+            'attempt' => 1]], 'anchored_evidence_witness_shape'];
+    }
+
     /**
      * @param list<array<string, mixed>> $history
      * @param list<array<string, mixed>>|null $witness
@@ -280,6 +384,17 @@ final class ConditionWaitAnchoredEvidenceTest extends TestCase
             Anchored::delivery('poll', 'task-2', $deliveryAttempt, $delivered),
             Anchored::completion('task-2', 1, [self::command(15)]),
         ];
+    }
+
+    /**
+     * The first call's completion, the given task-2 entries, and task-2's reopen completion.
+     *
+     * @param list<array<string, mixed>> $entries
+     * @return list<array<string, mixed>>
+     */
+    private static function replayWitness(array $entries, int $reopenTimeout = 15): array
+    {
+        return [Anchored::completion('task-1', 1, [self::command(20)]), ...$entries, Anchored::completion('task-2', 1, [self::command($reopenTimeout)])];
     }
 
     /**
