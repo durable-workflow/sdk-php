@@ -11,6 +11,10 @@ declare(strict_types=1);
 // worker process, whose @internal delivered-history observer writes the witness the
 // anchored assertions bind to. Recorded identities come from the Native history
 // export of the run this script started (fresh runs only).
+// Output: stdout carries only the final JSON document. Progress ("ok: ...") and one
+// bounded refusal line (at most 300 bytes) go to stderr; the worker processes' own
+// output is routed to stderr and is not capped here. Exit 0 pass, 1 refused or failed,
+// 2 capability absent, 64 usage.
 
 use DurableWorkflow\Client;
 use DurableWorkflow\Exception\ServerException;
@@ -63,7 +67,7 @@ function cwaCheck(bool $condition, string $message): void
     if (!$condition) {
         throw new ConditionWaitAnchoredFailure($message);
     }
-    echo "ok: {$message}\n";
+    fwrite(STDERR, "ok: {$message}\n");
 }
 
 function cwaWait(callable $condition, string $description, float $seconds = 30.0): mixed
@@ -157,6 +161,7 @@ if (($admin->clusterInfo()->capabilities['condition_wait_occurrence_deadline'] ?
     exit(2);
 }
 cwaCheck(true, 'runtime advertises condition_wait_occurrence_deadline');
+try {
 $root = sys_get_temp_dir().'/cwa-'.bin2hex(random_bytes(6));
 cwaCheck(mkdir($root, 0700), 'private witness directory');
 $cases = [];
@@ -204,6 +209,12 @@ $cases['C4'] = cwaCase('C4', $admin, $url, $script, $autoload, $root, static fun
 
     return [$handle->workflowId, $run];
 }, static fn (array $history, array $witness): array => Anchored::ownBudget($history, $witness, 'first', 30, 'second', 20, true));
+
+} catch (Throwable $error) {
+    // One bounded refusal line instead of an unhandled fatal stack; nothing is printed on stdout.
+    fwrite(STDERR, substr('refused: '.$error::class.': '.$error->getMessage(), 0, 300).PHP_EOL);
+    exit(1);
+}
 
 echo json_encode(['started_at' => $startedAt, 'finished_at' => gmdate(DATE_ATOM), 'php' => PHP_VERSION, 'mode' => 'anchored',
     'run_ids' => array_values(array_column($cases, 'run_id')), 'cases' => $cases], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT).PHP_EOL;
