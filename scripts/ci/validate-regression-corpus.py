@@ -70,8 +70,10 @@ PHP_NAMED_FUNCTION = re.compile(
     r"(?m)^[ \t]*(?:(?:abstract|final|private|protected|public|readonly|static)\s+)*"
     r"function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("
 )
+# A whole statement that only reports a handler failure or hands the inert
+# qualification observer (#269) a copy of the replay input or commands.
 PHP_REPLAY_NEUTRAL_OBSERVABILITY_STATEMENT = re.compile(
-    r"[ \t]*\$this->handlerFailure\([^();=]*\);[ \t]*"
+    r"[ \t]*\$this->(?:handlerFailure|notifyDeliveredWorkflowHistory)\([^();=]*\);[ \t]*"
 )
 PHP_REPLAY_NEUTRAL_PHP81_NULL_ARROW_RETURN_TYPE = re.compile(
     r"(\bfn\s*\(\s*\)\s*:\s*)null(\s*=>\s*null\b)"
