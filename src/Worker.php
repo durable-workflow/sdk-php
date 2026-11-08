@@ -1040,6 +1040,8 @@ final class Worker
             && in_array('start_service_operation', $supportedCommands, true);
         $this->childStartTurnSupported = is_array($capabilities)
             && ($capabilities['child_workflow_start_turn'] ?? null) === true;
+        $this->replayer->useConditionOccurrenceDeadline(is_array($capabilities)
+            && ($capabilities['condition_wait_occurrence_deadline'] ?? null) === true);
     }
 
     /** @param array<string, mixed> $response */

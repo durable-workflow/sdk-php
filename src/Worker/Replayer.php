@@ -72,8 +72,25 @@ final class Replayer
 
     private const MAX_VERSION = 2_147_483_647;
 
+    /** The occurrence-deadline opt-in on an anchored condition-wait open (#269). */
+    public const CONDITION_DEADLINE_POLICY = 'occurrence';
+
+    /** Whether the Server advertises condition_wait_occurrence_deadline for new chains. */
+    private bool $conditionOccurrenceDeadline = false;
+
     public function __construct(private readonly PayloadCodec $codec)
     {
+    }
+
+    /**
+     * @internal The Worker sets this from the Server's advertised
+     * condition_wait_occurrence_deadline capability. It decides only whether a
+     * new chain's first open opts in; a recorded chain keeps its first open's
+     * policy on every reopen.
+     */
+    public function useConditionOccurrenceDeadline(bool $supported): void
+    {
+        $this->conditionOccurrenceDeadline = $supported;
     }
 
     /**
@@ -890,6 +907,9 @@ final class Replayer
                 }
                 continue;
             }
+            if ($suspended->type === 'open_condition_wait') {
+                $suspended = $this->anchorNewConditionChain($suspended);
+            }
             if (($encodingFailure = $this->appendWorkflowCommand(
                 $commands,
                 $suspended,
@@ -1313,15 +1333,93 @@ final class Replayer
         foreach ($steps as $index => $step) {
             $previous = $steps[$index - 1] ?? null;
             if ($previous !== null && $this->isConditionReopen($previous, $step)) {
+                $this->assertConditionChainPolicy($previous, $step);
                 $steps[$index]['timeout_seconds'] = $previous['timeout_seconds'];
                 $steps[$index]['opened_at'] = $previous['opened_at'] ?? null;
                 // The first open owns the logical wait's id. A first open from a
                 // worker before #274 has none, and a later open must not lend it one.
                 $steps[$index]['occurrence_id'] = $this->stepOccurrence($previous);
+                // The chain keeps its first open's deadline policy (#269).
+                $steps[$index]['deadline_policy'] = $previous['deadline_policy'] ?? null;
+                $steps[$index]['timeout_budget'] = $previous['timeout_budget'] ?? null;
+            } elseif (($step['shape'] ?? null) === 'condition_wait' && ($step['deadline_policy'] ?? null) !== null
+                && $step['timeout_budget'] !== $step['timeout_seconds']) {
+                // A chain's first anchored open authors its whole budget.
+                throw new NonDeterministicWorkflow('Anchored condition wait opened with a budget other than its timeout.',
+                    $step['sequence'], reason: 'condition_wait_occurrence_mismatch');
             }
         }
 
         return $steps;
+    }
+
+    /**
+     * Every physical open of one anchored chain names the same policy, its
+     * original authored budget and the chain's occurrence; a chain that began
+     * without the policy never gains it (#269).
+     *
+     * @param array<string, mixed> $first The chain so far, carrying its first open's policy.
+     * @param array<string, mixed> $reopen
+     */
+    private function assertConditionChainPolicy(array $first, array $reopen): void
+    {
+        $policy = $first['deadline_policy'] ?? null;
+        if (($reopen['deadline_policy'] ?? null) !== $policy
+            || ($policy !== null && (($reopen['timeout_budget'] ?? null) !== ($first['timeout_budget'] ?? null)
+                || $this->stepOccurrence($first) === null || $this->stepOccurrence($reopen) !== $this->stepOccurrence($first)))) {
+            throw new NonDeterministicWorkflow('Condition wait reopen changed its occurrence deadline policy or budget.',
+                $reopen['sequence'], reason: 'condition_wait_occurrence_mismatch');
+        }
+    }
+
+    /**
+     * The recorded opt-in of one physical open. Both fields are present
+     * together, with the only defined policy and a non-negative integer budget
+     * no smaller than this open's remaining timeout, or both are absent.
+     *
+     * @param array<string, mixed> $payload
+     * @return array{policy: string, budget: int}|null
+     */
+    private function recordedConditionDeadlinePolicy(array $payload, int $sequence): ?array
+    {
+        $hasPolicy = array_key_exists('deadline_policy', $payload);
+        $hasBudget = array_key_exists('condition_wait_timeout_budget_seconds', $payload);
+        if (!$hasPolicy && !$hasBudget) {
+            return null;
+        }
+        $policy = $payload['deadline_policy'] ?? null;
+        $budget = $payload['condition_wait_timeout_budget_seconds'] ?? null;
+        $timeout = $payload['timeout_seconds'] ?? null;
+        $occurrence = $this->stringValue($payload['condition_wait_occurrence_id'] ?? null);
+        if ($policy !== self::CONDITION_DEADLINE_POLICY || !is_int($budget) || $budget < 0
+            || !is_int($timeout) || $timeout > $budget || $occurrence === null) {
+            throw new NonDeterministicWorkflow('Recorded condition wait has an invalid occurrence deadline policy.',
+                $sequence, reason: 'condition_wait_deadline_policy_invalid');
+        }
+
+        return ['policy' => $policy, 'budget' => $budget];
+    }
+
+    /**
+     * A new top-level chain opts in only when the Server advertises the
+     * capability and the call has an occurrence id and a timeout. The budget is
+     * the authored timeout; timeout_seconds stays the replay input (#269).
+     * Grouped waits keep the authored timeout until grouped reopens are
+     * qualified (#278).
+     */
+    private function anchorNewConditionChain(WorkflowCommand $command): WorkflowCommand
+    {
+        $timeout = $command->attributes['timeout_seconds'] ?? null;
+        if (!$this->conditionOccurrenceDeadline || !is_int($timeout)
+            || !is_string($command->attributes['condition_wait_occurrence_id'] ?? null)
+            || array_key_exists('parallel_group_path', $command->attributes)) {
+            return $command;
+        }
+
+        return $command->withAttributes([
+            'deadline_policy' => self::CONDITION_DEADLINE_POLICY,
+            'condition_wait_timeout_budget_seconds' => $timeout,
+        ]);
     }
 
     /**
@@ -1420,6 +1518,25 @@ final class Replayer
      * @param list<array<string, mixed>> $history
      */
     private function conditionReopen(WorkflowCommand $command, array $step, array $history): WorkflowCommand
+    {
+        $command = $this->remainingConditionReopen($command, $step, $history);
+        if (($step['deadline_policy'] ?? null) === self::CONDITION_DEADLINE_POLICY && is_int($step['timeout_budget'] ?? null)) {
+            // Same chain, same policy: the Server keeps the first open's
+            // deadline; timeout_seconds stays the remaining replay budget.
+            return $command->withAttributes([
+                'deadline_policy' => self::CONDITION_DEADLINE_POLICY,
+                'condition_wait_timeout_budget_seconds' => $step['timeout_budget'],
+            ]);
+        }
+
+        return $command;
+    }
+
+    /**
+     * @param array<string, mixed> $step
+     * @param list<array<string, mixed>> $history
+     */
+    private function remainingConditionReopen(WorkflowCommand $command, array $step, array $history): WorkflowCommand
     {
         $command = $command->withRecordedConditionDefinition($step['condition_definition_fingerprint']);
         $timeout = $step['timeout_seconds'] ?? null;
@@ -1535,6 +1652,7 @@ final class Replayer
         $conditionOccurrences = [];
         $conditionWaitIds = [];
         $conditionOpenSequences = [];
+        $conditionDeadlinePolicies = [];
         $conditionTerminals = [];
         $versionMarkerSequences = [];
         $versionMarkerChangeIds = [];
@@ -1990,6 +2108,7 @@ final class Replayer
                 $conditionOpenedOrder[$key] ??= $resolutionOrder;
                 $conditionOccurrences[$key] ??= $this->stringValue($payload['condition_wait_occurrence_id'] ?? null);
                 $conditionOpenSequences[$key] ??= $this->sequence($payload);
+                $conditionDeadlinePolicies[$key] ??= $this->recordedConditionDeadlinePolicy($payload, $sequence);
             } elseif (in_array($type, ['ConditionWaitSatisfied', 'ConditionWaitTimedOut'], true)) {
                 $conditionStepKey = $this->conditionStepKey($payload, $conditionStepsByWaitId);
                 if ($conditionStepKey !== null
@@ -2048,6 +2167,8 @@ final class Replayer
                 $steps[$key]['condition_wait_id'] = $conditionWaitIds[$key] ?? null;
                 $steps[$key]['condition_open_sequence'] = $conditionOpenSequences[$key] ?? null;
                 $steps[$key]['condition_terminal'] = $conditionTerminals[$key] ?? null;
+                $steps[$key]['deadline_policy'] = $conditionDeadlinePolicies[$key]['policy'] ?? null;
+                $steps[$key]['timeout_budget'] = $conditionDeadlinePolicies[$key]['budget'] ?? null;
                 // Snapshot before bindConditionReopens changes timeout/opening
                 // metadata. This is internal replay state, never a wire field.
                 $steps[$key]['physical_condition_steps'] = [$steps[$key]];
