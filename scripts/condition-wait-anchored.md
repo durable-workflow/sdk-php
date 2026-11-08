@@ -39,6 +39,10 @@ before creating anything; the legacy cells stay with `qualify-condition-wait-nat
 | C1-repeat | `cwn.false_wake` (20 s) | two false wakes about 5 s apart; times out at A |
 | C4 | `cwn.own_budget` | wait A satisfied; wait B (20 s) gets a false wake, then the matching signal |
 
-The script prints one JSON document with each case's namespace, queue, run ID, witness
-size, history size and evidence. On a refused assertion it writes the case and the
-helper's refusal code to stderr.
+**Output.** stdout carries only the final JSON document: each case's namespace, queue,
+run ID, witness size, history size and evidence. Progress lines (`ok: ...`) go to stderr.
+On a refused assertion the script writes the case and the helper's refusal code, then one
+`refused: ...` line, each at most 300 bytes, to stderr and exits 1; it does not end with an
+unhandled PHP fatal. The worker processes' own stdout and stderr are routed to stderr and
+are not capped by the script, so a cell controller must bound the streams it retains.
+Exit codes: 0 pass, 1 refused or failed, 2 capability absent, 64 usage.
