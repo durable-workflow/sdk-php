@@ -9,6 +9,7 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Qualification\DeferredChildAllScenario as Scenario;
 use DurableWorkflow\Qualification\ChildAllQualificationFailure;
+use DurableWorkflow\Qualification\DeferredChildAllReplayTransport;
 use DurableWorkflow\Qualification\DeferredChildAllTurnTransport;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Worker;
@@ -21,6 +22,7 @@ if (count($argv) < 3) {
 require_once $autoload;
 require_once __DIR__.'/Support/DeferredChildAllScenario.php';
 require_once __DIR__.'/Support/DeferredChildAllTurnTransport.php';
+require_once __DIR__.'/Support/DeferredChildAllReplayTransport.php';
 umask(0077);
 
 if (($argv[3] ?? null) === '--worker') {
@@ -40,6 +42,8 @@ if (($argv[3] ?? null) === '--worker') {
 }
 
 $deadline = microtime(true) + 600;
+// Replays a recorded completion byte for byte; inert until armed (childAllDuplicate).
+$replay = new DeferredChildAllReplayTransport(new Psr18Transport());
 
 function childAllBudget(): void
 {
@@ -149,18 +153,40 @@ function childAllNoParentTask(Client $worker, Scenario $scenario, string $queue)
  */
 function childAllDuplicate(Client $worker, Client $control, array $receipt, string $workflow, string $run, array $also = []): void
 {
+    global $replay;
     $targets = [[$workflow, $run], ...$also];
     $before = array_map(static fn (array $target): array => childAllHistory($control, ...$target), $targets);
     $body = $receipt['body'];
+    Scenario::check(is_array($body['commands'] ?? null) && $body['commands'] !== [], 'The recorded turn has no completion to replay.');
+    // An exact repeat of the recorded completion is an explicit no-op on a
+    // completed task. A different body would be a conflicting completion that
+    // Native refuses by run state (run_closed or task_not_leased), which is
+    // not what this check proves.
+    $replay->arm($receipt['task']['task_id'], $body);
     try {
         $response = $worker->completeWorkflowTask($receipt['task']['task_id'], $body['lease_owner'], $body['workflow_task_attempt'], $body['commands']);
-        Scenario::check(($response['recorded'] ?? null) === false && ($response['reason'] ?? null) === 'already_completed', 'Duplicate completion was not an explicit no-op.');
     } catch (ServerException $error) {
-        Scenario::check($error->status === 409 && $error->reason === 'task_not_leased', 'Duplicate completion was not fenced.');
+        throw new ChildAllQualificationFailure(childAllRefusal('Exact duplicate completion was refused', $error), 0, $error);
     }
+    Scenario::check($replay->sent() === $body, 'The duplicate did not replay the exact recorded completion body.');
+    Scenario::check(($response['recorded'] ?? null) === false && ($response['reason'] ?? null) === 'already_completed', substr(sprintf(
+        'Exact duplicate completion was not an explicit no-op: recorded %s, reason %s.',
+        json_encode($response['recorded'] ?? null), json_encode(is_scalar($response['reason'] ?? null) ? $response['reason'] : null)), 0, 300));
     foreach ($targets as $index => $target) {
         Scenario::check(childAllHistory($control, ...$target) === $before[$index], 'Duplicate completion changed canonical history.');
     }
+}
+
+/** A refusal's status, reason, recorded flag and validation-error shape only: no tokens or payloads, at most 600 bytes. */
+function childAllRefusal(string $what, ServerException $error): string
+{
+    $errors = $error->details['validation_errors'] ?? null;
+    $shape = is_array($errors) ? array_map(static fn (mixed $messages): array => array_values(array_filter(
+        is_array($messages) ? $messages : [], 'is_string')), $errors) : null;
+    $recorded = $error->details['recorded'] ?? null;
+
+    return substr(sprintf('%s: status %d, reason %s, recorded %s, validation_errors %s', $what, $error->status, $error->reason ?? 'none',
+        json_encode(is_bool($recorded) ? $recorded : null), json_encode($shape, JSON_UNESCAPED_SLASHES)), 0, 600);
 }
 
 /**
@@ -221,7 +247,7 @@ function childAllRunMember(Scenario $scenario, Client $worker, Client $control, 
 /** @return array<string, mixed> */
 function childAllCase(string $case): array
 {
-    global $url;
+    global $url, $replay;
     $sizes = ['single' => 1, 'out_of_order' => 3, 'failed' => 2, 'cancelled' => 2, 'terminated' => 2, 'retry' => 2, 'continue' => 2];
     Scenario::check(isset($sizes[$case]), 'Unknown deferred-child case.');
     $suffix = bin2hex(random_bytes(6));
@@ -232,7 +258,7 @@ function childAllCase(string $case): array
     $admin = new Client($url, controlToken: 'claimed-task-admin');
     $admin->createNamespace($namespace);
     $control = new Client($url, namespace: $namespace, controlToken: 'claimed-task-client');
-    $worker = new Client($url, namespace: $namespace, workerToken: 'claimed-task-worker');
+    $worker = new Client($url, namespace: $namespace, workerToken: 'claimed-task-worker', transport: $replay);
     $parent = $control->startWorkflow($scenario->parentType(), 'parent-'.$suffix, $parentQueue, [$scenario->fixture['input']]);
     $run = (string) $parent->selectedRunId;
     $start = childAllTurn($scenario, $namespace, $parentQueue);

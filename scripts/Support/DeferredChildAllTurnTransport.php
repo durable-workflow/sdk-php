@@ -7,7 +7,16 @@ namespace DurableWorkflow\Qualification;
 use Closure;
 use DurableWorkflow\Transport\BoundedTransport;
 
-/** Private, temporary turn receipt. Authentication headers are never retained. */
+/**
+ * Private, temporary turn receipt. Authentication headers are never retained.
+ *
+ * Each managed worker takes exactly one turn and then exits (#185). On a Server
+ * with carried polls, a workflow_poll on that turn's completion would lease the
+ * next ready task on the same queue (a retry or continue-as-new replacement run)
+ * to the exiting worker, which would then run it in the same process. So the
+ * completion is sent without workflow_poll, and the receipt records the body
+ * actually sent, which an exact duplicate replays.
+ */
 final class DeferredChildAllTurnTransport implements BoundedTransport
 {
     /** @var array<string, mixed>|null */
@@ -27,12 +36,30 @@ final class DeferredChildAllTurnTransport implements BoundedTransport
 
     public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
     {
+        $body = $this->prepare($uri, $body);
+
         return $this->observe($uri, $body, $this->http->send($method, $uri, $headers, $body));
     }
 
     public function sendBounded(string $method, string $uri, array $headers, ?array $body, int $timeoutSeconds): ?array
     {
+        $body = $this->prepare($uri, $body);
+
         return $this->observe($uri, $body, $this->http->sendBounded($method, $uri, $headers, $body, $timeoutSeconds));
+    }
+
+    /**
+     * @param array<string, mixed>|null $body
+     * @return array<string, mixed>|null
+     */
+    private function prepare(string $uri, ?array $body): ?array
+    {
+        if (is_array($body) && preg_match('~/workflow-tasks/[^/]+/complete$~', $uri) === 1) {
+            DeferredChildAllScenario::check(!array_key_exists('activity_poll', $body), 'A one-turn worker completion carried an activity poll.');
+            unset($body['workflow_poll']);
+        }
+
+        return $body;
     }
 
     /**
