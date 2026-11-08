@@ -1375,7 +1375,9 @@ final class Replayer
     /**
      * The recorded opt-in of one physical open. Both fields are present
      * together, with the only defined policy and a non-negative integer budget
-     * no smaller than this open's remaining timeout, or both are absent.
+     * no smaller than this open's non-negative remaining timeout, or both are
+     * absent. The check runs on every physical open, before a reopen's timeout
+     * is replaced by its chain's first-open value.
      *
      * @param array<string, mixed> $payload
      * @return array{policy: string, budget: int}|null
@@ -1392,7 +1394,7 @@ final class Replayer
         $timeout = $payload['timeout_seconds'] ?? null;
         $occurrence = $this->stringValue($payload['condition_wait_occurrence_id'] ?? null);
         if ($policy !== self::CONDITION_DEADLINE_POLICY || !is_int($budget) || $budget < 0
-            || !is_int($timeout) || $timeout > $budget || $occurrence === null) {
+            || !is_int($timeout) || $timeout < 0 || $timeout > $budget || $occurrence === null) {
             throw new NonDeterministicWorkflow('Recorded condition wait has an invalid occurrence deadline policy.',
                 $sequence, reason: 'condition_wait_deadline_policy_invalid');
         }

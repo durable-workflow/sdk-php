@@ -84,6 +84,19 @@ final class ConditionWaitOccurrenceDeadlineTest extends TestCase
         ]);
     }
 
+    /** A recorded zero-remaining anchored reopen (the deadline had passed) is valid and keeps the chain's budget. */
+    public function testARecordedZeroRemainingAnchoredReopenIsAccepted(): void
+    {
+        $commands = $this->replay([
+            self::opened(300, anchored: true), self::wrong('2026-11-04T02:38:05.345000+00:00'),
+            self::satisfied(), self::reopened(0, anchored: true), self::wrong('2026-11-04T02:40:05.000000+00:00'),
+        ], capable: true);
+
+        self::assertSame([61, 'occurrence', 300], [
+            $commands[0]['timeout_seconds'], $commands[0]['deadline_policy'], $commands[0]['condition_wait_timeout_budget_seconds'],
+        ]);
+    }
+
     /** A chain that began without the policy never gains it, even after the Server starts advertising it. */
     public function testALegacyChainStaysLegacyWhenTheCapabilityAppears(): void
     {
@@ -170,6 +183,11 @@ final class ConditionWaitOccurrenceDeadlineTest extends TestCase
             self::wrong('2026-11-04T02:40:05.000000+00:00')], 'condition_wait_occurrence_mismatch'];
         yield 'legacy chain, anchored reopen' => [[self::opened(300, anchored: false), $wrong, self::satisfied(), self::reopened(180, anchored: true),
             self::wrong('2026-11-04T02:40:05.000000+00:00')], 'condition_wait_occurrence_mismatch'];
+        // Causal (#364 review): a negative recorded remaining timeout on an anchored physical
+        // reopen is refused before the chain binding replaces it with the first open's timeout.
+        yield 'negative remaining on an anchored reopen' => [[self::opened(300, anchored: true), $wrong, self::satisfied(), self::reopened(-1, anchored: true),
+            self::wrong('2026-11-04T02:40:05.000000+00:00')], 'condition_wait_deadline_policy_invalid'];
+        yield 'negative remaining on an anchored first open' => [[self::opened(-1, anchored: true, budgetSeconds: 300), $wrong], 'condition_wait_deadline_policy_invalid'];
         yield 'reopen with another budget' => [[self::opened(300, anchored: true), $wrong, self::satisfied(), self::reopened(180, anchored: true, budgetSeconds: 240),
             self::wrong('2026-11-04T02:40:05.000000+00:00')], 'condition_wait_occurrence_mismatch'];
     }
