@@ -281,12 +281,17 @@ final class Worker
 
     /**
      * @internal Qualification evidence only (#269). Observe, for each workflow
-     * task attempt, the complete history handed to the Replayer (after every
-     * history page and the sticky cache, once the claim's grant is confirmed)
-     * as kind "history", and the commands the attempt completes with as kind
-     * "completion", just before the completion request. The observer receives
-     * copies; it is inert when unset, and its failures are ignored, so the
-     * Worker's behavior never depends on it.
+     * task attempt:
+     * - kind "history": the exact history handed to the Replayer, once per
+     *   replay pass (after every history page, the sticky cache and any
+     *   in-claim refresh), so an attempt that replays more than once reports
+     *   every pass;
+     * - kind "completion": the commands the attempt completes with, just
+     *   before the completion request;
+     * - kind "accepted": the same commands, only after the completion request
+     *   returned (the Server accepted that attempt's completion).
+     * The observer receives copies; it is inert when unset, and its failures
+     * are ignored, so the Worker's behavior never depends on it.
      *
      * @param (\Closure(string, string, int, list<array<string, mixed>>): void)|null $observer
      *     called as (kind, task ID, workflow task attempt, items)
@@ -1697,7 +1702,6 @@ final class Worker
             if (!$this->confirmWorkflowPollGrant($task, $taskId, $leaseOwner, $attempt)) {
                 return;
             }
-            $this->notifyDeliveredWorkflowHistory('history', $taskId, $attempt, $history);
             if ($this->client->observabilityContextAvailable()) {
                 $traceScope = $this->telemetry?->enterTask('workflow', $task, $this->client->namespace, $this->taskQueue);
             }
@@ -1775,6 +1779,7 @@ final class Worker
                     throw $error;
                 }
             }, ['task_id' => $taskId, 'lease_owner' => $leaseOwner, 'attempt' => $attempt]);
+            $this->notifyDeliveredWorkflowHistory('accepted', $taskId, $attempt, $commands);
             if ($carried !== null) {
                 // Payload hydration belongs to the next task, never this completed parent's catch path.
                 $carried->completion = $completion;
@@ -2355,6 +2360,7 @@ final class Worker
             }
             $this->claimDeliveredCancellationId = $state->delivery?->requestId;
             $task['cancellation_request'] = $observation;
+            $this->notifyDeliveredWorkflowHistory('history', (string) ($task['task_id'] ?? ''), (int) ($task['workflow_task_attempt'] ?? 1), $history);
             $replay = null;
             try {
                 $replay = $this->replayer->replay($handler, $history, $input, $this->taskQueue, $task,

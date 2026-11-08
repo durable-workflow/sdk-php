@@ -14,9 +14,11 @@ use RuntimeException;
 
 /**
  * #269 qualification witness: the @internal delivered-history observer sees
- * each workflow task attempt's complete replay input (every delivered page)
- * and its completion commands, and is inert: with no observer, a recording
- * observer or a throwing one, the Worker sends exactly the same requests.
+ * each replay pass's complete input (every delivered page), the completion
+ * commands and, once the completion returned, the accepted commands; it is
+ * inert: with no observer, a recording observer or a throwing one, the Worker
+ * sends exactly the same requests. Multi-pass claims are covered in
+ * CooperativeCancellationWorkerTest.
  */
 final class WorkerDeliveredHistoryObserverTest extends TestCase
 {
@@ -27,12 +29,13 @@ final class WorkerDeliveredHistoryObserverTest extends TestCase
             $seen[] = [$kind, $taskId, $attempt, $items];
         });
 
-        self::assertSame(['history', 'completion'], array_column($seen, 0));
-        self::assertSame([['task-1', 3], ['task-1', 3]], array_map(static fn (array $s): array => [$s[1], $s[2]], $seen));
+        self::assertSame(['history', 'completion', 'accepted'], array_column($seen, 0), 'one replay pass, then the accepted completion');
+        self::assertSame([['task-1', 3], ['task-1', 3], ['task-1', 3]], array_map(static fn (array $s): array => [$s[1], $s[2]], $seen));
         self::assertSame([1, 2], array_column($seen[0][3], 'sequence'), 'the poll event and the continuation-page event');
         $completion = array_values(array_filter($requests, static fn (array $r): bool => str_ends_with($r['uri'], '/task-1/complete')));
         self::assertCount(1, $completion);
         self::assertSame($completion[0]['body']['commands'], $seen[1][3]);
+        self::assertSame($seen[1][3], $seen[2][3], 'the accepted report carries the completed commands');
         self::assertSame('complete_workflow', $seen[1][3][0]['type']);
     }
 

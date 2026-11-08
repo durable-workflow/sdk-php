@@ -66,6 +66,71 @@ final class CooperativeCancellationWorkerTest extends TestCase
         }
     }
 
+    /**
+     * #269 witness: a claim that replays twice (refresh for the cancellation,
+     * delivery, refresh again) reports each pass's exact refreshed input, so a
+     * qualifier can refuse the attempt as ambiguous; the accepted report
+     * follows the returned completion with the same commands.
+     */
+    public function testTheDeliveredHistoryObserverReportsEveryReplayPass(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $seen = [];
+        $worker = $this->worker($transport);
+        $worker->observeDeliveredWorkflowHistory(static function (string $kind, string $taskId, int $attempt, array $items) use (&$seen): void {
+            $seen[] = [$kind, $taskId, $attempt, $items];
+        });
+        $worker->registerWorkflow('cancel', static function (WorkflowContext $context): string {
+            try {
+                $context->sleep(10);
+            } catch (\DurableWorkflow\Exception\WorkflowCancelled) {
+                $context->cancellationShield(static fn () => $context->activity('cleanup'));
+            }
+
+            return 'done';
+        });
+
+        self::assertTrue($worker->tick(0));
+
+        self::assertSame(['history', 'history', 'completion', 'accepted'], array_column($seen, 0));
+        foreach ($seen as [, $taskId, $attempt]) {
+            self::assertSame(['task-1', 3], [$taskId, $attempt]);
+        }
+        // The poll carried only WorkflowStarted; each pass reports its own refreshed input.
+        self::assertSame(['WorkflowStarted', 'CooperativeCancellationRequested'], array_column($seen[0][3], 'event_type'),
+            'the first pass replays the history refreshed for the cancellation');
+        self::assertSame(['WorkflowStarted', 'CooperativeCancellationRequested', 'CooperativeCancellationDelivered'],
+            array_column($seen[1][3], 'event_type'), 'the second pass replays the history refreshed after delivery');
+        self::assertSame($transport->completions[0]['commands'], $seen[2][3]);
+        self::assertSame($seen[2][3], $seen[3][3]);
+    }
+
+    public function testAFailedCompletionIsNeverReportedAsAccepted(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->requestVisible = false;
+        $transport->history = [$transport->history[0]];
+        $transport->onComplete = static function (): void {
+            // A definitive refusal (not transient), so the completion is never retried.
+            throw new \DurableWorkflow\Exception\ServerException('Completion refused.', 409, 'workflow_task_completion_rejected');
+        };
+        $kinds = [];
+        $worker = $this->worker($transport);
+        $worker->observeDeliveredWorkflowHistory(static function (string $kind) use (&$kinds): void {
+            $kinds[] = $kind;
+        });
+        $worker->registerWorkflow('cancel', static fn (WorkflowContext $context): string => 'done');
+
+        try {
+            $worker->tick(0);
+        } catch (\Throwable) {
+            // The refused completion's handling is not under test; only the reports are.
+        }
+
+        self::assertContains('completion', $kinds);
+        self::assertNotContains('accepted', $kinds);
+    }
+
     public static function deliveryReplyProvider(): array
     {
         return [['accepted'], ['lost acknowledgment'], ['malformed acknowledgment']];
