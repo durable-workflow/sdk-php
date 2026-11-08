@@ -18,7 +18,12 @@ project follows [Semantic Versioning](https://semver.org/).
   recorded chain keeps its first open's policy, so a chain started without it
   never gains it. Replay refuses an unknown policy, a missing or mismatched
   budget, or a chain whose physical opens disagree. Grouped condition waits do
-  not opt in yet (#278). Without the capability, commands are unchanged.
+  not opt in yet (#278). Without the capability, legacy and new chains send
+  unchanged commands. An already anchored chain reopens only while the current
+  Server advertises the capability: otherwise, for example after a rollback to
+  a Server that would record a legacy reopen inside the anchored chain, the
+  worker leaves the task claim with `condition_wait_occurrence_deadline_unavailable`
+  before sending the reopen, and a capable Server resumes the run.
 
 ## [3.10.0] - 2026-11-07
 

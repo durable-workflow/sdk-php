@@ -7,8 +7,10 @@ namespace DurableWorkflow\Tests;
 use DurableWorkflow\Client;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\Replayer;
+use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkflowContext;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -46,19 +48,90 @@ final class ConditionWaitOccurrenceDeadlineTest extends TestCase
 
     /**
      * A false wake on an anchored chain reopens with the remaining time as
-     * timeout_seconds and the unchanged original budget, whatever the current
-     * capability: the recorded first open decides.
+     * timeout_seconds and the unchanged original budget: the recorded first
+     * open decides the policy.
      */
-    #[DataProvider('capabilities')]
-    public function testAnAnchoredReopenSendsTheRemainingTimeAndTheOriginalBudget(bool $capable): void
+    public function testAnAnchoredReopenSendsTheRemainingTimeAndTheOriginalBudget(): void
     {
-        $commands = $this->replay([self::opened(300, anchored: true), self::wrong('2026-11-04T02:38:05.345000+00:00')], $capable);
+        $commands = $this->replay([self::opened(300, anchored: true), self::wrong('2026-11-04T02:38:05.345000+00:00')], capable: true);
 
         self::assertCount(1, $commands);
         self::assertSame(['open_condition_wait', 180, 'occurrence', 300, 'php:condition-wait:0'], [
             $commands[0]['type'], $commands[0]['timeout_seconds'], $commands[0]['deadline_policy'],
             $commands[0]['condition_wait_timeout_budget_seconds'], $commands[0]['condition_wait_occurrence_id'],
         ]);
+    }
+
+    /**
+     * Causal (#269 rollback): a Server that does not advertise the capability
+     * strips the policy and records a legacy reopen inside the anchored chain.
+     * An anchored chain that needs a new physical open therefore leaves the
+     * claim before any command exists, with the explicit unavailable reason.
+     * The predecessor sent the policy-bearing reopen here.
+     *
+     * @param list<array{string, string, array<string, mixed>}> $events
+     */
+    #[DataProvider('anchoredReopensNeedingANewOpen')]
+    public function testAnAnchoredReopenLeavesTheClaimWhenTheCapabilityIsUnavailable(array $events): void
+    {
+        try {
+            $this->replay($events, capable: false);
+            self::fail('The anchored reopen was authored without the capability.');
+        } catch (WorkflowClaimAborted $error) {
+            self::assertStringStartsWith('condition_wait_occurrence_deadline_unavailable: ', $error->getMessage());
+        }
+    }
+
+    /** @return iterable<string, array{list<array{string, string, array<string, mixed>}>}> */
+    public static function anchoredReopensNeedingANewOpen(): iterable
+    {
+        yield 'first false wake' => [[self::opened(300, anchored: true), self::wrong('2026-11-04T02:38:05.345000+00:00')]];
+        yield 'false wake after the deadline' => [[self::opened(300, anchored: true), self::wrong('2026-11-04T02:41:06.000000+00:00')]];
+        yield 'second false wake after a recorded anchored reopen' => [[
+            self::opened(300, anchored: true), self::wrong('2026-11-04T02:38:05.345000+00:00'),
+            self::satisfied(), self::reopened(180, anchored: true), self::wrong('2026-11-04T02:40:05.000000+00:00'),
+        ]];
+    }
+
+    /** A legacy chain reopens with exactly the same command whether or not the capability is advertised. */
+    public function testALegacyChainReopensUnchangedWithoutTheCapability(): void
+    {
+        $events = [self::opened(300, anchored: false), self::wrong('2026-11-04T02:38:05.345000+00:00')];
+        $withdrawn = $this->replay($events, capable: false);
+
+        self::assertSame(180, $withdrawn[0]['timeout_seconds']);
+        self::assertArrayNotHasKey('deadline_policy', $withdrawn[0]);
+        self::assertSame($this->replay($events, capable: true), $withdrawn);
+    }
+
+    /**
+     * Anchored replays that need no new physical open do not depend on the
+     * current capability: a satisfied wait completes, and a recorded anchored
+     * reopen that is still open authors nothing.
+     *
+     * @param list<array{string, string, array<string, mixed>}> $events
+     */
+    #[DataProvider('anchoredReplaysWithoutANewOpen')]
+    public function testAnAnchoredReplayThatNeedsNoNewOpenIgnoresTheCapability(array $events, ?string $command): void
+    {
+        $commands = $this->replay($events, capable: false);
+
+        self::assertSame($command, $commands[0]['type'] ?? null);
+        self::assertSame($commands, $this->replay($events, capable: true));
+    }
+
+    /** @return iterable<string, array{list<array{string, string, array<string, mixed>}>, ?string}> */
+    public static function anchoredReplaysWithoutANewOpen(): iterable
+    {
+        yield 'satisfied by the awaited signal' => [[
+            self::opened(300, anchored: true),
+            ['SignalReceived', '2026-11-04T02:37:00.000000+00:00', ['workflow_sequence' => 4, 'signal_name' => 'approve', 'arguments' => ['yes']]],
+            ['ConditionWaitSatisfied', '2026-11-04T02:37:00.100000+00:00', ['sequence' => 4, 'condition_wait_id' => 'wait-1', 'condition_key' => 'approval']],
+        ], 'complete_workflow'];
+        yield 'recorded anchored reopen still open' => [[
+            self::opened(300, anchored: true), self::wrong('2026-11-04T02:38:05.345000+00:00'),
+            self::satisfied(), self::reopened(180, anchored: true),
+        ], null];
     }
 
     /** Every later false wake of the chain sends the same original budget; only the remaining time shrinks. */
@@ -209,11 +282,76 @@ final class ConditionWaitOccurrenceDeadlineTest extends TestCase
         self::assertFalse($flag->getValue($replayer));
     }
 
-    /** @return iterable<string, array{bool}> */
-    public static function capabilities(): iterable
+    /**
+     * Worker level, through the real Client transport path: each workflow poll
+     * decides the capability for its own task, so an earlier advertised value
+     * cannot hide a later absent or false one. Without it the anchored reopen
+     * is never completed: the claim is failed with the unavailable reason, no
+     * completion is sent and so no history is written for that task.
+     */
+    public function testTheWorkerNeverCompletesAnAnchoredReopenAfterTheCapabilityDisappears(): void
     {
-        yield 'capability advertised' => [true];
-        yield 'capability withdrawn' => [false];
+        $codec = new AvroPayloadCodec();
+        $history = self::history($codec, [self::opened(300, anchored: true), self::wrong('2026-11-04T02:38:05.345000+00:00')]);
+        $polls = [
+            ['task-1', ['condition_wait_occurrence_deadline' => true]],
+            ['task-2', null],
+            ['task-3', ['condition_wait_occurrence_deadline' => false]],
+        ];
+        $completed = [];
+        $failed = [];
+        $transport = new FakeTransport(handler: static function (
+            string $method, string $uri, array $headers, ?array $body,
+        ) use (&$polls, &$completed, &$failed, $history): array {
+            if (str_ends_with($uri, '/workflow-tasks/poll')) {
+                [$taskId, $capabilities] = array_shift($polls) ?? [null, null];
+                if ($taskId === null) {
+                    return ['task' => null, 'poll_status' => 'empty'];
+                }
+                $response = ['poll_status' => 'leased', 'task' => ['task_id' => $taskId, 'workflow_task_attempt' => 1,
+                    'lease_owner' => 'worker-1', 'workflow_id' => 'approval', 'run_id' => 'run-1',
+                    'workflow_type' => 'approval.workflow', 'payload_codec' => 'avro', 'history_events' => $history]];
+                if ($capabilities !== null) {
+                    $response['server_capabilities'] = $capabilities;
+                }
+
+                return $response;
+            }
+            if (preg_match('#/workflow-tasks/(task-\d)/heartbeat$#', $uri, $match) === 1) {
+                return ['task_id' => $match[1], 'workflow_task_attempt' => 1, 'lease_owner' => 'worker-1', 'renewed' => true];
+            }
+            if (preg_match('#/workflow-tasks/(task-\d)/complete$#', $uri, $match) === 1) {
+                $completed[$match[1]] = $body['commands'];
+
+                return ['completed' => true];
+            }
+            if (preg_match('#/workflow-tasks/(task-\d)/fail$#', $uri, $match) === 1) {
+                $failed[$match[1]] = [$body['failure']['type'] ?? null, $body['failure']['message'] ?? null];
+
+                return ['recorded' => true];
+            }
+            if (str_ends_with($uri, '/activity-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'empty'];
+            }
+            self::fail("Unexpected request {$method} {$uri}");
+        });
+        $worker = new Worker(new Client('https://runtime.test', transport: $transport), 'approvals', workerId: 'worker-1');
+        $worker->registerWorkflow('approval.workflow', static fn (WorkflowContext $context): bool => $context->waitCondition(
+            static fn (): bool => $context->signals('approve') !== [], key: 'approval', timeout: '5 minutes'));
+
+        self::assertTrue($worker->tick(0));
+        self::assertTrue($worker->tick(0));
+        self::assertTrue($worker->tick(0));
+
+        self::assertSame(['task-1'], array_keys($completed), 'only the capable task completes');
+        self::assertSame(['open_condition_wait', 180, 'occurrence', 300], [$completed['task-1'][0]['type'],
+            $completed['task-1'][0]['timeout_seconds'], $completed['task-1'][0]['deadline_policy'],
+            $completed['task-1'][0]['condition_wait_timeout_budget_seconds']]);
+        self::assertSame(['task-2', 'task-3'], array_keys($failed));
+        foreach ($failed as [$type, $message]) {
+            self::assertSame(WorkflowClaimAborted::class, $type);
+            self::assertStringStartsWith('condition_wait_occurrence_deadline_unavailable: ', (string) $message);
+        }
     }
 
     /**
