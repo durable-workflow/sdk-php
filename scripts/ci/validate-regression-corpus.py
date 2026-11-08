@@ -70,15 +70,21 @@ PHP_NAMED_FUNCTION = re.compile(
     r"(?m)^[ \t]*(?:(?:abstract|final|private|protected|public|readonly|static)\s+)*"
     r"function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("
 )
-# A whole statement that only reports a handler failure, or one of the two exact
-# statements that hand the inert qualification observer (#269) a copy of the
-# replay input or the completion commands. The observer statements are matched
-# literally so no argument expression (such as ++$attempt) can hide a change.
+# A whole statement that only reports a handler failure, or one of the exact
+# statements that hand the inert qualification observer (#269) a copy of a
+# replay pass's input, the completion commands, or the accepted commands. The
+# observer statements are matched literally so no argument expression (such as
+# ++$attempt) can hide a change. The first history form is the original
+# pre-replay call site; it stays listed so moving it into the replay loop
+# compares as neutral in both the base and the current function.
 PHP_REPLAY_NEUTRAL_OBSERVABILITY_STATEMENT = re.compile(
     r"[ \t]*(?:"
     r"\$this->handlerFailure\([^();=]*\)"
     r"|\$this->notifyDeliveredWorkflowHistory\('history', \$taskId, \$attempt, \$history\)"
+    r"|\$this->notifyDeliveredWorkflowHistory\('history', \(string\) \(\$task\['task_id'\] \?\? ''\), "
+    r"\(int\) \(\$task\['workflow_task_attempt'\] \?\? 1\), \$history\)"
     r"|\$this->notifyDeliveredWorkflowHistory\('completion', \$taskId, \$attempt, \$commands\)"
+    r"|\$this->notifyDeliveredWorkflowHistory\('accepted', \$taskId, \$attempt, \$commands\)"
     r");[ \t]*"
 )
 PHP_REPLAY_NEUTRAL_PHP81_NULL_ARROW_RETURN_TYPE = re.compile(

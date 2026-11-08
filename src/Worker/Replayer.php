@@ -1530,8 +1530,11 @@ final class Replayer
                 // (an older binary after a rollback, or a withdrawn capability)
                 // strips the policy fields and records a legacy reopen inside
                 // the anchored chain, moving its wall deadline. Leave the claim
-                // before any command is sent; a capable Server resumes it.
-                throw new WorkflowClaimAborted('condition_wait_occurrence_deadline_unavailable: an anchored condition wait cannot reopen '
+                // before any command is sent, without completing or failing the
+                // task: it stays until its lease or another ordinary authority
+                // transition ends it, so no retry task is created, and a capable
+                // Server resumes the run.
+                throw new WorkflowClaimDeferred('condition_wait_occurrence_deadline_unavailable: an anchored condition wait cannot reopen '
                     .'because this Server does not advertise condition_wait_occurrence_deadline.');
             }
             // Same chain, same policy: the Server keeps the first open's

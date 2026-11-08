@@ -19,7 +19,25 @@ final class ReplayRegressionCorpusTest extends TestCase
         [$selectorCount, $paths] = self::replayFixturePaths();
         self::assertGreaterThan(0, $selectorCount);
 
+        // Immutable evidence is never edited; a deliberate behavior change appends
+        // a fixture that supersedes the old one, and only the current one replays.
+        $identities = [];
+        $superseded = [];
         foreach ($paths as $path) {
+            $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+            $identities[$path] = is_array($fixture) && is_string($fixture['id'] ?? null) ? $fixture['id'] : null;
+            foreach (is_array($fixture) && is_array($fixture['supersedes'] ?? null) ? $fixture['supersedes'] : [] as $identity) {
+                $superseded[(string) $identity] = true;
+            }
+        }
+        foreach (array_keys($superseded) as $identity) {
+            self::assertContains($identity, $identities, "A fixture supersedes unknown evidence {$identity}.");
+        }
+
+        foreach ($paths as $path) {
+            if (isset($superseded[(string) $identities[$path]])) {
+                continue;
+            }
             ReplayRegressionFixture::executeFile($path);
         }
 
