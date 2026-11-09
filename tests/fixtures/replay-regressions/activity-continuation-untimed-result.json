@@ -1,0 +1,88 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-activity-continuation-untimed-result",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.activity-continuation-untimed-result",
+    "input": []
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-11-09T12:00:00Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "continuation-activity-1",
+        "activity_type": "continuation.first"
+      }
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityCompleted",
+      "recorded_at": "2026-11-09T12:00:01.123456+00:00",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "continuation-activity-1",
+        "activity_type": "continuation.first",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoGb25l"
+        },
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-11-09T12:00:01.123456+00:00",
+      "payload": {
+        "sequence": 2,
+        "activity_execution_id": "continuation-activity-2",
+        "activity_type": "continuation.second"
+      }
+    },
+    {
+      "sequence": 4,
+      "event_type": "ActivityCompleted",
+      "recorded_at": null,
+      "payload": {
+        "sequence": 2,
+        "activity_execution_id": "continuation-activity-2",
+        "activity_type": "continuation.second",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoGdHdv"
+        },
+        "payload_codec": "avro"
+      }
+    }
+  ],
+  "workflow_tasks": [
+    {
+      "workflow_id": "continuation-workflow",
+      "run_id": "continuation-run"
+    }
+  ],
+  "expected": {
+    "workflow_tasks": [
+      {
+        "command_sequence": [
+          {
+            "type": "complete_workflow",
+            "result": {
+              "first": "one",
+              "first_time": "2026-11-09T12:00:01.123456+00:00",
+              "second": "two",
+              "second_time": null
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

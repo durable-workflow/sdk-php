@@ -2052,14 +2052,14 @@ final class Worker
             return null;
         }
         foreach ($commands as $command) {
-            if (!is_array($command) || !in_array($command['type'] ?? null, $supported, true)
+            if (!in_array($command['type'] ?? null, $supported, true)
                 || array_key_exists('cancellation_scope_id', $command) || array_key_exists('parallel_group_path', $command)) {
                 return null;
             }
         }
 
         return ['version' => 1, 'history_through_sequence' => $through, 'history_last_event_id' => $lastEventId,
-            'commands' => array_values($commands)];
+            'commands' => $commands];
     }
 
     private function reserveWorkflowPoll(string $leaseOwner, bool $workflowCompletion = false): ?CarriedPoll
