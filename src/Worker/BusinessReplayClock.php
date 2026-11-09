@@ -26,6 +26,7 @@ final class BusinessReplayClock
     private ?string $sourceRun = null;
     private ?int $resumeStep = null;
     private ?DateTimeImmutable $redriveInserted = null;
+    private int $unavailableReads = 0;
 
     /** @param list<array<string, mixed>> $history */
     public function __construct(private readonly array $history, private readonly string $workflowId, private readonly string $runId)
@@ -52,10 +53,23 @@ final class BusinessReplayClock
     public function time(): DateTimeImmutable
     {
         if (!$this->active || $this->time === null) {
+            $this->noteUnavailableRead();
             throw new ReplayClockUnavailable('Business replay time requires an active, validated consumed boundary.');
         }
 
         return $this->time;
+    }
+
+    /** Workflow code asked for business time that this replay could not supply. */
+    public function noteUnavailableRead(): void
+    {
+        $this->unavailableReads++;
+    }
+
+    /** Continuation speculation must not depend on a time the server has not assigned yet. */
+    public function unavailableReads(): int
+    {
+        return $this->unavailableReads;
     }
 
     /** The engine leaves this scope before suspension teardown can run finally.

@@ -26,6 +26,7 @@ final class WorkflowContext
         if ($this->execution === null || Fiber::getCurrent() !== $this->execution || $this->isCapturing()
             || $this->cancellationRequested || $this->deliveredCancellationRequestId !== null || $this->cancellationContext() !== null
             || $this->businessReplayClock === null) {
+            $this->businessReplayClock?->noteUnavailableRead();
             throw new ReplayClockUnavailable('Business replay time requires an active, validated consumed boundary.');
         }
 
