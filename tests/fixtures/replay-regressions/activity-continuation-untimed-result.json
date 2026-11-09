@@ -62,27 +62,14 @@
       }
     }
   ],
-  "workflow_tasks": [
-    {
-      "workflow_id": "continuation-workflow",
-      "run_id": "continuation-run"
-    }
-  ],
   "expected": {
-    "workflow_tasks": [
-      {
-        "command_sequence": [
-          {
-            "type": "complete_workflow",
-            "result": {
-              "first": "one",
-              "first_time": "2026-11-09T12:00:01.123456+00:00",
-              "second": "two",
-              "second_time": null
-            }
-          }
-        ]
-      }
-    ]
+    "type": "complete_workflow",
+    "result": {
+      "first": "one",
+      "first_time": "2026-11-09T12:00:01.123456+00:00",
+      "second": "two",
+      "second_time": null
+    },
+    "unavailable_business_time_read": true
   }
 }

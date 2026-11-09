@@ -481,6 +481,24 @@ final class ReplayRegressionConsumer
             throw new RuntimeException("{$identity}.history must not be empty.");
         }
 
+        if ($workflowType === 'golden.activity-continuation-untimed-result') {
+            // Server #1078: replay directly so the fixture can assert that the replayer
+            // reports a business-time read it could not answer at an untimed result.
+            $codec = new AvroPayloadCodec();
+            $replayer = new \DurableWorkflow\Worker\Replayer($codec);
+            $replay = $replayer->replay(self::workflow($workflowType), $history, $input, 'regression-corpus',
+                ['workflow_type' => $workflowType, 'workflow_id' => 'continuation-workflow', 'run_id' => 'continuation-run']);
+            $commands = array_map(static fn (array $command): array => self::decodeEnvelopes($command, $codec), $replay->commands);
+            $observed = ['command_sequence' => $commands,
+                'unavailable_business_time_read' => $replayer->lastReplayReadUnavailableTime()];
+            if (count($commands) === 1) {
+                $observed = array_merge($observed, $commands[0]);
+            }
+            self::assertExpected($identity, $fixture, $observed);
+
+            return;
+        }
+
         if ($workflowType === 'golden.completion-pipeline') {
             require_once __DIR__.'/../../tests/Support/CompletionPipelineScenario.php';
             require_once __DIR__.'/../../tests/Support/RecordingMetricsRecorder.php';
