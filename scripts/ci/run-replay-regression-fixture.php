@@ -1152,6 +1152,19 @@ final class ReplayRegressionConsumer
 
                 return ['values' => $values, 'time' => $time];
             },
+            'golden.activity-continuation-untimed-result' => static function (WorkflowContext $context): array {
+                // Server #1078: a speculative result has no server-assigned time, so
+                // business time at its boundary is unavailable; earlier boundaries keep theirs.
+                $time = static function () use ($context): ?string {
+                    try { return $context->replayNow()->format(self::CLOCK_FORMAT); }
+                    catch (\DurableWorkflow\Exception\ReplayClockUnavailable) { return null; }
+                };
+                $first = $context->activity('continuation.first');
+                $firstTime = $time();
+                $second = $context->activity('continuation.second');
+
+                return ['first' => $first, 'first_time' => $firstTime, 'second' => $second, 'second_time' => $time()];
+            },
             'golden.business-replay-clock-condition' => static function (WorkflowContext $context): array {
                 $predicate = static fn (): bool => true;
                 $outcomes = [];
