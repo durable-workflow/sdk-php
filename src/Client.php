@@ -2451,6 +2451,43 @@ final class Client implements WorkflowClientInterface
     }
 
     /**
+     * Server #1078: the run's history for computing an activity's continuation.
+     *
+     * @return array<string, mixed>
+     */
+    public function activityContinuationHistory(string $taskId, string $activityAttemptId, string $leaseOwner): array
+    {
+        return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/continuation/history', [
+            'activity_attempt_id' => $activityAttemptId,
+            'lease_owner' => $leaseOwner,
+        ]);
+    }
+
+    /**
+     * Server #1078: complete an activity and propose the run's next workflow task commands.
+     *
+     * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int, history_page_size: int, task_kinds: list<string>} $workflowPoll
+     * @param array{version: int, history_through_sequence: int, history_last_event_id: string, commands: list<array<string, mixed>>} $continuation
+     * @return array<string, mixed>
+     */
+    public function completeActivityTaskWithContinuation(
+        string $taskId,
+        string $activityAttemptId,
+        string $leaseOwner,
+        mixed $result,
+        array $workflowPoll,
+        array $continuation,
+    ): array {
+        return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/continuation/complete', [
+            'activity_attempt_id' => $activityAttemptId,
+            'lease_owner' => $leaseOwner,
+            'result' => $this->codec->envelope($result),
+            'workflow_poll' => $workflowPoll,
+            'continuation' => $continuation,
+        ]);
+    }
+
+    /**
      * @param array<string, mixed>|null $details
      * @param array<string, mixed>|null $diagnostics
      * @return array<string, mixed>

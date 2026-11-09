@@ -88,6 +88,24 @@ final class ReplayRegressionFixture
             return self::executeFreshWorkflowPoll($identity, $input, $history, $fixture);
         }
 
+        if ($workflowType === 'golden.activity-continuation-untimed-result') {
+            // Server #1078: replay directly so the fixture can assert that the replayer
+            // reports a business-time read it could not answer at an untimed result.
+            $codec = new AvroPayloadCodec();
+            $replayer = new \DurableWorkflow\Worker\Replayer($codec);
+            $replay = $replayer->replay(self::workflow($workflowType), $history, $input, 'regression-corpus',
+                ['workflow_type' => $workflowType, 'workflow_id' => 'continuation-workflow', 'run_id' => 'continuation-run']);
+            $commands = array_map(static fn (array $command): array => self::decodeEnvelopes($command, $codec), $replay->commands);
+            $observed = ['command_sequence' => $commands,
+                'unavailable_business_time_read' => $replayer->lastReplayReadUnavailableTime()];
+            if (count($commands) === 1) {
+                $observed = array_merge($observed, $commands[0]);
+            }
+            self::assertMatches($fixture['expected'], $observed, $identity.'.expected');
+
+            return $commands;
+        }
+
         if ($workflowType === 'golden.completion-pipeline') {
             $observed = WorkerPipelineScenario::run(true);
             if ($observed['error'] !== null) throw $observed['error'];
@@ -797,6 +815,19 @@ final class ReplayRegressionFixture
                 catch (\DurableWorkflow\Exception\ReplayClockUnavailable) { $time = null; }
 
                 return ['values' => $values, 'time' => $time];
+            },
+            'golden.activity-continuation-untimed-result' => static function (WorkflowContext $context): array {
+                // Server #1078: a speculative result has no server-assigned time, so
+                // business time at its boundary is unavailable; earlier boundaries keep theirs.
+                $time = static function () use ($context): ?string {
+                    try { return $context->replayNow()->format('Y-m-d\TH:i:s.uP'); }
+                    catch (\DurableWorkflow\Exception\ReplayClockUnavailable) { return null; }
+                };
+                $first = $context->activity('continuation.first');
+                $firstTime = $time();
+                $second = $context->activity('continuation.second');
+
+                return ['first' => $first, 'first_time' => $firstTime, 'second' => $second, 'second_time' => $time()];
             },
             'golden.business-replay-clock-condition' => static function (WorkflowContext $context): array {
                 $predicate = static fn (): bool => true;

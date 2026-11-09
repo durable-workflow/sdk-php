@@ -95,6 +95,14 @@ final class Replayer
         $this->conditionOccurrenceDeadline = $supported;
     }
 
+    private ?BusinessReplayClock $lastBusinessReplayClock = null;
+
+    /** @internal Whether the most recent replay asked for business time it could not have. */
+    public function lastReplayReadUnavailableTime(): bool
+    {
+        return ($this->lastBusinessReplayClock?->unavailableReads() ?? 0) > 0;
+    }
+
     /**
      * @param callable(WorkflowContext, mixed ...$input): mixed $handler
      * @param list<array<string, mixed>> $history
@@ -193,6 +201,7 @@ final class Replayer
             && ($cancellation->request === null || $replayCommittedCancellationScopes);
         $context = null;
         $businessReplayClock = new BusinessReplayClock($history, (string) ($task['workflow_id'] ?? ''), (string) ($task['run_id'] ?? ''));
+        $this->lastBusinessReplayClock = $businessReplayClock;
         $execution = new Fiber(ExecutionTelemetry::bind(function () use ($handler, $history, $input, $task, $businessReplayClock, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, $allowScopedPreparedLocalActivities, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {

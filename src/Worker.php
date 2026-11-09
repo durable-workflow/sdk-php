@@ -128,6 +128,8 @@ final class Worker
     private bool $activityCompletionWorkflowPollSupported = false;
     private bool $workflowCompletionWorkflowPollSupported = false;
     private ?CarriedPoll $carriedWorkflowPoll = null;
+    /** @var array<string, mixed>|null The server's advertised activity_workflow_continuation v1 contract. */
+    private ?array $activityContinuation = null;
     private int $workflowTasksInFlight = 0;
     private ?CarriedPoll $carriedActivityPoll = null;
     private int $activityTasksInFlight = 0;
@@ -175,6 +177,12 @@ final class Worker
         ?MetricsRecorder $metrics = null,
         /** Opt-in. Changes when completion failures become visible; never applies to public tick(). */
         private readonly bool $enableCompletionPipelining = false,
+        /**
+         * Opt-in (Server #1078). After an activity succeeds, replay its run with the result and send the
+         * next workflow commands with the completion. Used only when the server advertises
+         * activity_workflow_continuation; anything unsupported falls back to the ordinary path.
+         */
+        private readonly bool $enableActivityContinuation = false,
     ) {
         if ($enableCancellationScopes && !$enableCooperativeCancellation) {
             throw new \InvalidArgumentException('Cancellation scopes require the cooperative worker opt-in.');
@@ -1078,6 +1086,11 @@ final class Worker
             && ($capabilities['activity_completion_workflow_poll'] ?? null) === true;
         $this->workflowCompletionWorkflowPollSupported = is_array($capabilities)
             && ($capabilities['workflow_task_completion_workflow_poll'] ?? null) === true;
+        $continuation = is_array($capabilities) ? ($capabilities['activity_workflow_continuation'] ?? null) : null;
+        $this->activityContinuation = is_array($continuation) && ($continuation['version'] ?? null) === 1
+            && is_array($continuation['supported_commands'] ?? null) && is_int($continuation['max_commands'] ?? null)
+            && ($continuation['complete_endpoint'] ?? null) === '/worker/activity-tasks/{taskId}/continuation/complete'
+            ? $continuation : null;
     }
 
     private function observeCarriedWorkflowCompletion(): void
@@ -1959,6 +1972,94 @@ final class Worker
         if ($owner !== null) {
             $this->client->armWorkflowCompletion($owner, $task['task_id']);
         }
+    }
+
+    /**
+     * Server #1078: replay the activity's run with its own result appended and return the next
+     * workflow commands, or null for the ordinary completion. The replay has no local executor,
+     * preparation, checkpoint or scope delivery, so it makes no request. It is abandoned when the
+     * workflow reads business time the server has not assigned yet, or produces anything outside
+     * the advertised v1 command set. The server still decides; a decline is always safe.
+     *
+     * @param array<string, mixed> $task
+     * @return array{version: int, history_through_sequence: int, history_last_event_id: string, commands: list<array<string, mixed>>}|null
+     */
+    private function speculateActivityContinuation(array $task, mixed $result): ?array
+    {
+        $contract = $this->activityContinuation;
+        $executionId = $task['activity_execution_id'] ?? null;
+        if (!$this->enableActivityContinuation || $contract === null || !is_string($executionId) || $executionId === '') {
+            return null;
+        }
+        $taskId = (string) ($task['task_id'] ?? '');
+        $attemptId = (string) ($task['activity_attempt_id'] ?? $task['attempt_id'] ?? '');
+        $leaseOwner = (string) ($task['lease_owner'] ?? $this->workerId);
+        try {
+            $read = $this->client->activityContinuationHistory($taskId, $attemptId, $leaseOwner);
+            if (($read['continuation']['eligible'] ?? null) !== true || ($read['continuation']['version'] ?? null) !== 1) {
+                return null;
+            }
+            $workflowType = (string) ($read['workflow_type'] ?? '');
+            $handler = $this->workflows[$workflowType] ?? null;
+            $history = $read['history_events'] ?? null;
+            $through = $read['history_through_sequence'] ?? null;
+            $lastEventId = $read['history_last_event_id'] ?? null;
+            if ($handler === null || !is_array($history) || !array_is_list($history) || !is_int($through)
+                || count($history) !== $through || !is_string($lastEventId) || $lastEventId === ''
+                || ($history[$through - 1]['id'] ?? null) !== $lastEventId) {
+                return null;
+            }
+            // The worker's own result, in the shape the server records: this activity's last
+            // scheduling event with its result. The event has no time: the server assigns it.
+            $scheduled = null;
+            foreach ($history as $event) {
+                if (in_array($event['event_type'] ?? null, ['ActivityScheduled', 'ActivityStarted'], true)
+                    && ($event['payload']['activity_execution_id'] ?? null) === $executionId) {
+                    $scheduled = $event;
+                }
+            }
+            if (!is_array($scheduled) || !is_array($scheduled['payload'] ?? null)) {
+                return null;
+            }
+            $payload = $scheduled['payload'];
+            $payload['result'] = $this->client->payloadCodec()->envelope($result);
+            $payload['payload_codec'] = 'avro';
+            $payload['activity_attempt_id'] = $attemptId;
+            $payload['attempt_number'] = (int) ($task['attempt_number'] ?? 1);
+            $history[] = ['id' => null, 'sequence' => $through + 1, 'event_type' => 'ActivityCompleted', 'payload' => $payload,
+                'recorded_at' => null, 'workflow_task_id' => $taskId, 'workflow_command_id' => null];
+            $input = $this->decodeArguments($read['arguments'] ?? null);
+            WorkflowEntryArguments::validate($handler, $input, $workflowType);
+            $replay = $this->replayer->replay($handler, $history, $input, $this->taskQueue, [
+                'workflow_type' => $workflowType, 'workflow_id' => (string) ($read['workflow_id'] ?? ''),
+                'run_id' => (string) ($read['run_id'] ?? ''), 'cancel_requested' => false,
+            ]);
+        } catch (Throwable $error) {
+            $this->diagnostic('worker.activity_continuation_skipped', [
+                'task_id' => $taskId, 'activity_attempt_id' => $attemptId, 'error' => $error::class,
+            ]);
+
+            return null;
+        }
+        $supported = $contract['supported_commands'];
+        $commands = $replay->commands;
+        if ($this->replayer->lastReplayReadUnavailableTime() || $replay->terminalFailure !== null
+            || $replay->messageStreamCursors !== [] || $replay->messageStreamWaits !== []
+            || $replay->cancellationDelivery !== null || $replay->preparedLocalActivity !== null
+            || $replay->preparedLocalActivityGroup !== null || $replay->cancellationScopeOpening !== null
+            || $replay->cancellationScopeDelivery !== null
+            || $commands === [] || count($commands) > $contract['max_commands']) {
+            return null;
+        }
+        foreach ($commands as $command) {
+            if (!in_array($command['type'] ?? null, $supported, true)
+                || array_key_exists('cancellation_scope_id', $command) || array_key_exists('parallel_group_path', $command)) {
+                return null;
+            }
+        }
+
+        return ['version' => 1, 'history_through_sequence' => $through, 'history_last_event_id' => $lastEventId,
+            'commands' => $commands];
     }
 
     private function reserveWorkflowPoll(string $leaseOwner, bool $workflowCompletion = false): ?CarriedPoll
@@ -3073,10 +3174,16 @@ final class Worker
                     ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), authorizedTask: $task);
             }
             $carried = $this->reserveWorkflowPoll($leaseOwner);
+            $continuation = $carried === null ? null : $this->speculateActivityContinuation($task, $result);
             $completion = $this->retryStorageAdmission(
                 'activity_complete',
-                function () use ($taskId, $attemptId, $leaseOwner, $result, $carried): array {
+                function () use ($taskId, $attemptId, $leaseOwner, $result, $carried, $continuation): array {
                     try {
+                        if ($carried !== null && $continuation !== null) {
+                            return $this->client->completeActivityTaskWithContinuation(
+                                $taskId, $attemptId, $leaseOwner, $result, $carried->request, $continuation);
+                        }
+
                         return $this->client->completeActivityTask($taskId, $attemptId, $leaseOwner, $result, $carried?->request);
                     } catch (ServerException $error) {
                         $carried?->uncertainCompletion();
@@ -3091,6 +3198,14 @@ final class Worker
             );
             if ($carried !== null) {
                 $carried->completion = $completion;
+            }
+            if ($continuation !== null) {
+                $outcome = is_array($completion['continuation'] ?? null) ? $completion['continuation'] : [];
+                $this->diagnostic('worker.activity_continuation', [
+                    'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
+                    'outcome' => $outcome['outcome'] ?? null, 'reason' => $outcome['reason'] ?? null,
+                    'workflow_task_id' => $outcome['workflow_task_id'] ?? null,
+                ]);
             }
         } catch (Throwable $exception) {
             if ($exception instanceof ServerException && $this->discardClosedActivityAttempt($task, $exception)) {
