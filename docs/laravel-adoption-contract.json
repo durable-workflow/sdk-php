@@ -32,7 +32,7 @@
     },
     "service_v2": {
       "package": "durable-workflow/sdk",
-      "channel": "^3.13",
+      "channel": "^3.14",
       "state_owner": "server_or_cloud"
     }
   },
