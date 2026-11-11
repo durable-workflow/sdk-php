@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.13.1] - 2026-11-11
+
 ### Fixed
 
 - On native Server, a new condition or signal wait inside `all()` or
