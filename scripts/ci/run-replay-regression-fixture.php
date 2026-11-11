@@ -1113,6 +1113,12 @@ final class ReplayRegressionConsumer
             'golden.local-activity-context' => static fn (WorkflowContext $context): mixed => $context->localActivity('golden.context'),
             'golden.local-activity-recovered' => static fn (WorkflowContext $context): mixed =>
                 $context->localActivity('golden.local-receipt'),
+            'golden.schedule-origin' => static function (WorkflowContext $context): string {
+                $origin = $context->scheduleOrigin();
+
+                return $origin === null ? 'unscheduled'
+                    : $origin->scheduleId.'#'.$origin->triggerNumber.'@'.$origin->occurrenceTime?->format(DATE_ATOM);
+            },
             'golden.local-activity-backoff-repeat' => static function (WorkflowContext $context): string {
                 // .github#219: five attempts with backoff [1, 2] wait 1, 2, 2, 2 between them.
                 try {

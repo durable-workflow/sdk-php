@@ -309,6 +309,30 @@ Server execution ID; inline local/Server-free callbacks without one report
 null. Session callbacks use the actual claim field when present. The same
 accessor is used in ordinary and cooperative remote execution.
 
+## Schedule origin
+
+A run started by a schedule can read the fire that started it with
+`$context->scheduleOrigin()`. It returns a `ScheduleOrigin` with the
+`scheduleId`, the `occurrenceTime` the scheduler evaluated and the
+`triggerNumber`. A run that no schedule started gets `null`. The value comes
+from the run's `ScheduleTriggered` history event, so it is available on the
+first workflow task and identical on replay.
+
+Use `occurrenceTime` to pick the window a scheduled workflow processes. For a
+tick it is the jittered fire time. For a backfill it is the enumerated past
+occurrence. It is not the run's actual start time, so it does not drift with
+scheduler delay:
+
+```php
+$origin = $context->scheduleOrigin();
+$windowEnd = $origin?->occurrenceTime ?? throw new LogicException('Start this workflow from a schedule.');
+$report = $context->activity('reports.build', [$windowEnd->modify('-1 day')->format(DATE_ATOM), $windowEnd->format(DATE_ATOM)]);
+```
+
+`occurrenceTime` is `null` for a fire recorded without an occurrence. Whether
+continue-as-new successors and retried runs carry the origin depends on the
+Server writing `ScheduleTriggered` into those runs.
+
 ## Workflow handles and control-plane APIs
 
 `WorkflowHandle` distinguishes the stable workflow instance from a selected

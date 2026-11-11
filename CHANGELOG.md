@@ -6,6 +6,15 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `WorkflowContext::scheduleOrigin()` returns the schedule fire that started
+  the run, or `null` for an ordinary start (#381,
+  durable-workflow/.github#243). It reads the run's `ScheduleTriggered` event:
+  the schedule id, the occurrence time the scheduler evaluated (the jittered
+  tick or the backfilled occurrence) and the trigger number. It is available
+  on the first workflow task and identical on replay.
+
 ### Changed
 
 - `Worker::run()` now recovers from `stale_worker_registration` instead of
