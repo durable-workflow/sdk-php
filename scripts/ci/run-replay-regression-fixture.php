@@ -1099,6 +1099,12 @@ final class ReplayRegressionConsumer
             'golden.local-activity-context' => static fn (WorkflowContext $context): mixed => $context->localActivity('golden.context'),
             'golden.local-activity-recovered' => static fn (WorkflowContext $context): mixed =>
                 $context->localActivity('golden.local-receipt'),
+            'golden.schedule-origin' => static function (WorkflowContext $context): string {
+                $origin = $context->scheduleOrigin();
+
+                return $origin === null ? 'unscheduled'
+                    : $origin->scheduleId.'#'.$origin->triggerNumber.'@'.$origin->occurrenceTime?->format(DATE_ATOM);
+            },
             'golden.local-activity-terminal-failure' => static function (WorkflowContext $context): never {
                 $context->localActivity('golden.local-failure');
 
