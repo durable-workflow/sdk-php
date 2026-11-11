@@ -185,7 +185,8 @@ final class ReplayRegressionFixture
         }
         $localActivityInvocations = 0;
         $localActivityExecutor = in_array($workflowType, [
-            self::BOUNDED_LOCAL_FAILURE, 'golden.local-activity-terminal-failure', 'golden.local-activity-recovered', 'golden.prepared-local-cleanup',
+            self::BOUNDED_LOCAL_FAILURE, 'golden.local-activity-terminal-failure', 'golden.local-activity-recovered',
+            'golden.local-activity-recorded-backoff', 'golden.prepared-local-cleanup',
             'golden.prepared-local-group', 'golden.prepared-local-scoped-cleanup',
         ], true)
             ? static function () use (&$localActivityInvocations, $workflowType): array {
@@ -745,6 +746,9 @@ final class ReplayRegressionFixture
             },
             'golden.local-activity-recovered' => static fn (WorkflowContext $context): mixed =>
                 $context->localActivity('golden.local-receipt'),
+            // .github#219: a policy recorded before the repeat-final-backoff rule keeps its recorded attempts.
+            'golden.local-activity-recorded-backoff' => static fn (WorkflowContext $context): mixed =>
+                $context->localActivity('golden.local-receipt', [], ['retry_policy' => ['max_attempts' => 4, 'backoff_seconds' => [1]]]),
             'golden.local-activity-terminal-failure' => static function (WorkflowContext $context): never {
                 $context->localActivity('golden.local-failure');
 
