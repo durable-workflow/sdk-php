@@ -97,6 +97,41 @@ An activity option such as `['queue' => 'payments-v2']` selects the queue of a n
 
 `Worker::run()` registers, negotiates heartbeat cadence, polls workflow/activity/query tasks, renews workflow-task leases, and reports terminal outcomes. Typed transient poll pressure is retried with capped backoff while registration heartbeats and shutdown checks remain responsive.
 
+### Activity continuations
+
+Activity continuations are an explicit constructor opt-in:
+
+```php
+$worker = new Worker(
+    client: $client,
+    taskQueue: 'orders',
+    enableActivityContinuation: true,
+);
+
+$worker->register(OrderWorkflow::class, OrderActivities::class);
+$worker->run();
+```
+
+The default is `false`. A supporting native Server advertises
+`activity_workflow_continuation`. After a successful activity, the worker may
+replay the run's bounded history with that result and propose the next workflow
+commands on its completion. The Server validates the authoritative history and
+original authority, then commits the result and eligible commands together.
+An exact completion retry recovers the original decision.
+
+The initial contract supports sequential remote activities, timers, workflow
+completion and version markers. Local activities, parallel groups, selections,
+cancellation scopes, message cursors/waits and update/cancellation state retain
+ordinary execution. If workflow code reads business time at or after the
+speculative result, the worker abandons speculation because only the Server can
+assign that event's time. It does not repeat the activity callback.
+
+Missing or older capability, unsupported replay state and a documented Server
+decline preserve ordinary completion and polling. Backend faults and unknown
+completion outcomes follow completion error/recovery rules. They do not become
+eligibility declines. Drain or disable opted-in workers before downgrading a
+producer or introducing older serving nodes. No speedup is promised.
+
 ### Poll timeouts and early disconnects
 
 With the default cURL transport, supporting Servers send progress during idle

@@ -6,7 +6,27 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [3.11.0] - Unreleased
+## [3.12.0] - Unreleased
+
+### Added
+
+- The Worker constructor accepts `enableActivityContinuation`, defaulting to
+  `false` (#341). On a runtime advertising `activity_workflow_continuation`, an
+  opted-in worker can replay bounded history with its successful activity result
+  and submit eligible workflow commands with the same completion. The native
+  producer commits the result and commands atomically. Missing or older
+  capability, unsupported replay state and business-clock reads at the
+  speculative result retain ordinary completion and polling. A Server decline
+  also retains the ordinary path. Backend errors and uncertain completion
+  outcomes remain errors and use the existing completion recovery rules.
+- Continuations initially support sequential remote activities, timers, workflow
+  completion and version markers. Local activities, parallel groups, selections,
+  cancellation scopes, message waits/cursors and update/cancellation state stay
+  outside this opt-in. Drain or disable opted-in workers before introducing
+  older serving nodes. See the [worker guide](docs/portal/build/workers.md#activity-continuations).
+  No throughput or latency improvement is claimed.
+
+## [3.11.0] - 2026-11-08
 
 ### Upgrade notes
 
