@@ -1,0 +1,31 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-schedule-origin-backfill-cold-replay",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.schedule-origin", "input": []},
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "payload": {"workflow_type": "golden.schedule-origin"}
+    },
+    {
+      "event_type": "ScheduleTriggered",
+      "payload": {
+        "schedule_id": "nightly-report",
+        "schedule_ulid": "01JSCHEDULE0000000000000000",
+        "overlap_policy": "skip",
+        "trigger_number": 42,
+        "cron_expression": "0 0 * * *",
+        "timezone": "UTC",
+        "occurrence_time": "2026-11-01T00:00:00Z"
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {"type": "complete_workflow", "result": "nightly-report#42@2026-11-01T00:00:00+00:00"}
+    ]
+  }
+}
