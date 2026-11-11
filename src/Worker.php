@@ -739,6 +739,7 @@ final class Worker
                         'worker_sessions',
                         'sticky_execution',
                         'cross_kind_poll_wake',
+                        'sticky_history_suffix',
                         ...($this->enableCooperativeCancellation ? ['cooperative_cancellation', 'nexus_cooperative_cancellation'] : []),
                         ...($this->enablePreparedLocalActivities ? ['prepared_local_activities'] : []),
                         ...($this->preparedLocalActivityGroupsSupported ? ['prepared_local_activity_groups'] : []),
@@ -748,6 +749,8 @@ final class Worker
                     workflowCommandContracts: $this->workflowCommandContracts(),
                     capabilityManifest: [
                         ...CapabilityManifest::portableWorkerAffinity(),
+                        // Server #1017: a suffix is accepted only when it continues the cached prefix exactly.
+                        'sticky_history_suffix' => ['supported' => true, 'version' => 1],
                         ...($this->preparedLocalActivityCancellationPolicies !== [] ? [
                             'prepared_local_activity_cancellation_policies' => [
                                 'supported' => true,
@@ -3677,6 +3680,8 @@ final class Worker
             $this->effectiveBuildId(),
             $history,
             is_string($task['sticky_replay_mode'] ?? null) ? $task['sticky_replay_mode'] : null,
+            is_int($task['history_after_sequence'] ?? null) ? $task['history_after_sequence'] : null,
+            is_int($task['history_last_sequence'] ?? null) ? $task['history_last_sequence'] : null,
         );
         if ($history === null) {
             $history = $this->authoritativeWorkflowTaskHistory($task, $leaseOwner, $attempt);
