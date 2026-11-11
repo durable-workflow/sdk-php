@@ -244,6 +244,17 @@ Run one process per container or a bounded number under systemd, Supervisor, Kub
 
 <div class="warning"><strong>Do not daemonize in a web request</strong><p>Workers need a real process lifecycle. Start them through your platform's process supervisor, not a controller, queue callback, or request shutdown hook.</p></div>
 
+### Recover from a stale registration
+
+If the worker process stalls longer than the Server's registration-freshness
+window (a host pause, a long garbage-collection stop or a network partition),
+the Server fences its registration. `run()` then drops every task it held,
+registers again and keeps polling. The Server redelivers the dropped tasks.
+Repeated recoveries back off up to 60 seconds. Each one logs
+`worker.reregistered` and increments `durable_workflow_worker_reregistrations`.
+Construct the worker with `stopOnStaleRegistration: true` to stop instead and
+let your supervisor restart it.
+
 ## Observe worker health
 
 Use Server or Cloud visibility to verify registration freshness, build compatibility, and queue depth. Treat “the process exists” and “the worker is admitted and polling” as different health checks.

@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.13.0] - 2026-11-11
+
 ### Added
 
 - `WorkflowContext::scheduleOrigin()` returns the schedule fire that started

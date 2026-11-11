@@ -91,6 +91,8 @@ $result = $handle->update(
 
 Reuse a stable request ID when a caller may retry the same update after losing its response. Use `waitFor: 'accepted'` when another process will observe completion later.
 
+If a `waitFor: 'completed'` wait ends before the update finishes, `update()` throws `UpdateStillPending` instead of returning a value. Call `update()` again with `$pending->requestId` to keep waiting. The Server returns the same update and doesn't apply it twice.
+
 ## Follow run transitions deliberately
 
 Ordinary handle methods target the current run. `signalSelectedRun()`, `querySelectedRun()`, and `updateSelectedRun()` preserve the selected run guard. Choose selected-run methods for administrative tools whose answer must refer to one immutable run.
