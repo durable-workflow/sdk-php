@@ -127,6 +127,9 @@ final class Worker
     private ?QueryTaskAuthority $queryTaskAuthority = null;
     private bool $activityLeaseRenewalSupported = false;
     private bool $stickyHistorySuffixSupported = false;
+    /** Lazily discovered: false = not native, string = native Server description (sdk-php#278). */
+    private string|false|null $nativeServerVersion = null;
+    private bool $groupedConditionWaitsAdvertised = false;
     private ?ActivityLeaseProcess $activityLeaseProcess = null;
     private ?ActivityLeaseProcess $activityLeaseHelper = null;
     private ?WorkflowPollGrant $workflowPollGrant = null;
@@ -530,6 +533,7 @@ final class Worker
     {
         $this->applyHeartbeatInterval($registration);
         $this->captureRegistrationFence($registration);
+        $this->discoverGroupedConditionWaitSupport($registration);
         $this->queryTaskAuthoritySupported = $this->client->workerProtocolVersion === '1.20'
             && ($registration['server_capabilities']['query_task_authority'] ?? null) === true
             && $this->client->supportsSupervisedQueryRequests();
@@ -552,6 +556,50 @@ final class Worker
             $this->completionPipeline = new CompletionPipeline($this->pipelineTick(...), $this->capturePipelineState(...),
                 $this->resetPipelineState(...), $this->resumePipelineFiber(...), $this->client->disarmWorkflowCompletion(...));
         }
+    }
+
+    /**
+     * Native Server refuses condition waits inside all()/parallel() until it advertises
+     * grouped_condition_waits (server#1142). The replayer asks this only when it is about to
+     * send such a wait, so ordinary workers never make the extra cluster-info request.
+     *
+     * @param array<string, mixed> $registration
+     */
+    private function discoverGroupedConditionWaitSupport(array $registration): void
+    {
+        $this->nativeServerVersion = null;
+        $this->groupedConditionWaitsAdvertised = self::advertisesGroupedConditionWaits($registration['server_capabilities'] ?? null);
+        $this->replayer->refuseNewGroupedConditionWaits($this->groupedConditionWaitRefusal(...));
+    }
+
+    private function groupedConditionWaitRefusal(): ?string
+    {
+        if ($this->groupedConditionWaitsAdvertised) {
+            return null;
+        }
+        if ($this->nativeServerVersion === null) {
+            $this->nativeServerVersion = false;
+            try {
+                $info = $this->client->workerClusterInfo();
+                if (($info->raw['implementation'] ?? null) === 'rust') {
+                    $this->nativeServerVersion = 'native '.($info->version ?? 'unknown version');
+                }
+                $this->groupedConditionWaitsAdvertised = self::advertisesGroupedConditionWaits(
+                    $info->raw['worker_protocol']['server_capabilities'] ?? null);
+            } catch (Throwable $exception) {
+                // Unknown identity keeps today's behavior; the Server still validates every completion.
+                $this->diagnostic('worker.cluster_info_unavailable', ['worker_id' => $this->workerId, 'exception' => $exception], 'warning');
+            }
+        }
+
+        return is_string($this->nativeServerVersion) && !$this->groupedConditionWaitsAdvertised ? $this->nativeServerVersion : null;
+    }
+
+    private static function advertisesGroupedConditionWaits(mixed $capabilities): bool
+    {
+        $capability = is_array($capabilities) ? ($capabilities['grouped_condition_waits'] ?? null) : null;
+
+        return is_array($capability) && ($capability['supported'] ?? null) === true;
     }
 
     /** Only run() recovers, only from the Server's own stale-registration answer, and never past a requested shutdown. */
@@ -1202,6 +1250,9 @@ final class Worker
             && ($capabilities['child_workflow_start_turn'] ?? null) === true;
         $this->replayer->useConditionOccurrenceDeadline(is_array($capabilities)
             && ($capabilities['condition_wait_occurrence_deadline'] ?? null) === true);
+        if (self::advertisesGroupedConditionWaits($capabilities)) {
+            $this->groupedConditionWaitsAdvertised = true;
+        }
     }
 
     /** @param array<string, mixed> $response */

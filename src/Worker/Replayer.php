@@ -95,6 +95,23 @@ final class Replayer
         $this->conditionOccurrenceDeadline = $supported;
     }
 
+    /**
+     * Names the Server that refuses new condition waits inside groups (sdk-php#278), or returns
+     * null when they're allowed. Asked only when such a wait is about to be sent.
+     *
+     * @var (Closure(): ?string)|null
+     */
+    private ?Closure $groupedConditionWaitRefusal = null;
+
+    /**
+     * @internal
+     * @param (Closure(): ?string)|null $refusal
+     */
+    public function refuseNewGroupedConditionWaits(?Closure $refusal): void
+    {
+        $this->groupedConditionWaitRefusal = $refusal;
+    }
+
     private ?BusinessReplayClock $lastBusinessReplayClock = null;
 
     /** @internal Whether the most recent replay asked for business time it could not have. */
@@ -432,6 +449,16 @@ final class Replayer
                     $step = $steps[$stepCursor + $offset] ?? null;
                     if ($step === null) {
                         $missingMember = true;
+                        if ($this->groupedConditionWaitRefusal !== null
+                            && in_array($command->type, ['open_condition_wait', 'open_signal_wait'], true)
+                            && ($server = ($this->groupedConditionWaitRefusal)()) !== null) {
+                            // Recorded groups still replay; only a new grouped wait is refused (server#1142).
+                            throw new WorkflowClaimAborted(sprintf(
+                                'grouped_condition_wait_unsupported: condition waits inside all()/parallel() aren\'t supported; '
+                                .'await the condition outside the group (server#1142). Refused by Server %s.',
+                                $server,
+                            ));
+                        }
                         if ($preparedGroup) {
                             continue;
                         }
