@@ -546,6 +546,15 @@ final class ReplayRegressionConsumer
             return;
         }
 
+        if ($workflowType === 'golden.grouped-condition') {
+            require_once __DIR__.'/../../tests/Support/FakeTransport.php';
+            require_once __DIR__.'/../../tests/Support/GroupedConditionRefusalScenario.php';
+            $observed = \DurableWorkflow\Tests\Support\GroupedConditionRefusalScenario::run();
+            self::assertMatches($fixture['expected'], $observed, $identity.self::EXPECTED_CONTEXT);
+
+            return;
+        }
+
         if ($workflowType === 'golden.activity-poll-transit') {
             require_once __DIR__.'/../../tests/Support/ActivityGrantScenario.php';
             $observed = \DurableWorkflow\Tests\Support\ActivityGrantScenario::runIsolated();
