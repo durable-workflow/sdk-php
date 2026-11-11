@@ -182,6 +182,7 @@ final class WorkerAuthoringTest extends TestCase
                     'worker_sessions',
                     'sticky_execution',
                     'cross_kind_poll_wake',
+                    'sticky_history_suffix',
                 ],
                 'capability_manifest' => [
                     'local_activities' => [
@@ -199,6 +200,7 @@ final class WorkerAuthoringTest extends TestCase
                         'minimum_protocol_version' => '1.18',
                         'implementation' => 'bounded_exact_identity_cache',
                 ],
+                    'sticky_history_suffix' => ['supported' => true, 'minimum_protocol_version' => '1.18', 'version' => 1],
                 ],
                 'max_concurrent_workflow_tasks' => 1,
                 'max_concurrent_activity_tasks' => 1,

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-sticky-history-suffix-gap-refetches",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.sticky-suffix", "input": []},
+  "command_sequence": [
+    {"type": "complete_workflow", "result": ["one", "two"]}
+  ],
+  "expected": {
+    "type": "complete_workflow",
+    "result": ["one", "two"],
+    "authoritative_fetches": 1
+  }
+}

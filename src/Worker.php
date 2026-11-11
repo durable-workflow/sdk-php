@@ -126,6 +126,7 @@ final class Worker
     private bool $queryTaskAuthoritySupported = false;
     private ?QueryTaskAuthority $queryTaskAuthority = null;
     private bool $activityLeaseRenewalSupported = false;
+    private bool $stickyHistorySuffixSupported = false;
     /** Lazily discovered: false = not native, string = native Server description (sdk-php#278). */
     private string|false|null $nativeServerVersion = null;
     private bool $groupedConditionWaitsAdvertised = false;
@@ -696,6 +697,9 @@ final class Worker
                 'invalid_worker_registration_fence');
         }
         $this->activityLeaseRenewalSupported = ($capabilities['activity_lease_renewal'] ?? null) === true;
+        $suffix = $capabilities['sticky_history_suffix'] ?? null;
+        $this->stickyHistorySuffixSupported = is_array($suffix) && ($suffix['supported'] ?? null) === true
+            && ($suffix['version'] ?? null) === 1;
         $capability = $capabilities['worker_deregistration_fencing'] ?? null;
         if (($capability === null || (is_array($capability) && ($capability['supported'] ?? null) === false))
             && $token === null) {
@@ -908,6 +912,7 @@ final class Worker
                         'worker_sessions',
                         'sticky_execution',
                         'cross_kind_poll_wake',
+                        'sticky_history_suffix',
                         ...($this->enableCooperativeCancellation ? ['cooperative_cancellation', 'nexus_cooperative_cancellation'] : []),
                         ...($this->enablePreparedLocalActivities ? ['prepared_local_activities'] : []),
                         ...($this->preparedLocalActivityGroupsSupported ? ['prepared_local_activity_groups'] : []),
@@ -917,6 +922,8 @@ final class Worker
                     workflowCommandContracts: $this->workflowCommandContracts(),
                     capabilityManifest: [
                         ...CapabilityManifest::portableWorkerAffinity(),
+                        // Server #1017: a suffix is accepted only when it continues the cached prefix exactly.
+                        'sticky_history_suffix' => ['supported' => true, 'minimum_protocol_version' => '1.18', 'version' => 1],
                         ...($this->preparedLocalActivityCancellationPolicies !== [] ? [
                             'prepared_local_activity_cancellation_policies' => [
                                 'supported' => true,
@@ -3859,6 +3866,8 @@ final class Worker
             $this->effectiveBuildId(),
             $history,
             is_string($task['sticky_replay_mode'] ?? null) ? $task['sticky_replay_mode'] : null,
+            is_int($task['history_after_sequence'] ?? null) ? $task['history_after_sequence'] : null,
+            is_int($task['history_last_sequence'] ?? null) ? $task['history_last_sequence'] : null,
         );
         if ($history === null) {
             $history = $this->authoritativeWorkflowTaskHistory($task, $leaseOwner, $attempt);
@@ -4333,7 +4342,7 @@ final class Worker
             return null;
         }
 
-        return [
+        $claim = [
             'worker_id' => $this->workerId,
             'workflow_id' => (string) $task['workflow_id'],
             'run_id' => (string) $task['run_id'],
@@ -4341,6 +4350,14 @@ final class Worker
             'ttl_seconds' => $this->stickyCache->ttlSeconds(),
             'metrics' => $this->stickyCache->metrics(),
         ];
+        // sticky_history_suffix v1 (server#1017): the Server sends the next suffix after exactly this sequence.
+        $last = $this->stickyHistorySuffixSupported
+            ? $this->stickyCache->lastSequence($claim['workflow_id'], $claim['run_id'], $claim['build_id']) : null;
+        if ($last !== null) {
+            $claim['history_last_sequence'] = $last;
+        }
+
+        return $claim;
     }
 
     private function effectiveBuildId(): string

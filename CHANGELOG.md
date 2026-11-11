@@ -6,6 +6,21 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Workers advertise `sticky_history_suffix` (#233, server#1017). On a Server
+  that supports it, a sticky worker receives only the history after the
+  sequence it already cached, instead of the full history on every workflow
+  task. A suffix is used only if it continues the cached history exactly.
+  Otherwise the worker refetches full history. In a 26-task test against the
+  Server branch, history transfer fell from 573 KB to 41 KB.
+
+### Fixed
+
+- A sticky-cache suffix whose sequences don't continue the cached history is
+  refused and full history is refetched, instead of being merged into a wrong
+  history.
+
 ## [3.13.1] - 2026-11-11
 
 ### Fixed

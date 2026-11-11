@@ -546,6 +546,17 @@ final class ReplayRegressionConsumer
             return;
         }
 
+        if ($workflowType === 'golden.sticky-suffix') {
+            require_once __DIR__.'/../../tests/Support/FakeTransport.php';
+            require_once __DIR__.'/../../tests/Support/StickySuffixScenario.php';
+            $observed = \DurableWorkflow\Tests\Support\StickySuffixScenario::run();
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.self::COMMAND_SEQUENCE_CONTEXT);
+            self::assertMatches($fixture['expected'], $observed['commands'][0]
+                + ['authoritative_fetches' => $observed['authoritative_fetches']], $identity.self::EXPECTED_CONTEXT);
+
+            return;
+        }
+
         if ($workflowType === 'golden.grouped-condition') {
             require_once __DIR__.'/../../tests/Support/FakeTransport.php';
             require_once __DIR__.'/../../tests/Support/GroupedConditionRefusalScenario.php';

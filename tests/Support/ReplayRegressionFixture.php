@@ -84,6 +84,15 @@ final class ReplayRegressionFixture
             throw new RuntimeException("{$identity}.history must not be empty.");
         }
 
+        if ($workflowType === 'golden.sticky-suffix') {
+            $observed = StickySuffixScenario::run();
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
+            self::assertMatches($fixture['expected'], $observed['commands'][0]
+                + ['authoritative_fetches' => $observed['authoritative_fetches']], $identity.'.expected');
+
+            return $observed['commands'];
+        }
+
         if ($workflowType === 'golden.local-activity-backoff-repeat') {
             return self::executeLocalBackoffRepeat($identity, $history, $fixture);
         }

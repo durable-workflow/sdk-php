@@ -58,6 +58,9 @@ final class StickyWorkflowCache
     }
 
     /**
+     * $afterSequence and $lastSequence are the poll answer's sticky_history_suffix v1 fields:
+     * 0 marks full history, N > 0 marks events after sequence N only.
+     *
      * @param list<array<string, mixed>> $runtimeHistory
      * @return list<array<string, mixed>>|null Null when authoritative cold history is required.
      */
@@ -67,6 +70,8 @@ final class StickyWorkflowCache
         string $buildId,
         array $runtimeHistory,
         ?string $replayMode,
+        ?int $afterSequence = null,
+        ?int $lastSequence = null,
     ): ?array {
         $now = ($this->clock)();
         $this->evictExpired($now);
@@ -74,7 +79,7 @@ final class StickyWorkflowCache
         $entry = $this->entries[$key] ?? null;
         $stickyHitExpected = $replayMode === 'sticky_hit_expected';
         $forcedColdReplay = $replayMode === 'forced_cold_replay';
-        $runtimeHistoryIsComplete = self::startsWithWorkflowStart($runtimeHistory);
+        $runtimeHistoryIsComplete = self::startsWithWorkflowStart($runtimeHistory) && ($afterSequence ?? 0) === 0;
         $cachedHistoryIsComplete = $entry !== null && self::startsWithWorkflowStart($entry['history']);
         if ($forcedColdReplay || ! $stickyHitExpected || ! $cachedHistoryIsComplete || $runtimeHistoryIsComplete) {
             ++$this->metrics['miss'];
@@ -85,19 +90,67 @@ final class StickyWorkflowCache
             // A runtime suffix is only replayable with a validated cached
             // prefix. Tell the worker to fetch authoritative history instead
             // of treating the suffix as a complete durable history.
-            if (! $runtimeHistoryIsComplete && ($stickyHitExpected || $forcedColdReplay)) {
+            if (! $runtimeHistoryIsComplete && ($stickyHitExpected || $forcedColdReplay || ($afterSequence ?? 0) > 0)) {
                 return null;
             }
 
             return $runtimeHistory;
         }
 
+        // A suffix must continue the cached prefix exactly: it starts right after the
+        // cached last sequence, has no gaps, and ends where the answer says it does.
+        // Anything else would replay a history the Server never recorded.
+        $cachedLast = self::sequenceOf($entry['history'][array_key_last($entry['history'])]);
+        $rejected = $afterSequence !== null
+            // sticky_history_suffix v1: the Server named the boundary, so it must match exactly.
+            ? $cachedLast !== $afterSequence || !self::continues($runtimeHistory, $afterSequence, $lastSequence)
+            // Older answers carry no boundary. Refuse only a suffix whose own sequences contradict the cache.
+            : $runtimeHistory !== [] && $cachedLast !== null && !self::continues($runtimeHistory, $cachedLast, null);
+        if ($rejected) {
+            ++$this->metrics['miss'];
+            ++$this->metrics['forced_cold_replay'];
+            unset($this->entries[$key]);
+
+            return null;
+        }
+
         ++$this->metrics['hit'];
         $this->entries[$key]['touched_at'] = $now;
 
-        // Only a strict suffix consumes the cached durable prefix. Complete
-        // authoritative history took the cold-replay branch above.
         return array_merge($entry['history'], $runtimeHistory);
+    }
+
+    /** @param list<array<string, mixed>> $suffix */
+    private static function continues(array $suffix, int $after, ?int $last): bool
+    {
+        if ($suffix === []) {
+            return false;
+        }
+        $expected = $after + 1;
+        foreach ($suffix as $event) {
+            if (self::sequenceOf($event) !== $expected) {
+                return false;
+            }
+            ++$expected;
+        }
+
+        return $last === null || $last === $expected - 1;
+    }
+
+    /** @param array<string, mixed> $event */
+    private static function sequenceOf(array $event): ?int
+    {
+        $sequence = $event['sequence'] ?? null;
+
+        return is_int($sequence) && $sequence > 0 ? $sequence : null;
+    }
+
+    /** The last sequence of the cached history for this run, or null when none is cached or it has no sequences. */
+    public function lastSequence(string $workflowId, string $runId, string $buildId): ?int
+    {
+        $history = $this->entries[self::key($workflowId, $runId, $buildId)]['history'] ?? [];
+
+        return $history === [] ? null : self::sequenceOf($history[array_key_last($history)]);
     }
 
     /** @return array{hit: int, miss: int, eviction: int, forced_cold_replay: int} */
