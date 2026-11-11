@@ -6,14 +6,17 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.14.0] - 2026-11-12
+
 ### Added
 
 - Workers advertise `sticky_history_suffix` (#233, server#1017). On a Server
   that supports it, a sticky worker receives only the history after the
   sequence it already cached, instead of the full history on every workflow
   task. A suffix is used only if it continues the cached history exactly.
-  Otherwise the worker refetches full history. In a 26-task test against the
-  Server branch, history transfer fell from 573 KB to 41 KB.
+  Otherwise the worker refetches full history. Requires Server 3.5.0 or later.
+  Against published Server 3.5.0, a 25-activity workflow received about
+  0.23 MB of history instead of about 3.8 MB.
 
 ### Fixed
 
