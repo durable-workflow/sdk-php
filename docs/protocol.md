@@ -154,8 +154,15 @@ committed result.
 from typed fields, not human-readable error text. Stale registrations
 (`stale_worker_registration` or `worker_heartbeat_stale`) and server stop/drain
 outcomes (`draining`, `stopped`, `worker_draining`, or `worker_stopped`) are
-terminal. Managed `Worker::run()` and `Worker::tick()` stop all subsequent
-polling on those outcomes. `empty`, `timeout`, `workflow_task_pending`, and
+terminal. `Worker::tick()` stops all subsequent polling on those outcomes.
+Managed `Worker::run()` stops on stop/drain outcomes. On a stale registration,
+whether a poll reports it or a task operation answers HTTP `409`
+`stale_worker_registration`, `run()` drops every claim held by the fenced
+incarnation without completing, failing or heartbeating it, registers again
+as a new incarnation and resumes polling. Lease expiry redelivers the dropped
+work. Consecutive recoveries back off with jitter (immediate, then 1 s,
+doubling to 60 s), and the backoff resets after a healthy heartbeat interval.
+Pass `stopOnStaleRegistration: true` to stop instead. `empty`, `timeout`, `workflow_task_pending`, and
 other non-terminal no-task outcomes remain idle. A terminal HTTP `409` poll body
 is returned as the same response envelope; unrelated conflicts remain
 `ServerException` failures.
