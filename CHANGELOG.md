@@ -6,6 +6,17 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- On native Server, a new condition or signal wait inside `all()` or
+  `parallel()` now fails the workflow task with
+  `grouped_condition_wait_unsupported` and a message naming server#1142 and
+  the Server version (#278). Before, native refused the completion with a
+  422 and the worker process exited. Await the condition outside the group.
+  The refusal lifts automatically once the Server advertises
+  `grouped_condition_waits`. PHP Server keeps its existing behavior, and runs
+  that already recorded such a group keep replaying.
+
 ## [3.13.0] - 2026-11-11
 
 ### Added

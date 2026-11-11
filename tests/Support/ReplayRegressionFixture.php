@@ -88,6 +88,13 @@ final class ReplayRegressionFixture
             return self::executeLocalBackoffRepeat($identity, $history, $fixture);
         }
 
+        if ($workflowType === 'golden.grouped-condition') {
+            $observed = GroupedConditionRefusalScenario::run();
+            self::assertMatches($fixture['expected'], $observed, $identity.'.expected');
+
+            return [];
+        }
+
         if ($workflowType === 'golden.workflow-fresh-grant') {
             return self::executeFreshWorkflowPoll($identity, $input, $history, $fixture);
         }
