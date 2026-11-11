@@ -604,7 +604,7 @@ final class Worker
 
         $attempt = ++$this->staleRegistrationRecoveries;
         $delaySeconds = $attempt === 1 ? 0.0
-            : min(self::MAX_STALE_REGISTRATION_BACKOFF_SECONDS, 2 ** min($attempt - 2, 6)) * (0.8 + 0.2 * mt_rand() / mt_getrandmax());
+            : min(self::MAX_STALE_REGISTRATION_BACKOFF_SECONDS, 2 ** min($attempt - 2, 6)) * (0.8 + 0.2 * random_int(0, 1000) / 1000);
         $this->diagnostic('worker.reregistering', [
             'worker_id' => $this->workerId,
             'task_queue' => $this->taskQueue,
