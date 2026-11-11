@@ -634,6 +634,19 @@ The context provides these replay-aware commands:
 
 Do not use PHP's process sleep, random-number functions, current wall-clock time, or mutable global state directly to make workflow decisions. `sideEffect()` is for small values whose result belongs in history, not for network or database work.
 
+### Read the schedule fire that started a run
+
+A run started by a schedule can read which fire started it. Use the occurrence
+time to choose the window to process, including for backfills, instead of the
+current time:
+
+```php
+$origin = $context->scheduleOrigin();          // null when no schedule started the run
+$windowEnd = $origin?->occurrenceTime;         // the tick or backfilled occurrence
+```
+
+The value comes from the run's history, so it is the same on every replay.
+
 ## Declare search-attribute types
 
 Pass a type map when the workflow must preserve search-attribute type identity
