@@ -6,6 +6,19 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `Worker::run()` now recovers from `stale_worker_registration` instead of
+  stopping (#357). After a host pause, GC stall or partition longer than the
+  Server's registration-freshness window, the worker drops every claim held
+  by the fenced incarnation without completing it, registers again and keeps
+  polling. Lease expiry redelivers the dropped work. Consecutive recoveries
+  back off with jitter up to 60 seconds. Each recovery logs
+  `worker.reregistered` and increments
+  `durable_workflow_worker_reregistrations`. Pass
+  `stopOnStaleRegistration: true` to keep the previous stop behavior.
+  `Worker::tick()` is unchanged.
+
 ## [3.12.1] - 2026-11-11
 
 ### Fixed
