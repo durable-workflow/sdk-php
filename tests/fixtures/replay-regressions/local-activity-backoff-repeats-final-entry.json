@@ -1,0 +1,30 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-local-activity-backoff-repeats-final-entry",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.local-activity-backoff-repeat", "input": []},
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "payload": {"workflow_type": "golden.local-activity-backoff-repeat"}
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "record_local_activity",
+        "outcome": "failed",
+        "attempts": [
+          {"attempt_number": 1, "outcome": "failed", "backoff_seconds": 1},
+          {"attempt_number": 2, "outcome": "failed", "backoff_seconds": 2},
+          {"attempt_number": 3, "outcome": "failed", "backoff_seconds": 2},
+          {"attempt_number": 4, "outcome": "failed", "backoff_seconds": 2},
+          {"attempt_number": 5, "outcome": "failed"}
+        ]
+      },
+      {"type": "complete_workflow", "result": "retries-exhausted"}
+    ]
+  }
+}

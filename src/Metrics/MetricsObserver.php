@@ -51,6 +51,24 @@ final class MetricsObserver
         }
     }
 
+    /** A counter outside the shared registry's counter/histogram pairs.
+     * @param array<string, string> $tags
+     */
+    public function count(string $name, array $tags): void
+    {
+        if (!$this->enabled()) {
+            return;
+        }
+        $this->recording = true;
+        try {
+            $this->recorder->increment($name, 1.0, $tags);
+        } catch (Throwable) {
+            // A missing observation never changes worker recovery.
+        } finally {
+            $this->recording = false;
+        }
+    }
+
     /** @param array<string, string> $tags */
     public function observeHistogram(string $scope, float $seconds, array $tags): void
     {

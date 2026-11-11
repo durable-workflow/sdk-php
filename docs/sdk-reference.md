@@ -309,12 +309,59 @@ Server execution ID; inline local/Server-free callbacks without one report
 null. Session callbacks use the actual claim field when present. The same
 accessor is used in ordinary and cooperative remote execution.
 
+## Schedule origin
+
+A run started by a schedule can read the fire that started it with
+`$context->scheduleOrigin()`. It returns a `ScheduleOrigin` with the
+`scheduleId`, the `occurrenceTime` the scheduler evaluated and the
+`triggerNumber`. A run that no schedule started gets `null`. The value comes
+from the run's `ScheduleTriggered` history event, so it is available on the
+first workflow task and identical on replay.
+
+Use `occurrenceTime` to pick the window a scheduled workflow processes. For a
+tick it is the jittered fire time. For a backfill it is the enumerated past
+occurrence. It is not the run's actual start time, so it does not drift with
+scheduler delay:
+
+```php
+$origin = $context->scheduleOrigin();
+$windowEnd = $origin?->occurrenceTime ?? throw new LogicException('Start this workflow from a schedule.');
+$report = $context->activity('reports.build', [$windowEnd->modify('-1 day')->format(DATE_ATOM), $windowEnd->format(DATE_ATOM)]);
+```
+
+`occurrenceTime` is `null` for a fire recorded without an occurrence. Whether
+continue-as-new successors and retried runs carry the origin depends on the
+Server writing `ScheduleTriggered` into those runs.
+
 ## Workflow handles and control-plane APIs
 
 `WorkflowHandle` distinguishes the stable workflow instance from a selected
 run. Its ordinary operations follow whichever run is current after a
 continue-as-new transition. The `*SelectedRun()` methods retain the original
 run guard and fail rather than silently targeting a successor.
+
+### Updates that are still running
+
+`$handle->update()` and `Client::updateWorkflow()` wait for the update to
+complete by default (`waitFor: 'completed'`) and return its decoded result.
+If the wait ends first, for example after `waitTimeoutSeconds`, they throw
+`UpdateStillPending` instead of returning a value. The exception carries
+`updateId`, `requestId`, `workflowId`, `runId` and `updateStatus`. To keep
+waiting, call the same update again with that `requestId`. The Server returns
+the retained update instead of admitting a second one:
+
+```php
+use DurableWorkflow\Exception\UpdateStillPending;
+
+try {
+    $name = $handle->update('rename', ['Grace'], waitTimeoutSeconds: 5);
+} catch (UpdateStillPending $pending) {
+    $name = $handle->update('rename', ['Grace'], requestId: $pending->requestId);
+}
+```
+
+`waitFor: 'accepted'` returns the acceptance receipt as before.
+`updateWorkflowReceipt()` always returns the raw receipt.
 
 ## Control-plane administration and discovery
 
@@ -564,9 +611,14 @@ Call `$context->heartbeat($details)` from a long-running activity. It throws
 `ActivityCancelled` when the server requests cancellation. `Worker::run()`
 installs SIGINT/SIGTERM handlers when `pcntl` is available, stops accepting new
 tasks, and lets the active synchronous task settle before returning. The
-managed worker also returns when any task poll reports a terminal typed outcome
-such as `stale_worker_registration`, `draining`, or `stopped`; empty and timeout
-polls remain idle. Registration also negotiates the worker heartbeat cadence.
+managed worker also returns when any task poll reports a server stop or drain
+(`draining` or `stopped`); empty and timeout polls remain idle. If the Server
+reports `stale_worker_registration`, for example after a host pause or network
+partition longer than the registration-freshness window, `run()` drops the
+fenced claims, registers again and keeps polling. It logs `worker.reregistered`
+with short fingerprints of the old and new incarnation and increments the
+`durable_workflow_worker_reregistrations` counter. Construct the worker with
+`stopOnStaleRegistration: true` to keep the earlier stop behavior. Registration also negotiates the worker heartbeat cadence.
 Managed long polls are bounded by that cadence and heartbeat checks run between
 workflow, activity, and query polls, so an idle polling cycle cannot silently
 consume the server's registration freshness window. Invalid advertised cadence
