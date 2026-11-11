@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- An opted-in worker no longer waits a full poll timeout between steps after
+  an accepted activity continuation (server#1129). The accepted commands can
+  already have scheduled the run's next activity, so the next tick now sweeps
+  without holding a workflow poll first. Before, each continued step waited
+  about 5 seconds (the default `run()` poll timeout).
+
 ## [3.12.0] - Unreleased
 
 ### Added

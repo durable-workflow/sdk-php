@@ -3201,6 +3201,13 @@ final class Worker
             }
             if ($continuation !== null) {
                 $outcome = is_array($completion['continuation'] ?? null) ? $completion['continuation'] : [];
+                if (($outcome['outcome'] ?? null) === 'accepted') {
+                    // The accepted commands may already have scheduled this run's next
+                    // activity. The server's cross-kind wake only reports work that
+                    // becomes ready during a held poll, so sweep the next tick without
+                    // waiting instead of holding a workflow poll first (Server #1129).
+                    $this->pollSweepRequested = true;
+                }
                 $this->diagnostic('worker.activity_continuation', [
                     'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
                     'outcome' => $outcome['outcome'] ?? null, 'reason' => $outcome['reason'] ?? null,
