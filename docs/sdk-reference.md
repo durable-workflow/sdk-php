@@ -316,6 +316,29 @@ run. Its ordinary operations follow whichever run is current after a
 continue-as-new transition. The `*SelectedRun()` methods retain the original
 run guard and fail rather than silently targeting a successor.
 
+### Updates that are still running
+
+`$handle->update()` and `Client::updateWorkflow()` wait for the update to
+complete by default (`waitFor: 'completed'`) and return its decoded result.
+If the wait ends first, for example after `waitTimeoutSeconds`, they throw
+`UpdateStillPending` instead of returning a value. The exception carries
+`updateId`, `requestId`, `workflowId`, `runId` and `updateStatus`. To keep
+waiting, call the same update again with that `requestId`. The Server returns
+the retained update instead of admitting a second one:
+
+```php
+use DurableWorkflow\Exception\UpdateStillPending;
+
+try {
+    $name = $handle->update('rename', ['Grace'], waitTimeoutSeconds: 5);
+} catch (UpdateStillPending $pending) {
+    $name = $handle->update('rename', ['Grace'], requestId: $pending->requestId);
+}
+```
+
+`waitFor: 'accepted'` returns the acceptance receipt as before.
+`updateWorkflowReceipt()` always returns the raw receipt.
+
 ## Control-plane administration and discovery
 
 `listWorkflows()` and `workflowHistory()` each read one page. The

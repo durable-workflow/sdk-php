@@ -19,6 +19,7 @@ use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\SignalFailed;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Exception\UpdateFailed;
+use DurableWorkflow\Exception\UpdateStillPending;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Exception\WorkflowFailed;
 use DurableWorkflow\Exception\WorkflowTerminated;
@@ -1106,11 +1107,17 @@ final class Client implements WorkflowClientInterface
     }
 
     /**
-     * Send an update and return its decoded result, or the receipt while the
-     * update is still pending. Use updateWorkflowReceipt() to read the receipt
-     * with its `request_id` after a completed update.
+     * Send an update and return its decoded result.
+     *
+     * With `$waitFor = 'completed'` (the default), an update that hasn't
+     * completed when the wait ends throws UpdateStillPending. Call this again
+     * with the same `$requestId` to keep waiting; the Server returns the
+     * retained update instead of admitting a second one. With
+     * `$waitFor = 'accepted'` this returns the acceptance receipt. Use
+     * updateWorkflowReceipt() to read the raw receipt in either case.
      *
      * @param list<mixed> $arguments
+     * @throws UpdateStillPending
      */
     public function updateWorkflow(
         string $workflowId,
@@ -1121,9 +1128,41 @@ final class Client implements WorkflowClientInterface
         ?string $requestId = null,
         ?string $runId = null,
     ): mixed {
-        return $this->resultFromResponse($this->updateWorkflowReceipt(
+        $receipt = $this->updateWorkflowReceipt(
             $workflowId, $updateName, $arguments, $waitFor, $waitTimeoutSeconds, $requestId, $runId,
-        ));
+        );
+        if ($waitFor === 'completed' && self::updateStillPending($receipt)) {
+            $updateId = $receipt['update_id'] ?? null;
+            $status = $receipt['update_status'] ?? null;
+            $resolvedRun = $receipt['run_id'] ?? $runId;
+            throw new UpdateStillPending(
+                $workflowId,
+                is_string($resolvedRun) ? $resolvedRun : null,
+                $updateName,
+                is_string($updateId) ? $updateId : null,
+                (string) $receipt['request_id'],
+                is_string($status) ? $status : null,
+            );
+        }
+
+        return $this->resultFromResponse($receipt);
+    }
+
+    /**
+     * A completed wait that ended before the update finished carries no result. Returning the
+     * receipt in its place would hand callers an array that looks like the handler's result.
+     *
+     * @param array<string, mixed> $receipt
+     */
+    private static function updateStillPending(array $receipt): bool
+    {
+        if (isset($receipt['result_envelope']) && is_array($receipt['result_envelope'])) {
+            return false;
+        }
+        $status = $receipt['update_status'] ?? null;
+
+        return ($receipt['wait_timed_out'] ?? null) === true
+            || (is_string($status) && !in_array($status, ['completed', 'failed', 'rejected'], true));
     }
 
     /**
