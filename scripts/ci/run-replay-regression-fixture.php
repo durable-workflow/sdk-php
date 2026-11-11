@@ -768,9 +768,10 @@ final class ReplayRegressionConsumer
 
     private static function registerLocalActivities(Worker $worker, string $workflowType, int &$localActivityInvocations): void
     {
-        if (in_array($workflowType, ['golden.local-activity-terminal-failure', 'golden.local-activity-recovered'], true)) {
+        if (in_array($workflowType, ['golden.local-activity-terminal-failure', 'golden.local-activity-recovered',
+            'golden.local-activity-recorded-backoff'], true)) {
             $worker->registerActivity(
-                $workflowType === 'golden.local-activity-recovered' ? 'golden.local-receipt' : 'golden.local-failure',
+                $workflowType === 'golden.local-activity-terminal-failure' ? 'golden.local-failure' : 'golden.local-receipt',
                 static function (ActivityContext $_context) use (&$localActivityInvocations): never {
                     ++$localActivityInvocations;
 
@@ -1099,6 +1100,8 @@ final class ReplayRegressionConsumer
             'golden.local-activity-context' => static fn (WorkflowContext $context): mixed => $context->localActivity('golden.context'),
             'golden.local-activity-recovered' => static fn (WorkflowContext $context): mixed =>
                 $context->localActivity('golden.local-receipt'),
+            'golden.local-activity-recorded-backoff' => static fn (WorkflowContext $context): mixed =>
+                $context->localActivity('golden.local-receipt', [], ['retry_policy' => ['max_attempts' => 4, 'backoff_seconds' => [1]]]),
             'golden.local-activity-terminal-failure' => static function (WorkflowContext $context): never {
                 $context->localActivity('golden.local-failure');
 
