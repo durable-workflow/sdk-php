@@ -36,6 +36,17 @@ project follows [Semantic Versioning](https://semver.org/).
   those retries ran with no delay. A policy without `backoff_seconds` still
   retries immediately, and recorded attempts replay unchanged.
 
+- `Client::updateWorkflow()` and `WorkflowHandle::update()` no longer return
+  the Server receipt as if it were the update's result when a
+  `waitFor: 'completed'` wait ends before the update finishes (#380,
+  durable-workflow/.github#212). They now throw
+  `DurableWorkflow\Exception\UpdateStillPending`, which carries `updateId`,
+  `requestId`, `workflowId`, `runId` and `updateStatus`. **Upgrade note:** code
+  that inspected the returned array for `wait_timed_out` or `update_status`
+  should catch `UpdateStillPending` instead, and call the update again with
+  `$pending->requestId` to keep waiting. That doesn't admit a second update.
+  `waitFor: 'accepted'` and `updateWorkflowReceipt()` are unchanged.
+
 ## [3.12.1] - 2026-11-11
 
 ### Fixed
