@@ -6,9 +6,11 @@ namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Exception\ReplayClockUnavailable;
 use DurableWorkflow\Tests\Support\RedriveFixtureRegistry;
 use DurableWorkflow\Tests\Support\RedriveSuccessorHistory;
 use DurableWorkflow\Tests\Support\ReplayRegressionFixture;
+use DurableWorkflow\Worker\CancellationReplayClock;
 use DurableWorkflow\Worker\ReplayResult;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
@@ -233,6 +235,85 @@ final class RedriveReusedReplayTest extends TestCase
                 self::assertSame($baseline, ReplayRegressionFixture::execute($retimed), "{$name} {$eventType} at {$sourceTime}");
             }
         }
+    }
+
+    /**
+     * #244: business time never comes from a reused upsert or signal wait. It
+     * starts at the source run's start and is unavailable after each of those
+     * steps, so a redriven workflow can never read the redrive time there.
+     */
+    public function testBusinessTimeIsNeverTakenFromAReusedUpsertOrSignalWait(): void
+    {
+        $now = static function (WorkflowContext $context): string {
+            try {
+                return $context->replayNow()->format('Y-m-d\\TH:i:sP');
+            } catch (ReplayClockUnavailable) {
+                return 'unavailable';
+            }
+        };
+        $seen = [];
+        $upserts = static function (WorkflowContext $context, string $name) use (&$seen, $now): mixed {
+            $seen['start'] = $now($context);
+            $context->upsertMemo(['stage' => 'greeting', 'customer' => $name]);
+            $seen['MemoUpserted'] = $now($context);
+            $context->upsertSearchAttributes(['Stage' => 'greeting']);
+            $seen['SearchAttributesUpserted'] = $now($context);
+
+            return $context->activity(self::FIRST_ACTIVITY, [$name]);
+        };
+        $signalWait = static function (WorkflowContext $context, string $name) use (&$seen, $now): mixed {
+            $seen['start'] = $now($context);
+            $context->waitCondition(static fn (): bool => $context->signals('approve') !== [], 'approve');
+            $seen['SignalApplied'] = $now($context);
+
+            return $context->activity(self::FIRST_ACTIVITY, [$name]);
+        };
+
+        foreach (['redrive-reused-upserts-clock' => $upserts, 'redrive-reused-signal-wait-clock' => $signalWait] as $name => $workflow) {
+            $history = self::fixture(RedriveFixtureRegistry::path($name))['history'];
+            $start = $history[0]['payload'];
+            $seen = [];
+            $result = (new Replayer($this->codec()))->replay($workflow, $history, ['Taylor'], 'redrive-replay', [
+                'workflow_id' => $start['workflow_instance_id'],
+                'run_id' => $start['workflow_run_id'],
+            ]);
+
+            self::assertSame(['schedule_activity'], array_column($result->commands, 'type'), $name);
+            self::assertSame((new \DateTimeImmutable($start['replayed_started_at']))->format('Y-m-d\\TH:i:sP'), $seen['start'], $name);
+            unset($seen['start']);
+            self::assertNotSame([], $seen, $name);
+            foreach ($seen as $eventType => $time) {
+                self::assertSame('unavailable', $time, "{$name} after {$eventType}");
+            }
+        }
+    }
+
+    /**
+     * #244: the cancellation clock observes resolution events, and for every
+     * reused event type it takes payload.reused_recorded_at over the
+     * successor's own timestamp, as Core's RedriveReplayClock::recordedAt() does.
+     */
+    #[DataProvider('reusedEventTypes')]
+    public function testCancellationClockPrefersTheReusedRecordedAtOfEachReusedEventType(string $eventType): void
+    {
+        $fixture = str_starts_with($eventType, 'Signal') ? 'redrive-reused-signal-wait-clock' : 'redrive-reused-upserts-clock';
+        $events = array_values(array_filter(
+            self::fixture(RedriveFixtureRegistry::path($fixture))['history'],
+            static fn (array $event): bool => $event['event_type'] === $eventType,
+        ));
+        self::assertCount(1, $events);
+        $event = $events[0];
+        self::assertSame(self::SOURCE_RUN, $event['payload']['reused_from_run_id']);
+        self::assertNotSame($event['recorded_at'], $event['payload']['reused_recorded_at']);
+
+        $clock = new CancellationReplayClock();
+        $clock->observe($event);
+        self::assertEquals(new \DateTimeImmutable($event['payload']['reused_recorded_at']), $clock->time(), $eventType);
+
+        unset($event['payload']['reused_recorded_at']);
+        $ordinary = new CancellationReplayClock();
+        $ordinary->observe($event);
+        self::assertEquals(new \DateTimeImmutable($event['recorded_at']), $ordinary->time(), $eventType);
     }
 
     #[DataProvider('wrongResumeSteps')]
