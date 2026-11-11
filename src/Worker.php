@@ -77,6 +77,8 @@ final class Worker
     private const MAX_LOCAL_ACTIVITY_HEARTBEATS_PER_ATTEMPT = 1000;
     private const MAX_TRANSIENT_RETRY_DELAY_SECONDS = 5.0;
     private const TRANSIENT_RETRY_SLEEP_SLICE_SECONDS = 0.1;
+    private const MAX_STALE_REGISTRATION_BACKOFF_SECONDS = 60.0;
+    private const REREGISTRATION_METRIC = 'durable_workflow_worker_reregistrations';
 
     /** @var array<array-key, HandlerDefinition> */
     private array $workflows = [];
@@ -89,7 +91,12 @@ final class Worker
     /** @var array<array-key, array<array-key, HandlerDefinition>> */
     private array $updates = [];
     private bool $shutdownRequested = false;
+    /** Set only by requestShutdown() and process signals, so stale-registration recovery never overrides them. */
+    private bool $shutdownByRequest = false;
     private bool $registered = false;
+    private bool $staleRegistrationObserved = false;
+    private int $staleRegistrationRecoveries = 0;
+    private float $lastStaleRegistrationRecoveryAt = 0.0;
     private ?string $registrationToken = null;
     private bool $pollSweepRequested = false;
     private float $lastHeartbeatAt = 0.0;
@@ -183,6 +190,11 @@ final class Worker
          * activity_workflow_continuation; anything unsupported falls back to the ordinary path.
          */
         private readonly bool $enableActivityContinuation = false,
+        /**
+         * When the Server answers 409 stale_worker_registration, run() drops the fenced claims and
+         * re-registers as a new incarnation. Set true to keep the pre-3.13 behavior and stop instead.
+         */
+        private readonly bool $stopOnStaleRegistration = false,
     ) {
         if ($enableCancellationScopes && !$enableCooperativeCancellation) {
             throw new \InvalidArgumentException('Cancellation scopes require the cooperative worker opt-in.');
@@ -407,6 +419,12 @@ final class Worker
     /** Request that run() stop polling and perform its managed cleanup on exit. */
     public function requestShutdown(): void
     {
+        $this->shutdownByRequest = true;
+        $this->haltPolling();
+    }
+
+    private function haltPolling(): void
+    {
         if ($this->shutdownRequested) {
             return;
         }
@@ -448,35 +466,24 @@ final class Worker
             if ($registration === null) {
                 return;
             }
-            $this->applyHeartbeatInterval($registration);
-            $this->captureRegistrationFence($registration);
-            $this->queryTaskAuthoritySupported = $this->client->workerProtocolVersion === '1.20'
-                && ($registration['server_capabilities']['query_task_authority'] ?? null) === true
-                && $this->client->supportsSupervisedQueryRequests();
-            if (!$this->queryTaskAuthoritySupported && $this->queries !== []) {
-                $this->diagnostic('worker.query_authority_unavailable', ['worker_id' => $this->workerId,
-                    'mode' => 'legacy_local_timing', 'strong_authority' => false], 'warning');
-            }
-            $this->registered = true;
-            $this->lastHeartbeatAt = $this->now();
-            $this->prepareActivityLeaseMaintenance();
-            $this->diagnostic('worker.registered', [
-                'worker_id' => $this->workerId,
-                'task_queue' => $this->taskQueue,
-                'heartbeat_interval_seconds' => $this->heartbeatIntervalSeconds,
-            ]);
-
-            if ($this->completionPipeliningAvailable()) {
-                $this->completionPipeline = new CompletionPipeline($this->pipelineTick(...), $this->capturePipelineState(...),
-                    $this->resetPipelineState(...), $this->resumePipelineFiber(...), $this->client->disarmWorkflowCompletion(...));
-            }
-            while (!$this->shutdownRequested) {
-                if ($this->completionPipeline !== null) {
-                    $this->completionPipeline->tick($pollTimeoutSeconds);
-                } else {
-                    $this->tick($pollTimeoutSeconds);
+            $this->establishRegistration($registration);
+            while (!$this->shutdownRequested || $this->staleRegistrationObserved) {
+                try {
+                    if ($this->completionPipeline !== null) {
+                        $this->completionPipeline->tick($pollTimeoutSeconds);
+                    } else {
+                        $this->tick($pollTimeoutSeconds);
+                    }
+                    $this->heartbeatIfDue();
+                } catch (Throwable $exception) {
+                    if (!$this->recoversFromStaleRegistration($exception)) {
+                        throw $exception;
+                    }
+                    $this->staleRegistrationObserved = true;
                 }
-                $this->heartbeatIfDue();
+                if ($this->staleRegistrationObserved && !$this->recoverStaleRegistration()) {
+                    break;
+                }
             }
         } catch (Throwable $exception) {
             $runFailure = $exception;
@@ -515,6 +522,120 @@ final class Worker
                 'sticky_cache' => $this->stickyCacheMetrics(),
             ]);
         }
+    }
+
+    /** @param array<string, mixed> $registration */
+    private function establishRegistration(array $registration): void
+    {
+        $this->applyHeartbeatInterval($registration);
+        $this->captureRegistrationFence($registration);
+        $this->queryTaskAuthoritySupported = $this->client->workerProtocolVersion === '1.20'
+            && ($registration['server_capabilities']['query_task_authority'] ?? null) === true
+            && $this->client->supportsSupervisedQueryRequests();
+        if (!$this->queryTaskAuthoritySupported && $this->queries !== []) {
+            $this->diagnostic('worker.query_authority_unavailable', ['worker_id' => $this->workerId,
+                'mode' => 'legacy_local_timing', 'strong_authority' => false], 'warning');
+        }
+        $this->registered = true;
+        $this->lastHeartbeatAt = $this->now();
+        $this->heartbeatRetryAt = 0.0;
+        $this->heartbeatRetryAttempt = 0;
+        $this->prepareActivityLeaseMaintenance();
+        $this->diagnostic('worker.registered', [
+            'worker_id' => $this->workerId,
+            'task_queue' => $this->taskQueue,
+            'heartbeat_interval_seconds' => $this->heartbeatIntervalSeconds,
+        ]);
+
+        if ($this->completionPipeliningAvailable()) {
+            $this->completionPipeline = new CompletionPipeline($this->pipelineTick(...), $this->capturePipelineState(...),
+                $this->resetPipelineState(...), $this->resumePipelineFiber(...), $this->client->disarmWorkflowCompletion(...));
+        }
+    }
+
+    /** Only run() recovers, only from the Server's own stale-registration answer, and never past a requested shutdown. */
+    private function recoversFromStaleRegistration(Throwable $exception): bool
+    {
+        if ($this->stopOnStaleRegistration || $this->shutdownByRequest || !$this->registered) {
+            return false;
+        }
+        for ($error = $exception; $error !== null; $error = $error->getPrevious()) {
+            if ($error instanceof ServerException && $error->status === 409 && $error->reason === 'stale_worker_registration') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @param array<string, mixed> $response */
+    private function staleRegistrationPoll(array $response): bool
+    {
+        return !$this->stopOnStaleRegistration && !$this->shutdownByRequest && $this->registered
+            && (($response['poll_status'] ?? null) === 'stale_worker_registration'
+                || in_array($response['reason'] ?? null, ['stale_worker_registration', 'worker_heartbeat_stale'], true));
+    }
+
+    /**
+     * The Server has fenced this incarnation. Every claim it held is dropped without completing, failing or
+     * heartbeating it, because lease expiry redelivers that work. The worker then registers again, which
+     * rotates the incarnation token. Consecutive recoveries back off with jitter so this can never loop tightly.
+     */
+    private function recoverStaleRegistration(): bool
+    {
+        $this->staleRegistrationObserved = false;
+        $previousToken = $this->registrationToken;
+        $this->registered = false;
+        $this->completionPipeline?->finish();
+        $this->completionPipeline = null;
+        $this->carriedWorkflowPoll = null;
+        $this->carriedActivityPoll = null;
+        $this->workflowPollGrant = null;
+        $this->claimCancellation = null;
+        $this->claimDeliveredCancellationId = null;
+        $this->queryTaskAuthority = null;
+        $this->pollSweepRequested = false;
+        $this->shutdownRequested = $this->shutdownByRequest;
+        $this->stopActivityLease();
+        $this->stickyCache->clear();
+        if ($this->shutdownRequested) {
+            return false;
+        }
+
+        $attempt = ++$this->staleRegistrationRecoveries;
+        $delaySeconds = $attempt === 1 ? 0.0
+            : min(self::MAX_STALE_REGISTRATION_BACKOFF_SECONDS, 2 ** min($attempt - 2, 6)) * (0.8 + 0.2 * random_int(0, 1000) / 1000);
+        $this->diagnostic('worker.reregistering', [
+            'worker_id' => $this->workerId,
+            'task_queue' => $this->taskQueue,
+            'attempt' => $attempt,
+            'delay_seconds' => $delaySeconds,
+        ], 'warning');
+        if ($delaySeconds > 0) {
+            $this->waitForTransientRetry($delaySeconds);
+        }
+        $registration = $this->registerWithRetry();
+        if ($registration === null) {
+            return false;
+        }
+        $this->establishRegistration($registration);
+        $this->lastStaleRegistrationRecoveryAt = $this->now();
+        $this->metricsObserver->count(self::REREGISTRATION_METRIC, ['task_queue' => $this->taskQueue]);
+        $this->diagnostic('worker.reregistered', [
+            'worker_id' => $this->workerId,
+            'task_queue' => $this->taskQueue,
+            'previous_incarnation' => self::incarnationLabel($previousToken),
+            'incarnation' => self::incarnationLabel($this->registrationToken),
+            'attempt' => $attempt,
+        ], 'warning');
+
+        return true;
+    }
+
+    /** A short fingerprint names the incarnation in logs without exposing its deregistration token. */
+    private static function incarnationLabel(?string $token): ?string
+    {
+        return $token === null ? null : substr(hash('sha256', $token), 0, 12);
     }
 
     /** @param array<string, mixed> $registration */
@@ -1474,6 +1595,16 @@ final class Worker
         if (!PollResponse::isTerminal($response)) {
             return false;
         }
+        if ($this->staleRegistrationPoll($response)) {
+            // Leases carried by an earlier completion belong to the fenced incarnation; never drain them.
+            $this->staleRegistrationObserved = true;
+            $this->carriedWorkflowPoll = null;
+            $this->carriedActivityPoll = null;
+            $this->completionPipeline?->requestStop();
+            $this->shutdownRequested = true;
+
+            return true;
+        }
 
         $this->completionPipeline?->requestStop();
         $prefetched = $this->completionPipeline?->prefetched;
@@ -1866,7 +1997,7 @@ final class Worker
     private function assertPipelineAuthority(): void
     {
         if ($this->completionPipeline?->authorityLost() ?? false) {
-            $this->requestShutdown();
+            $this->haltPolling();
             throw new WorkflowClaimRevoked('pipeline_worker_fenced', 'The completion reply invalidated Worker authority.');
         }
     }
@@ -3517,7 +3648,7 @@ final class Worker
         $this->completionPipeline?->join();
         if ($this->completionPipeline?->authorityLost() ?? false) {
             $this->taskObservation?->outcome('aborted');
-            $this->requestShutdown();
+            $this->haltPolling();
             return;
         }
         if ($taskFailure instanceof FailureReportRefused) {
@@ -4392,6 +4523,9 @@ final class Worker
         $this->lastHeartbeatAt = $this->now();
         $this->heartbeatRetryAt = 0.0;
         $this->heartbeatRetryAttempt = 0;
+        if ($this->lastHeartbeatAt - $this->lastStaleRegistrationRecoveryAt >= $this->heartbeatIntervalSeconds) {
+            $this->staleRegistrationRecoveries = 0;
+        }
     }
 
     /** @param array<string, mixed> $response */
@@ -4430,6 +4564,7 @@ final class Worker
         pcntl_async_signals(true);
         foreach ([SIGINT, SIGTERM] as $signal) {
             pcntl_signal($signal, function (): void {
+                $this->shutdownByRequest = true;
                 $this->shutdownRequested = true;
                 $this->completionPipeline?->requestStop();
             });
