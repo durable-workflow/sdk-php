@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.12.1] - 2026-11-11
+
 ### Fixed
 
 - An opted-in worker no longer waits a full poll timeout between steps after
@@ -14,7 +16,7 @@ project follows [Semantic Versioning](https://semver.org/).
   without holding a workflow poll first. Before, each continued step waited
   about 5 seconds (the default `run()` poll timeout).
 
-## [3.12.0] - Unreleased
+## [3.12.0] - 2026-11-11
 
 ### Added
 
