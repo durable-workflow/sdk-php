@@ -43,7 +43,9 @@ $receipt = $context->activity(
 ```
 
 `max_attempts` includes the first attempt. This example permits four retries,
-with the listed delays in seconds. Unsupported option or retry-policy field
+with the listed delays in seconds. When there are more retries than delays, the
+last delay repeats: `max_attempts: 5` with `backoff_seconds: [1, 2]` waits 1, 2,
+2 and 2 seconds. Local activities follow the same rule from SDK 3.13.0. Unsupported option or retry-policy field
 names throw `InvalidArgumentException` before an activity command is submitted.
 
 Use the order or activity identity as the payment provider's idempotency key. A retry policy cannot repair a non-idempotent downstream API.
