@@ -5,7 +5,9 @@
   "protocol_version": "1.20",
   "bindings": ["php"],
   "workflow": {"type": "golden.grouped-condition", "input": []},
-  "command_sequence": [],
+  "history": [
+    {"event_type": "WorkflowStarted", "payload": {"workflow_type": "golden.grouped-condition"}}
+  ],
   "expected": {
     "failure_reason": "grouped_condition_wait_unsupported",
     "completed": false,
