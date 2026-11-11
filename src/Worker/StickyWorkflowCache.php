@@ -145,6 +145,14 @@ final class StickyWorkflowCache
         return is_int($sequence) && $sequence > 0 ? $sequence : null;
     }
 
+    /** The last sequence of the cached history for this run, or null when none is cached or it has no sequences. */
+    public function lastSequence(string $workflowId, string $runId, string $buildId): ?int
+    {
+        $history = $this->entries[self::key($workflowId, $runId, $buildId)]['history'] ?? [];
+
+        return $history === [] ? null : self::sequenceOf($history[array_key_last($history)]);
+    }
+
     /** @return array{hit: int, miss: int, eviction: int, forced_cold_replay: int} */
     public function metrics(): array
     {

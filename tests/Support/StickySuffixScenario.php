@@ -65,6 +65,9 @@ final class StickySuffixScenario
             }
             if (preg_match('#/workflow-tasks/(first|second)/complete$#', $uri, $match) === 1) {
                 $completions[$match[1]] = $body['commands'] ?? [];
+                if ($match[1] === 'first' && ($body['sticky_cache']['history_last_sequence'] ?? null) !== 3) {
+                    throw new RuntimeException('The completion must report the last cached sequence.');
+                }
 
                 return ['completed' => true];
             }
@@ -81,6 +84,9 @@ final class StickySuffixScenario
         $worker->registerWorkflow('golden.sticky-suffix', static function (WorkflowContext $context): array {
             return [$context->activity('golden.first'), $context->activity('golden.second')];
         });
+        // Registration is what learns the Server's sticky_history_suffix capability.
+        $registered = new \ReflectionProperty($worker, 'stickyHistorySuffixSupported');
+        $registered->setValue($worker, true);
         $worker->tick(0);
         $worker->tick(0);
         if (!isset($completions['second'])) {

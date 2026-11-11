@@ -119,6 +119,7 @@ final class Worker
     private bool $queryTaskAuthoritySupported = false;
     private ?QueryTaskAuthority $queryTaskAuthority = null;
     private bool $activityLeaseRenewalSupported = false;
+    private bool $stickyHistorySuffixSupported = false;
     private ?ActivityLeaseProcess $activityLeaseProcess = null;
     private ?ActivityLeaseProcess $activityLeaseHelper = null;
     private ?WorkflowPollGrant $workflowPollGrant = null;
@@ -527,6 +528,9 @@ final class Worker
                 'invalid_worker_registration_fence');
         }
         $this->activityLeaseRenewalSupported = ($capabilities['activity_lease_renewal'] ?? null) === true;
+        $suffix = $capabilities['sticky_history_suffix'] ?? null;
+        $this->stickyHistorySuffixSupported = is_array($suffix) && ($suffix['supported'] ?? null) === true
+            && ($suffix['version'] ?? null) === 1;
         $capability = $capabilities['worker_deregistration_fencing'] ?? null;
         if (($capability === null || (is_array($capability) && ($capability['supported'] ?? null) === false))
             && $token === null) {
@@ -4154,7 +4158,7 @@ final class Worker
             return null;
         }
 
-        return [
+        $claim = [
             'worker_id' => $this->workerId,
             'workflow_id' => (string) $task['workflow_id'],
             'run_id' => (string) $task['run_id'],
@@ -4162,6 +4166,14 @@ final class Worker
             'ttl_seconds' => $this->stickyCache->ttlSeconds(),
             'metrics' => $this->stickyCache->metrics(),
         ];
+        // sticky_history_suffix v1 (server#1017): the Server sends the next suffix after exactly this sequence.
+        $last = $this->stickyHistorySuffixSupported
+            ? $this->stickyCache->lastSequence($claim['workflow_id'], $claim['run_id'], $claim['build_id']) : null;
+        if ($last !== null) {
+            $claim['history_last_sequence'] = $last;
+        }
+
+        return $claim;
     }
 
     private function effectiveBuildId(): string
