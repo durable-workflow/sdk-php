@@ -588,9 +588,14 @@ Call `$context->heartbeat($details)` from a long-running activity. It throws
 `ActivityCancelled` when the server requests cancellation. `Worker::run()`
 installs SIGINT/SIGTERM handlers when `pcntl` is available, stops accepting new
 tasks, and lets the active synchronous task settle before returning. The
-managed worker also returns when any task poll reports a terminal typed outcome
-such as `stale_worker_registration`, `draining`, or `stopped`; empty and timeout
-polls remain idle. Registration also negotiates the worker heartbeat cadence.
+managed worker also returns when any task poll reports a server stop or drain
+(`draining` or `stopped`); empty and timeout polls remain idle. If the Server
+reports `stale_worker_registration`, for example after a host pause or network
+partition longer than the registration-freshness window, `run()` drops the
+fenced claims, registers again and keeps polling. It logs `worker.reregistered`
+with short fingerprints of the old and new incarnation and increments the
+`durable_workflow_worker_reregistrations` counter. Construct the worker with
+`stopOnStaleRegistration: true` to keep the earlier stop behavior. Registration also negotiates the worker heartbeat cadence.
 Managed long polls are bounded by that cadence and heartbeat checks run between
 workflow, activity, and query polls, so an idle polling cycle cannot silently
 consume the server's registration freshness window. Invalid advertised cadence
