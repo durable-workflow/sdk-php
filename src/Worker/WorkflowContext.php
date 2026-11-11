@@ -9,6 +9,7 @@ use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\ReplayClockUnavailable;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
+use DurableWorkflow\Model\ScheduleOrigin;
 use DurableWorkflow\Model\ServiceOperationOptions;
 use DurableWorkflow\Model\ServiceOperationResult;
 use Closure;
@@ -31,6 +32,43 @@ final class WorkflowContext
         }
 
         return $this->businessReplayClock->time();
+    }
+
+    /**
+     * The schedule fire that started this run, or null for a run no schedule started.
+     * It comes from recorded history, so it is identical on every replay.
+     */
+    public function scheduleOrigin(): ?ScheduleOrigin
+    {
+        foreach ($this->history as $event) {
+            if (($event['event_type'] ?? $event['type'] ?? null) !== 'ScheduleTriggered') {
+                continue;
+            }
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $scheduleId = $payload['schedule_id'] ?? null;
+            if (!is_string($scheduleId) || $scheduleId === '') {
+                return null;
+            }
+            $occurrence = $payload['occurrence_time'] ?? null;
+            $trigger = $payload['trigger_number'] ?? null;
+
+            return new ScheduleOrigin(
+                $scheduleId,
+                is_string($occurrence) ? self::scheduleOccurrence($occurrence) : null,
+                is_int($trigger) && $trigger > 0 ? $trigger : null,
+            );
+        }
+
+        return null;
+    }
+
+    private static function scheduleOccurrence(string $value): ?DateTimeImmutable
+    {
+        try {
+            return new DateTimeImmutable($value);
+        } catch (\Exception) {
+            return null;
+        }
     }
 
     public const MESSAGE_STREAM_SIGNAL = '__durable_workflow_message_stream';

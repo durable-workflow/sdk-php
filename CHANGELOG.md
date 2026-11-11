@@ -6,7 +6,35 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `WorkflowContext::scheduleOrigin()` returns the schedule fire that started
+  the run, or `null` for an ordinary start (#381,
+  durable-workflow/.github#243). It reads the run's `ScheduleTriggered` event:
+  the schedule id, the occurrence time the scheduler evaluated (the jittered
+  tick or the backfilled occurrence) and the trigger number. It is available
+  on the first workflow task and identical on replay.
+
+### Changed
+
+- `Worker::run()` now recovers from `stale_worker_registration` instead of
+  stopping (#357). After a host pause, GC stall or partition longer than the
+  Server's registration-freshness window, the worker drops every claim held
+  by the fenced incarnation without completing it, registers again and keeps
+  polling. Lease expiry redelivers the dropped work. Consecutive recoveries
+  back off with jitter up to 60 seconds. Each recovery logs
+  `worker.reregistered` and increments
+  `durable_workflow_worker_reregistrations`. Pass
+  `stopOnStaleRegistration: true` to keep the previous stop behavior.
+  `Worker::tick()` is unchanged.
+
 ### Fixed
+
+- A local activity with more attempts than `backoff_seconds` entries now
+  repeats the final entry for the remaining retries, the same rule
+  server-scheduled activities follow (durable-workflow/.github#219). Before,
+  those retries ran with no delay. A policy without `backoff_seconds` still
+  retries immediately, and recorded attempts replay unchanged.
 
 - `Client::updateWorkflow()` and `WorkflowHandle::update()` no longer return
   the Server receipt as if it were the update's result when a

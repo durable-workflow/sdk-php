@@ -8,3 +8,5 @@
 /polyglot-evidence/
 /polyglot-build.json
 /polyglot-package-provenance.txt
+.claude/settings.local.json
+**/.claude/settings.local.json

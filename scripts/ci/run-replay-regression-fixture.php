@@ -701,7 +701,13 @@ final class ReplayRegressionConsumer
         if ($workflowType === 'golden.workflow-lease-recovery') {
             $worker->tick(0);
         }
-        if ($localActivityInvocations !== (in_array($workflowType, ['golden.activity-completion-backend-loss', self::BOUNDED_LOCAL_FAILURE, 'golden.local-activity-context'], true) ? 1 : 0)) {
+        // A fresh local call runs once; the backoff-repeat fixture runs all five of its attempts.
+        $expectedLocalInvocations = match (true) {
+            $workflowType === 'golden.local-activity-backoff-repeat' => 5,
+            in_array($workflowType, ['golden.activity-completion-backend-loss', self::BOUNDED_LOCAL_FAILURE, 'golden.local-activity-context'], true) => 1,
+            default => 0,
+        };
+        if ($localActivityInvocations !== $expectedLocalInvocations) {
             throw new RuntimeException("{$identity} repeated a recorded local activity during cold replay.");
         }
         if (self::$sideEffectCalls !== 0) {
@@ -768,6 +774,14 @@ final class ReplayRegressionConsumer
 
     private static function registerLocalActivities(Worker $worker, string $workflowType, int &$localActivityInvocations): void
     {
+        if ($workflowType === 'golden.local-activity-backoff-repeat') {
+            $worker->registerActivity('golden.local-unavailable',
+                static function (ActivityContext $_context) use (&$localActivityInvocations): never {
+                    ++$localActivityInvocations;
+
+                    throw new RuntimeException('upstream unavailable');
+                });
+        }
         if (in_array($workflowType, ['golden.local-activity-terminal-failure', 'golden.local-activity-recovered'], true)) {
             $worker->registerActivity(
                 $workflowType === 'golden.local-activity-recovered' ? 'golden.local-receipt' : 'golden.local-failure',
@@ -1099,6 +1113,23 @@ final class ReplayRegressionConsumer
             'golden.local-activity-context' => static fn (WorkflowContext $context): mixed => $context->localActivity('golden.context'),
             'golden.local-activity-recovered' => static fn (WorkflowContext $context): mixed =>
                 $context->localActivity('golden.local-receipt'),
+            'golden.schedule-origin' => static function (WorkflowContext $context): string {
+                $origin = $context->scheduleOrigin();
+
+                return $origin === null ? 'unscheduled'
+                    : $origin->scheduleId.'#'.$origin->triggerNumber.'@'.$origin->occurrenceTime?->format(DATE_ATOM);
+            },
+            'golden.local-activity-backoff-repeat' => static function (WorkflowContext $context): string {
+                // .github#219: five attempts with backoff [1, 2] wait 1, 2, 2, 2 between them.
+                try {
+                    $context->localActivity('golden.local-unavailable', [],
+                        ['retry_policy' => ['max_attempts' => 5, 'backoff_seconds' => [1, 2]]]);
+                } catch (ActivityFailed) {
+                    return 'retries-exhausted';
+                }
+
+                return 'unexpected-success';
+            },
             'golden.local-activity-terminal-failure' => static function (WorkflowContext $context): never {
                 $context->localActivity('golden.local-failure');
 
