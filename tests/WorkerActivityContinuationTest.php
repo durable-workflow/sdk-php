@@ -52,6 +52,35 @@ final class WorkerActivityContinuationTest extends TestCase
         }
     }
 
+    public function testAcceptedContinuationSweepsTheNextTickWithoutWaiting(): void
+    {
+        // Server #1129: the accepted continuation already scheduled the next
+        // activity, so the next tick must not hold a workflow poll first.
+        $calls = [];
+        $transport = self::transport(static fn (): array => self::accepted());
+        $worker = self::worker($transport, $calls, static fn (WorkflowContext $context): int => $context->activity('test.activity') + 1);
+        self::assertTrue($worker->tick(0));
+        $before = count(self::requests($transport, '/workflow-tasks/poll'));
+        $worker->tick(5);
+        $polls = self::requests($transport, '/workflow-tasks/poll');
+        self::assertGreaterThan($before, count($polls));
+        self::assertSame(0, $polls[$before]['body']['timeout_seconds'], 'The first poll after an accepted continuation does not wait.');
+    }
+
+    public function testDeclinedContinuationKeepsTheOrdinaryPollTimeout(): void
+    {
+        $calls = [];
+        $transport = self::transport(static fn (): array => ['task_id' => 'activity', 'outcome' => 'completed', 'recorded' => true,
+            'next_task_id' => 'workflow', 'continuation' => ['version' => 1, 'outcome' => 'declined', 'reason' => 'no_workflow_task'],
+            'workflow_poll' => ['leased' => false]]);
+        $worker = self::worker($transport, $calls, static fn (WorkflowContext $context): int => $context->activity('test.activity') + 1);
+        self::assertTrue($worker->tick(0));
+        $before = count(self::requests($transport, '/workflow-tasks/poll'));
+        $worker->tick(5);
+        $polls = self::requests($transport, '/workflow-tasks/poll');
+        self::assertSame(5, $polls[$before]['body']['timeout_seconds'] ?? null);
+    }
+
     #[DataProvider('ordinaryPaths')]
     public function testUnsupportedOrDisabledContinuationKeepsTheOrdinaryCompletion(bool $enabled, mixed $contract, ?array $history): void
     {
