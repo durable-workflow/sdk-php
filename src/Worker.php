@@ -4145,7 +4145,9 @@ final class Worker
                 $isNonRetryable = $cancelled || $invalidReport || in_array($type, $nonRetryable, true)
                     || in_array(substr($type, (int) strrpos('\\'.$type, '\\')), $nonRetryable, true);
                 $retry = ! $cancelled && ! $isNonRetryable && $attemptNumber < $maxAttempts;
-                $backoffSeconds = $retry ? max(0, (int) ($backoff[$attemptNumber - 1] ?? 0)) : 0;
+                // Past the end of the list, repeat its final entry, as server-scheduled activities do.
+                $backoffSeconds = $retry && $backoff !== []
+                    ? max(0, (int) ($backoff[min($attemptNumber, count($backoff)) - 1])) : 0;
                 if ($retry
                     && $scheduleToClose !== null
                     && $this->now() - $executionStartedAt + $backoffSeconds >= $scheduleToClose

@@ -19,6 +19,14 @@ project follows [Semantic Versioning](https://semver.org/).
   `stopOnStaleRegistration: true` to keep the previous stop behavior.
   `Worker::tick()` is unchanged.
 
+### Fixed
+
+- A local activity with more attempts than `backoff_seconds` entries now
+  repeats the final entry for the remaining retries, the same rule
+  server-scheduled activities follow (durable-workflow/.github#219). Before,
+  those retries ran with no delay. A policy without `backoff_seconds` still
+  retries immediately, and recorded attempts replay unchanged.
+
 ## [3.12.1] - 2026-11-11
 
 ### Fixed

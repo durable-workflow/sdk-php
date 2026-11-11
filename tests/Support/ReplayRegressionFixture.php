@@ -84,6 +84,10 @@ final class ReplayRegressionFixture
             throw new RuntimeException("{$identity}.history must not be empty.");
         }
 
+        if ($workflowType === 'golden.local-activity-backoff-repeat') {
+            return self::executeLocalBackoffRepeat($identity, $history, $fixture);
+        }
+
         if ($workflowType === 'golden.workflow-fresh-grant') {
             return self::executeFreshWorkflowPoll($identity, $input, $history, $fixture);
         }
@@ -745,6 +749,17 @@ final class ReplayRegressionFixture
             },
             'golden.local-activity-recovered' => static fn (WorkflowContext $context): mixed =>
                 $context->localActivity('golden.local-receipt'),
+            'golden.local-activity-backoff-repeat' => static function (WorkflowContext $context): string {
+                // .github#219: five attempts with backoff [1, 2] wait 1, 2, 2, 2 between them.
+                try {
+                    $context->localActivity('golden.local-unavailable', [],
+                        ['retry_policy' => ['max_attempts' => 5, 'backoff_seconds' => [1, 2]]]);
+                } catch (ActivityFailed) {
+                    return 'retries-exhausted';
+                }
+
+                return 'unexpected-success';
+            },
             'golden.local-activity-terminal-failure' => static function (WorkflowContext $context): never {
                 $context->localActivity('golden.local-failure');
 
@@ -1025,6 +1040,52 @@ final class ReplayRegressionFixture
      * @param array<string, mixed> $fixture
      * @return list<array<string, mixed>>
      */
+    /**
+     * .github#219: run the real Worker local-activity executor, which owns the retry delays.
+     *
+     * @param list<array<string, mixed>> $history
+     * @param array<string, mixed> $fixture
+     * @return list<array<string, mixed>>
+     */
+    private static function executeLocalBackoffRepeat(string $identity, array $history, array $fixture): array
+    {
+        $codec = new AvroPayloadCodec();
+        $completion = null;
+        $transport = new \DurableWorkflow\Tests\Support\FakeTransport(handler: static function (string $method, string $uri, array $headers, ?array $body) use (&$completion, $history): array {
+            if (str_ends_with($uri, '/workflow-tasks/poll')) {
+                return $completion === null ? ['task' => ['task_id' => 'task', 'workflow_id' => 'workflow', 'run_id' => 'run',
+                    'workflow_type' => 'golden.local-activity-backoff-repeat', 'lease_owner' => 'owner', 'payload_codec' => 'avro',
+                    'history_events' => $history]] : ['task' => null];
+            }
+            if (str_ends_with($uri, '/workflow-tasks/task/complete')) {
+                $completion = $body;
+
+                return ['completed' => true];
+            }
+            if (str_ends_with($uri, '/workflow-tasks/task/heartbeat')) {
+                return ['task_id' => 'task', 'workflow_task_attempt' => 1, 'lease_owner' => 'owner', 'renewed' => true];
+            }
+
+            return ['task' => null];
+        });
+        $now = 0.0;
+        $worker = new Worker(new Client('https://replay.invalid', transport: $transport, codec: $codec), 'regression-corpus',
+            workerId: 'owner', clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $us) use (&$now): void { $now += $us / 1_000_000; });
+        $worker->registerWorkflow('golden.local-activity-backoff-repeat', self::workflow('golden.local-activity-backoff-repeat'));
+        $worker->registerActivity('golden.local-unavailable', static function (ActivityContext $_context): never {
+            throw new RuntimeException('upstream unavailable');
+        });
+        $worker->tick(0);
+        if (!is_array($completion)) {
+            throw new RuntimeException("{$identity} produced no workflow completion.");
+        }
+        $commands = array_map(static fn (array $command): array => self::decodeEnvelopes($command, $codec), $completion['commands']);
+        self::assertMatches($fixture['expected'], ['command_sequence' => $commands], $identity.'.expected');
+
+        return $commands;
+    }
+
     private static function executeFreshWorkflowPoll(string $identity, array $input, array $history, array $fixture): array
     {
         $codec = new AvroPayloadCodec();
