@@ -754,7 +754,7 @@ final class Worker
                     capabilityManifest: [
                         ...CapabilityManifest::portableWorkerAffinity(),
                         // Server #1017: a suffix is accepted only when it continues the cached prefix exactly.
-                        'sticky_history_suffix' => ['supported' => true, 'version' => 1],
+                        'sticky_history_suffix' => ['supported' => true, 'minimum_protocol_version' => '1.18', 'version' => 1],
                         ...($this->preparedLocalActivityCancellationPolicies !== [] ? [
                             'prepared_local_activity_cancellation_policies' => [
                                 'supported' => true,
