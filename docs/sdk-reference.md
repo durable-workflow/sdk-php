@@ -363,6 +363,15 @@ try {
 `waitFor: 'accepted'` returns the acceptance receipt as before.
 `updateWorkflowReceipt()` always returns the raw receipt.
 
+On a Server that advertises `update_outcome_reads` (native 3.6.0 and later),
+`Client::updateOutcome($workflowId, $pending->updateId)` reads the same
+update's outcome by its id instead, without submitting it again. It waits for
+completion by default and returns the decoded result, throws
+`UpdateStillPending` while the update is still running, and throws
+`UpdateFailed` for a failed update or `update_not_found`. On a Server without
+the capability it throws a `LogicException` rather than resubmitting.
+`updateOutcomeReceipt()` returns the raw receipt.
+
 ## Control-plane administration and discovery
 
 `listWorkflows()` and `workflowHistory()` each read one page. The

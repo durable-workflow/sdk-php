@@ -95,6 +95,8 @@ final class Client implements WorkflowClientInterface
     private ?ExecutionTelemetry $executionTelemetry = null;
     private bool $observabilityContextSupported = false;
     private bool $claimedTaskReadyAgeSupported = false;
+    /** Cached once a Server has advertised update_outcome_reads (server#1131). */
+    private ?bool $updateOutcomeReadsSupported = null;
     private MetricsObserver $metricsObserver;
     private ?ClientRequestObservation $metricsRequest = null;
     /** @var (\Closure(string, array<string, mixed>|null, array<string, mixed>, RequestBudget|null): (?\Closure))|null */
@@ -1147,6 +1149,86 @@ final class Client implements WorkflowClientInterface
         }
 
         return $this->resultFromResponse($receipt);
+    }
+
+    /**
+     * Read an accepted update's outcome later by its update id, without submitting it again.
+     *
+     * By default this waits for the outcome, like updateWorkflow(). It returns the decoded
+     * result of a completed update (including null), throws UpdateStillPending while the update
+     * is still accepted, and throws UpdateFailed for a failed or rejected update, or for
+     * 404 `update_not_found` (no retained update has that id, for example after pruning).
+     * Needs a Server that advertises `update_outcome_reads` (native 3.6.0 and later).
+     *
+     * @throws UpdateStillPending
+     * @throws UpdateFailed
+     * @throws \LogicException when the Server doesn't advertise update_outcome_reads
+     */
+    public function updateOutcome(
+        string $workflowId,
+        string $updateId,
+        string $waitFor = 'completed',
+        ?int $waitTimeoutSeconds = null,
+    ): mixed {
+        $receipt = $this->updateOutcomeReceipt($workflowId, $updateId, $waitFor, $waitTimeoutSeconds);
+        if ($waitFor === 'completed' && self::updateStillPending($receipt)) {
+            $name = $receipt['update_name'] ?? null;
+            $requestId = $receipt['request_id'] ?? null;
+            $runId = $receipt['run_id'] ?? null;
+            $status = $receipt['update_status'] ?? null;
+            throw new UpdateStillPending(
+                $workflowId,
+                is_string($runId) ? $runId : null,
+                is_string($name) ? $name : '',
+                $updateId,
+                is_string($requestId) ? $requestId : '',
+                is_string($status) ? $status : null,
+                fromOutcomeRead: true,
+            );
+        }
+
+        return $this->resultFromResponse($receipt);
+    }
+
+    /**
+     * Read an accepted update's Server receipt by update id (server#1131). It writes nothing.
+     *
+     * Refuses with a LogicException when the Server doesn't advertise `update_outcome_reads`:
+     * resubmitting the update is never a substitute for reading it.
+     *
+     * @return array<string, mixed>
+     * @throws UpdateFailed
+     * @throws \LogicException when the Server doesn't advertise update_outcome_reads
+     */
+    public function updateOutcomeReceipt(
+        string $workflowId,
+        string $updateId,
+        string $waitFor = 'accepted',
+        ?int $waitTimeoutSeconds = null,
+    ): array {
+        if (!in_array($waitFor, ['accepted', 'completed'], true)) {
+            throw new InvalidArgumentException('An update outcome read waits for "accepted" or "completed".');
+        }
+        if (trim($updateId) === '') {
+            throw new InvalidArgumentException('An update outcome read needs the update id.');
+        }
+        if ($this->updateOutcomeReadsSupported !== true) {
+            $this->updateOutcomeReadsSupported = ($this->clusterInfo()->capabilities['update_outcome_reads'] ?? null) === true;
+        }
+        if (!$this->updateOutcomeReadsSupported) {
+            throw new \LogicException('This Server does not advertise update_outcome_reads, so an update outcome '
+                .'cannot be read by id. Call updateWorkflow() again with the same requestId instead.');
+        }
+        $path = '/workflows/'.$this->segment($workflowId).'/updates/'.$this->segment($updateId);
+        $query = $this->withoutNulls([
+            'wait_for' => $waitFor === 'completed' ? 'completed' : null,
+            'wait_timeout_seconds' => $waitTimeoutSeconds,
+        ]);
+        if ($query !== []) {
+            $path .= '?'.http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+        }
+
+        return $this->control('GET', $path, null, 'update');
     }
 
     /**

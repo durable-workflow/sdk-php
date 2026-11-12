@@ -8,6 +8,12 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `Client::updateOutcome()` and `Client::updateOutcomeReceipt()` read an
+  accepted update's outcome later by its update id (#380, server#1131), without
+  submitting it again. They need a Server that advertises `update_outcome_reads`
+  (native 3.6.0 and later) and refuse with a `LogicException` otherwise. A
+  pending read throws `UpdateStillPending`, now with a hint to read again by
+  update id. A failed update or `update_not_found` throws `UpdateFailed`.
 - `Client::createSchedule()` raises `DurableWorkflow\Exception\ScheduleAlreadyExists`
   when the Server answers 409 `schedule_already_exists` (#389, workflow#876). The
   schedule id is taken, including by a deleted or exhausted schedule. The
