@@ -15,6 +15,7 @@ use DurableWorkflow\Failure\FailureReportLimiter;
 use DurableWorkflow\Failure\FailureReportLimits;
 use DurableWorkflow\Failure\LocalFailureReports;
 use DurableWorkflow\Exception\QueryFailed;
+use DurableWorkflow\Exception\ScheduleAlreadyExists;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\SignalFailed;
 use DurableWorkflow\Exception\TransportException;
@@ -1441,6 +1442,8 @@ final class Client implements WorkflowClientInterface
     /**
      * @param array<string, mixed>|null $memo
      * @param array<string, mixed>|null $searchAttributes
+     *
+     * @throws ScheduleAlreadyExists when the schedule id is taken, including by a deleted or exhausted schedule
      */
     public function createSchedule(
         ScheduleSpec $spec,
@@ -1454,18 +1457,27 @@ final class Client implements WorkflowClientInterface
         bool $paused = false,
         ?string $note = null,
     ): ScheduleHandle {
-        $response = $this->control('POST', '/schedules', $this->withoutNulls([
-            'schedule_id' => $scheduleId,
-            'spec' => $spec->toArray(),
-            'action' => $action->toArray($this->codec),
-            'overlap_policy' => $overlapPolicy,
-            'jitter_seconds' => $jitterSeconds,
-            'max_runs' => $maxRuns,
-            'memo' => $memo,
-            'search_attributes' => $searchAttributes,
-            'paused' => $paused ?: null,
-            'note' => $note,
-        ]));
+        try {
+            $response = $this->control('POST', '/schedules', $this->withoutNulls([
+                'schedule_id' => $scheduleId,
+                'spec' => $spec->toArray(),
+                'action' => $action->toArray($this->codec),
+                'overlap_policy' => $overlapPolicy,
+                'jitter_seconds' => $jitterSeconds,
+                'max_runs' => $maxRuns,
+                'memo' => $memo,
+                'search_attributes' => $searchAttributes,
+                'paused' => $paused ?: null,
+                'note' => $note,
+            ]));
+        } catch (ServerException $exception) {
+            // Only the taken-id refusal is typed; every other 409 keeps its ServerException.
+            if ($exception->status === 409 && $exception->reason === 'schedule_already_exists') {
+                throw ScheduleAlreadyExists::fromServerException($exception, $scheduleId);
+            }
+
+            throw $exception;
+        }
 
         return new ScheduleHandle($this, (string) ($response['schedule_id'] ?? $scheduleId ?? ''));
     }
