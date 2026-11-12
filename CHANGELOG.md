@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.15.0] - 2026-11-12
+
 ### Added
 
 - `Client::updateOutcome()` and `Client::updateOutcomeReceipt()` read an
