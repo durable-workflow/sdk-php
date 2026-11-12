@@ -6,6 +6,15 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `Client::createSchedule()` raises `DurableWorkflow\Exception\ScheduleAlreadyExists`
+  when the Server answers 409 `schedule_already_exists` (#389, workflow#876). The
+  schedule id is taken, including by a deleted or exhausted schedule. The
+  exception extends `ServerException`, keeps its status, reason and details, and
+  carries `scheduleId`, so create-then-update tooling can catch it directly.
+  Other 409 answers are unchanged.
+
 ## [3.14.0] - 2026-11-12
 
 ### Added
