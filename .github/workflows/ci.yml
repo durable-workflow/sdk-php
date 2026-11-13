@@ -474,6 +474,7 @@ jobs:
           FRAMEWORK_EXERCISED_PACKAGE: ${{ matrix.exercised_package }}
           DURABLE_WORKFLOW_TEST_TRACING: '1'
         run: |
+          php -r 'if (getenv("DURABLE_WORKFLOW_TEST_TRACING") !== "1") { throw new RuntimeException("Tracing control flag was not forwarded"); }'
           consumer="$(cat "$RUNNER_TEMP/framework-consumer")"
           composer --working-dir="$consumer" require --dev open-telemetry/api:1.10.1 'monolog/monolog:^3.0' \
             --no-interaction --prefer-dist --no-progress
@@ -631,6 +632,7 @@ jobs:
           FRAMEWORK_EXERCISED_PACKAGE: ${{ matrix.exercised_package }}
           DURABLE_WORKFLOW_TEST_TRACING: '1'
         run: |
+          php -r 'if (getenv("DURABLE_WORKFLOW_TEST_TRACING") !== "1") { throw new RuntimeException("Tracing control flag was not forwarded"); }'
           consumer="$(cat "$RUNNER_TEMP/framework-consumer")"
           composer --working-dir="$consumer" require --dev open-telemetry/api:1.10.1 'monolog/monolog:^3.0' \
             --no-interaction --prefer-dist --no-progress
@@ -802,6 +804,7 @@ jobs:
           FRAMEWORK_EXERCISED_PACKAGE: ${{ matrix.exercised_package }}
           DURABLE_WORKFLOW_TEST_TRACING: '1'
         run: |
+          php -r 'if (getenv("DURABLE_WORKFLOW_TEST_TRACING") !== "1") { throw new RuntimeException("Tracing control flag was not forwarded"); }'
           consumer="$(cat "$RUNNER_TEMP/framework-consumer")"
           composer --working-dir="$consumer" require --dev open-telemetry/api:1.10.1 'monolog/monolog:^3.0' \
             --no-interaction --prefer-dist --no-progress
