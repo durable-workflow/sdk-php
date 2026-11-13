@@ -10,6 +10,7 @@ use DurableWorkflow\Exception\CodecException;
 use DurableWorkflow\Exception\ExternalPayloadException;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
+use DurableWorkflow\Exception\WorkflowTaskCompletionTooLarge;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Transport\Psr18Transport;
@@ -140,6 +141,158 @@ final class RuntimePayloadUploadTest extends TestCase
         ]);
         self::assertCount(3, $http->requests);
         self::assertLessThanOrEqual(1100, strlen((string) $http->requests[2]->getBody()));
+    }
+
+    public function testCompletionAggregateLimitDoesNotWidenTheCachedOrdinaryRequestLimit(): void
+    {
+        $policy = self::discovery();
+        $policy['limits'] = ['max_payload_bytes' => 1100, 'max_workflow_task_completion_bytes' => 3000];
+        $policy['namespace']['external_payload_storage']['threshold_bytes'] = 1500;
+        [$client, $http] = $this->client($policy);
+        $blob = $client->payloadCodec()->encode(str_repeat('a', 600));
+        $commands = [['type' => 'record_side_effect', 'result' => $blob], ['type' => 'complete_workflow', 'result' => $blob]];
+        $client->completeWorkflowTask('task', 'worker', 1, $commands);
+
+        self::assertCount(2, $http->requests, 'The larger completion needs no upload.');
+        self::assertGreaterThan(1100, strlen((string) $http->requests[1]->getBody()));
+        self::assertLessThanOrEqual(3000, strlen((string) $http->requests[1]->getBody()));
+        self::assertSame($commands, $this->body($http->requests[1])['commands']);
+
+        $client->completeActivityTask('activity', 'attempt', 'worker', str_repeat('b', 900));
+        self::assertCount(4, $http->requests, 'The same worker policy still offloads an ordinary oversized request.');
+        self::assertArrayHasKey('external_payload', $this->body($http->requests[3])['result']);
+        self::assertLessThanOrEqual(1100, strlen((string) $http->requests[3]->getBody()));
+    }
+
+    public function testConfiguredStorageOffloadsAboveTheAdvertisedCompletionLimit(): void
+    {
+        $policy = self::discovery();
+        $policy['limits'] = ['max_payload_bytes' => 1100, 'max_workflow_task_completion_bytes' => 1500];
+        $policy['namespace']['external_payload_storage']['threshold_bytes'] = 1500;
+        [$client, $http] = $this->client($policy);
+        $blob = $client->payloadCodec()->encode(str_repeat('a', 600));
+        $client->completeWorkflowTask('task', 'worker', 1,
+            [['type' => 'record_side_effect', 'result' => $blob], ['type' => 'complete_workflow', 'result' => $blob]]);
+
+        self::assertCount(3, $http->requests);
+        self::assertSame($blob, (string) $http->requests[1]->getBody());
+        self::assertLessThanOrEqual(1500, strlen((string) $http->requests[2]->getBody()));
+    }
+
+    #[DataProvider('unconfiguredCompletionStorage')]
+    public function testExplicitCompletionLimitAllowsInlineValuesWithoutConfiguredStorage(string $status, bool $overLimit): void
+    {
+        $limit = $overLimit ? 1500 : 3000;
+        $policy = self::discovery();
+        $policy['limits'] = ['max_payload_bytes' => 1100, 'max_workflow_task_completion_bytes' => $limit];
+        $policy['namespace']['external_payload_storage']['status'] = $status;
+        if ($status === 'unsupported') {
+            unset($policy['namespace']['external_payload_storage']['transport']);
+        }
+        $refusal = new Response(413, [], json_encode(['reason' => 'payload_too_large',
+            'limit_kind' => 'workflow_task_completion_bytes', 'limit' => $limit], JSON_THROW_ON_ERROR));
+        [$client, $http] = $this->client($policy, completionResponse: $overLimit ? $refusal : null);
+        $blob = $client->payloadCodec()->encode(str_repeat('a', 600));
+        $commands = [['type' => 'record_side_effect', 'result' => $blob], ['type' => 'complete_workflow', 'result' => $blob]];
+        try {
+            $client->completeWorkflowTask('task', 'worker', 1, $commands);
+            self::assertFalse($overLimit, 'An aggregate above the advertised limit must surface the Server refusal.');
+        } catch (WorkflowTaskCompletionTooLarge $error) {
+            self::assertTrue($overLimit);
+            self::assertSame($limit, $error->limitBytes);
+            self::assertSame(strlen((string) $http->requests[1]->getBody()), $error->sizeBytes);
+            self::assertGreaterThan($limit, $error->sizeBytes);
+        }
+        self::assertCount(2, $http->requests, 'Discover once, submit once, with no upload or retry.');
+        self::assertSame($commands, $this->body($http->requests[1])['commands']);
+    }
+
+    public static function unconfiguredCompletionStorage(): iterable
+    {
+        foreach (['unconfigured', 'disabled', 'unsupported'] as $status) {
+            yield $status.' within aggregate' => [$status, false];
+            yield $status.' above aggregate' => [$status, true];
+        }
+    }
+
+    public function testOlderProducerStillRequiresOffloadAtTheOrdinaryLimit(): void
+    {
+        $policy = self::discovery();
+        $policy['limits']['max_payload_bytes'] = 1100;
+        $policy['namespace']['external_payload_storage']['status'] = 'unconfigured';
+        [$client, $http] = $this->client($policy);
+        $blob = $client->payloadCodec()->encode(str_repeat('a', 600));
+        try {
+            $client->completeWorkflowTask('task', 'worker', 1,
+                [['type' => 'record_side_effect', 'result' => $blob], ['type' => 'complete_workflow', 'result' => $blob]]);
+            self::fail('An older producer does not grant a larger aggregate limit.');
+        } catch (ExternalPayloadException $error) {
+            self::assertSame('external_payload_unavailable', $error->reason);
+        }
+        self::assertCount(1, $http->requests);
+    }
+
+    #[DataProvider('completionOffloadRefusals')]
+    public function testCompletionKeepsPerValueAndConfiguredStorageRefusals(string $status, int $valueBytes): void
+    {
+        $policy = self::discovery();
+        $policy['limits'] = ['max_payload_bytes' => 1100, 'max_workflow_task_completion_bytes' => 3000];
+        $policy['namespace']['external_payload_storage']['status'] = $status;
+        [$client, $http] = $this->client($policy);
+        try {
+            $client->completeWorkflowTask('task', 'worker', 1,
+                [['type' => 'complete_workflow', 'result' => $client->payloadCodec()->encode(str_repeat('a', $valueBytes))]]);
+            self::fail('The completion limit does not remove a payload/storage refusal.');
+        } catch (ExternalPayloadException $error) {
+            self::assertSame('external_payload_unavailable', $error->reason);
+        }
+        self::assertCount(1, $http->requests);
+    }
+
+    public static function completionOffloadRefusals(): iterable
+    {
+        yield 'individual value exceeds inline limit' => ['unconfigured', 1200];
+        yield 'configured storage transient failure' => ['unavailable', 600];
+        yield 'unknown storage state' => ['unknown', 600];
+    }
+
+    #[DataProvider('invalidCompletionLimits')]
+    public function testMalformedCompletionLimitRefusesOnlyTheCompletion(mixed $limit): void
+    {
+        $policy = self::discovery();
+        $policy['limits']['max_workflow_task_completion_bytes'] = $limit;
+        [$client, $http] = $this->client($policy);
+        $client->startWorkflow('echo', 'one', 'queue');
+        try {
+            $client->completeWorkflowTask('task', 'worker', 1,
+                [['type' => 'complete_workflow', 'result' => $client->payloadCodec()->encode('small')]]);
+            self::fail('An invalid aggregate limit cannot grant completion authority.');
+        } catch (ExternalPayloadException $error) {
+            self::assertSame('external_payload_unsupported', $error->reason);
+        }
+        self::assertCount(3, $http->requests, 'The ordinary request succeeds; completion stops after worker discovery.');
+    }
+
+    public static function invalidCompletionLimits(): iterable
+    {
+        foreach ([null, 0, -1, true, false, 3000.5, '3000', []] as $value) {
+            yield [$value];
+        }
+    }
+
+    public function testCompletionMetadataUsesActualWholeFloatHttpBytes(): void
+    {
+        $policy = self::discovery();
+        $policy['limits'] = ['max_payload_bytes' => 1100, 'max_workflow_task_completion_bytes' => 3000];
+        [$client, $http] = $this->client($policy);
+        try {
+            $client->completeWorkflowTask('task', 'worker', 1, [['type' => 'complete_workflow',
+                'result' => $client->payloadCodec()->encode('small'), 'metadata' => array_fill(0, 800, 1.0)]]);
+            self::fail('Whole-float metadata exceeds the actual completion limit even after offload.');
+        } catch (ExternalPayloadException $error) {
+            self::assertSame('payload_too_large', $error->reason);
+        }
+        self::assertCount(1, $http->requests);
     }
 
     public function testOversizedMetadataIsRejectedBeforeAnyUpload(): void
@@ -799,14 +952,14 @@ final class RuntimePayloadUploadTest extends TestCase
         }
     }
 
-    private function client(?array $discovery = null, bool $workerOnly = false, ?Response $uploadResponse = null, bool $drainUnbound = false, ?Response $retryUploadResponse = null): array
+    private function client(?array $discovery = null, bool $workerOnly = false, ?Response $uploadResponse = null, bool $drainUnbound = false, ?Response $retryUploadResponse = null, ?Response $completionResponse = null): array
     {
-        $http = new class($discovery ?? self::discovery(), $uploadResponse, $drainUnbound, $retryUploadResponse) {
+        $http = new class($discovery ?? self::discovery(), $uploadResponse, $drainUnbound, $retryUploadResponse, $completionResponse) {
             public array $requests = [];
             public array $options = [];
             private string $uploadBody;
             private int $uploadAttempts = 0;
-            public function __construct(private array $discovery, private ?Response $uploadResponse, private bool $drainUnbound, private ?Response $retryUploadResponse)
+            public function __construct(private array $discovery, private ?Response $uploadResponse, private bool $drainUnbound, private ?Response $retryUploadResponse, private ?Response $completionResponse)
             {
                 $this->uploadBody = (string) $uploadResponse?->getBody();
             }
@@ -829,6 +982,8 @@ final class RuntimePayloadUploadTest extends TestCase
                     }
                     $response = ['schema' => 'durable-workflow.v2.runtime-external-payload-upload.v1', 'transport_version' => 1,
                         'reference' => RuntimePayloadUploadTest::reference((string) $request->getBody())];
+                } elseif (str_contains($path, '/workflow-tasks/') && str_ends_with($path, '/complete') && $this->completionResponse !== null) {
+                    return Create::promiseFor($this->completionResponse);
                 } else {
                     $response = ['outcome' => 'completed'];
                 }
