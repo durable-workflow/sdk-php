@@ -1,0 +1,272 @@
+name: Published PHP command keys
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  modern-command-keys:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash --noprofile --norc -e -o pipefail {0}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Check the isolated system Python and inert runner controls
+        run: |
+          /usr/bin/python3 -I -S -B -c 'import sys; assert sys.version_info[:2] == (3,12)'
+          echo /usr/bin >> "$GITHUB_PATH"
+          /usr/bin/python3 -I -S -B tests/ci/test_command_key_supply.py
+          /usr/bin/python3 -I -S -B tests/ci/test_command_key_cohort.py
+          /usr/bin/python3 -I -S -B tests/ci/test_command_key_containers.py
+          /usr/bin/python3 -I -S -B tests/ci/test_command_key_include_closure.py
+          /usr/bin/python3 -I -S -B tests/ci/test_command_key_mount_boundary.py
+      - name: Create private registry consumer and runtime state
+        run: |
+          umask 077
+          state="$(mktemp -d "$RUNNER_TEMP/php-command-keys.XXXXXX")"
+          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp" "$state/consumer" "$state/runtime" "$state/docker"
+          {
+            echo "COMMAND_KEY_STATE=$state"
+            echo "CONSUMER=$state/consumer"
+            echo "COMPOSER_HOME=$state/home"
+            echo "COMPOSER_CACHE_DIR=$state/cache"
+            echo "TMPDIR=$state/tmp"
+          } >> "$GITHUB_ENV"
+          python3 -I -S -B - "$state/consumer/composer.json" <<'PY'
+          import json,pathlib,sys
+          supply=json.loads(pathlib.Path('tests/smoke/command-key-supply.json').read_text())
+          pathlib.Path(sys.argv[1]).write_text(json.dumps({'name':'durable-workflow/command-key-consumer','require':{'durable-workflow/sdk':supply['sdk_version']},'config':{'allow-plugins':{}}})+'\n')
+          PY
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+        with:
+          clients: python,composer,curl,git
+      - name: Set up the qualified PHP profile
+        uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7 # bound-linux-php
+        with:
+          php-version: '8.3'
+          ini-file: production
+          tools: composer:2.10.3,phpunit:11.5.57
+          coverage: none
+      - name: Verify Composer trust before registry requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+        with:
+          working-directory: ${{ env.CONSUMER }}
+      - name: Install the selected registry dist without loading package code
+        run: composer install --working-dir="$CONSUMER" --no-autoloader --no-scripts --no-plugins --prefer-dist --no-interaction --no-progress
+      - name: Download the exact public archive and shared response-loss fixture
+        run: |
+          python3 -I -S -B - <<'PY' > "$COMMAND_KEY_STATE/public-inputs"
+          import json,pathlib
+          supply=json.loads(pathlib.Path('tests/smoke/command-key-supply.json').read_text())
+          print(supply['sdk_dist_url'])
+          print('https://raw.githubusercontent.com/durable-workflow/.github/'+supply['loss_proxy_source']+'/conformance/command-keys/committed_response_loss.py')
+          PY
+          mapfile -t urls < "$COMMAND_KEY_STATE/public-inputs"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 90 --max-filesize 41943040 "${urls[0]}" --output "$COMMAND_KEY_STATE/sdk.zip"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 60 --max-filesize 65536 "${urls[1]}" --output "$COMMAND_KEY_STATE/committed_response_loss.py"
+          python3 -I -S -B tests/smoke/verify_command_key_supply.py "$CONSUMER" "$COMMAND_KEY_STATE/sdk.zip" > command-key-package.json
+      - name: Verify Composer trust before autoloader generation
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+        with:
+          working-directory: ${{ env.CONSUMER }}
+      - name: Generate only the verified consumer autoloader
+        run: composer dump-autoload --working-dir="$CONSUMER" --no-scripts --no-plugins --no-interaction
+      - name: Capture the complete include closure without package execution
+        id: stage
+        run: |
+          mkdir -m 700 "$COMMAND_KEY_STATE/stage"
+          python3 -I -S -B -c '
+          import hashlib,os,re,subprocess
+          from pathlib import Path
+          source=os.environ["GITHUB_SHA"]
+          if re.fullmatch("[0-9a-f]{40}",source) is None:
+              raise RuntimeError("An exact trusted runner source is required")
+          path="tests/smoke/command_key_cohort.py"
+          raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
+          if hashlib.sha256(raw).hexdigest() != "ce34c084c0a45c861a1cbe791a6be90936d59b3c7e3bce4066dad3c38e42e0c2":
+              raise RuntimeError("The captured controller differs from its independently fixed digest")
+          exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
+          ' \
+            --phase stage --consumer "$CONSUMER" --archive "$COMMAND_KEY_STATE/sdk.zip" \
+            --stage-root "$COMMAND_KEY_STATE/stage" --runtime-state "$COMMAND_KEY_STATE/runtime" \
+            --docker-config "$COMMAND_KEY_STATE/docker" \
+            --runtime-owner "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --runner-source "$GITHUB_SHA" \
+            > command-key-staging.json
+          root="$(sudo mktemp -d /run/sdk-php-command-keys.XXXXXX)"
+          python3 -I -S -B - "$root" <<'PYROOT'
+          import json,os,pathlib,stat,sys
+          root=pathlib.Path(sys.argv[1]); metadata=root.lstat()
+          if root.parent!=pathlib.Path('/run') or metadata.st_uid!=0 or not stat.S_ISDIR(metadata.st_mode):
+              raise RuntimeError('Unexpected root-controlled stage')
+          captured=json.loads(pathlib.Path('command-key-staging.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'],'a') as output:
+              output.write('root='+str(root)+'\n')
+              output.write('root_identity='+str(metadata.st_dev)+':'+str(metadata.st_ino)+'\n')
+              output.write('include_sha256='+captured['include_sha256']+'\n')
+          PYROOT
+          sudo cp -a --no-preserve=ownership -- "$COMMAND_KEY_STATE/stage/." "$root/"
+          sudo chmod 0555 -- "$root"
+      - name: Prepare the captured native and read-only PHP containers
+        id: prepare
+        env:
+          INCLUDE_ROOT: ${{ steps.stage.outputs.root }}
+          INCLUDE_IDENTITY: ${{ steps.stage.outputs.root_identity }}
+          INCLUDE_SHA256: ${{ steps.stage.outputs.include_sha256 }}
+        run: |
+          python3 -I -S -B -c '
+          import hashlib,os,re,subprocess
+          from pathlib import Path
+          source=os.environ["GITHUB_SHA"]
+          if re.fullmatch("[0-9a-f]{40}",source) is None:
+              raise RuntimeError("An exact trusted runner source is required")
+          path="tests/smoke/command_key_cohort.py"
+          raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
+          if hashlib.sha256(raw).hexdigest() != "ce34c084c0a45c861a1cbe791a6be90936d59b3c7e3bce4066dad3c38e42e0c2":
+              raise RuntimeError("The captured controller differs from its independently fixed digest")
+          exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
+          ' \
+            --phase prepare --stage-root "$INCLUDE_ROOT" --root-identity "$INCLUDE_IDENTITY" \
+            --include-sha256 "$INCLUDE_SHA256" --runtime-state "$COMMAND_KEY_STATE/runtime" \
+            --docker-config "$COMMAND_KEY_STATE/docker" \
+            --runtime-owner "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --runner-source "$GITHUB_SHA" \
+            | tee command-key-prepared.json
+      - name: Qualify modern retained commands and postcommit response loss
+        env:
+          INCLUDE_ROOT: ${{ steps.stage.outputs.root }}
+          INCLUDE_IDENTITY: ${{ steps.stage.outputs.root_identity }}
+          INCLUDE_SHA256: ${{ steps.stage.outputs.include_sha256 }}
+          SERVER_ID: ${{ steps.prepare.outputs.server_id }}
+          CONSUMER_ID: ${{ steps.prepare.outputs.consumer_id }}
+          FIXTURE_NONCE: ${{ steps.prepare.outputs.nonce }}
+          COMMAND_KEY_TOKEN: ${{ steps.prepare.outputs.token }}
+        run: |
+          timeout --signal=INT --kill-after=30s 12m python3 -I -S -B -c '
+          import hashlib,os,re,subprocess
+          from pathlib import Path
+          source=os.environ["GITHUB_SHA"]
+          if re.fullmatch("[0-9a-f]{40}",source) is None:
+              raise RuntimeError("An exact trusted runner source is required")
+          path="tests/smoke/command_key_cohort.py"
+          raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
+          if hashlib.sha256(raw).hexdigest() != "ce34c084c0a45c861a1cbe791a6be90936d59b3c7e3bce4066dad3c38e42e0c2":
+              raise RuntimeError("The captured controller differs from its independently fixed digest")
+          exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
+          ' \
+            --phase cohort --stage-root "$INCLUDE_ROOT" --root-identity "$INCLUDE_IDENTITY" \
+            --include-sha256 "$INCLUDE_SHA256" --runtime-state "$COMMAND_KEY_STATE/runtime" \
+            --docker-config "$COMMAND_KEY_STATE/docker" \
+            --server-id "$SERVER_ID" --consumer-id "$CONSUMER_ID" --nonce "$FIXTURE_NONCE" \
+            --proxy-source "$COMMAND_KEY_STATE/committed_response_loss.py" \
+            --runtime-owner "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --runner-source "$GITHUB_SHA" \
+            | tee command-key-modern.json
+      - name: Remove captured fixtures independently of checkout and state
+        if: always()
+        env:
+          SERVER_ID: ${{ steps.prepare.outputs.server_id }}
+          CONSUMER_ID: ${{ steps.prepare.outputs.consumer_id }}
+          FIXTURE_NONCE: ${{ steps.prepare.outputs.nonce }}
+          INCLUDE_ROOT: ${{ steps.stage.outputs.root }}
+          INCLUDE_IDENTITY: ${{ steps.stage.outputs.root_identity }}
+        run: |
+          /usr/bin/python3 -I -S -B - <<'PYCLEAN' | tee command-key-cleanup.json
+          import json,os,pathlib,re,stat,subprocess,tempfile
+          owner=os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT']
+          nonce=os.environ['FIXTURE_NONCE']; errors=[]; reconciled={}; role_absence={}
+          with tempfile.TemporaryDirectory(prefix='sdk-php-command-key-cleanup-',dir='/tmp') as configuration:
+              environment={'PATH':'/usr/bin:/bin','DOCKER_CONFIG':configuration,'DOCKER_HOST':'unix:///var/run/docker.sock'}
+              def invoke(arguments):
+                  return subprocess.run(['/usr/bin/docker',*arguments],env=environment,capture_output=True,text=True,timeout=30)
+              def absent(result,identity):
+                  return result.returncode==1 and result.stdout=='[]\n' and result.stderr in {
+                      'Error: No such object: '+identity+'\n','error: no such object: '+identity+'\n'}
+              def candidates(role):
+                  result=invoke(['ps','--all','--no-trunc','--last','2',
+                      '--filter','label=durable-workflow.php-command-keys='+owner,
+                      '--filter','label=durable-workflow.fixture-role='+role,
+                      '--filter','label=durable-workflow.fixture-nonce='+nonce,'--format','{{.ID}}'])
+                  if (result.returncode!=0 or result.stderr or len(result.stdout)>130
+                          or re.fullmatch(r'(?:[0-9a-f]{64}\n){0,2}',result.stdout) is None):
+                      raise RuntimeError('Role reconciliation was not complete')
+                  identities=result.stdout.splitlines()
+                  if len(identities)>1:
+                      raise RuntimeError('Ambiguous role candidates preserved')
+                  return identities
+              for role,key in [('consumer','CONSUMER_ID'),('server','SERVER_ID')]:
+                  identity=os.environ.get(key,'')
+                  if not identity and not nonce:
+                      continue
+                  try:
+                      role_absence[role]=False
+                      if (re.fullmatch('[0-9]+-[0-9]+',owner) is None or re.fullmatch('[0-9a-f]{32}',nonce) is None
+                              or (identity and re.fullmatch('[0-9a-f]{64}',identity) is None)):
+                          raise RuntimeError('Invalid immutable fixture outputs')
+                      matches=candidates(role)
+                      if identity and matches and matches!=[identity]:
+                          raise RuntimeError('Foreign role replacement preserved')
+                      recovered=not identity and bool(matches)
+                      identity=identity or (matches[0] if matches else '')
+                      if not identity:
+                          role_absence[role]=True
+                          continue
+                      result=invoke(['inspect',identity])
+                      if absent(result,identity):
+                          if candidates(role):
+                              raise RuntimeError('A labelled role remains')
+                          role_absence[role]=True
+                          continue
+                      if result.returncode!=0:
+                          raise RuntimeError('The recorded fixture cannot be inspected')
+                      rows=json.loads(result.stdout)
+                      if len(rows)!=1 or rows[0]['Id']!=identity:
+                          raise RuntimeError('Fixture identity differs')
+                      labels=rows[0]['Config'].get('Labels') or {}
+                      if (labels.get('durable-workflow.php-command-keys'),labels.get('durable-workflow.fixture-role'),labels.get('durable-workflow.fixture-nonce'))!=(owner,role,nonce):
+                          raise RuntimeError('Foreign replacement preserved')
+                      if recovered:
+                          reconciled[role]=identity
+                      removed=invoke(['rm','--force','--volumes',identity])
+                      if (removed.returncode!=0 or not absent(invoke(['inspect',identity]),identity)
+                              or candidates(role)):
+                          raise RuntimeError('Exact fixture absence was not established')
+                      role_absence[role]=True
+                  except Exception as error:
+                      errors.append(role+':'+type(error).__name__)
+          root=os.environ['INCLUDE_ROOT']
+          if root and not errors:
+              try:
+                  path=pathlib.Path(root); metadata=path.lstat()
+                  if (path.parent!=pathlib.Path('/run') or re.fullmatch(r'sdk-php-command-keys\.[A-Za-z0-9]{6}',path.name) is None
+                          or path.resolve()!=path or not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid!=0
+                          or str(metadata.st_dev)+':'+str(metadata.st_ino)!=os.environ['INCLUDE_IDENTITY']):
+                      raise RuntimeError('Foreign include root preserved')
+                  subprocess.run(['/usr/bin/sudo','/usr/bin/rm','-rf','--',root],check=True,timeout=30)
+                  if path.exists() or path.is_symlink():
+                      raise RuntimeError('Include root absence was not established')
+              except Exception as error:
+                  errors.append('include:'+type(error).__name__)
+          print(json.dumps({'runtime_removed':not errors,'errors':errors,
+                            'reconciled_ids':reconciled,'role_absence':role_absence}))
+          if errors:
+              raise SystemExit(1)
+          PYCLEAN
+      - name: Retain sanitized observations and installed dependency graph
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: published-php-command-keys
+          path: |
+            command-key-package.json
+            command-key-staging.json
+            command-key-prepared.json
+            command-key-modern.json
+            command-key-cleanup.json
+            ${{ env.CONSUMER }}/composer.lock
+          retention-days: 7
