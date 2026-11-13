@@ -33,10 +33,14 @@ class WorkflowCancelled extends DurableWorkflowException
     public static function forContext(
         ?string $requestId,
         CancellationContext|ScopedCancellationContext|null $context,
-        string $message = 'Workflow cancellation was requested.',
+        ?string $message = null,
     ): self {
-        return $context instanceof CancellationContext && $context->isTimeout()
-            ? new WorkflowTimeoutCleanupRequested(requestId: $requestId, context: $context)
-            : new self($message, requestId: $requestId, context: $context);
+        if ($context instanceof CancellationContext && $context->isTimeout()) {
+            return $message === null
+                ? new WorkflowTimeoutCleanupRequested(requestId: $requestId, context: $context)
+                : new WorkflowTimeoutCleanupRequested($message, requestId: $requestId, context: $context);
+        }
+
+        return new self($message ?? 'Workflow cancellation was requested.', requestId: $requestId, context: $context);
     }
 }

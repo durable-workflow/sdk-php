@@ -70,6 +70,31 @@ final class CancellationContextCauseTest extends TestCase
         self::assertSame('req-1', $exception->requestId);
     }
 
+    #[DataProvider('contextMessageProvider')]
+    public function testTheContextFactoryPreservesExplicitMessages(?string $cause, string $expectedDefault): void
+    {
+        $context = CancellationContext::fromArray([...self::snapshot(), 'cause' => $cause]);
+        $default = WorkflowCancelled::forContext('req-1', $context);
+        self::assertSame($expectedDefault, $default->getMessage());
+
+        foreach (['Caller-supplied message.', ''] as $message) {
+            $exception = WorkflowCancelled::forContext('req-1', $context, $message);
+            self::assertSame($message, $exception->getMessage());
+            self::assertSame($default::class, $exception::class);
+            self::assertSame($context, $exception->context);
+            self::assertSame('req-1', $exception->requestId);
+        }
+    }
+
+    /** @return array<string, array{?string, string}> */
+    public static function contextMessageProvider(): array
+    {
+        return [
+            'ordinary cancellation' => [null, 'Workflow cancellation was requested.'],
+            'timeout cleanup' => ['timeout', 'Workflow work deadline passed: timeout cleanup requested.'],
+        ];
+    }
+
     public function testADescendantIsCancelledNotTimedOut(): void
     {
         $parent = CancellationContext::fromArray(self::timeoutSnapshot());
