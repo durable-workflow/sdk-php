@@ -80,19 +80,30 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
-        with:
-          python-version: '3.12'
+      - name: Select Ubuntu's Python 3.12
+        run: |
+          /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          echo /usr/bin >> "$GITHUB_PATH"
+      - name: Create isolated Composer state
+        run: |
+          state="$(mktemp -d "$RUNNER_TEMP/php-check.XXXXXX")"
+          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp"
+          {
+            echo "COMPOSER_HOME=$state/home"
+            echo "COMPOSER_CACHE_DIR=$state/cache"
+            echo "TMPDIR=$state/tmp"
+          } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
         with:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
         with:
           php-version: '8.3'
-          tools: composer:2.10.3
+          ini-file: production
+          tools: composer:2.10.3,phpunit:11.5.57
           coverage: none
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
@@ -492,19 +503,30 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
-        with:
-          python-version: '3.12'
+      - name: Select Ubuntu's Python 3.12
+        run: |
+          /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          echo /usr/bin >> "$GITHUB_PATH"
+      - name: Create isolated Composer state
+        run: |
+          state="$(mktemp -d "$RUNNER_TEMP/php-check.XXXXXX")"
+          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp"
+          {
+            echo "COMPOSER_HOME=$state/home"
+            echo "COMPOSER_CACHE_DIR=$state/cache"
+            echo "TMPDIR=$state/tmp"
+          } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
         with:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
         with:
           php-version: '8.3'
-          tools: composer:2.10.3
+          ini-file: production
+          tools: composer:2.10.3,phpunit:11.5.57
           coverage: none
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
@@ -529,9 +551,10 @@ jobs:
         with:
           ref: ${{ matrix.source == 'current' && github.sha || matrix.source }}
           fetch-depth: 0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
-        with:
-          python-version: '3.12'
+      - name: Select Ubuntu's Python 3.12
+        run: |
+          /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          echo /usr/bin >> "$GITHUB_PATH"
       - name: Select the temporary tooling directory
         run: echo "DOCS_TOOLING_DIRECTORY=$RUNNER_TEMP/docs-tooling" >> "$GITHUB_ENV"
       - name: Prepare exact current tooling against the selected source
@@ -546,16 +569,26 @@ jobs:
         run: python "$DOCS_TOOLING_DIRECTORY/scripts/test-docs-release-channel.py"
       - name: Test presentation and published SDK source isolation
         run: python "$DOCS_TOOLING_DIRECTORY/scripts/prepare-docs-presentation.test.py"
+      - name: Create isolated Composer state
+        run: |
+          state="$(mktemp -d "$RUNNER_TEMP/php-check.XXXXXX")"
+          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp"
+          {
+            echo "COMPOSER_HOME=$state/home"
+            echo "COMPOSER_CACHE_DIR=$state/cache"
+            echo "TMPDIR=$state/tmp"
+          } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
         with:
           clients: pip,python,composer,curl,git,npm
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
         with:
           php-version: '8.3'
-          tools: composer:2.10.3
+          ini-file: production
+          tools: composer:2.10.3,phpunit:11.5.57
           coverage: none
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
         with:
@@ -637,19 +670,30 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
-        with:
-          python-version: '3.12'
+      - name: Select Ubuntu's Python 3.12
+        run: |
+          /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          echo /usr/bin >> "$GITHUB_PATH"
+      - name: Create isolated Composer state
+        run: |
+          state="$(mktemp -d "$RUNNER_TEMP/php-check.XXXXXX")"
+          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp"
+          {
+            echo "COMPOSER_HOME=$state/home"
+            echo "COMPOSER_CACHE_DIR=$state/cache"
+            echo "TMPDIR=$state/tmp"
+          } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
         with:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
         with:
           php-version: '8.3'
-          tools: composer:2.10.3
+          ini-file: production
+          tools: composer:2.10.3,phpunit:11.5.57
           coverage: none
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
@@ -685,19 +729,30 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
-        with:
-          python-version: '3.12'
+      - name: Select Ubuntu's Python 3.12
+        run: |
+          /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          echo /usr/bin >> "$GITHUB_PATH"
+      - name: Create isolated Composer state
+        run: |
+          state="$(mktemp -d "$RUNNER_TEMP/php-check.XXXXXX")"
+          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp"
+          {
+            echo "COMPOSER_HOME=$state/home"
+            echo "COMPOSER_CACHE_DIR=$state/cache"
+            echo "TMPDIR=$state/tmp"
+          } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
         with:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
         with:
           php-version: '8.3'
-          tools: composer:2.10.3
+          ini-file: production
+          tools: composer:2.10.3,phpunit:11.5.57
           coverage: none
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
