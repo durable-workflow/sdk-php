@@ -1,0 +1,9 @@
+{
+  "sdk_version": "3.18.2",
+  "sdk_reference": "f9483bb2b5b45f591a82d9e5419c5b60a6e967c6",
+  "sdk_archive_sha256": "32dc5d1a05a96e9e772e964bea95ae8142882b901d612c97a4aadee699f4ec6b",
+  "server_version": "3.9.2",
+  "server_source": "5614274d2629d03f92932a07dfee0fb10349ddd9",
+  "server_index": "sha256:8ffcdb2a36af3129a1987849aafe8715fe0d3bf9a9648467f0b5cb8eeef43ba9",
+  "server_amd64": "sha256:813c9337c44be7d497efd29e1b463546519e488aa796b5ecf9dfc6f4f10d2128"
+}
