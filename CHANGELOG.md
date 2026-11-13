@@ -26,6 +26,8 @@ project follows [Semantic Versioning](https://semver.org/).
 - Pending update guidance distinguishes admission waits, which retain the original
   request key, from GET-by-ID reads, where that key may be unavailable. Repeated
   reads preserve the update ID and never admit a second update (.github#212).
+- Distribution archives exclude internal CI and container tooling. Runtime
+  classes, resources, examples and public contracts remain included.
 
 ## [3.18.0] - 2026-11-13
 

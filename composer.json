@@ -84,6 +84,9 @@
         },
         "sort-packages": true
     },
+    "archive": {
+        "exclude": ["/.github", "/docker", "/scripts/ci", "/tests", "/.dockerignore"]
+    },
     "extra": {
         "laravel": {
             "providers": [

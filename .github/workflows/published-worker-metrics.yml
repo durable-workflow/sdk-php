@@ -16,6 +16,10 @@ on:
         description: Qualify completion limits on the immutable native 3.9.1 tuple
         type: boolean
         default: false
+      candidate_source:
+        description: Optional exact SDK commit for prepublication dist qualification only
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -58,10 +62,56 @@ jobs:
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
       - name: Install only the published SDK
+        if: inputs.candidate_source == ''
         run: |
           [[ "$SDK_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           composer init --working-dir="$CONSUMER" --name=durable-workflow/published-metrics --no-interaction
           composer require --working-dir="$CONSUMER" "durable-workflow/sdk:$SDK_VERSION" --no-scripts --no-interaction --prefer-dist --no-progress
+      - name: Validate an optional prepublication source
+        if: inputs.candidate_source != ''
+        env:
+          CANDIDATE_SOURCE: ${{ inputs.candidate_source }}
+        run: '[[ "$CANDIDATE_SOURCE" =~ ^[0-9a-f]{40}$ ]]'
+      - name: Check out only the selected public SDK candidate
+        if: inputs.candidate_source != ''
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.candidate_source }}
+          path: .candidate-sdk
+          persist-credentials: false
+      - name: Prepare and inspect the exact candidate dist
+        if: inputs.candidate_source != ''
+        env:
+          CANDIDATE_SOURCE: ${{ inputs.candidate_source }}
+        run: |
+          python3 -I -S -B - <<'PY'
+          import hashlib,json,os,pathlib,subprocess,zipfile
+          source=pathlib.Path('.candidate-sdk')
+          commit=os.environ['CANDIDATE_SOURCE']
+          assert subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD'],text=True).strip()==commit
+          consumer=pathlib.Path(os.environ['CONSUMER'])
+          archive=consumer/'candidate.zip'
+          subprocess.run(['git','-C',str(source),'archive','--format=zip','--prefix=sdk/','--output',str(archive),commit],check=True)
+          with zipfile.ZipFile(archive) as package:
+              names={name.removeprefix('sdk/') for name in package.namelist()}
+              excluded=('.github/','docker/','scripts/ci/','tests/')
+              assert not any(name.startswith(excluded) or name=='.dockerignore' for name in names)
+              expected=subprocess.check_output(['git','-C',str(source),'ls-files','src','examples','resources','config','docs/quickstart-contract.json','docs/laravel-adoption-contract.json'],text=True).splitlines()
+              assert expected and set(expected)<=names
+          manifest=json.loads((source/'composer.json').read_text())
+          assert manifest['name']=='durable-workflow/sdk' and manifest['type']=='library'
+          assert manifest['extra']['durable-workflow']['product-train']==os.environ['SDK_VERSION']
+          manifest.update(version=os.environ['SDK_VERSION'],dist={'type':'zip','url':archive.as_uri(),'reference':commit})
+          (consumer/'composer.json').write_text(json.dumps({'name':'durable-workflow/candidate-worker','repositories':[{'type':'package','package':manifest}],'require':{'durable-workflow/sdk':os.environ['SDK_VERSION']},'config':{'allow-plugins':{}}})+'\n')
+          pathlib.Path('candidate-package.json').write_text(json.dumps({'stage':'prepublication','source':commit,'archive_sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'retained_runtime_inputs':len(expected),'internal_ci_tooling':False})+'\n')
+          PY
+      - name: Verify Composer trust before candidate requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+        with:
+          working-directory: ${{ env.CONSUMER }}
+      - name: Install only the selected candidate dist
+        if: inputs.candidate_source != ''
+        run: composer install --working-dir="$CONSUMER" --no-scripts --no-interaction --prefer-dist --no-progress
       - name: Start the immutable published native Server
         run: |
           docker pull "$SERVER_IMAGE"
@@ -98,6 +148,8 @@ jobs:
             worker-metrics.json
             update-outcome.json
             workflow-completion-limits.json
+            candidate-package.json
+            ${{ env.CONSUMER }}/candidate.zip
             ${{ env.CONSUMER }}/composer.lock
           retention-days: 14
       - name: Show bounded Server diagnostics
