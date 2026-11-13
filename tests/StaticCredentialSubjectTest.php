@@ -23,9 +23,9 @@ final class StaticCredentialSubjectTest extends TestCase
         self::assertSame('3.10.0', $intent['requirements']['durable-workflow/sdk']);
         // The selected #307 graph: FrameworkBundle 7.4.21 is refused by advisory
         // GHSA-xg2q-4rrq-657q, so the intent names the patched 7.4.23 release.
-        self::assertSame(['php' => '8.4.27', 'durable-workflow/sdk' => '3.10.0', 'laravel/framework' => '12.69.3',
+        self::assertSame(['php' => '8.4.27', 'durable-workflow/sdk' => '3.10.0', 'laravel/framework' => '12.72.0',
             'symfony/framework-bundle' => '7.4.23'], $intent['requirements']);
-        self::assertSame(['laravel/framework' => '58ea544a2a80dc03c168e13a5dc9a1d176a88717',
+        self::assertSame(['laravel/framework' => 'b089d3020e508f49b3625726ab4a2c897f1b78d5',
             'symfony/framework-bundle' => '6a749f2c37cb9def53793633ec72958aaad4b359'], $intent['framework_source_references']);
         self::assertCount(3, $intent['future_inputs']);
         self::assertSame(['plugins' => false, 'scripts' => false, 'advisory_policy' => 'normal'], $intent['dependency_policy']);

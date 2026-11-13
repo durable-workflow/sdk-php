@@ -10,11 +10,12 @@ runnable path.
 - **Laravel adoption:** start with the [ownership-first transition
   guide](https://php.durable-workflow.com/frameworks/laravel/) when moving a
   Laravel Workflow v1 application to v2 embedded or service mode, or when
-  moving embedded v2 to service mode. The SDK 3.10 bridge and Workflow 2.21.0
-  support PHP `^8.2` and patched Laravel `^12.69.0|^13.30.0`; Laravel 13 needs
-  PHP 8.3 or newer. The bare SDK retains PHP `^8.1`. Existing SDK 3.9.x and
-  Workflow 2.20.x applications keep their release's support contract while
-  upgrading PHP and Laravel. Stable-v1 authority is unchanged.
+  moving embedded v2 to service mode. The current bridge supports PHP `^8.2`
+  and patched Laravel `^12.72.0|^13.41.0`; Laravel 13 needs PHP 8.3 or newer.
+  Embedded-to-service transitions require the installed Workflow package to
+  publish that same support contract. The bare SDK retains PHP `^8.1`.
+  Existing applications must apply Laravel security updates while upgrading.
+  Stable-v1 authority is unchanged.
 - **Plain PHP service mode:** follow the quickstart below when a framework-neutral
   application and remote worker connect to Durable Workflow Cloud or a
   self-hosted Server.
@@ -878,12 +879,11 @@ and the shipped [client](../examples/message-stream-client.php) and
 
 ## Laravel service mode
 
-Patched Laravel `^12.69.0|^13.30.0` applications auto-discover the provider from
+Patched Laravel `^12.72.0|^13.41.0` applications auto-discover the provider from
 the SDK package. The bridge requires PHP `^8.2`, with PHP 8.3 or newer for
 Laravel 13. The provider refuses unsupported or unknown installed framework/PHP
 versions before registering config, clients or workers. Upgrade PHP and Laravel
-before adopting this bridge, or retain the existing SDK 3.9.x release while
-upgrading the platform. The bare SDK's PHP `^8.1` support remains independent.
+before adopting this bridge. The bare SDK's PHP `^8.1` support remains independent.
 Publish the environment-backed configuration, add attributed handler services,
 and start the supervised Artisan command. The worker process needs `ext-pcntl`;
 the command refuses to start without it so `SIGINT` and `SIGTERM` always drain

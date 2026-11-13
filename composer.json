@@ -39,7 +39,7 @@
     },
     "suggest": {
         "ext-pcntl": "Required by framework console workers for graceful SIGINT and SIGTERM handling.",
-        "laravel/framework": "Enables the auto-discovered service-mode bridge on Laravel 12.69.0 or 13.30.0 and later releases of each major (the patched minimums for GHSA-f9x3-7vq9-cph6).",
+        "laravel/framework": "Enables the auto-discovered service-mode bridge on Laravel 12.72.0 or 13.41.0 and later releases of each major (the patched November 2026 security minimums).",
         "open-telemetry/api": "Optional worker tracing with the application's provider; supports API 1.10.1 and later in the 1.x line.",
         "symfony/framework-bundle": "Enables the Symfony 6.4, 7, and 8 service-mode bundle.",
         "symfony/console": "Required with symfony/framework-bundle to run the Symfony 6.4, 7, and 8 worker command."
@@ -122,7 +122,7 @@
                 "external-payload-references": "opaque-reference"
             },
             "frameworks": {
-                "laravel": "^12.69.0|^13.30.0",
+                "laravel": "^12.72.0|^13.41.0",
                 "symfony": "^6.4|^7.0|^8.0"
             }
         }

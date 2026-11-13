@@ -6,6 +6,13 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- Raise the optional Laravel bridge floors to 12.72.0 and 13.41.0 for
+  the November concurrency and signed-URL advisories, reject affected installations before provider bindings,
+  and update the current qualification matrix and HTTP example dependency
+  graph. Historical qualification reports retain their original tuples (#421).
+
 ## [3.18.2] - 2026-11-13
 
 ### Fixed
