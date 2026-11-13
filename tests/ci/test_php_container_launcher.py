@@ -43,11 +43,13 @@ class PhpContainerLauncherTests(unittest.TestCase):
     def test_config_id_and_caps_are_bound_without_passing_host_credentials(self):
         for name in ("GH_TOKEN", "GITHUB_TOKEN", "COMPOSER_AUTH"):
             self.environment[name] = "synthetic-unforwarded-canary"
+        self.environment["DURABLE_WORKFLOW_TEST_TRACING"] = "1"
         result = self.invoke("php", "-r", "echo 1;")
         self.assertEqual(result.returncode, 0, result.stderr)
         arguments = self.arguments()
         self.assertIn("sha256:" + "a" * 64, arguments)
         self.assertIn("--init", arguments)
+        self.assertIn("DURABLE_WORKFLOW_TEST_TRACING", arguments)
         for option, value in (("--cpus", "2"), ("--memory", "2g"),
                               ("--pids-limit", "512"), ("--cap-drop", "ALL"),
                               ("--security-opt", "no-new-privileges")):

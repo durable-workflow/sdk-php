@@ -124,6 +124,14 @@ final class LaravelAdoptionContractTest extends TestCase
                 substr($workflow, $offset),
             );
         }, 'The Laravel consumer must install exactly $FRAMEWORK_EXERCISED_PACKAGE.'];
+        yield 'container tool executes outside the PHP launcher' => [$first(
+            'php "$consumer/vendor/bin/phpstan" analyse',
+            '"$consumer/vendor/bin/phpstan" analyse',
+        ), 'Container framework tools must use the PHP launcher.'];
+        yield 'Symfony cell contradicts its fixed minor' => [$first(
+            "            php: '8.1'\n",
+            "            php: '8.4'\n",
+        ), 'A framework cell must use its job\'s fixed PHP minor.'];
         yield 'exact minimum removed from a cell' => [$first(
             "            exercised_package: 'laravel/framework:12.69.0'\n",
             '',
@@ -177,9 +185,23 @@ final class LaravelAdoptionContractTest extends TestCase
             $errors[] = 'The CI Laravel cells differ from the adoption contract.';
         }
 
-        preg_match_all('/^  framework-compat(?:83)?:\n.*?(?=^  [a-zA-Z0-9_-]+:\n|\z)/ms', $workflow, $jobs);
-        if (count($jobs[0]) !== 2) {
-            $errors[] = 'Both framework jobs must qualify their Laravel cells.';
+        preg_match_all('/^  framework-compat(?:81|83|84)?:\n.*?(?=^  [a-zA-Z0-9_-]+:\n|\z)/ms', $workflow, $jobs);
+        $minors = ['framework-compat' => '8.2', 'framework-compat81' => '8.1',
+            'framework-compat83' => '8.3', 'framework-compat84' => '8.4'];
+        $names = [];
+        foreach ($jobs[0] as $job) {
+            preg_match('/^  (framework-compat[0-9]*):/', $job, $name);
+            $names[] = $name[1];
+            preg_match_all("/^ {12}php: '([^']+)'$/m", $job, $actual);
+            if ($actual[1] === [] || array_filter($actual[1], static fn (string $minor): bool => $minor !== $minors[$name[1]]) !== []) {
+                $errors[] = 'A framework cell must use its job\'s fixed PHP minor.';
+            }
+        }
+        sort($names);
+        $expectedNames = array_keys($minors);
+        sort($expectedNames);
+        if ($names !== $expectedNames) {
+            $errors[] = 'All four framework jobs must qualify their cells.';
         }
         foreach ($jobs[0] as $job) {
             $errors = array_merge($errors, self::ciFrameworkJobMinimumErrors($job));
@@ -192,6 +214,10 @@ final class LaravelAdoptionContractTest extends TestCase
     private static function ciFrameworkJobMinimumErrors(string $workflow): array
     {
         $errors = [];
+        if (str_contains($workflow, 'setup-php-container.sh')
+            && !str_contains($workflow, 'php "$consumer/vendor/bin/phpstan" analyse')) {
+            $errors[] = 'Container framework tools must use the PHP launcher.';
+        }
         $install = self::between($workflow, '      - name: Install SDK into a clean framework consumer', '          else');
         $assert = 'php "$GITHUB_WORKSPACE/scripts/ci/assert-installed-version.php" "$consumer" laravel/framework "$exercised_version"';
         $require = strpos($install, 'composer require "$FRAMEWORK_EXERCISED_PACKAGE" \\');
