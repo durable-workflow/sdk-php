@@ -16,6 +16,7 @@ use DurableWorkflow\Failure\FailureReportLimits;
 use DurableWorkflow\Failure\LocalFailureReports;
 use DurableWorkflow\Exception\QueryFailed;
 use DurableWorkflow\Exception\ScheduleAlreadyExists;
+use DurableWorkflow\Exception\ServerCapabilityUnavailable;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\SignalFailed;
 use DurableWorkflow\Exception\TransportException;
@@ -1835,6 +1836,81 @@ final class Client implements WorkflowClientInterface
     public function describeTaskQueue(string $taskQueue): array
     {
         return $this->control('GET', '/task-queues/'.$this->segment($taskQueue));
+    }
+
+    /**
+     * Read whether activity dispatch is paused on one task queue of the client's namespace.
+     *
+     * Returns the Server's answer: `namespace`, `task_queue` and `activity_dispatch`
+     * (`state` `paused` or `active`, `paused`, `reason`, `paused_at`, `paused_by`,
+     * `resumed_at`, `resumed_by`). Needs an operator credential and a Server that advertises
+     * `task_queue_activity_dispatch_pause` (native 3.8.0 and later).
+     *
+     * @return array<string, mixed>
+     * @throws ServerCapabilityUnavailable when the Server has no activity dispatch routes
+     * @throws ServerException for any other refusal, for example 403 for a worker credential
+     */
+    public function describeTaskQueueActivityDispatch(string $taskQueue): array
+    {
+        return $this->taskQueueActivityDispatch('GET', $taskQueue, '');
+    }
+
+    /**
+     * Pause activity dispatch on one task queue of the client's namespace (native Server 3.8.0).
+     *
+     * While paused, no activity task on the queue is leased; leased activities keep running and
+     * workflow tasks are still delivered. The answer is the Server's: `namespace`, `task_queue`,
+     * `outcome` (`paused`, or `already_paused` when nothing changed and the original pause is
+     * reported) and `activity_dispatch`. `$reason` is optional, at most 1000 characters; the
+     * Server records the credential's principal as the one who paused. The request is sent once
+     * and never retried, so a lost answer can be checked with describeTaskQueueActivityDispatch().
+     *
+     * @return array<string, mixed>
+     * @throws ServerCapabilityUnavailable when the Server has no activity dispatch routes
+     * @throws ServerException for any other refusal: 403 for a worker credential or another
+     *                         tenant's namespace, 422 with `errors` for an invalid reason or queue name
+     */
+    public function pauseTaskQueueActivityDispatch(string $taskQueue, ?string $reason = null): array
+    {
+        return $this->taskQueueActivityDispatch('POST', $taskQueue, '/pause', $this->withoutNulls(['reason' => $reason]));
+    }
+
+    /**
+     * Resume activity dispatch on one task queue of the client's namespace (native Server 3.8.0).
+     *
+     * The answer is the Server's: `namespace`, `task_queue`, `outcome` (`resumed`, or
+     * `not_paused` when nothing changed) and `activity_dispatch`. Sent once, never retried.
+     *
+     * @return array<string, mixed>
+     * @throws ServerCapabilityUnavailable when the Server has no activity dispatch routes
+     * @throws ServerException for any other refusal, for example 403 for a worker credential
+     */
+    public function resumeTaskQueueActivityDispatch(string $taskQueue): array
+    {
+        return $this->taskQueueActivityDispatch('POST', $taskQueue, '/resume');
+    }
+
+    /**
+     * @param array<string, mixed>|null $body
+     * @return array<string, mixed>
+     */
+    private function taskQueueActivityDispatch(string $method, string $taskQueue, string $action, ?array $body = null): array
+    {
+        $path = '/task-queues/'.$this->segment($taskQueue).'/activity-dispatch'.$action;
+        try {
+            return $this->control($method, $path, $body);
+        } catch (ServerException $exception) {
+            if (ServerCapabilityUnavailable::isMissingRoute($exception)) {
+                throw ServerCapabilityUnavailable::fromMissingRoute(
+                    $exception,
+                    ClusterInfo::TASK_QUEUE_ACTIVITY_DISPATCH_PAUSE,
+                    'The connected Server does not support pausing activity dispatch on a task queue. '
+                        .'It needs to advertise task_queue_activity_dispatch_pause (native Durable Workflow Server 3.8.0 or later).',
+                );
+            }
+
+            throw $exception;
+        }
     }
 
     public function createSearchAttribute(string $name, string $type): SearchAttributeDefinition

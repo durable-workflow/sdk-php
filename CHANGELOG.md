@@ -6,6 +6,21 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `Client::pauseTaskQueueActivityDispatch()`, `Client::resumeTaskQueueActivityDispatch()`
+  and `Client::describeTaskQueueActivityDispatch()` pause, resume and read
+  activity dispatch on one task queue of the client's namespace (native
+  Server 3.8.0, server#577, waterline#299). They return the Server's answer,
+  with `outcome` `paused`, `already_paused`, `resumed` or `not_paused` and the
+  `activity_dispatch` state. Pause and resume are sent once and never retried.
+  `ClusterInfo::supportsTaskQueueActivityDispatchPause()` reads the
+  `task_queue_activity_dispatch_pause` capability. A Server without the routes
+  answers 404, raised as the new `DurableWorkflow\Exception\ServerCapabilityUnavailable`
+  (a `ServerException` with status 501 and reason `backend_capability_unavailable`).
+  Other refusals, such as 403 for a worker credential or 422 for an invalid
+  reason, stay `ServerException` with the Server's status, reason and details.
+
 ## [3.15.0] - 2026-11-12
 
 ### Added

@@ -138,7 +138,8 @@ final class MetricsRoutes
     {
         $routes = ['/activities/{activity_id}/result', '/system/health', '/system/operator-dashboard',
             '/system/operator-dashboard/bounded', '/system/operator-dashboard/bounded/workflow-types',
-            '/system/operator-metrics'];
+            '/system/operator-metrics', '/task-queues/{task_queue}/activity-dispatch',
+            '/task-queues/{task_queue}/activity-dispatch/pause', '/task-queues/{task_queue}/activity-dispatch/resume'];
         foreach (['debug', 'observation', 'redrive'] as $action) {
             $routes[] = "/workflows/{workflow_id}/{$action}";
         }
