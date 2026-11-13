@@ -46,15 +46,41 @@ Set `COMMAND_KEY_RUNTIME_URL` to the owned numeric loopback URL and
 Results select admission/read identities and flags rather than arbitrary
 response fields, headers or payloads. A transport failure is an error with an
 unknown admission outcome; it is never described as a refused admission.
-History output contains event counts only.
+History output contains event counts and selected signal/update admission
+identities. It excludes argument values and arbitrary event payloads.
 
 Use the accepted shared committed-response-loss fixture unchanged to prove
 response loss. Use the accepted portable SQLite helper and its adjacent exact
 Server manifest for synthetic legacy copies. The producer-owned physical seed
 and upgrade profile stay separate and must never pass through the synthetic
-transform. This PHP adapter currently supplies modern direct/loss API calls;
-installed execution, legacy/physical adapters and complete shared216 acceptance
-require their own reviewed runner and sanitized receipts.
+transform. The modern controller supplies explicit four-way retries, changed
+intent/name/run conflicts, pending/null reads, closed/continued retained reads,
+Unicode character limits and generated-key recovery after a fully consumed
+upstream response is deliberately lost. It compares history admissions for
+these cases. Synthetic legacy, physical upgrade, namespace isolation and full
+database snapshot proofs remain separate work. No complete shared216 result
+follows from the modern controller alone.
+
+`published-command-keys.yml` is a manual, main-only ordinary GitHub Actions
+cell. It uses the qualified stock PHP helper, private Composer state and the
+real Composer trust guard. Installation disables scripts, plugins and autoload
+generation until archive/installed-file inspection passes. The runner captures
+its exact committed source and the unchanged accepted shared loss fixture
+before loading them. Source checks and independent review precede execution.
+
+The controller pulls the selected Server index for linux/amd64 and verifies
+its image config/source. It creates one read-only, nonprivileged 1-CPU/1-GiB/
+256-PID runtime with private bounded tmpfs and one numeric loopback binding.
+Every operation checks the captured container ID/owner/endpoint and installed
+SDK bytes again. A private CID file supports cleanup on exceptions and the
+workflow's separate always-run cleanup. Removal uses that ID after checking
+its label; foreign replacements are preserved. A missing-object response,
+rather than a general engine error, establishes absence. Sanitized evidence
+and the dependency lock are retained for seven days.
+
+Run inert runner controls with
+`python3 -I -S -B tests/ci/test_command_key_cohort.py`. They exercise synthetic
+inspection metadata and receipts without creating a runtime or loading PHP.
 
 Run the offline input controls against an existing immutable PHP image:
 

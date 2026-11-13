@@ -1,0 +1,105 @@
+name: Published PHP command keys
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  modern-command-keys:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash --noprofile --norc -e -o pipefail {0}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Check the isolated system Python and inert runner controls
+        run: |
+          /usr/bin/python3 -I -S -B -c 'import sys; assert sys.version_info[:2] == (3,12)'
+          echo /usr/bin >> "$GITHUB_PATH"
+          /usr/bin/python3 -I -S -B tests/ci/test_command_key_supply.py
+          /usr/bin/python3 -I -S -B tests/ci/test_command_key_cohort.py
+      - name: Create private registry consumer and runtime state
+        run: |
+          umask 077
+          state="$(mktemp -d "$RUNNER_TEMP/php-command-keys.XXXXXX")"
+          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp" "$state/consumer" "$state/runtime"
+          {
+            echo "COMMAND_KEY_STATE=$state"
+            echo "CONSUMER=$state/consumer"
+            echo "COMPOSER_HOME=$state/home"
+            echo "COMPOSER_CACHE_DIR=$state/cache"
+            echo "TMPDIR=$state/tmp"
+          } >> "$GITHUB_ENV"
+          python3 -I -S -B - "$state/consumer/composer.json" <<'PY'
+          import json,pathlib,sys
+          supply=json.loads(pathlib.Path('tests/smoke/command-key-supply.json').read_text())
+          pathlib.Path(sys.argv[1]).write_text(json.dumps({'name':'durable-workflow/command-key-consumer','require':{'durable-workflow/sdk':supply['sdk_version']},'config':{'allow-plugins':{}}})+'\n')
+          PY
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+        with:
+          clients: python,composer,curl,git
+      - name: Set up the qualified PHP profile
+        uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7 # bound-linux-php
+        with:
+          php-version: '8.3'
+          ini-file: production
+          tools: composer:2.10.3,phpunit:11.5.57
+          coverage: none
+      - name: Verify Composer trust before registry requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+        with:
+          working-directory: ${{ env.CONSUMER }}
+      - name: Install the selected registry dist without loading package code
+        run: composer install --working-dir="$CONSUMER" --no-autoloader --no-scripts --no-plugins --prefer-dist --no-interaction --no-progress
+      - name: Download the exact public archive and shared response-loss fixture
+        run: |
+          python3 -I -S -B - <<'PY' > "$COMMAND_KEY_STATE/public-inputs"
+          import json,pathlib
+          supply=json.loads(pathlib.Path('tests/smoke/command-key-supply.json').read_text())
+          print(supply['sdk_dist_url'])
+          print('https://raw.githubusercontent.com/durable-workflow/.github/'+supply['loss_proxy_source']+'/conformance/command-keys/committed_response_loss.py')
+          PY
+          mapfile -t urls < "$COMMAND_KEY_STATE/public-inputs"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 90 --max-filesize 41943040 "${urls[0]}" --output "$COMMAND_KEY_STATE/sdk.zip"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 60 --max-filesize 65536 "${urls[1]}" --output "$COMMAND_KEY_STATE/committed_response_loss.py"
+          python3 -I -S -B tests/smoke/verify_command_key_supply.py "$CONSUMER" "$COMMAND_KEY_STATE/sdk.zip" > command-key-package.json
+      - name: Verify Composer trust before autoloader generation
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+        with:
+          working-directory: ${{ env.CONSUMER }}
+      - name: Generate only the verified consumer autoloader
+        run: composer dump-autoload --working-dir="$CONSUMER" --no-scripts --no-plugins --no-interaction
+      - name: Qualify modern retained commands and postcommit response loss
+        run: |
+          php -l tests/smoke/command-key-client.php
+          timeout --signal=INT --kill-after=30s 12m python3 -I -S -B tests/smoke/command_key_cohort.py \
+            --consumer "$CONSUMER" --archive "$COMMAND_KEY_STATE/sdk.zip" \
+            --proxy-source "$COMMAND_KEY_STATE/committed_response_loss.py" \
+            --runtime-state "$COMMAND_KEY_STATE/runtime" \
+            --runtime-owner "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --runner-source "$GITHUB_SHA" \
+            | tee command-key-modern.json
+      - name: Independently repeat captured-ID runtime cleanup
+        if: always() && env.COMMAND_KEY_STATE != ''
+        run: |
+          python3 -I -S -B tests/smoke/command_key_cohort.py \
+            --runtime-state "$COMMAND_KEY_STATE/runtime" \
+            --runtime-owner "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --runner-source "$GITHUB_SHA" \
+            --cleanup-only | tee command-key-cleanup.json
+      - name: Retain sanitized observations and installed dependency graph
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: published-php-command-keys
+          path: |
+            command-key-package.json
+            command-key-modern.json
+            command-key-cleanup.json
+            ${{ env.CONSUMER }}/composer.lock
+          retention-days: 7

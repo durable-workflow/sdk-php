@@ -75,7 +75,7 @@ if (!is_array($arguments) || !array_is_list($arguments)) {
     throw new RuntimeException('Command arguments must be a list.');
 }
 
-$receiptFields = ['workflow_id', 'run_id', 'command_id', 'update_id', 'request_id', 'command_status',
+$receiptFields = ['workflow_id', 'run_id', 'command_id', 'signal_id', 'update_id', 'request_id', 'command_sequence', 'command_status',
     'update_status', 'outcome', 'retained', 'intent_verified', 'accepted_at'];
 try {
     if ($operation === 'bootstrap' || $operation === 'drive') {
@@ -129,14 +129,23 @@ try {
         $result = ['completed_null' => $client->updateOutcome($workflow, $packet['update_id'], waitTimeoutSeconds: 1) === null];
     } elseif ($operation === 'describe') {
         $description = $client->describeWorkflow($workflow, $run);
-        $result = array_intersect_key($description, array_flip(['workflow_id', 'run_id', 'status', 'current_run_id']));
+        $result = ['workflow_id' => $description->workflowId, 'run_id' => $description->runId,
+            'status' => $description->status];
     } elseif ($operation === 'history') {
         $counts = [];
+        $admissions = [];
         foreach ($client->iterateWorkflowHistory($workflow, $run) as $event) {
             $type = $event['event_type'];
             $counts[$type] = ($counts[$type] ?? 0) + 1;
+            if (in_array($type, ['SignalReceived', 'UpdateAccepted'], true)) {
+                $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+                $admissions[] = ['event_type' => $type,
+                    'command_id' => $payload['workflow_command_id'] ?? $event['workflow_command_id'] ?? null,
+                    'signal_id' => $payload['signal_id'] ?? null, 'update_id' => $payload['update_id'] ?? null,
+                    'request_id' => $payload['request_id'] ?? null];
+            }
         }
-        $result = ['event_counts' => $counts];
+        $result = ['event_counts' => $counts, 'admissions' => $admissions];
     } else {
         throw new RuntimeException('Unknown command-key fixture operation.');
     }

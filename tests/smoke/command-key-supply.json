@@ -7,5 +7,8 @@
   "server_version": "3.9.2",
   "server_source": "5614274d2629d03f92932a07dfee0fb10349ddd9",
   "server_index": "sha256:8ffcdb2a36af3129a1987849aafe8715fe0d3bf9a9648467f0b5cb8eeef43ba9",
-  "server_amd64": "sha256:813c9337c44be7d497efd29e1b463546519e488aa796b5ecf9dfc6f4f10d2128"
+  "server_amd64": "sha256:813c9337c44be7d497efd29e1b463546519e488aa796b5ecf9dfc6f4f10d2128",
+  "server_config": "sha256:71b39c210e16adae7643f1209386c968e757eb304cfc6d6878b4b8400c3e3da9",
+  "loss_proxy_source": "117118c83093822469b3824ba9587ff4068ed29f",
+  "loss_proxy_sha256": "bd1e8ccbbf76f63fc2eafa278a023eb181d405b68d9c30016392e395a1eff725"
 }
