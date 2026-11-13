@@ -110,10 +110,20 @@ class Containers:
         result = self.command(["image", "inspect", image], timeout=15)
         require(result.returncode == 0, "The selected fixture image cannot be inspected")
         rows = json.loads(result.stdout)
-        require(len(rows) == 1 and rows[0]["Id"] == configuration
-                and rows[0]["Os"] == "linux" and rows[0]["Architecture"] == "amd64",
+        require(isinstance(rows, list) and len(rows) == 1, "The selected image inspection is ambiguous")
+        selected = rows[0]
+        descriptor = selected.get("Descriptor") or {}
+        index = image.split("@", 1)[1]
+        descriptor_matches = (descriptor.get("digest") == index and descriptor.get("mediaType") in {
+            "application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json"})
+        index_identity = selected["Id"] == index and descriptor_matches
+        require((selected["Id"] == configuration or index_identity)
+                and (not descriptor or descriptor_matches)
+                and selected["Os"] == "linux" and selected["Architecture"] == "amd64",
                 "The selected public image configuration differs")
-        return rows[0]
+        # The created container must independently bind its selected platform
+        # manifest before start when the engine uses the index as its image ID.
+        return selected
 
     def create(self, role, arguments):
         require(role in ROLES and role not in self.records, "A fixture role may be created only once")
@@ -122,7 +132,7 @@ class Containers:
         self.records[role] = descriptor
         flags = ["create", "--name", "sdk-php-command-keys-" + self.owner + "-" + self.nonce[:10] + "-" + role,
                  "--label", OWNER + "=" + self.owner, "--label", ROLE + "=" + role,
-                 "--label", NONCE + "=" + self.nonce, "--init", "--read-only",
+                 "--label", NONCE + "=" + self.nonce, "--platform", "linux/amd64", "--init", "--read-only",
                  "--cpus", "1", "--memory", "1g", "--pids-limit", "256",
                  "--cap-drop", "ALL", "--security-opt", "no-new-privileges"]
         try:

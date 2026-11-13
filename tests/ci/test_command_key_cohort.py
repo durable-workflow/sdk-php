@@ -25,7 +25,8 @@ ROOT = Path("/run/sdk-php-command-keys.abcdef")
 
 def runtime():
     return {"Id": IDENTITY, "Image": SUPPLY["server_config"], "State": {"Running": True},
-            "Config": {"Labels": {"org.opencontainers.image.revision": SUPPLY["server_source"]}},
+            "Config": {"Image": "durableworkflow/server@" + SUPPLY["server_index"],
+                       "Labels": {"org.opencontainers.image.revision": SUPPLY["server_source"]}},
             "HostConfig": {"ReadonlyRootfs": True, "Privileged": False, "Binds": None,
                            "Init": True, "CapDrop": ["ALL"], "CapAdd": None,
                            "SecurityOpt": ["no-new-privileges"], "Devices": [], "NetworkMode": "bridge",
@@ -38,6 +39,7 @@ def runtime():
 def consumer():
     record = runtime()
     record["Image"] = SUPPLY["php_config"]
+    record["Config"]["Image"] = "php@" + SUPPLY["php_index"]
     record["Config"]["User"] = "1001:1001"
     record["HostConfig"].update(NetworkMode="host", Tmpfs={"/tmp": "size=128m"})
     record["Mounts"] = [{"Type": "bind", "Source": str(ROOT), "Destination": "/closure", "RW": False},
@@ -64,6 +66,51 @@ class ProvenanceControls(unittest.TestCase):
 
     def test_complete_native_profile_selects_numeric_loopback(self):
         self.assertEqual(self.origin(runtime()), "http://127.0.0.1:43123")
+
+    def test_containerd_index_identity_requires_the_exact_platform_manifest(self):
+        for factory, role, check in ((runtime, "server", self.origin), (consumer, "php", self.php)):
+            record = factory()
+            record["Image"] = SUPPLY[role + "_index"]
+            record["ImageManifestDescriptor"] = {
+                "digest": SUPPLY[role + "_amd64"], "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "platform": {"os": "linux", "architecture": "amd64"}}
+            check(record)
+            for mutation in (lambda r: r.update(ImageManifestDescriptor=None),
+                             lambda r: r["ImageManifestDescriptor"].update(digest="sha256:" + "0" * 64),
+                             lambda r: r["ImageManifestDescriptor"]["platform"].update(architecture="arm64"),
+                             lambda r: r["ImageManifestDescriptor"]["platform"].update(os="windows"),
+                             lambda r: r["ImageManifestDescriptor"].update(mediaType="application/vnd.oci.image.index.v1+json"),
+                             lambda r: r["Config"].update(Image="php:latest"),
+                             lambda r: r.update(Image="sha256:" + "0" * 64)):
+                changed = deepcopy(record)
+                mutation(changed)
+                with self.subTest(role=role), self.assertRaises(RuntimeError):
+                    check(changed)
+
+    def test_present_wrong_manifest_refuses_even_with_matching_classic_config(self):
+        record = runtime()
+        record["ImageManifestDescriptor"] = {"digest": "sha256:" + "0" * 64,
+                                              "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                                              "platform": {"os": "linux", "architecture": "amd64"}}
+        with self.assertRaisesRegex(RuntimeError, "platform manifest differs"):
+            self.origin(record)
+
+    def test_wrong_selected_manifest_refuses_before_native_process_start(self):
+        resources = Mock()
+        resources.identities = {"server": IDENTITY}
+        resources.pull.return_value = {"Config": {"Labels": {"org.opencontainers.image.revision": SUPPLY["server_source"]}}}
+        resources.create.return_value = IDENTITY
+        record = runtime()
+        record["State"]["Running"] = False
+        record["Image"] = SUPPLY["server_index"]
+        record["ImageManifestDescriptor"] = {"digest": "sha256:" + "0" * 64,
+                                              "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                                              "platform": {"os": "linux", "architecture": "amd64"}}
+        resources.owned.return_value = record
+        with self.assertRaisesRegex(RuntimeError, "platform manifest differs"):
+            MODULE.prepare_containers(resources, SUPPLY, "synthetic", ROOT)
+        resources.start.assert_not_called()
+        resources.remove_all.assert_called_once()
 
     def test_native_source_configuration_network_and_ports_are_closed(self):
         mutations = [lambda r: r.update(Image="sha256:" + "0" * 64),

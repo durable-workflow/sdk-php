@@ -66,8 +66,28 @@ def stage_inventory(root, expected, root_identity, closure, supply, approved_fix
     return result
 
 
-def confined(record, configuration):
-    require(record["State"]["Running"] and record["Image"] == configuration,
+def selected_image(record, supply, role):
+    configuration = supply[role + "_config"]
+    index = supply[role + "_index"]
+    repository = "durableworkflow/server" if role == "server" else "php"
+    require(record["Config"]["Image"] == repository + "@" + index,
+            "The fixture must select its exact public image index")
+    descriptor = record.get("ImageManifestDescriptor")
+    if record["Image"] == configuration and descriptor is None:
+        return
+    require(record["Image"] in {configuration, index} and isinstance(descriptor, dict),
+            "The fixture image or selected manifest is missing")
+    platform = descriptor.get("platform") or {}
+    require(descriptor.get("digest") == supply[role + "_amd64"]
+            and descriptor.get("mediaType") in {"application/vnd.oci.image.manifest.v1+json",
+                                                 "application/vnd.docker.distribution.manifest.v2+json"}
+            and platform.get("os") == "linux" and platform.get("architecture") == "amd64",
+            "The selected fixture platform manifest differs")
+
+
+def confined(record, supply, role):
+    selected_image(record, supply, role)
+    require(record["State"]["Running"],
             "The fixture is not running the selected image configuration")
     host = record["HostConfig"]
     require(host["ReadonlyRootfs"] and not host["Privileged"] and not host.get("Binds")
@@ -80,7 +100,7 @@ def confined(record, configuration):
 
 def runtime_origin(resources, identity, supply):
     record = resources.owned(identity, "server")
-    confined(record, supply["server_config"])
+    confined(record, supply, "server")
     require(record["Config"]["Labels"].get("org.opencontainers.image.revision") == supply["server_source"],
             "The native source identity differs")
     require(record["HostConfig"]["NetworkMode"] == "bridge", "The native network profile differs")
@@ -100,7 +120,7 @@ def runtime_origin(resources, identity, supply):
 
 def consumer_record(resources, identity, supply, root):
     record = resources.owned(identity, "consumer")
-    confined(record, supply["php_config"])
+    confined(record, supply, "php")
     host = record["HostConfig"]
     require(host["NetworkMode"] == "host" and not record["NetworkSettings"]["Ports"],
             "The PHP fixture network profile differs")
@@ -148,6 +168,7 @@ def prepare_containers(resources, supply, token, root):
                                   "--tmpfs", "/app/database:uid=1000,gid=1000,mode=0700,size=32m",
                                   "--publish", "127.0.0.1::8080", "--env", "DB_CONNECTION=sqlite",
                                   "--env", "DW_AUTH_DRIVER=token", "--env", "DW_AUTH_TOKEN=" + token, server_image])
+        selected_image(resources.owned(server, "server"), supply, "server")
         resources.start(server, "server")
         origin = runtime_origin(resources, server, supply)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -170,6 +191,7 @@ def prepare_containers(resources, supply, token, root):
                                     "--workdir", "/closure/consumer", "--tmpfs", "/tmp:mode=1777,size=128m",
                                     "--mount", "type=bind,src=" + str(root) + ",dst=/closure,readonly", php_image,
                                     "php", "-c", "/usr/local/etc/php/php.ini-production", "-r", "sleep(900);"])
+        selected_image(resources.owned(consumer, "consumer"), supply, "php")
         resources.start(consumer, "consumer")
         consumer_record(resources, consumer, supply, root)
         probe = resources.command(["exec", consumer, "php", "-c", "/usr/local/etc/php/php.ini-production", "-r",

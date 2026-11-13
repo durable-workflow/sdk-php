@@ -72,6 +72,40 @@ class ContainerControls(unittest.TestCase):
                     self.assertRaises(RuntimeError):
                 self.resources.inspect(IDENTITY)
 
+    def test_pulled_image_accepts_config_id_or_explicit_index_descriptor(self):
+        configuration = "sha256:" + "c" * 64
+        index = "sha256:" + "d" * 64
+        image = "php@" + index
+        for record in ({"Id": configuration, "Os": "linux", "Architecture": "amd64"},
+                       {"Id": index, "Os": "linux", "Architecture": "amd64", "Descriptor": {
+                           "digest": index, "mediaType": "application/vnd.oci.image.index.v1+json"}}):
+            with patch.object(self.resources, "command", side_effect=[result(), result(output=json.dumps([record]))]) as invoke:
+                self.assertEqual(self.resources.pull(image, configuration), record)
+            self.assertEqual(invoke.call_args_list[0].args[0], ["pull", "--platform", "linux/amd64", image])
+
+    def test_index_image_refuses_wrong_digest_type_or_platform(self):
+        configuration = "sha256:" + "c" * 64
+        index = "sha256:" + "d" * 64
+        valid = {"Id": index, "Os": "linux", "Architecture": "amd64", "Descriptor": {
+            "digest": index, "mediaType": "application/vnd.oci.image.index.v1+json"}}
+        changes = [{"Id": "sha256:" + "0" * 64}, {"Os": "windows"}, {"Architecture": "arm64"},
+                   {"Descriptor": None}, {"Descriptor": {"digest": "sha256:" + "0" * 64,
+                    "mediaType": "application/vnd.oci.image.index.v1+json"}},
+                   {"Id": configuration, "Descriptor": {"digest": "sha256:" + "0" * 64,
+                    "mediaType": "application/vnd.oci.image.index.v1+json"}},
+                   {"Descriptor": {"digest": index, "mediaType": "application/vnd.oci.image.manifest.v1+json"}}]
+        for change in changes:
+            record = valid | change
+            with self.subTest(change=change), patch.object(self.resources, "command", side_effect=[
+                    result(), result(output=json.dumps([record]))]), self.assertRaisesRegex(RuntimeError, "configuration differs"):
+                self.resources.pull("php@" + index, configuration)
+
+    def test_image_tags_and_unselected_repositories_refuse_before_pull(self):
+        for image in ("php:latest", "php:8.3", "other/image@sha256:" + "d" * 64):
+            with self.subTest(image=image), patch.object(self.resources, "command") as invoke, self.assertRaises(RuntimeError):
+                self.resources.pull(image, "sha256:" + "c" * 64)
+            invoke.assert_not_called()
+
     def test_foreign_owner_role_and_nonce_are_preserved(self):
         for field in (MODULE.OWNER, MODULE.ROLE, MODULE.NONCE):
             record = owned_record()

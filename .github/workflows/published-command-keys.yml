@@ -90,7 +90,7 @@ jobs:
               raise RuntimeError("An exact trusted runner source is required")
           path="tests/smoke/command_key_cohort.py"
           raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
-          if hashlib.sha256(raw).hexdigest() != "8204003c5064670869168c1e759778debdc2529a6620048026e3a1540e7dca18":
+          if hashlib.sha256(raw).hexdigest() != "0aa2f6b87f68c67ef67bd32929e10bff6bf0226918aaea44bb9ea065e2efb1db":
               raise RuntimeError("The captured controller differs from its independently fixed digest")
           exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
           ' \
@@ -128,7 +128,7 @@ jobs:
               raise RuntimeError("An exact trusted runner source is required")
           path="tests/smoke/command_key_cohort.py"
           raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
-          if hashlib.sha256(raw).hexdigest() != "8204003c5064670869168c1e759778debdc2529a6620048026e3a1540e7dca18":
+          if hashlib.sha256(raw).hexdigest() != "0aa2f6b87f68c67ef67bd32929e10bff6bf0226918aaea44bb9ea065e2efb1db":
               raise RuntimeError("The captured controller differs from its independently fixed digest")
           exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
           ' \
@@ -155,7 +155,7 @@ jobs:
               raise RuntimeError("An exact trusted runner source is required")
           path="tests/smoke/command_key_cohort.py"
           raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
-          if hashlib.sha256(raw).hexdigest() != "8204003c5064670869168c1e759778debdc2529a6620048026e3a1540e7dca18":
+          if hashlib.sha256(raw).hexdigest() != "0aa2f6b87f68c67ef67bd32929e10bff6bf0226918aaea44bb9ea065e2efb1db":
               raise RuntimeError("The captured controller differs from its independently fixed digest")
           exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
           ' \

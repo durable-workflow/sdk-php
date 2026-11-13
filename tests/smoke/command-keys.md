@@ -87,6 +87,12 @@ and captures its complete consumer/vendor/fixture include tree without loading
 PHP. A root-controlled directory receives the verified copy. Preparation
 creates the selected linux/amd64 Server and an idle, unprivileged PHP consumer.
 Both have read-only root filesystems, 1-CPU/1-GiB/256-PID caps and bounded tmpfs.
+Creation explicitly selects linux/amd64. Classic image stores must report the
+selected config digest. Multi-platform stores may report the exact selected
+index instead, with its matching index descriptor; the created container must
+then report the independently pinned linux/amd64 platform manifest before it
+starts. A present manifest descriptor must always agree, even when the config
+digest matches. Missing, conflicting or other-platform identities refuse.
 The PHP consumer mounts the entire include tree read-only at `/closure`; only
 its separate `/tmp` is writable. Cohort execution invokes the adapter inside
 that consumer and checks the complete include inventory, mount configuration,
@@ -124,7 +130,8 @@ overwrite/rename controls, a writable-mount countercontrol, full consumer
 profile qualification and independent review are still required. File modes
 and the inert inventory tests alone provide no isolation verdict. The proposed
 official PHP image identities in the supply are raw-registry metadata bindings;
-this prototype has not pulled or qualified that consumer. The complete SDK
+read-only base-profile observations on the PR do not qualify the SDK consumer.
+The complete SDK
 member binding is proposed source and also requires independent review.
 
 Run the offline input controls against an existing immutable PHP image:
