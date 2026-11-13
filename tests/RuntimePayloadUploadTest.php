@@ -164,6 +164,21 @@ final class RuntimePayloadUploadTest extends TestCase
         self::assertLessThanOrEqual(1100, strlen((string) $http->requests[3]->getBody()));
     }
 
+    public function testConfiguredStorageOffloadsAboveTheAdvertisedCompletionLimit(): void
+    {
+        $policy = self::discovery();
+        $policy['limits'] = ['max_payload_bytes' => 1100, 'max_workflow_task_completion_bytes' => 1500];
+        $policy['namespace']['external_payload_storage']['threshold_bytes'] = 1500;
+        [$client, $http] = $this->client($policy);
+        $blob = $client->payloadCodec()->encode(str_repeat('a', 600));
+        $client->completeWorkflowTask('task', 'worker', 1,
+            [['type' => 'record_side_effect', 'result' => $blob], ['type' => 'complete_workflow', 'result' => $blob]]);
+
+        self::assertCount(3, $http->requests);
+        self::assertSame($blob, (string) $http->requests[1]->getBody());
+        self::assertLessThanOrEqual(1500, strlen((string) $http->requests[2]->getBody()));
+    }
+
     #[DataProvider('unconfiguredCompletionStorage')]
     public function testExplicitCompletionLimitAllowsInlineValuesWithoutConfiguredStorage(string $status, bool $overLimit): void
     {
@@ -171,6 +186,9 @@ final class RuntimePayloadUploadTest extends TestCase
         $policy = self::discovery();
         $policy['limits'] = ['max_payload_bytes' => 1100, 'max_workflow_task_completion_bytes' => $limit];
         $policy['namespace']['external_payload_storage']['status'] = $status;
+        if ($status === 'unsupported') {
+            unset($policy['namespace']['external_payload_storage']['transport']);
+        }
         $refusal = new Response(413, [], json_encode(['reason' => 'payload_too_large',
             'limit_kind' => 'workflow_task_completion_bytes', 'limit' => $limit], JSON_THROW_ON_ERROR));
         [$client, $http] = $this->client($policy, completionResponse: $overLimit ? $refusal : null);
