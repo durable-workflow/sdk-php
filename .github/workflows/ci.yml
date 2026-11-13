@@ -1004,11 +1004,6 @@ jobs:
             php: '8.2'
             laravel: '^12.0'
             workflow: '^1.0'
-          - source: embedded-v2
-            source_mode: embedded_v2
-            php: '8.3'
-            laravel: '^12.0'
-            workflow: '^2.21'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
@@ -1027,6 +1022,66 @@ jobs:
           coverage: none
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+      - name: Exercise the established Laravel application transition
+        env:
+          LARAVEL_REQUIREMENT: ${{ matrix.laravel }}
+          SDK_PATH: ${{ github.workspace }}
+          SOURCE_MODE: ${{ matrix.source_mode }}
+          WORKFLOW_REQUIREMENT: ${{ matrix.workflow }}
+        run: scripts/ci/laravel-service-transition-smoke.sh
+
+  laravel-transition-compat83:
+    name: Laravel ${{ matrix.source }} to service mode
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: action-policy
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - source: embedded-v2
+            source_mode: embedded_v2
+            php: '8.3'
+            laravel: '^12.0'
+            workflow: '^2.21'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+      - name: Select stock-profile system Python
+        run: |
+          /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          echo /usr/bin >> "$GITHUB_PATH"
+      - name: Create isolated transition Composer state
+        run: |
+          state="$(mktemp -d "$RUNNER_TEMP/transition-composer.XXXXXX")"
+          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp"
+          {
+            echo "COMPOSER_HOME=$state/home"
+            echo "COMPOSER_CACHE_DIR=$state/cache"
+            echo "TMPDIR=$state/tmp"
+          } >> "$GITHUB_ENV"
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git
+      - name: Disable APT download retries (CVE-2026-109518)
+        run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
+      - name: Set up the qualified stock PHP 8.3 transition profile
+        uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
+        with:
+          php-version: '8.3'
+          ini-file: production
+          tools: composer:2.10.3,phpunit:11.5.57
+          coverage: none
+      - name: Require the actual stock transition modules
+        run: |
+          php -r 'if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 3) { throw new RuntimeException("Expected PHP 8.3"); }
+          foreach (["curl", "mbstring", "pdo_sqlite", "sqlite3", "xml"] as $extension) {
+            if (!extension_loaded($extension)) { throw new RuntimeException("Missing ".$extension); }
+          }'
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - name: Exercise the established Laravel application transition
         env:
           LARAVEL_REQUIREMENT: ${{ matrix.laravel }}
@@ -1581,6 +1636,7 @@ jobs:
       - framework-compat84
       - framework-compat83
       - laravel-transition-compat
+      - laravel-transition-compat83
       - analyse
       - docs
       - package-smoke
@@ -1605,6 +1661,7 @@ jobs:
           FRAMEWORK_84_RESULT: ${{ needs.framework-compat84.result }}
           FRAMEWORK_83_RESULT: ${{ needs.framework-compat83.result }}
           LARAVEL_TRANSITION_RESULT: ${{ needs.laravel-transition-compat.result }}
+          LARAVEL_TRANSITION_83_RESULT: ${{ needs.laravel-transition-compat83.result }}
           ANALYSIS_RESULT: ${{ needs.analyse.result }}
           DOCS_RESULT: ${{ needs.docs.result }}
           PACKAGE_RESULT: ${{ needs.package-smoke.result }}
@@ -1619,6 +1676,7 @@ jobs:
           test "$FRAMEWORK_84_RESULT" = success
           test "$FRAMEWORK_83_RESULT" = success
           test "$LARAVEL_TRANSITION_RESULT" = success
+          test "$LARAVEL_TRANSITION_83_RESULT" = success
           test "$ANALYSIS_RESULT" = success
           test "$DOCS_RESULT" = success
           test "$PACKAGE_RESULT" = success
