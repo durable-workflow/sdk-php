@@ -11,7 +11,7 @@ use DurableWorkflow\Failure\FailureReportLimiter;
 
 /** Namespace-scoped discovery and request-local, content-addressed uploads.
  * @phpstan-type PayloadSlot array{path: list<int|string>, blob: string}
- * @phpstan-type UploadPolicy array{threshold_bytes: int, max_bytes: int, request_bytes: int, timeout_seconds: int, status: string, completion_context?: bool, prepared_completion_context?: bool, scope_completion_context?: bool}
+ * @phpstan-type UploadPolicy array{threshold_bytes: int, max_bytes: int, request_bytes: int, timeout_seconds: int, status: string, completion_request_bytes?: mixed, completion_context?: bool, prepared_completion_context?: bool, scope_completion_context?: bool}
  * @phpstan-type UploadRequest array{headers: array<string, string>, path: string, worker: bool, budget: RequestBudget|null}
  */
 final class RuntimePayloadUploads
@@ -62,6 +62,22 @@ final class RuntimePayloadUploads
         }
 
         $policy = $this->requestPolicy($body, $path, $worker, $headers, $budget);
+        if ($worker && preg_match('~\A/worker/workflow-tasks/[^/]+/complete\z~', $path) === 1
+            && array_key_exists('completion_request_bytes', $policy)) {
+            $limit = $policy['completion_request_bytes'];
+            if (!is_int($limit) || $limit < 1) {
+                throw new ExternalPayloadException('Invalid workflow-task completion limit in runtime discovery.', 422, 'external_payload_unsupported');
+            }
+            $inlineLimit = $policy['request_bytes'];
+            $policy['request_bytes'] = $limit;
+            if ($requestBytesLimit === null && in_array($policy['status'], ['unconfigured', 'disabled', 'unsupported'], true)
+                && array_filter($payloads, static fn (array $payload): bool => strlen($payload['blob']) > $inlineLimit) === []) {
+                // Without configured storage, individually valid values can still fit the
+                // completion's larger aggregate limit. Let the Server return its typed
+                // structural refusal if the actual serialized batch exceeds that limit.
+                return $body;
+            }
+        }
         if ($requestBytesLimit !== null) {
             $policy['request_bytes'] = min($policy['request_bytes'], $requestBytesLimit);
         }
@@ -289,7 +305,7 @@ final class RuntimePayloadUploads
     }
 
     /** @param array<string, string> $headers
-     * @return array{threshold_bytes: int, max_bytes: int, request_bytes: int, timeout_seconds: int, status: string, completion_context?: bool, prepared_completion_context?: bool, scope_completion_context?: bool}
+     * @return UploadPolicy
      */
     private function policy(array $headers, bool $worker, ?RequestBudget $budget = null): array
     {
@@ -337,6 +353,11 @@ final class RuntimePayloadUploads
                     && ($manifest['upload']['completion_context']['header'] ?? null) === self::COMPLETION_HEADER,
                 'prepared_completion_context' => ($manifest['upload']['completion_context']['prepared_schema'] ?? null) === self::PREPARED_COMPLETION_SCHEMA,
                 'scope_completion_context' => ($manifest['upload']['completion_context']['scope_schema'] ?? null) === self::PREPARED_COMPLETION_SCHEMA];
+        }
+        if (is_array($info['limits'] ?? null) && array_key_exists('max_workflow_task_completion_bytes', $info['limits'])) {
+            // Validate only on the completion route; this field grants no authority
+            // to widen an ordinary endpoint or an older producer's request limit.
+            $policy['completion_request_bytes'] = $info['limits']['max_workflow_task_completion_bytes'];
         }
         $this->policies[$key] = ['expires' => time() + 60, 'policy' => $policy];
 

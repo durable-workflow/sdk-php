@@ -6,6 +6,17 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Workflow completion planning honors the Server's advertised
+  `limits.max_workflow_task_completion_bytes` without changing ordinary request
+  or per-value limits (.github#228, server#1136). When external storage is
+  explicitly unconfigured, disabled or unsupported, individually valid values
+  can be submitted inline. An oversized aggregate is sent once so the Server's
+  typed structural-limit refusal reaches the worker. Configured-storage
+  failures keep their existing behavior; older producers retain the
+  conservative ordinary-request fallback.
+
 ## [3.18.0] - 2026-11-13
 
 ### Added
