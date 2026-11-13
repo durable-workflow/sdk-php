@@ -140,8 +140,17 @@ writable owned files with a read-only mount, then removes only that mount's
 read-only qualifier for the negative primitive. The production guard must
 refuse the writable mount. The primitive must then show successful marker
 overwrite/rename, demonstrating that ordinary file permissions cannot explain
-the read-only result. Genuine PHP includes only the generated constant leaf.
+the read-only result. Only the root-owned sealed case includes a generated
+constant PHP leaf; the mutable-tree controls execute the literal probe only.
 No published SDK, application, repository or host control file is mounted.
+
+The complete intended tree is constructed from the captured fixture constants
+before the privilege transition, including every path, kind, mode, size and
+body digest. Both staged and root-owned inventories must equal that retained
+authority. A fresh inventory of the mutable staging path cannot redefine it.
+The inert regression simulates the privileged copy under an owned temporary
+directory, replaces a staged leaf after authority selection and proves refusal
+before a mocked container creation. It invokes neither sudo nor Docker.
 
 The opt-in tests share the proposed consumer argument factory and the exact
 selected image/platform and captured-ID lifecycle checks. They create three

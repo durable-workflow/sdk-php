@@ -1,9 +1,10 @@
 """Opt-in mount controls using generated include files, never package code."""
 
 from contextlib import contextmanager
+import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import secrets
 import shutil
@@ -13,6 +14,7 @@ import tempfile
 import time
 import types
 import unittest
+from unittest.mock import Mock, patch
 
 
 HERE = Path(__file__).resolve().parent
@@ -21,6 +23,8 @@ IMAGE = os.environ.get("SDK_PHP_COMMAND_KEY_MOUNT_IMAGE", "")
 OBSERVATIONS = []
 TARGETS = ("consumer/vendor/autoload.php", "consumer/vendor/composer/nested.php",
            "fixture/command-key-client.php", "fixture/nested/leaf.php")
+ORIGINAL = b"<?php return 'original';\n"
+REPLACEMENT = b"synthetic replacement\n"
 PROBE = r'''
 $targets=['consumer/vendor/autoload.php','consumer/vendor/composer/nested.php',
           'fixture/command-key-client.php','fixture/nested/leaf.php'];
@@ -62,6 +66,26 @@ CLOSURE = load("command_key_include_closure")
 SUPPLY = json.loads(selected_bytes(SMOKE / "command-key-supply.json"))
 
 
+def generated_files():
+    files = {}
+    for index, relative in enumerate(TARGETS):
+        files[relative] = ORIGINAL
+        files[(PurePosixPath(relative).parent / ("candidate-" + str(index))).as_posix()] = REPLACEMENT
+    return files
+
+
+def intended_tree(*, sealed):
+    entries = {".": {"kind": "directory", "mode": 0o555 if sealed else 0o700}}
+    for name, raw in generated_files().items():
+        for parent in PurePosixPath(name).parents:
+            entries[parent.as_posix()] = {"kind": "directory", "mode": 0o555 if sealed else 0o700}
+        entries[name] = {"kind": "file", "mode": 0o444 if sealed else 0o600,
+                         "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+    digest = hashlib.sha256(json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return {"entries": dict(sorted(entries.items())), "sha256": digest,
+            "bytes": sum(len(raw) for raw in generated_files().values())}
+
+
 def boundary_arguments(root, *, writable=False):
     arguments = ["--pull", "never", *COHORT.php_consumer_arguments(root, SUPPLY)]
     if writable:
@@ -74,7 +98,6 @@ def boundary_arguments(root, *, writable=False):
 
 class ConsumerArguments(unittest.TestCase):
     def test_unprivileged_complete_closure_factory_has_no_writable_alias(self):
-        from unittest.mock import patch
         root = Path("/run/sdk-php-command-keys.abcdef")
         with patch.object(COHORT.os, "getuid", return_value=1001), patch.object(COHORT.os, "getgid", return_value=1001):
             arguments = boundary_arguments(root)
@@ -88,6 +111,81 @@ class ConsumerArguments(unittest.TestCase):
                          [arguments.index("--mount") + 1])
         with patch.object(COHORT.os, "getuid", return_value=0), self.assertRaises(RuntimeError):
             COHORT.php_consumer_arguments(root, SUPPLY)
+
+
+class GeneratedTreeAuthority(unittest.TestCase):
+    @contextmanager
+    def copy_sandbox(self, *, replace_before_copy):
+        with tempfile.TemporaryDirectory(prefix="sdk-php-copy-authority-") as temporary:
+            work = Path(temporary)
+            case = SyntheticMountBoundary("test_root_owned_sealed_closure_refuses_all_replacements_and_keeps_genuine_php")
+            case.work = work / "work"
+            case.work.mkdir(mode=0o700)
+            case.active = set()
+            surrogate = work / "root-surrogate"
+            reported = Path("/run/sdk-php-command-keys.ABCDEF")
+            actual_stat, actual_resolve, actual_inventory = Path.lstat, Path.resolve, CLOSURE.inventory
+            copied = []
+
+            def stat_path(path, *arguments, **keywords):
+                if path == reported:
+                    metadata = actual_stat(surrogate)
+                    return types.SimpleNamespace(st_uid=0, st_mode=metadata.st_mode,
+                                                 st_dev=metadata.st_dev, st_ino=metadata.st_ino)
+                return actual_stat(path, *arguments, **keywords)
+
+            def resolve_path(path, *arguments, **keywords):
+                return reported if path == reported else actual_resolve(path, *arguments, **keywords)
+
+            def inventory(path, owner, *, sealed):
+                if path == reported:
+                    return actual_inventory(surrogate, os.getuid(), sealed=sealed)
+                return actual_inventory(path, owner, sealed=sealed)
+
+            def simulated_sudo(arguments, **_):
+                self.assertEqual(arguments[:2], ["/usr/bin/sudo", "-n"])
+                command = arguments[2]
+                if command == "/usr/bin/mktemp":
+                    surrogate.mkdir(mode=0o700)
+                    return types.SimpleNamespace(stdout=str(reported) + "\n", returncode=0)
+                if command == "/usr/bin/cp":
+                    staged = case.work / "sealed"
+                    leaf = staged / "fixture/nested/leaf.php"
+                    if replace_before_copy:
+                        leaf.chmod(0o600)
+                        leaf.write_bytes(b"<?php return 'changed!';\n")
+                        leaf.chmod(0o444)
+                    shutil.copytree(staged, surrogate, dirs_exist_ok=True)
+                    copied.append((surrogate / "fixture/nested/leaf.php").read_bytes())
+                    return types.SimpleNamespace(returncode=0)
+                if command == "/usr/bin/chmod":
+                    surrogate.chmod(0o555)
+                    return types.SimpleNamespace(returncode=0)
+                raise AssertionError("Unexpected subprocess in inert copy control")
+
+            try:
+                with patch.object(Path, "lstat", stat_path), patch.object(Path, "resolve", resolve_path), \
+                        patch.object(CLOSURE, "inventory", side_effect=inventory), \
+                        patch.object(subprocess, "run", side_effect=simulated_sudo), patch.object(case, "addCleanup"):
+                    yield case, reported, copied
+            finally:
+                for path in [work, *work.rglob("*")]:
+                    if path.is_dir() and not path.is_symlink():
+                        path.chmod(0o700)
+
+    def test_complete_literal_tree_crosses_simulated_copy_unchanged(self):
+        with self.copy_sandbox(replace_before_copy=False) as (case, reported, copied):
+            self.assertEqual(case.sealed_root(), reported)
+            self.assertEqual(copied, [ORIGINAL])
+
+    def test_precopy_replacement_cannot_redefine_the_generated_authority(self):
+        create_container = Mock()
+        with self.copy_sandbox(replace_before_copy=True) as (case, _, copied):
+            with self.assertRaises(AssertionError):
+                root = case.sealed_root()
+                create_container(root)
+            self.assertEqual(copied, [b"<?php return 'changed!';\n"])
+        create_container.assert_not_called()
 
 
 @unittest.skipUnless(IMAGE, "Boundary controls require an exact reviewed source and cached selected PHP image.")
@@ -122,20 +220,23 @@ class SyntheticMountBoundary(unittest.TestCase):
     def synthetic_tree(self, name):
         root = self.work / name
         root.mkdir(mode=0o700)
-        for index, relative in enumerate(TARGETS):
+        for relative, raw in generated_files().items():
             path = root / relative
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            path.write_text("<?php return 'original';\n")
+            path.write_bytes(raw)
             path.chmod(0o600)
-            candidate = path.parent / ("candidate-" + str(index))
-            candidate.write_text("synthetic replacement\n")
-            candidate.chmod(0o600)
+        for path in root.rglob("*"):
+            if path.is_dir():
+                path.chmod(0o700)
+        self.assertEqual(CLOSURE.inventory(root, os.getuid(), sealed=False), intended_tree(sealed=False))
         return root
 
     def sealed_root(self):
+        expected = intended_tree(sealed=True)
         source = self.synthetic_tree("source")
         staged = self.work / "sealed"
-        CLOSURE.copy_tree(source, staged, CLOSURE.inventory(source, os.getuid(), sealed=False))
+        CLOSURE.copy_tree(source, staged, intended_tree(sealed=False))
+        self.assertEqual(CLOSURE.inventory(staged, os.getuid(), sealed=True), expected)
         result = subprocess.run(["/usr/bin/sudo", "-n", "/usr/bin/mktemp", "-d",
                                  "/run/sdk-php-command-keys.XXXXXX"], capture_output=True, text=True,
                                 check=True, timeout=15)
@@ -153,8 +254,8 @@ class SyntheticMountBoundary(unittest.TestCase):
                         str(staged) + "/.", str(root) + "/"], check=True, capture_output=True, timeout=15)
         subprocess.run(["/usr/bin/sudo", "-n", "/usr/bin/chmod", "0555", "--", str(root)],
                        check=True, capture_output=True, timeout=15)
-        self.assertEqual(CLOSURE.inventory(root, 0, sealed=True)["sha256"],
-                         CLOSURE.inventory(staged, os.getuid(), sealed=True)["sha256"])
+        self.assertEqual(CLOSURE.inventory(root, 0, sealed=True), expected)
+        self.assertEqual(CLOSURE.inventory(staged, os.getuid(), sealed=True), expected)
         return root
 
     def remove_root(self, root, identity):
@@ -227,7 +328,6 @@ class SyntheticMountBoundary(unittest.TestCase):
         with self.consumer(root) as (resources, identity):
             COHORT.consumer_record(resources, identity, SUPPLY, root)
             self.assertEqual(self.probe(resources, identity), [False] * (2 * len(TARGETS)))
-            self.genuine_php(resources, identity)
         self.assertEqual(CLOSURE.inventory(root, os.getuid(), sealed=False), before)
         # This negative primitive receives only generated marker data. It is
         # deliberately rejected by the production guard and never admitted.
