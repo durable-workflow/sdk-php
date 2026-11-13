@@ -2008,21 +2008,8 @@ final class CooperativeCancellationTest extends TestCase
 
     private function client(?Transport $transport = null, string $namespace = 'default'): Client
     {
-        $client = new Client($this->runtimeUrl, namespace: $namespace, token: $this->token,
+        return new Client($this->runtimeUrl, namespace: $namespace, token: $this->token,
             transport: $transport);
-        if ($transport !== null && method_exists($client, 'withActivityLeaseBootstrap')) {
-            // These owner-only observers wrap the default HTTP transport. The
-            // independent helper recreates that same URI/auth/TLS configuration,
-            // without inheriting the owner's fault injection or callback pipes.
-            $bootstrap = $this->directory.'/activity-lease-'.hash('sha256', $namespace).'.php';
-            file_put_contents($bootstrap, '<?php return new \\DurableWorkflow\\Client('
-                .var_export($this->runtimeUrl, true).', namespace: '.var_export($namespace, true).', '
-                .'token: getenv("DURABLE_WORKFLOW_AUTH_TOKEN") ?: "test-token");');
-            chmod($bootstrap, 0600);
-            $client = $client->withActivityLeaseBootstrap($bootstrap);
-        }
-
-        return $client;
     }
 
     private function queue(string $kind): string
