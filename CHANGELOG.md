@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.17.0] - 2026-11-13
+
 ### Added
 
 - Signal and update request ID conflicts from native Server 3.9.0 (server#934,
