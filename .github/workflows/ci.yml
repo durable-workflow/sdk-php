@@ -324,7 +324,8 @@ jobs:
   framework-compat:
     name: ${{ matrix.framework }} ${{ matrix.version }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
+    needs: action-policy
     strategy:
       fail-fast: false
       matrix:
@@ -336,56 +337,37 @@ jobs:
             exercised_package: 'laravel/framework:12.69.0'
             bootstrap: fresh_supported_install
             script: laravel.php
-          - framework: Laravel
-            version: '12'
-            php: '8.4'
-            package: 'laravel/framework:^12.69.0'
-            exercised_package: 'laravel/framework:12.69.0'
-            bootstrap: fresh_supported_install
-            script: laravel.php
-          - framework: Laravel
-            version: '13'
-            php: '8.4'
-            package: 'laravel/framework:^13.30.0'
-            exercised_package: 'laravel/framework:13.30.0'
-            bootstrap: fresh_supported_install
-            script: laravel.php
-          - framework: Symfony
-            version: '6.4'
-            php: '8.1'
-            package: 'symfony/framework-bundle:^6.4'
-            console_package: 'symfony/console:^6.4'
-            script: symfony.php
           - framework: Symfony
             version: '7'
             php: '8.2'
             package: 'symfony/framework-bundle:^7.0'
             console_package: 'symfony/console:^7.0'
             script: symfony.php
-          - framework: Symfony
-            version: '8'
-            php: '8.4'
-            package: 'symfony/framework-bundle:^8.0'
-            console_package: 'symfony/console:^8.0'
-            script: symfony.php
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
-          python-version: '3.12'
+          persist-credentials: false
+      - name: Check out the fixed APT prerequisite
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          repository: durable-workflow/.github
+          ref: 18783be6bef737cc778e4c7282a8797e39daa61a
+          path: .central-apt-source
+          persist-credentials: false
+      - name: Select Ubuntu's Python 3.12
+        run: |
+          /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          echo /usr/bin >> "$GITHUB_PATH"
       - name: Select authenticated dependency trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
-        with:
-          php-version: ${{ matrix.php }}
-          tools: composer:2.10.3
-          coverage: none
+      - name: Prepare the reviewed PHP container runtime
+        run: bash "$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh" "8.2"
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - name: Install SDK into a clean framework consumer
         env:
           FRAMEWORK_BOOTSTRAP: ${{ matrix.bootstrap }}
@@ -430,13 +412,13 @@ jobs:
             php "$GITHUB_WORKSPACE/scripts/ci/assert-installed-version.php" "$consumer" laravel/framework "$exercised_version"
           fi
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - name: Install SDK into a fresh Laravel application for cached role isolation
         if: matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4'
         env:
           FRAMEWORK_EXERCISED_PACKAGE: ${{ matrix.exercised_package }}
         run: |
-          application="$RUNNER_TEMP/laravel-fresh-config-cache"
+          application="$SDK_PHP_CI_STATE/data/laravel-fresh-config-cache"
           exercised_version="${FRAMEWORK_EXERCISED_PACKAGE#laravel/framework:}"
           composer create-project laravel/laravel:^13.0 "$application" \
             --no-interaction --prefer-dist --no-progress
@@ -450,7 +432,7 @@ jobs:
       - name: Exercise fresh Laravel cached role isolation
         if: matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4'
         run: |
-          bash tests/compat/laravel-fresh-config-cache.sh "$RUNNER_TEMP/laravel-fresh-config-cache"
+          bash tests/compat/laravel-fresh-config-cache.sh "$SDK_PHP_CI_STATE/data/laravel-fresh-config-cache"
       - name: Exercise native container, diagnostics, and testing integration
         env:
           COMPAT_SCRIPT: ${{ matrix.script }}
@@ -475,13 +457,13 @@ jobs:
           fi
           compatibility_scripts+=(tests/compat/history-cache.php tests/compat/execution-telemetry.php)
           php tests/compat/static-credentials.php "$consumer/vendor/autoload.php" "$COMPAT_SCRIPT"
-          "$consumer/vendor/bin/phpstan" analyse -c phpstan-framework.neon \
+          php "$consumer/vendor/bin/phpstan" analyse -c phpstan-framework.neon \
             --autoload-file="$consumer/vendor/autoload.php" \
             src/Bridge/FrameworkRuntimeException.php \
             src/Bridge/ServiceConfiguration.php src/Bridge/Event \
             "$bridge_path" "${compatibility_scripts[@]}"
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - name: Exercise optional tracing in framework workers
         if: >-
           (matrix.framework == 'Laravel' && matrix.version == '12' && matrix.php == '8.2') ||
@@ -492,6 +474,337 @@ jobs:
           FRAMEWORK_EXERCISED_PACKAGE: ${{ matrix.exercised_package }}
           DURABLE_WORKFLOW_TEST_TRACING: '1'
         run: |
+          php -r 'if (getenv("DURABLE_WORKFLOW_TEST_TRACING") !== "1") { throw new RuntimeException("Tracing control flag was not forwarded"); }'
+          consumer="$(cat "$RUNNER_TEMP/framework-consumer")"
+          composer --working-dir="$consumer" require --dev open-telemetry/api:1.10.1 'monolog/monolog:^3.0' \
+            --no-interaction --prefer-dist --no-progress
+          if [ "$COMPAT_SCRIPT" = laravel.php ]; then
+            php scripts/ci/assert-installed-version.php "$consumer" laravel/framework \
+              "${FRAMEWORK_EXERCISED_PACKAGE#laravel/framework:}"
+          fi
+          DURABLE_WORKFLOW_CLIENT_TOKEN=client-secret \
+            DURABLE_WORKFLOW_WORKER_TOKEN=worker-secret \
+            php "tests/compat/${COMPAT_SCRIPT}" "$consumer/vendor/autoload.php"
+
+  framework-compat81:
+    name: ${{ matrix.framework }} ${{ matrix.version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: action-policy
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - framework: Symfony
+            version: '6.4'
+            php: '8.1'
+            package: 'symfony/framework-bundle:^6.4'
+            console_package: 'symfony/console:^6.4'
+            script: symfony.php
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+      - name: Check out the fixed APT prerequisite
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          repository: durable-workflow/.github
+          ref: 18783be6bef737cc778e4c7282a8797e39daa61a
+          path: .central-apt-source
+          persist-credentials: false
+      - name: Select Ubuntu's Python 3.12
+        run: |
+          /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          echo /usr/bin >> "$GITHUB_PATH"
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git
+      - name: Disable APT download retries (CVE-2026-109518)
+        run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
+      - name: Prepare the reviewed PHP container runtime
+        run: bash "$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh" "8.1"
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
+      - name: Install SDK into a clean framework consumer
+        env:
+          FRAMEWORK_BOOTSTRAP: ${{ matrix.bootstrap }}
+          FRAMEWORK_PACKAGE: ${{ matrix.package }}
+          FRAMEWORK_EXERCISED_PACKAGE: ${{ matrix.exercised_package }}
+          FRAMEWORK_CONSOLE_PACKAGE: ${{ matrix.console_package }}
+          COMPAT_SCRIPT: ${{ matrix.script }}
+        run: |
+          consumer="$(mktemp -d)"
+          printf '%s\n' "$consumer" > "$RUNNER_TEMP/framework-consumer"
+          cd "$consumer"
+          composer init --name=durable-workflow/framework-compat --no-interaction
+          composer config repositories.sdk path "$GITHUB_WORKSPACE"
+          if [ "$COMPAT_SCRIPT" = laravel.php ]; then
+            bootstrap_arguments=()
+            if [ "$FRAMEWORK_BOOTSTRAP" = existing_supported_lock ]; then
+              # Model the established application named by the adoption contract.
+              # Composer may refuse a new installation of an end-of-life Laravel
+              # line, but SDK installation still runs with normal policy against
+              # the resulting existing lock file.
+              bootstrap_arguments+=(--no-blocking)
+            fi
+            # matrix.package is the published caret support range. Install
+            # exactly its minimum release, and prove the SDK does not move it.
+            exercised_version="${FRAMEWORK_EXERCISED_PACKAGE#laravel/framework:}"
+            composer require "$FRAMEWORK_EXERCISED_PACKAGE" \
+              --no-interaction --prefer-dist --no-progress "${bootstrap_arguments[@]}"
+            php "$GITHUB_WORKSPACE/scripts/ci/assert-installed-version.php" "$consumer" laravel/framework "$exercised_version"
+            composer require durable-workflow/sdk:@dev \
+              --no-interaction --prefer-dist --no-progress
+            php "$GITHUB_WORKSPACE/scripts/ci/assert-installed-version.php" "$consumer" laravel/framework "$exercised_version"
+          else
+            framework_packages=("$FRAMEWORK_PACKAGE")
+            if [ -n "$FRAMEWORK_CONSOLE_PACKAGE" ]; then
+              framework_packages+=("$FRAMEWORK_CONSOLE_PACKAGE")
+            fi
+            composer require durable-workflow/sdk:@dev "${framework_packages[@]}" \
+              --no-interaction --prefer-dist --with-all-dependencies
+          fi
+          composer require --dev phpstan/phpstan:^2.0 'monolog/monolog:^2.9|^3.0' --no-interaction --prefer-dist
+          if [ "$COMPAT_SCRIPT" = laravel.php ]; then
+            php "$GITHUB_WORKSPACE/scripts/ci/assert-installed-version.php" "$consumer" laravel/framework "$exercised_version"
+          fi
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
+      - name: Install SDK into a fresh Laravel application for cached role isolation
+        if: matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4'
+        env:
+          FRAMEWORK_EXERCISED_PACKAGE: ${{ matrix.exercised_package }}
+        run: |
+          application="$SDK_PHP_CI_STATE/data/laravel-fresh-config-cache"
+          exercised_version="${FRAMEWORK_EXERCISED_PACKAGE#laravel/framework:}"
+          composer create-project laravel/laravel:^13.0 "$application" \
+            --no-interaction --prefer-dist --no-progress
+          composer --working-dir="$application" require "$FRAMEWORK_EXERCISED_PACKAGE" \
+            --with-all-dependencies --no-interaction --prefer-dist --no-progress
+          php scripts/ci/assert-installed-version.php "$application" laravel/framework "$exercised_version"
+          composer --working-dir="$application" config repositories.sdk path "$GITHUB_WORKSPACE"
+          composer --working-dir="$application" require durable-workflow/sdk:@dev \
+            --no-interaction --prefer-dist --no-progress
+          php scripts/ci/assert-installed-version.php "$application" laravel/framework "$exercised_version"
+      - name: Exercise fresh Laravel cached role isolation
+        if: matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4'
+        run: |
+          bash tests/compat/laravel-fresh-config-cache.sh "$SDK_PHP_CI_STATE/data/laravel-fresh-config-cache"
+      - name: Exercise native container, diagnostics, and testing integration
+        env:
+          COMPAT_SCRIPT: ${{ matrix.script }}
+        run: |
+          consumer="$(cat "$RUNNER_TEMP/framework-consumer")"
+          if [ "$COMPAT_SCRIPT" = laravel.php ]; then
+            DURABLE_WORKFLOW_CLIENT_TOKEN=client-secret \
+              DURABLE_WORKFLOW_WORKER_TOKEN=worker-secret \
+              php "tests/compat/${COMPAT_SCRIPT}" "$consumer/vendor/autoload.php"
+            php tests/compat/laravel-config-cache.php "$consumer/vendor/autoload.php"
+            bridge_path=src/Bridge/Laravel
+            compatibility_scripts=(
+              "tests/compat/${COMPAT_SCRIPT}"
+              tests/compat/laravel-config-cache.php
+              tests/compat/laravel-fresh-config-cache.php
+              tests/compat/laravel-fresh-role-launch.php
+            )
+          else
+            php "tests/compat/${COMPAT_SCRIPT}" "$consumer/vendor/autoload.php"
+            bridge_path=src/Bridge/Symfony
+            compatibility_scripts=("tests/compat/${COMPAT_SCRIPT}")
+          fi
+          compatibility_scripts+=(tests/compat/history-cache.php tests/compat/execution-telemetry.php)
+          php tests/compat/static-credentials.php "$consumer/vendor/autoload.php" "$COMPAT_SCRIPT"
+          php "$consumer/vendor/bin/phpstan" analyse -c phpstan-framework.neon \
+            --autoload-file="$consumer/vendor/autoload.php" \
+            src/Bridge/FrameworkRuntimeException.php \
+            src/Bridge/ServiceConfiguration.php src/Bridge/Event \
+            "$bridge_path" "${compatibility_scripts[@]}"
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
+      - name: Exercise optional tracing in framework workers
+        if: >-
+          (matrix.framework == 'Laravel' && matrix.version == '12' && matrix.php == '8.2') ||
+          (matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4') ||
+          (matrix.framework == 'Symfony' && matrix.version == '6.4')
+        env:
+          COMPAT_SCRIPT: ${{ matrix.script }}
+          FRAMEWORK_EXERCISED_PACKAGE: ${{ matrix.exercised_package }}
+          DURABLE_WORKFLOW_TEST_TRACING: '1'
+        run: |
+          php -r 'if (getenv("DURABLE_WORKFLOW_TEST_TRACING") !== "1") { throw new RuntimeException("Tracing control flag was not forwarded"); }'
+          consumer="$(cat "$RUNNER_TEMP/framework-consumer")"
+          composer --working-dir="$consumer" require --dev open-telemetry/api:1.10.1 'monolog/monolog:^3.0' \
+            --no-interaction --prefer-dist --no-progress
+          if [ "$COMPAT_SCRIPT" = laravel.php ]; then
+            php scripts/ci/assert-installed-version.php "$consumer" laravel/framework \
+              "${FRAMEWORK_EXERCISED_PACKAGE#laravel/framework:}"
+          fi
+          DURABLE_WORKFLOW_CLIENT_TOKEN=client-secret \
+            DURABLE_WORKFLOW_WORKER_TOKEN=worker-secret \
+            php "tests/compat/${COMPAT_SCRIPT}" "$consumer/vendor/autoload.php"
+
+  framework-compat84:
+    name: ${{ matrix.framework }} ${{ matrix.version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: action-policy
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - framework: Laravel
+            version: '12'
+            php: '8.4'
+            package: 'laravel/framework:^12.69.0'
+            exercised_package: 'laravel/framework:12.69.0'
+            bootstrap: fresh_supported_install
+            script: laravel.php
+          - framework: Laravel
+            version: '13'
+            php: '8.4'
+            package: 'laravel/framework:^13.30.0'
+            exercised_package: 'laravel/framework:13.30.0'
+            bootstrap: fresh_supported_install
+            script: laravel.php
+          - framework: Symfony
+            version: '8'
+            php: '8.4'
+            package: 'symfony/framework-bundle:^8.0'
+            console_package: 'symfony/console:^8.0'
+            script: symfony.php
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+      - name: Check out the fixed APT prerequisite
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          repository: durable-workflow/.github
+          ref: 18783be6bef737cc778e4c7282a8797e39daa61a
+          path: .central-apt-source
+          persist-credentials: false
+      - name: Select Ubuntu's Python 3.12
+        run: |
+          /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          echo /usr/bin >> "$GITHUB_PATH"
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git
+      - name: Disable APT download retries (CVE-2026-109518)
+        run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
+      - name: Prepare the reviewed PHP container runtime
+        run: bash "$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh" "8.4"
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
+      - name: Install SDK into a clean framework consumer
+        env:
+          FRAMEWORK_BOOTSTRAP: ${{ matrix.bootstrap }}
+          FRAMEWORK_PACKAGE: ${{ matrix.package }}
+          FRAMEWORK_EXERCISED_PACKAGE: ${{ matrix.exercised_package }}
+          FRAMEWORK_CONSOLE_PACKAGE: ${{ matrix.console_package }}
+          COMPAT_SCRIPT: ${{ matrix.script }}
+        run: |
+          consumer="$(mktemp -d)"
+          printf '%s\n' "$consumer" > "$RUNNER_TEMP/framework-consumer"
+          cd "$consumer"
+          composer init --name=durable-workflow/framework-compat --no-interaction
+          composer config repositories.sdk path "$GITHUB_WORKSPACE"
+          if [ "$COMPAT_SCRIPT" = laravel.php ]; then
+            bootstrap_arguments=()
+            if [ "$FRAMEWORK_BOOTSTRAP" = existing_supported_lock ]; then
+              # Model the established application named by the adoption contract.
+              # Composer may refuse a new installation of an end-of-life Laravel
+              # line, but SDK installation still runs with normal policy against
+              # the resulting existing lock file.
+              bootstrap_arguments+=(--no-blocking)
+            fi
+            # matrix.package is the published caret support range. Install
+            # exactly its minimum release, and prove the SDK does not move it.
+            exercised_version="${FRAMEWORK_EXERCISED_PACKAGE#laravel/framework:}"
+            composer require "$FRAMEWORK_EXERCISED_PACKAGE" \
+              --no-interaction --prefer-dist --no-progress "${bootstrap_arguments[@]}"
+            php "$GITHUB_WORKSPACE/scripts/ci/assert-installed-version.php" "$consumer" laravel/framework "$exercised_version"
+            composer require durable-workflow/sdk:@dev \
+              --no-interaction --prefer-dist --no-progress
+            php "$GITHUB_WORKSPACE/scripts/ci/assert-installed-version.php" "$consumer" laravel/framework "$exercised_version"
+          else
+            framework_packages=("$FRAMEWORK_PACKAGE")
+            if [ -n "$FRAMEWORK_CONSOLE_PACKAGE" ]; then
+              framework_packages+=("$FRAMEWORK_CONSOLE_PACKAGE")
+            fi
+            composer require durable-workflow/sdk:@dev "${framework_packages[@]}" \
+              --no-interaction --prefer-dist --with-all-dependencies
+          fi
+          composer require --dev phpstan/phpstan:^2.0 'monolog/monolog:^2.9|^3.0' --no-interaction --prefer-dist
+          if [ "$COMPAT_SCRIPT" = laravel.php ]; then
+            php "$GITHUB_WORKSPACE/scripts/ci/assert-installed-version.php" "$consumer" laravel/framework "$exercised_version"
+          fi
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
+      - name: Install SDK into a fresh Laravel application for cached role isolation
+        if: matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4'
+        env:
+          FRAMEWORK_EXERCISED_PACKAGE: ${{ matrix.exercised_package }}
+        run: |
+          application="$SDK_PHP_CI_STATE/data/laravel-fresh-config-cache"
+          exercised_version="${FRAMEWORK_EXERCISED_PACKAGE#laravel/framework:}"
+          composer create-project laravel/laravel:^13.0 "$application" \
+            --no-interaction --prefer-dist --no-progress
+          composer --working-dir="$application" require "$FRAMEWORK_EXERCISED_PACKAGE" \
+            --with-all-dependencies --no-interaction --prefer-dist --no-progress
+          php scripts/ci/assert-installed-version.php "$application" laravel/framework "$exercised_version"
+          composer --working-dir="$application" config repositories.sdk path "$GITHUB_WORKSPACE"
+          composer --working-dir="$application" require durable-workflow/sdk:@dev \
+            --no-interaction --prefer-dist --no-progress
+          php scripts/ci/assert-installed-version.php "$application" laravel/framework "$exercised_version"
+      - name: Exercise fresh Laravel cached role isolation
+        if: matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4'
+        run: |
+          bash tests/compat/laravel-fresh-config-cache.sh "$SDK_PHP_CI_STATE/data/laravel-fresh-config-cache"
+      - name: Exercise native container, diagnostics, and testing integration
+        env:
+          COMPAT_SCRIPT: ${{ matrix.script }}
+        run: |
+          consumer="$(cat "$RUNNER_TEMP/framework-consumer")"
+          if [ "$COMPAT_SCRIPT" = laravel.php ]; then
+            DURABLE_WORKFLOW_CLIENT_TOKEN=client-secret \
+              DURABLE_WORKFLOW_WORKER_TOKEN=worker-secret \
+              php "tests/compat/${COMPAT_SCRIPT}" "$consumer/vendor/autoload.php"
+            php tests/compat/laravel-config-cache.php "$consumer/vendor/autoload.php"
+            bridge_path=src/Bridge/Laravel
+            compatibility_scripts=(
+              "tests/compat/${COMPAT_SCRIPT}"
+              tests/compat/laravel-config-cache.php
+              tests/compat/laravel-fresh-config-cache.php
+              tests/compat/laravel-fresh-role-launch.php
+            )
+          else
+            php "tests/compat/${COMPAT_SCRIPT}" "$consumer/vendor/autoload.php"
+            bridge_path=src/Bridge/Symfony
+            compatibility_scripts=("tests/compat/${COMPAT_SCRIPT}")
+          fi
+          compatibility_scripts+=(tests/compat/history-cache.php tests/compat/execution-telemetry.php)
+          php tests/compat/static-credentials.php "$consumer/vendor/autoload.php" "$COMPAT_SCRIPT"
+          php "$consumer/vendor/bin/phpstan" analyse -c phpstan-framework.neon \
+            --autoload-file="$consumer/vendor/autoload.php" \
+            src/Bridge/FrameworkRuntimeException.php \
+            src/Bridge/ServiceConfiguration.php src/Bridge/Event \
+            "$bridge_path" "${compatibility_scripts[@]}"
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
+      - name: Exercise optional tracing in framework workers
+        if: >-
+          (matrix.framework == 'Laravel' && matrix.version == '12' && matrix.php == '8.2') ||
+          (matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4') ||
+          (matrix.framework == 'Symfony' && matrix.version == '6.4')
+        env:
+          COMPAT_SCRIPT: ${{ matrix.script }}
+          FRAMEWORK_EXERCISED_PACKAGE: ${{ matrix.exercised_package }}
+          DURABLE_WORKFLOW_TEST_TRACING: '1'
+        run: |
+          php -r 'if (getenv("DURABLE_WORKFLOW_TEST_TRACING") !== "1") { throw new RuntimeException("Tracing control flag was not forwarded"); }'
           consumer="$(cat "$RUNNER_TEMP/framework-consumer")"
           composer --working-dir="$consumer" require --dev open-telemetry/api:1.10.1 'monolog/monolog:^3.0' \
             --no-interaction --prefer-dist --no-progress
@@ -1322,6 +1635,8 @@ jobs:
       - test-php83
       - carbon-2
       - framework-compat
+      - framework-compat81
+      - framework-compat84
       - framework-compat83
       - laravel-transition-compat
       - laravel-transition-compat83
@@ -1345,6 +1660,8 @@ jobs:
           PHP_83_RESULT: ${{ needs.test-php83.result }}
           CARBON_2_RESULT: ${{ needs.carbon-2.result }}
           FRAMEWORK_RESULT: ${{ needs.framework-compat.result }}
+          FRAMEWORK_81_RESULT: ${{ needs.framework-compat81.result }}
+          FRAMEWORK_84_RESULT: ${{ needs.framework-compat84.result }}
           FRAMEWORK_83_RESULT: ${{ needs.framework-compat83.result }}
           LARAVEL_TRANSITION_RESULT: ${{ needs.laravel-transition-compat.result }}
           LARAVEL_TRANSITION_83_RESULT: ${{ needs.laravel-transition-compat83.result }}
@@ -1358,6 +1675,8 @@ jobs:
           test "$PHP_83_RESULT" = success
           test "$CARBON_2_RESULT" = success
           test "$FRAMEWORK_RESULT" = success
+          test "$FRAMEWORK_81_RESULT" = success
+          test "$FRAMEWORK_84_RESULT" = success
           test "$FRAMEWORK_83_RESULT" = success
           test "$LARAVEL_TRANSITION_RESULT" = success
           test "$LARAVEL_TRANSITION_83_RESULT" = success
