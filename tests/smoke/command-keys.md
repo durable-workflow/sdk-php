@@ -82,6 +82,18 @@ Run inert runner controls with
 `python3 -I -S -B tests/ci/test_command_key_cohort.py`. They exercise synthetic
 inspection metadata and receipts without creating a runtime or loading PHP.
 
+The proposed include-tree capture is data-only preparation for the required
+read-only consumer boundary. `command_key_include_closure.py` inventories every
+consumer/vendor/fixture leaf, rejects aliases, hardlinks, repository metadata
+and unexpected root members, and copies verified bytes with read-only modes.
+Its output includes a complete member/hash inventory. Before any installed
+execution, that complete tree still needs a root-controlled staging location,
+a kernel-enforced read-only consumer mount, before/after source and mount
+identity checks, independent container-ID cleanup and actual boundary controls.
+File modes and the inert inventory tests alone provide no isolation verdict.
+The proposed official PHP image identities in the supply are raw-registry
+metadata bindings; this prototype has not pulled or qualified that consumer.
+
 Run the offline input controls against an existing immutable PHP image:
 
 ```sh
