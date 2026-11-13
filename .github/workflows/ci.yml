@@ -727,6 +727,8 @@ jobs:
             exit 1
           fi
           grep -F 'Installed Composer product-train identifies' "$RUNNER_TEMP/stale-release-metadata.log"
+      - name: Reject Git metadata and CI tooling in real Composer archives
+        run: python3 -I -S -B tests/ci/test_composer_archive.py
 
   example-lock-audit:
     name: Laravel example lock audit
@@ -774,7 +776,7 @@ jobs:
   cooperative-integration:
     name: Connected cooperative cancellation
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.cooperative_qualification }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
       COMPOSE_PROJECT_NAME: php-cooperative-${{ github.run_id }}-${{ github.run_attempt }}
@@ -786,40 +788,22 @@ jobs:
         with:
           path: sdk-php
           persist-credentials: false
-      - name: Select Ubuntu's Python 3.12
-        run: |
-          /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
-          echo /usr/bin >> "$GITHUB_PATH"
-      - name: Create isolated Composer state
-        run: |
-          state="$(mktemp -d "$RUNNER_TEMP/php-check.XXXXXX")"
-          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp"
-          {
-            echo "COMPOSER_HOME=$state/home"
-            echo "COMPOSER_CACHE_DIR=$state/cache"
-            echo "TMPDIR=$state/tmp"
-          } >> "$GITHUB_ENV"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
       - name: Select authenticated dependency trust
         id: trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
         with:
           clients: pip,python,composer,curl,git,cargo
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: '8.3'
-          ini-file: production
-          tools: composer:2.10.3,phpunit:11.5.57
+          extensions: pcntl, posix
+          tools: composer:2.10.3
           coverage: none
-      - name: Require the stock cooperative worker capabilities
-        run: |
-          php -r 'foreach (["pcntl", "posix"] as $extension) {
-            if (!extension_loaded($extension)) { throw new RuntimeException("Missing ".$extension); }
-          }
-          foreach (["pcntl_fork", "pcntl_waitpid", "pcntl_signal", "pcntl_async_signals", "posix_kill"] as $function) {
-            if (!function_exists($function)) { throw new RuntimeException("Missing ".$function); }
-          }'
       - name: Check out the exact public Server source
         env:
           SERVER_COMMIT: ${{ inputs.server_commit }}
@@ -856,7 +840,7 @@ jobs:
             '{qualification:"source",sdk_commit:$sdk,server_commit:$server,native_source_overlay:($native | if length > 0 then . else null end),python_sdk_commit:($python | if length > 0 then . else null end),rust_sdk_commit:($rust | if length > 0 then . else null end),cli_source_commit:($cli | if length > 0 then . else null end)}' \
             > sdk-php/cooperative-source-provenance.json
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
       - name: Bind exact CLI inspection source
         if: ${{ inputs.cli_commit != '' }}
         env:
@@ -917,7 +901,7 @@ jobs:
           printf 'DURABLE_WORKFLOW_POLYGLOT_RUST_BINARY=%s\n' "$binary" >> "$GITHUB_ENV"
           printf 'DURABLE_WORKFLOW_POLYGLOT_ARTIFACT_DIRECTORY=%s/sdk-php/polyglot-evidence\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
         with:
           working-directory: sdk-php
       - run: composer install --no-interaction --prefer-dist --no-progress
