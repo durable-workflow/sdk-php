@@ -43,7 +43,7 @@ jobs:
       - name: Select authenticated dependency trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
         with:
-          clients: composer,curl,git
+          clients: python,composer,curl,git
       - name: Set up the qualified PHP profile
         uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7 # bound-linux-php
         with:
