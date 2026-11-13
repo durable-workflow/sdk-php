@@ -179,7 +179,7 @@ jobs:
           /usr/bin/python3 -I -S -B - <<'PYCLEAN' | tee command-key-cleanup.json
           import json,os,pathlib,re,stat,subprocess,tempfile
           owner=os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT']
-          nonce=os.environ['FIXTURE_NONCE']; errors=[]
+          nonce=os.environ['FIXTURE_NONCE']; errors=[]; reconciled={}; role_absence={}
           with tempfile.TemporaryDirectory(prefix='sdk-php-command-key-cleanup-',dir='/tmp') as configuration:
               environment={'PATH':'/usr/bin:/bin','DOCKER_CONFIG':configuration,'DOCKER_HOST':'unix:///var/run/docker.sock'}
               def invoke(arguments):
@@ -187,15 +187,40 @@ jobs:
               def absent(result,identity):
                   return result.returncode==1 and result.stdout=='[]\n' and result.stderr in {
                       'Error: No such object: '+identity+'\n','error: no such object: '+identity+'\n'}
+              def candidates(role):
+                  result=invoke(['ps','--all','--no-trunc','--last','2',
+                      '--filter','label=durable-workflow.php-command-keys='+owner,
+                      '--filter','label=durable-workflow.fixture-role='+role,
+                      '--filter','label=durable-workflow.fixture-nonce='+nonce,'--format','{{.ID}}'])
+                  if (result.returncode!=0 or result.stderr or len(result.stdout)>130
+                          or re.fullmatch(r'(?:[0-9a-f]{64}\n){0,2}',result.stdout) is None):
+                      raise RuntimeError('Role reconciliation was not complete')
+                  identities=result.stdout.splitlines()
+                  if len(identities)>1:
+                      raise RuntimeError('Ambiguous role candidates preserved')
+                  return identities
               for role,key in [('consumer','CONSUMER_ID'),('server','SERVER_ID')]:
-                  identity=os.environ[key]
-                  if not identity:
+                  identity=os.environ.get(key,'')
+                  if not identity and not nonce:
                       continue
                   try:
-                      if re.fullmatch('[0-9a-f]{64}',identity) is None or re.fullmatch('[0-9a-f]{32}',nonce) is None:
+                      role_absence[role]=False
+                      if (re.fullmatch('[0-9]+-[0-9]+',owner) is None or re.fullmatch('[0-9a-f]{32}',nonce) is None
+                              or (identity and re.fullmatch('[0-9a-f]{64}',identity) is None)):
                           raise RuntimeError('Invalid immutable fixture outputs')
+                      matches=candidates(role)
+                      if identity and matches and matches!=[identity]:
+                          raise RuntimeError('Foreign role replacement preserved')
+                      recovered=not identity and bool(matches)
+                      identity=identity or (matches[0] if matches else '')
+                      if not identity:
+                          role_absence[role]=True
+                          continue
                       result=invoke(['inspect',identity])
                       if absent(result,identity):
+                          if candidates(role):
+                              raise RuntimeError('A labelled role remains')
+                          role_absence[role]=True
                           continue
                       if result.returncode!=0:
                           raise RuntimeError('The recorded fixture cannot be inspected')
@@ -205,9 +230,13 @@ jobs:
                       labels=rows[0]['Config'].get('Labels') or {}
                       if (labels.get('durable-workflow.php-command-keys'),labels.get('durable-workflow.fixture-role'),labels.get('durable-workflow.fixture-nonce'))!=(owner,role,nonce):
                           raise RuntimeError('Foreign replacement preserved')
+                      if recovered:
+                          reconciled[role]=identity
                       removed=invoke(['rm','--force','--volumes',identity])
-                      if removed.returncode!=0 or not absent(invoke(['inspect',identity]),identity):
+                      if (removed.returncode!=0 or not absent(invoke(['inspect',identity]),identity)
+                              or candidates(role)):
                           raise RuntimeError('Exact fixture absence was not established')
+                      role_absence[role]=True
                   except Exception as error:
                       errors.append(role+':'+type(error).__name__)
           root=os.environ['INCLUDE_ROOT']
@@ -223,7 +252,8 @@ jobs:
                       raise RuntimeError('Include root absence was not established')
               except Exception as error:
                   errors.append('include:'+type(error).__name__)
-          print(json.dumps({'runtime_removed':not errors,'errors':errors}))
+          print(json.dumps({'runtime_removed':not errors,'errors':errors,
+                            'reconciled_ids':reconciled,'role_absence':role_absence}))
           if errors:
               raise SystemExit(1)
           PYCLEAN

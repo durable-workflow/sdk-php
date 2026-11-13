@@ -275,6 +275,10 @@ class ProvenanceControls(unittest.TestCase):
             def invoke(arguments, **options):
                 self.assertEqual(options["env"]["DOCKER_CONFIG"], "/inert-independent-configuration")
                 calls.append(arguments)
+                if arguments[1] == "ps":
+                    role = "server" if "label=durable-workflow.fixture-role=server" in arguments else "consumer"
+                    selected = IDENTITY if role == "server" else "c" * 64
+                    return SimpleNamespace(returncode=0, stdout="" if selected in removed else selected + "\n", stderr="")
                 identity = arguments[-1]
                 if arguments[1] == "rm":
                     removed.add(identity)

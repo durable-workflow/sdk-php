@@ -104,6 +104,11 @@ stdout, keeps an exclusive private record descriptor open, and publishes the
 IDs to workflow outputs before executing package code. The separate literal
 always-run cleanup uses those outputs, a fresh empty Docker configuration and
 owner/role/nonce labels. It needs no checkout, controller import or state file.
+If create loses its returned ID, cleanup reconciles the exact three labels with
+a role-specific list limited to two candidates. Multiple candidates, malformed
+IDs or conflicting inspection identity/labels refuse. Both roles are attempted
+independently, and each role's labels must match no remaining container before
+its absence is reported.
 It attempts both removals, preserves foreign replacements, and accepts only an
 exact missing-object response as proof of absence. Root-stage removal also
 requires the original root-owned directory device/inode. Sanitized evidence
@@ -171,20 +176,26 @@ the two effectful tests. Preparing this source does not qualify the actual
 mount, dependency profile, cleanup-after-state-refusal or installed cohort.
 
 `tests/ci/test_command_key_cleanup_boundary.py` proposes a separate opt-in
-cleanup control. It creates two idle containers from the selected cached PHP
-image, using only the two fixture role labels. No native Server, SDK, API or
+cleanup control. It creates two containers from the selected cached PHP image,
+using only the two fixture role labels. One deliberately loses create stdout
+and stays unstarted; the other runs a fixed idle PHP command. No native Server, SDK, API or
 Worker runs. Both containers have read-only roots, unprivileged users, no
-mounts or network, and the existing resource caps. Their full IDs are captured
-before the production guards refuse an invalid source selection, nonprivate
+mounts or network, and the existing resource caps. Ownership is flushed before
+creation. The missing-ID role is recovered only through label reconciliation;
+the test retains only a ground-truth ID hash for comparison, not as cleanup
+input. The production guards then refuse an invalid source selection, nonprivate
 disposable state and nonempty disposable Docker configuration.
 
-The control then runs the unchanged literal workflow cleanup from captured Git
+The control then runs the reviewed literal workflow cleanup from captured Git
 bytes with an independently fixed digest. Its environment supplies the held
 IDs and labels while deliberately invalidating checkout, state, temporary and
 ambient Docker configuration values. The cleanup must use its own fresh Docker
 configuration and establish both exact absences. A separate observer checks
-the full IDs again before owned fixture data is removed. Cleanup failure
-preserves that data. Default CI checks the cleanup source binding and skips the
+the full IDs and both role-label sets again before owned fixture data is removed.
+An empty captured-ID set cannot establish cleanup. Cleanup refusal or an
+incomplete observer preserves that data. Default CI checks the cleanup source
+binding and lost/ambiguous create, duplicate/foreign candidate and independent
+role cleanup controls, and skips the
 container control. Any actual execution requires exact source/entry review,
 `SDK_PHP_COMMAND_KEY_CLEANUP_IMAGE` and `SDK_PHP_COMMAND_KEY_CLEANUP_SOURCE`,
 and a Git-blob bootstrap with an independently fixed outer test digest. This
