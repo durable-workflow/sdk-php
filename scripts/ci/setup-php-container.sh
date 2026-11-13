@@ -12,8 +12,8 @@ assert re.fullmatch(r'php:8\.[24]\.\d+-cli-bookworm@sha256:[0-9a-f]{64}', image)
 print(image)
 PY
 )"
-test -f "$root/.central-apt-source/docker/apt/require-fixed-bookworm-apt.sh"
-test "$(git -C "$root/.central-apt-source" rev-parse HEAD)" = 18783be6bef737cc778e4c7282a8797e39daa61a
+[[ -f "$root/.central-apt-source/docker/apt/require-fixed-bookworm-apt.sh" ]]
+[[ "$(git -C "$root/.central-apt-source" rev-parse HEAD)" = 18783be6bef737cc778e4c7282a8797e39daa61a ]]
 echo '2a36a2417e8947357ea6f6cbc2f6c53a834f3c069f8013a34d6d861b7123d576  '"$root/.central-apt-source/docker/apt/require-fixed-bookworm-apt.sh" | sha256sum --check --strict
 
 runtime="sdk-php-ci:${minor}-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
