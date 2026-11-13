@@ -109,10 +109,11 @@ foreach (['workflow', 'activity'] as $kind) {
         || ($kind === 'workflow' && max($ages) <= 0)) {
         throw new RuntimeException('Each dispatched '.$kind.' task must have a ready-age sample; queued workflow age must be positive.');
     }
-    $pollTags = json_encode(['outcome' => 'task', 'task_kind' => $kind, 'task_queue' => $queue], JSON_THROW_ON_ERROR);
-    if (($series['durable_workflow_worker_polls'][$pollTags] ?? []) === []) {
-        throw new RuntimeException('The worker omitted the successful '.$kind.' poll.');
-    }
+}
+// A completion may carry the activity lease, without a separate activity poll.
+$leased = json_encode(['outcome' => 'task', 'task_kind' => 'workflow', 'task_queue' => $queue], JSON_THROW_ON_ERROR);
+if (($series['durable_workflow_worker_polls'][$leased] ?? []) === []) {
+    throw new RuntimeException('The worker omitted the successful workflow poll.');
 }
 $empty = json_encode(['outcome' => 'empty', 'task_kind' => 'query', 'task_queue' => $queue], JSON_THROW_ON_ERROR);
 if (($series['durable_workflow_worker_polls'][$empty] ?? []) === []) {
