@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.18.0] - 2026-11-13
+
 ### Added
 
 - Timeout cleanup cause on the cancellation context (workflow#863,
