@@ -2,10 +2,10 @@ name: Published worker metrics
 
 on:
   pull_request:
-    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php']
+    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php']
   push:
     branches: [main]
-    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php']
+    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php']
   workflow_dispatch:
     inputs:
       sdk_version:
@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
-      SDK_VERSION: ${{ inputs.sdk_version || '3.17.0' }}
+      SDK_VERSION: ${{ inputs.sdk_version || '3.18.0' }}
       SERVER_VERSION: '3.8.0'
       SERVER_IMAGE: durableworkflow/server@sha256:7988a23525d9e50e997a9f6f02e801300ed4f626de3cf6977033657ae7e9f58e
       METRICS_RUNTIME_URL: http://127.0.0.1:8080
@@ -76,6 +76,10 @@ jobs:
         run: |
           php -l tests/smoke/worker-metrics.php
           timeout 60s php tests/smoke/worker-metrics.php "$CONSUMER/vendor/autoload.php" | tee worker-metrics.json
+      - name: Assert installed pending and retained update outcomes
+        run: |
+          php -l tests/smoke/update-outcome.php
+          timeout 60s php tests/smoke/update-outcome.php "$CONSUMER/vendor/autoload.php" | tee update-outcome.json
       - name: Retain the tuple, observations and installed dependency graph
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -83,6 +87,7 @@ jobs:
           name: published-worker-metrics
           path: |
             worker-metrics.json
+            update-outcome.json
             ${{ env.CONSUMER }}/composer.lock
           retention-days: 14
       - name: Show bounded Server diagnostics
