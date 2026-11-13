@@ -76,7 +76,7 @@ jobs:
           timeout 60s php tests/smoke/worker-metrics.php "$CONSUMER/vendor/autoload.php" | tee worker-metrics.json
       - name: Retain the tuple, observations and installed dependency graph
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: published-worker-metrics
           path: |
