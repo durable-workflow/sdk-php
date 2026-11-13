@@ -232,6 +232,216 @@ final class RuntimePayloadUploadTest extends TestCase
         self::assertCount(1, $http->requests);
     }
 
+    #[DataProvider('unconfiguredCompletionStorage')]
+    public function testContinuationUsesTheAdvertisedAggregateWithoutStorage(string $status, bool $overLimit): void
+    {
+        $limit = $overLimit ? 1500 : 3000;
+        $policy = self::discovery();
+        $policy['limits'] = ['max_payload_bytes' => 1100, 'max_workflow_task_completion_bytes' => $limit];
+        $policy['namespace']['external_payload_storage']['status'] = $status;
+        if ($status === 'unsupported') {
+            unset($policy['namespace']['external_payload_storage']['transport']);
+        }
+        $refusal = new Response(413, [], json_encode(['reason' => 'payload_too_large',
+            'limit_kind' => 'workflow_task_completion_bytes', 'limit' => $limit], JSON_THROW_ON_ERROR));
+        [$client, $http] = $this->client($policy, completionResponse: $overLimit ? $refusal : null);
+        $value = str_repeat('a', 600);
+        $blob = $client->payloadCodec()->encode($value);
+        $continuation = self::continuation([['type' => 'record_side_effect', 'result' => $blob]]);
+        try {
+            $client->completeActivityTaskWithContinuation('task', 'attempt', 'worker', $value, self::workflowPoll(), $continuation);
+            self::assertFalse($overLimit);
+        } catch (WorkflowTaskCompletionTooLarge $error) {
+            self::assertTrue($overLimit);
+            self::assertSame($limit, $error->limitBytes);
+            self::assertCount(2, $http->requests);
+            self::assertSame(strlen((string) $http->requests[1]->getBody()), $error->sizeBytes);
+            self::assertGreaterThan($limit, $error->sizeBytes);
+        }
+        self::assertCount(2, $http->requests, 'Discover once, submit once; no upload or retry.');
+        $sent = $this->body($http->requests[1]);
+        self::assertSame($continuation, $sent['continuation']);
+        self::assertSame(['codec' => 'avro', 'blob' => $blob], $sent['result']);
+    }
+
+    public function testContinuationOffloadsOnlyResultWithoutWideningOrdinaryActivityCompletion(): void
+    {
+        $policy = self::discovery();
+        $policy['limits'] = ['max_payload_bytes' => 1100, 'max_workflow_task_completion_bytes' => 1500];
+        $policy['namespace']['external_payload_storage']['threshold_bytes'] = 512;
+        [$client, $http] = $this->client($policy);
+        $value = str_repeat('a', 600);
+        $blob = $client->payloadCodec()->encode($value);
+        $client->completeActivityTaskWithContinuation('task', 'attempt', 'worker', $value, self::workflowPoll(),
+            self::continuation([['type' => 'record_side_effect', 'result' => $blob]]));
+        self::assertCount(3, $http->requests, 'Only the authorized activity result is uploaded.');
+        $sent = $this->body($http->requests[2]);
+        self::assertSame(self::reference($blob), $sent['result']['external_payload']);
+        self::assertSame($blob, $sent['continuation']['commands'][0]['result'], 'Identical bytes do not grant command reference-placement authority.');
+        self::assertLessThanOrEqual(1500, strlen((string) $http->requests[2]->getBody()));
+
+        $client->completeActivityTask('ordinary', 'attempt', 'worker', str_repeat('b', 900));
+        self::assertCount(5, $http->requests);
+        self::assertArrayHasKey('external_payload', $this->body($http->requests[4])['result']);
+        self::assertLessThanOrEqual(1100, strlen((string) $http->requests[4]->getBody()));
+    }
+
+    public function testContinuationKeepsOldProducerAndPerValueStorageRefusals(): void
+    {
+        foreach (['old producer', 'oversized result', 'oversized command', 'configured transient'] as $case) {
+            $policy = self::discovery();
+            $policy['limits'] = ['max_payload_bytes' => 1100];
+            if ($case !== 'old producer') {
+                $policy['limits']['max_workflow_task_completion_bytes'] = 5000;
+            }
+            $policy['namespace']['external_payload_storage']['status'] = $case === 'configured transient' ? 'unavailable' : 'unconfigured';
+            [$client, $http] = $this->client($policy);
+            $result = str_repeat('a', $case === 'oversized result' ? 1200 : 600);
+            $blob = $client->payloadCodec()->encode(str_repeat('b', $case === 'oversized command' ? 1200 : 600));
+            try {
+                $client->completeActivityTaskWithContinuation('task', 'attempt', 'worker', $result, self::workflowPoll(),
+                    self::continuation([['type' => 'record_side_effect', 'result' => $blob]]));
+                self::fail($case.': no aggregate authority can remove this refusal.');
+            } catch (ExternalPayloadException $error) {
+                self::assertSame(match ($case) {
+                    'oversized command' => 'external_payload_oversized',
+                    'old producer' => 'payload_too_large',
+                    default => 'external_payload_unavailable',
+                }, $error->reason, $case);
+            }
+            self::assertCount(1, $http->requests, $case);
+        }
+    }
+
+    public function testExplicitSmallerCompletionCapIsHonoredOnBothRoutes(): void
+    {
+        foreach ([false, true] as $continuation) {
+            $policy = self::discovery();
+            $policy['limits']['max_workflow_task_completion_bytes'] = 64;
+            $refusal = new Response(413, [], json_encode(['reason' => 'payload_too_large',
+                'limit_kind' => 'workflow_task_completion_bytes', 'limit' => 64], JSON_THROW_ON_ERROR));
+            [$client, $http] = $this->client($policy, completionResponse: $refusal);
+            try {
+                if ($continuation) {
+                    $client->completeActivityTaskWithContinuation('task', 'attempt', 'worker', 'small', self::workflowPoll(), self::continuation([]));
+                } else {
+                    $client->completeWorkflowTask('task', 'worker', 1,
+                        [['type' => 'complete_workflow', 'result' => $client->payloadCodec()->encode('small')]]);
+                }
+                self::fail('Explicit positive smaller caps cannot expand to the ordinary limit.');
+            } catch (ExternalPayloadException $error) {
+                self::assertSame('payload_too_large', $error->reason);
+            } catch (WorkflowTaskCompletionTooLarge $error) {
+                self::assertTrue($continuation);
+                self::assertSame(64, $error->limitBytes);
+            }
+            self::assertCount($continuation ? 2 : 1, $http->requests);
+        }
+    }
+
+    #[DataProvider('invalidCompletionLimits')]
+    public function testMalformedContinuationLimitStopsBeforeUploadsOrSubmission(mixed $limit): void
+    {
+        $policy = self::discovery();
+        $policy['limits']['max_workflow_task_completion_bytes'] = $limit;
+        [$client, $http] = $this->client($policy);
+        try {
+            $client->completeActivityTaskWithContinuation('task', 'attempt', 'worker', 'small', self::workflowPoll(), self::continuation([]));
+            self::fail('Malformed continuation cap must refuse before any upload or completion.');
+        } catch (ExternalPayloadException $error) {
+            self::assertSame('external_payload_unsupported', $error->reason);
+        }
+        self::assertCount(1, $http->requests);
+    }
+
+    #[DataProvider('continuationLeaseSlots')]
+    public function testContinuationBoundUploadAuthorityIsOnlyForTheActivityResult(bool $resultSlot): void
+    {
+        [, $http, $transport] = $this->client(self::completionDiscovery(), workerOnly: true, drainUnbound: true);
+        $blob = (new AvroPayloadCodec())->encode(str_repeat('a', 600));
+        $body = ['activity_attempt_id' => 'attempt', 'lease_owner' => 'worker',
+            'result' => ['codec' => 'avro', 'blob' => $resultSlot ? $blob : (new AvroPayloadCodec())->encode('small')],
+            'continuation' => self::continuation($resultSlot ? [] : [['type' => 'record_side_effect', 'result' => $blob]])];
+        try {
+            $prepared = (new RuntimePayloadUploads($transport, 'https://runtime.test'))->request($body, 'POST',
+                '/worker/activity-tasks/task/continuation/complete', true, []);
+            if ($resultSlot) {
+                self::assertArrayHasKey('external_payload', $prepared['result']);
+            } else {
+                self::assertSame($body, $prepared);
+            }
+        } catch (ExternalPayloadException $error) {
+            self::assertFalse($resultSlot);
+            self::assertSame('storage_pressure', $error->reason);
+        }
+        self::assertCount($resultSlot ? 3 : 1, $http->requests);
+        if ($resultSlot) {
+            self::assertSame('', $http->requests[1]->getHeaderLine('X-Durable-Workflow-Payload-Completion'));
+            self::assertSame(['schema' => 'durable-workflow.v2.payload-completion-context.v1', 'kind' => 'activity',
+                'task_id' => 'task', 'attempt' => 'attempt', 'lease_owner' => 'worker', 'operation' => 'complete', 'slot' => ['result']],
+                json_decode($http->requests[2]->getHeaderLine('X-Durable-Workflow-Payload-Completion'), true, flags: JSON_THROW_ON_ERROR));
+        }
+    }
+
+    public static function continuationLeaseSlots(): iterable
+    {
+        yield 'activity result' => [true];
+        yield 'proposed command' => [false];
+    }
+
+    public function testEqualContinuationCommandBytesNeverReuseAResultBoundReference(): void
+    {
+        [, $http, $transport] = $this->client(self::completionDiscovery(), workerOnly: true, drainUnbound: true);
+        $blob = (new AvroPayloadCodec())->encode(str_repeat('a', 600));
+        $commands = [['type' => 'record_side_effect', 'result' => $blob]];
+        $body = ['activity_attempt_id' => 'attempt', 'lease_owner' => 'worker',
+            'result' => ['codec' => 'avro', 'blob' => $blob], 'continuation' => self::continuation($commands)];
+        $prepared = (new RuntimePayloadUploads($transport, 'https://runtime.test'))->request($body, 'POST',
+            '/worker/activity-tasks/task/continuation/complete', true, []);
+        self::assertCount(3, $http->requests, 'One result upload, then its authorized bound retry; no command upload.');
+        self::assertArrayHasKey('external_payload', $prepared['result']);
+        self::assertSame($commands, $prepared['continuation']['commands']);
+        $context = json_decode($http->requests[2]->getHeaderLine('X-Durable-Workflow-Payload-Completion'), true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame(['result'], $context['slot']);
+    }
+
+    public function testImpossibleContinuationRewriteSubmitsOriginalOnceWithoutPartialUploads(): void
+    {
+        foreach (['available', 'unavailable'] as $status) {
+            $policy = self::discovery();
+            $policy['limits'] = ['max_payload_bytes' => 1100, 'max_workflow_task_completion_bytes' => 500];
+            $policy['namespace']['external_payload_storage']['status'] = $status;
+            $refusal = new Response(413, [], json_encode(['reason' => 'payload_too_large',
+                'limit_kind' => 'workflow_task_completion_bytes', 'limit' => 500], JSON_THROW_ON_ERROR));
+            [$client, $http] = $this->client($policy, completionResponse: $refusal);
+            $value = str_repeat('a', 600);
+            $blob = $client->payloadCodec()->encode($value);
+            $continuation = self::continuation([['type' => 'record_side_effect', 'result' => $blob]]);
+            try {
+                $client->completeActivityTaskWithContinuation('task', 'attempt', 'worker', $value, self::workflowPoll(), $continuation);
+                self::fail('Only the actual Server response can settle this impossible aggregate.');
+            } catch (WorkflowTaskCompletionTooLarge $error) {
+                self::assertSame(500, $error->limitBytes);
+            }
+            self::assertCount(2, $http->requests);
+            $sent = $this->body($http->requests[1]);
+            self::assertSame($continuation, $sent['continuation']);
+            self::assertSame(['codec' => 'avro', 'blob' => $blob], $sent['result']);
+            self::assertSame('', $http->requests[1]->getHeaderLine('X-Durable-Workflow-Payload-Completion'));
+        }
+    }
+
+    private static function workflowPoll(): array
+    {
+        return ['worker_id' => 'worker', 'task_queue' => 'queue', 'poll_request_id' => 'poll',
+            'timeout_seconds' => 0, 'history_page_size' => 100, 'task_kinds' => ['workflow']];
+    }
+
+    private static function continuation(array $commands): array
+    {
+        return ['version' => 1, 'history_through_sequence' => 1, 'history_last_event_id' => 'event', 'commands' => $commands];
+    }
+
     #[DataProvider('completionOffloadRefusals')]
     public function testCompletionKeepsPerValueAndConfiguredStorageRefusals(string $status, int $valueBytes): void
     {
@@ -982,7 +1192,8 @@ final class RuntimePayloadUploadTest extends TestCase
                     }
                     $response = ['schema' => 'durable-workflow.v2.runtime-external-payload-upload.v1', 'transport_version' => 1,
                         'reference' => RuntimePayloadUploadTest::reference((string) $request->getBody())];
-                } elseif (str_contains($path, '/workflow-tasks/') && str_ends_with($path, '/complete') && $this->completionResponse !== null) {
+                } elseif ((str_contains($path, '/workflow-tasks/') || str_ends_with($path, '/continuation/complete'))
+                    && str_ends_with($path, '/complete') && $this->completionResponse !== null) {
                     return Create::promiseFor($this->completionResponse);
                 } else {
                     $response = ['outcome' => 'completed'];

@@ -62,7 +62,15 @@ final class RuntimePayloadUploads
         }
 
         $policy = $this->requestPolicy($body, $path, $worker, $headers, $budget);
-        if ($worker && preg_match('~\A/worker/workflow-tasks/[^/]+/complete\z~', $path) === 1
+        $continuation = $worker && preg_match('~\A/worker/activity-tasks/[^/]+/continuation/complete\z~', $path) === 1;
+        if ($continuation) {
+            foreach ($payloads as $payload) {
+                if ($payload['path'] !== ['result'] && strlen($payload['blob']) > $policy['request_bytes']) {
+                    throw new ExternalPayloadException('Continuation command payload exceeds the inline value limit.', 413, 'external_payload_oversized');
+                }
+            }
+        }
+        if ($worker && preg_match('~\A/worker/(?:workflow-tasks/[^/]+/complete|activity-tasks/[^/]+/continuation/complete)\z~', $path) === 1
             && array_key_exists('completion_request_bytes', $policy)) {
             $limit = $policy['completion_request_bytes'];
             if (!is_int($limit) || $limit < 1) {
@@ -80,6 +88,24 @@ final class RuntimePayloadUploads
         }
         if ($requestBytesLimit !== null) {
             $policy['request_bytes'] = min($policy['request_bytes'], $requestBytesLimit);
+        }
+        if ($continuation) {
+            // The continuation contract authorizes result offload only. Commands
+            // stay inline, including when their bytes equal the activity result.
+            $payloads = array_values(array_filter($payloads, static fn (array $payload): bool => $payload['path'] === ['result']));
+            $smallest = $body;
+            foreach ($payloads as $payload) {
+                if (strlen($payload['blob']) > $policy['max_bytes']) {
+                    throw new ExternalPayloadException('Encoded payload exceeds the runtime upload limit.', 413, 'external_payload_oversized');
+                }
+                $this->placeholder($smallest, $payload);
+            }
+            if ($requestBytesLimit === null && array_key_exists('completion_request_bytes', $policy)
+                && $this->jsonSize($smallest) > $policy['request_bytes']) {
+                // No authorized rewrite can fit. Avoid a futile result upload;
+                // submit unchanged once for the Server's structural settlement.
+                return $body;
+            }
         }
         $selected = $this->plan($body, $payloads, $policy);
         return $this->uploadSelected($body, $payloads, $selected, $policy,
@@ -371,19 +397,25 @@ final class RuntimePayloadUploads
     {
         $paths = [];
         if ($worker) {
-            if (preg_match('~\A/worker/workflow-tasks/[^/]+/(?:complete|local-activities/checkpoint(?:-group)?|cancellation-scopes/checkpoint)\z~', $path)) {
-                foreach ($body['commands'] ?? [] as $index => $command) {
+            $continuation = preg_match('~\A/worker/activity-tasks/[^/]+/continuation/complete\z~', $path) === 1;
+            if ($continuation || preg_match('~\A/worker/workflow-tasks/[^/]+/(?:complete|local-activities/checkpoint(?:-group)?|cancellation-scopes/checkpoint)\z~', $path)) {
+                $prefix = $continuation ? ['continuation', 'commands'] : ['commands'];
+                $commands = $continuation ? ($body['continuation']['commands'] ?? []) : ($body['commands'] ?? []);
+                if ($continuation) {
+                    $paths[] = ['result'];
+                }
+                foreach ($commands as $index => $command) {
                     if (!is_array($command)) {
                         continue;
                     }
                     foreach (self::COMMAND_FIELDS[$command['type'] ?? ''] ?? [] as $field) {
-                        $paths[] = ['commands', $index, $field];
+                        $paths[] = [...$prefix, $index, $field];
                     }
                     if (($command['type'] ?? null) === 'fail_workflow') {
-                        $paths[] = ['commands', $index, 'exception', 'details'];
+                        $paths[] = [...$prefix, $index, 'exception', 'details'];
                     }
                     foreach ($command['workflow_stream']['items'] ?? [] as $item => $_) {
-                        $paths[] = ['commands', $index, 'workflow_stream', 'items', $item, 'payload'];
+                        $paths[] = [...$prefix, $index, 'workflow_stream', 'items', $item, 'payload'];
                     }
                 }
             } elseif (preg_match('~\A/worker/workflow-tasks/[^/]+/local-activities/(?:prepare|recover)\z~', $path)) {
@@ -459,7 +491,15 @@ final class RuntimePayloadUploads
 
             return strlen($context) <= 4096 ? $context : null;
         }
-        if (!preg_match('~\A/worker/(activity|workflow|query)-tasks/([^/]+)/(complete|fail)\z~', explode('?', $path)[0], $match)) {
+        if (preg_match('~\A/worker/activity-tasks/([^/]+)/continuation/complete\z~', $path, $match)) {
+            // V1 continuation uploads inherit only the activity result's lease.
+            // Proposed workflow commands have no completion upload authority.
+            if ($slot !== ['result']) {
+                return null;
+            }
+            $path = '/worker/activity-tasks/'.$match[1].'/complete';
+        }
+        if (!preg_match('~\A/worker/(activity|workflow|query)-tasks/([^/]+)/(complete|fail)\z~', $path, $match)) {
             return null;
         }
         $kind = $match[1];
