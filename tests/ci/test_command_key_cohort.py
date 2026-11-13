@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 
@@ -120,6 +121,31 @@ class ProvenanceControls(unittest.TestCase):
         (MODULE.DOCKER_CONFIG / "config.json").write_text('{}')
         with self.assertRaisesRegex(RuntimeError, "remain empty"):
             MODULE.docker_environment()
+
+    def controller_bootstrap(self):
+        workflow = (SOURCE.parents[2] / ".github/workflows/published-command-keys.yml").read_text()
+        literal = workflow.split("python3 -I -S -B -c '\n", 1)[1].split("\n          ' \\", 1)[0]
+        return compile(textwrap.dedent(literal), "literal-controller-bootstrap", "exec")
+
+    def test_literal_bootstrap_loads_only_the_digest_bound_git_blob(self):
+        bootstrap = self.controller_bootstrap()
+        with patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}), \
+                patch.object(MODULE.subprocess, "check_output", return_value=SOURCE.read_bytes()) as read, \
+                patch("sys.argv", ["controller", "--help"]), patch("sys.stdout"), \
+                self.assertRaises(SystemExit) as result:
+            exec(bootstrap, {})
+        self.assertEqual(result.exception.code, 0)
+        self.assertEqual(read.call_args.args[0], ["/usr/bin/git", "--no-replace-objects", "show",
+                                                "a" * 40 + ":tests/smoke/command_key_cohort.py"])
+
+    def test_literal_bootstrap_rejects_other_bytes_before_compile(self):
+        bootstrap = self.controller_bootstrap()
+        with patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}), \
+                patch.object(MODULE.subprocess, "check_output", return_value=b"print('inert marker')"), \
+                patch("builtins.compile") as compile_source, \
+                self.assertRaisesRegex(RuntimeError, "independently fixed digest"):
+            exec(bootstrap, {})
+        compile_source.assert_not_called()
 
     def test_only_owned_private_runtime_state_and_regular_cid_are_accepted(self):
         with tempfile.TemporaryDirectory() as temporary:

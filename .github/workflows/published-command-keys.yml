@@ -79,7 +79,18 @@ jobs:
       - name: Qualify modern retained commands and postcommit response loss
         run: |
           php -l tests/smoke/command-key-client.php
-          timeout --signal=INT --kill-after=30s 12m python3 -I -S -B tests/smoke/command_key_cohort.py \
+          timeout --signal=INT --kill-after=30s 12m python3 -I -S -B -c '
+          import hashlib,os,re,subprocess
+          from pathlib import Path
+          source=os.environ["GITHUB_SHA"]
+          if re.fullmatch("[0-9a-f]{40}",source) is None:
+              raise RuntimeError("An exact trusted runner source is required")
+          path="tests/smoke/command_key_cohort.py"
+          raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
+          if hashlib.sha256(raw).hexdigest() != "7e2fa936fb45238411ac0d7c986cfc983898ceeeb2065d796cdf0a0ffa8059a0":
+              raise RuntimeError("The captured controller differs from its independently fixed digest")
+          exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
+          ' \
             --consumer "$CONSUMER" --archive "$COMMAND_KEY_STATE/sdk.zip" \
             --proxy-source "$COMMAND_KEY_STATE/committed_response_loss.py" \
             --runtime-state "$COMMAND_KEY_STATE/runtime" \
