@@ -1,0 +1,45 @@
+ARG PHP_IMAGE
+FROM ${PHP_IMAGE} AS php81
+FROM composer@sha256:2cf275428757e5435a667bfc0d038b14520ca02be2b1b70d44a05c8c19e2de48 AS composer
+
+# Same fixed linux/amd64 Bookworm parent bound by the official 8.2/8.4 images.
+# The old PHP image supplies only PHP files; none of its APT code is executed.
+FROM debian@sha256:c67e92c8099ba22853ab4cfda7cfb494d253d6012ca82dee98ba8976772af018
+
+ENV PHP_INI_DIR=/usr/local/etc/php \
+    PHPIZE_DEPS="autoconf dpkg-dev file g++ gcc libc6-dev make pkg-config re2c" \
+    PHP_CFLAGS="-fstack-protector-strong -fpic -fpie -O2 -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64" \
+    PHP_CPPFLAGS="-fstack-protector-strong -fpic -fpie -O2 -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64" \
+    PHP_LDFLAGS="-Wl,-O1 -pie" \
+    PHP_VERSION=8.1.34 \
+    PHP_SHA256=ffa9e0982e82eeaea848f57687b425ed173aa278fe563001310ae2638db5c251
+
+COPY --from=php81 /usr/local /usr/local
+COPY --from=php81 /usr/src/php.tar.xz /usr/src/php.tar.xz
+COPY .central-apt-source/docker/apt/require-fixed-bookworm-apt.sh /usr/local/share/durable-workflow/php-ci/require-fixed-bookworm-apt.sh
+COPY --from=composer /usr/bin/composer /usr/local/bin/composer
+COPY docker/php-ci/verify-php-trust.php /usr/local/share/durable-workflow/php-ci/verify-php-trust.php
+COPY docker/brotli /usr/local/share/durable-workflow/php-ci/brotli
+
+RUN test "$(dpkg --print-architecture)" = amd64 \
+    && /bin/sh /usr/local/share/durable-workflow/php-ci/require-fixed-bookworm-apt.sh \
+    && printf 'Acquire::Retries "0";\n' > /etc/apt/apt.conf.d/99-no-retries \
+    && printf 'Package: php*\nPin: release *\nPin-Priority: -1\n' > /etc/apt/preferences.d/no-debian-php \
+    && echo "$PHP_SHA256  /usr/src/php.tar.xz" | sha256sum --check --strict \
+    && sh /usr/local/share/durable-workflow/php-ci/brotli/install-vendor.sh /usr/local/share/durable-workflow/php-ci/brotli \
+        autoconf dpkg-dev file g++ gcc libc6-dev make pkg-config re2c \
+        ca-certificates curl xz-utils git unzip python3 libicu-dev libonig-dev libzip-dev \
+        libargon2-1 libcurl4 libreadline8 libsqlite3-0 libsodium23 libssl3 libxml2 zlib1g \
+    && php /usr/local/share/durable-workflow/php-ci/verify-php-trust.php /usr/local/bin/composer \
+    && docker-php-ext-install -j2 bcmath intl mbstring pcntl sockets zip \
+    && cc -O2 /usr/local/share/durable-workflow/php-ci/brotli/verify-system-brotli.c -lbrotlidec -lbrotlienc -ldl \
+        -o /usr/local/share/durable-workflow/php-ci/brotli/verify-system-brotli \
+    && cp "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini" \
+    && php /usr/local/share/durable-workflow/php-ci/verify-php-trust.php /usr/local/bin/composer \
+    && php /usr/local/share/durable-workflow/php-ci/brotli/verify-runtime.php \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+USER www-data
+ENTRYPOINT ["docker-php-entrypoint"]
+CMD ["php", "-a"]
