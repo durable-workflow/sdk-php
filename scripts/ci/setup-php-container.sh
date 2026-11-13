@@ -3,7 +3,9 @@ set -euo pipefail
 umask 077
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-minor="${1:?Usage: setup-php-container.sh 8.1|8.2|8.4}"
+minor="${1:?Usage: setup-php-container.sh 8.1|8.2|8.4 [carbon2]}"
+mode="${2:-unit}"
+case "$mode:$minor" in unit:8.1|unit:8.2|unit:8.4|carbon2:8.1) ;; *) echo 'Unsupported PHP CI caller mode.' >&2; exit 2 ;; esac
 image="$(python3 -I -S - "$root/scripts/ci/php-container-images.json" "$minor" <<'PY'
 import json,re,sys
 images=json.load(open(sys.argv[1]))
@@ -45,17 +47,31 @@ docker run --rm --init --name "sdk-php-ci-probe-${minor}-${GITHUB_RUN_ID:-local}
 printf 'php_ci_image=%s\n' "$runtime_id"
 
 state="$(mktemp -d "${RUNNER_TEMP:?RUNNER_TEMP is required}/sdk-php-ci.XXXXXX")"
-mkdir -p "$state/bin" "$state/tmp" "$state/composer-home/cache"
+# Repository controls and host wrappers stay read-only in every container.
+# Only dependencies, generated locks, bounded test output and private data write.
+for path in vendor composer.lock build .phpunit.cache composer.json; do
+    [[ ! -L "$root/$path" ]]
+done
+mkdir -p "$root/vendor" "$root/build" "$root/.phpunit.cache" "$state/bin" "$state/data/tmp" "$state/data/composer-home/cache"
+if [[ ! -e "$root/composer.lock" ]]; then
+    printf '{}\n' > "$root/composer.lock"
+fi
+[[ -d "$root/vendor" && -d "$root/build" && -d "$root/.phpunit.cache" && -f "$root/composer.lock" && -f "$root/composer.json" ]]
+if [[ "$mode" = carbon2 ]]; then
+    printf 'carbon2\n' > "$state/writable-manifest"
+fi
 ln -sf "$root/scripts/ci/run-php-container.sh" "$state/bin/php"
 ln -sf "$root/scripts/ci/run-php-container.sh" "$state/bin/composer"
+SDK_PHP_CI_TEST_IMAGE="$runtime_id" \
+    python3 -I -S -B "$root/tests/ci/test_php_container_isolation.py" -v
 SDK_PHP_CI_TEST_IMAGE="$runtime_id" SDK_PHP_CI_ROOT="$root" SDK_PHP_CI_STATE="$state" \
     python3 -I -S -B "$root/tests/ci/test_php_container_tls.py" -v
 {
     echo "SDK_PHP_CI_IMAGE=$runtime_id"
     echo "SDK_PHP_CI_ROOT=$root"
     echo "SDK_PHP_CI_STATE=$state"
-    echo "COMPOSER_HOME=$state/composer-home"
-    echo "COMPOSER_CACHE_DIR=$state/composer-home/cache"
-    echo "TMPDIR=$state/tmp"
+    echo "COMPOSER_HOME=$state/data/composer-home"
+    echo "COMPOSER_CACHE_DIR=$state/data/composer-home/cache"
+    echo "TMPDIR=$state/data/tmp"
 } >> "${GITHUB_ENV:?GITHUB_ENV is required}"
 echo "$state/bin" >> "${GITHUB_PATH:?GITHUB_PATH is required}"

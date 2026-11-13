@@ -15,9 +15,22 @@ options=(--rm --init --interactive --name "sdk-php-ci-${command}-${BASHPID}"
     --cpus 2 --memory 2g --pids-limit 512 --network host
     --cap-drop ALL --security-opt no-new-privileges
     --user "$(id -u):$(id -g)" --workdir "$PWD"
-    --mount "type=bind,source=$root,target=$root"
-    --mount "type=bind,source=$state,target=$state"
+    --mount "type=bind,source=$root,target=$root,readonly"
+    --mount "type=bind,source=$state,target=$state,readonly"
+    --mount "type=bind,source=$state/data,target=$state/data"
+    --mount "type=bind,source=$root/vendor,target=$root/vendor"
+    --mount "type=bind,source=$root/composer.lock,target=$root/composer.lock"
+    --mount "type=bind,source=$root/build,target=$root/build"
+    --mount "type=bind,source=$root/.phpunit.cache,target=$root/.phpunit.cache"
     --mount "type=bind,source=$root/docker/php-ci/ci-defaults.ini,target=/usr/local/etc/php/conf.d/zz-sdk-php-ci.ini,readonly")
+
+# Only the fixed Carbon 2 caller intentionally rewrites its root manifest.
+# The host creates this marker before running any container; state stays RO.
+if [[ -e "$state/writable-manifest" || -L "$state/writable-manifest" ]]; then
+    [[ -f "$state/writable-manifest" && ! -L "$state/writable-manifest" ]]
+    [[ "$(cat "$state/writable-manifest")" = carbon2 ]]
+    options+=(--mount "type=bind,source=$root/composer.json,target=$root/composer.json")
+fi
 
 # Composer's guard is a composite action outside the repository checkout.
 if [[ -n "${GITHUB_ACTION_PATH:-}" ]]; then
