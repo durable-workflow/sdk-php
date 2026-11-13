@@ -481,7 +481,7 @@ final class CooperativeCancellationTest extends TestCase
             $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue,
                 [$grouped ? 'scoped-remote-group-only' : 'scoped-remote-only']);
             $this->awaitMessage($ownerMessages, 'remote-entered');
-            $this->awaitMessage($ownerMessages, 'owner-heartbeat');
+            $this->awaitOwnerHeartbeat($ownerMessages, $ownerPid, $queue.'-'.$ownerPid);
             $pids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
             foreach ($pids as $pid) { self::assertTrue(posix_kill($pid, 0)); }
             $fence = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
@@ -1546,7 +1546,7 @@ final class CooperativeCancellationTest extends TestCase
             $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['remote']);
             self::assertNotNull($handle->selectedRunId);
             $this->awaitMessage($ownerMessages, 'remote-entered');
-            $this->awaitMessage($ownerMessages, 'owner-heartbeat');
+            $this->awaitOwnerHeartbeat($ownerMessages, $ownerPid, $queue.'-'.$ownerPid);
             $pids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
             foreach ($pids as $pid) { self::assertTrue(posix_kill($pid, 0), 'The remote callback must still be active.'); }
             $remainingWorkflowLease = 0.0;
@@ -1645,7 +1645,7 @@ final class CooperativeCancellationTest extends TestCase
                 && ($event['payload']['activity_type'] ?? null) === 'tests.php-cooperative-remote');
             self::assertSame($userHeartbeat, count($heartbeats) > 0, 'Owner checks must not manufacture user progress.');
             $fence = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
-            if (getenv('DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION') === '1') {
+            if (($client->clusterInfo()->raw['worker_protocol']['server_capabilities']['activity_cancellation_acknowledgement'] ?? false) === true) {
                 $until = microtime(true) + 5;
                 do {
                     $status = $client->activityTaskStatus($fence['task_id'], $fence['activity_attempt_id'], $fence['lease_owner']);
@@ -1743,7 +1743,7 @@ final class CooperativeCancellationTest extends TestCase
         try {
             $this->awaitMessage($workflowMessages, 'registered');
             $this->awaitMessage($ownerMessages, 'registered');
-            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['remote']);
+            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['remote-retry']);
             $this->awaitMessage($ownerMessages, 'remote-entered');
             $pids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
             $this->stopWorker($ownerPid, $kill);
@@ -1799,7 +1799,7 @@ final class CooperativeCancellationTest extends TestCase
         try {
             $this->awaitMessage($workflowMessages, 'registered');
             $this->awaitMessage($ownerMessages, 'registered');
-            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['remote']);
+            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['remote-retry']);
             $this->awaitMessage($ownerMessages, 'remote-entered');
             $original = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
             $processes = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
@@ -1822,7 +1822,16 @@ final class CooperativeCancellationTest extends TestCase
             // pass. No clock, database row or production lease is changed.
             $this->awaitReclaimedActivity($ownerMessages);
             $replacement = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
-            self::assertSame($original['task_id'], $replacement['task_id']);
+            self::assertNotSame($original['task_id'], $replacement['task_id']);
+            $retries = array_values(array_filter($this->history($client, $handle), static fn (array $event): bool =>
+                $event['event_type'] === 'ActivityRetryScheduled'
+                && ($event['payload']['retry_of_task_id'] ?? null) === $original['task_id']));
+            self::assertCount(1, $retries);
+            self::assertSame($replacement['task_id'], $retries[0]['payload']['retry_task_id']);
+            self::assertSame($original['activity_attempt_id'], $retries[0]['payload']['retry_after_attempt_id']);
+            self::assertSame(1, $retries[0]['payload']['retry_after_attempt']);
+            self::assertSame(2, $retries[0]['payload']['max_attempts']);
+            self::assertSame('lease_expired', $retries[0]['payload']['retry_reason']);
             self::assertNotSame($original['activity_attempt_id'], $replacement['activity_attempt_id']);
             self::assertNotSame($original['lease_owner'], $replacement['lease_owner']);
             self::assertSame(2, $replacement['attempt_number']);
@@ -1949,7 +1958,7 @@ final class CooperativeCancellationTest extends TestCase
             $this->awaitMessage($ownerMessages, 'registered');
             $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['remote']);
             $this->awaitMessage($ownerMessages, 'remote-entered');
-            $this->awaitMessage($ownerMessages, 'owner-heartbeat');
+            $this->awaitOwnerHeartbeat($ownerMessages, $ownerPid, $queue.'-'.$ownerPid);
             $pids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
             $fence = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
             $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 30);
@@ -2008,8 +2017,25 @@ final class CooperativeCancellationTest extends TestCase
 
     private function client(?Transport $transport = null, string $namespace = 'default'): Client
     {
-        return new Client($this->runtimeUrl, namespace: $namespace, token: $this->token,
+        $client = new Client($this->runtimeUrl, namespace: $namespace, token: $this->token,
             transport: $transport);
+        if ($transport !== null && method_exists($client, 'withActivityLeaseBootstrap')) {
+            // These owner-only observers wrap the default HTTP transport. The
+            // independent helper recreates that same URI/auth/TLS configuration.
+            // Presence observations use a metadata-only file; owner fault
+            // injection and callback pipes remain outside the helper.
+            $bootstrap = $this->directory.'/activity-lease-'.getmypid().'-'.hash('sha256', $namespace).'.php';
+            file_put_contents($bootstrap, '<?php require_once '.var_export(__DIR__.'/ActivityLeaseObservationTransport.php', true)
+                .'; return new \\DurableWorkflow\\Client('
+                .var_export($this->runtimeUrl, true).', namespace: '.var_export($namespace, true).', '
+                .'token: getenv("DURABLE_WORKFLOW_AUTH_TOKEN") ?: "test-token", '
+                .'transport: new \\DurableWorkflow\\Tests\\Integration\\ActivityLeaseObservationTransport('
+                .var_export($this->directory.'/activity-lease-heartbeat-'.getmypid().'.json', true).'));');
+            chmod($bootstrap, 0600);
+            $client = $client->withActivityLeaseBootstrap($bootstrap);
+        }
+
+        return $client;
     }
 
     private function queue(string $kind): string
@@ -2177,11 +2203,15 @@ final class CooperativeCancellationTest extends TestCase
                                     static fn () => $context->localActivity('tests.php-cooperative-group-work-0'),
                                     static fn () => $context->localActivity('tests.php-cooperative-group-work-1'),
                                 ]);
-                            } elseif ($kind === 'remote') {
-                                $context->activity('tests.php-cooperative-remote', [], $remotePolicy === null ? [] : [
+                            } elseif (in_array($kind, ['remote', 'remote-retry'], true)) {
+                                $options = $remotePolicy === null ? [] : [
                                     'cancellation_policy' => $remotePolicy,
                                     'schedule_to_close_timeout' => 60,
-                                ]);
+                                ];
+                                // Lease loss settles through the captured retry policy.
+                                // Only owner-death/reclaim fixtures need a second attempt.
+                                if ($kind === 'remote-retry') { $options['retry_policy'] = ['max_attempts' => 2]; }
+                                $context->activity('tests.php-cooperative-remote', [], $options);
                             } else {
                                 $context->sleep(300);
                             }
@@ -2317,6 +2347,19 @@ final class CooperativeCancellationTest extends TestCase
         fclose($child);
         $this->workerProcesses[$pid] = true;
         return [$pid, $parent];
+    }
+
+    /** @param resource $messages */
+    private function awaitOwnerHeartbeat($messages, int $pid, string $workerId): void
+    {
+        if (!method_exists(Client::class, 'withActivityLeaseBootstrap')) {
+            $this->awaitMessage($messages, 'owner-heartbeat');
+            return;
+        }
+        $name = 'activity-lease-heartbeat-'.$pid.'.json';
+        $this->awaitObservationFile($name);
+        $observation = json_decode((string) file_get_contents($this->directory.'/'.$name), true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame(['worker_id' => $workerId, 'acknowledged' => true], $observation);
     }
 
     /** @param resource $messages */
