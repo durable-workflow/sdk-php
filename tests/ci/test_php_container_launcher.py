@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import shutil
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -75,6 +76,25 @@ class PhpContainerLauncherTests(unittest.TestCase):
             mount = f"type=bind,source={selected},target={selected},readonly"
             self.assertEqual(arguments.count(mount), 1)
         self.assertEqual(arguments[-3:], ["php", "/reviewed/verify.php", "/usr/local/bin/composer"])
+
+    def test_host_selector_ignores_workspace_and_pythonpath_modules_before_apt(self):
+        for location in ("workspace", "pythonpath"):
+            with self.subTest(location=location):
+                root = self.state / location
+                scripts = root / "scripts/ci"
+                scripts.mkdir(parents=True)
+                for name in ("setup-php-container.sh", "php-container-images.json"):
+                    shutil.copyfile(ROOT / "scripts/ci" / name, scripts / name)
+                marker = root / "untrusted-import-ran"
+                modules = root if location == "workspace" else root / "ambient"
+                modules.mkdir(exist_ok=True)
+                (modules / "json.py").write_text(f"open({str(marker)!r},'w').write('marker only')\n")
+                environment = self.environment | {"PYTHONPATH": str(modules)}
+                result = subprocess.run(["bash", str(scripts / "setup-php-container.sh"), "8.2"],
+                                        cwd=root, env=environment, capture_output=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0, "The deliberately absent APT helper must stop before Docker.")
+                self.assertFalse(marker.exists(), "Host setup must never import workspace/PYTHONPATH code.")
+                self.assertFalse(self.log.exists())
 
 
 if __name__ == "__main__":
