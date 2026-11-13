@@ -47,6 +47,12 @@ requireCompletionAcceptance($info->version === getenv('SERVER_VERSION') && ($inf
 $queue = 'completion-limits-'.bin2hex(random_bytes(6));
 $evidenceFile = tempnam(sys_get_temp_dir(), 'sdk-php-completion-');
 requireCompletionAcceptance(is_string($evidenceFile), 'Cannot create owned worker evidence.');
+$bootstrapFile = tempnam(sys_get_temp_dir(), 'sdk-php-completion-lease-');
+requireCompletionAcceptance(is_string($bootstrapFile), 'Cannot create owned maintenance bootstrap.');
+// Authentication remains in the inherited fixture environment, never in this
+// file or the evidence. Only the owner needs HTTP observation middleware.
+file_put_contents($bootstrapFile, '<?php return new \\DurableWorkflow\\Client('
+    .'getenv("METRICS_RUNTIME_URL"), token: getenv("METRICS_TOKEN"));');
 $pid = pcntl_fork();
 requireCompletionAcceptance($pid !== -1, 'Cannot start the acceptance worker.');
 if ($pid === 0) {
@@ -84,8 +90,9 @@ if ($pid === 0) {
                 ++$trace->uploads;
             }
         }));
-        $workerClient = new Client(getenv('METRICS_RUNTIME_URL'), token: getenv('METRICS_TOKEN'),
-            transport: new Psr18Transport(new HttpClient(['handler' => $stack])), metrics: $trace);
+        $workerClient = (new Client(getenv('METRICS_RUNTIME_URL'), token: getenv('METRICS_TOKEN'),
+            transport: new Psr18Transport(new HttpClient(['handler' => $stack])), metrics: $trace))
+            ->withActivityLeaseBootstrap($bootstrapFile);
         $worker = new Worker($workerClient, $queue, diagnosticListener: static function (string $event, array $details) use ($trace): void {
             if ($event === 'worker.workflow_task_completion_too_large') {
                 $trace->diagnostics[] = array_intersect_key($details, array_flip(['limit_kind', 'limit_bytes', 'size_bytes']));
@@ -163,4 +170,5 @@ try {
         'source_fallback' => false], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR).PHP_EOL;
 } finally {
     unlink($evidenceFile);
+    unlink($bootstrapFile);
 }
