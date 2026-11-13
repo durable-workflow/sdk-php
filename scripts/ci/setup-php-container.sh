@@ -24,7 +24,7 @@ fi
 docker build --file "$dockerfile" --build-arg "PHP_IMAGE=$image" --tag "$runtime" "$root"
 runtime_id="$(docker image inspect "$runtime" --format '{{.Id}}')"
 docker run --rm --init --name "sdk-php-ci-probe-${minor}-${GITHUB_RUN_ID:-local}" \
-    --cpus 1 --memory 512m --pids-limit 64 --network none \
+    --cpus 1 --memory 512m --pids-limit 64 --network none --user "$(id -u):$(id -g)" \
     --mount "type=bind,source=$root/docker/php-ci/ci-defaults.ini,target=/usr/local/etc/php/conf.d/zz-sdk-php-ci.ini,readonly" "$runtime_id" \
     php -r '
         if (PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION !== $argv[1]) { throw new RuntimeException("The PHP matrix minor does not match the image."); }
