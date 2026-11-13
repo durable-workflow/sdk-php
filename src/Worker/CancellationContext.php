@@ -13,6 +13,15 @@ use LogicException;
 /** Immutable root request and cleanup budget read from canonical history. */
 final class CancellationContext
 {
+    /**
+     * `cause` of a run's own interruption when deadline-triggered timeout
+     * cleanup requested it (workflow#863). Absent or `cancellation` is an
+     * ordinary cooperative cancellation.
+     */
+    public const CAUSE_TIMEOUT = 'timeout';
+
+    public const CAUSE_CANCELLATION = 'cancellation';
+
     /** @var (Closure(): DateTimeImmutable)|null */
     private ?Closure $replayClock = null;
 
@@ -33,7 +42,18 @@ final class CancellationContext
         private readonly DateTimeImmutable $cleanupDeadline,
         public readonly array $lineage,
         public readonly ?ScopedCancellationContext $scopeOrigin = null,
+        /** Wire `cause` as recorded: null (absent), `cancellation` or `timeout`. */
+        public readonly ?string $cause = null,
+        /** `execution` or `run` when a timeout context names its timeout kind. */
+        public readonly ?string $timeoutKind = null,
+        private readonly ?DateTimeImmutable $workDeadline = null,
     ) {
+    }
+
+    /** Whether deadline-triggered timeout cleanup requested this interruption. */
+    public function isTimeout(): bool
+    {
+        return $this->cause === self::CAUSE_TIMEOUT;
     }
 
     /** @param array<string, mixed> $snapshot */
@@ -106,6 +126,7 @@ final class CancellationContext
         if ($deadline <= $requestedAt) {
             throw new InvalidArgumentException('Cancellation deadline must follow the original request.');
         }
+        [$cause, $timeoutKind, $workDeadline] = self::cause($snapshot, $deadline);
         if ($scopeOrigin !== null) {
             self::assertScopedOrigin($snapshot, $scopeOrigin, $normalized, $requester, $requestedAt, $deadline);
         }
@@ -113,6 +134,7 @@ final class CancellationContext
         return new self(
             $requestId, $rootRequestId, $rootInstanceId, $rootRunId, $parentRequestId,
             $reason, $requester, self::text($snapshot, 'source'), $requestedAt, $deadline, $normalized, $scopeOrigin,
+            $cause, $timeoutKind, $workDeadline,
         );
     }
 
@@ -124,6 +146,12 @@ final class CancellationContext
     public function deadline(): DateTimeImmutable
     {
         return $this->cleanupDeadline;
+    }
+
+    /** The work deadline a timeout context names, if it names one. */
+    public function workDeadlineAt(): ?DateTimeImmutable
+    {
+        return $this->workDeadline;
     }
 
     /** Remaining seconds at the consumed replay boundary, never the host clock. */
@@ -168,6 +196,11 @@ final class CancellationContext
             'requested_at' => $this->originalRequestedAt->format('Y-m-d\TH:i:s.u\Z'),
             'cleanup_deadline_at' => $this->cleanupDeadline->format('Y-m-d\TH:i:s.u\Z'),
             'lineage' => $this->lineage,
+            ...($this->cause === null ? [] : ['cause' => $this->cause]),
+            ...($this->timeoutKind === null ? [] : ['timeout_kind' => $this->timeoutKind]),
+            ...($this->workDeadline === null ? [] : [
+                'work_deadline_at' => $this->workDeadline->format('Y-m-d\TH:i:s.u\Z'),
+            ]),
             ...($this->scopeOrigin === null ? [] : [
                 'scope_origin' => $this->scopeOrigin->toArray(),
                 'scope_authority_deadline_at' => $this->cleanupDeadline->format('Y-m-d\TH:i:s.u\Z'),
@@ -223,6 +256,43 @@ final class CancellationContext
         if ($lineage !== $expected) {
             throw new InvalidArgumentException('Run cancellation lineage discards or replaces its original scope ancestry.');
         }
+    }
+
+    /**
+     * Read the optional top-level `cause` and, for a timeout, its timeout
+     * fields. Unknown causes, and timeout fields without the timeout cause,
+     * are refused.
+     *
+     * @param array<string, mixed> $snapshot
+     * @return array{?string, ?string, ?DateTimeImmutable}
+     */
+    private static function cause(array $snapshot, DateTimeImmutable $deadline): array
+    {
+        $cause = $snapshot['cause'] ?? null;
+        if ($cause !== null && !in_array($cause, [self::CAUSE_CANCELLATION, self::CAUSE_TIMEOUT], true)) {
+            throw new InvalidArgumentException('Cancellation cause must be cancellation or timeout.');
+        }
+        $timeoutKind = $snapshot['timeout_kind'] ?? null;
+        $workDeadlineAt = $snapshot['work_deadline_at'] ?? null;
+        if ($cause !== self::CAUSE_TIMEOUT) {
+            if ($timeoutKind !== null || $workDeadlineAt !== null) {
+                throw new InvalidArgumentException('Cancellation timeout fields require the timeout cause.');
+            }
+
+            return [$cause, null, null];
+        }
+        if ($timeoutKind !== null && !in_array($timeoutKind, ['execution', 'run'], true)) {
+            throw new InvalidArgumentException('Cancellation timeout_kind must be execution or run.');
+        }
+        $workDeadline = null;
+        if ($workDeadlineAt !== null) {
+            $workDeadline = self::timestamp(self::text($snapshot, 'work_deadline_at'));
+            if ($workDeadline >= $deadline) {
+                throw new InvalidArgumentException('Cancellation work deadline must precede its cleanup deadline.');
+            }
+        }
+
+        return [$cause, $timeoutKind, $workDeadline];
     }
 
     /** @param array<string, mixed> $value */

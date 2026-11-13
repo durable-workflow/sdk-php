@@ -157,6 +157,26 @@ observations retain the opaque history refresh route while canonical history
 supplies the workflow-facing object. Older cancellation histories without the
 rich snapshot continue delivering cancellation with `context === null`.
 
+## Timeout cleanup cause
+
+A context can carry an optional top-level `cause` (workflow#863). `timeout`
+means deadline-triggered timeout cleanup requested the interruption: the run
+passed its work deadline and is now in cleanup. Absent or `cancellation` means
+an ordinary cooperative cancellation, and any other value is refused as
+invalid. A timeout context may also name `timeout_kind` (`execution` or `run`)
+and `work_deadline_at`; those fields are refused without the timeout cause.
+Its cleanup deadline is the context's existing `cleanup_deadline_at`. A
+descendant cancelled under the request is cancelled, not timed out, so it
+carries no cause. `toArray()` writes `cause` and the timeout fields back as
+read, and leaves an ordinary context unchanged.
+
+`CancellationContext::$cause`, `isTimeout()`, `$timeoutKind` and
+`workDeadlineAt()` read them. A timeout delivery raises
+`WorkflowTimeoutCleanupRequested`, which extends `WorkflowCancelled`, so
+existing `catch (WorkflowCancelled)` compensation runs on timeout too. Test
+`$cancelled->context?->isTimeout()` (the cross-SDK discriminator is `cause`)
+when cleanup must differ. The run still ends timed out.
+
 ## Child policies
 
 Child authoring accepts `CancellationPolicy` and `ParentClosePolicy` values from

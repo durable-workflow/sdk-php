@@ -111,6 +111,9 @@ final class ScopedCancellationContext
             }
             $deadlineSnapshot = $root->toArray();
             $deadlineSnapshot['cleanup_deadline_at'] = $entry['cleanup_deadline_at'];
+            // Only the budget is checked here; a narrowed scope budget is not
+            // compared with a timeout root's work deadline.
+            unset($deadlineSnapshot['timeout_kind'], $deadlineSnapshot['work_deadline_at']);
             $nextDeadline = CancellationContext::fromArray($deadlineSnapshot)->deadline();
             if (($index === 0 && $nextDeadline != $root->deadline()) || $nextDeadline > $deadline) {
                 throw new InvalidArgumentException('Scoped cancellation cannot change its root or extend a descendant budget.');
