@@ -1,0 +1,93 @@
+name: Published worker metrics
+
+on:
+  pull_request:
+    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php']
+  push:
+    branches: [main]
+    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php']
+  workflow_dispatch:
+    inputs:
+      sdk_version:
+        description: Exact published PHP SDK version
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  installed-worker-metrics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      SDK_VERSION: ${{ inputs.sdk_version || '3.17.0' }}
+      SERVER_VERSION: '3.8.0'
+      SERVER_IMAGE: durableworkflow/server@sha256:7988a23525d9e50e997a9f6f02e801300ed4f626de3cf6977033657ae7e9f58e
+      METRICS_RUNTIME_URL: http://127.0.0.1:8080
+      METRICS_TOKEN: published-metrics-test-token
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Create isolated Composer state
+        run: |
+          state="$(mktemp -d "$RUNNER_TEMP/worker-metrics.XXXXXX")"
+          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp" "$state/consumer"
+          {
+            echo "COMPOSER_HOME=$state/home"
+            echo "COMPOSER_CACHE_DIR=$state/cache"
+            echo "TMPDIR=$state/tmp"
+            echo "CONSUMER=$state/consumer"
+          } >> "$GITHUB_ENV"
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+        with:
+          clients: python,composer,curl,git
+      - name: Set up the qualified PHP profile
+        uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7 # bound-linux-php
+        with:
+          php-version: '8.3'
+          ini-file: production
+          tools: composer:2.10.3,phpunit:11.5.57
+          coverage: none
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+      - name: Install only the published SDK
+        run: |
+          [[ "$SDK_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          composer init --working-dir="$CONSUMER" --name=durable-workflow/published-metrics --no-interaction
+          composer require --working-dir="$CONSUMER" "durable-workflow/sdk:$SDK_VERSION" --no-scripts --no-interaction --prefer-dist --no-progress
+      - name: Start the immutable published native Server
+        run: |
+          docker pull "$SERVER_IMAGE"
+          docker run --detach --init --name sdk-php-metrics-runtime \
+            --cpus 1 --memory 512m --pids-limit 256 \
+            --publish 127.0.0.1:8080:8080 \
+            --env DB_CONNECTION=sqlite --env DW_AUTH_DRIVER=token \
+            --env DW_AUTH_TOKEN="$METRICS_TOKEN" \
+            "$SERVER_IMAGE"
+          for attempt in {1..30}; do
+            if curl --fail --silent "$METRICS_RUNTIME_URL/api/ready" > /dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent "$METRICS_RUNTIME_URL/api/ready" > /dev/null
+      - name: Assert installed worker metrics over real HTTP
+        run: |
+          php -l tests/smoke/worker-metrics.php
+          timeout 60s php tests/smoke/worker-metrics.php "$CONSUMER/vendor/autoload.php" | tee worker-metrics.json
+      - name: Retain the tuple, observations and installed dependency graph
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: published-worker-metrics
+          path: |
+            worker-metrics.json
+            ${{ env.CONSUMER }}/composer.lock
+          retention-days: 14
+      - name: Show bounded Server diagnostics
+        if: failure()
+        run: docker logs --tail 80 sdk-php-metrics-runtime
+      - name: Remove the isolated Server and its volumes
+        if: always()
+        run: docker rm --force --volumes sdk-php-metrics-runtime

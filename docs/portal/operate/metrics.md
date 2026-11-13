@@ -90,8 +90,9 @@ so this histogram does not establish exactly-once execution.
 
 The vendored registry pins shared contract revision 2 at
 [`23f9bc3c`](https://github.com/durable-workflow/.github/tree/23f9bc3c3798cb6aab6ccf5f9cd210854b820c65/sdk-metrics).
-Server eligibility-origin implementation and exact published Server/installed
-SDK qualification remain required before this addition is delivered.
+The [published worker metrics check](https://github.com/durable-workflow/sdk-php/actions/workflows/published-worker-metrics.yml)
+installs the released SDK and verifies these instruments, including ready-age
+samples for workflow and activity tasks, against an immutable native Server image.
 
 ## Bounded labels
 
