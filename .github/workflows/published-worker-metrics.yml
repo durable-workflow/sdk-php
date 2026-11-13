@@ -51,6 +51,8 @@ jobs:
           ini-file: production
           tools: composer:2.10.3,phpunit:11.5.57
           coverage: none
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
       - name: Install only the published SDK
         run: |
           [[ "$SDK_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
