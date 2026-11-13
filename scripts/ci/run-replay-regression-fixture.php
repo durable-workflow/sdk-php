@@ -100,6 +100,7 @@ final class ReplayRegressionTransport implements Transport
         private readonly bool $workflowLeaseRecovery = false,
         private readonly bool $completionLockPressure = false,
         private readonly bool $occurrenceDeadline = false,
+        private readonly bool $completionTooLarge = false,
     ) {
     }
 
@@ -191,6 +192,27 @@ final class ReplayRegressionTransport implements Transport
                         unset($refusal['worker_id'], $refusal['task_queue']);
                     }
                     throw TransportException::fromResponse(503, $refusal, json_encode($refusal, JSON_THROW_ON_ERROR));
+                }
+            }
+            if ($this->completionTooLarge) {
+                // .github#228: Server 3.6.0 refuses the whole completion before reading it.
+                if ($this->refusedCompletion !== null && $body === $this->refusedCompletion) {
+                    throw new RuntimeException('The Worker resent the oversized workflow completion.');
+                }
+                if ($this->completionRefusals++ === 0) {
+                    $this->refusedCompletion = $body;
+                    $refusal = [
+                        'message' => 'Workflow task completion exceeds the maximum allowed size of 64 bytes. Each command\'s '
+                            .'arguments may be up to 4 bytes; offload larger payloads or split the work across workflow tasks.',
+                        'reason' => 'payload_too_large', 'limit' => 64, 'limit_kind' => 'workflow_task_completion_bytes',
+                    ];
+                    throw TransportException::fromResponse(413, $refusal, json_encode($refusal, JSON_THROW_ON_ERROR));
+                }
+                $message = $body['commands'][0]['message'] ?? null;
+                if (!is_string($message)
+                    || !str_starts_with($message, 'Structural limit exceeded: workflow_task_completion_bytes: ')
+                    || !str_contains($message, 'over the server limit of 64 bytes')) {
+                    throw new RuntimeException('The structural-limit failure does not name the completion limit.');
                 }
             }
             if ($this->storagePressure) {
@@ -669,6 +691,7 @@ final class ReplayRegressionConsumer
             workflowLeaseRecovery: $workflowType === 'golden.workflow-lease-recovery',
             completionLockPressure: $workflowType === 'golden.completion-lock-pressure',
             occurrenceDeadline: self::occurrenceDeadlineAdvertised($workflowType, $history),
+            completionTooLarge: $workflowType === 'golden.completion-too-large',
         );
         $now = 0.0;
         $worker = new Worker(
@@ -1157,6 +1180,7 @@ final class ReplayRegressionConsumer
             },
             'golden.completion-backend-loss', 'golden.completion-lock-pressure' => static fn (WorkflowContext $context): string =>
                 'completion-after-backend-recovery',
+            'golden.completion-too-large' => static fn (WorkflowContext $context): string => 'refused-as-too-large',
             'golden.workflow-lease-recovery' => static fn (WorkflowContext $context): mixed =>
                 $context->activity('golden.lease-receipt'),
             'golden.activity-completion-backend-loss' => static fn (WorkflowContext $context): mixed =>

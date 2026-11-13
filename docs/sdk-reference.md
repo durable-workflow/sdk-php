@@ -746,6 +746,33 @@ Grant freshness includes the original completion transit and
 time spent waiting to dispatch. Shutdown finishes a known delivered lease before
 returning. Runtimes without the capability keep the ordinary polling path.
 
+## Workflow task completion size limit
+
+Each command's arguments must fit the Server's per-payload limit
+(`DW_MAX_PAYLOAD_BYTES`, 2 MiB by default). Server 3.6.0 also bounds a whole
+workflow-task completion that carries commands at 16 payload limits, 32 MiB by
+default, so a large fan-out of small commands completes. A larger completion is
+refused with 413 `payload_too_large` and `limit_kind:
+workflow_task_completion_bytes` before the Server reads it.
+
+The PHP Worker raises `WorkflowTaskCompletionTooLarge`, a `ServerException`
+with `limitBytes` (the Server's `limit`) and `sizeBytes` (the encoded size of
+the completion it sent). Replaying the task would produce the same commands, so
+the Worker never sends that completion again. It completes the same task once
+with a `fail_workflow` command whose message starts `Structural limit exceeded:
+workflow_task_completion_bytes:` and names both sizes, and logs
+`worker.workflow_task_completion_too_large`. The run fails with
+`failure_category: structural_limit`; it is not retried and not recorded as a
+replay block. If that small completion is refused too, the error surfaces as
+any other completion error.
+
+To stay within the limit, split the fan-out into smaller batches across
+workflow tasks, move work into child workflows, or continue as new, and offload
+large payloads with external payload storage. An activity continuation that is
+refused the same way falls back to an ordinary activity completion; the run's
+own workflow task then reports the limit. Other 413 responses and 5xx errors
+keep their existing `ServerException` behavior.
+
 ## Completion pipelining (opt-in)
 
 `Worker::create($client, $taskQueue, enableCompletionPipelining: true)` allows

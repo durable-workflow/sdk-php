@@ -25,6 +25,7 @@ use DurableWorkflow\Exception\UpdateStillPending;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Exception\WorkflowFailed;
 use DurableWorkflow\Exception\WorkflowTerminated;
+use DurableWorkflow\Exception\WorkflowTaskCompletionTooLarge;
 use DurableWorkflow\Exception\WorkflowTimedOut;
 use DurableWorkflow\Model\ClusterInfo;
 use DurableWorkflow\Model\NamespaceDescription;
@@ -51,6 +52,7 @@ use DurableWorkflow\Metrics\MetricsRoutes;
 use DurableWorkflow\Metrics\NoopMetricsRecorder;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Transport\BoundedTransport;
+use DurableWorkflow\Transport\JsonDocument;
 use DurableWorkflow\Transport\BoundedPayloadTransport;
 use DurableWorkflow\Transport\BoundedPayloadUploadTransport;
 use DurableWorkflow\Transport\PayloadTransport;
@@ -3269,9 +3271,20 @@ final class Client implements WorkflowClientInterface
             if ($operation === 'signal') {
                 throw new SignalFailed($message, $status, $reason, $details, $exception, $requestId);
             }
+            if ($worker && $method === 'POST' && $body !== null && self::isWorkflowCommandCompletion($path)
+                && WorkflowTaskCompletionTooLarge::matches($status, $details)) {
+                /** @var array<string, mixed> $details */
+                throw WorkflowTaskCompletionTooLarge::fromResponse($details, JsonDocument::size($body), $exception);
+            }
 
             throw new ServerException($message, $status, $reason, $details, $exception);
         }
+    }
+
+    /** Server 3.6.0 bounds these requests by its workflow-task completion limit. */
+    private static function isWorkflowCommandCompletion(string $path): bool
+    {
+        return preg_match('~\A/worker/(?:workflow-tasks/[^/]+/complete|activity-tasks/[^/]+/continuation/complete)\z~', $path) === 1;
     }
 
     /**

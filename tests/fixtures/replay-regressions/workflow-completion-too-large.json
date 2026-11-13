@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-workflow-completion-too-large",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.completion-too-large", "input": []},
+  "command_sequence": [
+    {"type": "fail_workflow", "exception_type": "StructuralLimitExceeded", "non_retryable": true}
+  ],
+  "expected": {
+    "command_sequence": [
+      {"type": "fail_workflow", "exception_type": "StructuralLimitExceeded", "non_retryable": true}
+    ]
+  }
+}
