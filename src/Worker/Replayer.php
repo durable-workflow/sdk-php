@@ -68,6 +68,13 @@ final class Replayer
     /** An upsert is the only command at its sequence. */
     private const UPSERT_COMMAND_KINDS = ['memo', 'search_attributes'];
 
+    /**
+     * `cancellation_reason` of an ActivityCancelled that the run's own close
+     * recorded (complete, fail or continue-as-new) for an activity it never
+     * awaited, such as a select() loser (Workflow #1117, Server #1193).
+     */
+    private const RUN_CLOSED_CANCELLATION_REASON = 'run_closed';
+
     private const MIN_VERSION = -2_147_483_648;
 
     private const MAX_VERSION = 2_147_483_647;
@@ -1872,7 +1879,8 @@ final class Replayer
                     parallelPath: $this->resolutionParallelPath($payload, $steps[$key] ?? null, $sequence),
                     resolutionOrder: $resolutionOrder,
                 );
-            } elseif (in_array($type, ['ActivityFailed', 'ActivityTimedOut', 'ActivityCancelled'], true)) {
+            } elseif (in_array($type, ['ActivityFailed', 'ActivityTimedOut', 'ActivityCancelled'], true)
+                && !self::settledAtRunClose($type, $payload)) {
                 if (($steps[$key]['resolved'] ?? false) === true) {
                     continue;
                 }
@@ -2489,6 +2497,7 @@ final class Replayer
                 $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
                 $sequence = $this->sequence($payload);
                 if (!in_array($type, $terminalTypes, true)
+                    || self::settledAtRunClose($type, $payload)
                     || $sequence === null
                     || $sequence < $memberBase
                     || $sequence >= $memberBase + $memberSize) {
@@ -3498,6 +3507,20 @@ final class Replayer
         }
 
         return $raw;
+    }
+
+    /**
+     * The run's close cancelled this activity after the workflow had moved
+     * past it. The workflow never observed it, so it is not an outcome: it
+     * never resolves a step, a selection member or a group failure, and the
+     * activity stays open for replay.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private static function settledAtRunClose(string $type, array $payload): bool
+    {
+        return $type === 'ActivityCancelled'
+            && ($payload['cancellation_reason'] ?? null) === self::RUN_CLOSED_CANCELLATION_REASON;
     }
 
     /** @param array<string, mixed> $payload */

@@ -1,0 +1,386 @@
+{
+  "id": "php-parallel-handled-failure-settled-at-close",
+  "source": {
+    "issue": "durable-workflow/server#1193",
+    "upstream": "durable-workflow/workflow#1121 tests/Fixtures/V2/ReplayRegression/selection-loser-settled-at-close.json",
+    "consumer": "tests/RunClosedSettlementReplayTest.php",
+    "note": "Vector for V2OpenOperationsAtCloseTest::testACancellationRecordedAtCloseNeverReplacesTheFailureTheWorkflowHandled. Time is frozen, so the close's ActivityCancelled for member 0 has the same close time as member 1's failure and a lower index. It must not replace the failure the workflow handled."
+  },
+  "workflow": {
+    "type": "TestSelectionLoserAtCloseWorkflow",
+    "mode": "all-failure"
+  },
+  "history": [
+    {
+      "id": "01m795h48s87krk3abrcesqf39",
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "payload": {
+        "workflow_command_id": "01m795h48pxb9ks6zxaxxzcxkg",
+        "workflow_instance_id": "gen-1117",
+        "workflow_run_id": "01m795h48k4a44yjrzbhx5hvaa",
+        "workflow_class": "Tests\\Fixtures\\V2\\TestSelectionLoserAtCloseWorkflow",
+        "workflow_type": "test-selection-loser-at-close-workflow",
+        "business_key": null,
+        "visibility_labels": null,
+        "memo": null,
+        "search_attributes": null,
+        "outcome": "started_new"
+      },
+      "recorded_at": "2026-11-13T00:39:42.000000Z"
+    },
+    {
+      "id": "01m795h48vrbq18nwm3g08va0x",
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestSelectionLoserAtCloseWorkflow",
+        "workflow_type": "test-selection-loser-at-close-workflow",
+        "workflow_instance_id": "gen-1117",
+        "workflow_run_id": "01m795h48k4a44yjrzbhx5hvaa",
+        "workflow_command_id": "01m795h48pxb9ks6zxaxxzcxkg",
+        "business_key": null,
+        "visibility_labels": null,
+        "memo": null,
+        "search_attributes": null,
+        "execution_timeout_seconds": null,
+        "run_timeout_seconds": null,
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
+        "workflow_definition_fingerprint": "sha256:c910e312c536fe0111b43ebe46d59ddce9e7d8e635add8ce39dd5f1e8b2175e7",
+        "declared_queries": [],
+        "declared_query_contracts": [],
+        "declared_signals": [],
+        "declared_signal_contracts": [],
+        "declared_updates": [],
+        "declared_update_contracts": [],
+        "declared_entry_method": "handle",
+        "declared_entry_mode": "canonical",
+        "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestSelectionLoserAtCloseWorkflow"
+      },
+      "recorded_at": "2026-11-13T00:39:42.000000Z"
+    },
+    {
+      "id": "01m795j0a1a11fa11ure0sch01",
+      "sequence": 3,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "activity_execution_id": "01m795j0a1st111runn1ng0001",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 1,
+        "activity": {
+          "id": "01m795j0a1st111runn1ng0001",
+          "idempotency_key": "01m795j0a1st111runn1ng0001",
+          "sequence": 1,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-13T00:39:42.000000Z",
+          "arguments": "wwHioz3/VYAiNwwCChpzdGlsbC1ydW5uaW5nAA==",
+          "parallel_group_id": "parallel-activities:1:2",
+          "parallel_group_kind": "activity",
+          "parallel_group_base_sequence": 1,
+          "parallel_group_size": 2,
+          "parallel_group_index": 0,
+          "parallel_group_path": [
+            {
+              "parallel_group_id": "parallel-activities:1:2",
+              "parallel_group_kind": "activity",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0
+            }
+          ]
+        },
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ]
+      },
+      "recorded_at": "2026-11-13T00:39:42.000000Z"
+    },
+    {
+      "id": "01m795j0a2a11fa11ure0sch02",
+      "sequence": 4,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "activity_execution_id": "01m795j0a2fa111ng0act1v1ty",
+        "activity_class": "Tests\\Fixtures\\V2\\TestFailingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestFailingActivity",
+        "sequence": 2,
+        "activity": {
+          "id": "01m795j0a2fa111ng0act1v1ty",
+          "idempotency_key": "01m795j0a2fa111ng0act1v1ty",
+          "sequence": 2,
+          "type": "Tests\\Fixtures\\V2\\TestFailingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestFailingActivity",
+          "local_activity": false,
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-13T00:39:42.000000Z",
+          "arguments": "wwHioz3/VYAiNwwA",
+          "parallel_group_id": "parallel-activities:1:2",
+          "parallel_group_kind": "activity",
+          "parallel_group_base_sequence": 1,
+          "parallel_group_size": 2,
+          "parallel_group_index": 1,
+          "parallel_group_path": [
+            {
+              "parallel_group_id": "parallel-activities:1:2",
+              "parallel_group_kind": "activity",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 1
+            }
+          ]
+        },
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ]
+      },
+      "recorded_at": "2026-11-13T00:39:42.000000Z"
+    },
+    {
+      "id": "01m795j0a3a11fa11ure0fa11d",
+      "sequence": 5,
+      "event_type": "ActivityFailed",
+      "payload": {
+        "activity_execution_id": "01m795j0a2fa111ng0act1v1ty",
+        "activity_attempt_id": "01m795j0a3fa111ng0attempt1",
+        "activity_class": "Tests\\Fixtures\\V2\\TestFailingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestFailingActivity",
+        "sequence": 2,
+        "attempt_number": 1,
+        "failure_id": "01m795j0a3fa11ure000000001",
+        "failure_category": "application",
+        "non_retryable": false,
+        "exception_type": null,
+        "exception_class": "RuntimeException",
+        "message": "boom",
+        "code": 0,
+        "exception": {
+          "class": "RuntimeException",
+          "message": "boom",
+          "code": 0
+        },
+        "activity": {
+          "id": "01m795j0a2fa111ng0act1v1ty",
+          "idempotency_key": "01m795j0a2fa111ng0act1v1ty",
+          "sequence": 2,
+          "type": "Tests\\Fixtures\\V2\\TestFailingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestFailingActivity",
+          "local_activity": false,
+          "status": "failed",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-13T00:39:42.000000Z",
+          "arguments": "wwHioz3/VYAiNwwA",
+          "parallel_group_id": "parallel-activities:1:2",
+          "parallel_group_kind": "activity",
+          "parallel_group_base_sequence": 1,
+          "parallel_group_size": 2,
+          "parallel_group_index": 1,
+          "parallel_group_path": [
+            {
+              "parallel_group_id": "parallel-activities:1:2",
+              "parallel_group_kind": "activity",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 1
+            }
+          ],
+          "closed_at": "2026-11-13T00:39:42.000000Z"
+        },
+        "activity_attempt": {
+          "id": "01m795j0a3fa111ng0attempt1",
+          "activity_execution_id": "01m795j0a2fa111ng0act1v1ty",
+          "attempt_number": 1,
+          "status": "failed",
+          "closed_at": "2026-11-13T00:39:42.000000Z"
+        },
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ]
+      },
+      "recorded_at": "2026-11-13T00:39:42.000000Z"
+    },
+    {
+      "id": "01m795j0a4a11fa11ure0ca1c1",
+      "sequence": 6,
+      "event_type": "ActivityCancelled",
+      "payload": {
+        "workflow_command_id": null,
+        "activity_execution_id": "01m795j0a1st111runn1ng0001",
+        "activity_attempt_id": null,
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 1,
+        "attempt_number": 0,
+        "cancelled_at": "2026-11-13T00:39:42.000000Z",
+        "activity": {
+          "id": "01m795j0a1st111runn1ng0001",
+          "idempotency_key": "01m795j0a1st111runn1ng0001",
+          "sequence": 1,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "status": "cancelled",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-13T00:39:42.000000Z",
+          "arguments": "wwHioz3/VYAiNwwCChpzdGlsbC1ydW5uaW5nAA==",
+          "parallel_group_id": "parallel-activities:1:2",
+          "parallel_group_kind": "activity",
+          "parallel_group_base_sequence": 1,
+          "parallel_group_size": 2,
+          "parallel_group_index": 0,
+          "parallel_group_path": [
+            {
+              "parallel_group_id": "parallel-activities:1:2",
+              "parallel_group_kind": "activity",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0
+            }
+          ],
+          "closed_at": "2026-11-13T00:39:42.000000Z"
+        },
+        "activity_attempt": null,
+        "cancellation_reason": "run_closed"
+      },
+      "recorded_at": "2026-11-13T00:39:42.000000Z"
+    },
+    {
+      "id": "01m795j0a5a11fa11ure0c0mp1",
+      "sequence": 7,
+      "event_type": "WorkflowCompleted",
+      "payload": {
+        "output": "wwHioz3/VYAiNwoYY2F1Z2h0OiBib29t",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-13T00:39:42.000000Z"
+    }
+  ],
+  "expected_result": "caught: boom"
+}

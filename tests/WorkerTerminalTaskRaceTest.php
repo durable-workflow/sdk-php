@@ -236,6 +236,140 @@ final class WorkerTerminalTaskRaceTest extends TestCase
         yield 'fallback activity failure' => ['fallback'];
     }
 
+    /**
+     * Workflow #1117 / Server #1193: a run that closes by completing, failing or
+     * continuing as new settles its open activities. A late heartbeat, outcome
+     * or failure for one of them is refused with run_closed and nothing is
+     * recorded. That refusal is final: the Worker neither retries the outcome
+     * nor re-reports it, and moves on to the next task.
+     */
+    #[DataProvider('runClosedActivityRefusalProvider')]
+    public function testRunClosedActivityRefusalIsFinalAndNeverRetried(
+        string $failurePoint,
+        int $expectedCompletions,
+        int $expectedFailures,
+        string $expectedLevel,
+        ?string $activityStatus = null,
+    ): void {
+        $activityPolls = 0;
+        $completions = 0;
+        $failures = 0;
+        $nextActivityCompleted = false;
+        $diagnostics = [];
+        $transport = new FakeTransport(handler: static function (
+            string $method,
+            string $uri,
+            array $headers,
+            ?array $body,
+        ) use (
+            $failurePoint,
+            $activityStatus,
+            &$activityPolls,
+            &$completions,
+            &$failures,
+            &$nextActivityCompleted,
+        ): ?array {
+            if (str_ends_with($uri, '/api/worker/register')) {
+                return ['registered' => true];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'empty'];
+            }
+            if (str_ends_with($uri, '/api/worker/activity-tasks/poll')) {
+                ++$activityPolls;
+
+                return self::leasedActivityTask($activityPolls === 1 ? 'closed-activity' : 'next-activity');
+            }
+            if (str_ends_with($uri, '/activity-tasks/closed-activity/heartbeat')) {
+                // The bridge answers a closed run's heartbeat with 200.
+                return [
+                    'task_id' => 'closed-activity',
+                    'activity_attempt_id' => 'closed-activity-attempt',
+                    'lease_owner' => 'worker-1',
+                    'cancel_requested' => false,
+                    'can_continue' => false,
+                    'reason' => 'run_closed',
+                    'run_closed_reason' => 'completed',
+                    'heartbeat_recorded' => false,
+                ];
+            }
+            if (str_ends_with($uri, '/activity-tasks/closed-activity/complete')) {
+                ++$completions;
+                throw self::activityRunClosedRefusal('closed-activity', 'completed', $activityStatus);
+            }
+            if (str_ends_with($uri, '/activity-tasks/closed-activity/fail')) {
+                ++$failures;
+                throw self::activityRunClosedRefusal('closed-activity', 'failed', $activityStatus);
+            }
+            if (str_ends_with($uri, '/activity-tasks/next-activity/complete')) {
+                $nextActivityCompleted = true;
+
+                return ['completed' => true];
+            }
+            if (str_ends_with($uri, '/api/worker/query-tasks/poll')) {
+                return $nextActivityCompleted
+                    ? ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped']
+                    : ['task' => null, 'poll_status' => 'empty'];
+            }
+
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        });
+        $worker = new Worker(
+            new Client('https://server.example', transport: $transport),
+            'queue',
+            workerId: 'worker-1',
+            diagnosticListener: static function (string $event, array $context) use (&$diagnostics): void {
+                $diagnostics[] = [$event, $context];
+            },
+        );
+        $worker->registerActivity(
+            'race.activity',
+            static function (ActivityContext $context) use ($failurePoint): string {
+                if ($context->taskId === 'closed-activity') {
+                    if ($failurePoint === 'heartbeat') {
+                        $context->heartbeat();
+                        self::fail('A run_closed heartbeat must stop the activity.');
+                    }
+                    if ($failurePoint === 'failure') {
+                        throw new \RuntimeException('Activity failed after its run closed.');
+                    }
+                }
+
+                return 'completed';
+            },
+        );
+
+        $worker->run(0);
+
+        self::assertTrue($nextActivityCompleted);
+        self::assertSame($expectedCompletions, $completions);
+        self::assertSame($expectedFailures, $failures);
+        $runClosed = array_values(array_filter(
+            $diagnostics,
+            static fn (array $diagnostic): bool => $diagnostic[0] === 'worker.activity_run_closed',
+        ));
+        self::assertCount(1, $runClosed);
+        self::assertSame('closed-activity', $runClosed[0][1]['task_id']);
+        self::assertSame('run_closed', $runClosed[0][1]['reason']);
+        self::assertSame([], array_filter(
+            $diagnostics,
+            static fn (array $diagnostic): bool => $diagnostic[0] === 'worker.retrying',
+        ));
+        self::assertStringContainsString(
+            $expectedLevel === 'info' ? 'left this activity running' : 'will not be retried',
+            $runClosed[0][1]['message'],
+        );
+    }
+
+    /** @return iterable<string, array{string, int, int, string, 4?: ?string}> */
+    public static function runClosedActivityRefusalProvider(): iterable
+    {
+        yield 'heartbeat reports run_closed, cancellation report refused' => ['heartbeat', 0, 1, 'warning'];
+        yield 'completion refused' => ['completion', 1, 0, 'warning'];
+        yield 'failure refused' => ['failure', 0, 1, 'warning'];
+        yield 'abandoned activity outcome accepted without recording' => ['completion', 1, 0, 'info', 'completed'];
+    }
+
     #[DataProvider('queryTerminalAcknowledgementProvider')]
     public function testManagedWorkerProcessesTheNextQueryAfterATerminalAcknowledgementRace(
         string $failurePoint,
@@ -581,6 +715,24 @@ final class WorkerTerminalTaskRaceTest extends TestCase
             'task_status' => 'cancelled',
             'can_continue' => false,
         ];
+
+        return TransportException::fromResponse(409, $response, json_encode($response, JSON_THROW_ON_ERROR));
+    }
+
+    /** The Server's reply to a late outcome of an activity its run closed without (Workflow #1117). */
+    private static function activityRunClosedRefusal(string $taskId, string $outcome, ?string $activityStatus): TransportException
+    {
+        $response = [
+            'task_id' => $taskId,
+            'activity_attempt_id' => $taskId.'-attempt',
+            'outcome' => $outcome,
+            'recorded' => false,
+            'reason' => 'run_closed',
+            'next_task_id' => null,
+        ];
+        if ($activityStatus !== null) {
+            $response['activity_status'] = $activityStatus;
+        }
 
         return TransportException::fromResponse(409, $response, json_encode($response, JSON_THROW_ON_ERROR));
     }

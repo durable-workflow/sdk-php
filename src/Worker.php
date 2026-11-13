@@ -3713,6 +3713,9 @@ final class Worker
             throw $taskFailure;
         }
         if ($this->isTaskAuthorityLost($taskKind, $taskId, $taskFailure, $workflowTaskAttempt)) {
+            if ($this->settleRunClosedActivityRefusal($taskKind, $taskId, $taskFailure)) {
+                return;
+            }
             $this->taskObservation?->outcome('aborted');
             if ($taskKind === 'workflow' && $taskFailure instanceof ServerException
                 && ($taskFailure->details['task_status'] ?? null) === 'ready') {
@@ -3734,6 +3737,9 @@ final class Worker
         } catch (Throwable $acknowledgementFailure) {
             if (!$this->isTaskAuthorityLost($taskKind, $taskId, $acknowledgementFailure, $workflowTaskAttempt)) {
                 throw $acknowledgementFailure;
+            }
+            if ($this->settleRunClosedActivityRefusal($taskKind, $taskId, $acknowledgementFailure)) {
+                return;
             }
             $this->taskObservation?->outcome('aborted');
         }
@@ -3769,13 +3775,60 @@ final class Worker
                     && ($details['workflow_task_attempt'] ?? null) === $workflowTaskAttempt
                     && ($details['task_status'] ?? null) === 'leased'
                     && ($details['lease_owner'] ?? null) === $this->workerId),
-            'activity' => in_array($reason, ['run_cancelled', 'run_terminated'], true)
-                && ($details['can_continue'] ?? null) === false
-                && ($details['task_status'] ?? null) === 'cancelled',
+            'activity' => (in_array($reason, ['run_cancelled', 'run_terminated'], true)
+                    && ($details['can_continue'] ?? null) === false
+                    && ($details['task_status'] ?? null) === 'cancelled')
+                || $this->isRunClosedActivityRefusal($exception),
             'query' => $reason === 'query_task_timed_out'
                 && ($details['outcome'] ?? null) === 'rejected',
             default => false,
         };
+    }
+
+    /**
+     * The run closed (complete, fail or continue-as-new) after this activity
+     * was claimed, so its outcome or failure report is refused with run_closed
+     * and nothing is recorded on the closed run (Workflow #1117, Server #1193).
+     * The refusal is final: the outcome is never retried or re-reported.
+     */
+    private function isRunClosedActivityRefusal(ServerException $exception): bool
+    {
+        $details = $exception->details;
+
+        return $exception->status === 409
+            && $exception->reason === 'run_closed'
+            && $details !== null && !array_is_list($details)
+            && ($details['reason'] ?? null) === 'run_closed'
+            && ($details['recorded'] ?? null) === false;
+    }
+
+    /**
+     * An abandon-policy activity its run left running at close still closes
+     * with its own outcome; the Server answers run_closed because nothing is
+     * appended to the closed run. That is success for this Worker. Any other
+     * run_closed refusal means the close cancelled the activity.
+     */
+    private function settleRunClosedActivityRefusal(string $taskKind, string $taskId, Throwable $failure): bool
+    {
+        if ($taskKind !== 'activity' || !$failure instanceof ServerException || !$this->isRunClosedActivityRefusal($failure)) {
+            return false;
+        }
+        $activityStatus = $failure->details['activity_status'] ?? null;
+        $kept = in_array($activityStatus, ['completed', 'failed'], true);
+        if (!$kept) {
+            $this->taskObservation?->outcome('aborted');
+        }
+        $this->diagnostic('worker.activity_run_closed', [
+            'task_id' => $taskId,
+            'activity_attempt_id' => $failure->details['activity_attempt_id'] ?? null,
+            'reason' => 'run_closed',
+            'activity_status' => $activityStatus,
+            'message' => $kept
+                ? 'The workflow run closed and left this activity running; its outcome closed the activity and is not recorded on the closed run.'
+                : 'The workflow run closed and cancelled this activity; its outcome was not recorded and will not be retried.',
+        ], $kept ? 'info' : 'warning');
+
+        return true;
     }
 
     /**

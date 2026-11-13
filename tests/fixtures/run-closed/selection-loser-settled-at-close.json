@@ -1,0 +1,348 @@
+{
+  "id": "php-selection-loser-settled-at-close",
+  "source": {
+    "issue": "durable-workflow/server#1193",
+    "upstream": "durable-workflow/workflow#1121 tests/Fixtures/V2/ReplayRegression/selection-loser-settled-at-close.json",
+    "consumer": "tests/RunClosedSettlementReplayTest.php",
+    "note": "The run's own close recorded ActivityCancelled (cancellation_reason run_closed) for the select() loser before WorkflowCompleted. The workflow never observed it, so replay leaves the loser open and the recorded winner still decides the selection."
+  },
+  "workflow": {
+    "type": "TestSelectionLoserAtCloseWorkflow",
+    "mode": "complete"
+  },
+  "history": [
+    {
+      "id": "01m795h48s87krk3abrcesqf39",
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "payload": {
+        "workflow_command_id": "01m795h48pxb9ks6zxaxxzcxkg",
+        "workflow_instance_id": "gen-1117",
+        "workflow_run_id": "01m795h48k4a44yjrzbhx5hvaa",
+        "workflow_class": "Tests\\Fixtures\\V2\\TestSelectionLoserAtCloseWorkflow",
+        "workflow_type": "test-selection-loser-at-close-workflow",
+        "business_key": null,
+        "visibility_labels": null,
+        "memo": null,
+        "search_attributes": null,
+        "outcome": "started_new"
+      },
+      "recorded_at": "2026-11-13T00:39:42.103872Z"
+    },
+    {
+      "id": "01m795h48vrbq18nwm3g08va0x",
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestSelectionLoserAtCloseWorkflow",
+        "workflow_type": "test-selection-loser-at-close-workflow",
+        "workflow_instance_id": "gen-1117",
+        "workflow_run_id": "01m795h48k4a44yjrzbhx5hvaa",
+        "workflow_command_id": "01m795h48pxb9ks6zxaxxzcxkg",
+        "business_key": null,
+        "visibility_labels": null,
+        "memo": null,
+        "search_attributes": null,
+        "execution_timeout_seconds": null,
+        "run_timeout_seconds": null,
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
+        "workflow_definition_fingerprint": "sha256:c910e312c536fe0111b43ebe46d59ddce9e7d8e635add8ce39dd5f1e8b2175e7",
+        "declared_queries": [],
+        "declared_query_contracts": [],
+        "declared_signals": [],
+        "declared_signal_contracts": [],
+        "declared_updates": [],
+        "declared_update_contracts": [],
+        "declared_entry_method": "handle",
+        "declared_entry_mode": "canonical",
+        "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestSelectionLoserAtCloseWorkflow"
+      },
+      "recorded_at": "2026-11-13T00:39:42.107521Z"
+    },
+    {
+      "id": "01m795h4a14c2beezexqk6zwqd",
+      "sequence": 3,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "activity_execution_id": "01m795h49zm0xftwdqam8nqj81",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 1,
+        "activity": {
+          "id": "01m795h49zm0xftwdqam8nqj81",
+          "idempotency_key": "01m795h49zm0xftwdqam8nqj81",
+          "sequence": 1,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-13T00:39:42.143497Z",
+          "arguments": "wwHioz3/VYAiNwwCChBjb21wbGV0ZQA=",
+          "parallel_group_id": "select-calls:1:2",
+          "parallel_group_kind": "mixed",
+          "parallel_group_mode": "select",
+          "parallel_group_base_sequence": 1,
+          "parallel_group_size": 2,
+          "parallel_group_index": 0,
+          "selection_member_key": "work",
+          "selection_member_index": 0,
+          "selection_member_base_sequence": 1,
+          "selection_member_size": 1,
+          "selection_member_kind": "activity",
+          "parallel_group_path": [
+            {
+              "parallel_group_id": "select-calls:1:2",
+              "parallel_group_kind": "mixed",
+              "parallel_group_mode": "select",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0,
+              "selection_member_key": "work",
+              "selection_member_index": 0,
+              "selection_member_base_sequence": 1,
+              "selection_member_size": 1,
+              "selection_member_kind": "activity"
+            }
+          ]
+        },
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "selection_member_key": "work",
+        "selection_member_index": 0,
+        "selection_member_base_sequence": 1,
+        "selection_member_size": 1,
+        "selection_member_kind": "activity",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "selection_member_key": "work",
+            "selection_member_index": 0,
+            "selection_member_base_sequence": 1,
+            "selection_member_size": 1,
+            "selection_member_kind": "activity"
+          }
+        ]
+      },
+      "recorded_at": "2026-11-13T00:39:42.144915Z"
+    },
+    {
+      "id": "01m795h4a344awn80w7wnvztxr",
+      "sequence": 4,
+      "event_type": "TimerScheduled",
+      "payload": {
+        "timer_id": "01m795h4a2vty5vv2b0j103gpv",
+        "sequence": 2,
+        "delay_seconds": 0,
+        "fire_at": "2026-11-13T00:39:42.146411Z",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "selection_member_key": "deadline",
+        "selection_member_index": 1,
+        "selection_member_base_sequence": 2,
+        "selection_member_size": 1,
+        "selection_member_kind": "timer",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "selection_member_key": "deadline",
+            "selection_member_index": 1,
+            "selection_member_base_sequence": 2,
+            "selection_member_size": 1,
+            "selection_member_kind": "timer"
+          }
+        ]
+      },
+      "recorded_at": "2026-11-13T00:39:42.146930Z"
+    },
+    {
+      "id": "01m795h4a466hy5ckc65z8bgwa",
+      "sequence": 5,
+      "event_type": "TimerFired",
+      "payload": {
+        "timer_id": "01m795h4a2vty5vv2b0j103gpv",
+        "sequence": 2,
+        "delay_seconds": 0,
+        "fired_at": "2026-11-13T00:39:42.146411Z",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "selection_member_key": "deadline",
+        "selection_member_index": 1,
+        "selection_member_base_sequence": 2,
+        "selection_member_size": 1,
+        "selection_member_kind": "timer",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "selection_member_key": "deadline",
+            "selection_member_index": 1,
+            "selection_member_base_sequence": 2,
+            "selection_member_size": 1,
+            "selection_member_kind": "timer"
+          }
+        ]
+      },
+      "recorded_at": "2026-11-13T00:39:42.147973Z"
+    },
+    {
+      "id": "01m795h4a5xa436wzevyv0zqq2",
+      "sequence": 6,
+      "event_type": "SelectionResolved",
+      "payload": {
+        "selection_group_id": "select-calls:1:2",
+        "selection_group_base_sequence": 1,
+        "selection_group_size": 2,
+        "member_key": "deadline",
+        "member_index": 1,
+        "member_base_sequence": 2,
+        "member_size": 1,
+        "operation_kind": "timer",
+        "operation_identity": "01m795h4a2vty5vv2b0j103gpv",
+        "outcome": "completed",
+        "resolution_event_id": "01m795h4a466hy5ckc65z8bgwa",
+        "resolution_event_type": "TimerFired"
+      },
+      "recorded_at": "2026-11-13T00:39:42.149382Z"
+    },
+    {
+      "id": "01m795h4a6c1os3dsett1edat0",
+      "sequence": 7,
+      "event_type": "ActivityCancelled",
+      "payload": {
+        "workflow_command_id": null,
+        "activity_execution_id": "01m795h49zm0xftwdqam8nqj81",
+        "activity_attempt_id": null,
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 1,
+        "attempt_number": 0,
+        "cancelled_at": "2026-11-13T00:39:42.151204Z",
+        "activity": {
+          "id": "01m795h49zm0xftwdqam8nqj81",
+          "idempotency_key": "01m795h49zm0xftwdqam8nqj81",
+          "sequence": 1,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "status": "cancelled",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-13T00:39:42.143497Z",
+          "arguments": "wwHioz3/VYAiNwwCChBjb21wbGV0ZQA=",
+          "parallel_group_id": "select-calls:1:2",
+          "parallel_group_kind": "mixed",
+          "parallel_group_mode": "select",
+          "parallel_group_base_sequence": 1,
+          "parallel_group_size": 2,
+          "parallel_group_index": 0,
+          "selection_member_key": "work",
+          "selection_member_index": 0,
+          "selection_member_base_sequence": 1,
+          "selection_member_size": 1,
+          "selection_member_kind": "activity",
+          "parallel_group_path": [
+            {
+              "parallel_group_id": "select-calls:1:2",
+              "parallel_group_kind": "mixed",
+              "parallel_group_mode": "select",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0,
+              "selection_member_key": "work",
+              "selection_member_index": 0,
+              "selection_member_base_sequence": 1,
+              "selection_member_size": 1,
+              "selection_member_kind": "activity"
+            }
+          ],
+          "closed_at": "2026-11-13T00:39:42.151204Z"
+        },
+        "activity_attempt": null,
+        "cancellation_reason": "run_closed"
+      },
+      "recorded_at": "2026-11-13T00:39:42.151204Z"
+    },
+    {
+      "id": "01m795h4a7c1os3dc0mp1eted0",
+      "sequence": 8,
+      "event_type": "WorkflowCompleted",
+      "payload": {
+        "output": "wwHioz3/VYAiNwooY2xvc2VkLXdpdGgtZGVhZGxpbmU=",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-13T00:39:42.151204Z"
+    }
+  ],
+  "expected_result": "closed-with-deadline"
+}
