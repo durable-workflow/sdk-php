@@ -41,7 +41,10 @@ if ($pid === 0) {
     try {
         $worker = new Worker(new Client($url, token: $token), $queue);
         $worker->registerWorkflow('smoke.query-results', static function (WorkflowContext $context): void {
-            $context->awaitSignal('finish');
+            if (!$context->waitCondition(static fn (): bool => $context->signals('finish') !== [],
+                key: 'finish', timeout: 45)) {
+                throw new RuntimeException('The query observation window expired.');
+            }
         });
         $worker->registerQuery('smoke.query-results', 'binary', static fn (QueryContext $context): array =>
             ['nested' => [AvroBinaryValue::fromBytes("\xff\x00\x80")]]);

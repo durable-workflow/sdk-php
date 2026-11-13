@@ -1,6 +1,9 @@
 """Keep both installed feature options bound to the qualified native tuple."""
 
 from pathlib import Path
+import shlex
+import subprocess
+import tempfile
 import unittest
 
 
@@ -39,6 +42,19 @@ class PublishedQueryTupleTest(unittest.TestCase):
     def test_wrong_image_refuses(self) -> None:
         with self.assertRaises(ValueError):
             require_tuple(self.source.replace(IMAGE, OLD_IMAGE))
+
+    def test_configured_shell_propagates_probe_failure_through_tee(self) -> None:
+        shell = "bash --noprofile --norc -e -o pipefail {0}"
+        self.assertIn(f"        shell: {shell}", self.source.splitlines())
+        with tempfile.TemporaryDirectory() as temporary:
+            probe = Path(temporary) / "probe.sh"
+            probe.write_text("(exit 7) | cat > /dev/null\n")
+            current = [str(probe) if word == "{0}" else word for word in shlex.split(shell)]
+            self.assertEqual(7, subprocess.run(current, check=False).returncode)
+            self.assertEqual(0, subprocess.run(["bash", "-e", str(probe)], check=False).returncode)
+
+    def test_empty_query_evidence_is_not_accepted(self) -> None:
+        self.assertIn('json_decode(file_get_contents("query-results.json"),true,flags:JSON_THROW_ON_ERROR)', self.source)
 
 
 if __name__ == "__main__":
