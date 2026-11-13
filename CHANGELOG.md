@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.18.1] - 2026-11-13
+
 ### Fixed
 
 - Activity continuations honor the completion aggregate and command per-value
@@ -20,6 +22,10 @@ project follows [Semantic Versioning](https://semver.org/).
   typed structural-limit refusal reaches the worker. Configured-storage
   failures keep their existing behavior; older producers retain the
   conservative ordinary-request fallback.
+
+- Pending update guidance distinguishes admission waits, which retain the original
+  request key, from GET-by-ID reads, where that key may be unavailable. Repeated
+  reads preserve the update ID and never admit a second update (.github#212).
 
 ## [3.18.0] - 2026-11-13
 
