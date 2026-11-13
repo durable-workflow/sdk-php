@@ -11,7 +11,7 @@ use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\WorkflowContext;
 
-// One bounded public-API operation per invocation. The owning runner verifies
+// One bounded fixture operation per invocation. The owning runner verifies
 // the registry archive and installed bytes before loading this read-only tool.
 $input = stream_get_contents(STDIN, 65537);
 if (!is_string($input) || strlen($input) > 65536) {

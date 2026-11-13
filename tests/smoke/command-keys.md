@@ -1,7 +1,7 @@
 # Installed PHP command-key adapter
 
 `command-key-client.php` reads one JSON packet from stdin and performs one
-public PHP SDK operation. The selected immutable SDK and Server tuple lives
+fixture operation through the public PHP SDK API. The selected immutable SDK and Server tuple lives
 in `command-key-supply.json`. Every result identifies the installed package
 reference, runtime version and PHP version. The adapter bounds input to 64 KiB,
 accepts only a numeric loopback origin, and restricts fixture workflow and
@@ -14,6 +14,15 @@ synthetic credential, namespace provisioning, finite process timeout and exact
 cleanup. Mount or capture the reviewed adapter, supply and autoloader inputs
 read-only. The adapter's reflection checks reject a repository source fallback;
 the runner supplies the independent archive/provenance proof.
+
+`verify_command_key_supply.py <consumer-directory> <downloaded-archive>`
+performs the package inspection before PHP loading. It checks the exact root
+requirement, absence of repository overrides, lock/source/dist URLs and refs,
+dist installation, approved archive digest and every installed SDK file. It
+accepts private umasks, normalizes GitHub's DOS nonexecutable entries and
+rejects added permissions, missing/extra/changed files or aliases. Its output
+is explicitly inspection-only. Run its inert controls with
+`python3 -I -S -B tests/ci/test_command_key_supply.py`.
 
 Set `COMMAND_KEY_RUNTIME_URL` to the owned numeric loopback URL and
 `COMMAND_KEY_TOKEN` to its synthetic credential. Pass the registry consumer's

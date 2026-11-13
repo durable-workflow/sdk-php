@@ -1,6 +1,8 @@
 {
   "sdk_version": "3.18.2",
   "sdk_reference": "f9483bb2b5b45f591a82d9e5419c5b60a6e967c6",
+  "sdk_source_url": "https://github.com/durable-workflow/sdk-php.git",
+  "sdk_dist_url": "https://api.github.com/repos/durable-workflow/sdk-php/zipball/f9483bb2b5b45f591a82d9e5419c5b60a6e967c6",
   "sdk_archive_sha256": "32dc5d1a05a96e9e772e964bea95ae8142882b901d612c97a4aadee699f4ec6b",
   "server_version": "3.9.2",
   "server_source": "5614274d2629d03f92932a07dfee0fb10349ddd9",
