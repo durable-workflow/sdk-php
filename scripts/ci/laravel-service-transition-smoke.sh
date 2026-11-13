@@ -12,11 +12,17 @@ if [[ "$source_mode" != embedded_v1 && "$source_mode" != embedded_v2 ]]; then
   exit 1
 fi
 
-temporary_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
-if [ -d /dev/shm ] && [ -w /dev/shm ]; then
-  database_root=/dev/shm
-else
+if [[ -n "${SDK_PHP_CI_STATE:-}" ]]; then
+  # All PHP invocations share this owned data mount; host controls stay RO.
+  temporary_root="$SDK_PHP_CI_STATE/data"
   database_root="$temporary_root"
+else
+  temporary_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+  if [ -d /dev/shm ] && [ -w /dev/shm ]; then
+    database_root=/dev/shm
+  else
+    database_root="$temporary_root"
+  fi
 fi
 
 fixture_root=$(mktemp -d "${temporary_root%/}/laravel-service-transition.XXXXXX")
@@ -288,12 +294,12 @@ fi
 composer dump-autoload --no-interaction --no-scripts --quiet
 
 queue_depth() {
-  QUEUE_NAME="$1" DATABASE_PATH="$database_path" php -r '
-    $database = new PDO("sqlite:".getenv("DATABASE_PATH"));
+  php -r '
+    $database = new PDO("sqlite:".$argv[1]);
     $statement = $database->prepare("SELECT COUNT(*) FROM jobs WHERE queue = :queue");
-    $statement->execute(["queue" => getenv("QUEUE_NAME")]);
+    $statement->execute(["queue" => $argv[2]]);
     echo (int) $statement->fetchColumn();
-  '
+  ' "$database_path" "$1"
 }
 
 drain_queue() {
@@ -312,10 +318,10 @@ drain_queue() {
 }
 
 hash_source_tables() {
-  TABLES="$source_tables" DATABASE_PATH="$database_path" php -r '
-    $database = new PDO("sqlite:".getenv("DATABASE_PATH"));
+  php -r '
+    $database = new PDO("sqlite:".$argv[1]);
     $snapshot = [];
-    foreach (explode(",", getenv("TABLES")) as $table) {
+    foreach (explode(",", $argv[2]) as $table) {
         $statement = $database->query(sprintf("SELECT * FROM \"%s\" ORDER BY rowid", $table));
         if ($statement === false) {
             throw new RuntimeException("Missing embedded history table {$table}.");
@@ -323,7 +329,7 @@ hash_source_tables() {
         $snapshot[$table] = $statement->fetchAll(PDO::FETCH_ASSOC);
     }
     echo hash("sha256", json_encode($snapshot, JSON_THROW_ON_ERROR));
-  '
+  ' "$database_path" "$source_tables"
 }
 
 php artisan transition:embedded-start embedded-completed >/dev/null
@@ -333,12 +339,12 @@ if [ "$source_mode" = embedded_v2 ]; then
   drain_queue "$source_queue"
 fi
 embedded_result=$(php artisan transition:embedded-inspect embedded-completed)
-EMBEDDED_RESULT="$embedded_result" php -r '
-  $result = json_decode(getenv("EMBEDDED_RESULT"), true, 512, JSON_THROW_ON_ERROR);
+php -r '
+  $result = json_decode($argv[1], true, 512, JSON_THROW_ON_ERROR);
   if ($result["completed"] !== true || $result["output"] !== "hello from Laravel, Ada") {
       throw new RuntimeException("The established embedded workflow did not preserve its injected dependency and result.");
   }
-'
+' "$embedded_result"
 
 if [ "$source_mode" = embedded_v1 ]; then
   php artisan transition:embedded-start embedded-open --open >/dev/null
@@ -347,12 +353,12 @@ else
 fi
 drain_queue "$source_queue"
 embedded_open=$(php artisan transition:embedded-inspect embedded-open)
-EMBEDDED_RESULT="$embedded_open" php -r '
-  $result = json_decode(getenv("EMBEDDED_RESULT"), true, 512, JSON_THROW_ON_ERROR);
+php -r '
+  $result = json_decode($argv[1], true, 512, JSON_THROW_ON_ERROR);
   if ($result["completed"] !== false) {
       throw new RuntimeException("The coexistence rehearsal did not retain an open embedded-owned run.");
   }
-'
+' "$embedded_open"
 source_state_before=$(hash_source_tables)
 
 sdk_path=$(cd "$sdk_path" && pwd)
@@ -553,12 +559,12 @@ if [ "$source_state_after_service" != "$source_state_before" ]; then
 fi
 
 embedded_open_after=$(php artisan transition:embedded-inspect embedded-open)
-EMBEDDED_RESULT="$embedded_open_after" php -r '
-  $result = json_decode(getenv("EMBEDDED_RESULT"), true, 512, JSON_THROW_ON_ERROR);
+php -r '
+  $result = json_decode($argv[1], true, 512, JSON_THROW_ON_ERROR);
   if ($result["completed"] !== false) {
       throw new RuntimeException("The embedded-owned open run did not remain routed to its original engine.");
   }
-'
+' "$embedded_open_after"
 
 printf 'source_mode=%s laravel=%s workflow=%s sdk=2.0.x-dev result=%s history_owner=embedded status=passed\n' \
   "$source_mode" "$laravel_requirement" "$source_version_after" 'hello from Laravel, Ada'
