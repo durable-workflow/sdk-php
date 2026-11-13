@@ -804,6 +804,8 @@ jobs:
             exit 1
           fi
           grep -F 'Installed Composer product-train identifies' "$RUNNER_TEMP/stale-release-metadata.log"
+      - name: Reject Git metadata and CI tooling in real Composer archives
+        run: python3 -I -S -B tests/ci/test_composer_archive.py
 
   example-lock-audit:
     name: Laravel example lock audit
@@ -987,7 +989,7 @@ jobs:
       # and must stay immediately before the one registered build command.
       - name: Bind the Server build's container Composer trust
         id: container-trust
-        uses: durable-workflow/.github/.github/actions/verify-composer-container-trust@699d09d602fc0353160bdecaa2b23f07ef4c7c21  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-container-trust@06efa32de898cff5766ef9f3a9db6a368fced981  # composer-container-trust
         with:
           request: sdk-php-cooperative-server
           source-directory: server
@@ -1062,6 +1064,16 @@ jobs:
           DW_SERVER_SOURCE_COMMIT: ${{ steps.container-trust.outputs.source-commit }}
           DW_SERVER_DOCKERFILE_SHA256: ${{ steps.container-trust.outputs.dockerfile-sha256 }}
         run: docker compose down -v --rmi local
+      - name: Remove only the verified staged public CA
+        if: ${{ always() && steps.container-trust.outcome == 'success' }}
+        working-directory: sdk-php
+        env:
+          VERIFIER_CONTEXT: ${{ steps.container-trust.outputs.context-directory }}
+          STAGED_CA: ${{ steps.container-trust.outputs.ca-file }}
+          CA_SHA256: ${{ steps.container-trust.outputs.ca-sha256 }}
+        run: >-
+          python3 -I -S -B "$VERIFIER_CONTEXT/../../../scripts/composer_container_trust.py" cleanup-ca
+          --ca-file "$STAGED_CA" --ca-sha256 "$CA_SHA256" --compose-directory .
 
   target-branch-qualification:
     name: Target branch qualification
