@@ -40,5 +40,6 @@ RUN test "$(dpkg --print-architecture)" = amd64 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+USER www-data
 ENTRYPOINT ["docker-php-entrypoint"]
 CMD ["php", "-a"]
