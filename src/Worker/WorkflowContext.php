@@ -757,10 +757,7 @@ final class WorkflowContext
     {
         if ($this->isCancellationRequested() && !$this->isCancellationShielded()) {
             $context = $this->cancellationContext();
-            throw new WorkflowCancelled(
-                'Workflow cancellation was requested.', requestId: $context->requestId ?? $this->deliveredCancellationRequestId,
-                context: $context,
-            );
+            throw WorkflowCancelled::forContext($context->requestId ?? $this->deliveredCancellationRequestId, $context);
         }
     }
 
@@ -860,7 +857,7 @@ final class WorkflowContext
             $this->deliveredCancellationContext = $context;
         }
 
-        return new WorkflowCancelled('Workflow cancellation was requested.', requestId: $requestId, context: $context);
+        return WorkflowCancelled::forContext($requestId, $context);
     }
 
     /** @return Closure(): DateTimeImmutable */

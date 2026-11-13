@@ -13,6 +13,15 @@ use LogicException;
 /** Immutable root request and cleanup budget read from canonical history. */
 final class CancellationContext
 {
+    /**
+     * `cause` of a run's own interruption when deadline-triggered timeout
+     * cleanup requested it (workflow#863). Absent or `cancellation` is an
+     * ordinary cooperative cancellation.
+     */
+    public const CAUSE_TIMEOUT = 'timeout';
+
+    public const CAUSE_CANCELLATION = 'cancellation';
+
     /** @var (Closure(): DateTimeImmutable)|null */
     private ?Closure $replayClock = null;
 
@@ -33,7 +42,15 @@ final class CancellationContext
         private readonly DateTimeImmutable $cleanupDeadline,
         public readonly array $lineage,
         public readonly ?ScopedCancellationContext $scopeOrigin = null,
+        /** Wire `cause` as recorded: null (absent), `cancellation` or `timeout`. */
+        public readonly ?string $cause = null,
     ) {
+    }
+
+    /** Whether deadline-triggered timeout cleanup requested this interruption. */
+    public function isTimeout(): bool
+    {
+        return $this->cause === self::CAUSE_TIMEOUT;
     }
 
     /** @param array<string, mixed> $snapshot */
@@ -106,6 +123,10 @@ final class CancellationContext
         if ($deadline <= $requestedAt) {
             throw new InvalidArgumentException('Cancellation deadline must follow the original request.');
         }
+        $cause = $snapshot['cause'] ?? null;
+        if ($cause !== null && !in_array($cause, [self::CAUSE_CANCELLATION, self::CAUSE_TIMEOUT], true)) {
+            throw new InvalidArgumentException('Cancellation cause must be cancellation or timeout.');
+        }
         if ($scopeOrigin !== null) {
             self::assertScopedOrigin($snapshot, $scopeOrigin, $normalized, $requester, $requestedAt, $deadline);
         }
@@ -113,6 +134,7 @@ final class CancellationContext
         return new self(
             $requestId, $rootRequestId, $rootInstanceId, $rootRunId, $parentRequestId,
             $reason, $requester, self::text($snapshot, 'source'), $requestedAt, $deadline, $normalized, $scopeOrigin,
+            $cause,
         );
     }
 
@@ -168,6 +190,7 @@ final class CancellationContext
             'requested_at' => $this->originalRequestedAt->format('Y-m-d\TH:i:s.u\Z'),
             'cleanup_deadline_at' => $this->cleanupDeadline->format('Y-m-d\TH:i:s.u\Z'),
             'lineage' => $this->lineage,
+            ...($this->cause === null ? [] : ['cause' => $this->cause]),
             ...($this->scopeOrigin === null ? [] : [
                 'scope_origin' => $this->scopeOrigin->toArray(),
                 'scope_authority_deadline_at' => $this->cleanupDeadline->format('Y-m-d\TH:i:s.u\Z'),
