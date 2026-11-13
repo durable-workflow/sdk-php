@@ -51,7 +51,7 @@ if ($pid === 0) {
         $worker->registerQuery('smoke.query-results', 'json', static fn (QueryContext $context): array =>
             ['values' => [null, true, 'λ', 1.0, -0.0]]);
         $worker->registerQuery('smoke.query-results', 'null', static fn (QueryContext $context): mixed => null);
-        $worker->registerSignal('smoke.query-results', 'finish', static function (): void {});
+        $worker->declareSignal('smoke.query-results', 'finish');
         pcntl_async_signals(true);
         pcntl_signal(SIGTERM, static fn () => $worker->requestShutdown());
         $worker->run(0);
