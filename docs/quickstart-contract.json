@@ -3,9 +3,9 @@
   "schema_version": 2,
   "package": {
     "name": "durable-workflow/sdk",
-    "published_version": "3.17.0",
-    "composer_requirement": "3.17.0",
-    "onboarding_requirement": "^3.17"
+    "published_version": "3.18.0",
+    "composer_requirement": "3.18.0",
+    "onboarding_requirement": "^3.18"
   },
   "runtime_targets": {
     "server": {
