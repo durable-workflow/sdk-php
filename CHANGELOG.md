@@ -8,6 +8,10 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Activity continuations honor the completion aggregate and command per-value
+  limits. Commands stay inline; only the activity result may be offloaded.
+  An aggregate that cannot fit through an authorized rewrite reaches the
+  Server unchanged once, without partial uploads.
 - Workflow completion planning honors the Server's advertised
   `limits.max_workflow_task_completion_bytes` without changing ordinary request
   or per-value limits (.github#228, server#1136). When external storage is
