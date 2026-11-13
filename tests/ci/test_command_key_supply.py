@@ -1,10 +1,10 @@
 """Inert archive/installation provenance controls; no PHP or network."""
 
 from copy import deepcopy
-import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import stat
 import tempfile
 import unittest
 import zipfile
@@ -36,7 +36,7 @@ class CommandKeySupplyTest(unittest.TestCase):
         self.supply = {"sdk_version": "1.2.3", "sdk_reference": "a" * 40,
                        "sdk_source_url": "https://example.invalid/sdk.git",
                        "sdk_dist_url": "https://example.invalid/sdk.zip",
-                       "sdk_archive_sha256": hashlib.sha256(self.archive.read_bytes()).hexdigest()}
+                       "sdk_archive_members_sha256": MODULE.member_digest({"src/Client.php": (self.data, 0o644)})}
         entry = {"name": "durable-workflow/sdk", "version": "1.2.3",
                  "source": {"url": self.supply["sdk_source_url"], "reference": self.supply["sdk_reference"]},
                  "dist": {"url": self.supply["sdk_dist_url"], "reference": self.supply["sdk_reference"]}}
@@ -66,10 +66,32 @@ class CommandKeySupplyTest(unittest.TestCase):
         member.external_attr = 0
         self.assertEqual(("ordinary.php", 0o644), MODULE.archive_member(member))
 
-    def test_archive_must_equal_the_approved_bytes(self):
-        self.supply["sdk_archive_sha256"] = "0" * 64
+    def test_archive_members_must_equal_the_approved_inventory(self):
+        self.supply["sdk_archive_members_sha256"] = "0" * 64
         with self.assertRaisesRegex(ValueError, "approved SDK supply"):
             self.verify()
+
+    def test_regenerated_wrapper_is_allowed_only_with_identical_members(self):
+        original = self.verify()
+        member = zipfile.ZipInfo("different-generated-root/src/Client.php", date_time=(2026, 1, 1, 0, 0, 0))
+        member.external_attr = 0o100644 << 16
+        with zipfile.ZipFile(self.archive, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.comment = b"inert wrapper change"
+            archive.writestr(member, self.data)
+        regenerated = self.verify()
+        self.assertNotEqual(original["archive_sha256"], regenerated["archive_sha256"])
+        self.assertEqual(original["archive_members_sha256"], regenerated["archive_members_sha256"])
+
+    def test_changed_member_bytes_modes_and_inventory_refuse(self):
+        for raw, mode, extra in ((b"changed", 0o644, False), (self.data, 0o755, False), (self.data, 0o644, True)):
+            member = zipfile.ZipInfo("sdk/src/Client.php")
+            member.external_attr = (stat.S_IFREG | mode) << 16
+            with zipfile.ZipFile(self.archive, "w") as archive:
+                archive.writestr(member, raw)
+                if extra:
+                    archive.writestr("sdk/extra.php", b"inert")
+            with self.subTest(mode=mode, extra=extra), self.assertRaisesRegex(ValueError, "approved SDK supply"):
+                self.verify()
 
     def test_changed_installed_module_refuses(self):
         (self.package / "src/Client.php").write_bytes(b"changed")

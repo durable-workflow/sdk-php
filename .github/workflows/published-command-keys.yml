@@ -24,6 +24,8 @@ jobs:
           echo /usr/bin >> "$GITHUB_PATH"
           /usr/bin/python3 -I -S -B tests/ci/test_command_key_supply.py
           /usr/bin/python3 -I -S -B tests/ci/test_command_key_cohort.py
+          /usr/bin/python3 -I -S -B tests/ci/test_command_key_containers.py
+          /usr/bin/python3 -I -S -B tests/ci/test_command_key_include_closure.py
       - name: Create private registry consumer and runtime state
         run: |
           umask 077
@@ -76,9 +78,75 @@ jobs:
           working-directory: ${{ env.CONSUMER }}
       - name: Generate only the verified consumer autoloader
         run: composer dump-autoload --working-dir="$CONSUMER" --no-scripts --no-plugins --no-interaction
-      - name: Qualify modern retained commands and postcommit response loss
+      - name: Capture the complete include closure without package execution
+        id: stage
         run: |
-          php -l tests/smoke/command-key-client.php
+          mkdir -m 700 "$COMMAND_KEY_STATE/stage"
+          python3 -I -S -B -c '
+          import hashlib,os,re,subprocess
+          from pathlib import Path
+          source=os.environ["GITHUB_SHA"]
+          if re.fullmatch("[0-9a-f]{40}",source) is None:
+              raise RuntimeError("An exact trusted runner source is required")
+          path="tests/smoke/command_key_cohort.py"
+          raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
+          if hashlib.sha256(raw).hexdigest() != "53feca91964f24382d2a4f90967efa51970ba05405b9b2c7a16b0a521b125f84":
+              raise RuntimeError("The captured controller differs from its independently fixed digest")
+          exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
+          ' \
+            --phase stage --consumer "$CONSUMER" --archive "$COMMAND_KEY_STATE/sdk.zip" \
+            --stage-root "$COMMAND_KEY_STATE/stage" --runtime-state "$COMMAND_KEY_STATE/runtime" \
+            --docker-config "$COMMAND_KEY_STATE/docker" \
+            --runtime-owner "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --runner-source "$GITHUB_SHA" \
+            > command-key-staging.json
+          root="$(sudo mktemp -d /run/sdk-php-command-keys.XXXXXX)"
+          python3 -I -S -B - "$root" <<'PYROOT'
+          import json,os,pathlib,stat,sys
+          root=pathlib.Path(sys.argv[1]); metadata=root.lstat()
+          if root.parent!=pathlib.Path('/run') or metadata.st_uid!=0 or not stat.S_ISDIR(metadata.st_mode):
+              raise RuntimeError('Unexpected root-controlled stage')
+          captured=json.loads(pathlib.Path('command-key-staging.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'],'a') as output:
+              output.write('root='+str(root)+'\n')
+              output.write('root_identity='+str(metadata.st_dev)+':'+str(metadata.st_ino)+'\n')
+              output.write('include_sha256='+captured['include_sha256']+'\n')
+          PYROOT
+          sudo cp -a --no-preserve=ownership -- "$COMMAND_KEY_STATE/stage/." "$root/"
+          sudo chmod 0555 -- "$root"
+      - name: Prepare the captured native and read-only PHP containers
+        id: prepare
+        env:
+          INCLUDE_ROOT: ${{ steps.stage.outputs.root }}
+          INCLUDE_IDENTITY: ${{ steps.stage.outputs.root_identity }}
+          INCLUDE_SHA256: ${{ steps.stage.outputs.include_sha256 }}
+        run: |
+          python3 -I -S -B -c '
+          import hashlib,os,re,subprocess
+          from pathlib import Path
+          source=os.environ["GITHUB_SHA"]
+          if re.fullmatch("[0-9a-f]{40}",source) is None:
+              raise RuntimeError("An exact trusted runner source is required")
+          path="tests/smoke/command_key_cohort.py"
+          raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
+          if hashlib.sha256(raw).hexdigest() != "53feca91964f24382d2a4f90967efa51970ba05405b9b2c7a16b0a521b125f84":
+              raise RuntimeError("The captured controller differs from its independently fixed digest")
+          exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
+          ' \
+            --phase prepare --stage-root "$INCLUDE_ROOT" --root-identity "$INCLUDE_IDENTITY" \
+            --include-sha256 "$INCLUDE_SHA256" --runtime-state "$COMMAND_KEY_STATE/runtime" \
+            --docker-config "$COMMAND_KEY_STATE/docker" \
+            --runtime-owner "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --runner-source "$GITHUB_SHA" \
+            | tee command-key-prepared.json
+      - name: Qualify modern retained commands and postcommit response loss
+        env:
+          INCLUDE_ROOT: ${{ steps.stage.outputs.root }}
+          INCLUDE_IDENTITY: ${{ steps.stage.outputs.root_identity }}
+          INCLUDE_SHA256: ${{ steps.stage.outputs.include_sha256 }}
+          SERVER_ID: ${{ steps.prepare.outputs.server_id }}
+          CONSUMER_ID: ${{ steps.prepare.outputs.consumer_id }}
+          FIXTURE_NONCE: ${{ steps.prepare.outputs.nonce }}
+          COMMAND_KEY_TOKEN: ${{ steps.prepare.outputs.token }}
+        run: |
           timeout --signal=INT --kill-after=30s 12m python3 -I -S -B -c '
           import hashlib,os,re,subprocess
           from pathlib import Path
@@ -87,24 +155,77 @@ jobs:
               raise RuntimeError("An exact trusted runner source is required")
           path="tests/smoke/command_key_cohort.py"
           raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
-          if hashlib.sha256(raw).hexdigest() != "621dca01d9d34edbb612db2ba2ba13c72c476667f7b5c1a75cc72079530e13df":
+          if hashlib.sha256(raw).hexdigest() != "53feca91964f24382d2a4f90967efa51970ba05405b9b2c7a16b0a521b125f84":
               raise RuntimeError("The captured controller differs from its independently fixed digest")
           exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
           ' \
-            --consumer "$CONSUMER" --archive "$COMMAND_KEY_STATE/sdk.zip" \
-            --proxy-source "$COMMAND_KEY_STATE/committed_response_loss.py" \
-            --runtime-state "$COMMAND_KEY_STATE/runtime" \
+            --phase cohort --stage-root "$INCLUDE_ROOT" --root-identity "$INCLUDE_IDENTITY" \
+            --include-sha256 "$INCLUDE_SHA256" --runtime-state "$COMMAND_KEY_STATE/runtime" \
             --docker-config "$COMMAND_KEY_STATE/docker" \
+            --server-id "$SERVER_ID" --consumer-id "$CONSUMER_ID" --nonce "$FIXTURE_NONCE" \
+            --proxy-source "$COMMAND_KEY_STATE/committed_response_loss.py" \
             --runtime-owner "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --runner-source "$GITHUB_SHA" \
             | tee command-key-modern.json
-      - name: Independently repeat captured-ID runtime cleanup
-        if: always() && env.COMMAND_KEY_STATE != ''
+      - name: Remove captured fixtures independently of checkout and state
+        if: always()
+        env:
+          SERVER_ID: ${{ steps.prepare.outputs.server_id }}
+          CONSUMER_ID: ${{ steps.prepare.outputs.consumer_id }}
+          FIXTURE_NONCE: ${{ steps.prepare.outputs.nonce }}
+          INCLUDE_ROOT: ${{ steps.stage.outputs.root }}
+          INCLUDE_IDENTITY: ${{ steps.stage.outputs.root_identity }}
         run: |
-          python3 -I -S -B tests/smoke/command_key_cohort.py \
-            --runtime-state "$COMMAND_KEY_STATE/runtime" \
-            --docker-config "$COMMAND_KEY_STATE/docker" \
-            --runtime-owner "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --runner-source "$GITHUB_SHA" \
-            --cleanup-only | tee command-key-cleanup.json
+          /usr/bin/python3 -I -S -B - <<'PYCLEAN' | tee command-key-cleanup.json
+          import json,os,pathlib,re,stat,subprocess,tempfile
+          owner=os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT']
+          nonce=os.environ['FIXTURE_NONCE']; errors=[]
+          with tempfile.TemporaryDirectory(prefix='sdk-php-command-key-cleanup-',dir='/tmp') as configuration:
+              environment={'PATH':'/usr/bin:/bin','DOCKER_CONFIG':configuration,'DOCKER_HOST':'unix:///var/run/docker.sock'}
+              def invoke(arguments):
+                  return subprocess.run(['/usr/bin/docker',*arguments],env=environment,capture_output=True,text=True,timeout=30)
+              def absent(result,identity):
+                  return result.returncode==1 and result.stdout=='[]\n' and result.stderr in {
+                      'Error: No such object: '+identity+'\n','error: no such object: '+identity+'\n'}
+              for role,key in [('consumer','CONSUMER_ID'),('server','SERVER_ID')]:
+                  identity=os.environ[key]
+                  if not identity:
+                      continue
+                  try:
+                      if re.fullmatch('[0-9a-f]{64}',identity) is None or re.fullmatch('[0-9a-f]{32}',nonce) is None:
+                          raise RuntimeError('Invalid immutable fixture outputs')
+                      result=invoke(['inspect',identity])
+                      if absent(result,identity):
+                          continue
+                      if result.returncode!=0:
+                          raise RuntimeError('The recorded fixture cannot be inspected')
+                      rows=json.loads(result.stdout)
+                      if len(rows)!=1 or rows[0]['Id']!=identity:
+                          raise RuntimeError('Fixture identity differs')
+                      labels=rows[0]['Config'].get('Labels') or {}
+                      if (labels.get('durable-workflow.php-command-keys'),labels.get('durable-workflow.fixture-role'),labels.get('durable-workflow.fixture-nonce'))!=(owner,role,nonce):
+                          raise RuntimeError('Foreign replacement preserved')
+                      removed=invoke(['rm','--force','--volumes',identity])
+                      if removed.returncode!=0 or not absent(invoke(['inspect',identity]),identity):
+                          raise RuntimeError('Exact fixture absence was not established')
+                  except Exception as error:
+                      errors.append(role+':'+type(error).__name__)
+          root=os.environ['INCLUDE_ROOT']
+          if root and not errors:
+              try:
+                  path=pathlib.Path(root); metadata=path.lstat()
+                  if (path.parent!=pathlib.Path('/run') or re.fullmatch(r'sdk-php-command-keys\.[A-Za-z0-9]{6}',path.name) is None
+                          or path.resolve()!=path or not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid!=0
+                          or str(metadata.st_dev)+':'+str(metadata.st_ino)!=os.environ['INCLUDE_IDENTITY']):
+                      raise RuntimeError('Foreign include root preserved')
+                  subprocess.run(['/usr/bin/sudo','/usr/bin/rm','-rf','--',root],check=True,timeout=30)
+                  if path.exists() or path.is_symlink():
+                      raise RuntimeError('Include root absence was not established')
+              except Exception as error:
+                  errors.append('include:'+type(error).__name__)
+          print(json.dumps({'runtime_removed':not errors,'errors':errors}))
+          if errors:
+              raise SystemExit(1)
+          PYCLEAN
       - name: Retain sanitized observations and installed dependency graph
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -112,6 +233,8 @@ jobs:
           name: published-php-command-keys
           path: |
             command-key-package.json
+            command-key-staging.json
+            command-key-prepared.json
             command-key-modern.json
             command-key-cleanup.json
             ${{ env.CONSUMER }}/composer.lock

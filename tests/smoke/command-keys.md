@@ -7,8 +7,8 @@ reference, runtime version and PHP version. The adapter bounds input to 64 KiB,
 accepts only a numeric loopback origin, and restricts fixture workflow and
 queue names to the `sdk-php-216-` prefix.
 
-Before invocation, the owning acceptance runner verifies the registry archive
-checksum, Composer lock/source/dist identities and installed SDK file bytes
+Before invocation, the owning acceptance runner verifies the complete registry
+archive member digest, Composer lock/source/dist identities and installed SDK file bytes
 against that selected supply. It owns the isolated runtime and endpoint,
 synthetic credential, namespace provisioning, finite process timeout and exact
 cleanup. Mount or capture the reviewed adapter, supply and autoloader inputs
@@ -18,10 +18,13 @@ the runner supplies the independent archive/provenance proof.
 `verify_command_key_supply.py <consumer-directory> <downloaded-archive>`
 performs the package inspection before PHP loading. It checks the exact root
 requirement, absence of repository overrides, lock/source/dist URLs and refs,
-dist installation, approved archive digest and every installed SDK file. It
+dist installation, the approved digest of every archive path/body/mode and every installed SDK file. It
 accepts private umasks, normalizes GitHub's DOS nonexecutable entries and
 rejects added permissions, missing/extra/changed files or aliases. Its output
-is explicitly inspection-only. Run its inert controls with
+is explicitly inspection-only. Exact commit and member identities are the
+durable binding because GitHub can regenerate ZIP wrapper bytes; each download's
+raw ZIP hash is still retained as an observation. Changed, added or missing
+members and changed executable modes refuse. Run its inert controls with
 `python3 -I -S -B tests/ci/test_command_key_supply.py`.
 
 Set `COMMAND_KEY_RUNTIME_URL` to the owned numeric loopback URL and
@@ -68,31 +71,50 @@ generation until archive/installed-file inspection passes. The runner captures
 its exact committed source and the unchanged accepted shared loss fixture
 before loading them. Source checks and independent review precede execution.
 
-The controller pulls the selected Server index for linux/amd64 and verifies
-its image config/source. It creates one read-only, nonprivileged 1-CPU/1-GiB/
-256-PID runtime with private bounded tmpfs and one numeric loopback binding.
-Every operation checks the captured container ID/owner/endpoint and installed
-SDK bytes again. A private CID file supports cleanup on exceptions and the
-workflow's separate always-run cleanup. Removal uses that ID after checking
-its label; foreign replacements are preserved. A missing-object response,
-rather than a general engine error, establishes absence. Sanitized evidence
+The proposed workflow has three phases. Staging inspects the installed package
+and captures its complete consumer/vendor/fixture include tree without loading
+PHP. A root-controlled directory receives the verified copy. Preparation
+creates the selected linux/amd64 Server and an idle, unprivileged PHP consumer.
+Both have read-only root filesystems, 1-CPU/1-GiB/256-PID caps and bounded tmpfs.
+The PHP consumer mounts the entire include tree read-only at `/closure`; only
+its separate `/tmp` is writable. Cohort execution invokes the adapter inside
+that consumer and checks the complete include inventory, mount configuration,
+image identity and captured runtime endpoint before and after each operation.
+
+Each phase loads the controller from exact Git bytes through an independently
+fixed literal bootstrap. Preparation captures full IDs from Docker create
+stdout, keeps an exclusive private record descriptor open, and publishes the
+IDs to workflow outputs before executing package code. The separate literal
+always-run cleanup uses those outputs, a fresh empty Docker configuration and
+owner/role/nonce labels. It needs no checkout, controller import or state file.
+It attempts both removals, preserves foreign replacements, and accepts only an
+exact missing-object response as proof of absence. Root-stage removal also
+requires the original root-owned directory device/inode. Sanitized evidence
 and the dependency lock are retained for seven days.
 
-Run inert runner controls with
-`python3 -I -S -B tests/ci/test_command_key_cohort.py`. They exercise synthetic
-inspection metadata and receipts without creating a runtime or loading PHP.
+Run the inert controls with:
 
-The proposed include-tree capture is data-only preparation for the required
-read-only consumer boundary. `command_key_include_closure.py` inventories every
+```sh
+python3 -I -S -B tests/ci/test_command_key_cohort.py
+python3 -I -S -B tests/ci/test_command_key_containers.py
+python3 -I -S -B tests/ci/test_command_key_include_closure.py
+```
+
+They exercise synthetic inspection metadata, captured-ID substitution,
+independent cleanup, include inventories and receipts without creating a
+runtime or loading PHP.
+
+`command_key_include_closure.py` inventories every
 consumer/vendor/fixture leaf, rejects aliases, hardlinks, repository metadata
 and unexpected root members, and copies verified bytes with read-only modes.
-Its output includes a complete member/hash inventory. Before any installed
-execution, that complete tree still needs a root-controlled staging location,
-a kernel-enforced read-only consumer mount, before/after source and mount
-identity checks, independent container-ID cleanup and actual boundary controls.
-File modes and the inert inventory tests alone provide no isolation verdict.
-The proposed official PHP image identities in the supply are raw-registry
-metadata bindings; this prototype has not pulled or qualified that consumer.
+Its output includes a complete member/hash inventory. The workflow wiring is
+proposed source, with installed execution on hold. Actual nested-file
+overwrite/rename controls, a writable-mount countercontrol, full consumer
+profile qualification and independent review are still required. File modes
+and the inert inventory tests alone provide no isolation verdict. The proposed
+official PHP image identities in the supply are raw-registry metadata bindings;
+this prototype has not pulled or qualified that consumer. The complete SDK
+member binding is proposed source and also requires independent review.
 
 Run the offline input controls against an existing immutable PHP image:
 

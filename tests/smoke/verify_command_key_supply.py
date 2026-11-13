@@ -79,8 +79,6 @@ def archive_files(archive, supply):
     if not 0 < size <= MAX_ARCHIVE_BYTES:
         raise ValueError("The registry archive exceeds its byte bound")
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    if digest != supply["sdk_archive_sha256"]:
-        raise ValueError("The registry archive differs from the approved SDK supply")
 
     expected = {}
     total = 0
@@ -101,7 +99,15 @@ def archive_files(archive, supply):
             if total > MAX_PACKAGE_BYTES:
                 raise ValueError("The package expands beyond its byte bound")
             expected[name] = (source.read(entry), mode)
+    if member_digest(expected) != supply["sdk_archive_members_sha256"]:
+        raise ValueError("The registry archive members differ from the approved SDK supply")
     return expected, digest, total
+
+
+def member_digest(files):
+    members = {name: {"mode": mode, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+               for name, (raw, mode) in files.items()}
+    return hashlib.sha256(json.dumps(members, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def installed_files(package, expected):
@@ -135,7 +141,7 @@ def verify(consumer, archive, supply):
     expected, digest, total = archive_files(Path(archive), supply)
     count = installed_files(package, expected)
     return {"sdk_version": supply["sdk_version"], "sdk_reference": supply["sdk_reference"],
-            "archive_sha256": digest, "installed_files": count,
+            "archive_sha256": digest, "archive_members_sha256": member_digest(expected), "installed_files": count,
             "installed_bytes": total, "source_fallback": False, "inspection_only": True}
 
 

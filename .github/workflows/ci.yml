@@ -127,6 +127,7 @@ jobs:
         run: |
           python3 -I -S -B tests/ci/test_command_key_supply.py
           python3 -I -S -B tests/ci/test_command_key_cohort.py
+          python3 -I -S -B tests/ci/test_command_key_containers.py
           python3 -I -S -B tests/ci/test_command_key_include_closure.py
 
   test:

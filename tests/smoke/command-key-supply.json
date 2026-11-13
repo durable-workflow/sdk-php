@@ -3,7 +3,6 @@
   "sdk_reference": "f9483bb2b5b45f591a82d9e5419c5b60a6e967c6",
   "sdk_source_url": "https://github.com/durable-workflow/sdk-php.git",
   "sdk_dist_url": "https://api.github.com/repos/durable-workflow/sdk-php/zipball/f9483bb2b5b45f591a82d9e5419c5b60a6e967c6",
-  "sdk_archive_sha256": "32dc5d1a05a96e9e772e964bea95ae8142882b901d612c97a4aadee699f4ec6b",
   "server_version": "3.9.2",
   "server_source": "5614274d2629d03f92932a07dfee0fb10349ddd9",
   "server_index": "sha256:8ffcdb2a36af3129a1987849aafe8715fe0d3bf9a9648467f0b5cb8eeef43ba9",
@@ -14,5 +13,6 @@
   "php_amd64": "sha256:b2d2be78de4de803e20d1ae3df91c196e332a40cc851754472be4fab0fac1f03",
   "php_config": "sha256:6d664d15c9c1ad38a202a9b91736126c7c804d7669c3b7bfddd7ff6f7fdadba5",
   "loss_proxy_source": "117118c83093822469b3824ba9587ff4068ed29f",
-  "loss_proxy_sha256": "bd1e8ccbbf76f63fc2eafa278a023eb181d405b68d9c30016392e395a1eff725"
+  "loss_proxy_sha256": "bd1e8ccbbf76f63fc2eafa278a023eb181d405b68d9c30016392e395a1eff725",
+  "sdk_archive_members_sha256": "c08c3a741f21eff2a42bd9b8e383c88c02a162098d411659eae644497508b7bc"
 }
