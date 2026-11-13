@@ -157,6 +157,14 @@ def publish_outputs(values):
         os.close(descriptor)
 
 
+def php_consumer_arguments(root, supply):
+    require(os.getuid() > 0, "The PHP fixture cannot run as root")
+    return ["--network", "host", "--user", str(os.getuid()) + ":" + str(os.getgid()),
+            "--workdir", "/closure/consumer", "--tmpfs", "/tmp:mode=1777,size=128m",
+            "--mount", "type=bind,src=" + str(root) + ",dst=/closure,readonly", "php@" + supply["php_index"],
+            "php", "-c", "/usr/local/etc/php/php.ini-production", "-r", "sleep(900);"]
+
+
 def prepare_containers(resources, supply, token, root):
     try:
         server_image = "durableworkflow/server@" + supply["server_index"]
@@ -185,12 +193,7 @@ def prepare_containers(resources, supply, token, root):
         php_image = "php@" + supply["php_index"]
         php = resources.pull(php_image, supply["php_config"])
         require("PHP_VERSION=" + supply["php_version"] in php["Config"]["Env"], "The PHP image version differs")
-        user = str(os.getuid()) + ":" + str(os.getgid())
-        require(os.getuid() > 0, "The PHP fixture cannot run as root")
-        consumer = resources.create("consumer", ["--network", "host", "--user", user,
-                                    "--workdir", "/closure/consumer", "--tmpfs", "/tmp:mode=1777,size=128m",
-                                    "--mount", "type=bind,src=" + str(root) + ",dst=/closure,readonly", php_image,
-                                    "php", "-c", "/usr/local/etc/php/php.ini-production", "-r", "sleep(900);"])
+        consumer = resources.create("consumer", php_consumer_arguments(root, supply))
         selected_image(resources.owned(consumer, "consumer"), supply, "php")
         resources.start(consumer, "consumer")
         consumer_record(resources, consumer, supply, root)

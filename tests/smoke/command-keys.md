@@ -131,8 +131,35 @@ profile qualification and independent review are still required. File modes
 and the inert inventory tests alone provide no isolation verdict. The proposed
 official PHP image identities in the supply are raw-registry metadata bindings;
 read-only base-profile observations on the PR do not qualify the SDK consumer.
-The complete SDK
-member binding is proposed source and also requires independent review.
+Exact source and runtime qualification receipts belong on the owning PR.
+
+`tests/ci/test_command_key_mount_boundary.py` proposes two opt-in controls and
+an inert argument-factory control. The effectful tests use only generated
+include/marker files. One exercises a root-owned sealed tree; the other uses
+writable owned files with a read-only mount, then removes only that mount's
+read-only qualifier for the negative primitive. The production guard must
+refuse the writable mount. The primitive must then show successful marker
+overwrite/rename, demonstrating that ordinary file permissions cannot explain
+the read-only result. Genuine PHP includes only the generated constant leaf.
+No published SDK, application, repository or host control file is mounted.
+
+The opt-in tests share the proposed consumer argument factory and the exact
+selected image/platform and captured-ID lifecycle checks. They create three
+containers sequentially, never concurrently, with the existing 1-CPU/1-GiB/
+256-PID limits and host-network setting but no network requests. Image pulling
+is disabled. Container absence must be established before owned data or the
+root-controlled staging inode can be removed; otherwise those paths are
+preserved. Sanitized outcomes include the full IDs and removal results.
+
+Execution remains review-gated. Set `SDK_PHP_COMMAND_KEY_MOUNT_IMAGE` only to
+the exact cached `php@<php_index>` from the selected supply, and
+`SDK_PHP_COMMAND_KEY_BOUNDARY_SOURCE` to the exact reviewed Git commit. Launch
+the test from captured Git bytes through a literal bootstrap that verifies an
+independently fixed test digest before compile/exec. The helpers and supply are
+also captured from that commit. A direct mutable-path launch does not supply
+that outer binding. Default CI runs only the inert factory control and skips
+the two effectful tests. Preparing this source does not qualify the actual
+mount, dependency profile, cleanup-after-state-refusal or installed cohort.
 
 Run the offline input controls against an existing immutable PHP image:
 

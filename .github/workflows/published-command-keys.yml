@@ -26,6 +26,7 @@ jobs:
           /usr/bin/python3 -I -S -B tests/ci/test_command_key_cohort.py
           /usr/bin/python3 -I -S -B tests/ci/test_command_key_containers.py
           /usr/bin/python3 -I -S -B tests/ci/test_command_key_include_closure.py
+          /usr/bin/python3 -I -S -B tests/ci/test_command_key_mount_boundary.py
       - name: Create private registry consumer and runtime state
         run: |
           umask 077
@@ -90,7 +91,7 @@ jobs:
               raise RuntimeError("An exact trusted runner source is required")
           path="tests/smoke/command_key_cohort.py"
           raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
-          if hashlib.sha256(raw).hexdigest() != "0aa2f6b87f68c67ef67bd32929e10bff6bf0226918aaea44bb9ea065e2efb1db":
+          if hashlib.sha256(raw).hexdigest() != "275b3741eeff87a3257237e597c78a5de02fd4d7b64c005f3437099e043d3705":
               raise RuntimeError("The captured controller differs from its independently fixed digest")
           exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
           ' \
@@ -128,7 +129,7 @@ jobs:
               raise RuntimeError("An exact trusted runner source is required")
           path="tests/smoke/command_key_cohort.py"
           raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
-          if hashlib.sha256(raw).hexdigest() != "0aa2f6b87f68c67ef67bd32929e10bff6bf0226918aaea44bb9ea065e2efb1db":
+          if hashlib.sha256(raw).hexdigest() != "275b3741eeff87a3257237e597c78a5de02fd4d7b64c005f3437099e043d3705":
               raise RuntimeError("The captured controller differs from its independently fixed digest")
           exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
           ' \
@@ -155,7 +156,7 @@ jobs:
               raise RuntimeError("An exact trusted runner source is required")
           path="tests/smoke/command_key_cohort.py"
           raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
-          if hashlib.sha256(raw).hexdigest() != "0aa2f6b87f68c67ef67bd32929e10bff6bf0226918aaea44bb9ea065e2efb1db":
+          if hashlib.sha256(raw).hexdigest() != "275b3741eeff87a3257237e597c78a5de02fd4d7b64c005f3437099e043d3705":
               raise RuntimeError("The captured controller differs from its independently fixed digest")
           exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
           ' \
