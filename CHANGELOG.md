@@ -19,6 +19,30 @@ project follows [Semantic Versioning](https://semver.org/).
   a repeated signal key can still record a second signal there, and a changed
   update can still return the original receipt.
 
+### Fixed
+
+- Replay of a run that closed with work still open (workflow#1117, workflow#1121,
+  server#1193). When a run completes, fails or continues as new, Workflow
+  2.28.0 records `ActivityCancelled` with `cancellation_reason: run_closed` for
+  each activity the workflow never awaited, such as a `select()` loser, before
+  the terminal event. The workflow never saw these cancellations, so the
+  Replayer now ignores them. They no longer resolve the activity, a selection
+  member or an `all()` failure, and the activity stays open. Before this change,
+  a caught `all()` failure lost its business replay time (`replayNow()` threw
+  `ReplayClockUnavailable`) once the member it left open was cancelled at
+  close, and a loser handle could resolve to that cancellation. The
+  `abandoned_activities` key on `WorkflowCompleted`, `WorkflowFailed` and
+  `WorkflowContinuedAsNew` is tolerated.
+- The Worker now treats a `run_closed` refusal of an activity outcome or
+  failure report (409, `recorded: false`) as final, as it already did for
+  `run_cancelled` and `run_terminated`. It no longer reports the refused
+  completion as a failure or raises it out of the worker loop. A heartbeat that
+  answers `can_continue: false` with `run_closed` still stops the activity with
+  `ActivityCancelled`. If an abandon-policy activity that its run left running
+  closes with its own outcome (`activity_status` `completed` or `failed`), that
+  refusal counts as success. The `worker.activity_run_closed` diagnostic
+  reports both cases.
+
 ## [3.16.0] - 2026-11-13
 
 ### Added

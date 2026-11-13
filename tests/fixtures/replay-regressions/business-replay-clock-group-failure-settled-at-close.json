@@ -1,0 +1,282 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-business-replay-clock-group-failure-settled-at-close",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.business-replay-clock-group-failure",
+    "input": []
+  },
+  "history": [
+    {
+      "id": "close-scheduled-1",
+      "sequence": 1,
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-11-06T00:00:00Z",
+      "payload": {
+        "sequence": 1,
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ],
+        "activity_execution_id": "close-activity-0",
+        "activity_class": "first",
+        "activity_type": "first"
+      }
+    },
+    {
+      "id": "close-scheduled-2",
+      "sequence": 2,
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-11-06T00:00:00Z",
+      "payload": {
+        "sequence": 2,
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ],
+        "activity_execution_id": "close-activity-1",
+        "activity_class": "second",
+        "activity_type": "second"
+      }
+    },
+    {
+      "id": "close-failed-2",
+      "sequence": 3,
+      "event_type": "ActivityFailed",
+      "recorded_at": "2026-11-06T00:00:05Z",
+      "payload": {
+        "sequence": 2,
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ],
+        "activity_execution_id": "close-activity-1",
+        "activity_class": "second",
+        "activity_type": "second",
+        "attempt_number": 1,
+        "exception_class": "RuntimeException",
+        "message": "original-1",
+        "non_retryable": false
+      }
+    },
+    {
+      "id": "close-scheduled-3",
+      "sequence": 4,
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-11-06T00:00:05Z",
+      "payload": {
+        "sequence": 3,
+        "parallel_group_id": "parallel-calls:3:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:3:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ],
+        "activity_execution_id": "close-activity-3",
+        "activity_class": "first",
+        "activity_type": "first"
+      }
+    },
+    {
+      "id": "close-timer-scheduled-4",
+      "sequence": 5,
+      "event_type": "TimerScheduled",
+      "recorded_at": "2026-11-06T00:00:05Z",
+      "payload": {
+        "sequence": 4,
+        "parallel_group_id": "parallel-calls:3:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:3:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ],
+        "timer_id": "close-timer-4",
+        "delay_seconds": 2,
+        "fire_at": "2026-11-06T00:00:07Z"
+      }
+    },
+    {
+      "id": "close-completed-3",
+      "sequence": 6,
+      "event_type": "ActivityCompleted",
+      "recorded_at": "2026-11-06T00:00:06Z",
+      "payload": {
+        "sequence": 3,
+        "parallel_group_id": "parallel-calls:3:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:3:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ],
+        "activity_execution_id": "close-activity-3",
+        "activity_class": "first",
+        "activity_type": "first",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoKZmlyc3Q="
+        }
+      }
+    },
+    {
+      "id": "close-timer-fired-4",
+      "sequence": 7,
+      "event_type": "TimerFired",
+      "recorded_at": "2026-11-06T00:00:07Z",
+      "payload": {
+        "sequence": 4,
+        "parallel_group_id": "parallel-calls:3:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-calls:3:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ],
+        "timer_id": "close-timer-4",
+        "delay_seconds": 2,
+        "fire_at": "2026-11-06T00:00:07Z",
+        "fired_at": "2026-11-06T00:00:07Z"
+      }
+    },
+    {
+      "id": "close-cancelled-1",
+      "sequence": 8,
+      "event_type": "ActivityCancelled",
+      "recorded_at": "2026-11-06T00:00:08Z",
+      "payload": {
+        "workflow_command_id": null,
+        "activity_execution_id": "close-activity-0",
+        "activity_attempt_id": null,
+        "activity_class": "first",
+        "activity_type": "first",
+        "sequence": 1,
+        "attempt_number": 0,
+        "cancelled_at": "2026-11-06T00:00:08Z",
+        "activity": {
+          "id": "close-activity-0",
+          "idempotency_key": "close-activity-0",
+          "sequence": 1,
+          "type": "first",
+          "class": "first",
+          "local_activity": false,
+          "status": "cancelled",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "closed_at": "2026-11-06T00:00:08Z",
+          "parallel_group_id": "parallel-activities:1:2",
+          "parallel_group_kind": "activity",
+          "parallel_group_base_sequence": 1,
+          "parallel_group_size": 2,
+          "parallel_group_index": 0,
+          "parallel_group_path": [
+            {
+              "parallel_group_id": "parallel-activities:1:2",
+              "parallel_group_kind": "activity",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0
+            }
+          ]
+        },
+        "activity_attempt": null,
+        "cancellation_reason": "run_closed"
+      }
+    },
+    {
+      "id": "close-completed",
+      "sequence": 9,
+      "event_type": "WorkflowCompleted",
+      "recorded_at": "2026-11-06T00:00:08Z",
+      "payload": {
+        "output": "wwHioz3/VYAiNw4GDmZhaWx1cmUKFG9yaWdpbmFsLTEWZmFpbGVkX3RpbWUKQDIwMjYtMTEtMDZUMDA6MDA6MDUuMDAwMDAwKzAwOjAwCHRpbWUKQDIwMjYtMTEtMDZUMDA6MDA6MDcuMDAwMDAwKzAwOjAwAA==",
+        "payload_codec": "avro"
+      }
+    }
+  ],
+  "workflow_tasks": [
+    {
+      "workflow_id": "clock-parent",
+      "run_id": "clock-parent-run"
+    }
+  ],
+  "expected": {
+    "workflow_tasks": [
+      {
+        "command_sequence": [
+          {
+            "type": "complete_workflow",
+            "result": {
+              "failure": "original-1",
+              "failed_time": "2026-11-06T00:00:05.000000+00:00",
+              "time": "2026-11-06T00:00:07.000000+00:00"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
