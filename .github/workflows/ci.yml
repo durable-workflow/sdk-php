@@ -121,6 +121,8 @@ jobs:
         run: python scripts/ci/test-regression-corpus-policy.py
       - name: Require APT retries off before networked APT (CVE-2026-109518)
         run: python -I scripts/ci/test-apt-no-retries.py
+      - name: Verify PHP container launcher boundaries
+        run: python -I -S -B tests/ci/test_php_container_launcher.py
 
   test:
     name: PHP ${{ matrix.php }}

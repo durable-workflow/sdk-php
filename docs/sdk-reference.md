@@ -451,6 +451,13 @@ completion by default and returns the decoded result, throws
 the capability it throws a `LogicException` rather than resubmitting.
 `updateOutcomeReceipt()` returns the raw receipt.
 
+A pending outcome read preserves the stable `updateId` and points callers to
+`updateOutcome()` again. The producer may omit the original request key on
+this GET path; `UpdateStillPending::requestId` is then an empty string for
+unknown. Continue reading by update id in that case. The original caller key
+is retained by the admission-time pending exception; an empty, cached or
+internal hashed token cannot stand in for that key.
+
 ## Control-plane administration and discovery
 
 `listWorkflows()` and `workflowHistory()` each read one page. The
