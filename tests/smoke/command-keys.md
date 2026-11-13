@@ -27,6 +27,17 @@ raw ZIP hash is still retained as an observation. Changed, added or missing
 members and changed executable modes refuse. Run its inert controls with
 `python3 -I -S -B tests/ci/test_command_key_supply.py`.
 
+The controller also retains that approved archive member map in memory and
+passes it into staging. Each SDK source descriptor is checked against the
+approved path/body/mode policy before copying. Expected SDK bytes are never
+derived from a later read of the mutable install tree. Staging assigns fixed
+read-only modes from the approved modes, checks all members again after the
+copy, and rejects missing or extra SDK files and directories. Every subsequent
+root-controlled inventory rechecks the sealed SDK against the same digest from
+the captured supply before container creation and around each invocation.
+The fixture map comes independently from captured Git bytes and is checked
+during copying and sealed-root checks too.
+
 Set `COMMAND_KEY_RUNTIME_URL` to the owned numeric loopback URL and
 `COMMAND_KEY_TOKEN` to its synthetic credential. Pass the registry consumer's
 `vendor/autoload.php` as the first argument. Packet fields are:

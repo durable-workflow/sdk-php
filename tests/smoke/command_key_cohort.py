@@ -47,7 +47,12 @@ def module_from_bytes(name, raw):
     return module
 
 
-def stage_inventory(root, expected, root_identity, closure):
+def fixture_authority(sources):
+    return {name: {"mode": 0o644, "bytes": len(sources[name]), "sha256": hashlib.sha256(sources[name]).hexdigest()}
+            for name in ("command-key-client.php", "command-key-supply.json")}
+
+
+def stage_inventory(root, expected, root_identity, closure, supply, approved_fixture):
     require(root.parent == Path("/run") and re.fullmatch(r"sdk-php-command-keys\.[A-Za-z0-9]{6}", root.name),
             "The include closure must use its root-controlled staging location")
     metadata = root.lstat()
@@ -55,6 +60,8 @@ def stage_inventory(root, expected, root_identity, closure):
             "The include staging root is not root controlled")
     require(root_identity == str(metadata.st_dev) + ":" + str(metadata.st_ino), "The include staging inode differs")
     result = closure.inventory(root, 0, sealed=True)
+    closure.verify_sealed_sdk(result, supply["sdk_archive_members_sha256"])
+    closure.bind_members(result, "fixture/", approved_fixture, sealed=True)
     require(result["sha256"] == expected, "The complete include inventory differs")
     return result
 
@@ -183,13 +190,15 @@ class Consumer:
         self.resources, self.container, self.runtime_id = resources, container, runtime_id
         self.supply, self.sources, self.origin, self.token = supply, sources, origin, token
         self.root, self.expected, self.root_identity, self.closure = root, expected, root_identity, closure
-        self.include_inventory = stage_inventory(root, expected, root_identity, closure)
+        self.approved_fixture = fixture_authority(sources)
+        self.include_inventory = stage_inventory(root, expected, root_identity, closure, supply, self.approved_fixture)
 
     def call(self, packet, origin=None):
         require(runtime_origin(self.resources, self.runtime_id, self.supply) == self.origin,
                 "The captured native endpoint changed")
         consumer_record(self.resources, self.container, self.supply, self.root)
-        require(stage_inventory(self.root, self.expected, self.root_identity, self.closure) == self.include_inventory,
+        require(stage_inventory(self.root, self.expected, self.root_identity, self.closure,
+                                self.supply, self.approved_fixture) == self.include_inventory,
                 "The complete include tree changed before invocation")
         for name, raw in self.sources.items():
             require((HERE / name).read_bytes() == raw, "The captured runner source changed")
@@ -199,7 +208,8 @@ class Consumer:
                                          "/closure/consumer/vendor/autoload.php"], input=json.dumps(packet), timeout=20)
         require(result.returncode == 0, "The isolated PHP fixture operation failed")
         require(0 < len(result.stdout) <= 1024**2, "The PHP fixture evidence is empty or oversized")
-        require(stage_inventory(self.root, self.expected, self.root_identity, self.closure) == self.include_inventory,
+        require(stage_inventory(self.root, self.expected, self.root_identity, self.closure,
+                                self.supply, self.approved_fixture) == self.include_inventory,
                 "The complete include tree changed during invocation")
         consumer_record(self.resources, self.container, self.supply, self.root)
         response = json.loads(result.stdout)
@@ -401,25 +411,28 @@ def main():
     require(re.fullmatch(r"[0-9]+-[0-9]+", options.runtime_owner), "Invalid fixture run owner")
     sources = capture_inputs(options.runner_source)
     supply = json.loads(sources["command-key-supply.json"])
+    approved_fixture = fixture_authority(sources)
     closure = module_from_bytes("command_key_include_closure", sources["command_key_include_closure.py"])
     if options.phase == "stage":
         require(options.consumer is not None and options.archive is not None,
                 "The registry consumer and approved archive are required")
         verifier = module_from_bytes("verify_command_key_supply", sources["verify_command_key_supply.py"])
-        package = verifier.verify(options.consumer, options.archive, supply)
+        package, approved_sdk = verifier.verify_with_members(options.consumer, options.archive, supply)
         fixture = options.stage_root.parent / "captured-fixture"
         fixture.mkdir(mode=0o700)
         for name in ("command-key-client.php", "command-key-supply.json"):
             descriptor = os.open(fixture / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
             with os.fdopen(descriptor, "wb") as output:
                 output.write(sources[name])
-        include = closure.stage(options.consumer, fixture, options.stage_root)
+        include = closure.stage(options.consumer, fixture, options.stage_root, approved_sdk,
+                                supply["sdk_archive_members_sha256"], approved_fixture)
         print(json.dumps({"include_sha256": include["sha256"], "members": len(include["entries"]),
                           "bytes": include["bytes"], "package": package, "inspection_only": True}))
         return
     require(isinstance(options.include_sha256, str) and re.fullmatch(r"[0-9a-f]{64}", options.include_sha256),
             "The captured include digest is required")
-    include = stage_inventory(options.stage_root, options.include_sha256, options.root_identity, closure)
+    include = stage_inventory(options.stage_root, options.include_sha256, options.root_identity,
+                              closure, supply, approved_fixture)
     containers = module_from_bytes("command_key_containers", sources["command_key_containers.py"])
     nonce = secrets.token_hex(16) if options.phase == "prepare" else options.nonce
     created = (lambda role, identity: publish_outputs({role + "_id": identity})) if options.phase == "prepare" else None
@@ -430,7 +443,8 @@ def main():
                 token = "sdk-php-216-" + secrets.token_hex(24)
                 publish_outputs({"nonce": nonce, "token": token})
                 server, consumer = prepare_containers(resources, supply, token, options.stage_root)
-                stage_inventory(options.stage_root, options.include_sha256, options.root_identity, closure)
+                stage_inventory(options.stage_root, options.include_sha256, options.root_identity,
+                                closure, supply, approved_fixture)
                 # This step ends before any package code executes. GitHub retains
                 # these outputs independently of the mutable checkout/state.
                 print(json.dumps({"prepared": True, "package_executed": False,

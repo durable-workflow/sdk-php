@@ -1,15 +1,64 @@
 """Capture and inventory the complete PHP include tree without loading PHP."""
 
-import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import stat
 
 
 MAX_FILES = 10000
 MAX_BYTES = 128 * 1024 * 1024
+SDK_PREFIX = "consumer/vendor/durable-workflow/sdk/"
+
+
+def members_digest(members):
+    return hashlib.sha256(json.dumps(members, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def approved_directories(prefix, approved):
+    directories = {prefix.rstrip("/")}
+    for name, expected in approved.items():
+        if expected["mode"] not in (0o644, 0o755):
+            raise ValueError("The approved member mode is unsupported")
+        path = PurePosixPath(name)
+        if path.is_absolute() or ".." in path.parts or path.as_posix() != name:
+            raise ValueError("The approved member path is not canonical")
+        directories.update(prefix + parent.as_posix() for parent in path.parents if parent.as_posix() != ".")
+    return directories
+
+
+def bind_members(snapshot, prefix, approved, *, sealed):
+    files = {name.removeprefix(prefix): entry for name, entry in snapshot["entries"].items()
+             if name.startswith(prefix) and entry["kind"] == "file"}
+    if not approved or set(files) != set(approved):
+        raise ValueError("The staged member set differs from its approved authority")
+    expected_directories = approved_directories(prefix, approved)
+    for name, expected in approved.items():
+        actual = files[name]
+        mode_matches = (actual["mode"] == (expected["mode"] & ~0o222) if sealed
+                        else not (actual["mode"] & ~expected["mode"]))
+        if not mode_matches or actual["bytes"] != expected["bytes"] or actual["sha256"] != expected["sha256"]:
+            raise ValueError("The staged member differs from its approved authority")
+    actual_directories = {name for name, entry in snapshot["entries"].items()
+                          if (name == prefix.rstrip("/") or name.startswith(prefix)) and entry["kind"] == "directory"}
+    if actual_directories != expected_directories:
+        raise ValueError("The staged directory set differs from its approved authority")
+    return {prefix + name: {"kind": "file", **member} for name, member in approved.items()}
+
+
+def verify_sealed_sdk(snapshot, approved_digest):
+    approved = {}
+    for name, entry in snapshot["entries"].items():
+        if name.startswith(SDK_PREFIX) and entry["kind"] == "file":
+            if entry["mode"] not in (0o444, 0o555):
+                raise ValueError("The sealed SDK member mode differs")
+            approved[name.removeprefix(SDK_PREFIX)] = {
+                "mode": 0o755 if entry["mode"] == 0o555 else 0o644,
+                "bytes": entry["bytes"], "sha256": entry["sha256"]}
+    if members_digest(approved) != approved_digest:
+        raise ValueError("The sealed SDK differs from the approved archive member authority")
+    bind_members(snapshot, SDK_PREFIX, approved, sealed=True)
 
 
 def inventory(root, owner, *, sealed):
@@ -63,8 +112,9 @@ def copy_tree(source, destination, expected):
         descriptor = os.open(original, os.O_RDONLY | os.O_NOFOLLOW)
         try:
             metadata = os.fstat(descriptor)
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-                raise ValueError("The include source changed its leaf type")
+            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1
+                    or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & ~member["mode"]):
+                raise ValueError("The include source type, owner or mode changed")
             with os.fdopen(descriptor, "rb", closefd=False) as stream:
                 raw = stream.read(MAX_BYTES + 1)
             if len(raw) != member["bytes"] or hashlib.sha256(raw).hexdigest() != member["sha256"]:
@@ -81,7 +131,9 @@ def copy_tree(source, destination, expected):
     destination.chmod(0o555)
 
 
-def stage(consumer, fixture, destination):
+def stage(consumer, fixture, destination, approved_sdk, approved_digest, approved_fixture):
+    if members_digest(approved_sdk) != approved_digest:
+        raise ValueError("The staging SDK authority differs from the approved archive")
     if set(path.name for path in consumer.iterdir()) != {"composer.json", "composer.lock", "vendor"}:
         raise ValueError("Unexpected consumer root members")
     if set(path.name for path in fixture.iterdir()) != {"command-key-client.php", "command-key-supply.json"}:
@@ -89,6 +141,15 @@ def stage(consumer, fixture, destination):
     owner = os.getuid()
     before = inventory(consumer, owner, sealed=False)
     fixture_before = inventory(fixture, owner, sealed=False)
+    # Expected SDK and fixture leaf bytes come from approved archive/Git data,
+    # never from a fresh read of the mutable install tree.
+    consumer_copy = {"entries": dict(before["entries"])}
+    consumer_copy["entries"].update(bind_members(before, "vendor/durable-workflow/sdk/", approved_sdk, sealed=False))
+    fixture_snapshot = {"entries": {"fixture" if name == "." else "fixture/" + name: entry
+                                    for name, entry in fixture_before["entries"].items()}}
+    fixture_copy = {"entries": dict(fixture_before["entries"])}
+    fixture_copy["entries"].update({name.removeprefix("fixture/"): entry for name, entry in
+                                  bind_members(fixture_snapshot, "fixture/", approved_fixture, sealed=False).items()})
     for required in ("vendor/autoload.php", "vendor/composer/installed.json"):
         if before["entries"].get(required, {}).get("kind") != "file":
             raise ValueError("The complete installed autoloader metadata is required")
@@ -97,24 +158,12 @@ def stage(consumer, fixture, destination):
             or metadata.st_uid != owner or stat.S_IMODE(metadata.st_mode) != 0o700
             or list(destination.iterdir())):
         raise ValueError("The include destination must be a fresh private directory")
-    copy_tree(consumer, destination / "consumer", before)
-    copy_tree(fixture, destination / "fixture", fixture_before)
+    copy_tree(consumer, destination / "consumer", consumer_copy)
+    copy_tree(fixture, destination / "fixture", fixture_copy)
     if inventory(consumer, owner, sealed=False) != before or inventory(fixture, owner, sealed=False) != fixture_before:
         raise ValueError("An include source changed during staging")
     destination.chmod(0o555)
-    return inventory(destination, owner, sealed=True)
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--consumer", type=Path, required=True)
-    parser.add_argument("--fixture", type=Path, required=True)
-    parser.add_argument("--destination", type=Path, required=True)
-    options = parser.parse_args()
-    result = stage(options.consumer, options.fixture, options.destination)
-    print(json.dumps({"inspection_only": True, "include_sha256": result["sha256"],
-                      "members": len(result["entries"]), "bytes": result["bytes"]}))
-
-
-if __name__ == "__main__":
-    main()
+    result = inventory(destination, owner, sealed=True)
+    verify_sealed_sdk(result, approved_digest)
+    bind_members(result, "fixture/", approved_fixture, sealed=True)
+    return result

@@ -1,6 +1,7 @@
 """Inert closure, workflow-bootstrap and receipt controls; no runtime calls."""
 
 from copy import deepcopy
+import hashlib
 import importlib.util
 import json
 import os
@@ -121,20 +122,41 @@ class ProvenanceControls(unittest.TestCase):
         closure = Mock()
         closure.inventory.return_value = {"sha256": "d" * 64}
         with patch.object(Path, "lstat", return_value=metadata), patch.object(Path, "resolve", lambda path: path):
-            self.assertEqual(MODULE.stage_inventory(ROOT, "d" * 64, "3:4", closure), closure.inventory.return_value)
+            self.assertEqual(MODULE.stage_inventory(ROOT, "d" * 64, "3:4", closure, SUPPLY, {}), closure.inventory.return_value)
             closure.inventory.assert_called_with(ROOT, 0, sealed=True)
+            closure.verify_sealed_sdk.assert_called_once_with(closure.inventory.return_value, SUPPLY["sdk_archive_members_sha256"])
+            closure.bind_members.assert_called_once_with(closure.inventory.return_value, "fixture/", {}, sealed=True)
             for root, digest, identity in ((Path("/tmp") / ROOT.name, "d" * 64, "3:4"),
                                            (ROOT, "e" * 64, "3:4"), (ROOT, "d" * 64, "3:5")):
                 with self.assertRaises(RuntimeError):
-                    MODULE.stage_inventory(root, digest, identity, closure)
+                    MODULE.stage_inventory(root, digest, identity, closure, SUPPLY, {})
             metadata.st_uid = 1001
             with self.assertRaises(RuntimeError):
-                MODULE.stage_inventory(ROOT, "d" * 64, "3:4", closure)
+                MODULE.stage_inventory(ROOT, "d" * 64, "3:4", closure, SUPPLY, {})
 
     def bootstraps(self):
         bodies = WORKFLOW.read_text().split("python3 -I -S -B -c '\n")[1:]
         return [compile(textwrap.dedent(body.split("\n          ' \\", 1)[0]), "literal-controller-bootstrap", "exec")
                 for body in bodies]
+
+    def test_matching_dynamic_root_hash_cannot_authorize_a_replaced_sdk_leaf(self):
+        path = SOURCE.with_name("command_key_include_closure.py")
+        spec = importlib.util.spec_from_file_location("root_closure", path)
+        closure = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(closure)
+        approved = {"src/Client.php": {"mode": 0o644, "bytes": 5, "sha256": hashlib.sha256(b"safe!").hexdigest()}}
+        supply = {"sdk_archive_members_sha256": closure.members_digest(approved)}
+        prefix = "consumer/vendor/durable-workflow/sdk"
+        snapshot = {"sha256": "d" * 64, "entries": {
+            prefix: {"kind": "directory", "mode": 0o555},
+            prefix + "/src": {"kind": "directory", "mode": 0o555},
+            prefix + "/src/Client.php": {"kind": "file", "mode": 0o444, "bytes": 5,
+                                         "sha256": hashlib.sha256(b"evil!").hexdigest()}}}
+        metadata = SimpleNamespace(st_mode=stat.S_IFDIR | 0o555, st_uid=0, st_dev=3, st_ino=4)
+        with patch.object(Path, "lstat", return_value=metadata), patch.object(Path, "resolve", lambda value: value), \
+                patch.object(closure, "inventory", return_value=snapshot), \
+                self.assertRaisesRegex(ValueError, "approved archive member authority"):
+            MODULE.stage_inventory(ROOT, snapshot["sha256"], "3:4", closure, supply, {})
 
     def test_all_three_phase_bootstraps_bind_git_bytes_before_execution(self):
         bootstraps = self.bootstraps()

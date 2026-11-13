@@ -105,9 +105,13 @@ def archive_files(archive, supply):
 
 
 def member_digest(files):
-    members = {name: {"mode": mode, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
-               for name, (raw, mode) in files.items()}
+    members = member_inventory(files)
     return hashlib.sha256(json.dumps(members, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def member_inventory(files):
+    return {name: {"mode": mode, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+            for name, (raw, mode) in files.items()}
 
 
 def installed_files(package, expected):
@@ -133,16 +137,21 @@ def installed_files(package, expected):
     return len(actual)
 
 
-def verify(consumer, archive, supply):
+def verify_with_members(consumer, archive, supply):
     consumer = Path(consumer)
     if consumer.resolve() != consumer or not consumer.is_dir():
         raise ValueError("The consumer must be a canonical directory")
     package = package_metadata(consumer, supply)
     expected, digest, total = archive_files(Path(archive), supply)
     count = installed_files(package, expected)
-    return {"sdk_version": supply["sdk_version"], "sdk_reference": supply["sdk_reference"],
-            "archive_sha256": digest, "archive_members_sha256": member_digest(expected), "installed_files": count,
-            "installed_bytes": total, "source_fallback": False, "inspection_only": True}
+    evidence = {"sdk_version": supply["sdk_version"], "sdk_reference": supply["sdk_reference"],
+                "archive_sha256": digest, "archive_members_sha256": member_digest(expected), "installed_files": count,
+                "installed_bytes": total, "source_fallback": False, "inspection_only": True}
+    return evidence, member_inventory(expected)
+
+
+def verify(consumer, archive, supply):
+    return verify_with_members(consumer, archive, supply)[0]
 
 
 if __name__ == "__main__":
