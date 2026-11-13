@@ -91,6 +91,8 @@ $result = $handle->update(
 
 Reuse a stable request ID when a caller may retry the same update after losing its response. Use `waitFor: 'accepted'` when another process will observe completion later.
 
+A request ID names one command. On a Server that advertises `command_request_keys` (native 3.9.0 and later), retrying a signal or update with the same request ID and the same input returns the original receipt, and reusing it with a different name, arguments or run target throws `SignalFailed` or `UpdateFailed` whose `isRequestIdConflict()` is true. `conflict()` names what differs and `retainedCommandId()` the original command. Nothing is written, and the SDK doesn't resend it. Use a new request ID for new input.
+
 If a `waitFor: 'completed'` wait ends before the update finishes, `update()` throws `UpdateStillPending` instead of returning a value. Call `update()` again with `$pending->requestId` to keep waiting. The Server returns the same update and doesn't apply it twice.
 
 ## Follow run transitions deliberately

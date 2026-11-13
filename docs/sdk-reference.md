@@ -378,6 +378,47 @@ run. Its ordinary operations follow whichever run is current after a
 continue-as-new transition. The `*SelectedRun()` methods retain the original
 run guard and fail rather than silently targeting a successor.
 
+### Signal and update request IDs
+
+`signalWorkflow()`, `updateWorkflow()`, `updateWorkflowReceipt()` and the
+matching handle methods send a `request_id` with every call. Pass `requestId`
+to choose it, or the SDK generates one per call. The receipt and any
+`SignalFailed` or `UpdateFailed` carry the key that was sent, so a caller that
+lost a response can retry with the same key. The SDK never resends a signal or
+update by itself.
+
+On a Server that advertises `command_request_keys` (native 3.9.0 and later,
+`$client->clusterInfo()->supportsCommandRequestKeys()`), the key is a durable
+command key on the workflow instance:
+
+- A retry with the same name, arguments and run target returns the original
+  receipt and writes nothing. A signal receipt then carries `retained: true`
+  and `intent_verified: true`.
+- The same key with a different name, arguments or run target is refused with
+  409 `request_id_conflict`. Nothing is written. The exception's
+  `isRequestIdConflict()` is true, `conflict()` lists the parts that differ
+  (`name`, `arguments` or `target_or_arguments`) and `retainedCommandId()`
+  names the original command. Don't retry it unchanged: send the original input
+  to recover the receipt, or use a new key for new input.
+
+```php
+use DurableWorkflow\Exception\SignalFailed;
+
+try {
+    $handle->signal('approve', ['Grace'], 'approve-order-1');
+} catch (SignalFailed $failed) {
+    if (!$failed->isRequestIdConflict()) {
+        throw $failed;
+    }
+    // $failed->conflict() is ['arguments']; $failed->retainedCommandId() is the original signal.
+}
+```
+
+Older Servers (PHP Server 2.x and native up to 3.8) don't compare input under a
+key: a repeated signal key records a second signal, and an update retried with
+changed arguments returns the original receipt. Keep business-event handling
+idempotent there.
+
 ### Updates that are still running
 
 `$handle->update()` and `Client::updateWorkflow()` wait for the update to

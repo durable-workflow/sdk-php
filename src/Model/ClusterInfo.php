@@ -10,6 +10,9 @@ final class ClusterInfo
     /** Per-task-queue activity dispatch pause and resume (native Server 3.8.0 and later). */
     public const TASK_QUEUE_ACTIVITY_DISPATCH_PAUSE = 'task_queue_activity_dispatch_pause';
 
+    /** Signal and update `request_id` is a durable command key (native Server 3.9.0 and later). */
+    public const COMMAND_REQUEST_KEYS = 'command_request_keys';
+
     /**
      * @param array<string, mixed> $namespace
      * @param array<string, mixed> $capabilities
@@ -51,6 +54,19 @@ final class ClusterInfo
     public function supportsTaskQueueActivityDispatchPause(): bool
     {
         return ($this->capabilities[self::TASK_QUEUE_ACTIVITY_DISPATCH_PAUSE] ?? null) === true;
+    }
+
+    /**
+     * Whether a signal or update `request_id` is a durable command key on the workflow instance.
+     *
+     * When true, a retry with the same name, arguments and run target returns the original
+     * receipt, and the same key with different input is refused with 409 `request_id_conflict`.
+     * Without it, a repeated signal key can record a second signal and a changed update reuses
+     * the original receipt, so keep business-event handling idempotent.
+     */
+    public function supportsCommandRequestKeys(): bool
+    {
+        return ($this->capabilities[self::COMMAND_REQUEST_KEYS] ?? null) === true;
     }
 
     /** @return array<string, mixed> */
