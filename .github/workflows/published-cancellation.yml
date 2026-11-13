@@ -33,7 +33,7 @@ permissions:
 
 jobs:
   mixed-cascade:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       COMPOSE_PROJECT_NAME: published-cancellation-${{ github.run_id }}-${{ github.run_attempt }}
@@ -60,26 +60,44 @@ jobs:
           for version in "$PHP_SDK_VERSION" "$PYTHON_SDK_VERSION" "$RUST_SDK_VERSION" "$CLI_VERSION"; do
             [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[1-9][0-9]*)?$ ]]
           done
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.12'
+      - name: Select Ubuntu's Python 3.12
+        run: |
+          /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          echo /usr/bin >> "$GITHUB_PATH"
+      - name: Create isolated Composer state
+        run: |
+          state="$(mktemp -d "$RUNNER_TEMP/php-check.XXXXXX")"
+          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp"
+          {
+            echo "COMPOSER_HOME=$state/home"
+            echo "COMPOSER_CACHE_DIR=$state/cache"
+            echo "TMPDIR=$state/tmp"
+          } >> "$GITHUB_ENV"
       - name: Bootstrap published-consumer dependency trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           clients: pip,python,composer,curl,git,cargo
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
         with:
           php-version: '8.3'
-          extensions: pcntl, posix
-          tools: composer:2.10.3
+          ini-file: production
+          tools: composer:2.10.3,phpunit:11.5.57
           coverage: none
+      - name: Require the stock cooperative worker capabilities
+        run: |
+          php -r 'foreach (["pcntl", "posix"] as $extension) {
+            if (!extension_loaded($extension)) { throw new RuntimeException("Missing ".$extension); }
+          }
+          foreach (["pcntl_fork", "pcntl_waitpid", "pcntl_signal", "pcntl_async_signals", "posix_kill"] as $function) {
+            if (!function_exists($function)) { throw new RuntimeException("Missing ".$function); }
+          }'
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: 1.86.0
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - name: Install the published SDKs and CLI
         run: |
           set -euo pipefail
