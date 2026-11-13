@@ -2865,12 +2865,21 @@ final class Client implements WorkflowClientInterface
     public function completeQueryTask(string $taskId, string $leaseOwner, int $attempt, mixed $result, ?RequestBudget $budget = null): array
     {
         $client = $budget === null ? $this : $this->withBoundedWorkerRequests();
-        return $client->worker('POST', '/worker/query-tasks/'.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX, [
+        $body = [
             'lease_owner' => $leaseOwner,
             'query_task_attempt' => $attempt,
-            'result' => $result,
             'result_envelope' => $this->codec->envelope($result),
-        ], $budget);
+        ];
+        try {
+            // The plain result is an optional display projection. Binary Avro
+            // values remain authoritative through the encoded envelope.
+            JsonDocument::encode($result);
+            $body['result'] = $result;
+        } catch (\JsonException) {
+            // A valid Avro result need not have a JSON representation.
+        }
+
+        return $client->worker('POST', '/worker/query-tasks/'.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX, $body, $budget);
     }
 
     /** @return array<string, mixed> */
