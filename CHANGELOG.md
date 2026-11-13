@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.16.0] - 2026-11-13
+
 ### Added
 
 - `Client::pauseTaskQueueActivityDispatch()`, `Client::resumeTaskQueueActivityDispatch()`
