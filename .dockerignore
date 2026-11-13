@@ -2,6 +2,7 @@
 !docker/
 !docker/php-ci/
 !docker/php-ci/Dockerfile
+!docker/php-ci/Dockerfile.81
 !docker/php-ci/verify-php-trust.php
 !docker/brotli/
 !docker/brotli/*
