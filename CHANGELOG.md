@@ -6,6 +6,19 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Signal and update request ID conflicts from native Server 3.9.0 (server#934,
+  server#1191). `SignalFailed` and `UpdateFailed` gain `conflict()`, the parts
+  that differ (`name`, `arguments` or `target_or_arguments`), and
+  `retainedCommandId()`, the command retained under the key, for a 409
+  `request_id_conflict`. `isRequestIdConflict()` already detects it. A
+  refused command is sent once and never resent automatically.
+  `ClusterInfo::supportsCommandRequestKeys()` reads the `command_request_keys`
+  capability. Older Servers are unaffected:
+  a repeated signal key can still record a second signal there, and a changed
+  update can still return the original receipt.
+
 ## [3.16.0] - 2026-11-13
 
 ### Added
