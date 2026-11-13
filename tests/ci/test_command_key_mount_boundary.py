@@ -340,7 +340,7 @@ class SyntheticMountBoundary(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    result = unittest.main(exit=False).result
+    result = unittest.main(exit=False, failfast=True).result
     if IMAGE:
         print(json.dumps({"scope": "synthetic-mount-controls-only", "observations": OBSERVATIONS}))
     raise SystemExit(not result.wasSuccessful())
