@@ -113,6 +113,17 @@ final class LaravelAdoptionContractTest extends TestCase
             'composer require "$FRAMEWORK_EXERCISED_PACKAGE" \\',
             'composer require "$FRAMEWORK_PACKAGE" \\',
         ), 'The Laravel consumer must install exactly $FRAMEWORK_EXERCISED_PACKAGE.'];
+        yield 'stock 8.3 job installs a caret instead of the exact minimum' => [static function (string $workflow): string {
+            $offset = strpos($workflow, '  framework-compat83:');
+            if ($offset === false) {
+                return $workflow;
+            }
+            return substr($workflow, 0, $offset).str_replace(
+                'composer require "$FRAMEWORK_EXERCISED_PACKAGE" \\',
+                'composer require "$FRAMEWORK_PACKAGE" \\',
+                substr($workflow, $offset),
+            );
+        }, 'The Laravel consumer must install exactly $FRAMEWORK_EXERCISED_PACKAGE.'];
         yield 'exact minimum removed from a cell' => [$first(
             "            exercised_package: 'laravel/framework:12.69.0'\n",
             '',
@@ -158,10 +169,29 @@ final class LaravelAdoptionContractTest extends TestCase
         );
         $cells = array_map(static fn (array $match): array => ['laravel' => $match[1], 'php' => $match[2],
             'package' => $match[3], 'exercised_package' => $match[4], 'bootstrap' => $match[5]], $matches);
+        $order = static fn (array $left, array $right): int =>
+            [$left['laravel'], $left['php']] <=> [$right['laravel'], $right['php']];
+        usort($cells, $order);
+        usort($matrix, $order);
         if ($cells !== $matrix || count($matches) !== substr_count($workflow, "- framework: Laravel\n")) {
             $errors[] = 'The CI Laravel cells differ from the adoption contract.';
         }
 
+        preg_match_all('/^  framework-compat(?:83)?:\n.*?(?=^  [a-zA-Z0-9_-]+:\n|\z)/ms', $workflow, $jobs);
+        if (count($jobs[0]) !== 2) {
+            $errors[] = 'Both framework jobs must qualify their Laravel cells.';
+        }
+        foreach ($jobs[0] as $job) {
+            $errors = array_merge($errors, self::ciFrameworkJobMinimumErrors($job));
+        }
+
+        return $errors;
+    }
+
+    /** @return list<string> */
+    private static function ciFrameworkJobMinimumErrors(string $workflow): array
+    {
+        $errors = [];
         $install = self::between($workflow, '      - name: Install SDK into a clean framework consumer', '          else');
         $assert = 'php "$GITHUB_WORKSPACE/scripts/ci/assert-installed-version.php" "$consumer" laravel/framework "$exercised_version"';
         $require = strpos($install, 'composer require "$FRAMEWORK_EXERCISED_PACKAGE" \\');
