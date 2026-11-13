@@ -103,6 +103,8 @@ class ProvenanceControls(unittest.TestCase):
     def test_missing_object_requires_exact_exit_stdout_and_stderr(self):
         expected = {"returncode": 1, "stdout": "[]\n", "stderr": "Error: No such object: " + IDENTITY + "\n"}
         self.assertTrue(MODULE.exact_missing(type("Result", (), expected)(), IDENTITY))
+        current_cli = expected | {"stderr": "error: no such object: " + IDENTITY + "\n"}
+        self.assertTrue(MODULE.exact_missing(type("Result", (), current_cli)(), IDENTITY))
         for changed in ({"returncode": 125}, {"stdout": ""}, {"stdout": "[{}]\n"},
                         {"stderr": expected["stderr"] + "permission denied\n"},
                         {"stderr": "daemon error\n" + expected["stderr"]}):

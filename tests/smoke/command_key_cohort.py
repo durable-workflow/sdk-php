@@ -59,7 +59,8 @@ def docker_environment():
 
 def exact_missing(process, identity):
     return (process.returncode == 1 and process.stdout == "[]\n"
-            and process.stderr == "Error: No such object: " + identity + "\n")
+            and process.stderr in {"Error: No such object: " + identity + "\n",
+                                   "error: no such object: " + identity + "\n"})
 
 
 def inspect_runtime(identity, allow_missing=False):

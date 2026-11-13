@@ -87,7 +87,7 @@ jobs:
               raise RuntimeError("An exact trusted runner source is required")
           path="tests/smoke/command_key_cohort.py"
           raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
-          if hashlib.sha256(raw).hexdigest() != "7e2fa936fb45238411ac0d7c986cfc983898ceeeb2065d796cdf0a0ffa8059a0":
+          if hashlib.sha256(raw).hexdigest() != "621dca01d9d34edbb612db2ba2ba13c72c476667f7b5c1a75cc72079530e13df":
               raise RuntimeError("The captured controller differs from its independently fixed digest")
           exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
           ' \
