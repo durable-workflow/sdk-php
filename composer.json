@@ -84,6 +84,9 @@
         },
         "sort-packages": true
     },
+    "archive": {
+        "exclude": ["/.git", "/.github", "/docker", "/scripts/ci", "/tests", "/.dockerignore"]
+    },
     "extra": {
         "laravel": {
             "providers": [
@@ -94,7 +97,7 @@
             }
         },
         "durable-workflow": {
-            "product-train": "3.18.0",
+            "product-train": "3.18.1",
             "supported-server-versions": "2.5.0",
             "supported-server-release-baselines": {
                 "2": "2.5.0",
