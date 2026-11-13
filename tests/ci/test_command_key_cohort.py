@@ -100,7 +100,7 @@ class ProvenanceControls(unittest.TestCase):
                 self.origin(record)
 
     def test_complete_php_include_closure_is_readonly_and_unprivileged(self):
-        self.assertEqual(self.php(consumer())["Mounts"][0]["RW"], False)
+        self.assertFalse(self.php(consumer())["Mounts"][0]["RW"])
 
     def test_writable_partial_replaced_or_shadowed_include_mount_refuses(self):
         mutations = [lambda r: r["Mounts"][0].update(RW=True),

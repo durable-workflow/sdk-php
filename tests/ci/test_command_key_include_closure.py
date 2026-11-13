@@ -88,11 +88,12 @@ class IncludeClosureControls(unittest.TestCase):
         self.stage()
         member = self.output / "consumer/vendor/autoload.php"
         member.chmod(0o600)
+        owner = os.getuid()
         with self.assertRaisesRegex(ValueError, "write permissions"):
-            MODULE.inventory(self.output, os.getuid(), sealed=True)
+            MODULE.inventory(self.output, owner, sealed=True)
         member.chmod(0o400)
         with self.assertRaisesRegex(ValueError, "ownership"):
-            MODULE.inventory(self.output, os.getuid() + 1, sealed=True)
+            MODULE.inventory(self.output, owner + 1, sealed=True)
 
 
 if __name__ == "__main__":
