@@ -112,7 +112,9 @@ if ($pid === 0) {
             $lengths = $context->all($operations);
             return [count($lengths), array_sum($lengths)];
         });
-        $worker->run(1);
+        // Match the other bounded installed smokes: avoid an idle long-poll
+        // delay before every activity in this serial functional fixture.
+        $worker->run(0);
     } catch (Throwable $error) {
         $exit = 1;
         $errorClass = $error::class;
