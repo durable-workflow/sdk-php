@@ -18,6 +18,8 @@ final class WorkflowTaskCompletionTooLarge extends ServerException
 {
     public const REASON = 'payload_too_large';
     public const LIMIT_KIND = 'workflow_task_completion_bytes';
+    /** The most bytes of the Server's message kept on this error and in its logs. */
+    public const SERVER_MESSAGE_MAX_BYTES = 512;
     public const GUIDANCE = 'Split the fan-out into smaller batches, move work into child workflows, or continue-as-new; '
         .'offload large payloads with external payload storage.';
 
@@ -61,10 +63,24 @@ final class WorkflowTaskCompletionTooLarge extends ServerException
         return new self(
             is_int($limit) && $limit > 0 ? $limit : null,
             $sizeBytes,
-            is_string($details['message'] ?? null) ? $details['message'] : '',
+            is_string($details['message'] ?? null) ? self::capped($details['message']) : '',
             $details,
             $previous,
         );
+    }
+
+    /** The Server's message cut to SERVER_MESSAGE_MAX_BYTES at a UTF-8 character boundary. */
+    private static function capped(string $message): string
+    {
+        if (strlen($message) <= self::SERVER_MESSAGE_MAX_BYTES) {
+            return $message;
+        }
+        $cut = substr($message, 0, self::SERVER_MESSAGE_MAX_BYTES);
+        while ($cut !== '' && preg_match('//u', $cut) !== 1) {
+            $cut = substr($cut, 0, -1);
+        }
+
+        return $cut.'...';
     }
 
     /**

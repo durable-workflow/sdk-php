@@ -115,10 +115,16 @@ final class WorkflowTaskCompletionTooLargeTest extends TestCase
         self::assertSame(JsonDocument::size($completions[0]['body']), $logged[0][1]['size_bytes']);
     }
 
-    public function testAFailedStructuralFailureFallsThroughWithoutAnotherAttempt(): void
+    #[DataProvider('followUpRefusals')]
+    public function testAFailedStructuralFailureFallsThroughWithoutAnotherAttempt(string $kind): void
     {
         $events = [];
-        $secondary = TransportException::fromResponse(500, ['message' => 'Server Error'], '{"message":"Server Error"}');
+        $secondary = match ($kind) {
+            'server_error' => TransportException::fromResponse(500, ['message' => 'Server Error'], '{"message":"Server Error"}'),
+            'invalid_commands' => TransportException::fromResponse(409, ['reason' => 'invalid_commands'], '{"reason":"invalid_commands"}'),
+            'validation_failed' => TransportException::fromResponse(422, ['reason' => 'validation_failed'], '{"reason":"validation_failed"}'),
+            'second_typed_413' => self::typedRefusal(),
+        };
         $transport = self::workflowTransport([self::typedRefusal(), $secondary]);
         $worker = self::fanOutWorker($transport, $events);
 
@@ -126,13 +132,35 @@ final class WorkflowTaskCompletionTooLargeTest extends TestCase
             $worker->tick(0);
             self::fail('The failed structural failure must surface.');
         } catch (ServerException $error) {
-            self::assertNotInstanceOf(WorkflowTaskCompletionTooLarge::class, $error);
-            self::assertSame(500, $error->status);
+            self::assertSame($secondary->status, $error->status);
+            if ($kind !== 'second_typed_413') {
+                self::assertNotInstanceOf(WorkflowTaskCompletionTooLarge::class, $error);
+            }
         }
         $completions = self::requests($transport, '/workflow-tasks/workflow-task-1/complete');
         self::assertCount(2, $completions);
         self::assertSame('fail_workflow', $completions[1]['body']['commands'][0]['type']);
         self::assertSame([], self::requests($transport, '/workflow-tasks/workflow-task-1/fail'));
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function followUpRefusals(): iterable
+    {
+        foreach (['server_error', 'invalid_commands', 'validation_failed', 'second_typed_413'] as $kind) {
+            yield $kind => [$kind];
+        }
+    }
+
+    public function testTheServerMessageIsCappedOnTheTypedError(): void
+    {
+        $response = ['reason' => 'payload_too_large', 'limit' => self::LIMIT,
+            'limit_kind' => 'workflow_task_completion_bytes', 'message' => str_repeat('é', 400)];
+        $error = WorkflowTaskCompletionTooLarge::fromResponse($response, 40_000_000);
+
+        self::assertLessThanOrEqual(WorkflowTaskCompletionTooLarge::SERVER_MESSAGE_MAX_BYTES + 3, strlen($error->serverMessage));
+        self::assertStringEndsWith('...', $error->serverMessage);
+        self::assertSame(1, preg_match('//u', $error->serverMessage));
+        self::assertStringNotContainsString('é', $error->failWorkflowCommand()['message']);
     }
 
     /** @param array<string, mixed>|null $response */
