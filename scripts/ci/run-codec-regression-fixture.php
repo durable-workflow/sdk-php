@@ -56,14 +56,20 @@ try {
         'Apache\\Avro\\' => $avroSource,
         'Psr\\Container\\' => $psrContainerSource,
         'Psr\\Log\\' => $psrLogSource,
+        'Psr\\Http\\Client\\' => $vendorRoot.'/psr/http-client/src',
+        'Psr\\Http\\Message\\' => $vendorRoot.'/psr/http-message/src',
+        'GuzzleHttp\\Psr7\\' => $vendorRoot.'/guzzlehttp/psr7/src',
     ];
     spl_autoload_register(
-        static function (string $class) use ($prefixes): void {
+        static function (string $class) use ($prefixes, $vendorRoot): void {
             foreach ($prefixes as $prefix => $directory) {
                 if (!str_starts_with($class, $prefix)) {
                     continue;
                 }
                 $path = $directory.'/'.str_replace('\\', '/', substr($class, strlen($prefix))).'.php';
+                if (!is_file($path) && $prefix === 'Psr\\Http\\Message\\') {
+                    $path = $vendorRoot.'/psr/http-factory/src/'.substr($class, strlen($prefix)).'.php';
+                }
                 if (is_file($path)) {
                     require $path;
                 }

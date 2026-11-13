@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "query-nested-binary-result",
+  "protocol": {
+    "codec": "avro",
+    "schema": "durable_workflow.protocol.Value",
+    "version": "1",
+    "fingerprint": "e2a33dff55802237"
+  },
+  "bindings": ["php"],
+  "value": {
+    "type": "array",
+    "items": [{"type": "array", "items": [{"type": "bytes", "base64": "/wCA"}]}]
+  },
+  "framing": {
+    "encoding": "avro-single-object",
+    "wire_base64": "wwHioz3/VYAiNwwCDAIIBv8AgAAA"
+  },
+  "failure_policy": {"operation": "round_trip", "error": null},
+  "query_completion": true
+}

@@ -9,6 +9,8 @@ use DurableWorkflow\Codec\AvroBinaryValue;
 use DurableWorkflow\Codec\AvroMapValue;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\CodecException;
+use DurableWorkflow\Transport\Psr18Transport;
+use GuzzleHttp\Psr7\Response;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\QueryContext;
@@ -119,6 +121,45 @@ final class CodecRegressionFixture
         if (array_key_exists('task_transport', $fixture)) {
             self::assertTaskTransportCodecRejection($fixture, $path);
         }
+        if (($fixture['query_completion'] ?? false) === true) {
+            self::assertBinaryQueryCompletion($value, $wire);
+        }
+    }
+
+    private static function assertBinaryQueryCompletion(mixed $value, mixed $wire): void
+    {
+        $http = new class implements \Psr\Http\Client\ClientInterface {
+            public array $completions = [];
+            public array $paths = [];
+            public function sendRequest(\Psr\Http\Message\RequestInterface $request): \Psr\Http\Message\ResponseInterface
+            {
+                $path = $request->getUri()->getPath();
+                $this->paths[] = $path;
+                if (str_ends_with($path, '/cluster/info')) {
+                    $reply = ['limits' => ['max_payload_bytes' => 2097152],
+                        'namespace' => ['external_payload_storage' => ['status' => 'unconfigured']]];
+                } elseif (str_ends_with($path, '/worker/query-tasks/query-binary/complete')) {
+                    $this->completions[] = json_decode((string) $request->getBody(), true, flags: JSON_THROW_ON_ERROR);
+                    $reply = ['outcome' => 'completed'];
+                } else {
+                    throw new RuntimeException('Unexpected binary query fixture request.');
+                }
+
+                return new Response(200, [], json_encode($reply, JSON_THROW_ON_ERROR));
+            }
+        };
+        $client = new Client('https://query-regression.invalid', transport: new Psr18Transport($http));
+        try {
+            $client->completeQueryTask('query-binary', 'query-worker', 3, $value);
+        } catch (\JsonException $error) {
+            throw new CodecRegressionAssertionFailed('Plain JSON projection blocked a valid Avro query result.', 0, $error);
+        }
+        self::assertSame(2, count($http->paths));
+        self::assertSame(1, count($http->completions));
+        self::assertSame([
+            'lease_owner' => 'query-worker', 'query_task_attempt' => 3,
+            'result_envelope' => ['codec' => 'avro', 'blob' => $wire],
+        ], $http->completions[0]);
     }
 
     /** @param array<string, mixed> $fixture */
