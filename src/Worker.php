@@ -15,6 +15,7 @@ use DurableWorkflow\Exception\WorkflowEntryArgumentsMismatch;
 use DurableWorkflow\Exception\SagaCompensationFailed;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
+use DurableWorkflow\Exception\WorkflowTaskCompletionTooLarge;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\ActivityLeaseProcess;
 use DurableWorkflow\Worker\ActivityLeaseMaintenanceException;
@@ -1966,21 +1967,42 @@ final class Worker
             $carried = $this->reserveActivityPoll($leaseOwner, $commands !== []);
             $workflowCarried = $commands === [] ? null : $this->reserveWorkflowPoll($leaseOwner, workflowCompletion: true);
             $this->notifyDeliveredWorkflowHistory('completion', $taskId, $attempt, $commands);
-            $completion = $this->retryStorageAdmission('workflow_complete', function () use (
-                $taskId, $leaseOwner, $attempt, $commands, $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried, $workflowCarried,
-            ): array {
-                try {
-                    return $this->client->completeWorkflowTask($taskId, $leaseOwner, $attempt, $commands,
-                        $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried?->request, $workflowCarried?->request);
-                } catch (ServerException $error) {
-                    $carried?->uncertainCompletion();
-                    $workflowCarried?->uncertainCompletion();
-                    if ($this->completionPipeline?->abandoningCurrent() ?? false) {
-                        throw new WorkflowClaimDeferred('The owned completion request was abandoned during pipeline cleanup.');
+            $complete = fn (array $commands, array $messageStreamCursors, array $messageStreamWaits): array
+                => $this->retryStorageAdmission('workflow_complete', function () use (
+                    $taskId, $leaseOwner, $attempt, $commands, $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried, $workflowCarried,
+                ): array {
+                    try {
+                        return $this->client->completeWorkflowTask($taskId, $leaseOwner, $attempt, $commands,
+                            $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried?->request, $workflowCarried?->request);
+                    } catch (ServerException $error) {
+                        $carried?->uncertainCompletion();
+                        $workflowCarried?->uncertainCompletion();
+                        if ($this->completionPipeline?->abandoningCurrent() ?? false) {
+                            throw new WorkflowClaimDeferred('The owned completion request was abandoned during pipeline cleanup.');
+                        }
+                        throw $error;
                     }
-                    throw $error;
-                }
-            }, ['task_id' => $taskId, 'lease_owner' => $leaseOwner, 'attempt' => $attempt]);
+                }, ['task_id' => $taskId, 'lease_owner' => $leaseOwner, 'attempt' => $attempt]);
+            try {
+                $completion = $complete($commands, $messageStreamCursors, $messageStreamWaits);
+            } catch (WorkflowTaskCompletionTooLarge $tooLarge) {
+                // .github#228: the Server refused the whole completion before reading it,
+                // so the lease is unchanged. Replaying gives the same commands, and a
+                // task failure would only be retried into the same refusal. Never send
+                // the oversized completion again: fail the run with a structural-limit
+                // failure on the same lease instead.
+                $commands = [$tooLarge->failWorkflowCommand()];
+                $this->diagnostic('worker.workflow_task_completion_too_large', [
+                    'worker_id' => $this->workerId, 'task_id' => $taskId, 'workflow_task_attempt' => $attempt,
+                    'workflow_id' => $task['workflow_id'] ?? null, 'run_id' => $task['run_id'] ?? null,
+                    'workflow_type' => $workflowType, 'limit_kind' => WorkflowTaskCompletionTooLarge::LIMIT_KIND,
+                    'limit_bytes' => $tooLarge->limitBytes, 'size_bytes' => $tooLarge->sizeBytes,
+                    'message' => $tooLarge->getMessage(), 'exception' => $tooLarge,
+                ], 'error');
+                ExecutionTelemetry::failure($tooLarge);
+                $this->notifyDeliveredWorkflowHistory('completion', $taskId, $attempt, $commands);
+                $completion = $complete($commands, [], []);
+            }
             $this->notifyDeliveredWorkflowHistory('accepted', $taskId, $attempt, $commands);
             if ($carried !== null) {
                 // Payload hydration belongs to the next task, never this completed parent's catch path.
@@ -3366,11 +3388,22 @@ final class Worker
             $continuation = $carried === null ? null : $this->speculateActivityContinuation($task, $result);
             $completion = $this->retryStorageAdmission(
                 'activity_complete',
-                function () use ($taskId, $attemptId, $leaseOwner, $result, $carried, $continuation): array {
+                function () use ($taskId, $attemptId, $leaseOwner, $result, $carried, &$continuation): array {
                     try {
                         if ($carried !== null && $continuation !== null) {
-                            return $this->client->completeActivityTaskWithContinuation(
-                                $taskId, $attemptId, $leaseOwner, $result, $carried->request, $continuation);
+                            try {
+                                return $this->client->completeActivityTaskWithContinuation(
+                                    $taskId, $attemptId, $leaseOwner, $result, $carried->request, $continuation);
+                            } catch (WorkflowTaskCompletionTooLarge $tooLarge) {
+                                // .github#228: the proposed commands are only speculation, and the
+                                // refused request recorded nothing. Complete the activity alone;
+                                // the run's own workflow task then reports the size limit.
+                                $this->diagnostic('worker.activity_continuation_too_large', [
+                                    'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
+                                    'limit_bytes' => $tooLarge->limitBytes, 'size_bytes' => $tooLarge->sizeBytes,
+                                ], 'warning');
+                                $continuation = null;
+                            }
                         }
 
                         return $this->client->completeActivityTask($taskId, $attemptId, $leaseOwner, $result, $carried?->request);

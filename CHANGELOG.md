@@ -21,6 +21,18 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Oversized workflow-task completions (durable-workflow/.github#228,
+  server#1136). Server 3.6.0 refuses a completion over its aggregate limit
+  (16 payload limits, 32 MiB by default) with 413 `payload_too_large` and
+  `limit_kind: workflow_task_completion_bytes`. The SDK now raises
+  `WorkflowTaskCompletionTooLarge`, a `ServerException` carrying the limit and
+  the encoded size it sent. The Worker never resends that completion: it fails
+  the run once with a `Structural limit exceeded:` `fail_workflow` command
+  naming both sizes, with guidance to split the fan-out, use child workflows or
+  continue as new. Before, the Worker surfaced a generic `ServerException` and
+  the task returned when its lease expired, reaching the same refusal again. An
+  oversized activity continuation falls back to an ordinary activity
+  completion. Other 413 and 5xx responses are unchanged.
 - Replay of a run that closed with work still open (workflow#1117, workflow#1121,
   server#1193). When a run completes, fails or continues as new, Workflow
   2.28.0 records `ActivityCancelled` with `cancellation_reason: run_closed` for
