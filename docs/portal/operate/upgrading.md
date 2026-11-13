@@ -19,8 +19,8 @@ Laravel 10/11 bridge support. Its provider checks the installed framework and
 PHP before registering application bindings, including during auto-discovery.
 Upgrade the platform before adopting this bridge; existing SDK 3.9.x and
 Workflow 2.20.x applications must also apply Laravel security updates while upgrading.
-Stable-v1 authority remains unchanged. SDK 3.11 keeps these platform contracts
-and adds the occurrence-deadline rollout below.
+Stable-v1 authority remains unchanged. SDK 3.11 adds the occurrence-deadline
+rollout below.
 
 ## Condition-wait occurrence deadlines
 
