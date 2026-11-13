@@ -44,12 +44,17 @@ class PhpContainerLauncherTests(unittest.TestCase):
         for name in ("GH_TOKEN", "GITHUB_TOKEN", "COMPOSER_AUTH"):
             self.environment[name] = "synthetic-unforwarded-canary"
         self.environment["DURABLE_WORKFLOW_TEST_TRACING"] = "1"
+        self.environment.update({"DURABLE_WORKFLOW_PROCESS_ROLE": "worker",
+                                 "DURABLE_WORKFLOW_PROCESS_TOKEN": "synthetic-runtime-role",
+                                 "DURABLE_WORKFLOW_ROLE_PROBE_LOG": str(self.state / "data/role.jsonl")})
         result = self.invoke("php", "-r", "echo 1;")
         self.assertEqual(result.returncode, 0, result.stderr)
         arguments = self.arguments()
         self.assertIn("sha256:" + "a" * 64, arguments)
         self.assertIn("--init", arguments)
         self.assertIn("DURABLE_WORKFLOW_TEST_TRACING", arguments)
+        for name in ("DURABLE_WORKFLOW_PROCESS_ROLE", "DURABLE_WORKFLOW_PROCESS_TOKEN", "DURABLE_WORKFLOW_ROLE_PROBE_LOG"):
+            self.assertIn(name, arguments)
         for option, value in (("--cpus", "2"), ("--memory", "2g"),
                               ("--pids-limit", "512"), ("--cap-drop", "ALL"),
                               ("--security-opt", "no-new-privileges")):
