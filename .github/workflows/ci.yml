@@ -94,7 +94,7 @@ jobs:
             echo "TMPDIR=$state/tmp"
           } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
@@ -106,7 +106,7 @@ jobs:
           tools: composer:2.10.3,phpunit:11.5.57
           coverage: none
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - run: composer install --no-interaction --prefer-dist --no-progress
       - name: Require durable replay and codec evidence
         env:
@@ -517,7 +517,7 @@ jobs:
             echo "TMPDIR=$state/tmp"
           } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
@@ -529,10 +529,10 @@ jobs:
           tools: composer:2.10.3,phpunit:11.5.57
           coverage: none
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - run: composer install --no-interaction --prefer-dist
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - run: composer analyse
 
   docs:
@@ -579,7 +579,7 @@ jobs:
             echo "TMPDIR=$state/tmp"
           } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           clients: pip,python,composer,curl,git,npm
       - name: Disable APT download retries (CVE-2026-109518)
@@ -594,7 +594,7 @@ jobs:
         with:
           node-version: '24'
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - run: composer --working-dir="$DOCS_TOOLING_DIRECTORY" install --no-interaction --prefer-dist
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" ci --ignore-scripts
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" audit --audit-level=moderate
@@ -604,7 +604,7 @@ jobs:
       - name: Test selected presentation asset validation
         run: python "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-analytics.test.py"
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - run: bash "$DOCS_TOOLING_DIRECTORY/scripts/build-docs.sh"
       - run: node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-portal.mjs" build/site
       - run: php "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-analytics.php" build/site
@@ -684,7 +684,7 @@ jobs:
             echo "TMPDIR=$state/tmp"
           } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
@@ -696,7 +696,7 @@ jobs:
           tools: composer:2.10.3,phpunit:11.5.57
           coverage: none
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - name: Install into a clean consumer project
         run: |
           consumer="$(mktemp -d)"
@@ -710,7 +710,7 @@ jobs:
             "$consumer/vendor/autoload.php" \
             source-development
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - name: Verify release identity and reject stale package metadata
         run: |
           release_tag=$(php -r '$manifest = json_decode(file_get_contents("composer.json"), true, flags: JSON_THROW_ON_ERROR); echo $manifest["extra"]["durable-workflow"]["product-train"];')
@@ -743,7 +743,7 @@ jobs:
             echo "TMPDIR=$state/tmp"
           } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
@@ -755,7 +755,7 @@ jobs:
           tools: composer:2.10.3,phpunit:11.5.57
           coverage: none
       - name: Verify Composer trust before requests
-        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           working-directory: examples/laravel-http
       # Audits the committed lock only: no install, plugins or scripts. Composer's
