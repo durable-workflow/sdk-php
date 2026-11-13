@@ -1743,7 +1743,7 @@ final class CooperativeCancellationTest extends TestCase
         try {
             $this->awaitMessage($workflowMessages, 'registered');
             $this->awaitMessage($ownerMessages, 'registered');
-            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['remote']);
+            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['remote-retry']);
             $this->awaitMessage($ownerMessages, 'remote-entered');
             $pids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
             $this->stopWorker($ownerPid, $kill);
@@ -1799,7 +1799,7 @@ final class CooperativeCancellationTest extends TestCase
         try {
             $this->awaitMessage($workflowMessages, 'registered');
             $this->awaitMessage($ownerMessages, 'registered');
-            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['remote']);
+            $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['remote-retry']);
             $this->awaitMessage($ownerMessages, 'remote-entered');
             $original = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
             $processes = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
@@ -2194,11 +2194,15 @@ final class CooperativeCancellationTest extends TestCase
                                     static fn () => $context->localActivity('tests.php-cooperative-group-work-0'),
                                     static fn () => $context->localActivity('tests.php-cooperative-group-work-1'),
                                 ]);
-                            } elseif ($kind === 'remote') {
-                                $context->activity('tests.php-cooperative-remote', [], $remotePolicy === null ? [] : [
+                            } elseif (in_array($kind, ['remote', 'remote-retry'], true)) {
+                                $options = $remotePolicy === null ? [] : [
                                     'cancellation_policy' => $remotePolicy,
                                     'schedule_to_close_timeout' => 60,
-                                ]);
+                                ];
+                                // Lease loss settles through the captured retry policy.
+                                // Only owner-death/reclaim fixtures need a second attempt.
+                                if ($kind === 'remote-retry') { $options['retry_policy'] = ['max_attempts' => 2]; }
+                                $context->activity('tests.php-cooperative-remote', [], $options);
                             } else {
                                 $context->sleep(300);
                             }
