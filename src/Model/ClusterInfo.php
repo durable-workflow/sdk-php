@@ -7,6 +7,9 @@ namespace DurableWorkflow\Model;
 /** Public compatibility and capability manifest returned by cluster discovery. */
 final class ClusterInfo
 {
+    /** Per-task-queue activity dispatch pause and resume (native Server 3.8.0 and later). */
+    public const TASK_QUEUE_ACTIVITY_DISPATCH_PAUSE = 'task_queue_activity_dispatch_pause';
+
     /**
      * @param array<string, mixed> $namespace
      * @param array<string, mixed> $capabilities
@@ -39,6 +42,15 @@ final class ClusterInfo
             self::map($value['control_plane'] ?? null),
             $value,
         );
+    }
+
+    /**
+     * Whether the Server can pause and resume activity dispatch on a task queue. A Server that
+     * doesn't advertise it has no pause routes, so check it before offering a pause.
+     */
+    public function supportsTaskQueueActivityDispatchPause(): bool
+    {
+        return ($this->capabilities[self::TASK_QUEUE_ACTIVITY_DISPATCH_PAUSE] ?? null) === true;
     }
 
     /** @return array<string, mixed> */

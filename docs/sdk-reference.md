@@ -40,6 +40,44 @@ additive Server route. Older Servers return their original HTTP 404 without an
 unfiltered fallback. The SDK rejects malformed selections and encoded query
 values larger than 4096 bytes before sending them.
 
+## Pause activity dispatch on a task queue
+
+With an operator credential and a Server that advertises
+`task_queue_activity_dispatch_pause` (native 3.8.0 and later), you can pause
+activity dispatch on one task queue of the client's namespace and resume it:
+
+```php
+if ($client->clusterInfo()->supportsTaskQueueActivityDispatchPause()) {
+    $paused = $client->pauseTaskQueueActivityDispatch('payments', 'payments vendor outage');
+    // $paused['outcome'] is 'paused', or 'already_paused' with the original pause.
+
+    $state = $client->describeTaskQueueActivityDispatch('payments');
+    // $state['activity_dispatch']['state'] is 'paused' or 'active'.
+
+    $resumed = $client->resumeTaskQueueActivityDispatch('payments');
+    // $resumed['outcome'] is 'resumed', or 'not_paused' when nothing changed.
+}
+```
+
+Each call returns the Server's answer: `namespace`, `task_queue`,
+`activity_dispatch` (`state`, `paused`, `reason`, `paused_at`, `paused_by`,
+`resumed_at`, `resumed_by`) and, for pause and resume, `outcome`. While a queue
+is paused, no activity task on it is leased. Activities already leased keep
+running, workflow tasks are still delivered, and activity deadlines keep
+running. The reason is optional and at most 1000 characters. The Server records
+the credential's principal as the one who paused. Queue names are exact:
+pausing `Orders` does not pause `orders`.
+
+Pause and resume are sent once and never retried, so a lost answer never
+repeats a pause. Read the state with `describeTaskQueueActivityDispatch()`
+instead. A worker credential, or a tenant credential for another namespace,
+gets a `ServerException` with status 403. An invalid reason or queue name gets
+status 422 with Laravel validation `errors` in `details`. A Server without the
+routes (published PHP Server 2.x, older native) answers 404, which the SDK raises
+as `DurableWorkflow\Exception\ServerCapabilityUnavailable`: a
+`ServerException` with status 501, reason `backend_capability_unavailable` and
+`capability` `task_queue_activity_dispatch_pause`. Nothing was changed.
+
 ## Bounded workflow observations
 
 With an operator credential, `workflowObservation('order-1', 'run-1')` reads
