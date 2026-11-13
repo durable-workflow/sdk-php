@@ -481,7 +481,7 @@ final class CooperativeCancellationTest extends TestCase
             $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue,
                 [$grouped ? 'scoped-remote-group-only' : 'scoped-remote-only']);
             $this->awaitMessage($ownerMessages, 'remote-entered');
-            $this->awaitMessage($ownerMessages, 'owner-heartbeat');
+            $this->awaitOwnerHeartbeat($ownerMessages, $ownerPid, $queue.'-'.$ownerPid);
             $pids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
             foreach ($pids as $pid) { self::assertTrue(posix_kill($pid, 0)); }
             $fence = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
@@ -1546,7 +1546,7 @@ final class CooperativeCancellationTest extends TestCase
             $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['remote']);
             self::assertNotNull($handle->selectedRunId);
             $this->awaitMessage($ownerMessages, 'remote-entered');
-            $this->awaitMessage($ownerMessages, 'owner-heartbeat');
+            $this->awaitOwnerHeartbeat($ownerMessages, $ownerPid, $queue.'-'.$ownerPid);
             $pids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
             foreach ($pids as $pid) { self::assertTrue(posix_kill($pid, 0), 'The remote callback must still be active.'); }
             $remainingWorkflowLease = 0.0;
@@ -1949,7 +1949,7 @@ final class CooperativeCancellationTest extends TestCase
             $this->awaitMessage($ownerMessages, 'registered');
             $handle = $client->startWorkflow('tests.php-cooperative', $queue, $queue, ['remote']);
             $this->awaitMessage($ownerMessages, 'remote-entered');
-            $this->awaitMessage($ownerMessages, 'owner-heartbeat');
+            $this->awaitOwnerHeartbeat($ownerMessages, $ownerPid, $queue.'-'.$ownerPid);
             $pids = json_decode((string) file_get_contents($this->directory.'/processes'), true, flags: JSON_THROW_ON_ERROR);
             $fence = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
             $accepted = $handle->requestSelectedRunCancellation(cleanupTimeoutSeconds: 30);
@@ -2012,12 +2012,16 @@ final class CooperativeCancellationTest extends TestCase
             transport: $transport);
         if ($transport !== null && method_exists($client, 'withActivityLeaseBootstrap')) {
             // These owner-only observers wrap the default HTTP transport. The
-            // independent helper recreates that same URI/auth/TLS configuration,
-            // without inheriting the owner's fault injection or callback pipes.
-            $bootstrap = $this->directory.'/activity-lease-'.hash('sha256', $namespace).'.php';
-            file_put_contents($bootstrap, '<?php return new \\DurableWorkflow\\Client('
+            // independent helper recreates that same URI/auth/TLS configuration.
+            // Presence observations use a metadata-only file; owner fault
+            // injection and callback pipes remain outside the helper.
+            $bootstrap = $this->directory.'/activity-lease-'.getmypid().'-'.hash('sha256', $namespace).'.php';
+            file_put_contents($bootstrap, '<?php require_once '.var_export(__DIR__.'/ActivityLeaseObservationTransport.php', true)
+                .'; return new \\DurableWorkflow\\Client('
                 .var_export($this->runtimeUrl, true).', namespace: '.var_export($namespace, true).', '
-                .'token: getenv("DURABLE_WORKFLOW_AUTH_TOKEN") ?: "test-token");');
+                .'token: getenv("DURABLE_WORKFLOW_AUTH_TOKEN") ?: "test-token", '
+                .'transport: new \\DurableWorkflow\\Tests\\Integration\\ActivityLeaseObservationTransport('
+                .var_export($this->directory.'/activity-lease-heartbeat-'.getmypid().'.json', true).'));');
             chmod($bootstrap, 0600);
             $client = $client->withActivityLeaseBootstrap($bootstrap);
         }
@@ -2330,6 +2334,19 @@ final class CooperativeCancellationTest extends TestCase
         fclose($child);
         $this->workerProcesses[$pid] = true;
         return [$pid, $parent];
+    }
+
+    /** @param resource $messages */
+    private function awaitOwnerHeartbeat($messages, int $pid, string $workerId): void
+    {
+        if (!method_exists(Client::class, 'withActivityLeaseBootstrap')) {
+            $this->awaitMessage($messages, 'owner-heartbeat');
+            return;
+        }
+        $name = 'activity-lease-heartbeat-'.$pid.'.json';
+        $this->awaitObservationFile($name);
+        $observation = json_decode((string) file_get_contents($this->directory.'/'.$name), true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame(['worker_id' => $workerId, 'acknowledged' => true], $observation);
     }
 
     /** @param resource $messages */
