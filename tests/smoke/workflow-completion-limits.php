@@ -124,6 +124,7 @@ if ($pid === 0) {
     exit($exit);
 }
 
+$parentError = null;
 try {
     $start = static fn (int $count, int $bytes) => $client->startWorkflow('completion.fanout',
         'completion-'.bin2hex(random_bytes(8)), $queue, [$count, $bytes], executionTimeoutSeconds: 180, runTimeoutSeconds: 180);
@@ -144,6 +145,8 @@ try {
     requireCompletionAcceptance(($counts['ActivityScheduled'] ?? 0) === 0 && ($counts['WorkflowTaskFailed'] ?? 0) === 0
         && count($failures) === 1 && ($failures[0]['payload']['failure_category'] ?? null) === 'structural_limit',
         'The oversized aggregate admitted partial work or did not settle structurally.');
+} catch (Throwable $error) {
+    $parentError = $error;
 } finally {
     posix_kill($pid, SIGTERM);
     pcntl_waitpid($pid, $workerStatus);
@@ -151,6 +154,10 @@ try {
 
 try {
     $evidence = json_decode((string) file_get_contents($evidenceFile), true, flags: JSON_THROW_ON_ERROR);
+    if ($parentError !== null) {
+        fwrite(STDERR, json_encode(['parent_error_class' => $parentError::class, 'worker' => $evidence], JSON_THROW_ON_ERROR).PHP_EOL);
+        throw $parentError;
+    }
     requireCompletionAcceptance(pcntl_wifexited($workerStatus) && pcntl_wexitstatus($workerStatus) === 0
         && $evidence['worker_error_class'] === null, 'The Worker did not shut down cleanly.');
     $large = array_values(array_filter($evidence['completions'], static fn (array $row): bool => $row['bytes'] > $cap));
