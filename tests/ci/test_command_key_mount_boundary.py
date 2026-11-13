@@ -181,9 +181,12 @@ class GeneratedTreeAuthority(unittest.TestCase):
     def test_precopy_replacement_cannot_redefine_the_generated_authority(self):
         create_container = Mock()
         with self.copy_sandbox(replace_before_copy=True) as (case, _, copied):
-            with self.assertRaises(AssertionError):
+            def create_after_sealing():
                 root = case.sealed_root()
                 create_container(root)
+
+            with self.assertRaises(AssertionError):
+                create_after_sealing()
             self.assertEqual(copied, [b"<?php return 'changed!';\n"])
         create_container.assert_not_called()
 
@@ -258,13 +261,13 @@ class SyntheticMountBoundary(unittest.TestCase):
         self.assertEqual(CLOSURE.inventory(staged, os.getuid(), sealed=True), expected)
         return root
 
-    def remove_root(self, root, identity):
+    def remove_root(self, root, expected_identity):
         self.assertFalse(self.active, "Preserve the sealed root until exact container absence is established")
         metadata = root.lstat()
         self.assertEqual(root.resolve(), root)
         self.assertTrue(stat.S_ISDIR(metadata.st_mode))
         self.assertEqual(metadata.st_uid, 0)
-        self.assertEqual((metadata.st_dev, metadata.st_ino), identity)
+        self.assertEqual((metadata.st_dev, metadata.st_ino), expected_identity)
         subprocess.run(["/usr/bin/sudo", "-n", "/usr/bin/rm", "-rf", "--", str(root)],
                        check=True, capture_output=True, timeout=15)
         self.assertFalse(root.exists())
@@ -288,6 +291,11 @@ class SyntheticMountBoundary(unittest.TestCase):
             observation["container_id"] = identity
             COHORT.selected_image(resources.owned(identity, "consumer"), SUPPLY, "php")
             resources.start(identity, "consumer")
+            record = resources.owned(identity, "consumer")
+            observation["declared_tmpfs"] = record["HostConfig"]["Tmpfs"]
+            observation["reported_mounts"] = [
+                {key: mount.get(key) for key in ("Type", "Destination", "RW")}
+                for mount in record["Mounts"]]
             yield resources, identity
         finally:
             try:

@@ -31,7 +31,9 @@ def runtime():
                            "Init": True, "CapDrop": ["ALL"], "CapAdd": None,
                            "SecurityOpt": ["no-new-privileges"], "Devices": [], "NetworkMode": "bridge",
                            "Memory": 1024**3, "NanoCpus": 10**9, "PidsLimit": 256,
-                           "Tmpfs": {"/tmp": "size=64m", "/app/database": "size=32m", "/app/storage": "size=64m"}},
+                           "Tmpfs": {"/tmp": "mode=1777,size=64m",
+                                     "/app/database": "uid=1000,gid=1000,mode=0700,size=32m",
+                                     "/app/storage": "uid=1000,gid=1000,mode=0700,size=64m"}},
             "Mounts": [{"Type": "tmpfs", "Destination": path} for path in ("/tmp", "/app/database", "/app/storage")],
             "NetworkSettings": {"Ports": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "43123"}]}}}
 
@@ -41,7 +43,7 @@ def consumer():
     record["Image"] = SUPPLY["php_config"]
     record["Config"]["Image"] = "php@" + SUPPLY["php_index"]
     record["Config"]["User"] = "1001:1001"
-    record["HostConfig"].update(NetworkMode="host", Tmpfs={"/tmp": "size=128m"})
+    record["HostConfig"].update(NetworkMode="host", Tmpfs={"/tmp": "mode=1777,size=128m"})
     record["Mounts"] = [{"Type": "bind", "Source": str(ROOT), "Destination": "/closure", "RW": False},
                         {"Type": "tmpfs", "Destination": "/tmp"}]
     record["NetworkSettings"]["Ports"] = None
@@ -66,6 +68,41 @@ class ProvenanceControls(unittest.TestCase):
 
     def test_complete_native_profile_selects_numeric_loopback(self):
         self.assertEqual(self.origin(runtime()), "http://127.0.0.1:43123")
+
+    def test_legacy_tmpfs_configuration_and_complete_reported_form_both_pass(self):
+        for factory, check in ((runtime, self.origin), (consumer, self.php)):
+            complete = factory()
+            check(complete)
+            legacy = deepcopy(complete)
+            legacy["Mounts"] = [mount for mount in legacy["Mounts"] if mount["Type"] != "tmpfs"]
+            check(legacy)
+
+    def test_duplicate_reported_destinations_refuse_for_both_roles(self):
+        for factory, check in ((runtime, self.origin), (consumer, self.php)):
+            record = factory()
+            record["Mounts"].append(deepcopy(record["Mounts"][-1]))
+            with self.subTest(role=factory.__name__), self.assertRaisesRegex(RuntimeError, "mount destinations"):
+                check(record)
+
+    def test_partial_reported_native_tmpfs_set_refuses(self):
+        record = runtime()
+        record["Mounts"].pop()
+        with self.assertRaisesRegex(RuntimeError, "mount destinations"):
+            self.origin(record)
+
+    def test_tmpfs_size_permissions_and_declared_path_set_are_exact(self):
+        for factory, check in ((runtime, self.origin), (consumer, self.php)):
+            for options in ("mode=1777,size=1g", "mode=0777,size=128m", "", None):
+                record = factory()
+                record["HostConfig"]["Tmpfs"]["/tmp"] = options
+                with self.subTest(role=factory.__name__, options=options), self.assertRaisesRegex(RuntimeError, "tmpfs configuration"):
+                    check(record)
+            for declared in ({}, {"/tmp": "mode=1777,size=128m", "/closure": "size=1m"}):
+                record = factory()
+                record["Mounts"] = [mount for mount in record["Mounts"] if mount["Type"] != "tmpfs"]
+                record["HostConfig"]["Tmpfs"] = declared
+                with self.subTest(role=factory.__name__, declared=declared), self.assertRaisesRegex(RuntimeError, "tmpfs configuration"):
+                    check(record)
 
     def test_containerd_index_identity_requires_the_exact_platform_manifest(self):
         for factory, role, check in ((runtime, "server", self.origin), (consumer, "php", self.php)):

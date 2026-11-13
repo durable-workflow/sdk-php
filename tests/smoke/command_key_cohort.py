@@ -98,6 +98,16 @@ def confined(record, supply, role):
             and 0 < host["PidsLimit"] <= 256, "The fixture resource caps differ")
 
 
+def mount_destinations(record, tmpfs, required=()):
+    require(record["HostConfig"]["Tmpfs"] == tmpfs, "The exact bounded tmpfs configuration differs")
+    destinations = [mount["Destination"] for mount in record["Mounts"]]
+    # Engine keeps legacy --tmpfs in HostConfig.Tmpfs separately from Mounts.
+    # Accept that form or the complete reported form, with no extra/duplicate path.
+    require(len(destinations) == len(set(destinations))
+            and set(destinations) in (set(required), set(required) | set(tmpfs)),
+            "Unexpected writable mount destinations")
+
+
 def runtime_origin(resources, identity, supply):
     record = resources.owned(identity, "server")
     confined(record, supply, "server")
@@ -105,10 +115,9 @@ def runtime_origin(resources, identity, supply):
             "The native source identity differs")
     require(record["HostConfig"]["NetworkMode"] == "bridge", "The native network profile differs")
     require(all(mount["Type"] == "tmpfs" for mount in record["Mounts"]), "Unexpected native bind or volume")
-    require(set(record["HostConfig"]["Tmpfs"]) == {"/tmp", "/app/database", "/app/storage"},
-            "Unexpected native writable paths")
-    require({mount["Destination"] for mount in record["Mounts"]} == {"/tmp", "/app/database", "/app/storage"},
-            "The native writable mount destinations differ")
+    mount_destinations(record, {"/tmp": "mode=1777,size=64m",
+                                "/app/storage": "uid=1000,gid=1000,mode=0700,size=64m",
+                                "/app/database": "uid=1000,gid=1000,mode=0700,size=32m"})
     require(set(record["NetworkSettings"]["Ports"]) == {"8080/tcp"}, "Unexpected native published ports")
     ports = record["NetworkSettings"]["Ports"]["8080/tcp"]
     require(isinstance(ports, list) and len(ports) == 1 and ports[0]["HostIp"] == "127.0.0.1",
@@ -126,15 +135,13 @@ def consumer_record(resources, identity, supply, root):
             "The PHP fixture network profile differs")
     require(record["Config"]["User"] == str(os.getuid()) + ":" + str(os.getgid()) and os.getuid() != 0,
             "The PHP fixture must use the unprivileged caller identity")
-    require(set(host["Tmpfs"]) == {"/tmp"}, "Unexpected PHP writable paths")
     binds = [mount for mount in record["Mounts"] if mount["Type"] == "bind"]
     require(len(binds) == 1 and binds[0]["Source"] == str(root)
             and binds[0]["Destination"] == "/closure" and binds[0]["RW"] is False,
             "The complete include closure must be mounted read-only")
     require(all(mount["Type"] == "tmpfs" or mount in binds for mount in record["Mounts"]),
             "Unexpected PHP volume or mount")
-    require({mount["Destination"] for mount in record["Mounts"]} == {"/closure", "/tmp"},
-            "Unexpected PHP writable mount destinations")
+    mount_destinations(record, {"/tmp": "mode=1777,size=128m"}, ("/closure",))
     return record
 
 
