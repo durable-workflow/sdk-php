@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.18.2] - 2026-11-13
+
+### Fixed
+
+- Query completion preserves valid Avro results containing nested binary bytes
+  when the optional plain JSON display projection cannot be encoded. Ordinary
+  JSON display values and query lease/payload bounds remain unchanged (#414).
+
 ## [3.18.1] - 2026-11-13
 
 ### Fixed

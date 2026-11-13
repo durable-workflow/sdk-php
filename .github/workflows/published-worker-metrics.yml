@@ -2,10 +2,10 @@ name: Published worker metrics
 
 on:
   pull_request:
-    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php']
+    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php', 'tests/smoke/query-results.php']
   push:
     branches: [main]
-    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php']
+    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php', 'tests/smoke/query-results.php']
   workflow_dispatch:
     inputs:
       sdk_version:
@@ -14,6 +14,10 @@ on:
         required: false
       completion_limits:
         description: Qualify completion limits on the immutable native 3.9.1 tuple
+        type: boolean
+        default: false
+      query_results:
+        description: Qualify binary and JSON query results with the installed Worker
         type: boolean
         default: false
       candidate_source:
@@ -139,6 +143,11 @@ jobs:
         run: |
           php -l tests/smoke/workflow-completion-limits.php
           timeout 240s php tests/smoke/workflow-completion-limits.php "$CONSUMER/vendor/autoload.php" | tee workflow-completion-limits.json
+      - name: Assert installed query results over real HTTP
+        if: inputs.query_results
+        run: |
+          php -l tests/smoke/query-results.php
+          timeout 90s php tests/smoke/query-results.php "$CONSUMER/vendor/autoload.php" | tee query-results.json
       - name: Retain the tuple, observations and installed dependency graph
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -148,6 +157,7 @@ jobs:
             worker-metrics.json
             update-outcome.json
             workflow-completion-limits.json
+            query-results.json
             candidate-package.json
             ${{ env.CONSUMER }}/candidate.zip
             ${{ env.CONSUMER }}/composer.lock
