@@ -170,6 +170,26 @@ that outer binding. Default CI runs only the inert factory control and skips
 the two effectful tests. Preparing this source does not qualify the actual
 mount, dependency profile, cleanup-after-state-refusal or installed cohort.
 
+`tests/ci/test_command_key_cleanup_boundary.py` proposes a separate opt-in
+cleanup control. It creates two idle containers from the selected cached PHP
+image, using only the two fixture role labels. No native Server, SDK, API or
+Worker runs. Both containers have read-only roots, unprivileged users, no
+mounts or network, and the existing resource caps. Their full IDs are captured
+before the production guards refuse an invalid source selection, nonprivate
+disposable state and nonempty disposable Docker configuration.
+
+The control then runs the unchanged literal workflow cleanup from captured Git
+bytes with an independently fixed digest. Its environment supplies the held
+IDs and labels while deliberately invalidating checkout, state, temporary and
+ambient Docker configuration values. The cleanup must use its own fresh Docker
+configuration and establish both exact absences. A separate observer checks
+the full IDs again before owned fixture data is removed. Cleanup failure
+preserves that data. Default CI checks the cleanup source binding and skips the
+container control. Any actual execution requires exact source/entry review,
+`SDK_PHP_COMMAND_KEY_CLEANUP_IMAGE` and `SDK_PHP_COMMAND_KEY_CLEANUP_SOURCE`,
+and a Git-blob bootstrap with an independently fixed outer test digest. This
+control supplies no dependency, consumer profile or installed acceptance.
+
 Run the offline input controls against an existing immutable PHP image:
 
 ```sh
