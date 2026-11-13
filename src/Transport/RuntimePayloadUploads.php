@@ -57,59 +57,90 @@ final class RuntimePayloadUploads
             $body = $this->failureMetadata($body, $payloads, $path, $failureReports);
             $payloads = $this->payloads($body, $slots);
         }
-        if ($payloads === []) {
+        $commandCompletion = $worker && preg_match('~\A/worker/(?:workflow-tasks/[^/]+/complete|activity-tasks/[^/]+/continuation/complete)\z~', $path) === 1;
+        if ($payloads === [] && !$commandCompletion) {
             return $body;
         }
 
         $policy = $this->requestPolicy($body, $path, $worker, $headers, $budget);
-        $continuation = $worker && preg_match('~\A/worker/activity-tasks/[^/]+/continuation/complete\z~', $path) === 1;
-        if ($continuation) {
-            foreach ($payloads as $payload) {
-                if ($payload['path'] !== ['result'] && strlen($payload['blob']) > $policy['request_bytes']) {
-                    throw new ExternalPayloadException('Continuation command payload exceeds the inline value limit.', 413, 'external_payload_oversized');
-                }
-            }
-        }
-        if ($worker && preg_match('~\A/worker/(?:workflow-tasks/[^/]+/complete|activity-tasks/[^/]+/continuation/complete)\z~', $path) === 1
-            && array_key_exists('completion_request_bytes', $policy)) {
-            $limit = $policy['completion_request_bytes'];
-            if (!is_int($limit) || $limit < 1) {
-                throw new ExternalPayloadException('Invalid workflow-task completion limit in runtime discovery.', 422, 'external_payload_unsupported');
-            }
-            $inlineLimit = $policy['request_bytes'];
-            $policy['request_bytes'] = $limit;
-            if ($requestBytesLimit === null && in_array($policy['status'], ['unconfigured', 'disabled', 'unsupported'], true)
-                && array_filter($payloads, static fn (array $payload): bool => strlen($payload['blob']) > $inlineLimit) === []) {
-                // Without configured storage, individually valid values can still fit the
-                // completion's larger aggregate limit. Let the Server return its typed
-                // structural refusal if the actual serialized batch exceeds that limit.
-                return $body;
-            }
+        $inlineLimit = $policy['request_bytes'];
+        $policy = $this->completionPolicy($policy, $commandCompletion);
+        if ($this->maySubmitInlineCompletion($policy, $payloads, $inlineLimit, $requestBytesLimit, $commandCompletion)) {
+            return $body;
         }
         if ($requestBytesLimit !== null) {
             $policy['request_bytes'] = min($policy['request_bytes'], $requestBytesLimit);
         }
-        if ($continuation) {
-            // The continuation contract authorizes result offload only. Commands
-            // stay inline, including when their bytes equal the activity result.
-            $payloads = array_values(array_filter($payloads, static fn (array $payload): bool => $payload['path'] === ['result']));
-            $smallest = $body;
-            foreach ($payloads as $payload) {
-                if (strlen($payload['blob']) > $policy['max_bytes']) {
-                    throw new ExternalPayloadException('Encoded payload exceeds the runtime upload limit.', 413, 'external_payload_oversized');
-                }
-                $this->placeholder($smallest, $payload);
-            }
-            if ($requestBytesLimit === null && array_key_exists('completion_request_bytes', $policy)
-                && $this->jsonSize($smallest) > $policy['request_bytes']) {
-                // No authorized rewrite can fit. Avoid a futile result upload;
-                // submit unchanged once for the Server's structural settlement.
+        if ($commandCompletion && str_starts_with($path, '/worker/activity-tasks/')) {
+            $payloads = $this->continuationUploads($body, $payloads, $policy, $inlineLimit, $requestBytesLimit);
+            if ($payloads === null) {
                 return $body;
             }
         }
         $selected = $this->plan($body, $payloads, $policy);
         return $this->uploadSelected($body, $payloads, $selected, $policy,
             ['headers' => $headers, 'path' => $path, 'worker' => $worker, 'budget' => $budget]);
+    }
+
+    /** @param UploadPolicy $policy
+     * @return UploadPolicy
+     */
+    private function completionPolicy(array $policy, bool $completion): array
+    {
+        if (!$completion || !array_key_exists('completion_request_bytes', $policy)) {
+            return $policy;
+        }
+        $limit = $policy['completion_request_bytes'];
+        if (!is_int($limit) || $limit < 1) {
+            throw new ExternalPayloadException('Invalid workflow-task completion limit in runtime discovery.', 422, 'external_payload_unsupported');
+        }
+        $policy['request_bytes'] = $limit;
+
+        return $policy;
+    }
+
+    /** @param UploadPolicy $policy
+     * @param list<PayloadSlot> $payloads
+     */
+    private function maySubmitInlineCompletion(array $policy, array $payloads, int $inlineLimit, ?int $reportLimit, bool $completion): bool
+    {
+        // Individually valid values need no unavailable external storage. The
+        // Server settles an oversized aggregate through its typed refusal.
+        return $completion && $reportLimit === null && array_key_exists('completion_request_bytes', $policy)
+            && in_array($policy['status'], ['unconfigured', 'disabled', 'unsupported'], true)
+            && array_filter($payloads, static fn (array $payload): bool => strlen($payload['blob']) > $inlineLimit) === [];
+    }
+
+    /** @param array<string, mixed> $body
+     * @param list<PayloadSlot> $payloads
+     * @param UploadPolicy $policy
+     * @return list<PayloadSlot>|null Null means no authorized rewrite fits; submit unchanged once.
+     */
+    private function continuationUploads(array $body, array $payloads, array $policy, int $inlineLimit, ?int $reportLimit): ?array
+    {
+        $results = [];
+        $smallest = $body;
+        foreach ($payloads as $payload) {
+            // Commands stay inline even when their bytes equal the result.
+            if ($payload['path'] !== ['result']) {
+                if (strlen($payload['blob']) > $inlineLimit) {
+                    throw new ExternalPayloadException('Continuation command payload exceeds the inline value limit.', 413, 'external_payload_oversized');
+                }
+                continue;
+            }
+            if (strlen($payload['blob']) > $policy['max_bytes']) {
+                throw new ExternalPayloadException('Encoded payload exceeds the runtime upload limit.', 413, 'external_payload_oversized');
+            }
+            $results[] = $payload;
+            $this->placeholder($smallest, $payload);
+        }
+        if ($reportLimit === null && array_key_exists('completion_request_bytes', $policy)
+            && $this->jsonSize($smallest) > $policy['request_bytes']) {
+            // Avoid a futile partial result upload before structural settlement.
+            return null;
+        }
+
+        return $results;
     }
 
     /** @param array<string, mixed> $body

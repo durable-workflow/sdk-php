@@ -485,8 +485,46 @@ final class RuntimePayloadUploadTest extends TestCase
 
     public static function invalidCompletionLimits(): iterable
     {
-        foreach ([null, 0, -1, true, false, 3000.5, '3000', []] as $value) {
+        foreach ([null, 0, -1, true, false, 3000.0, 3000.5, '3000', []] as $value) {
             yield [$value];
+        }
+    }
+
+    #[DataProvider('referencedCompletionPreflightCases')]
+    public function testReferencedAndPayloadFreeCompletionsStillValidateDiscovery(bool $continuation, string $shape, mixed $limit): void
+    {
+        $policy = self::discovery();
+        $policy['limits']['max_workflow_task_completion_bytes'] = $limit;
+        [, $http, $transport] = $this->client($policy, workerOnly: true);
+        $reference = ['codec' => 'avro', 'external_payload' => self::reference('existing')];
+        $commands = match ($shape) {
+            'empty' => [],
+            'timer' => [['type' => 'start_timer', 'sequence' => 1, 'delay_seconds' => 1]],
+            default => [['type' => 'complete_workflow', 'result' => $reference]],
+        };
+        $body = $continuation
+            ? ['activity_attempt_id' => 'attempt', 'lease_owner' => 'worker', 'result' => $reference,
+                'continuation' => self::continuation($commands)]
+            : ['workflow_task_attempt' => 1, 'lease_owner' => 'worker', 'commands' => $commands];
+        $path = $continuation ? '/worker/activity-tasks/task/continuation/complete' : '/worker/workflow-tasks/task/complete';
+        try {
+            (new RuntimePayloadUploads($transport, 'https://runtime.test'))->request($body, 'POST', $path, true, []);
+            self::fail('Explicit malformed discovery must refuse even when no inline value needs uploading.');
+        } catch (ExternalPayloadException $error) {
+            self::assertSame('external_payload_unsupported', $error->reason);
+        }
+        self::assertCount(1, $http->requests, 'Exactly one discovery, no upload or completion.');
+        self::assertStringEndsWith('/cluster/info', $http->requests[0]->getUri()->getPath());
+    }
+
+    public static function referencedCompletionPreflightCases(): iterable
+    {
+        foreach ([false, true] as $continuation) {
+            foreach (['empty', 'timer', 'reference'] as $shape) {
+                foreach (self::invalidCompletionLimits() as [$limit]) {
+                    yield [$continuation, $shape, $limit];
+                }
+            }
         }
     }
 
@@ -1199,7 +1237,7 @@ final class RuntimePayloadUploadTest extends TestCase
                     $response = ['outcome' => 'completed'];
                 }
 
-                return Create::promiseFor(new Response(200, [], json_encode($response, JSON_THROW_ON_ERROR)));
+                return Create::promiseFor(new Response(200, [], json_encode($response, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION)));
             }
         };
         $transport = new Psr18Transport(new GuzzleClient(['handler' => $http]));
