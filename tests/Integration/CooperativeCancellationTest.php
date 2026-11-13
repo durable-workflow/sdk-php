@@ -1645,7 +1645,7 @@ final class CooperativeCancellationTest extends TestCase
                 && ($event['payload']['activity_type'] ?? null) === 'tests.php-cooperative-remote');
             self::assertSame($userHeartbeat, count($heartbeats) > 0, 'Owner checks must not manufacture user progress.');
             $fence = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
-            if (getenv('DURABLE_WORKFLOW_CHILD_POLICY_QUALIFICATION') === '1') {
+            if (($client->clusterInfo()->raw['worker_protocol']['server_capabilities']['activity_cancellation_acknowledgement'] ?? false) === true) {
                 $until = microtime(true) + 5;
                 do {
                     $status = $client->activityTaskStatus($fence['task_id'], $fence['activity_attempt_id'], $fence['lease_owner']);
@@ -1822,7 +1822,16 @@ final class CooperativeCancellationTest extends TestCase
             // pass. No clock, database row or production lease is changed.
             $this->awaitReclaimedActivity($ownerMessages);
             $replacement = json_decode((string) file_get_contents($this->directory.'/remote-fence'), true, flags: JSON_THROW_ON_ERROR);
-            self::assertSame($original['task_id'], $replacement['task_id']);
+            self::assertNotSame($original['task_id'], $replacement['task_id']);
+            $retries = array_values(array_filter($this->history($client, $handle), static fn (array $event): bool =>
+                $event['event_type'] === 'ActivityRetryScheduled'
+                && ($event['payload']['retry_of_task_id'] ?? null) === $original['task_id']));
+            self::assertCount(1, $retries);
+            self::assertSame($replacement['task_id'], $retries[0]['payload']['retry_task_id']);
+            self::assertSame($original['activity_attempt_id'], $retries[0]['payload']['retry_after_attempt_id']);
+            self::assertSame(1, $retries[0]['payload']['retry_after_attempt']);
+            self::assertSame(2, $retries[0]['payload']['max_attempts']);
+            self::assertSame('lease_expired', $retries[0]['payload']['retry_reason']);
             self::assertNotSame($original['activity_attempt_id'], $replacement['activity_attempt_id']);
             self::assertNotSame($original['lease_owner'], $replacement['lease_owner']);
             self::assertSame(2, $replacement['attempt_number']);
