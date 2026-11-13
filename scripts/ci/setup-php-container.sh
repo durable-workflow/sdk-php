@@ -24,7 +24,8 @@ fi
 docker build --file "$dockerfile" --build-arg "PHP_IMAGE=$image" --tag "$runtime" "$root"
 runtime_id="$(docker image inspect "$runtime" --format '{{.Id}}')"
 docker run --rm --init --name "sdk-php-ci-probe-${minor}-${GITHUB_RUN_ID:-local}" \
-    --cpus 1 --memory 512m --pids-limit 64 --network none "$runtime_id" \
+    --cpus 1 --memory 512m --pids-limit 64 --network none \
+    --mount "type=bind,source=$root/docker/php-ci/ci-defaults.ini,target=/usr/local/etc/php/conf.d/zz-sdk-php-ci.ini,readonly" "$runtime_id" \
     php -r '
         if (PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION !== $argv[1]) { throw new RuntimeException("The PHP matrix minor does not match the image."); }
         foreach (["mbstring", "intl", "bcmath", "sockets", "zip", "curl", "pcntl", "posix", "dom", "xml", "xmlwriter", "pdo_sqlite", "sqlite3"] as $extension) {
@@ -35,7 +36,11 @@ docker run --rm --init --name "sdk-php-ci-probe-${minor}-${GITHUB_RUN_ID:-local}
         }
         if (extension_loaded("xdebug") || extension_loaded("pcov")) { throw new RuntimeException("Coverage must remain none."); }
         if (php_ini_loaded_file() !== "/usr/local/etc/php/php.ini") { throw new RuntimeException("Production INI must be loaded."); }
-        echo json_encode(["php" => PHP_VERSION, "extensions" => get_loaded_extensions(), "ini" => php_ini_loaded_file(), "coverage" => "none"]), PHP_EOL;
+        $defaults = ["date.timezone" => "UTC", "memory_limit" => "-1", "opcache.enable" => "1", "opcache.jit_buffer_size" => "256M", "opcache.jit" => "1235"];
+        foreach ($defaults as $setting => $expected) {
+            if (ini_get($setting) !== $expected) { throw new RuntimeException("Existing CI default changed: ".$setting); }
+        }
+        echo json_encode(["php" => PHP_VERSION, "extensions" => get_loaded_extensions(), "ini" => php_ini_loaded_file(), "ci_defaults" => $defaults, "coverage" => "none"]), PHP_EOL;
     ' "$minor"
 printf 'php_ci_image=%s\n' "$runtime_id"
 

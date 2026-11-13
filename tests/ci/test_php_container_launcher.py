@@ -62,6 +62,12 @@ class PhpContainerLauncherTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.log.exists())
 
+    def test_existing_ci_ini_defaults_are_mounted_read_only(self):
+        result = self.invoke("php", "-r", "echo ini_get('memory_limit');")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"type=bind,source={ROOT}/docker/php-ci/ci-defaults.ini,target=/usr/local/etc/php/conf.d/zz-sdk-php-ci.ini,readonly",
+                      self.arguments())
+
     def test_selected_ca_mounts_are_read_only_and_composer_guard_uses_real_phar(self):
         bundle = self.state / "selected.pem"
         bundle.write_text("public certificate fixture\n")

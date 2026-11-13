@@ -23,6 +23,15 @@ coverage drivers. It adds no MySQL, PostgreSQL, Redis or GD profile. The
 existing vendor Brotli verification and Composer 2.10.3 trust inspection run
 during the image build.
 
+Each probe and launcher invocation also mounts the checked-in CI defaults
+read-only over the production INI. These preserve the original setup-php
+f3e473d1 `php.ini`/`jit.ini` values: UTC, `memory_limit=-1`, enabled OPcache,
+256M JIT buffer and mode1235. CLI OPcache is not enabled by this file. The
+container memory cap still bounds the process. A plain production128M limit
+fails the PHP8.1 suite; the original hosted caller uses more than128MiB and
+passes with its existing unlimited PHP limit. Runtime files remain unchanged,
+so this SDK-specific test profile needs no shared-base rebuild.
+
 The launcher binds the inspected image config ID and selected CA paths. Each
 setup runs the actual Composer TLS control: ambient synthetic trust reaches
 the local repository; the selected clean bundle refuses before HTTP. Normal
@@ -30,6 +39,5 @@ dependency requests still require the reviewed live Composer guard. Runtime
 and trust files require SDK-specific recipe review before CI caller admission;
 Sample App's policy entry does not authorize this target.
 
-PHP 8.1 remains a separate migration constraint: its last official Bookworm
-image carries APT 2.6.1. The supported PHP matrix stays unchanged while the
-fixed-parent approach is reviewed under shared #297.
+The supported PHP matrix stays unchanged while caller migration and its exact
+runtime/CI-defaults recipe are reviewed under shared #297.

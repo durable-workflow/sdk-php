@@ -16,7 +16,8 @@ options=(--rm --init --interactive --name "sdk-php-ci-${command}-${BASHPID}"
     --cap-drop ALL --security-opt no-new-privileges
     --user "$(id -u):$(id -g)" --workdir "$PWD"
     --mount "type=bind,source=$root,target=$root"
-    --mount "type=bind,source=$state,target=$state")
+    --mount "type=bind,source=$state,target=$state"
+    --mount "type=bind,source=$root/docker/php-ci/ci-defaults.ini,target=/usr/local/etc/php/conf.d/zz-sdk-php-ci.ini,readonly")
 
 # Composer's guard is a composite action outside the repository checkout.
 if [[ -n "${GITHUB_ACTION_PATH:-}" ]]; then
