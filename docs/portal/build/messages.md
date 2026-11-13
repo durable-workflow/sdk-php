@@ -97,6 +97,8 @@ If a `waitFor: 'completed'` wait ends before the update finishes, `update()` thr
 
 Use `Client::updateOutcome($workflowId, $pending->updateId)` to read the same update without another admission. This typed read defaults to `waitFor: 'completed'`: it throws `UpdateStillPending` while work is pending, then returns the result, including a completed `null`.
 
+This read requires the `update_outcome_reads` capability (native Server 3.6 and later). Without it, the SDK throws `LogicException` and does not resubmit the update.
+
 A pending read preserves the stable update ID. The producer may omit the original request key on this GET path; `$pending->requestId` is then an empty string for an unknown key. Continue with `updateOutcome()` and that update ID. Never submit another update using an empty, inferred or internal hashed key.
 
 ## Follow run transitions deliberately
