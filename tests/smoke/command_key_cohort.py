@@ -20,6 +20,7 @@ import urllib.request
 
 HERE = Path(__file__).resolve().parent
 INPUTS = ("command-key-client.php", "command-key-supply.json", "verify_command_key_supply.py", "command_key_cohort.py")
+DOCKER_CONFIG = None
 
 
 def require(condition, message):
@@ -48,10 +49,23 @@ def module_from_bytes(name, raw):
     return module
 
 
+def docker_environment():
+    require(DOCKER_CONFIG is not None, "An explicit empty Docker configuration is required")
+    private_state(DOCKER_CONFIG)
+    require(not list(DOCKER_CONFIG.iterdir()), "Docker configuration must remain empty")
+    return {"PATH": "/usr/bin:/bin", "DOCKER_CONFIG": str(DOCKER_CONFIG),
+            "DOCKER_HOST": "unix:///var/run/docker.sock"}
+
+
+def exact_missing(process, identity):
+    return (process.returncode == 1 and process.stdout == "[]\n"
+            and process.stderr == "Error: No such object: " + identity + "\n")
+
+
 def inspect_runtime(identity, allow_missing=False):
-    process = subprocess.run(["docker", "inspect", identity], capture_output=True, text=True, timeout=15)
-    if (allow_missing and process.returncode != 0
-            and "no such object: " + identity in process.stderr.lower()):
+    process = subprocess.run(["docker", "inspect", identity], capture_output=True, text=True, timeout=15,
+                             env=docker_environment())
+    if allow_missing and exact_missing(process, identity):
         return None
     require(process.returncode == 0, "The captured runtime cannot be inspected")
     records = json.loads(process.stdout)
@@ -96,9 +110,10 @@ def remove_runtime(identity, owner):
             and record["Config"]["Labels"].get("durable-workflow.php-command-keys") == owner,
             "Runtime ownership changed; preserve the replacement")
     subprocess.run(["docker", "rm", "--force", "--volumes", identity], check=True,
-                   stdout=subprocess.DEVNULL, timeout=30)
-    missing = subprocess.run(["docker", "inspect", identity], capture_output=True, text=True, timeout=15)
-    require(missing.returncode != 0 and "no such object: " + identity in missing.stderr.lower(),
+                   stdout=subprocess.DEVNULL, timeout=30, env=docker_environment())
+    missing = subprocess.run(["docker", "inspect", identity], capture_output=True, text=True, timeout=15,
+                             env=docker_environment())
+    require(exact_missing(missing, identity),
             "Exact runtime absence was not established")
 
 
@@ -128,8 +143,8 @@ def owned_runtime(owner, supply, token, directory):
     require(re.fullmatch("[0-9]+-[0-9]+", owner) is not None, "The workflow run owner is required")
     image = "durableworkflow/server@" + supply["server_index"]
     subprocess.run(["docker", "pull", "--platform", "linux/amd64", image], check=True,
-                   stdout=subprocess.DEVNULL, timeout=180)
-    raw = subprocess.check_output(["docker", "image", "inspect", image], timeout=15)
+                   stdout=subprocess.DEVNULL, timeout=180, env=docker_environment())
+    raw = subprocess.check_output(["docker", "image", "inspect", image], timeout=15, env=docker_environment())
     selected = json.loads(raw)[0]
     require(selected["Id"] == supply["server_config"] and selected["Os"] == "linux"
             and selected["Architecture"] == "amd64"
@@ -148,14 +163,15 @@ def owned_runtime(owner, supply, token, directory):
                             "--tmpfs", "/app/database:uid=1000,gid=1000,mode=0700,size=32m",
                             "--publish", "127.0.0.1::8080", "--env", "DB_CONNECTION=sqlite",
                             "--env", "DW_AUTH_DRIVER=token", "--env", "DW_AUTH_TOKEN=" + token, image],
-                           check=True, stdout=subprocess.DEVNULL, timeout=30)
+                           check=True, stdout=subprocess.DEVNULL, timeout=30, env=docker_environment())
         identity = cidfile.read_text()
         require(re.fullmatch("[0-9a-f]{64}", identity) is not None, "Docker did not capture a full runtime ID")
         created = inspect_runtime(identity)
         require(created["Id"] == identity
                 and created["Config"]["Labels"].get("durable-workflow.php-command-keys") == owner,
                 "The created runtime identity differs")
-        subprocess.run(["docker", "start", identity], check=True, stdout=subprocess.DEVNULL, timeout=30)
+        subprocess.run(["docker", "start", identity], check=True, stdout=subprocess.DEVNULL, timeout=30,
+                       env=docker_environment())
         origin = runtime_origin(identity, owner, supply)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         for _ in range(30):
@@ -377,15 +393,19 @@ def loss_cell(client, module, kind):
 
 
 def main():
+    global DOCKER_CONFIG
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--consumer", type=Path)
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--proxy-source", type=Path)
     parser.add_argument("--runtime-state", type=Path, required=True)
+    parser.add_argument("--docker-config", type=Path, required=True)
     parser.add_argument("--runtime-owner", required=True)
     parser.add_argument("--runner-source", required=True)
     parser.add_argument("--cleanup-only", action="store_true")
     options = parser.parse_args()
+    DOCKER_CONFIG = options.docker_config
+    docker_environment()
     sources = capture_inputs(options.runner_source)
     require(re.fullmatch("[0-9]+-[0-9]+", options.runtime_owner) is not None, "Invalid runtime owner")
     if options.cleanup_only:

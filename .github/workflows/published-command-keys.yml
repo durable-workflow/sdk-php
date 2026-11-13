@@ -28,7 +28,7 @@ jobs:
         run: |
           umask 077
           state="$(mktemp -d "$RUNNER_TEMP/php-command-keys.XXXXXX")"
-          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp" "$state/consumer" "$state/runtime"
+          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp" "$state/consumer" "$state/runtime" "$state/docker"
           {
             echo "COMMAND_KEY_STATE=$state"
             echo "CONSUMER=$state/consumer"
@@ -83,6 +83,7 @@ jobs:
             --consumer "$CONSUMER" --archive "$COMMAND_KEY_STATE/sdk.zip" \
             --proxy-source "$COMMAND_KEY_STATE/committed_response_loss.py" \
             --runtime-state "$COMMAND_KEY_STATE/runtime" \
+            --docker-config "$COMMAND_KEY_STATE/docker" \
             --runtime-owner "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --runner-source "$GITHUB_SHA" \
             | tee command-key-modern.json
       - name: Independently repeat captured-ID runtime cleanup
@@ -90,6 +91,7 @@ jobs:
         run: |
           python3 -I -S -B tests/smoke/command_key_cohort.py \
             --runtime-state "$COMMAND_KEY_STATE/runtime" \
+            --docker-config "$COMMAND_KEY_STATE/docker" \
             --runtime-owner "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --runner-source "$GITHUB_SHA" \
             --cleanup-only | tee command-key-cleanup.json
       - name: Retain sanitized observations and installed dependency graph

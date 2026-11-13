@@ -31,6 +31,13 @@ def runtime():
 
 
 class ProvenanceControls(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        configuration = patch.object(MODULE, "DOCKER_CONFIG", Path(directory.name))
+        configuration.start()
+        self.addCleanup(configuration.stop)
+
     def origin(self, record):
         with patch.object(MODULE, "inspect_runtime", return_value=record):
             return MODULE.runtime_origin(IDENTITY, "123-1", SUPPLY)
@@ -79,7 +86,8 @@ class ProvenanceControls(unittest.TestCase):
 
         def execute(arguments, **_):
             calls.append(arguments)
-            return type("Result", (), {"returncode": 1, "stderr": "Error: No such object: " + IDENTITY})()
+            return type("Result", (), {"returncode": 1, "stdout": "[]\n",
+                                       "stderr": "Error: No such object: " + IDENTITY + "\n"})()
 
         with patch.object(MODULE, "inspect_runtime", return_value=runtime()), \
                 patch.object(MODULE.subprocess, "run", side_effect=execute):
@@ -90,6 +98,28 @@ class ProvenanceControls(unittest.TestCase):
         result = type("Result", (), {"returncode": 1, "stdout": "", "stderr": "engine unavailable"})()
         with patch.object(MODULE.subprocess, "run", return_value=result), self.assertRaises(RuntimeError):
             MODULE.inspect_runtime(IDENTITY, allow_missing=True)
+
+    def test_missing_object_requires_exact_exit_stdout_and_stderr(self):
+        expected = {"returncode": 1, "stdout": "[]\n", "stderr": "Error: No such object: " + IDENTITY + "\n"}
+        self.assertTrue(MODULE.exact_missing(type("Result", (), expected)(), IDENTITY))
+        for changed in ({"returncode": 125}, {"stdout": ""}, {"stdout": "[{}]\n"},
+                        {"stderr": expected["stderr"] + "permission denied\n"},
+                        {"stderr": "daemon error\n" + expected["stderr"]}):
+            with self.subTest(changed=changed):
+                process = type("Result", (), expected | changed)()
+                self.assertFalse(MODULE.exact_missing(process, IDENTITY))
+                with patch.object(MODULE.subprocess, "run", return_value=process), self.assertRaises(RuntimeError):
+                    MODULE.inspect_runtime(IDENTITY, allow_missing=True)
+
+    def test_docker_environment_excludes_ambient_credentials_and_remote_context(self):
+        with patch.dict(os.environ, {"DOCKER_AUTH_CONFIG": "untrusted", "DOCKER_CONTEXT": "foreign",
+                                     "DOCKER_HOST": "tcp://remote:2375"}):
+            environment = MODULE.docker_environment()
+        self.assertEqual(environment, {"PATH": "/usr/bin:/bin", "DOCKER_CONFIG": str(MODULE.DOCKER_CONFIG),
+                                       "DOCKER_HOST": "unix:///var/run/docker.sock"})
+        (MODULE.DOCKER_CONFIG / "config.json").write_text('{}')
+        with self.assertRaisesRegex(RuntimeError, "remain empty"):
+            MODULE.docker_environment()
 
     def test_only_owned_private_runtime_state_and_regular_cid_are_accepted(self):
         with tempfile.TemporaryDirectory() as temporary:
