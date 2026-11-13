@@ -20,10 +20,12 @@ next:
 The service-mode bridge supports Laravel 12.72.0 and 13.41.0, and later
 releases of each major (`^12.72.0|^13.41.0`). The Laravel bridge requires PHP
 8.2 or newer, with PHP 8.3 or newer for Laravel 13. These Laravel floors include
-the fixes for [task output injection](https://github.com/advisories/GHSA-63hm-g96r-2m2q)
-and both temporary signed-URL expiration bypasses
-([query parsing](https://github.com/laravel/framework/security/advisories/GHSA-v5ch-g375-82r6),
-[numeric route parameters](https://github.com/laravel/framework/security/advisories/GHSA-6rv8-qj5v-p8ch)).
+the November security fixes:
+
+- [Task output injection](https://github.com/advisories/GHSA-63hm-g96r-2m2q)
+- [Signed URL query limits](https://github.com/laravel/framework/security/advisories/GHSA-v5ch-g375-82r6)
+- [Signed URL route parameters](https://github.com/laravel/framework/security/advisories/GHSA-6rv8-qj5v-p8ch)
+
 Embedded-to-service transitions require the installed Workflow package to
 publish the same Laravel and PHP support contract. The bare HTTP SDK continues
 to support PHP 8.1.
