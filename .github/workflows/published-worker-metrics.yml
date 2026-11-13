@@ -2,10 +2,10 @@ name: Published worker metrics
 
 on:
   pull_request:
-    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php', 'tests/smoke/query-results.php']
+    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php', 'tests/smoke/query-results.php', 'tests/ci/test_published_query_tuple.py']
   push:
     branches: [main]
-    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php', 'tests/smoke/query-results.php']
+    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php', 'tests/smoke/query-results.php', 'tests/ci/test_published_query_tuple.py']
   workflow_dispatch:
     inputs:
       sdk_version:
@@ -34,14 +34,16 @@ jobs:
     timeout-minutes: 10
     env:
       SDK_VERSION: ${{ inputs.sdk_version || '3.18.0' }}
-      SERVER_VERSION: ${{ inputs.completion_limits && '3.9.1' || '3.8.0' }}
-      SERVER_IMAGE: ${{ inputs.completion_limits && 'durableworkflow/server@sha256:946c65eb70e8b4b7c4694be8a181c9669d46c3408b80d4e44d96f2030ea3cf51' || 'durableworkflow/server@sha256:7988a23525d9e50e997a9f6f02e801300ed4f626de3cf6977033657ae7e9f58e' }}
+      SERVER_VERSION: ${{ (inputs.completion_limits || inputs.query_results) && '3.9.1' || '3.8.0' }}
+      SERVER_IMAGE: ${{ (inputs.completion_limits || inputs.query_results) && 'durableworkflow/server@sha256:946c65eb70e8b4b7c4694be8a181c9669d46c3408b80d4e44d96f2030ea3cf51' || 'durableworkflow/server@sha256:7988a23525d9e50e997a9f6f02e801300ed4f626de3cf6977033657ae7e9f58e' }}
       METRICS_RUNTIME_URL: http://127.0.0.1:8080
       METRICS_TOKEN: published-metrics-test-token
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - name: Require the exact published query tuple selectors
+        run: python3 -I -S -B tests/ci/test_published_query_tuple.py
       - name: Create isolated Composer state
         run: |
           state="$(mktemp -d "$RUNNER_TEMP/worker-metrics.XXXXXX")"
