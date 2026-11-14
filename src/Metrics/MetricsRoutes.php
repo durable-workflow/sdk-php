@@ -136,7 +136,7 @@ final class MetricsRoutes
     /** @return list<string> Reviewed operations only the PHP client currently sends. */
     private static function phpRoutes(): array
     {
-        $routes = ['/activities/{activity_id}/result', '/system/health', '/system/operator-dashboard',
+        $routes = ['/workflow-version-usage', '/activities/{activity_id}/result', '/system/health', '/system/operator-dashboard',
             '/system/operator-dashboard/bounded', '/system/operator-dashboard/bounded/workflow-types',
             '/system/operator-metrics', '/task-queues/{task_queue}/activity-dispatch',
             '/task-queues/{task_queue}/activity-dispatch/pause', '/task-queues/{task_queue}/activity-dispatch/resume'];

@@ -13,6 +13,9 @@ final class ClusterInfo
     /** Signal and update `request_id` is a durable command key (native Server 3.9.0 and later). */
     public const COMMAND_REQUEST_KEYS = 'command_request_keys';
 
+    /** Read-only v1 open-run version usage; availability is discovered, never inferred from a version. */
+    public const WORKFLOW_VERSION_USAGE = 'workflow_version_usage';
+
     /**
      * @param array<string, mixed> $namespace
      * @param array<string, mixed> $capabilities
@@ -67,6 +70,11 @@ final class ClusterInfo
     public function supportsCommandRequestKeys(): bool
     {
         return ($this->capabilities[self::COMMAND_REQUEST_KEYS] ?? null) === true;
+    }
+
+    public function supportsWorkflowVersionUsage(): bool
+    {
+        return ($this->capabilities[self::WORKFLOW_VERSION_USAGE] ?? null) === true;
     }
 
     /** @return array<string, mixed> */

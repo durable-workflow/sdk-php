@@ -36,6 +36,7 @@ $started = hrtime(true);
 try {
     match ($operation) {
         'list' => $client->listWorkflows(),
+        'version-usage' => $client->workflowVersionUsage('shipment', 'carrier-api', 2),
         'worker' => $client->workerClusterInfo(),
         'payload' => (new DurableWorkflow\Transport\Psr18Transport(requestTimeoutSeconds: (float) $seconds))
             ->uploadPayload($url.'/api/external-payloads/v1', [], 'fixture', 1),
