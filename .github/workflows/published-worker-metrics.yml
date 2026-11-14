@@ -2,10 +2,10 @@ name: Published worker metrics
 
 on:
   pull_request:
-    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php', 'tests/smoke/query-results.php', 'tests/ci/test_published_query_tuple.py', 'tests/ci/check_published_laravel.py', 'tests/ci/test_published_laravel.py']
+    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php', 'tests/smoke/query-results.php', 'tests/ci/test_published_query_tuple.py', 'tests/ci/check_published_laravel.py', 'tests/ci/test_published_laravel.py', 'tests/smoke/activity-retry-identity.php', 'tests/smoke/activity-retry-identity-assertions.php', 'tests/PublishedActivityRetryIdentityTest.php', 'tests/ci/test_published_activity_identity_tuple.py']
   push:
     branches: [main]
-    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php', 'tests/smoke/query-results.php', 'tests/ci/test_published_query_tuple.py', 'tests/ci/check_published_laravel.py', 'tests/ci/test_published_laravel.py']
+    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php', 'tests/smoke/query-results.php', 'tests/ci/test_published_query_tuple.py', 'tests/ci/check_published_laravel.py', 'tests/ci/test_published_laravel.py', 'tests/smoke/activity-retry-identity.php', 'tests/smoke/activity-retry-identity-assertions.php', 'tests/PublishedActivityRetryIdentityTest.php', 'tests/ci/test_published_activity_identity_tuple.py']
   workflow_dispatch:
     inputs:
       sdk_version:
@@ -18,6 +18,10 @@ on:
         default: false
       query_results:
         description: Qualify binary and JSON query results with the installed Worker
+        type: boolean
+        default: false
+      activity_retry_identity:
+        description: Qualify ordinary retry IDs on published SDK 3.18.2/native 3.8.0
         type: boolean
         default: false
       laravel_bridges:
@@ -53,9 +57,22 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - name: Require the published activity identity tuple
+        if: inputs.activity_retry_identity
+        env:
+          CANDIDATE_SOURCE: ${{ inputs.candidate_source }}
+          COMPLETION_LIMITS: ${{ inputs.completion_limits }}
+          QUERY_RESULTS: ${{ inputs.query_results }}
+          LARAVEL_BRIDGES: ${{ inputs.laravel_bridges }}
+        run: |
+          [[ "$GITHUB_EVENT_NAME" = workflow_dispatch && "$GITHUB_REF" = refs/heads/main ]]
+          [[ -z "$CANDIDATE_SOURCE" && "$COMPLETION_LIMITS" != true && "$QUERY_RESULTS" != true && "$LARAVEL_BRIDGES" != true ]]
+          [[ "$SDK_VERSION" = 3.18.2 && "$SERVER_VERSION" = 3.8.0 ]]
+          [[ "$SERVER_IMAGE" = durableworkflow/server@sha256:7988a23525d9e50e997a9f6f02e801300ed4f626de3cf6977033657ae7e9f58e ]]
       - name: Require the exact published query tuple selectors
         run: |
           python3 -I -S -B tests/ci/test_published_query_tuple.py
+          python3 -I -S -B tests/ci/test_published_activity_identity_tuple.py
           python3 -S -B -m unittest discover -s tests/ci -p test_published_laravel.py
       - name: Create isolated Composer state
         run: |
@@ -170,6 +187,11 @@ jobs:
             if (($r["sdk_version"]??null)!==getenv("SDK_VERSION") || ($r["server_version"]??null)!==getenv("SERVER_VERSION")) {
               throw new RuntimeException("Query evidence tuple mismatch.");
             }'
+      - name: Assert ordinary activity retry identity over real HTTP
+        if: inputs.activity_retry_identity
+        run: |
+          php -l tests/smoke/activity-retry-identity.php
+          timeout 60s php tests/smoke/activity-retry-identity.php "$CONSUMER/vendor/autoload.php" | tee activity-retry-identity.json
       - name: Retain the tuple, observations and installed dependency graph
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -180,6 +202,7 @@ jobs:
             update-outcome.json
             workflow-completion-limits.json
             query-results.json
+            activity-retry-identity.json
             candidate-package.json
             ${{ env.CONSUMER }}/candidate.zip
             ${{ env.CONSUMER }}/composer.lock
