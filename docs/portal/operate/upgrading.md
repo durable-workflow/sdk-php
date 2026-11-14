@@ -13,14 +13,14 @@ next:
 This guide covers PHP SDK {{ release.sdkVersion }} and its changes listed in the
 [changelog](https://github.com/durable-workflow/sdk-php/blob/main/CHANGELOG.md).
 The bare SDK retains PHP `^8.1`, and Symfony 6.4/7/8 support is unchanged.
-The Laravel bridge follows Workflow 2.21.0: PHP `^8.2` and patched Laravel
-`^12.69.0|^13.30.0`, with PHP 8.3 or newer for Laravel 13. SDK 3.10 removes
+The Laravel bridge requires PHP `^8.2` and patched Laravel
+`^12.72.0|^13.41.0`, with PHP 8.3 or newer for Laravel 13. SDK 3.10 removes
 Laravel 10/11 bridge support. Its provider checks the installed framework and
 PHP before registering application bindings, including during auto-discovery.
 Upgrade the platform before adopting this bridge; existing SDK 3.9.x and
-Workflow 2.20.x applications retain their own support contracts while upgrading.
-Stable-v1 authority remains unchanged. SDK 3.11 keeps these platform contracts
-and adds the occurrence-deadline rollout below.
+Workflow 2.20.x applications must also apply Laravel security updates while upgrading.
+Stable-v1 authority remains unchanged. SDK 3.11 adds the occurrence-deadline
+rollout below.
 
 ## Condition-wait occurrence deadlines
 

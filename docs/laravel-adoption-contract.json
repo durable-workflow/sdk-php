@@ -3,14 +3,14 @@
   "schema_version": 1,
   "framework": {
     "package": "laravel/framework",
-    "constraint": "^12.69.0|^13.30.0",
+    "constraint": "^12.72.0|^13.41.0",
     "php_constraint": "^8.2",
     "qualification_matrix": [
-      {"laravel": "12", "php": "8.2", "package": "laravel/framework:^12.69.0", "exercised_package": "laravel/framework:12.69.0", "bootstrap": "fresh_supported_install"},
-      {"laravel": "12", "php": "8.3", "package": "laravel/framework:^12.69.0", "exercised_package": "laravel/framework:12.69.0", "bootstrap": "fresh_supported_install"},
-      {"laravel": "13", "php": "8.3", "package": "laravel/framework:^13.30.0", "exercised_package": "laravel/framework:13.30.0", "bootstrap": "fresh_supported_install"},
-      {"laravel": "12", "php": "8.4", "package": "laravel/framework:^12.69.0", "exercised_package": "laravel/framework:12.69.0", "bootstrap": "fresh_supported_install"},
-      {"laravel": "13", "php": "8.4", "package": "laravel/framework:^13.30.0", "exercised_package": "laravel/framework:13.30.0", "bootstrap": "fresh_supported_install"}
+      {"laravel": "12", "php": "8.2", "package": "laravel/framework:^12.72.0", "exercised_package": "laravel/framework:12.72.0", "bootstrap": "fresh_supported_install"},
+      {"laravel": "12", "php": "8.3", "package": "laravel/framework:^12.72.0", "exercised_package": "laravel/framework:12.72.0", "bootstrap": "fresh_supported_install"},
+      {"laravel": "13", "php": "8.3", "package": "laravel/framework:^13.41.0", "exercised_package": "laravel/framework:13.41.0", "bootstrap": "fresh_supported_install"},
+      {"laravel": "12", "php": "8.4", "package": "laravel/framework:^12.72.0", "exercised_package": "laravel/framework:12.72.0", "bootstrap": "fresh_supported_install"},
+      {"laravel": "13", "php": "8.4", "package": "laravel/framework:^13.41.0", "exercised_package": "laravel/framework:13.41.0", "bootstrap": "fresh_supported_install"}
     ]
   },
   "embedded_transition_authority": {

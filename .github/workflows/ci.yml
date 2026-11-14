@@ -333,8 +333,8 @@ jobs:
           - framework: Laravel
             version: '12'
             php: '8.2'
-            package: 'laravel/framework:^12.69.0'
-            exercised_package: 'laravel/framework:12.69.0'
+            package: 'laravel/framework:^12.72.0'
+            exercised_package: 'laravel/framework:12.72.0'
             bootstrap: fresh_supported_install
             script: laravel.php
           - framework: Symfony
@@ -656,15 +656,15 @@ jobs:
           - framework: Laravel
             version: '12'
             php: '8.4'
-            package: 'laravel/framework:^12.69.0'
-            exercised_package: 'laravel/framework:12.69.0'
+            package: 'laravel/framework:^12.72.0'
+            exercised_package: 'laravel/framework:12.72.0'
             bootstrap: fresh_supported_install
             script: laravel.php
           - framework: Laravel
             version: '13'
             php: '8.4'
-            package: 'laravel/framework:^13.30.0'
-            exercised_package: 'laravel/framework:13.30.0'
+            package: 'laravel/framework:^13.41.0'
+            exercised_package: 'laravel/framework:13.41.0'
             bootstrap: fresh_supported_install
             script: laravel.php
           - framework: Symfony
@@ -828,15 +828,15 @@ jobs:
           - framework: Laravel
             version: '12'
             php: '8.3'
-            package: 'laravel/framework:^12.69.0'
-            exercised_package: 'laravel/framework:12.69.0'
+            package: 'laravel/framework:^12.72.0'
+            exercised_package: 'laravel/framework:12.72.0'
             bootstrap: fresh_supported_install
             script: laravel.php
           - framework: Laravel
             version: '13'
             php: '8.3'
-            package: 'laravel/framework:^13.30.0'
-            exercised_package: 'laravel/framework:13.30.0'
+            package: 'laravel/framework:^13.41.0'
+            exercised_package: 'laravel/framework:13.41.0'
             bootstrap: fresh_supported_install
             script: laravel.php
     steps:
