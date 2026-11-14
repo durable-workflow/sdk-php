@@ -777,6 +777,16 @@ final class ReplayRegressionFixture
                 return $origin === null ? 'unscheduled'
                     : $origin->scheduleId.'#'.$origin->triggerNumber.'@'.$origin->occurrenceTime?->format(DATE_ATOM);
             },
+            'golden.local-activity-backoff-legacy' => static function (WorkflowContext $context): string {
+                try {
+                    $context->localActivity('golden.local-unavailable', [],
+                        ['retry_policy' => ['max_attempts' => 4, 'backoff_seconds' => [1]]]);
+                } catch (ActivityFailed) {
+                    return 'retries-exhausted';
+                }
+
+                return 'unexpected-success';
+            },
             'golden.local-activity-backoff-repeat' => static function (WorkflowContext $context): string {
                 // .github#219: five attempts with backoff [1, 2] wait 1, 2, 2, 2 between them.
                 try {
