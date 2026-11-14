@@ -211,6 +211,7 @@ final class ReplayRegressionFixture
         $localActivityInvocations = 0;
         $localActivityExecutor = in_array($workflowType, [
             self::BOUNDED_LOCAL_FAILURE, 'golden.local-activity-terminal-failure', 'golden.local-activity-recovered', 'golden.prepared-local-cleanup',
+            'golden.local-activity-backoff-legacy',
             'golden.prepared-local-group', 'golden.prepared-local-scoped-cleanup',
         ], true)
             ? static function () use (&$localActivityInvocations, $workflowType): array {
