@@ -12,6 +12,13 @@ def guard_source():
     return "\n".join(line[10:] for line in step.split("        run: |\n", 1)[1].splitlines())
 
 
+def require_disjoint_jobs(source):
+    expected = "    if: github.event_name == 'workflow_dispatch' && inputs.laravel_bridges && !inputs.activity_retry_identity"
+    header = source.split("  installed-laravel-bridges:\n", 1)[1].split("    runs-on:", 1)[0]
+    if header.strip() != expected.strip():
+        raise ValueError("The sibling Laravel job must not start for activity identity qualification")
+
+
 class PublishedActivityIdentityTupleTest(unittest.TestCase):
     def setUp(self):
         self.env = {
@@ -41,6 +48,12 @@ class PublishedActivityIdentityTupleTest(unittest.TestCase):
                                 ("GITHUB_EVENT_NAME", "pull_request"), ("GITHUB_REF", "refs/heads/topic")]:
             with self.subTest(variable=variable):
                 self.assertFalse(self.accepts({variable: value}))
+
+    def test_sibling_job_cannot_start_on_conflicting_flags(self):
+        source = (Path(__file__).resolve().parents[2] / ".github/workflows/published-worker-metrics.yml").read_text()
+        require_disjoint_jobs(source)
+        with self.assertRaises(ValueError):
+            require_disjoint_jobs(source.replace(" && !inputs.activity_retry_identity", ""))
 
 
 if __name__ == "__main__":

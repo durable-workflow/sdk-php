@@ -52,4 +52,15 @@ function verifyActivityRetryIdentity(array $callbacks, string $workflowId, strin
             }
         }
     }
+    $started = array_values(array_filter($history,
+        static fn (array $event): bool => ($event['event_type'] ?? null) === 'ActivityStarted'));
+    foreach ($callbacks as $index => $callback) {
+        $payload = $started[$index]['payload'] ?? [];
+        if (($payload['activity_execution_id'] ?? null) !== $callback['activity_execution_id']
+            || ($payload['task']['id'] ?? null) !== $callback['task_id']
+            || ($payload['activity_attempt_id'] ?? null) !== $callback['activity_attempt_id']
+            || ($payload['attempt_number'] ?? null) !== $callback['attempt_number']) {
+            throw new RuntimeException('Each callback must match its durable ActivityStarted identities.');
+        }
+    }
 }

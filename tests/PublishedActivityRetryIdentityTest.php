@@ -21,12 +21,18 @@ final class PublishedActivityRetryIdentityTest extends TestCase
             $callbacks[] = ['activity_execution_id' => 'execution', 'workflow_id' => 'workflow', 'run_id' => 'run',
                 'task_id' => 'task-'.$attempt, 'activity_attempt_id' => 'attempt-'.$attempt, 'attempt_number' => $attempt];
         }
-        $history = array_map(static fn (string $type): array => ['event_type' => $type],
-            ['ActivityScheduled', 'ActivityStarted', 'ActivityStarted', 'ActivityCompleted', 'WorkflowCompleted']);
-        $history[] = ['event_type' => 'ActivityRetryScheduled', 'payload' => [
-            'activity_execution_id' => 'execution', 'retry_of_task_id' => 'task-1', 'retry_task_id' => 'task-2',
-            'retry_after_attempt_id' => 'attempt-1', 'retry_after_attempt' => 1, 'max_attempts' => 2, 'retry_backoff_seconds' => 0,
+        $started = static fn (array $callback): array => ['event_type' => 'ActivityStarted', 'payload' => [
+            'activity_execution_id' => $callback['activity_execution_id'], 'task' => ['id' => $callback['task_id']],
+            'activity_attempt_id' => $callback['activity_attempt_id'], 'attempt_number' => $callback['attempt_number'],
         ]];
+        $history = [
+            ['event_type' => 'ActivityScheduled'], $started($callbacks[0]),
+            ['event_type' => 'ActivityRetryScheduled', 'payload' => [
+                'activity_execution_id' => 'execution', 'retry_of_task_id' => 'task-1', 'retry_task_id' => 'task-2',
+                'retry_after_attempt_id' => 'attempt-1', 'retry_after_attempt' => 1, 'max_attempts' => 2, 'retry_backoff_seconds' => 0,
+            ]],
+            $started($callbacks[1]), ['event_type' => 'ActivityCompleted'], ['event_type' => 'WorkflowCompleted'],
+        ];
 
         return [$callbacks, $history];
     }
@@ -64,7 +70,15 @@ final class PublishedActivityRetryIdentityTest extends TestCase
     public function testHistoryFromAnotherAttemptCannotQualifyTheCallbackPair(): void
     {
         [$callbacks, $history] = self::evidence();
-        $history[5]['payload']['retry_task_id'] = 'foreign-task';
+        $history[2]['payload']['retry_task_id'] = 'foreign-task';
+        $this->expectException(RuntimeException::class);
+        verifyActivityRetryIdentity($callbacks, 'workflow', 'run', $history);
+    }
+
+    public function testInventedSecondAttemptIdentityRefuses(): void
+    {
+        [$callbacks, $history] = self::evidence();
+        $callbacks[1]['activity_attempt_id'] = 'unrelated-nonempty-attempt';
         $this->expectException(RuntimeException::class);
         verifyActivityRetryIdentity($callbacks, 'workflow', 'run', $history);
     }
