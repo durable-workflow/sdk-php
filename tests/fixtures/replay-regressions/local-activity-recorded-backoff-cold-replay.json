@@ -1,0 +1,32 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-local-activity-recorded-backoff-cold-replay",
+  "protocol_version": "1.19",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.local-activity-backoff-legacy", "input": []},
+  "history": [
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {"sequence": 1, "activity_type": "golden.local-unavailable", "execution_mode": "local", "retry_policy": {"max_attempts": 4, "backoff_seconds": [1]}}
+    },
+    {
+      "event_type": "ActivityFailed",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "golden.local-unavailable",
+        "execution_mode": "local",
+        "outcome": "failed",
+        "message": "recorded legacy failure",
+        "exception_type": "RuntimeException",
+        "attempts": [
+          {"attempt_id": "legacy-1", "attempt_number": 1, "outcome": "failed", "retry_reason": "failure", "backoff_seconds": 1},
+          {"attempt_id": "legacy-2", "attempt_number": 2, "outcome": "failed", "retry_reason": "failure", "backoff_seconds": 0},
+          {"attempt_id": "legacy-3", "attempt_number": 3, "outcome": "failed", "retry_reason": "failure", "backoff_seconds": 0},
+          {"attempt_id": "legacy-4", "attempt_number": 4, "outcome": "failed"}
+        ]
+      }
+    }
+  ],
+  "expected": {"command_sequence": [{"type": "complete_workflow", "result": "retries-exhausted"}]}
+}
