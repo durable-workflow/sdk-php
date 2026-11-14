@@ -163,19 +163,21 @@ A context can carry an optional top-level `cause` (workflow#863). `timeout`
 means deadline-triggered timeout cleanup requested the interruption: the run
 passed its work deadline and is now in cleanup. Absent or `cancellation` means
 an ordinary cooperative cancellation, and any other value is refused as
-invalid. A timeout context may also name `timeout_kind` (`execution` or `run`)
-and `work_deadline_at`; those fields are refused without the timeout cause.
-Its cleanup deadline is the context's existing `cleanup_deadline_at`. A
-descendant cancelled under the request is cancelled, not timed out, so it
-carries no cause. `toArray()` writes `cause` and the timeout fields back as
-read, and leaves an ordinary context unchanged.
+invalid. The cleanup deadline is the context's existing
+`cleanup_deadline_at`; the timeout kind and work deadline are recorded on
+`WorkflowTimeoutCleanupStarted`, not in the context. `toArray()` writes
+`cause` back exactly as read, including an explicit `cancellation`, and
+leaves a context without one unchanged.
 
-`CancellationContext::$cause`, `isTimeout()`, `$timeoutKind` and
-`workDeadlineAt()` read them. A timeout delivery raises
-`WorkflowTimeoutCleanupRequested`, which extends `WorkflowCancelled`, so
-existing `catch (WorkflowCancelled)` compensation runs on timeout too. Test
-`$cancelled->context?->isTimeout()` (the cross-SDK discriminator is `cause`)
-when cleanup must differ. The run still ends timed out.
+`cause` is never inherited. A child cancelled under the request, scoped or
+not, carries no cause and is an ordinary cancellation, even when its
+`scopeOrigin` root context carries `cause: timeout`.
+
+`CancellationContext::$cause` and `isTimeout()` read it. A timeout delivery
+raises `WorkflowTimeoutCleanupRequested`, which extends `WorkflowCancelled`,
+so existing `catch (WorkflowCancelled)` compensation runs on timeout too.
+Test `$cancelled->context?->isTimeout()` (the cross-SDK discriminator is
+`cause`) when cleanup must differ. The run still ends timed out.
 
 ## Child policies
 

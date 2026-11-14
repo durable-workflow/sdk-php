@@ -28,8 +28,6 @@ final class CancellationContextCauseTest extends TestCase
 
         self::assertFalse($context->isTimeout());
         self::assertNull($context->cause);
-        self::assertNull($context->timeoutKind);
-        self::assertNull($context->workDeadlineAt());
         self::assertSame($snapshot, $context->toArray());
         self::assertSame(
             json_encode($snapshot, JSON_THROW_ON_ERROR),
@@ -72,19 +70,18 @@ final class CancellationContextCauseTest extends TestCase
         self::assertSame('req-1', $exception->requestId);
     }
 
-    public function testTimeoutFieldsRoundTrip(): void
+    public function testTimeoutCleanupStartedFieldsAreNotPartOfTheContext(): void
     {
-        $snapshot = self::timeoutSnapshot();
-        $context = CancellationContext::fromArray($snapshot);
+        // The timeout kind and work deadline live on WorkflowTimeoutCleanupStarted.
+        // In a context they are unknown keys, read and written back as Core does.
+        $context = CancellationContext::fromArray([
+            ...self::timeoutSnapshot(),
+            'timeout_kind' => 'execution',
+            'work_deadline_at' => '2026-11-13T00:01:00.000000Z',
+        ]);
 
         self::assertTrue($context->isTimeout());
-        self::assertSame('execution', $context->timeoutKind);
-        self::assertSame('2026-11-13T00:01:00.000000+00:00', $context->workDeadlineAt()?->format('Y-m-d\TH:i:s.uP'));
-        self::assertSame($snapshot, $context->toArray());
-        self::assertSame($snapshot, CancellationContext::fromArray($context->toArray())->toArray());
-
-        $offset = [...$snapshot, 'work_deadline_at' => '2026-11-12T19:01:00-05:00'];
-        self::assertSame($snapshot, CancellationContext::fromArray($offset)->toArray());
+        self::assertSame(self::timeoutSnapshot(), $context->toArray());
     }
 
     public function testADescendantIsCancelledNotTimedOut(): void
@@ -93,7 +90,7 @@ final class CancellationContextCauseTest extends TestCase
         $descendant = $parent->toArray();
         // Built as Core's forDescendant does: the descendant was cancelled
         // because its ancestor was, so it carries no cause.
-        unset($descendant['cause'], $descendant['timeout_kind'], $descendant['work_deadline_at']);
+        unset($descendant['cause']);
         $descendant['request_id'] = 'req-child';
         $descendant['parent_request_id'] = 'req-1';
         $descendant['lineage'][] = [
@@ -108,6 +105,40 @@ final class CancellationContextCauseTest extends TestCase
         self::assertSame(WorkflowCancelled::class, WorkflowCancelled::forContext('req-child', $context)::class);
     }
 
+    public function testAScopedDescendantOfATimeoutIsCancelledNotTimedOut(): void
+    {
+        $origin = ScopedCancellationContext::fromRunContext(CancellationContext::fromArray(self::timeoutSnapshot()));
+        // Built as Core's scopedDescendantSnapshot does: the root's cause is
+        // stripped from the child, while scope_origin.root_context keeps it.
+        $root = $origin->rootContext->toArray();
+        unset($root['cause']);
+        $deadline = $origin->deadline()->format('Y-m-d\TH:i:s.u\Z');
+        $child = [
+            ...$root,
+            'schema' => 'durable-workflow.cancellation-context/v2',
+            'request_id' => 'req-child',
+            'parent_request_id' => $origin->requestId,
+            'cleanup_deadline_at' => $deadline,
+            'lineage' => [$root['lineage'][0], [
+                'request_id' => 'req-child',
+                'workflow_instance_id' => 'child-instance',
+                'workflow_run_id' => 'child-run',
+            ]],
+            'scope_origin' => $origin->toArray(),
+            'scope_authority_deadline_at' => $deadline,
+        ];
+        self::assertSame('timeout', $child['scope_origin']['root_context']['cause']);
+        $context = CancellationContext::fromArray($child);
+
+        self::assertFalse($context->isTimeout());
+        self::assertNull($context->cause);
+        self::assertTrue($context->scopeOrigin?->rootContext->isTimeout());
+        self::assertArrayNotHasKey('cause', $context->toArray());
+        self::assertSame($child, $context->toArray());
+        self::assertFalse(CancellationContext::fromArray($context->toArray())->isTimeout());
+        self::assertSame(WorkflowCancelled::class, WorkflowCancelled::forContext('req-child', $context)::class);
+    }
+
     public function testAScopedRootFromATimeoutRunContextKeepsItsCause(): void
     {
         $scoped = ScopedCancellationContext::fromRunContext(CancellationContext::fromArray(self::timeoutSnapshot()));
@@ -119,7 +150,7 @@ final class CancellationContextCauseTest extends TestCase
 
     /** @param array<string, mixed> $snapshot */
     #[DataProvider('invalidCauseProvider')]
-    public function testAnInvalidCauseOrTimeoutFieldIsRefused(array $snapshot): void
+    public function testAnInvalidCauseIsRefused(array $snapshot): void
     {
         $this->expectException(InvalidArgumentException::class);
 
@@ -129,23 +160,12 @@ final class CancellationContextCauseTest extends TestCase
     /** @return array<string, array{array<string, mixed>}> */
     public static function invalidCauseProvider(): array
     {
-        $timeout = self::timeoutSnapshot();
-
         return [
             'unknown cause' => [[...self::snapshot(), 'cause' => 'deadline']],
             'empty cause' => [[...self::snapshot(), 'cause' => '']],
             'uppercase cause' => [[...self::snapshot(), 'cause' => 'TIMEOUT']],
             'non-string cause' => [[...self::snapshot(), 'cause' => true]],
             'list cause' => [[...self::snapshot(), 'cause' => ['timeout']]],
-            'timeout kind without cause' => [[...self::snapshot(), 'timeout_kind' => 'execution']],
-            'work deadline without cause' => [[...self::snapshot(), 'work_deadline_at' => '2026-11-13T00:01:00.000000Z']],
-            'timeout kind with cancellation cause' => [[...self::snapshot(), 'cause' => 'cancellation', 'timeout_kind' => 'run']],
-            'unknown timeout kind' => [[...$timeout, 'timeout_kind' => 'activity']],
-            'non-string timeout kind' => [[...$timeout, 'timeout_kind' => 1]],
-            'invalid work deadline' => [[...$timeout, 'work_deadline_at' => '2026-11-13 00:01:00']],
-            'empty work deadline' => [[...$timeout, 'work_deadline_at' => '']],
-            'work deadline at cleanup deadline' => [[...$timeout, 'work_deadline_at' => '2026-11-13T00:01:10.000000Z']],
-            'work deadline after cleanup deadline' => [[...$timeout, 'work_deadline_at' => '2026-11-13T00:02:00.000000Z']],
         ];
     }
 
@@ -244,12 +264,7 @@ final class CancellationContextCauseTest extends TestCase
     /** @return array<string, mixed> */
     private static function timeoutSnapshot(): array
     {
-        return [
-            ...self::snapshot(),
-            'cause' => 'timeout',
-            'timeout_kind' => 'execution',
-            'work_deadline_at' => '2026-11-13T00:01:00.000000Z',
-        ];
+        return [...self::snapshot(), 'cause' => 'timeout'];
     }
 
     /**

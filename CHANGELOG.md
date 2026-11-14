@@ -12,15 +12,16 @@ project follows [Semantic Versioning](https://semver.org/).
   workflow#1129). `CancellationContext` reads the optional top-level `cause`
   of `durable-workflow.cancellation-context/v1` and `v2`: `timeout` for a
   deadline-triggered timeout cleanup request, absent or `cancellation` for an
-  ordinary cancellation. Any other value is refused as invalid. A timeout
-  context may also carry `timeout_kind` (`execution` or `run`) and
-  `work_deadline_at`, refused without the timeout cause. `$cause`,
-  `isTimeout()`, `$timeoutKind` and `workDeadlineAt()` read them, and
-  `toArray()` writes them back as read; an ordinary context stays
-  byte-identical. A timeout delivery raises the new experimental
-  `WorkflowTimeoutCleanupRequested`, a subclass of `WorkflowCancelled`, so
-  existing `catch (WorkflowCancelled)` handlers also run on timeout cleanup.
-  `WorkflowCancelled::forContext()` picks the class for a delivered context.
+  ordinary cancellation. Any other value is refused as invalid. `$cause` and
+  `isTimeout()` read it, and `toArray()` writes it back exactly as read, so a
+  context without one stays byte-identical. The cleanup deadline is the
+  existing `cleanup_deadline_at`; the timeout kind and work deadline stay on
+  `WorkflowTimeoutCleanupStarted`. Children don't inherit the cause: a scoped
+  child of a timeout root is an ordinary cancellation. A timeout delivery
+  raises the new experimental `WorkflowTimeoutCleanupRequested`, a subclass
+  of `WorkflowCancelled`, so existing `catch (WorkflowCancelled)` handlers
+  also run on timeout cleanup. `WorkflowCancelled::forContext()` picks the
+  class for a delivered context.
 
 ### Changed
 
