@@ -36,6 +36,30 @@ final class WorkflowVersionUsagePage
     /** @param array<string, mixed> $value */
     public static function fromArray(array $value): self
     {
+        self::requireShape($value);
+        self::requireTextFields($value);
+        $counts = WorkflowVersionUsageCounts::fromArray($value['counts']);
+        if ($value['returned_count'] !== count($value['runs']) || $value['returned_count'] > $value['limit']
+            || $value['returned_count'] > $counts->total
+            || ($value['has_more'] !== ($value['next_cursor'] !== null))
+            || ($value['has_more'] && $value['returned_count'] === 0)
+            || ($value['through_run_id'] === null && $counts->total !== 0)) {
+            throw new UnexpectedValueException('Workflow version-usage page boundaries do not reconcile.');
+        }
+        $remaining = ['legacy' => $counts->legacy, 'current' => $counts->current, 'unknown' => $counts->unknown];
+        $selectedCount = $value['state'] === null ? $counts->total : $remaining[$value['state']];
+        if ($value['has_more'] && $selectedCount <= $value['returned_count']) {
+            throw new UnexpectedValueException('Workflow version-usage continuation has no remaining matching runs.');
+        }
+
+        return new self($value['namespace'], $value['workflow_type'], $value['change_id'], $value['min_version'],
+            $value['state'], $value['through_run_id'], $counts, self::readRuns($value, $remaining), $value['limit'], $value['returned_count'],
+            $value['has_more'], $value['next_cursor'], $value);
+    }
+
+    /** @param array<string, mixed> $value */
+    private static function requireShape(array $value): void
+    {
         $keys = array_keys($value);
         sort($keys);
         if ($keys !== ['change_id', 'consistency', 'counts', 'has_more', 'limit', 'min_version', 'namespace',
@@ -49,6 +73,11 @@ final class WorkflowVersionUsagePage
             || !is_array($value['runs']) || !array_is_list($value['runs'])) {
             throw new UnexpectedValueException('Invalid workflow version-usage v1 response.');
         }
+    }
+
+    /** @param array<string, mixed> $value */
+    private static function requireTextFields(array $value): void
+    {
         foreach (['namespace', 'workflow_type', 'change_id', 'through_run_id', 'next_cursor'] as $field) {
             if ($value[$field] === null && in_array($field, ['namespace', 'through_run_id', 'next_cursor'], true)) {
                 continue;
@@ -57,20 +86,16 @@ final class WorkflowVersionUsagePage
                 throw new UnexpectedValueException('Invalid workflow version-usage response identity or cursor.');
             }
         }
-        $counts = WorkflowVersionUsageCounts::fromArray($value['counts']);
-        if ($value['returned_count'] !== count($value['runs']) || $value['returned_count'] > $value['limit']
-            || $value['returned_count'] > $counts->total
-            || ($value['has_more'] !== ($value['next_cursor'] !== null))
-            || ($value['has_more'] && $value['returned_count'] === 0)
-            || ($value['through_run_id'] === null && $counts->total !== 0)) {
-            throw new UnexpectedValueException('Workflow version-usage page boundaries do not reconcile.');
-        }
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @param array<string, int> $remaining
+     * @return list<WorkflowVersionUsageRun>
+     */
+    private static function readRuns(array $value, array $remaining): array
+    {
         $runs = [];
-        $remaining = ['legacy' => $counts->legacy, 'current' => $counts->current, 'unknown' => $counts->unknown];
-        $selectedCount = $value['state'] === null ? $counts->total : $remaining[$value['state']];
-        if ($value['has_more'] && $selectedCount <= $value['returned_count']) {
-            throw new UnexpectedValueException('Workflow version-usage continuation has no remaining matching runs.');
-        }
         $previous = null;
         foreach ($value['runs'] as $row) {
             if (!is_array($row)) {
@@ -89,8 +114,6 @@ final class WorkflowVersionUsagePage
             $previous = $run->runId;
         }
 
-        return new self($value['namespace'], $value['workflow_type'], $value['change_id'], $value['min_version'],
-            $value['state'], $value['through_run_id'], $counts, $runs, $value['limit'], $value['returned_count'],
-            $value['has_more'], $value['next_cursor'], $value);
+        return $runs;
     }
 }
