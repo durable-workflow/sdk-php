@@ -9,15 +9,17 @@ use PHPUnit\Framework\TestCase;
 
 /**
  * The embedded-v2 to service-mode transition check CI runs against the
- * installed Workflow package. The historical fixture is published Workflow 2.21.0's
- * resources/laravel-embedded-upgrade-contract.json, byte for byte
- * (SHA-256 1e65a6ffa6f2a1feba53ff0b5f7782a9ac8d7a3560f31c44c040767c592308c6).
+ * installed Workflow package. Versioned fixtures retain the exact published
+ * resources/laravel-embedded-upgrade-contract.json bytes. Historical authorities
+ * cannot qualify a newer floor; Workflow 2.28.1 supplies the patched boundary.
  */
 final class LaravelTransitionAuthorityTest extends TestCase
 {
     private const WORKFLOW_2_17_1 = __DIR__.'/fixtures/laravel-transition/workflow-2.17.1';
 
     private const WORKFLOW_2_21_0 = __DIR__.'/fixtures/laravel-transition/workflow-2.21.0';
+
+    private const WORKFLOW_2_28_1 = __DIR__.'/fixtures/laravel-transition/workflow-2.28.1';
 
     private string $directory;
 
@@ -37,7 +39,7 @@ final class LaravelTransitionAuthorityTest extends TestCase
 
     public function testHistoricalPublishedAuthorityCannotAuthorizeTheNewPatchedServiceFloor(): void
     {
-        [$status, $errors] = $this->check(dirname(__DIR__).'/docs/laravel-adoption-contract.json');
+        [$status, $errors] = $this->check(dirname(__DIR__).'/docs/laravel-adoption-contract.json', self::WORKFLOW_2_21_0);
 
         self::assertSame(1, $status);
         self::assertStringContainsString('Embedded and service modes publish different Laravel constraints.', $errors);
@@ -56,7 +58,7 @@ final class LaravelTransitionAuthorityTest extends TestCase
         }
         $path = $this->directory.'/historical-service.json';
         file_put_contents($path, json_encode($contract, JSON_THROW_ON_ERROR));
-        [$status, $errors] = $this->check($path);
+        [$status, $errors] = $this->check($path, self::WORKFLOW_2_21_0);
         self::assertSame('', $errors);
         self::assertSame(0, $status);
     }
@@ -70,6 +72,21 @@ final class LaravelTransitionAuthorityTest extends TestCase
             true, 512, JSON_THROW_ON_ERROR);
         self::assertSame($previous['supported_intersection']['authority']['stable_v1'],
             $published['supported_intersection']['authority']['stable_v1']);
+    }
+
+    public function testCurrentPublishedAuthorityMatchesThePatchedServiceBoundary(): void
+    {
+        $path = self::WORKFLOW_2_28_1.'/resources/laravel-embedded-upgrade-contract.json';
+        self::assertSame('153a261371272e0fa8e0a6e79dbe425b9adc311cbe596ce0237575a78b0828a7', hash_file('sha256', $path));
+        $published = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+        $historical = json_decode((string) file_get_contents(self::WORKFLOW_2_21_0.'/resources/laravel-embedded-upgrade-contract.json'),
+            true, 512, JSON_THROW_ON_ERROR);
+        self::assertSame($historical['supported_intersection']['authority']['stable_v1'],
+            $published['supported_intersection']['authority']['stable_v1']);
+
+        [$status, $errors] = $this->check(dirname(__DIR__).'/docs/laravel-adoption-contract.json');
+        self::assertSame('', $errors);
+        self::assertSame(0, $status);
     }
 
     public function testPreviousEmbeddedSupportBoundaryDoesNotAuthorizeTheNewServiceFloor(): void
@@ -159,7 +176,7 @@ final class LaravelTransitionAuthorityTest extends TestCase
     }
 
     /** @return array{int, string} */
-    private function check(string $contract, string $workflow = self::WORKFLOW_2_21_0): array
+    private function check(string $contract, string $workflow = self::WORKFLOW_2_28_1): array
     {
         $process = proc_open([PHP_BINARY, dirname(__DIR__).'/scripts/ci/check-laravel-transition-authority.php',
             $contract, $workflow], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
