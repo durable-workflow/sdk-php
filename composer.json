@@ -3,7 +3,17 @@
     "description": "PHP client and worker SDK for Durable Workflow Cloud and self-hosted Server",
     "type": "library",
     "license": "MIT",
-    "keywords": ["cloud", "durable", "laravel", "orchestration", "php", "sdk", "symfony", "worker", "workflow"],
+    "keywords": [
+        "cloud",
+        "durable",
+        "laravel",
+        "orchestration",
+        "php",
+        "sdk",
+        "symfony",
+        "worker",
+        "workflow"
+    ],
     "homepage": "https://php.durable-workflow.com/",
     "support": {
         "docs": "https://php.durable-workflow.com/",
@@ -21,7 +31,7 @@
         "composer-runtime-api": "^2.0",
         "ext-json": "*",
         "guzzlehttp/guzzle": "^7.8|^8.0",
-        "nesbot/carbon": "^2.72.6|^3.8.4",
+        "nesbot/carbon": "^2.72.6",
         "pear/http_request2": "^2.8",
         "psr/container": "^1.1|^2.0",
         "psr/http-client": "^1.0",
@@ -106,14 +116,26 @@
             "durable-selection-minimum-worker-protocol-version": "1.19",
             "message-streams": true,
             "message-streams-minimum-worker-protocol-version": "1.15",
-            "payload-codecs": ["avro"],
+            "payload-codecs": [
+                "avro"
+            ],
             "version-markers": true,
             "version-marker-command": "record_version_marker",
             "version-marker-history-event": "VersionMarkerRecorded",
-            "version-marker-helpers": ["patched", "deprecatePatch"],
+            "version-marker-helpers": [
+                "patched",
+                "deprecatePatch"
+            ],
             "workflow-streams": {
                 "contract": "durable-workflow.v2.workflow-streams.contract@1",
-                "operations": ["list", "describe", "subscribe", "append", "close", "error"],
+                "operations": [
+                    "list",
+                    "describe",
+                    "subscribe",
+                    "append",
+                    "close",
+                    "error"
+                ],
                 "authoring-command": "record_side_effect.workflow_stream",
                 "delivery": "at-least-once",
                 "external-payload-references": "opaque-reference"
