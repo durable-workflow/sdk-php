@@ -99,6 +99,8 @@ final class WorkflowVersionUsageTest extends TestCase
             $value['runs'] = [$value['runs'][1]];
             $value['runs'][0]['recorded_version'] = $minimum;
             $value['returned_count'] = 1;
+            $value['counts'] = ['total' => 1, 'legacy' => 0, 'current' => 1, 'unknown' => 0];
+            $value['through_run_id'] = 'run-2';
             $transport = new FakeTransport([self::CAPABILITY, $value]);
             $page = (new Client('https://runtime.example', namespace: 'orders', transport: $transport))
                 ->workflowVersionUsage('shipment', 'carrier-api', $minimum);
@@ -250,6 +252,53 @@ final class WorkflowVersionUsageTest extends TestCase
             ->workflowVersionUsage('shipment', 'carrier-api', 2);
         self::assertSame(3, $page->counts->total);
         self::assertCount(2, $transport->requests);
+    }
+
+    #[DataProvider('invalidPageProgress')]
+    public function testPageProgressRequiresRequestContext(string $mutation): void
+    {
+        $value = self::page();
+        $state = $mutation === 'filtered-first-terminal' ? 'legacy' : null;
+        $cursor = $mutation === 'repeated-cursor' ? 'unchanged-opaque-cursor' : null;
+        $value['state'] = $state;
+        $value['runs'] = [$value['runs'][0]];
+        $value['returned_count'] = 1;
+        if ($mutation === 'filtered-first-terminal') {
+            $value['runs'] = [];
+            $value['returned_count'] = 0;
+        }
+        if (in_array($mutation, ['short-has-more', 'repeated-cursor'], true)) {
+            $value['has_more'] = true;
+            $value['next_cursor'] = $cursor ?? 'next-opaque-cursor';
+        }
+        if ($mutation === 'repeated-cursor') {
+            $value['limit'] = 1;
+        }
+        $transport = new FakeTransport([self::CAPABILITY, $value]);
+        $this->expectException(UnexpectedValueException::class);
+        (new Client('https://runtime.example', namespace: 'orders', transport: $transport))
+            ->workflowVersionUsage('shipment', 'carrier-api', 2, state: $state, limit: $value['limit'], cursor: $cursor);
+    }
+
+    public static function invalidPageProgress(): iterable
+    {
+        foreach (['unfiltered-first-terminal', 'filtered-first-terminal', 'short-has-more', 'repeated-cursor'] as $mutation) {
+            yield $mutation => [$mutation];
+        }
+    }
+
+    public function testLaterTerminalCursorPageCanBeEmptyWithRemainingCohortCounts(): void
+    {
+        $value = self::page();
+        $value['runs'] = [];
+        $value['returned_count'] = 0;
+        $transport = new FakeTransport([self::CAPABILITY, $value]);
+        $page = (new Client('https://runtime.example', namespace: 'orders', transport: $transport))
+            ->workflowVersionUsage('shipment', 'carrier-api', 2, cursor: 'earlier-opaque-cursor');
+        self::assertSame(3, $page->counts->total);
+        self::assertSame([], $page->runs);
+        self::assertFalse($page->hasMore);
+        self::assertNull($page->nextCursor);
     }
 
     /** @return array<string, mixed> */

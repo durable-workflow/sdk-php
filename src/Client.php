@@ -430,7 +430,7 @@ final class Client implements WorkflowClientInterface
         ]);
         $response = $this->request('GET', '/workflow-version-usage?'.http_build_query($query, '', '&', PHP_QUERY_RFC3986),
             false, payloadPaths: static fn (array $metadata): array => []);
-        $page = WorkflowVersionUsagePage::fromArray($response);
+        $page = WorkflowVersionUsagePage::fromArray($response, $cursor);
         if ($page->namespace !== $this->namespace || $page->workflowType !== $workflowType
             || $page->changeId !== $changeId || $page->minVersion !== $minVersion
             || $page->state !== $state || $page->limit !== $limit) {

@@ -33,8 +33,11 @@ final class WorkflowVersionUsagePage
     ) {
     }
 
-    /** @param array<string, mixed> $value */
-    public static function fromArray(array $value): self
+    /**
+     * @param array<string, mixed> $value
+     * @param string|null $requestCursor The opaque cursor supplied for this exact page request.
+     */
+    public static function fromArray(array $value, ?string $requestCursor = null): self
     {
         self::requireShape($value);
         self::requireTextFields($value);
@@ -51,10 +54,25 @@ final class WorkflowVersionUsagePage
         if ($value['has_more'] && $selectedCount <= $value['returned_count']) {
             throw new UnexpectedValueException('Workflow version-usage continuation has no remaining matching runs.');
         }
+        self::requireCursorProgress($value, $selectedCount, $requestCursor);
 
         return new self($value['namespace'], $value['workflow_type'], $value['change_id'], $value['min_version'],
             $value['state'], $value['through_run_id'], $counts, self::readRuns($value, $remaining), $value['limit'], $value['returned_count'],
             $value['has_more'], $value['next_cursor'], $value);
+    }
+
+    /** @param array<string, mixed> $value */
+    private static function requireCursorProgress(array $value, int $selectedCount, ?string $requestCursor): void
+    {
+        if ($requestCursor === null && !$value['has_more'] && $value['returned_count'] !== $selectedCount) {
+            throw new UnexpectedValueException('The first terminal version-usage page must contain the complete selected cohort.');
+        }
+        if ($value['has_more'] && $value['returned_count'] !== $value['limit']) {
+            throw new UnexpectedValueException('A version-usage continuation page must fill its requested limit.');
+        }
+        if ($requestCursor !== null && $value['next_cursor'] === $requestCursor) {
+            throw new UnexpectedValueException('A version-usage continuation cursor must advance.');
+        }
     }
 
     /** @param array<string, mixed> $value */
