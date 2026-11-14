@@ -2,10 +2,10 @@ name: Published worker metrics
 
 on:
   pull_request:
-    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php', 'tests/smoke/query-results.php', 'tests/ci/test_published_query_tuple.py']
+    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php', 'tests/smoke/query-results.php', 'tests/ci/test_published_query_tuple.py', 'tests/ci/check_published_laravel.py', 'tests/ci/test_published_laravel.py']
   push:
     branches: [main]
-    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php', 'tests/smoke/query-results.php', 'tests/ci/test_published_query_tuple.py']
+    paths: ['.github/workflows/published-worker-metrics.yml', 'tests/smoke/worker-metrics.php', 'tests/smoke/update-outcome.php', 'tests/smoke/workflow-completion-limits.php', 'tests/smoke/query-results.php', 'tests/ci/test_published_query_tuple.py', 'tests/ci/check_published_laravel.py', 'tests/ci/test_published_laravel.py']
   workflow_dispatch:
     inputs:
       sdk_version:
@@ -20,6 +20,14 @@ on:
         description: Qualify binary and JSON query results with the installed Worker
         type: boolean
         default: false
+      laravel_bridges:
+        description: Qualify registry SDK installation on both patched Laravel floors
+        type: boolean
+        default: false
+      expected_sdk_reference:
+        description: Exact published SDK source reference required by Laravel qualification
+        type: string
+        default: ''
       candidate_source:
         description: Optional exact SDK commit for prepublication dist qualification only
         type: string
@@ -46,7 +54,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Require the exact published query tuple selectors
-        run: python3 -I -S -B tests/ci/test_published_query_tuple.py
+        run: |
+          python3 -I -S -B tests/ci/test_published_query_tuple.py
+          python3 -S -B -m unittest discover -s tests/ci -p test_published_laravel.py
       - name: Create isolated Composer state
         run: |
           state="$(mktemp -d "$RUNNER_TEMP/worker-metrics.XXXXXX")"
@@ -180,3 +190,97 @@ jobs:
       - name: Remove the isolated Server and its volumes
         if: always()
         run: docker rm --force --volumes sdk-php-metrics-runtime
+
+  installed-laravel-bridges:
+    if: github.event_name == 'workflow_dispatch' && inputs.laravel_bridges
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        laravel: ['12.72.0', '13.41.0']
+    defaults:
+      run:
+        shell: bash --noprofile --norc -e -o pipefail {0}
+    env:
+      SDK_VERSION: ${{ inputs.sdk_version }}
+      SDK_REFERENCE: ${{ inputs.expected_sdk_reference }}
+      LARAVEL_VERSION: ${{ matrix.laravel }}
+    steps:
+      - name: Require a registry-only main invocation
+        env:
+          CANDIDATE_SOURCE: ${{ inputs.candidate_source }}
+        run: |
+          [[ "$GITHUB_REF" = refs/heads/main && -z "$CANDIDATE_SOURCE" ]]
+          [[ "$SDK_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$SDK_REFERENCE" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Select Ubuntu's Python 3.12
+        run: |
+          /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          echo /usr/bin >> "$GITHUB_PATH"
+      - name: Create the clean registry consumer
+        run: |
+          state="$(mktemp -d "$RUNNER_TEMP/published-laravel.XXXXXX")"
+          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp" "$state/consumer"
+          {
+            echo "COMPOSER_HOME=$state/home"
+            echo "COMPOSER_CACHE_DIR=$state/cache"
+            echo "TMPDIR=$state/tmp"
+            echo "LARAVEL_CONSUMER=$state/consumer"
+          } >> "$GITHUB_ENV"
+          python3 -I -S -B - "$state/consumer/composer.json" <<'PY'
+          import json,os,pathlib,sys
+          pathlib.Path(sys.argv[1]).write_text(json.dumps({
+              'name':'durable-workflow/published-laravel',
+              'require':{'durable-workflow/sdk':os.environ['SDK_VERSION'],'laravel/framework':os.environ['LARAVEL_VERSION']},
+              'config':{'allow-plugins':{}}
+          })+'\n')
+          PY
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+        with:
+          clients: python,composer,curl,git
+      - name: Set up the qualified PHP profile
+        uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7 # bound-linux-php
+        with:
+          php-version: '8.3'
+          ini-file: production
+          tools: composer:2.10.3,phpunit:11.5.57
+          coverage: none
+      - name: Verify Composer trust before registry installation
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+        with:
+          working-directory: ${{ env.LARAVEL_CONSUMER }}
+      - name: Install the exact registry SDK and Laravel floor
+        run: composer install --working-dir="$LARAVEL_CONSUMER" --no-scripts --no-plugins --no-interaction --prefer-dist --no-progress
+      - name: Verify Composer trust before the locked audit
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+        with:
+          working-directory: ${{ env.LARAVEL_CONSUMER }}
+      - name: Audit the actual installed graph
+        run: composer audit --working-dir="$LARAVEL_CONSUMER" --locked --format=json > laravel-audit.json
+      - name: Exercise the installed Laravel bridge and cached roles
+        env:
+          DURABLE_WORKFLOW_CLIENT_TOKEN: client-secret
+          DURABLE_WORKFLOW_WORKER_TOKEN: worker-secret
+        run: |
+          php scripts/ci/assert-installed-version.php "$LARAVEL_CONSUMER" durable-workflow/sdk "$SDK_VERSION"
+          php scripts/ci/assert-installed-version.php "$LARAVEL_CONSUMER" laravel/framework "$LARAVEL_VERSION"
+          python3 -I -S -B tests/ci/check_published_laravel.py "$LARAVEL_CONSUMER" "$SDK_VERSION" "$SDK_REFERENCE" "$LARAVEL_VERSION" > laravel-tuple.json
+          php tests/compat/laravel.php "$LARAVEL_CONSUMER/vendor/autoload.php"
+          php tests/compat/laravel-config-cache.php "$LARAVEL_CONSUMER/vendor/autoload.php"
+      - name: Retain the registry tuple and installed graph
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: published-laravel-${{ matrix.laravel }}
+          path: |
+            laravel-tuple.json
+            laravel-audit.json
+            ${{ env.LARAVEL_CONSUMER }}/composer.json
+            ${{ env.LARAVEL_CONSUMER }}/composer.lock
+            ${{ env.LARAVEL_CONSUMER }}/vendor/composer/installed.json
+          retention-days: 14
