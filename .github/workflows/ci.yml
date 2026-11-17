@@ -1223,7 +1223,7 @@ jobs:
       - name: Audit the docs tooling graph
         run: |
           npm --prefix "$DOCS_TOOLING_DIRECTORY" audit --json > "$RUNNER_TEMP/npm-audit.json" || true
-          node "$DOCS_TOOLING_DIRECTORY/scripts/ci/npm-audit-allowlisted.mjs" "$RUNNER_TEMP/npm-audit.json"
+          node "$DOCS_TOOLING_DIRECTORY/scripts/ci/npm-audit-allowlisted.mjs" < "$RUNNER_TEMP/npm-audit.json"
       - run: node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-examples.mjs"
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-portal-links
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-identity-status
