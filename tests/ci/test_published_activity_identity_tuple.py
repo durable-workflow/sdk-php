@@ -13,7 +13,7 @@ def guard_source():
 
 
 def require_disjoint_jobs(source):
-    expected = "    if: github.event_name == 'workflow_dispatch' && inputs.laravel_bridges && !inputs.activity_retry_identity"
+    expected = "    if: github.event_name == 'workflow_dispatch' && inputs.laravel_bridges && !inputs.activity_retry_identity && !inputs.pagination"
     header = source.split("  installed-laravel-bridges:\n", 1)[1].split("    runs-on:", 1)[0]
     if header.strip() != expected.strip():
         raise ValueError("The sibling Laravel job must not start for activity identity qualification")
@@ -25,7 +25,7 @@ class PublishedActivityIdentityTupleTest(unittest.TestCase):
             "PATH": os.defpath, "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
             "SDK_VERSION": "3.18.2", "SERVER_VERSION": "3.8.0",
             "SERVER_IMAGE": "durableworkflow/server@sha256:7988a23525d9e50e997a9f6f02e801300ed4f626de3cf6977033657ae7e9f58e",
-            "CANDIDATE_SOURCE": "", "COMPLETION_LIMITS": "false", "QUERY_RESULTS": "false", "LARAVEL_BRIDGES": "false",
+            "CANDIDATE_SOURCE": "", "COMPLETION_LIMITS": "false", "QUERY_RESULTS": "false", "LARAVEL_BRIDGES": "false", "PAGINATION": "false",
         }
 
     def accepts(self, changes=None):
@@ -38,7 +38,7 @@ class PublishedActivityIdentityTupleTest(unittest.TestCase):
 
     def test_source_selector_and_unrelated_qualification_flags_refuse(self):
         for variable, value in [("CANDIDATE_SOURCE", "a" * 40), ("COMPLETION_LIMITS", "true"),
-                                ("QUERY_RESULTS", "true"), ("LARAVEL_BRIDGES", "true")]:
+                                ("QUERY_RESULTS", "true"), ("LARAVEL_BRIDGES", "true"), ("PAGINATION", "true")]:
             with self.subTest(variable=variable):
                 self.assertFalse(self.accepts({variable: value}))
 
