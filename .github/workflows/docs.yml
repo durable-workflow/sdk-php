@@ -176,7 +176,11 @@ jobs:
           working-directory: ${{ env.DOCS_TOOLING_DIRECTORY }}
       - run: composer --working-dir="$DOCS_TOOLING_DIRECTORY" install --no-interaction --prefer-dist
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" ci --ignore-scripts
-      - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" audit --audit-level=moderate
+      - run: node --test "$DOCS_TOOLING_DIRECTORY/scripts/ci/npm-audit-allowlisted.test.mjs"
+      - name: Audit the docs tooling graph
+        run: |
+          npm --prefix "$DOCS_TOOLING_DIRECTORY" audit --json > "$RUNNER_TEMP/npm-audit.json" || true
+          node "$DOCS_TOOLING_DIRECTORY/scripts/ci/npm-audit-allowlisted.mjs" < "$RUNNER_TEMP/npm-audit.json"
       - run: node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-examples.mjs"
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-portal-links
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-identity-status
