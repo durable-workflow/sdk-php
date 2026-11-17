@@ -67,7 +67,7 @@ final class ControlRequestTimeoutTest extends TestCase
     {
         foreach ([false, true] as $native) {
             foreach (['stall', 'slow_headers', 'slow_body'] as $mode) {
-                foreach (['list', 'start', 'signal', 'update', ...self::WORKER_OPERATIONS] as $operation) {
+                foreach (['list', 'start', 'signal', 'update', 'version-usage', ...self::WORKER_OPERATIONS] as $operation) {
                     yield $mode.' '.$operation.' native='.(int) $native => [$mode, $operation, $native];
                 }
             }

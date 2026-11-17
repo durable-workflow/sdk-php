@@ -6,6 +6,13 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `Client::workflowVersionUsage()` reads typed live v1 open-run version usage,
+  with all-state counts, explicit unknown reasons and opaque continuation cursors
+  (.github#220). It requires the advertised `workflow_version_usage` capability
+  and retains the control credential, namespace and request timeout policy.
+
 ### Security
 
 - Raise the optional Laravel bridge floors to 12.72.0 and 13.41.0 for

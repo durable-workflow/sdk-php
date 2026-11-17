@@ -39,6 +39,7 @@ use DurableWorkflow\Model\ServiceOperationDescription;
 use DurableWorkflow\Model\ServiceOperationOptions;
 use DurableWorkflow\Model\WorkflowExecution;
 use DurableWorkflow\Model\WorkflowPage;
+use DurableWorkflow\Model\WorkflowVersionUsagePage;
 use DurableWorkflow\Model\WorkflowRun;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Model\WorkflowStreamAppendResult;
@@ -386,6 +387,57 @@ final class Client implements WorkflowClientInterface
         $this->rememberClaimedTaskReadyAge($info['worker_protocol']['server_capabilities'] ?? null);
 
         return ClusterInfo::fromArray($info);
+    }
+
+    /**
+     * Read one page of open-run version decisions for a proposed minimum supported version.
+     *
+     * Uses the existing control credential, namespace and control-request timeout policy.
+     * Cursors are opaque and query-bound: pass the returned nextCursor unchanged with the
+     * same filters. Counts precede state filtering and each page is a live observation,
+     * not a durable snapshot or authorization to remove a version branch.
+     *
+     * @throws ServerCapabilityUnavailable when workflow_version_usage is not advertised
+     * @throws \UnexpectedValueException when the v1 response or query identity is invalid
+     */
+    public function workflowVersionUsage(
+        string $workflowType,
+        string $changeId,
+        int $minVersion,
+        ?string $state = null,
+        int $limit = 50,
+        ?string $cursor = null,
+    ): WorkflowVersionUsagePage {
+        foreach ([[$workflowType, 255], [$changeId, 1024]] as [$identity, $maximum]) {
+            if (strlen($identity) > $maximum || preg_match('/[^\s\p{Z}]/u', $identity) !== 1) {
+                throw new InvalidArgumentException('Version usage needs nonblank UTF-8 workflow type and change ID within their byte limits.');
+            }
+        }
+        if ($minVersion < -2147483648 || $minVersion > 2147483647
+            || !in_array($state, [null, 'legacy', 'current', 'unknown'], true) || $limit < 1 || $limit > 200
+            || ($cursor !== null && ($cursor === '' || preg_match('//u', $cursor) !== 1))) {
+            throw new InvalidArgumentException('Invalid version-usage minimum, state, limit or opaque cursor.');
+        }
+        $info = ClusterInfo::fromArray($this->request('GET', self::CLUSTER_INFO_PATH, false,
+            payloadPaths: static fn (array $metadata): array => []));
+        if (!$info->supportsWorkflowVersionUsage()) {
+            throw new ServerCapabilityUnavailable(ClusterInfo::WORKFLOW_VERSION_USAGE,
+                'This Server does not advertise workflow_version_usage.');
+        }
+        $query = $this->withoutNulls([
+            'workflow_type' => $workflowType, 'change_id' => $changeId, 'min_version' => $minVersion,
+            'state' => $state, 'limit' => $limit, 'cursor' => $cursor,
+        ]);
+        $response = $this->request('GET', '/workflow-version-usage?'.http_build_query($query, '', '&', PHP_QUERY_RFC3986),
+            false, payloadPaths: static fn (array $metadata): array => []);
+        $page = WorkflowVersionUsagePage::fromArray($response, $cursor);
+        if ($page->namespace !== $this->namespace || $page->workflowType !== $workflowType
+            || $page->changeId !== $changeId || $page->minVersion !== $minVersion
+            || $page->state !== $state || $page->limit !== $limit) {
+            throw new \UnexpectedValueException('Version-usage response does not match the authenticated namespace and exact query.');
+        }
+
+        return $page;
     }
 
     /**
