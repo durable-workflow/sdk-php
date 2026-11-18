@@ -26,6 +26,7 @@ final class LocalActivityBackoffTest extends TestCase
         yield 'short list repeats its final entry' => [['max_attempts' => 5, 'backoff_seconds' => [1, 2]], [1, 2, 2, 2, 0]];
         yield 'full list is used as written' => [['max_attempts' => 3, 'backoff_seconds' => [3, 4]], [3, 4, 0]];
         yield 'no list keeps immediate retries' => [['max_attempts' => 3], [0, 0, 0]];
+        yield 'empty list keeps immediate retries' => [['max_attempts' => 3, 'backoff_seconds' => []], [0, 0, 0]];
         yield 'zero final entry stays immediate' => [['max_attempts' => 4, 'backoff_seconds' => [5, 0]], [5, 0, 0, 0]];
     }
 
