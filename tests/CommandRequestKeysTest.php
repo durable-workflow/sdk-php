@@ -96,6 +96,100 @@ final class CommandRequestKeysTest extends TestCase
         self::assertSame($bodies[2], $bodies[3]);
     }
 
+    public function testAnAmbiguousLegacyKeyIsATypedRefusalSentOnce(): void
+    {
+        $requests = [];
+        $client = $this->answering(409, [
+            'workflow_id' => 'order-1',
+            'reason' => 'request_id_ambiguous',
+            'outcome' => 'rejected_request_id_ambiguous',
+            'command_status' => 'rejected',
+            'rejection_reason' => 'request_id_ambiguous',
+            'retained' => true,
+            'intent_verified' => false,
+            'retryable' => false,
+            'message' => 'The request_id matches an ambiguous retained command identity.',
+        ], $requests);
+
+        foreach (['signal', 'update'] as $kind) {
+            try {
+                $kind === 'signal'
+                    ? $client->signalWorkflow('order-1', 'approve', ['Ada'], requestId: 'legacy-1')
+                    : $client->updateWorkflowReceipt('order-1', 'approve', ['Ada'], 'accepted', requestId: 'legacy-1');
+                self::fail('An ambiguous key must be refused.');
+            } catch (SignalFailed|UpdateFailed $exception) {
+                self::assertInstanceOf($kind === 'signal' ? SignalFailed::class : UpdateFailed::class, $exception);
+                self::assertSame(409, $exception->status);
+                self::assertTrue($exception->isRequestIdAmbiguous());
+                self::assertFalse($exception->isRequestIdConflict());
+                self::assertSame('legacy-1', $exception->requestId());
+                self::assertSame([], $exception->conflict());
+                self::assertNull($exception->retainedCommandId());
+                self::assertSame('rejected_request_id_ambiguous', $exception->details()['outcome']);
+                self::assertFalse($exception->details()['intent_verified']);
+            }
+        }
+
+        self::assertCount(2, $requests);
+    }
+
+    public function testALegacyReceiptReadsBackUnverifiedWithoutAnError(): void
+    {
+        $requests = [];
+        $client = $this->answering(202, [
+            'workflow_id' => 'order-1',
+            'command_id' => 'cmd-legacy',
+            'run_id' => 'run-1',
+            'command_status' => 'accepted',
+            'outcome' => 'signal_received',
+            'retained' => true,
+            'intent_verified' => false,
+        ], $requests);
+
+        $receipt = $client->signalWorkflow('order-1', 'approve', ['Grace'], requestId: 'legacy-1');
+        self::assertSame('cmd-legacy', $receipt['command_id']);
+        self::assertTrue($receipt['retained']);
+        self::assertFalse($receipt['intent_verified']);
+        self::assertSame('legacy-1', $receipt['request_id']);
+        self::assertCount(1, $requests);
+    }
+
+    public function testAGeneratedKeyIsSentOnceAndCarriedByTheFailure(): void
+    {
+        $requests = [];
+        $client = $this->answering(503, ['reason' => 'unavailable', 'message' => 'Try again.'], $requests);
+
+        try {
+            $client->signalWorkflow('order-1', 'approve', ['Ada']);
+            self::fail('A 503 must surface.');
+        } catch (SignalFailed $exception) {
+            $key = $exception->requestId();
+            self::assertIsString($key);
+            self::assertMatchesRegularExpression('/\Asdk-php-signal-[0-9a-f]{32}\z/', $key);
+            self::assertCount(1, $requests);
+            $body = json_decode((string) $requests[0]->getBody(), true, flags: JSON_THROW_ON_ERROR);
+            self::assertSame($key, $body['request_id']);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $response
+     * @param list<RequestInterface> $requests
+     */
+    private function answering(int $status, array $response, array &$requests): Client
+    {
+        $http = new GuzzleClient(['handler' => static function (RequestInterface $request) use ($status, $response, &$requests) {
+            if ($request->getUri()->getPath() === '/api/cluster/info') {
+                return Create::promiseFor(new Response(200, [], json_encode(['capabilities' => ['command_request_keys' => true]], JSON_THROW_ON_ERROR)));
+            }
+            $requests[] = $request;
+
+            return Create::promiseFor(new Response($status, [], json_encode($response, JSON_THROW_ON_ERROR)));
+        }]);
+
+        return new Client('https://runtime.test', transport: new Psr18Transport($http), controlToken: 'fixture-client');
+    }
+
     public function testAnOlderServerWithoutTheCapabilityIsUnchanged(): void
     {
         [$client, $requests] = $this->server(native: false);

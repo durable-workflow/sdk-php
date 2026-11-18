@@ -266,9 +266,8 @@ def identity(receipt, kind):
             "The admission identity is incomplete")
     require(type(receipt.get("command_sequence")) is int and receipt["command_sequence"] > 0,
             "The command sequence is missing")
-    if kind == "signal":
-        require(isinstance(receipt.get("signal_id"), str) and receipt["signal_id"], "The signal identity is missing")
-        fields += ["signal_id"]
+    # A signal receipt identifies its admission by command_id; the signal_id
+    # appears only on the SignalReceived history event.
     return {field: receipt[field] for field in fields + ["command_sequence"]}
 
 
@@ -307,7 +306,17 @@ def history(client, workflow, run):
     return client.answered({"operation": "history", "workflow_id": workflow, "run_id": run})
 
 
-def settle(client, workflow, queue, original_run, mode):
+def settle(client, workflow, queue, original_run, mode, update_id):
+    # Apply the queued signal and update before releasing the run. The fixture's
+    # condition reads signals() from the whole history, so a release admitted
+    # behind the queued update would otherwise close the run before the update
+    # is applied, and the Server would then fail that update on closure.
+    for _ in range(6):
+        client.answered({"operation": "drive", "workflow_id": workflow, "task_queue": queue})
+        if client.call({"operation": "value", "workflow_id": workflow, "update_id": update_id}).get("outcome") == "answered":
+            break
+    else:
+        raise RuntimeError("The fixture did not apply its queued update")
     client.answered({"operation": "signal", "workflow_id": workflow, "name": "release",
                      "request_id": "release", "arguments": []})
     for _ in range(6):
@@ -342,7 +351,7 @@ def direct_cell(client, mode):
                            "update_id": admissions["update"][1]["update_id"]})
     require(pending.get("outcome") == "pending", "The queued update did not preserve typed pending")
     if mode != "open":
-        settled = settle(client, workflow, queue, run, mode)
+        settled = settle(client, workflow, queue, run, mode, admissions["update"][1]["update_id"])
         for kind, (packet, original) in admissions.items():
             four_retries(client, packet, original, kind)
         value = client.answered({"operation": "value", "workflow_id": workflow,

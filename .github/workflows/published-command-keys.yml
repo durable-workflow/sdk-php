@@ -1,6 +1,11 @@
 name: Published PHP command keys
 
 on:
+  pull_request:
+    paths: ['.github/workflows/published-command-keys.yml', 'tests/smoke/command-key-client.php', 'tests/smoke/command-key-supply.json', 'tests/smoke/command_key_cohort.py', 'tests/smoke/command_key_containers.py', 'tests/smoke/command_key_include_closure.py', 'tests/smoke/verify_command_key_supply.py']
+  push:
+    branches: [main]
+    paths: ['.github/workflows/published-command-keys.yml', 'tests/smoke/command-key-client.php', 'tests/smoke/command-key-supply.json', 'tests/smoke/command_key_cohort.py', 'tests/smoke/command_key_containers.py', 'tests/smoke/command_key_include_closure.py', 'tests/smoke/verify_command_key_supply.py']
   workflow_dispatch:
 
 permissions:
@@ -8,7 +13,7 @@ permissions:
 
 jobs:
   modern-command-keys:
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -91,7 +96,7 @@ jobs:
               raise RuntimeError("An exact trusted runner source is required")
           path="tests/smoke/command_key_cohort.py"
           raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
-          if hashlib.sha256(raw).hexdigest() != "ce34c084c0a45c861a1cbe791a6be90936d59b3c7e3bce4066dad3c38e42e0c2":
+          if hashlib.sha256(raw).hexdigest() != "fb0334dced85a883db1bf52237fd4e37cd778e29463341949ba5599d45c846c0":
               raise RuntimeError("The captured controller differs from its independently fixed digest")
           exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
           ' \
@@ -129,7 +134,7 @@ jobs:
               raise RuntimeError("An exact trusted runner source is required")
           path="tests/smoke/command_key_cohort.py"
           raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
-          if hashlib.sha256(raw).hexdigest() != "ce34c084c0a45c861a1cbe791a6be90936d59b3c7e3bce4066dad3c38e42e0c2":
+          if hashlib.sha256(raw).hexdigest() != "fb0334dced85a883db1bf52237fd4e37cd778e29463341949ba5599d45c846c0":
               raise RuntimeError("The captured controller differs from its independently fixed digest")
           exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
           ' \
@@ -156,7 +161,7 @@ jobs:
               raise RuntimeError("An exact trusted runner source is required")
           path="tests/smoke/command_key_cohort.py"
           raw=subprocess.check_output(["/usr/bin/git","--no-replace-objects","show",source+":"+path],timeout=10)
-          if hashlib.sha256(raw).hexdigest() != "ce34c084c0a45c861a1cbe791a6be90936d59b3c7e3bce4066dad3c38e42e0c2":
+          if hashlib.sha256(raw).hexdigest() != "fb0334dced85a883db1bf52237fd4e37cd778e29463341949ba5599d45c846c0":
               raise RuntimeError("The captured controller differs from its independently fixed digest")
           exec(compile(raw,path,"exec"),{"__name__":"__main__","__file__":str(Path.cwd()/path)})
           ' \
