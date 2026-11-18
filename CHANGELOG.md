@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `SignalFailed::isRequestIdAmbiguous()` and `UpdateFailed::isRequestIdAmbiguous()`
+  detect the 409 `request_id_ambiguous` refusal native Server 3.9.2 and later
+  return when a command key matches an ambiguous legacy retained identity
+  (durable-workflow/.github#216). Nothing was written and no receipt was
+  selected, so the refusal is never resent automatically.
+
 ## [3.20.0] - 2026-11-18
 
 ### Added

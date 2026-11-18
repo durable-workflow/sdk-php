@@ -53,6 +53,20 @@ trait CarriesCommandRequestId
     }
 
     /**
+     * Whether the Server refused the key because it matches an ambiguous retained identity.
+     *
+     * A 409 `request_id_ambiguous` (`rejected_request_id_ambiguous`) means the key matches a
+     * legacy retained command that the Server cannot select safely, for example a raw legacy
+     * key and a hashed key, or keys that differ only by case on a case-insensitive database.
+     * Nothing was written and no receipt was selected. Don't retry this unchanged: inspect the
+     * original command before sending the input again under a new key.
+     */
+    public function isRequestIdAmbiguous(): bool
+    {
+        return $this->status === 409 && $this->reason === 'request_id_ambiguous';
+    }
+
+    /**
      * The parts of the refused command that differ from the retained one, for a
      * `request_id_conflict`: `name`, `arguments` or `target_or_arguments`. Otherwise empty.
      *

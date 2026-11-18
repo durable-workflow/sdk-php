@@ -401,6 +401,16 @@ command key on the workflow instance:
   (`name`, `arguments` or `target_or_arguments`) and `retainedCommandId()`
   names the original command. Don't retry it unchanged: send the original input
   to recover the receipt, or use a new key for new input.
+- A key retained before the Server recorded command intent (a legacy receipt)
+  reads back the original receipt with `retained: true` and
+  `intent_verified: false`. The Server can't prove the retry matches it, so it
+  neither admits a new command nor reports equality; check the receipt's
+  identities before treating it as your command.
+- A key that matches an ambiguous legacy identity (a raw legacy key and a
+  hashed key, or keys differing only by case on a case-insensitive database) is
+  refused with 409 `request_id_ambiguous` and `isRequestIdAmbiguous()` is true.
+  Nothing is written and no receipt is selected; inspect the original command
+  before sending the input under a new key.
 
 ```php
 use DurableWorkflow\Exception\SignalFailed;
