@@ -537,6 +537,22 @@ type, visibility-query, page-size, and continuation-token filtering. Pass a
 non-null `nextPageToken` back unchanged with the same namespace and filters to
 read the next page. See the protocol guide for the paging and error contract.
 
+`listWorkers()` reads one page of worker registrations. Native Server 3.13.0
+and later return at most 100 registrations per page in worker id order with a
+`next_page_token`; older Servers return every registration in one response
+without a token. `listAllWorkers()` follows the tokens with the same filters
+for at most `Client::LIST_ALL_WORKERS_MAX_PAGES` (50) requests by default and
+returns the last page with `workers` holding every registration read.
+`next_page_token` is null when the list is complete and is the unread token
+when the page bound stopped the read:
+
+```php
+$workers = $client->listAllWorkers(taskQueue: 'orders', status: 'stale');
+if ($workers['next_page_token'] ?? null) {
+    // More registrations remain beyond the page bound.
+}
+```
+
 `startServiceOperation()` explicitly starts an asynchronous call and returns a
 `ServiceOperationHandle`. `executeServiceOperation()` honors the catalog mode,
 waits for completion by default, and returns a `ServiceOperationDescription`.
