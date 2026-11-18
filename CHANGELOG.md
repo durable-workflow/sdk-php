@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.20.0] - 2026-11-18
+
 ### Added
 
 - `Client::listWorkers()` takes optional `pageSize` and `nextPageToken`
