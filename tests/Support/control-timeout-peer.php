@@ -54,7 +54,7 @@ while (microtime(true) < $until) {
         'headers' => $headers, 'body' => $body], JSON_THROW_ON_ERROR)."\n", FILE_APPEND | LOCK_EX);
     $replyMode = str_starts_with($parts[1], '/api/cluster/info') ? 'echo' : $mode;
     if (str_starts_with($parts[1], '/api/cluster/info')) {
-        $payload = '{"limits":{"max_payload_bytes":1048576}}';
+        $payload = '{"limits":{"max_payload_bytes":1048576},"capabilities":{"workflow_version_usage":true}}';
     } elseif ($replyMode === 'echo') {
         $payload = '{"status":"ok","workflows":[]}';
     } else {

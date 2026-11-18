@@ -45,9 +45,9 @@ h1, h2, h3, h4 { color: var(--ink); font-family: var(--display); font-weight: 60
 .primary-nav .header-cta { font-size: 14px; padding-inline: 16px; white-space: nowrap; }
 .theme-toggle { border: 1px solid var(--line); border-radius: 6px; min-height: 44px; padding: 8px 10px; color: var(--ink2); background: var(--surface); font-size: 13px; }
 .sdk-switcher { position: relative; }
-.sdk-switcher summary { min-height: 44px; display: flex; align-items: center; gap: 5px; list-style: none; }
+.sdk-switcher summary { min-height: 44px; display: flex; align-items: center; font-weight: 400; list-style: none; }
 .sdk-switcher summary::-webkit-details-marker { display: none; }
-.sdk-switcher summary::after { content: '⌄'; }
+.sdk-indicator { font-size: .8em; line-height: 1; vertical-align: middle; }
 .sdk-menu { position: absolute; top: 100%; left: -12px; min-width: 160px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px; z-index: 40; }
 .sdk-menu a { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; min-height: 44px; color: var(--ink2); text-decoration: none; border-radius: 6px; }
 .sdk-menu a:hover, .sdk-menu a[aria-current] { background: var(--tint); color: var(--action); }
@@ -96,4 +96,4 @@ h1, h2, h3, h4 { color: var(--ink); font-family: var(--display); font-weight: 60
 [data-theme='dark'] .status-pill[data-state='incident'] { color: #F5A2A5; background: #351C20; border-color: #71373E; }
 [data-theme='dark'] .status-pill[data-state='maintenance'] { color: #A4C9F6; background: #192B40; border-color: #355C88; }
 .status-pill .status-label { width: auto; height: auto; border: 0; border-radius: 0; }
-.sdk-switcher summary, .sdk-menu a[aria-current], .footer-grid a[aria-current] { color: var(--ink); font-weight: 600; }
+.sdk-menu a[aria-current], .footer-grid a[aria-current] { color: var(--ink); font-weight: 600; }
