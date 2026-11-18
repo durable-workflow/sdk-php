@@ -6,6 +6,15 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `Client::listWorkers()` takes optional `pageSize` and `nextPageToken`
+  arguments for the paged worker list of native Server 3.13.0 and later, and
+  `Client::listAllWorkers()` follows `next_page_token` for at most 50 requests
+  by default, returning every registration read and any unread token. Servers
+  that do not page the worker list are read with one request as before
+  (server#553).
+
 ## [3.19.0] - 2026-11-17
 
 ### Added

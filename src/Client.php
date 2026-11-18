@@ -80,6 +80,9 @@ use InvalidArgumentException;
 /** Synchronous control-plane and worker-plane client for the standalone server. */
 final class Client implements WorkflowClientInterface
 {
+    /** Default request bound for listAllWorkers(): 5,000 registrations at the native page size. */
+    public const LIST_ALL_WORKERS_MAX_PAGES = 50;
+
     private const EXTERNAL_PAYLOAD_REFERENCE_SCHEMA = 'durable-workflow.v2.external-payload-reference.v1';
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_MESSAGE = 'Workflow task waiting for scheduled history.';
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_TYPE = 'WorkflowTaskWaitingForHistory';
@@ -1865,13 +1868,73 @@ final class Client implements WorkflowClientInterface
         return $types;
     }
 
-    /** @return array<string, mixed> */
-    public function listWorkers(?string $taskQueue = null, ?string $status = null): array
-    {
+    /**
+     * Read one page of worker registrations.
+     *
+     * Native Server 3.13.0 and later return at most 100 registrations per page
+     * in worker id order and a `next_page_token` that is null on the last page.
+     * Pass a non-null token back unchanged with the same namespace and filters
+     * to read the next page. Older Servers return every registration in one
+     * response without a `next_page_token`.
+     *
+     * @return array<string, mixed>
+     */
+    public function listWorkers(
+        ?string $taskQueue = null,
+        ?string $status = null,
+        ?int $pageSize = null,
+        ?string $nextPageToken = null,
+    ): array {
         return $this->control('GET', $this->pathWithQuery('/workers', [
             'task_queue' => $taskQueue,
             'status' => $status,
+            'page_size' => $pageSize,
+            'next_page_token' => $nextPageToken,
         ]));
+    }
+
+    /**
+     * Read every worker registration by following `next_page_token`, making at
+     * most `$maxPages` requests.
+     *
+     * Returns the last page read with `workers` replaced by every registration
+     * read, in the Server's order. `next_page_token` is null when the list is
+     * complete, or the unread continuation when `$maxPages` stopped the read.
+     * A Server that does not page the worker list (no `next_page_token` in its
+     * response) is read with one request and its response is returned as is.
+     *
+     * @return array<string, mixed>
+     * @throws PaginationException when a page is malformed or a token repeats
+     */
+    public function listAllWorkers(
+        ?string $taskQueue = null,
+        ?string $status = null,
+        ?int $pageSize = null,
+        int $maxPages = self::LIST_ALL_WORKERS_MAX_PAGES,
+    ): array {
+        if ($maxPages < 1) {
+            throw new InvalidArgumentException('The worker list page bound must be at least 1.');
+        }
+
+        $page = $this->listWorkers($taskQueue, $status, $pageSize);
+        if (!array_key_exists('next_page_token', $page)) {
+            return $page;
+        }
+
+        $workers = $this->paginationItems($page, 'workers');
+        $next = $this->continuationToken($page);
+        $seen = [];
+        for ($read = 1; $next !== null && $read < $maxPages; ++$read) {
+            $seen[$next] = true;
+            $page = $this->listWorkers($taskQueue, $status, $pageSize, $next);
+            array_push($workers, ...$this->paginationItems($page, 'workers'));
+            $next = $this->continuationToken($page);
+            if ($next !== null && isset($seen[$next])) {
+                throw new PaginationException('The Server repeated a continuation token or formed a token cycle.', 'repeated_page_token');
+            }
+        }
+
+        return [...$page, 'workers' => $workers, 'next_page_token' => $next];
     }
 
     /** @return array<string, mixed> */
