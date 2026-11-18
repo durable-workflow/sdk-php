@@ -22,7 +22,7 @@ class PublishedPaginationTupleTest(unittest.TestCase):
             "SDK_VERSION": "3.18.2", "SERVER_VERSION": "3.8.0",
             "SERVER_IMAGE": "durableworkflow/server@sha256:7988a23525d9e50e997a9f6f02e801300ed4f626de3cf6977033657ae7e9f58e",
             "CANDIDATE_SOURCE": "", "COMPLETION_LIMITS": "false", "QUERY_RESULTS": "false",
-            "LARAVEL_BRIDGES": "false", "ACTIVITY_RETRY_IDENTITY": "false",
+            "LARAVEL_BRIDGES": "false", "ACTIVITY_RETRY_IDENTITY": "false", "LOCAL_BACKOFF": "false",
         }
 
     def accepts(self, changes=None):
@@ -35,7 +35,7 @@ class PublishedPaginationTupleTest(unittest.TestCase):
     def test_candidates_conflicting_cases_and_foreign_tuples_refuse(self):
         for variable, value in [("CANDIDATE_SOURCE", "a" * 40), ("COMPLETION_LIMITS", "true"),
                                 ("QUERY_RESULTS", "true"), ("LARAVEL_BRIDGES", "true"),
-                                ("ACTIVITY_RETRY_IDENTITY", "true"), ("SDK_VERSION", "3.18.3"),
+                                ("ACTIVITY_RETRY_IDENTITY", "true"), ("LOCAL_BACKOFF", "true"), ("SDK_VERSION", "3.18.3"),
                                 ("SERVER_VERSION", "3.9.1"), ("SERVER_IMAGE", "durableworkflow/server:3.8.0"),
                                 ("GITHUB_EVENT_NAME", "pull_request"), ("GITHUB_REF", "refs/heads/topic")]:
             with self.subTest(variable=variable):
@@ -43,7 +43,7 @@ class PublishedPaginationTupleTest(unittest.TestCase):
 
     def test_sibling_laravel_job_excludes_pagination_before_effects(self):
         header = workflow_source().split("  installed-laravel-bridges:\n", 1)[1].split("    runs-on:", 1)[0]
-        self.assertEqual("if: github.event_name == 'workflow_dispatch' && inputs.laravel_bridges && !inputs.activity_retry_identity && !inputs.pagination",
+        self.assertEqual("if: github.event_name == 'workflow_dispatch' && inputs.laravel_bridges && !inputs.activity_retry_identity && !inputs.pagination && !inputs.local_backoff",
                          header.strip())
 
     def test_nonempty_typed_evidence_is_required(self):
