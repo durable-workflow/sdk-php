@@ -32,11 +32,11 @@ final class LaravelAdoptionContractTest extends TestCase
             'The optional Laravel bridge floor must not raise the bare HTTP SDK floor.');
         self::assertSame(
             [
-                ['laravel' => '12', 'php' => '8.2', 'package' => 'laravel/framework:^12.69.0', 'exercised_package' => 'laravel/framework:12.69.0', 'bootstrap' => 'fresh_supported_install'],
-                ['laravel' => '12', 'php' => '8.3', 'package' => 'laravel/framework:^12.69.0', 'exercised_package' => 'laravel/framework:12.69.0', 'bootstrap' => 'fresh_supported_install'],
-                ['laravel' => '13', 'php' => '8.3', 'package' => 'laravel/framework:^13.30.0', 'exercised_package' => 'laravel/framework:13.30.0', 'bootstrap' => 'fresh_supported_install'],
-                ['laravel' => '12', 'php' => '8.4', 'package' => 'laravel/framework:^12.69.0', 'exercised_package' => 'laravel/framework:12.69.0', 'bootstrap' => 'fresh_supported_install'],
-                ['laravel' => '13', 'php' => '8.4', 'package' => 'laravel/framework:^13.30.0', 'exercised_package' => 'laravel/framework:13.30.0', 'bootstrap' => 'fresh_supported_install'],
+                ['laravel' => '12', 'php' => '8.2', 'package' => 'laravel/framework:^12.72.0', 'exercised_package' => 'laravel/framework:12.72.0', 'bootstrap' => 'fresh_supported_install'],
+                ['laravel' => '12', 'php' => '8.3', 'package' => 'laravel/framework:^12.72.0', 'exercised_package' => 'laravel/framework:12.72.0', 'bootstrap' => 'fresh_supported_install'],
+                ['laravel' => '13', 'php' => '8.3', 'package' => 'laravel/framework:^13.41.0', 'exercised_package' => 'laravel/framework:13.41.0', 'bootstrap' => 'fresh_supported_install'],
+                ['laravel' => '12', 'php' => '8.4', 'package' => 'laravel/framework:^12.72.0', 'exercised_package' => 'laravel/framework:12.72.0', 'bootstrap' => 'fresh_supported_install'],
+                ['laravel' => '13', 'php' => '8.4', 'package' => 'laravel/framework:^13.41.0', 'exercised_package' => 'laravel/framework:13.41.0', 'bootstrap' => 'fresh_supported_install'],
             ],
             $this->contract['framework']['qualification_matrix'],
         );
@@ -48,13 +48,13 @@ final class LaravelAdoptionContractTest extends TestCase
         ], $this->contract['embedded_transition_authority']);
     }
 
-    public function testServiceModePublishesThePatchedLaravelFloorsForGhsaF9x37vq9Cph6(): void
+    public function testServiceModePublishesThePatchedLaravelFloorsForGhsa63hmG96r2m2q(): void
     {
-        // The maintained majors and patched floors published by Workflow 2.21.0.
-        $floors = '^12.69.0|^13.30.0';
+        // Current maintained majors and the CVE-2026-128083 patched floors.
+        $floors = '^12.72.0|^13.41.0';
         self::assertSame($floors, $this->contract['framework']['constraint']);
         self::assertSame($floors, $this->composer['extra']['durable-workflow']['frameworks']['laravel']);
-        foreach (['12.69.0', '13.30.0'] as $floor) {
+        foreach (['12.72.0', '13.41.0'] as $floor) {
             self::assertStringContainsString($floor, $this->composer['suggest']['laravel/framework']);
         }
         self::assertArrayNotHasKey('laravel/framework', $this->composer['conflict'] ?? [],
@@ -133,16 +133,16 @@ final class LaravelAdoptionContractTest extends TestCase
             "            php: '8.4'\n",
         ), 'A framework cell must use its job\'s fixed PHP minor.'];
         yield 'exact minimum removed from a cell' => [$first(
-            "            exercised_package: 'laravel/framework:12.69.0'\n",
+            "            exercised_package: 'laravel/framework:12.72.0'\n",
             '',
         ), 'The CI Laravel cells differ from the adoption contract.'];
         yield 'cell exercises a later 12.x release' => [$first(
-            "exercised_package: 'laravel/framework:12.69.0'",
-            "exercised_package: 'laravel/framework:12.70.0'",
+            "exercised_package: 'laravel/framework:12.72.0'",
+            "exercised_package: 'laravel/framework:12.73.0'",
         ), 'The CI Laravel cells differ from the adoption contract.'];
         yield 'cell exercises a caret range' => [$first(
-            "exercised_package: 'laravel/framework:12.69.0'",
-            "exercised_package: 'laravel/framework:^12.69.0'",
+            "exercised_package: 'laravel/framework:12.72.0'",
+            "exercised_package: 'laravel/framework:^12.72.0'",
         ), 'The CI Laravel cells differ from the adoption contract.'];
         yield 'no installed-version assertion after the SDK' => [static fn (string $workflow): string => str_replace(
             "              --no-interaction --prefer-dist --no-progress\n"

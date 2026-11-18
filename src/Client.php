@@ -39,6 +39,7 @@ use DurableWorkflow\Model\ServiceOperationDescription;
 use DurableWorkflow\Model\ServiceOperationOptions;
 use DurableWorkflow\Model\WorkflowExecution;
 use DurableWorkflow\Model\WorkflowPage;
+use DurableWorkflow\Model\WorkflowVersionUsagePage;
 use DurableWorkflow\Model\WorkflowRun;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Model\WorkflowStreamAppendResult;
@@ -79,6 +80,9 @@ use InvalidArgumentException;
 /** Synchronous control-plane and worker-plane client for the standalone server. */
 final class Client implements WorkflowClientInterface
 {
+    /** Default request bound for listAllWorkers(): 5,000 registrations at the native page size. */
+    public const LIST_ALL_WORKERS_MAX_PAGES = 50;
+
     private const EXTERNAL_PAYLOAD_REFERENCE_SCHEMA = 'durable-workflow.v2.external-payload-reference.v1';
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_MESSAGE = 'Workflow task waiting for scheduled history.';
     private const WORKFLOW_TASK_WAITING_FOR_HISTORY_TYPE = 'WorkflowTaskWaitingForHistory';
@@ -386,6 +390,57 @@ final class Client implements WorkflowClientInterface
         $this->rememberClaimedTaskReadyAge($info['worker_protocol']['server_capabilities'] ?? null);
 
         return ClusterInfo::fromArray($info);
+    }
+
+    /**
+     * Read one page of open-run version decisions for a proposed minimum supported version.
+     *
+     * Uses the existing control credential, namespace and control-request timeout policy.
+     * Cursors are opaque and query-bound: pass the returned nextCursor unchanged with the
+     * same filters. Counts precede state filtering and each page is a live observation,
+     * not a durable snapshot or authorization to remove a version branch.
+     *
+     * @throws ServerCapabilityUnavailable when workflow_version_usage is not advertised
+     * @throws \UnexpectedValueException when the v1 response or query identity is invalid
+     */
+    public function workflowVersionUsage(
+        string $workflowType,
+        string $changeId,
+        int $minVersion,
+        ?string $state = null,
+        int $limit = 50,
+        ?string $cursor = null,
+    ): WorkflowVersionUsagePage {
+        foreach ([[$workflowType, 255], [$changeId, 1024]] as [$identity, $maximum]) {
+            if (strlen($identity) > $maximum || preg_match('/[^\s\p{Z}]/u', $identity) !== 1) {
+                throw new InvalidArgumentException('Version usage needs nonblank UTF-8 workflow type and change ID within their byte limits.');
+            }
+        }
+        if ($minVersion < -2147483648 || $minVersion > 2147483647
+            || !in_array($state, [null, 'legacy', 'current', 'unknown'], true) || $limit < 1 || $limit > 200
+            || ($cursor !== null && ($cursor === '' || preg_match('//u', $cursor) !== 1))) {
+            throw new InvalidArgumentException('Invalid version-usage minimum, state, limit or opaque cursor.');
+        }
+        $info = ClusterInfo::fromArray($this->request('GET', self::CLUSTER_INFO_PATH, false,
+            payloadPaths: static fn (array $metadata): array => []));
+        if (!$info->supportsWorkflowVersionUsage()) {
+            throw new ServerCapabilityUnavailable(ClusterInfo::WORKFLOW_VERSION_USAGE,
+                'This Server does not advertise workflow_version_usage.');
+        }
+        $query = $this->withoutNulls([
+            'workflow_type' => $workflowType, 'change_id' => $changeId, 'min_version' => $minVersion,
+            'state' => $state, 'limit' => $limit, 'cursor' => $cursor,
+        ]);
+        $response = $this->request('GET', '/workflow-version-usage?'.http_build_query($query, '', '&', PHP_QUERY_RFC3986),
+            false, payloadPaths: static fn (array $metadata): array => []);
+        $page = WorkflowVersionUsagePage::fromArray($response, $cursor);
+        if ($page->namespace !== $this->namespace || $page->workflowType !== $workflowType
+            || $page->changeId !== $changeId || $page->minVersion !== $minVersion
+            || $page->state !== $state || $page->limit !== $limit) {
+            throw new \UnexpectedValueException('Version-usage response does not match the authenticated namespace and exact query.');
+        }
+
+        return $page;
     }
 
     /**
@@ -1813,13 +1868,73 @@ final class Client implements WorkflowClientInterface
         return $types;
     }
 
-    /** @return array<string, mixed> */
-    public function listWorkers(?string $taskQueue = null, ?string $status = null): array
-    {
+    /**
+     * Read one page of worker registrations.
+     *
+     * Native Server 3.13.0 and later return at most 100 registrations per page
+     * in worker id order and a `next_page_token` that is null on the last page.
+     * Pass a non-null token back unchanged with the same namespace and filters
+     * to read the next page. Older Servers return every registration in one
+     * response without a `next_page_token`.
+     *
+     * @return array<string, mixed>
+     */
+    public function listWorkers(
+        ?string $taskQueue = null,
+        ?string $status = null,
+        ?int $pageSize = null,
+        ?string $nextPageToken = null,
+    ): array {
         return $this->control('GET', $this->pathWithQuery('/workers', [
             'task_queue' => $taskQueue,
             'status' => $status,
+            'page_size' => $pageSize,
+            'next_page_token' => $nextPageToken,
         ]));
+    }
+
+    /**
+     * Read every worker registration by following `next_page_token`, making at
+     * most `$maxPages` requests.
+     *
+     * Returns the last page read with `workers` replaced by every registration
+     * read, in the Server's order. `next_page_token` is null when the list is
+     * complete, or the unread continuation when `$maxPages` stopped the read.
+     * A Server that does not page the worker list (no `next_page_token` in its
+     * response) is read with one request and its response is returned as is.
+     *
+     * @return array<string, mixed>
+     * @throws PaginationException when a page is malformed or a token repeats
+     */
+    public function listAllWorkers(
+        ?string $taskQueue = null,
+        ?string $status = null,
+        ?int $pageSize = null,
+        int $maxPages = self::LIST_ALL_WORKERS_MAX_PAGES,
+    ): array {
+        if ($maxPages < 1) {
+            throw new InvalidArgumentException('The worker list page bound must be at least 1.');
+        }
+
+        $page = $this->listWorkers($taskQueue, $status, $pageSize);
+        if (!array_key_exists('next_page_token', $page)) {
+            return $page;
+        }
+
+        $workers = $this->paginationItems($page, 'workers');
+        $next = $this->continuationToken($page);
+        $seen = [];
+        for ($read = 1; $next !== null && $read < $maxPages; ++$read) {
+            $seen[$next] = true;
+            $page = $this->listWorkers($taskQueue, $status, $pageSize, $next);
+            array_push($workers, ...$this->paginationItems($page, 'workers'));
+            $next = $this->continuationToken($page);
+            if ($next !== null && isset($seen[$next])) {
+                throw new PaginationException('The Server repeated a continuation token or formed a token cycle.', 'repeated_page_token');
+            }
+        }
+
+        return [...$page, 'workers' => $workers, 'next_page_token' => $next];
     }
 
     /** @return array<string, mixed> */

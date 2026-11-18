@@ -6,6 +6,35 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.20.0] - 2026-11-18
+
+### Added
+
+- `Client::listWorkers()` takes optional `pageSize` and `nextPageToken`
+  arguments for the paged worker list of native Server 3.13.0 and later, and
+  `Client::listAllWorkers()` follows `next_page_token` for at most 50 requests
+  by default, returning every registration read and any unread token. Servers
+  that do not page the worker list are read with one request as before
+  (server#553).
+
+## [3.19.0] - 2026-11-17
+
+### Added
+
+- `Client::workflowVersionUsage()` reads typed live v1 open-run version usage,
+  with all-state counts, explicit unknown reasons and opaque continuation cursors
+  (.github#220). It requires the advertised `workflow_version_usage` capability
+  and retains the control credential, namespace and request timeout policy.
+
+## [3.18.3] - 2026-11-14
+
+### Security
+
+- Raise the optional Laravel bridge floors to 12.72.0 and 13.41.0 for
+  the November concurrency and signed-URL advisories, reject affected installations before provider bindings,
+  and update the current qualification matrix and HTTP example dependency
+  graph. Historical qualification reports retain their original tuples (#421).
+
 ## [3.18.2] - 2026-11-13
 
 ### Fixed

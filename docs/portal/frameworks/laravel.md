@@ -17,11 +17,18 @@ next:
   <div class="choice"><h3>Cloud or Server</h3><p><code>durable-workflow/sdk</code> connects the same Laravel application structure to a separately operated namespace. The Laravel bridge keeps container resolution, configuration, Artisan, logging, events, and testing.</p></div>
 </div>
 
-The service-mode bridge supports Laravel 12.69.0 and 13.30.0, and later
-releases of each major (`^12.69.0|^13.30.0`). The Laravel bridge requires PHP
-8.2 or newer, with PHP 8.3 or newer for Laravel 13. These are the same patched
-framework and PHP floors published by Workflow 2.21.0 for embedded v2. The
-bare HTTP SDK continues to support PHP 8.1.
+The service-mode bridge supports Laravel 12.72.0 and 13.41.0, and later
+releases of each major (`^12.72.0|^13.41.0`). The Laravel bridge requires PHP
+8.2 or newer, with PHP 8.3 or newer for Laravel 13. These Laravel floors include
+the November security fixes:
+
+- [Task output injection](https://github.com/advisories/GHSA-63hm-g96r-2m2q)
+- [Signed URL query limits](https://github.com/laravel/framework/security/advisories/GHSA-v5ch-g375-82r6)
+- [Signed URL route parameters](https://github.com/laravel/framework/security/advisories/GHSA-6rv8-qj5v-p8ch)
+
+Embedded-to-service transitions require the installed Workflow package to
+publish the same Laravel and PHP support contract. The bare HTTP SDK continues
+to support PHP 8.1.
 
 SDK 3.10 removes Laravel 10 and 11 from service-mode framework support. Those
 majors are past their upstream end of life and have published advisories with

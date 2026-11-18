@@ -10,8 +10,8 @@ use RuntimeException;
 final class LaravelPlatform
 {
     private const PLATFORMS = [
-        12 => ['floor' => '12.69.0', 'php' => 80200],
-        13 => ['floor' => '13.30.0', 'php' => 80300],
+        12 => ['floor' => '12.72.0', 'php' => 80200],
+        13 => ['floor' => '13.41.0', 'php' => 80300],
     ];
 
     public static function laravelConstraint(): string
@@ -41,7 +41,7 @@ final class LaravelPlatform
         throw new RuntimeException(
             'The Durable Workflow Laravel bridge requires PHP ^8.2 and Laravel '.self::laravelConstraint()
             .'; Laravel 13 requires PHP ^8.3. Upgrade the application platform before activating the bridge'
-            .' or retain the existing SDK 3.9.x release while upgrading.',
+            .'. The bare HTTP client remains available independently of this optional bridge.',
         );
     }
 }

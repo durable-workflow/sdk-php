@@ -99,7 +99,7 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -222,7 +222,7 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -340,8 +340,8 @@ jobs:
           - framework: Laravel
             version: '12'
             php: '8.2'
-            package: 'laravel/framework:^12.69.0'
-            exercised_package: 'laravel/framework:12.69.0'
+            package: 'laravel/framework:^12.72.0'
+            exercised_package: 'laravel/framework:12.72.0'
             bootstrap: fresh_supported_install
             script: laravel.php
           - framework: Symfony
@@ -663,15 +663,15 @@ jobs:
           - framework: Laravel
             version: '12'
             php: '8.4'
-            package: 'laravel/framework:^12.69.0'
-            exercised_package: 'laravel/framework:12.69.0'
+            package: 'laravel/framework:^12.72.0'
+            exercised_package: 'laravel/framework:12.72.0'
             bootstrap: fresh_supported_install
             script: laravel.php
           - framework: Laravel
             version: '13'
             php: '8.4'
-            package: 'laravel/framework:^13.30.0'
-            exercised_package: 'laravel/framework:13.30.0'
+            package: 'laravel/framework:^13.41.0'
+            exercised_package: 'laravel/framework:13.41.0'
             bootstrap: fresh_supported_install
             script: laravel.php
           - framework: Symfony
@@ -835,15 +835,15 @@ jobs:
           - framework: Laravel
             version: '12'
             php: '8.3'
-            package: 'laravel/framework:^12.69.0'
-            exercised_package: 'laravel/framework:12.69.0'
+            package: 'laravel/framework:^12.72.0'
+            exercised_package: 'laravel/framework:12.72.0'
             bootstrap: fresh_supported_install
             script: laravel.php
           - framework: Laravel
             version: '13'
             php: '8.3'
-            package: 'laravel/framework:^13.30.0'
-            exercised_package: 'laravel/framework:13.30.0'
+            package: 'laravel/framework:^13.41.0'
+            exercised_package: 'laravel/framework:13.41.0'
             bootstrap: fresh_supported_install
             script: laravel.php
     steps:
@@ -870,7 +870,7 @@ jobs:
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
       - name: Set up the qualified stock PHP 8.3 framework profile
-        uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
+        uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -1086,7 +1086,7 @@ jobs:
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
       - name: Set up the qualified stock PHP 8.3 transition profile
-        uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
+        uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -1150,7 +1150,7 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -1213,7 +1213,7 @@ jobs:
           clients: pip,python,composer,curl,git,npm
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -1226,7 +1226,11 @@ jobs:
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - run: composer --working-dir="$DOCS_TOOLING_DIRECTORY" install --no-interaction --prefer-dist
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" ci --ignore-scripts
-      - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" audit --audit-level=moderate
+      - run: node --test "$DOCS_TOOLING_DIRECTORY/scripts/ci/npm-audit-allowlisted.test.mjs"
+      - name: Audit the docs tooling graph
+        run: |
+          npm --prefix "$DOCS_TOOLING_DIRECTORY" audit --json > "$RUNNER_TEMP/npm-audit.json" || true
+          node "$DOCS_TOOLING_DIRECTORY/scripts/ci/npm-audit-allowlisted.mjs" < "$RUNNER_TEMP/npm-audit.json"
       - run: node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-examples.mjs"
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-portal-links
       - run: npm --prefix "$DOCS_TOOLING_DIRECTORY" run test:docs-identity-status
@@ -1320,7 +1324,7 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -1381,7 +1385,7 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -1432,7 +1436,7 @@ jobs:
           clients: pip,python,composer,curl,git,cargo
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production

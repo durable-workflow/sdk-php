@@ -407,6 +407,49 @@ A later deployment can raise the maximum while keeping the recorded versions in 
 
 For a boolean rollout, use `patched('require-reservation-review')`. It returns `false` for legacy histories and `true` for new histories. After the legacy branch is no longer supported, replace the conditional call with `deprecatePatch()` for the same ID before eventually removing the marker. Compatible numeric and patch helpers share the same frozen version for a change ID. Every call must support that version, and `patched()` returns whether it equals `1`. Do not reuse a change ID for an unrelated rollout.
 
+### Inspect open-run version usage
+
+Before raising a minimum or removing a legacy branch, inspect the open runs for
+that exact workflow type and change ID. `workflowVersionUsage()` requires the
+Server's `workflow_version_usage` capability and throws
+`ServerCapabilityUnavailable` when it is absent. Discovery and the metadata read
+use the client's control credential, namespace and configured control-request
+timeout. They do not use a worker credential or fetch application payloads.
+
+```php
+$page = $client->workflowVersionUsage(
+    workflowType: 'shipment',
+    changeId: 'carrier-api',
+    minVersion: 2,
+    state: 'legacy',
+    limit: 50,
+);
+
+// Counts include every state, even though this page lists only legacy runs.
+$unknown = $page->counts->unknown;
+foreach ($page->runs as $run) {
+    printf("%s %s %s\n", $run->instanceId, $run->runId, $run->state);
+}
+
+// Repeat the exact namespace/type/change/minimum/state query to continue.
+$nextCursor = $page->nextCursor;
+```
+
+`minVersion` is the proposed minimum supported signed 32-bit version, including
+negative legacy sentinels; it is not the largest deployed version. The response
+distinguishes `legacy`, `current` and `unknown`. Missing markers, unavailable or
+invalid history remain unknown with their original reason. A current build or
+definition is not evidence that a run recorded the current branch.
+
+Each page is a live observation over a fixed upper run-ID bound, not a durable
+fleet snapshot. Runs can close or record decisions between pages, so counts can
+change. Pass cursors unchanged with the exact same filters; invalid cursors are
+errors, not a reason to restart silently. Unknowns remain relevant to rollout
+decisions. Fence or drain admissions and restart the traversal before making a
+removal decision; this API returns no `safe_to_remove` authorization. The
+[shared v1 contract](https://github.com/durable-workflow/workflow/blob/c93cadad8a0104b6e7e5f38e022c3b06c26c86e6/docs/version-usage.md)
+defines the classification and live paging limits.
+
 A `waitCondition()` predicate is part of replay identity too. New waits use a
 `dwphp2:sha256:` fingerprint of the callable's tokens. Whitespace and comments
 outside literals, file locations and neighboring call-site arguments are
