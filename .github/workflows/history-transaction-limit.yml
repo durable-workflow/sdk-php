@@ -1,0 +1,135 @@
+name: Installed history-transaction limit
+
+# durable-workflow/.github#228: the installed SDK Worker against published native
+# Server 3.13.0 with a lowered DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES. A fan-out
+# within the completion size limit is refused with 409
+# history_transaction_limit_exceeded and must fail its run once with a typed
+# structural-limit failure.
+
+on:
+  pull_request:
+    paths: ['.github/workflows/history-transaction-limit.yml', 'tests/smoke/history-transaction-limit.php', 'src/**', 'composer.json']
+  push:
+    branches: [main]
+    paths: ['.github/workflows/history-transaction-limit.yml', 'tests/smoke/history-transaction-limit.php', 'src/**', 'composer.json']
+  workflow_dispatch:
+    inputs:
+      sdk_version:
+        description: Exact published PHP SDK version to install from Packagist instead of this checkout
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: history-transaction-limit-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  installed-history-limit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash --noprofile --norc -e -o pipefail {0}
+    env:
+      SDK_VERSION: ${{ inputs.sdk_version }}
+      HISTORY_LIMIT_SERVER_VERSION: 3.13.0
+      SERVER_IMAGE: ghcr.io/durable-workflow/server@sha256:30ccaf2cea6810a92915a9eb389f1a63ea870818a74c9cc1a321379b07b2d25c
+      HISTORY_LIMIT_BYTES: '65536'
+      HISTORY_LIMIT_RUNTIME_URL: http://127.0.0.1:8080
+      HISTORY_LIMIT_TOKEN: history-limit-test-token
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Require an exact published SDK version when one is selected
+        if: inputs.sdk_version != ''
+        run: '[[ "$SDK_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]'
+      - name: Create isolated Composer state and consumer
+        run: |
+          state="$(mktemp -d "$RUNNER_TEMP/history-limit.XXXXXX")"
+          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp" "$state/consumer"
+          {
+            echo "COMPOSER_HOME=$state/home"
+            echo "COMPOSER_CACHE_DIR=$state/cache"
+            echo "TMPDIR=$state/tmp"
+            echo "CONSUMER=$state/consumer"
+          } >> "$GITHUB_ENV"
+          python3 -I -S -B - "$state/consumer/composer.json" <<'PY'
+          import json,os,pathlib,sys
+          version=os.environ['SDK_VERSION']
+          manifest={'name':'durable-workflow/history-limit-consumer','config':{'allow-plugins':{}},'minimum-stability':'dev','prefer-stable':True}
+          if version:
+              manifest['require']={'durable-workflow/sdk':version}
+          else:
+              # Install this checkout as a copied package, never a symlink to the source tree.
+              manifest['repositories']=[{'type':'path','url':os.environ['GITHUB_WORKSPACE'],'options':{'symlink':False}}]
+              manifest['require']={'durable-workflow/sdk':'*@dev'}
+          pathlib.Path(sys.argv[1]).write_text(json.dumps(manifest)+'\n')
+          PY
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+        with:
+          clients: python,composer,curl,git
+      - name: Disable APT download retries (CVE-2026-109518)
+        run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
+      - name: Set up the qualified PHP profile
+        uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a # bound-linux-php
+        with:
+          php-version: '8.3'
+          ini-file: production
+          tools: composer:2.10.3
+          coverage: none
+      - name: Verify Composer trust before requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+        with:
+          working-directory: ${{ env.CONSUMER }}
+      - name: Install the SDK into the clean consumer
+        run: |
+          composer install --working-dir="$CONSUMER" --no-scripts --no-plugins --prefer-dist --no-interaction --no-progress
+          test ! -L "$CONSUMER/vendor/durable-workflow/sdk"
+          composer show --working-dir="$CONSUMER" durable-workflow/sdk | tee installed-sdk.txt
+      - name: Start published native Server 3.13.0 with a lowered history budget
+        run: |
+          docker pull "$SERVER_IMAGE"
+          docker run --detach --init --name sdk-php-history-limit-runtime \
+            --cpus 1 --memory 512m --pids-limit 256 \
+            --publish 127.0.0.1:8080:8080 \
+            --env DB_CONNECTION=sqlite --env DW_AUTH_DRIVER=token \
+            --env DW_AUTH_TOKEN="$HISTORY_LIMIT_TOKEN" \
+            --env DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES="$HISTORY_LIMIT_BYTES" \
+            "$SERVER_IMAGE"
+          for attempt in {1..30}; do
+            if curl --fail --silent "$HISTORY_LIMIT_RUNTIME_URL/api/ready" > /dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent "$HISTORY_LIMIT_RUNTIME_URL/api/ready" > /dev/null
+      - name: Fail the over-budget fan-out once and complete a follow-up on the same Worker
+        run: |
+          php -l tests/smoke/history-transaction-limit.php
+          timeout 180s php tests/smoke/history-transaction-limit.php "$CONSUMER/vendor/autoload.php" | tee history-transaction-limit.json
+          {
+            echo '### Installed history-transaction limit'
+            echo '```json'
+            cat history-transaction-limit.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Emit Server diagnostics
+        if: failure()
+        run: docker logs --tail 200 sdk-php-history-limit-runtime || true
+      - name: Remove the runtime
+        if: always()
+        run: docker rm --force --volumes sdk-php-history-limit-runtime || true
+      - name: Retain the result and installed dependency graph
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installed-history-transaction-limit
+          path: |
+            history-transaction-limit.json
+            installed-sdk.txt
+            ${{ env.CONSUMER }}/composer.lock
+          retention-days: 7
+          if-no-files-found: warn

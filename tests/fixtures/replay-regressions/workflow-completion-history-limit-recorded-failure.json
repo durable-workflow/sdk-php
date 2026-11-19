@@ -1,0 +1,144 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-workflow-completion-history-limit-recorded-failure",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "source": "Recorded on published native Server 3.13.0 with DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES=65536 (durable-workflow/.github#228): the fan-out's completion was refused with 409 history_transaction_limit_exceeded and the Worker failed the run once with a structural-limit failure. Replaying that history reproduces the refused commands; it is not a replay block or a nondeterminism failure.",
+  "workflow": {
+    "type": "golden.completion-history-limit-fanout",
+    "input": [
+      3
+    ]
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "timestamp": "2026-11-19T05:53:56.431000Z",
+      "payload": {
+        "workflow_instance_id": "history-limit-650a4976d427a597",
+        "workflow_run_id": "01M7S5WTPEGXVH3V8N70VRW45W",
+        "workflow_type": "history.fanout",
+        "workflow_class": "history.fanout",
+        "workflow_command_id": "01M7S5WTPEGXVH3V8N70VRW45X",
+        "memo": null,
+        "business_key": null,
+        "visibility_labels": null,
+        "search_attributes": null,
+        "outcome": "started_new",
+        "command": {
+          "id": "01M7S5WTPEGXVH3V8N70VRW45X",
+          "sequence": 1,
+          "type": "start",
+          "target_scope": "instance",
+          "resolved_run_id": "01M7S5WTPEGXVH3V8N70VRW45W",
+          "payload_codec": "avro",
+          "payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwEBFAEgEAA"
+          },
+          "source": "control_plane",
+          "status": "accepted",
+          "outcome": "started_new",
+          "accepted_at": "2026-11-19T05:53:56.430000Z",
+          "applied_at": "2026-11-19T05:53:56.430000Z"
+        }
+      }
+    },
+    {
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "timestamp": "2026-11-19T05:53:56.431000Z",
+      "payload": {
+        "workflow_instance_id": "history-limit-650a4976d427a597",
+        "workflow_run_id": "01M7S5WTPEGXVH3V8N70VRW45W",
+        "workflow_type": "history.fanout",
+        "workflow_class": "history.fanout",
+        "workflow_command_id": "01M7S5WTPEGXVH3V8N70VRW45X",
+        "execution_timeout_seconds": 120,
+        "run_timeout_seconds": 120,
+        "execution_deadline_at": "2026-11-19T05:55:56.430Z",
+        "run_deadline_at": "2026-11-19T05:55:56.430Z",
+        "command": {
+          "id": "01M7S5WTPEGXVH3V8N70VRW45X",
+          "sequence": 1,
+          "type": "start",
+          "target_scope": "instance",
+          "resolved_run_id": "01M7S5WTPEGXVH3V8N70VRW45W",
+          "payload_codec": "avro",
+          "payload": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwEBFAEgEAA"
+          },
+          "source": "control_plane",
+          "status": "accepted",
+          "outcome": "started_new",
+          "accepted_at": "2026-11-19T05:53:56.430000Z",
+          "applied_at": "2026-11-19T05:53:56.430000Z"
+        }
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "WorkflowFailed",
+      "timestamp": "2026-11-19T05:53:56.536000Z",
+      "payload": {
+        "failure_id": "01M7S5WTSQ1GC3W7FDZ8BZKHW3",
+        "source_kind": "workflow_run",
+        "source_id": "01M7S5WTPEGXVH3V8N70VRW45W",
+        "failure_category": "structural_limit",
+        "non_retryable": true,
+        "exception_type": "StructuralLimitExceeded",
+        "exception_class": "RuntimeException",
+        "message": "Structural limit exceeded: history_transaction_bytes: the workflow task completion would write 68482 history bytes in one history transaction, over the server limit of 65536 history bytes. Split the fan-out into smaller batches, move work into child workflows, or continue-as-new; offload large payloads with external payload storage.",
+        "exception": {
+          "class": "RuntimeException",
+          "type": "StructuralLimitExceeded",
+          "message": "Structural limit exceeded: history_transaction_bytes: the workflow task completion would write 68482 history bytes in one history transaction, over the server limit of 65536 history bytes. Split the fan-out into smaller batches, move work into child workflows, or continue-as-new; offload large payloads with external payload storage.",
+          "code": 0,
+          "file": "",
+          "line": 0,
+          "trace": [],
+          "properties": []
+        },
+        "command": {
+          "type": "fail_workflow",
+          "source": "worker_protocol"
+        }
+      }
+    }
+  ],
+  "command_sequence": [
+    {
+      "type": "schedule_activity",
+      "activity_type": "history.length"
+    },
+    {
+      "type": "schedule_activity",
+      "activity_type": "history.length"
+    },
+    {
+      "type": "schedule_activity",
+      "activity_type": "history.length"
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "history.length"
+      },
+      {
+        "type": "schedule_activity",
+        "activity_type": "history.length"
+      },
+      {
+        "type": "schedule_activity",
+        "activity_type": "history.length"
+      }
+    ]
+  }
+}

@@ -26,6 +26,7 @@ use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Exception\WorkflowFailed;
 use DurableWorkflow\Exception\WorkflowTerminated;
 use DurableWorkflow\Exception\WorkflowTaskCompletionTooLarge;
+use DurableWorkflow\Exception\WorkflowTaskHistoryLimitExceeded;
 use DurableWorkflow\Exception\WorkflowTimedOut;
 use DurableWorkflow\Model\ClusterInfo;
 use DurableWorkflow\Model\NamespaceDescription;
@@ -3400,12 +3401,21 @@ final class Client implements WorkflowClientInterface
                 /** @var array<string, mixed> $details */
                 throw WorkflowTaskCompletionTooLarge::fromResponse($details, JsonDocument::size($body), $exception);
             }
+            if ($worker && $method === 'POST' && $body !== null && self::isWorkflowCommandCompletion($path)
+                && WorkflowTaskHistoryLimitExceeded::matches($status, $details)) {
+                // .github#228: recording the completion would exceed the history-transaction budget.
+                /** @var array<string, mixed> $details */
+                throw WorkflowTaskHistoryLimitExceeded::fromResponse($details, $exception);
+            }
 
             throw new ServerException($message, $status, $reason, $details, $exception);
         }
     }
 
-    /** Server 3.6.0 bounds these requests by its workflow-task completion limit. */
+    /**
+     * Server 3.6.0 bounds these requests by its workflow-task completion limit, and
+     * records each in one history transaction bounded by its history budget.
+     */
     private static function isWorkflowCommandCompletion(string $path): bool
     {
         return preg_match('~\A/worker/(?:workflow-tasks/[^/]+/complete|activity-tasks/[^/]+/continuation/complete)\z~', $path) === 1;

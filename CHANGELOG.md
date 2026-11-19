@@ -6,6 +6,25 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A workflow-task completion the Server refuses over its history-transaction
+  budget (409 `history_transaction_limit_exceeded`, or
+  `completion_budget_exceeded`) now raises `WorkflowTaskHistoryLimitExceeded`,
+  a `ServerException` carrying the Server's `limit_kind`, measured
+  `currentValue` and `configuredLimit` (native Server 3.13.0 names all three).
+  The Worker never resends that completion: it fails the run once with a
+  non-retryable `Structural limit exceeded:` `fail_workflow` command naming the
+  limit kind and both values, and logs
+  `worker.workflow_task_history_limit_exceeded`. Before, the Worker surfaced a
+  generic `ServerException` and the task was retried into the same refusal, so
+  the run never progressed. This happens only when a Server's
+  `DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES` (or the event/row budget) is set below
+  what a completion records; native Server 3.13.0's default budget is four times
+  the completion size limit. An activity continuation refused the same way
+  falls back to an ordinary activity completion. Other 409 responses are
+  unchanged (durable-workflow/.github#228).
+
 ### Added
 
 - `SignalFailed::isRequestIdAmbiguous()` and `UpdateFailed::isRequestIdAmbiguous()`
