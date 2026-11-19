@@ -138,7 +138,7 @@ try {
     check($client->describeWorkflow($target->workflowId)->status === 'completed', 'the delivered target completed');
 
     $result = $senderRun->result(5);
-    check(($result['delivered'][0] ?? null) === 'delivered' && ($result['delivered'][1] ?? 'x') === null
+    check(($result['delivered'][0] ?? null) === 'delivered' && array_key_exists(1, $result['delivered']) && $result['delivered'][1] === null
         && is_string($result['delivered'][2] ?? null) && is_string($result['delivered'][3] ?? null),
         'success: delivered with the target run and command ('.json_encode($result['delivered'] ?? null).')');
     check(($result['missing'][0] ?? null) === 'target_not_found' && ($result['missing'][1] ?? null) === 'instance_not_found',
@@ -153,6 +153,8 @@ try {
     check(count(ofType($events, 'ExternalSignalDelivered')) === 1 && count(ofType($events, 'ExternalSignalFailed')) === 2,
         'the sender recorded one delivered and two failed outcomes');
     check(array_column(array_column($requested, 'payload'), 'sequence') === [1, 2, 3], 'the requests took sequences 1, 2 and 3');
+    check((ofType($events, 'TimerScheduled')[0]['payload']['sequence'] ?? null) === 4,
+        'the durable timer after the signals took sequence 4');
     $targetEvents = events($client, $target->workflowId, (string) $target->selectedRunId);
     check(count(ofType($targetEvents, 'SignalReceived')) === 1, 'the target history has exactly one SignalReceived');
     $doneEvents = events($client, $done->workflowId, (string) $done->selectedRunId);
