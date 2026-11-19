@@ -99,7 +99,7 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@cba1285ddd43696ac9f445d7d04e8aff8fcad545  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -222,7 +222,7 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@cba1285ddd43696ac9f445d7d04e8aff8fcad545  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -870,7 +870,7 @@ jobs:
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
       - name: Set up the qualified stock PHP 8.3 framework profile
-        uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
+        uses: durable-workflow/.github/.github/actions/setup-php-linux@cba1285ddd43696ac9f445d7d04e8aff8fcad545  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -1086,7 +1086,7 @@ jobs:
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
       - name: Set up the qualified stock PHP 8.3 transition profile
-        uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
+        uses: durable-workflow/.github/.github/actions/setup-php-linux@cba1285ddd43696ac9f445d7d04e8aff8fcad545  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -1150,7 +1150,7 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@cba1285ddd43696ac9f445d7d04e8aff8fcad545  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -1213,7 +1213,7 @@ jobs:
           clients: pip,python,composer,curl,git,npm
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@cba1285ddd43696ac9f445d7d04e8aff8fcad545  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -1324,7 +1324,7 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@cba1285ddd43696ac9f445d7d04e8aff8fcad545  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -1385,7 +1385,7 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@cba1285ddd43696ac9f445d7d04e8aff8fcad545  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -1436,7 +1436,7 @@ jobs:
           clients: pip,python,composer,curl,git,cargo
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@cba1285ddd43696ac9f445d7d04e8aff8fcad545  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
