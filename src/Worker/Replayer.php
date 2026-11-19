@@ -149,6 +149,60 @@ final class Replayer
         bool $prepareCancellationScopeDelivery = false,
         bool $allowScopedPreparedLocalActivities = false,
     ): ReplayResult {
+        // sdk-php#434: workflow code observes a signal only once the Server has
+        // applied it (or this task delivers it). Histories recorded while the SDK
+        // showed every received signal stay replayable: when hiding a received
+        // but unapplied signal contradicts the recorded history, the signals an
+        // earlier task could see (those received before a later recorded
+        // decision) are shown again. Signals received after the last recorded
+        // decision stay hidden until applied.
+        $applied = AppliedSignals::fromHistory($history, $task);
+        $replay = fn (?AppliedSignals $visibility): ReplayResult => $this->replayWithSignals(
+            $visibility, $handler, $history, $input, $taskQueue, $task, $localActivityExecutor, $prepareLocalActivities,
+            $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowCancellationScopeAuthoring,
+            $replayCommittedCancellationScopes, $prepareCancellationScopeDelivery, $allowScopedPreparedLocalActivities,
+        );
+        if (!$applied->hidesAny($history)) {
+            return $replay($applied);
+        }
+        try {
+            return $replay($applied);
+        } catch (NonDeterministicWorkflow $appliedOnly) {
+            $recorded = $applied->withRecordedObservations($history);
+            if (!$recorded->showsMoreThan($applied, $history)) {
+                throw $appliedOnly;
+            }
+            try {
+                return $replay($recorded);
+            } catch (NonDeterministicWorkflow) {
+                throw $appliedOnly;
+            }
+        }
+    }
+
+    /**
+     * @param callable(WorkflowContext, mixed ...$input): mixed $handler
+     * @param list<array<string, mixed>> $history
+     * @param list<mixed> $input
+     * @param array<string, mixed> $task
+     * @param list<string> $localActivityCancellationPolicies
+     */
+    private function replayWithSignals(
+        ?AppliedSignals $appliedSignals,
+        callable $handler,
+        array $history,
+        array $input,
+        string $taskQueue,
+        array $task,
+        ?callable $localActivityExecutor,
+        bool $prepareLocalActivities,
+        bool $prepareLocalActivityGroups,
+        array $localActivityCancellationPolicies,
+        bool $allowCancellationScopeAuthoring,
+        bool $replayCommittedCancellationScopes,
+        bool $prepareCancellationScopeDelivery,
+        bool $allowScopedPreparedLocalActivities,
+    ): ReplayResult {
         if ($prepareLocalActivityGroups && !$prepareLocalActivities) {
             throw new LogicException('Prepared local groups require prepared local activity admission.');
         }
@@ -226,7 +280,7 @@ final class Replayer
         $context = null;
         $businessReplayClock = new BusinessReplayClock($history, (string) ($task['workflow_id'] ?? ''), (string) ($task['run_id'] ?? ''));
         $this->lastBusinessReplayClock = $businessReplayClock;
-        $execution = new Fiber(ExecutionTelemetry::bind(function () use ($handler, $history, $input, $task, $businessReplayClock, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, $allowScopedPreparedLocalActivities, &$context): mixed {
+        $execution = new Fiber(ExecutionTelemetry::bind(function () use ($handler, $history, $input, $task, $businessReplayClock, $appliedSignals, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, $allowScopedPreparedLocalActivities, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -249,6 +303,7 @@ final class Replayer
                 $scopes->openings !== [],
                 $allowScopedPreparedLocalActivities,
                 $businessReplayClock,
+                $appliedSignals,
             );
 
             try {

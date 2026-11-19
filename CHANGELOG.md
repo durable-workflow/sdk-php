@@ -14,6 +14,22 @@ project follows [Semantic Versioning](https://semver.org/).
   (durable-workflow/.github#216). Nothing was written and no receipt was
   selected, so the refusal is never resent automatically.
 
+### Fixed
+
+- `WorkflowContext::signals()` returns only signals the Server has applied to
+  the run (a `SignalApplied` event, or a `SignalReceived` carrying the
+  `workflow_sequence` of the wait that consumed it), plus the signal the current
+  workflow task delivers. It previously returned every received signal, so
+  workflow code could act on a signal the Server had not applied yet and later
+  rejected, for example closing the run before a queued update was applied.
+  Signals now reach workflow code in message order with updates, as in embedded
+  Workflow, Python and Rust. `SignalReceived` records that name neither a
+  signal ID nor a command ID are still returned. Replay compatibility: a history
+  recorded by an earlier release still replays unchanged. When hiding an
+  unapplied signal contradicts that history, the replay shows again each signal
+  received before a later recorded workflow decision; signals received after the
+  last recorded decision stay hidden until applied (#434).
+
 ## [3.20.0] - 2026-11-18
 
 ### Added

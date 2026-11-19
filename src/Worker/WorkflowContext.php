@@ -174,6 +174,7 @@ final class WorkflowContext
         private bool $hasAuthoredCancellationScopes = false,
         private readonly bool $allowScopedPreparedLocalActivities = false,
         private readonly ?BusinessReplayClock $businessReplayClock = null,
+        private readonly ?AppliedSignals $appliedSignals = null,
     ) {
         $this->execution = $execution;
         $this->loadMessageStreamMessages();
@@ -883,12 +884,32 @@ final class WorkflowContext
         ($this->cancellationReplayClock ??= new CancellationReplayClock())->observe($event);
     }
 
-    /** @return list<list<mixed>> */
+    /**
+     * The arguments of each signal with this name applied to the run, in the
+     * order the Server received them.
+     *
+     * A signal the Server has received but not yet applied is not included:
+     * the Server applies signals in message order with updates, when the
+     * workflow task that delivers the signal completes, and can still reject
+     * one it has not applied (sdk-php#434). The signal the current workflow
+     * task delivers is included.
+     *
+     * @return list<list<mixed>>
+     */
     public function signals(string $signalName): array
     {
+        return $this->receivedSignals($signalName, $this->appliedSignals);
+    }
+
+    /** @return list<list<mixed>> */
+    private function receivedSignals(string $signalName, ?AppliedSignals $applied): array
+    {
         $signals = [];
-        foreach ($this->history as $event) {
+        foreach ($this->history as $order => $event) {
             if (($event['event_type'] ?? $event['type'] ?? null) !== 'SignalReceived') {
+                continue;
+            }
+            if ($applied !== null && !$applied->observes($event, $order)) {
                 continue;
             }
             $payload = isset($event['payload']) && is_array($event['payload']) ? $event['payload'] : [];
@@ -935,7 +956,8 @@ final class WorkflowContext
     {
         $seenPositions = [];
         $seenMessageIds = [];
-        foreach ($this->signals(self::MESSAGE_STREAM_SIGNAL) as $arguments) {
+        // Message streams keep their own cursor over every received message.
+        foreach ($this->receivedSignals(self::MESSAGE_STREAM_SIGNAL, null) as $arguments) {
             if (count($arguments) !== 1 || !is_array($arguments[0])) {
                 continue;
             }

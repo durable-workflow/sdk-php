@@ -713,6 +713,17 @@ invoked. The workflow reads their committed values with
 `$context->signals('set-language')` during replay. Query and update methods are
 executed with immutable `QueryContext` state.
 
+`signals()` returns only signals the Server has applied to the run, plus the
+signal the current workflow task delivers, in the order the Server received
+them. The Server applies signals in message order with updates, so an update
+sent before a signal is applied first. A signal that has been received but not
+yet applied is not returned, and one the Server rejects (for example because
+the run closed first) never is. Histories recorded by earlier SDK releases,
+which returned every received signal, still replay: if hiding an unapplied
+signal would contradict the recorded history, the signals received before that
+history's last recorded workflow decision are returned again. Signals received
+after it stay hidden until applied.
+
 The PHP SDK does not expose update-validator authoring. Worker registration
 therefore declares an empty `update_validators` list for every workflow type;
 capability discovery and Server admission must not infer validator parity from
