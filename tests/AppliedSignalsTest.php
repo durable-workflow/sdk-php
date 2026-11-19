@@ -8,13 +8,15 @@ use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Worker\AppliedSignals;
 use DurableWorkflow\Worker\Replayer;
+use DurableWorkflow\Worker\ReplayResult;
 use DurableWorkflow\Worker\WorkflowContext;
 use PHPUnit\Framework\TestCase;
 
 /**
  * sdk-php#434: workflow code observes a signal only once the Server has applied
- * it, or when the current workflow task delivers it, so a received signal the
- * Server later rejects never changes a workflow decision.
+ * it, or when the current workflow task delivers it. The applied-only view is a
+ * versioned change: the first live decision it changes records a version
+ * marker, and histories without the marker keep the earlier view.
  */
 final class AppliedSignalsTest extends TestCase
 {
@@ -36,27 +38,32 @@ final class AppliedSignalsTest extends TestCase
             $this->received('signal-release', 'command-release', 'release'),
         ];
 
-        $updateTask = $this->replay($history, ['workflow_update_id' => 'update-1', 'update_name' => 'change']);
+        $updateTask = $this->replayCondition($history, ['workflow_update_id' => 'update-1', 'update_name' => 'change']);
+        self::assertSame('record_version_marker', $updateTask->commands[0]['type']);
+        self::assertSame(AppliedSignals::CHANGE_ID, $updateTask->commands[0]['change_id']);
+        self::assertSame(1, $updateTask->commands[0]['version']);
         self::assertNotContains('complete_workflow', array_column($updateTask->commands, 'type'));
 
-        // The signal's own task delivers it: now the condition is satisfied.
-        $signalTask = $this->replay($history, ['resume_source_kind' => 'workflow_signal',
+        // The update task recorded the marker; the signal's own task delivers it.
+        $history[] = $this->marker(2);
+        $signalTask = $this->replayCondition($history, ['resume_source_kind' => 'workflow_signal',
             'workflow_signal_id' => 'signal-release', 'workflow_command_id' => 'command-release', 'signal_name' => 'release']);
-        self::assertSame('complete_workflow', $signalTask->commands[0]['type']);
+        self::assertSame(['complete_workflow'], array_column($signalTask->commands, 'type'));
         self::assertSame(['released' => [['go']]], $this->codec->decodeEnvelope($signalTask->commands[0]['result']));
     }
 
-    public function testARejectedSignalIsNeverObserved(): void
+    public function testARejectedSignalIsNeverObservedByANewDecision(): void
     {
         $history = [
             $this->conditionOpened(),
+            $this->marker(2),
             $this->received('signal-release', 'command-release', 'release'),
             ['event_type' => 'SignalRejected', 'payload' => ['signal_id' => 'signal-release',
                 'workflow_command_id' => 'command-release', 'signal_name' => 'release',
                 'rejection_reason' => 'run_closed_before_signal_applied']],
         ];
 
-        self::assertNotContains('complete_workflow', array_column($this->replay($history)->commands, 'type'));
+        self::assertNotContains('complete_workflow', array_column($this->replayCondition($history)->commands, 'type'));
     }
 
     public function testAppliedSignalsAreObservedInReceiptOrder(): void
@@ -79,84 +86,123 @@ final class AppliedSignalsTest extends TestCase
 
         // Applied by event (by signal or command identity), consumed with a
         // sequence, and an identity-less imported record; never the unapplied one.
+        self::assertSame(['record_version_marker', 'complete_workflow'], array_column($result->commands, 'type'));
         self::assertSame([['first'], ['second'], ['third'], ['imported']],
-            $this->codec->decodeEnvelope($result->commands[0]['result']));
+            $this->codec->decodeEnvelope($result->commands[1]['result']));
     }
 
-    public function testALegacyHistoryKeepsTheSignalsItsTasksObservedButHidesLaterOnes(): void
+    public function testAHistoryThatNeverReadsSignalsReplaysUnchanged(): void
     {
-        // Recorded by an SDK that showed every received signal: the activity was
-        // chosen while signal-observed was received but not yet applied.
+        $history = [
+            $this->received('signal-pending', 'command-pending', 'approve'),
+            ['event_type' => 'ActivityScheduled', 'payload' => ['sequence' => 1, 'activity_type' => 'work']],
+            ['event_type' => 'ActivityCompleted', 'payload' => ['sequence' => 1, 'activity_type' => 'work',
+                'result' => $this->codec->envelope('done')]],
+            $this->received('signal-later', 'command-later', 'approve'),
+        ];
+        $workflow = static fn (WorkflowContext $context): mixed => $context->activity('work');
+
+        $result = (new Replayer($this->codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertCount(1, $result->commands);
+        self::assertSame('complete_workflow', $result->commands[0]['type']);
+        self::assertSame('done', $this->codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    public function testReadingSignalsThatAreAllAppliedRecordsNoMarker(): void
+    {
+        $history = [
+            $this->received('signal-1', 'command-1', 'approve', 'first', workflowSequence: 1),
+            ['event_type' => 'SignalReceived', 'payload' => ['signal_name' => 'approve',
+                'arguments' => $this->codec->envelope(['imported'])]],
+        ];
+        $workflow = static fn (WorkflowContext $context): array => $context->signals('approve');
+
+        $result = (new Replayer($this->codec))->replay($workflow, $history, [], 'php-workers');
+
+        self::assertSame(['complete_workflow'], array_column($result->commands, 'type'));
+        self::assertSame([['first'], ['imported']], $this->codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    public function testAHistoryWithoutTheMarkerKeepsTheEarlierViewForRecordedDecisions(): void
+    {
+        // Recorded by an earlier release: the activity was chosen while
+        // signal-observed was received but not yet applied.
         $history = [
             $this->received('signal-observed', 'command-observed', 'approve', 'first'),
             ['event_type' => 'ActivityScheduled', 'payload' => ['sequence' => 1, 'activity_type' => 'approved']],
             ['event_type' => 'ActivityCompleted', 'payload' => ['sequence' => 1, 'activity_type' => 'approved',
                 'result' => $this->codec->envelope('ok')]],
-            $this->received('signal-later', 'command-later', 'approve', 'later'),
         ];
-        $workflow = static function (WorkflowContext $context): array {
-            $result = $context->activity($context->signals('approve') !== [] ? 'approved' : 'waiting');
 
-            return ['result' => $result, 'signals' => $context->signals('approve')];
-        };
+        $result = (new Replayer($this->codec))->replay(self::decision(), $history, [], 'php-workers');
 
-        $result = (new Replayer($this->codec))->replay($workflow, $history, [], 'php-workers');
-
-        self::assertSame(['result' => 'ok', 'signals' => [['first']]],
-            $this->codec->decodeEnvelope($result->commands[0]['result']));
+        // The recorded decision replays unchanged; the first live decision the
+        // applied-only view changes records the marker before it.
+        self::assertSame(['record_version_marker', 'schedule_activity'], array_column($result->commands, 'type'));
+        self::assertSame('second-waiting', $result->commands[1]['activity_type']);
     }
 
-    public function testAGenuinelyChangedWorkflowStillReportsTheAppliedOnlyDivergence(): void
+    public function testTheMarkerSelectsTheAppliedViewFromItsPositionOn(): void
     {
         $history = [
-            $this->received('signal-observed', 'command-observed', 'approve'),
-            ['event_type' => 'ActivityScheduled', 'payload' => ['sequence' => 1, 'activity_type' => 'removed']],
+            $this->received('signal-observed', 'command-observed', 'approve', 'first'),
+            ['event_type' => 'ActivityScheduled', 'payload' => ['sequence' => 1, 'activity_type' => 'approved']],
+            ['event_type' => 'ActivityCompleted', 'payload' => ['sequence' => 1, 'activity_type' => 'approved',
+                'result' => $this->codec->envelope('ok')]],
+            $this->marker(2),
+            ['event_type' => 'ActivityScheduled', 'payload' => ['sequence' => 3, 'activity_type' => 'second-waiting']],
+            ['event_type' => 'ActivityCompleted', 'payload' => ['sequence' => 3, 'activity_type' => 'second-waiting',
+                'result' => $this->codec->envelope('later')]],
         ];
-        $workflow = static function (WorkflowContext $context): mixed {
-            return $context->activity($context->signals('approve') !== [] ? 'approved' : 'waiting');
-        };
+
+        $result = (new Replayer($this->codec))->replay(self::decision(), $history, [], 'php-workers');
+
+        self::assertSame(['complete_workflow'], array_column($result->commands, 'type'));
+        self::assertSame(['ok', 'later', []], $this->codec->decodeEnvelope($result->commands[0]['result']));
+    }
+
+    public function testAChangedWorkflowIsReportedWithoutTryingTheEarlierView(): void
+    {
+        // The marker selects the applied view, so the recorded "approved" choice
+        // cannot be explained by the unapplied signal: it is nondeterministic.
+        $history = [
+            $this->marker(1),
+            $this->received('signal-observed', 'command-observed', 'approve'),
+            ['event_type' => 'ActivityScheduled', 'payload' => ['sequence' => 2, 'activity_type' => 'approved']],
+        ];
 
         try {
-            (new Replayer($this->codec))->replay($workflow, $history, [], 'php-workers');
+            (new Replayer($this->codec))->replay(self::decision(), $history, [], 'php-workers');
             self::fail('A changed workflow must remain nondeterministic.');
         } catch (NonDeterministicWorkflow $error) {
-            self::assertSame(1, $error->sequence);
+            self::assertSame(2, $error->sequence);
             self::assertStringContainsString('waiting', $error->getMessage());
         }
     }
 
-    public function testFreshDecisionsWithoutContradictionUseOnlyAppliedSignals(): void
+    public function testACompletedHistoryRecordsNoMarker(): void
     {
         $history = [
-            $this->received('signal-pending', 'command-pending', 'approve'),
+            $this->received('signal-observed', 'command-observed', 'approve', 'first'),
+            ['event_type' => 'WorkflowCompleted', 'payload' => []],
         ];
-        $workflow = static fn (WorkflowContext $context): mixed
-            => $context->activity($context->signals('approve') !== [] ? 'approved' : 'waiting');
+        $workflow = static fn (WorkflowContext $context): array => $context->signals('approve');
 
         $result = (new Replayer($this->codec))->replay($workflow, $history, [], 'php-workers');
 
-        self::assertSame('schedule_activity', $result->commands[0]['type']);
-        self::assertSame('waiting', $result->commands[0]['activity_type']);
+        self::assertSame(['complete_workflow'], array_column($result->commands, 'type'));
+        self::assertSame([['first']], $this->codec->decodeEnvelope($result->commands[0]['result']));
     }
 
-    public function testRecordedObservationsCoverOnlySignalsBeforeTheLastDecision(): void
+    private static function decision(): \Closure
     {
-        $history = [
-            $this->received('signal-1', 'command-1', 'approve'),
-            ['event_type' => 'TimerScheduled', 'payload' => ['sequence' => 1]],
-            $this->received('signal-2', 'command-2', 'approve'),
-            ['event_type' => 'TimerFired', 'payload' => ['sequence' => 1]],
-            $this->received('signal-3', 'command-3', 'approve'),
-        ];
-        $applied = AppliedSignals::fromHistory($history, []);
-        $recorded = $applied->withRecordedObservations($history);
+        return static function (WorkflowContext $context): array {
+            $first = $context->activity($context->signals('approve') !== [] ? 'approved' : 'waiting');
+            $second = $context->activity($context->signals('approve') !== [] ? 'second-approved' : 'second-waiting');
 
-        self::assertFalse($applied->observes($history[0], 0));
-        self::assertTrue($recorded->observes($history[0], 0));
-        self::assertFalse($recorded->observes($history[2], 2));
-        self::assertFalse($recorded->observes($history[4], 4));
-        self::assertTrue($recorded->showsMoreThan($applied, $history));
-        self::assertTrue($recorded->hidesAny($history));
+            return [$first, $second, $context->signals('approve')];
+        };
     }
 
     /** @return array<string, mixed> */
@@ -164,6 +210,13 @@ final class AppliedSignalsTest extends TestCase
     {
         return ['event_type' => 'ConditionWaitOpened', 'payload' => ['sequence' => 1,
             'condition_wait_id' => 'wait-release', 'condition_key' => 'release', 'timeout_seconds' => 300]];
+    }
+
+    /** @return array<string, mixed> */
+    private function marker(int $sequence): array
+    {
+        return ['event_type' => 'VersionMarkerRecorded', 'payload' => ['sequence' => $sequence,
+            'change_id' => AppliedSignals::CHANGE_ID, 'version' => 1, 'min_supported' => -1, 'max_supported' => 1]];
     }
 
     /** @return array<string, mixed> */
@@ -182,7 +235,7 @@ final class AppliedSignalsTest extends TestCase
      * @param list<array<string, mixed>> $history
      * @param array<string, mixed> $task
      */
-    private function replay(array $history, array $task = []): \DurableWorkflow\Worker\ReplayResult
+    private function replayCondition(array $history, array $task = []): ReplayResult
     {
         $workflow = static function (WorkflowContext $context): array {
             $context->waitCondition(static fn (): bool => $context->signals('release') !== [], key: 'release', timeout: 300);

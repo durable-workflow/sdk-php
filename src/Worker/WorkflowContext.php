@@ -892,7 +892,10 @@ final class WorkflowContext
      * the Server applies signals in message order with updates, when the
      * workflow task that delivers the signal completes, and can still reject
      * one it has not applied (sdk-php#434). The signal the current workflow
-     * task delivers is included.
+     * task delivers is included. Runs recorded before this rule keep their
+     * earlier view: the first live call that hides a received signal records
+     * the version marker `durable-workflow.sdk-php.signals-applied-only`
+     * (see {@see AppliedSignals}).
      *
      * @return list<list<mixed>>
      */
@@ -904,14 +907,20 @@ final class WorkflowContext
     /** @return list<list<mixed>> */
     private function receivedSignals(string $signalName, ?AppliedSignals $applied): array
     {
-        $signals = [];
+        $received = [];
         foreach ($this->history as $order => $event) {
             $payload = isset($event['payload']) && is_array($event['payload']) ? $event['payload'] : [];
-            if (($event['event_type'] ?? $event['type'] ?? null) !== 'SignalReceived'
-                || ($payload['signal_name'] ?? null) !== $signalName
-                || ($applied !== null && !$applied->observes($event, $order))) {
-                continue;
+            if (($event['event_type'] ?? $event['type'] ?? null) === 'SignalReceived'
+                && ($payload['signal_name'] ?? null) === $signalName) {
+                $received[$order] = $payload;
             }
+        }
+        if ($applied !== null) {
+            $received = array_intersect_key($received, $applied->select(array_map(
+                static fn (array $payload): array => ['event_type' => 'SignalReceived', 'payload' => $payload], $received)));
+        }
+        $signals = [];
+        foreach ($received as $payload) {
             $raw = $payload['value'] ?? $payload['input'] ?? $payload['arguments'] ?? null;
             $decoded = (is_array($raw) || is_string($raw)) ? $this->codec->decodeEnvelope($raw) : null;
             $signals[] = is_array($decoded) && array_is_list($decoded) ? $decoded : [$decoded];

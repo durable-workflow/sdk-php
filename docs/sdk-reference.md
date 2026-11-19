@@ -718,11 +718,17 @@ signal the current workflow task delivers, in the order the Server received
 them. The Server applies signals in message order with updates, so an update
 sent before a signal is applied first. A signal that has been received but not
 yet applied is not returned, and one the Server rejects (for example because
-the run closed first) never is. Histories recorded by earlier SDK releases,
-which returned every received signal, still replay: if hiding an unapplied
-signal would contradict the recorded history, the signals received before that
-history's last recorded workflow decision are returned again. Signals received
-after it stay hidden until applied.
+the run closed first) never is.
+
+Earlier SDK releases returned every received signal, so the applied-only view
+is versioned with the marker `durable-workflow.sdk-php.signals-applied-only`.
+The worker records it the first time hiding an unapplied signal changes what
+`signals()` returns to a live decision: a call at the end of the recorded
+history, or the predicate of a condition wait whose outcome is not recorded.
+A history without the marker replays with every received signal visible. With
+the marker, live decisions and calls replayed at or after the marker's sequence
+use the applied-only view, and calls replayed before it keep the earlier view.
+A run that never meets an unapplied signal records no marker.
 
 The PHP SDK does not expose update-validator authoring. Worker registration
 therefore declares an empty `update_validators` list for every workflow type;

@@ -43,11 +43,16 @@ project follows [Semantic Versioning](https://semver.org/).
   rejected, for example closing the run before a queued update was applied.
   Signals now reach workflow code in message order with updates, as in embedded
   Workflow, Python and Rust. `SignalReceived` records that name neither a
-  signal ID nor a command ID are still returned. Replay compatibility: a history
-  recorded by an earlier release still replays unchanged. When hiding an
-  unapplied signal contradicts that history, the replay shows again each signal
-  received before a later recorded workflow decision; signals received after the
-  last recorded decision stay hidden until applied (#434).
+  signal ID nor a command ID are still returned. Replay compatibility: the
+  change is gated by the version marker
+  `durable-workflow.sdk-php.signals-applied-only`. The worker records it the
+  first time hiding an unapplied signal changes what `signals()` returns to a
+  live decision (a call at the end of the recorded history, or the predicate of
+  a condition wait whose outcome is not recorded). A history without the marker
+  replays with every received signal visible; with it, live decisions and calls
+  replayed at or after the marker's sequence use the applied-only view, and
+  calls replayed before it keep the earlier view. Runs that never meet an
+  unapplied signal record no marker (#434).
 
 ## [3.20.0] - 2026-11-18
 

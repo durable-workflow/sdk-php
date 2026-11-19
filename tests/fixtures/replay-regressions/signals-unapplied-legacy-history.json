@@ -3,7 +3,9 @@
   "fixture_schema": "durable-workflow.replay-regression/v1",
   "id": "php-signals-unapplied-legacy-history",
   "protocol_version": "1.20",
-  "bindings": ["php"],
+  "bindings": [
+    "php"
+  ],
   "workflow": {
     "type": "golden.signal-decision",
     "input": []
@@ -15,7 +17,10 @@
         "signal_id": "signal-observed",
         "workflow_command_id": "command-observed",
         "signal_name": "approve",
-        "arguments": {"codec": "avro", "blob": "wwHioz3/VYAiNwwCCgpmaXJzdAA="}
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCgpmaXJzdAA="
+        }
       }
     },
     {
@@ -30,7 +35,10 @@
       "payload": {
         "sequence": 1,
         "activity_type": "golden.approved",
-        "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwoeYXBwcm92ZWQtcmVzdWx0"}
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwoeYXBwcm92ZWQtcmVzdWx0"
+        }
       }
     },
     {
@@ -39,21 +47,44 @@
         "signal_id": "signal-later",
         "workflow_command_id": "command-later",
         "signal_name": "approve",
-        "arguments": {"codec": "avro", "blob": "wwHioz3/VYAiNwwCCgxzZWNvbmQA"}
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCgxzZWNvbmQA"
+        }
       }
     }
   ],
   "command_sequence": [
     {
+      "type": "record_version_marker",
+      "change_id": "durable-workflow.sdk-php.signals-applied-only",
+      "version": 1,
+      "min_supported": -1,
+      "max_supported": 1
+    },
+    {
       "type": "complete_workflow",
-      "result": {"result": "approved-result", "signals": [["first"]]}
+      "result": {
+        "result": "approved-result",
+        "signals": []
+      }
     }
   ],
   "expected": {
     "command_sequence": [
       {
+        "type": "record_version_marker",
+        "change_id": "durable-workflow.sdk-php.signals-applied-only",
+        "version": 1,
+        "min_supported": -1,
+        "max_supported": 1
+      },
+      {
         "type": "complete_workflow",
-        "result": {"result": "approved-result", "signals": [["first"]]}
+        "result": {
+          "result": "approved-result",
+          "signals": []
+        }
       }
     ]
   }

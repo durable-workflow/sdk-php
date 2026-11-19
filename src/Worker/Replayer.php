@@ -121,57 +121,28 @@ final class Replayer
 
     private ?BusinessReplayClock $lastBusinessReplayClock = null;
 
-    /** The signals the replay in progress shows workflow code (sdk-php#434). */
-    private ?AppliedSignals $signalView = null;
-
-    private bool $replayingSignalView = false;
-
     /**
-     * sdk-php#434: workflow code observes a signal only once the Server has
-     * applied it (or this task delivers it). Histories recorded while the SDK
-     * showed every received signal stay replayable: when hiding a received but
-     * unapplied signal contradicts the recorded history, the signals an earlier
-     * task could see (those received before a later recorded decision) are
-     * shown again. Signals received after the last recorded decision stay
-     * hidden until applied.
+     * Send the applied-only signal marker once, the first time that view
+     * changed a live decision of this task (sdk-php#434).
      *
-     * @param list<array<string, mixed>> $history
-     * @param array<string, mixed> $task
-     * @param Closure(): ReplayResult $replay
+     * @param list<array<string, mixed>> $commands
+     * @phpstan-impure
      */
-    private function replayWithSignalCompatibility(array $history, array $task, Closure $replay): ReplayResult
-    {
-        $applied = AppliedSignals::fromHistory($history, $task);
-        $view = fn (AppliedSignals $signals): ReplayResult => $this->replayWithSignalView($signals, $replay);
-        if (!$applied->hidesAny($history)) {
-            return $view($applied);
+    private function recordAppliedSignalMarker(
+        AppliedSignals $appliedSignals,
+        array &$commands,
+        int &$nextSequence,
+        string $taskQueue,
+        ?WorkflowContext $context,
+    ): ?ReplayResult {
+        if (!$appliedSignals->takeMarker()) {
+            return null;
         }
-        try {
-            return $view($applied);
-        } catch (NonDeterministicWorkflow $appliedOnly) {
-            $recorded = $applied->withRecordedObservations($history);
-            if (!$recorded->showsMoreThan($applied, $history)) {
-                throw $appliedOnly;
-            }
-            try {
-                return $view($recorded);
-            } catch (NonDeterministicWorkflow) {
-                throw $appliedOnly;
-            }
-        }
-    }
+        $failure = $this->appendWorkflowCommand($commands,
+            WorkflowCommand::versionMarker(AppliedSignals::CHANGE_ID, -1, 1, 'patched'), $taskQueue, $context);
+        ++$nextSequence;
 
-    /** @param Closure(): ReplayResult $replay */
-    private function replayWithSignalView(AppliedSignals $signals, Closure $replay): ReplayResult
-    {
-        $this->replayingSignalView = true;
-        $this->signalView = $signals;
-        try {
-            return $replay();
-        } finally {
-            $this->replayingSignalView = false;
-            $this->signalView = null;
-        }
+        return $failure;
     }
 
     /** @internal Whether the most recent replay asked for business time it could not have. */
@@ -202,14 +173,6 @@ final class Replayer
         bool $prepareCancellationScopeDelivery = false,
         bool $allowScopedPreparedLocalActivities = false,
     ): ReplayResult {
-        if (!$this->replayingSignalView) {
-            return $this->replayWithSignalCompatibility($history, $task, fn (): ReplayResult => $this->replay(
-                $handler, $history, $input, $taskQueue, $task, $localActivityExecutor, $prepareLocalActivities,
-                $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowCancellationScopeAuthoring,
-                $replayCommittedCancellationScopes, $prepareCancellationScopeDelivery, $allowScopedPreparedLocalActivities,
-            ));
-        }
-        $appliedSignals = $this->signalView;
         if ($prepareLocalActivityGroups && !$prepareLocalActivities) {
             throw new LogicException('Prepared local groups require prepared local activity admission.');
         }
@@ -259,6 +222,19 @@ final class Replayer
         }
         $strictSequences = $cancellation->request !== null || $scopes->openings !== [];
         $steps = $this->recordedSteps($history, $strictSequences, $scopes);
+        // sdk-php#434: the applied-only signal marker is transparent to the
+        // authored command sequence; only its position selects the view.
+        $appliedSignals = AppliedSignals::fromHistory($history, $task);
+        $signalMarkerSequences = [];
+        $steps = array_values(array_filter($steps, static function (array $step) use (&$signalMarkerSequences): bool {
+            if ($step['shape'] === 'version_marker' && $step['detail'] === AppliedSignals::CHANGE_ID) {
+                $signalMarkerSequences[$step['sequence']] = true;
+
+                return false;
+            }
+
+            return true;
+        }));
         $stepsBySequence = [];
         foreach ($steps as $step) {
             $stepsBySequence[$step['sequence']] = $step;
@@ -323,15 +299,24 @@ final class Replayer
 
         $stepCursor = 0;
         $commands = [];
+        $nextSequence = 1;
+        $appliedSignals->bind(static function () use (&$nextSequence, &$stepCursor, &$steps, $completedHistory): array {
+            return [$nextSequence, $stepCursor >= count($steps) && !$completedHistory];
+        });
         /** @var array<string, array{version: int, sequence: ?int}> $versionDecisions */
         $versionDecisions = [];
         $suspended = $businessReplayClock->invoke($execution->start(...));
-        $nextSequence = 1;
         $cancellationConsumed = false;
         $consumedScopeDeliveries = [];
         $consumedConditionTail = null;
 
         while (!$execution->isTerminated()) {
+            while (isset($signalMarkerSequences[$nextSequence])) {
+                ++$nextSequence;
+            }
+            if (($encodingFailure = $this->recordAppliedSignalMarker($appliedSignals, $commands, $nextSequence, $taskQueue, $context)) !== null) {
+                return $encodingFailure;
+            }
             if ($consumedConditionTail !== null) {
                 $remaining = $this->restoreConsumedConditionTail($suspended, $consumedConditionTail);
                 if ($remaining !== []) {
@@ -339,8 +324,12 @@ final class Replayer
                 }
                 $consumedConditionTail = null;
             }
-            if ($suspended instanceof WorkflowCommand && !isset($cancelledConditionSequences[$nextSequence])
-                && ($conditionResult = $this->unrecordedConditionResult($suspended, $steps[$stepCursor] ?? null)) !== null) {
+            $conditionResult = $suspended instanceof WorkflowCommand && !isset($cancelledConditionSequences[$nextSequence])
+                ? $this->unrecordedConditionResult($suspended, $steps[$stepCursor] ?? null) : null;
+            if (($encodingFailure = $this->recordAppliedSignalMarker($appliedSignals, $commands, $nextSequence, $taskQueue, $context)) !== null) {
+                return $encodingFailure;
+            }
+            if ($conditionResult !== null) {
                 $suspended = $this->resumeExecution($execution, $businessReplayClock, $conditionResult);
                 continue;
             }
@@ -927,7 +916,11 @@ final class Replayer
                         $suspended = $this->resumeExecution($execution, $businessReplayClock, $step['value'], $step);
                         continue;
                     }
-                    if ($suspended->conditionSatisfied()) {
+                    $satisfied = $appliedSignals->live(static fn (): bool => $suspended->conditionSatisfied());
+                    if (($encodingFailure = $this->recordAppliedSignalMarker($appliedSignals, $commands, $nextSequence, $taskQueue, $context)) !== null) {
+                        return $encodingFailure;
+                    }
+                    if ($satisfied) {
                         $consumedConditionTail = $this->conditionTailAfterConsumption($step, $suspended, true);
                         $suspended = $this->resumeExecution($execution, $businessReplayClock, true);
                         continue;
@@ -1050,6 +1043,9 @@ final class Replayer
             }
         }
         $this->assertNoRemainingSteps($steps, $stepCursor, 'complete_workflow');
+        if (($encodingFailure = $this->recordAppliedSignalMarker($appliedSignals, $commands, $nextSequence, $taskQueue, $context)) !== null) {
+            return $encodingFailure;
+        }
         $result = $execution->getReturn();
         if ($result instanceof \Generator) {
             throw new LogicException(
