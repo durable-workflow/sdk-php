@@ -741,7 +741,10 @@ returns the recorded result without sending the signal again, and a changed
 target, run, name or arguments fails replay with `external_signal_mismatch`.
 The worker refuses the command with `signal_external_workflow_unavailable`
 before submitting it when the runtime does not advertise
-`signal_external_workflow`.
+`signal_external_workflow`; native Server 3.15.0 and later advertise it.
+`Client::signalWithStart()` likewise needs native Server 3.15.0 or later,
+which advertises `signal_with_start`, and throws `ServerCapabilityUnavailable`
+before sending anything on an older Server.
 
 The PHP SDK does not expose update-validator authoring. Worker registration
 therefore declares an empty `update_validators` list for every workflow type;

@@ -6,13 +6,20 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.22.0] - 2026-11-19
+
+Signal-with-start and durable signal-external need native Server 3.15.0 or
+later, the first published Server that advertises `signal_with_start` and
+`signal_external_workflow`. The supported Server baseline is unchanged. On an
+older Server both refuse before anything is sent.
+
 ### Added
 
 - `WorkflowContext::signalExternalWorkflow($workflowId, $signalName, $arguments, runId: null)`
   signals another workflow in the namespace from workflow code as a durable
   `signal_external_workflow` command (durable-workflow/.github#223, Server
-  #1134). The runtime records the signal, delivers it and records the outcome,
-  then gives the sender a new turn. The call returns an `ExternalSignalResult`
+  #1134; native Server 3.15.0 or later). The runtime records the signal,
+  delivers it and records the outcome, then gives the sender a new turn. The call returns an `ExternalSignalResult`
   whose `ExternalSignalOutcome` is `delivered`, `target_not_found`,
   `target_closed` or `rejected`, with the recorded `reason`, target run,
   target command and signal IDs. A failed outcome is a returned value, not an
@@ -31,8 +38,8 @@ project follows [Semantic Versioning](https://semver.org/).
 - `Client::signalWithStart()` starts a workflow or reuses its open run and records one
   signal on it in a single Server transaction, so the run cannot close between a separate
   start and signal (durable-workflow/.github#222, server#1133). It needs a Server that
-  advertises `signal_with_start` (`ClusterInfo::supportsSignalWithStart()`, native Server)
-  and throws `ServerCapabilityUnavailable` before sending otherwise. An open run, including
+  advertises `signal_with_start` (`ClusterInfo::supportsSignalWithStart()`, native Server
+  3.15.0 or later) and throws `ServerCapabilityUnavailable` before sending otherwise. An open run, including
   the newest run after continue-as-new, is reused with its input and deadlines unchanged;
   the `fail` duplicate policy refuses it. A closed run is refused with `run_not_active`
   unless the closed run policy is `start_new_run`, which starts a fresh run after it. The

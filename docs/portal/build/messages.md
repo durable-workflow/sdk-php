@@ -46,6 +46,14 @@ $client->workflowHandle('order-1001')->signal('approve', ['Ada']);
 
 Signals are appropriate when the caller only needs acknowledgement that the runtime accepted the event.
 
+To start a workflow and signal it atomically, `$client->signalWithStart($type,
+$workflowId, $taskQueue, $signalName, $signalArguments, $input)` starts the
+workflow or reuses its open run and records the signal in one Server
+transaction, so the run cannot close between a separate start and signal. It
+needs native Server 3.15.0 or later, which advertises `signal_with_start`; on
+an older Server it throws `ServerCapabilityUnavailable` before sending
+anything. A refusal throws `SignalWithStartFailed` with the Server's reason.
+
 ## Signal another workflow from workflow code
 
 Workflow code signals another workflow in the same namespace with a durable
@@ -89,8 +97,8 @@ replay with `NonDeterministicWorkflow` reason `external_signal_mismatch`. The
 call cannot run inside `all()`, `parallel()` or `select()` groups and is not a
 cancellation-scope member.
 
-This needs a runtime that advertises `signal_external_workflow` (native Server
-with Server #1134). PHP Server 2.x does not. Without it, the worker abandons the
+This needs a runtime that advertises `signal_external_workflow`: native Server
+3.15.0 or later. PHP Server 2.x does not. Without it, the worker abandons the
 task with `signal_external_workflow_unavailable` before it submits anything, so
 nothing is signalled.
 
