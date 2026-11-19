@@ -82,7 +82,7 @@ function ofType(array $events, string $type): array
     return array_values(array_filter($events, static fn (array $event): bool => ($event['event_type'] ?? null) === $type));
 }
 
-function waitFor(callable $condition, string $what, int $seconds = 90): void
+function waitFor(callable $condition, string $what, ?callable $diagnose = null, int $seconds = 90): void
 {
     $deadline = microtime(true) + $seconds;
     while (microtime(true) < $deadline) {
@@ -90,6 +90,9 @@ function waitFor(callable $condition, string $what, int $seconds = 90): void
             return;
         }
         usleep(250_000);
+    }
+    if ($diagnose !== null) {
+        fwrite(STDERR, json_encode($diagnose(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR)."\n");
     }
     check(false, "timed out waiting for {$what}");
 }
@@ -121,7 +124,8 @@ try {
 
     // All three outcomes are recorded and the sender waits on its timer.
     waitFor(static fn (): bool => ofType(events($client, $senderRun->workflowId, $senderRunId), 'TimerScheduled') !== [],
-        'the sender to record its signals and start its timer');
+        'the sender to record its signals and start its timer',
+        static fn (): array => events($client, $senderRun->workflowId, $senderRunId));
     proc_terminate($process);
     proc_close($process);
     echo "ok: stopped the first worker while the sender waits\n";

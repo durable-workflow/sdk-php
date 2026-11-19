@@ -206,7 +206,8 @@ final class SignalExternalWorkflowTest extends TestCase
             static fn (WorkflowContext $context): mixed => $context->signalExternalWorkflow('', 'approve'),
             static fn (WorkflowContext $context): mixed => $context->signalExternalWorkflow(str_repeat('w', 192), 'approve'),
             static fn (WorkflowContext $context): mixed => $context->signalExternalWorkflow('order-42', ' '),
-            static fn (WorkflowContext $context): mixed => $context->signalExternalWorkflow('order-42', str_repeat('s', 256)),
+            static fn (WorkflowContext $context): mixed => $context->signalExternalWorkflow('order-42', str_repeat('s', 192)),
+            static fn (WorkflowContext $context): mixed => $context->signalExternalWorkflow('order-42', str_repeat('é', 128)),
             static fn (WorkflowContext $context): mixed => $context->signalExternalWorkflow('order-42', 'approve', ['a' => 1]),
             static fn (WorkflowContext $context): mixed => $context->signalExternalWorkflow('order-42', 'approve', runId: ''),
         ] as $index => $workflow) {
@@ -217,7 +218,7 @@ final class SignalExternalWorkflowTest extends TestCase
                 $this->addToAssertionCount(1);
             }
         }
-        $limit = static fn (WorkflowContext $context): mixed => $context->signalExternalWorkflow(str_repeat('é', 191), str_repeat('s', 255));
+        $limit = static fn (WorkflowContext $context): mixed => $context->signalExternalWorkflow(str_repeat('é', 191), str_repeat('é', 127));
         self::assertSame('signal_external_workflow', (new Replayer($this->codec))->replay($limit, [], [], 'php-workers')->commands[0]['type']);
     }
 

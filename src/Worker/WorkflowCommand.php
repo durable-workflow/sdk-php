@@ -313,8 +313,9 @@ final class WorkflowCommand
         if ($length === false || $length < 1 || $length > 191 || trim($workflowId) === '') {
             throw new InvalidArgumentException('The target workflow ID must be a non-blank string of 1 to 191 characters.');
         }
-        if (trim($signalName) === '' || strlen($signalName) > 255) {
-            throw new InvalidArgumentException('The signal name must be a non-blank string of at most 255 bytes.');
+        $nameLength = preg_match_all('/./su', $signalName);
+        if (trim($signalName) === '' || $nameLength === false || $nameLength > 191 || strlen($signalName) > 255) {
+            throw new InvalidArgumentException('The signal name must be a non-blank string of at most 191 characters and 255 bytes.');
         }
         if ($runId !== null && trim($runId) === '') {
             throw new InvalidArgumentException('The target run ID must be null or a non-blank string.');
