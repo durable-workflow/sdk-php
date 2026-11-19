@@ -79,6 +79,11 @@ that received it), `targetCommandId`, `targetSignalId`, `message` and
 `retained`. A started child's handle has the same call for the child's current
 run: `$child->signal('approve', ['Ada'])`.
 
+A signal name the Server would refuse throws `InvalidSignalName` (reason
+`invalid_signal_name`) in workflow code before any command is sent: an empty
+or blank name, a control character (a byte below `0x20`, or `0x7f`), more than
+191 characters or more than 255 bytes.
+
 Changing the target, run, signal name or arguments of a recorded signal fails
 replay with `NonDeterministicWorkflow` reason `external_signal_mismatch`. The
 call cannot run inside `all()`, `parallel()` or `select()` groups and is not a

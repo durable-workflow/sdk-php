@@ -48,6 +48,7 @@ final class ChildWorkflowHandle
      * signal_external_workflow.
      *
      * @param list<mixed> $arguments
+     * @throws \DurableWorkflow\Exception\InvalidSignalName before any command when the Server would refuse the name
      */
     public function signal(string $signalName, array $arguments = []): ExternalSignalResult
     {

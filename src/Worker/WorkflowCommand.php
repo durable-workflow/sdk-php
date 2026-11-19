@@ -10,6 +10,7 @@ use DurableWorkflow\Codec\AvroMapValue;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\InvalidLocalActivityReport;
+use DurableWorkflow\Exception\InvalidSignalName;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\FailureReportRefused;
 use DurableWorkflow\Failure\LocalFailureReports;
@@ -313,10 +314,7 @@ final class WorkflowCommand
         if ($length === false || $length < 1 || $length > 191 || trim($workflowId) === '') {
             throw new InvalidArgumentException('The target workflow ID must be a non-blank string of 1 to 191 characters.');
         }
-        $nameLength = preg_match_all('/./su', $signalName);
-        if (trim($signalName) === '' || $nameLength === false || $nameLength > 191 || strlen($signalName) > 255) {
-            throw new InvalidArgumentException('The signal name must be a non-blank string of at most 191 characters and 255 bytes.');
-        }
+        InvalidSignalName::assertValid($signalName);
         if ($runId !== null && trim($runId) === '') {
             throw new InvalidArgumentException('The target run ID must be null or a non-blank string.');
         }

@@ -555,6 +555,8 @@ final class WorkflowContext
      * all()/parallel()/select() groups, and not a cancellation scope member.
      *
      * @param list<mixed> $arguments
+     * @throws \DurableWorkflow\Exception\InvalidSignalName before any command when the Server would refuse the name
+     *         (blank, a control character, over 191 characters or over 255 bytes)
      */
     public function signalExternalWorkflow(
         string $workflowId,

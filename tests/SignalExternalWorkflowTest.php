@@ -6,6 +6,7 @@ namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Client;
 use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Exception\InvalidSignalName;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Model\ExternalSignalOutcome;
 use DurableWorkflow\Model\ExternalSignalResult;
@@ -222,6 +223,58 @@ final class SignalExternalWorkflowTest extends TestCase
         self::assertSame('signal_external_workflow', (new Replayer($this->codec))->replay($limit, [], [], 'php-workers')->commands[0]['type']);
     }
 
+    /** @return iterable<string, array{string, string}> */
+    public static function refusedSignalNames(): iterable
+    {
+        yield 'empty' => ['', 'blank'];
+        yield 'blank' => ["  \t", 'blank'];
+        yield 'newline' => ["approve\n", 'control_character'];
+        yield 'nul byte' => ["app\0rove", 'control_character'];
+        yield 'escape' => ["\x1bapprove", 'control_character'];
+        yield 'delete' => ["approve\x7f", 'control_character'];
+        yield '192 characters' => [str_repeat('s', 192), 'too_many_characters'];
+        yield '256 bytes in 128 characters' => [str_repeat('é', 128), 'too_many_bytes'];
+        yield 'invalid UTF-8' => ["approve\xff", 'invalid_utf8'];
+    }
+
+    #[DataProvider('refusedSignalNames')]
+    public function testANameTheServerWouldRefuseRaisesATypedErrorInWorkflowCodeBeforeAnyCommand(string $name, string $problem): void
+    {
+        foreach ([
+            static fn (WorkflowContext $context): mixed => $context->signalExternalWorkflow('order-42', $name),
+            static function (WorkflowContext $context) use ($name): mixed {
+                $child = $context->startChildWorkflow('billing.reconcile');
+
+                return $child->signal($name);
+            },
+        ] as $index => $call) {
+            $workflow = static function (WorkflowContext $context) use ($call): array {
+                try {
+                    $call($context);
+                } catch (InvalidSignalName $error) {
+                    return [$error->reason, $error->problem];
+                }
+
+                return ['sent'];
+            };
+            $history = $index === 0 ? [] : $this->childStarted();
+            $commands = (new Replayer($this->codec))->replay($workflow, $history, [], 'php-workers')->commands;
+
+            self::assertSame(['complete_workflow'], array_column($commands, 'type'), 'no signal command is emitted');
+            self::assertSame(['invalid_signal_name', $problem], $this->codec->decodeEnvelope($commands[0]['result']));
+        }
+    }
+
+    public function testTheLongestAcceptedNamesAreSent(): void
+    {
+        foreach ([str_repeat('s', 191), str_repeat('é', 127).'s', str_repeat('€', 85)] as $name) {
+            $workflow = static fn (WorkflowContext $context): mixed => $context->signalExternalWorkflow('order-42', $name);
+            $commands = (new Replayer($this->codec))->replay($workflow, [], [], 'php-workers')->commands;
+
+            self::assertSame($name, $commands[0]['signal_name']);
+        }
+    }
+
     public function testASignalCannotJoinAGroup(): void
     {
         $workflow = static fn (WorkflowContext $context): array => $context->all([
@@ -351,6 +404,18 @@ final class SignalExternalWorkflowTest extends TestCase
         };
 
         return (new Replayer($this->codec))->replay($workflow, $history, [], 'php-workers')->commands;
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function childStarted(): array
+    {
+        $identity = ['sequence' => 1, 'child_call_id' => 'call-1', 'workflow_link_id' => 'call-1',
+            'child_workflow_instance_id' => 'child-instance', 'child_workflow_run_id' => 'child-run-1', 'child_workflow_type' => 'billing.reconcile'];
+
+        return [
+            ['event_type' => 'ChildWorkflowScheduled', 'payload' => $identity],
+            ['event_type' => 'ChildRunStarted', 'payload' => $identity],
+        ];
     }
 
     /** @return array<string, mixed> */

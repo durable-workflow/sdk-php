@@ -24,7 +24,21 @@ project follows [Semantic Versioning](https://semver.org/).
   The worker abandons the task with `signal_external_workflow_unavailable`
   before submitting a new signal when the runtime does not advertise
   `signal_external_workflow`. The call cannot run inside `all()`,
-  `parallel()` or `select()` groups.
+  `parallel()` or `select()` groups. A signal name the Server would refuse
+  (blank, a control character, more than 191 characters or 255 bytes) throws
+  the new `InvalidSignalName` in workflow code before any command is sent.
+
+- `Client::signalWithStart()` starts a workflow or reuses its open run and records one
+  signal on it in a single Server transaction, so the run cannot close between a separate
+  start and signal (durable-workflow/.github#222, server#1133). It needs a Server that
+  advertises `signal_with_start` (`ClusterInfo::supportsSignalWithStart()`, native Server)
+  and throws `ServerCapabilityUnavailable` before sending otherwise. An open run, including
+  the newest run after continue-as-new, is reused with its input and deadlines unchanged;
+  the `fail` duplicate policy refuses it. A closed run is refused with `run_not_active`
+  unless the closed run policy is `start_new_run`, which starts a fresh run after it. The
+  request ID is the signal's command key (`sdk-php-signal-with-start-<hex>` when omitted):
+  a retry returns the original receipt, even after the run closed. Every refusal throws the
+  new `SignalWithStartFailed` with the Server's reason, and nothing was written.
 
 ## [3.21.0] - 2026-11-19
 

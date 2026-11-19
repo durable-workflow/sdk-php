@@ -14,6 +14,7 @@ declare(strict_types=1);
 
 use DurableWorkflow\Client;
 use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Exception\InvalidSignalName;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
@@ -25,6 +26,13 @@ require_once $autoload;
 function senderResult(WorkflowContext $context, string $target, string $missing, string $closed): array
 {
     $results = [];
+    // A name the Server would refuse never becomes a command.
+    try {
+        $context->signalExternalWorkflow($target, "approve\n");
+        $results['bad_name'] = 'sent';
+    } catch (InvalidSignalName $error) {
+        $results['bad_name'] = $error->reason;
+    }
     foreach (['delivered' => $target, 'missing' => $missing, 'closed' => $closed] as $case => $workflowId) {
         $result = $context->signalExternalWorkflow($workflowId, 'approve', ['Ada', 3]);
         $results[$case] = [$result->outcome->value, $result->reason, $result->targetRunId, $result->targetCommandId];
@@ -145,6 +153,7 @@ try {
         'missing target: target_not_found / instance_not_found ('.json_encode($result['missing'] ?? null).')');
     check(($result['closed'][0] ?? null) === 'target_closed' && ($result['closed'][1] ?? null) === 'run_not_active',
         'closed target: target_closed / run_not_active ('.json_encode($result['closed'] ?? null).')');
+    check(($result['bad_name'] ?? null) === 'invalid_signal_name', 'a control-character name is refused in workflow code');
     check($target->result(5) === [['Ada', 3]], 'the target received the signal arguments once');
 
     $events = events($client, $senderRun->workflowId, $senderRunId);
