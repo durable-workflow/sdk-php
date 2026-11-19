@@ -325,8 +325,10 @@ command of its own. Replay and a replacement worker rebuild the same handle
 from history without starting another child.
 
 Parent-close and cancellation policies, timeouts and retries work as they do
-for `childWorkflow()`. The handle supports only `identity()` and `await()`:
-it cannot signal, query, update, cancel or terminate the child. Await it in the
+for `childWorkflow()`. Besides `identity()` and `await()`, the handle's
+`signal()` sends a durable signal to the child's current run, as
+[`signalExternalWorkflow()`](/build/messages/#signal-another-workflow-from-workflow-code)
+does. It cannot query, update, cancel or terminate the child. Await it in the
 workflow execution that started it. `startChildWorkflow()` cannot run inside an
 `all()` or `parallel()` group; use `deferChildWorkflow()` there.
 

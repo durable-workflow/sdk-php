@@ -123,6 +123,7 @@ final class Worker
     private ?array $workflowMemoCapability = null;
     private bool $serviceOperationsSupported = false;
     private bool $childStartTurnSupported = false;
+    private bool $signalExternalWorkflowSupported = false;
     /** @var (\Closure(string, string, int, list<array<string, mixed>>): void)|null */
     private ?\Closure $deliveredWorkflowHistoryObserver = null;
     private bool $queryTaskAuthoritySupported = false;
@@ -1250,6 +1251,8 @@ final class Worker
             && in_array('start_service_operation', $supportedCommands, true);
         $this->childStartTurnSupported = is_array($capabilities)
             && ($capabilities['child_workflow_start_turn'] ?? null) === true;
+        $this->signalExternalWorkflowSupported = is_array($capabilities)
+            && ($capabilities['signal_external_workflow'] ?? null) === true;
         $this->replayer->useConditionOccurrenceDeadline(is_array($capabilities)
             && ($capabilities['condition_wait_occurrence_deadline'] ?? null) === true);
         if (self::advertisesGroupedConditionWaits($capabilities)) {
@@ -1961,6 +1964,7 @@ final class Worker
             $this->assertWorkflowMemoUpdatesAvailable($commands);
             $this->assertServiceOperationsAvailable($commands);
             $this->assertChildStartTurnAvailable($commands);
+            $this->assertSignalExternalWorkflowAvailable($commands);
             $this->assertCancellationPoliciesAvailable($commands);
             $stickyClaim = $this->stickyCacheClaim($task);
             $this->prepareCompletionPipeline($task, $commands);
@@ -3237,6 +3241,24 @@ final class Worker
                 && !$this->childStartTurnSupported) {
                 throw new WorkflowClaimAborted(
                     'child_workflow_start_turn_unavailable: startChildWorkflow() needs a runtime that advertises child_workflow_start_turn.',
+                );
+            }
+        }
+    }
+
+    /**
+     * A runtime without the capability refuses the command and fails the task,
+     * so the claim is abandoned before anything is submitted. A replayed
+     * signal is never sent again, so only a new signal needs the capability.
+     *
+     * @param list<array<string, mixed>> $commands
+     */
+    private function assertSignalExternalWorkflowAvailable(array $commands): void
+    {
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'signal_external_workflow' && !$this->signalExternalWorkflowSupported) {
+                throw new WorkflowClaimAborted(
+                    'signal_external_workflow_unavailable: signalExternalWorkflow() needs a runtime that advertises signal_external_workflow.',
                 );
             }
         }
