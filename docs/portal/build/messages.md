@@ -46,6 +46,54 @@ $client->workflowHandle('order-1001')->signal('approve', ['Ada']);
 
 Signals are appropriate when the caller only needs acknowledgement that the runtime accepted the event.
 
+## Signal another workflow from workflow code
+
+Workflow code signals another workflow in the same namespace with a durable
+command. Do not call the client from workflow code:
+
+```php
+$result = $context->signalExternalWorkflow('order-1001', 'approve', ['Ada']);
+if (!$result->delivered()) {
+    $context->activity('orders.escalate', [$result->outcome->value, $result->reason]);
+}
+```
+
+The runtime records the signal in the sender's history, delivers it in the same
+transaction, records the outcome beside it and gives the sender a new turn.
+Replay and a replacement worker return the recorded result and never send the
+signal again. Without a run ID the signal goes to the target's current run;
+pass `runId:` to signal only that run.
+
+A target that is missing, closed or refuses the signal is a returned outcome,
+not an exception:
+
+| `outcome` | `reason` |
+| --- | --- |
+| `delivered` | `null` |
+| `target_not_found` | `instance_not_found`, `run_not_found` |
+| `target_closed` | `run_not_active`, `historical_run` |
+| `rejected` | `unknown_signal`, `invalid_signal_arguments`, `structural_limit_exceeded`, `runtime_reserved_signal`, `self_target`, `request_id_conflict` |
+
+`ExternalSignalResult` also carries `targetWorkflowId`, `targetRunId` (the run
+that received it), `targetCommandId`, `targetSignalId`, `message` and
+`retained`. A started child's handle has the same call for the child's current
+run: `$child->signal('approve', ['Ada'])`.
+
+A signal name the Server would refuse throws `InvalidSignalName` (reason
+`invalid_signal_name`) in workflow code before any command is sent: an empty
+or blank name, a control character (a byte below `0x20`, or `0x7f`), more than
+191 characters or more than 255 bytes.
+
+Changing the target, run, signal name or arguments of a recorded signal fails
+replay with `NonDeterministicWorkflow` reason `external_signal_mismatch`. The
+call cannot run inside `all()`, `parallel()` or `select()` groups and is not a
+cancellation-scope member.
+
+This needs a runtime that advertises `signal_external_workflow` (native Server
+with Server #1134). PHP Server 2.x does not. Without it, the worker abandons the
+task with `signal_external_workflow_unavailable` before it submits anything, so
+nothing is signalled.
+
 Use [inbound Message Streams](/build/message-streams/) instead when one workflow
 instance needs repeated ordered input with stable message identities and a
 replay-safe consumption cursor.

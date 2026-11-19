@@ -1,0 +1,59 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-signal-external-target-not-found",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.signal-external",
+    "input": []
+  },
+  "history": [
+    {
+      "event_type": "ExternalSignalRequested",
+      "payload": {
+        "sequence": 1,
+        "target_workflow_instance_id": "order-42",
+        "target_workflow_run_id": null,
+        "signal_name": "approve",
+        "request_id": "workflow-signal:regression-inline:1",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwECgZBZGEEBgA="
+        },
+        "payload_codec": "avro",
+        "task": {
+          "id": "sender-task-1"
+        }
+      }
+    },
+    {
+      "event_type": "ExternalSignalFailed",
+      "payload": {
+        "sequence": 1,
+        "target_workflow_instance_id": "order-42",
+        "target_workflow_run_id": null,
+        "signal_name": "approve",
+        "request_id": "workflow-signal:regression-inline:1",
+        "outcome": "target_not_found",
+        "reason": "instance_not_found",
+        "message": "No workflow instance order-42 in this namespace."
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "complete_workflow",
+        "result": {
+          "outcome": "target_not_found",
+          "reason": "instance_not_found",
+          "target_run_id": null,
+          "target_command_id": null
+        }
+      }
+    ]
+  }
+}

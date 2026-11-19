@@ -8,6 +8,7 @@ use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\ReplayClockUnavailable;
 use DurableWorkflow\Exception\WorkflowCancelled;
+use DurableWorkflow\Model\ExternalSignalResult;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Model\ScheduleOrigin;
 use DurableWorkflow\Model\ServiceOperationOptions;
@@ -534,6 +535,45 @@ final class WorkflowContext
         }
 
         return $handle;
+    }
+
+    /**
+     * Signal another workflow in this namespace and return the recorded outcome.
+     *
+     * The signal is a durable workflow command: the runtime records it in this
+     * run's history, delivers it in the same transaction and records the
+     * outcome beside it, then gives this workflow a new turn. Replay returns
+     * the recorded result and never sends the signal again. Without $runId the
+     * signal goes to the target instance's current run.
+     *
+     * A target that is missing, closed or refuses the signal is a returned
+     * outcome (target_not_found, target_closed or rejected, with a reason), not
+     * an exception, the same way the runtime records it. Check delivered().
+     *
+     * Requires a runtime that advertises signal_external_workflow; the worker
+     * refuses the command before submitting it otherwise. Not available inside
+     * all()/parallel()/select() groups, and not a cancellation scope member.
+     *
+     * @param list<mixed> $arguments
+     * @throws \DurableWorkflow\Exception\InvalidSignalName before any command when the Server would refuse the name
+     *         (blank, a control character, over 191 characters or over 255 bytes)
+     */
+    public function signalExternalWorkflow(
+        string $workflowId,
+        string $signalName,
+        array $arguments = [],
+        ?string $runId = null,
+    ): ExternalSignalResult {
+        $this->assertActiveFiber();
+        if ($this->isCapturing()) {
+            throw new LogicException('signalExternalWorkflow() cannot run inside an all(), parallel() or select() group.');
+        }
+        $result = $this->suspend(WorkflowCommand::signalExternalWorkflow($workflowId, $signalName, $arguments, $runId));
+        if (!$result instanceof ExternalSignalResult) {
+            throw new LogicException('A signal to another workflow must resume with its recorded outcome.');
+        }
+
+        return $result;
     }
 
     /** @internal Called by ChildWorkflowHandle::await(). */

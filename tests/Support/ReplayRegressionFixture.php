@@ -586,6 +586,15 @@ final class ReplayRegressionFixture
 
                 return ['child' => $result];
             },
+            // .github#223: a signal to another workflow resolves from its recorded outcome.
+            'golden.signal-external' => static function (WorkflowContext $context): array {
+                $result = $context->signalExternalWorkflow('order-42', 'approve', ['Ada', 3]);
+
+                return [
+                    'outcome' => $result->outcome->value, 'reason' => $result->reason,
+                    'target_run_id' => $result->targetRunId, 'target_command_id' => $result->targetCommandId,
+                ];
+            },
             'golden.child-start-handle' => static function (
                 WorkflowContext $context,
                 mixed $workflowType,
