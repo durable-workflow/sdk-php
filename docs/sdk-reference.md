@@ -730,6 +730,19 @@ the marker, live decisions and calls replayed at or after the marker's sequence
 use the applied-only view, and calls replayed before it keep the earlier view.
 A run that never meets an unapplied signal records no marker.
 
+Workflow code signals another workflow with
+`$context->signalExternalWorkflow($workflowId, $signalName, $arguments, runId: null)`,
+or `$child->signal()` on a started child's handle. It is a durable
+`signal_external_workflow` command: the runtime records and delivers it and
+records the outcome, and the call returns an `ExternalSignalResult` whose
+`outcome` is `delivered`, `target_not_found`, `target_closed` or `rejected`
+with a `reason`. A failed outcome is a returned value, not an exception. Replay
+returns the recorded result without sending the signal again, and a changed
+target, run, name or arguments fails replay with `external_signal_mismatch`.
+The worker refuses the command with `signal_external_workflow_unavailable`
+before submitting it when the runtime does not advertise
+`signal_external_workflow`.
+
 The PHP SDK does not expose update-validator authoring. Worker registration
 therefore declares an empty `update_validators` list for every workflow type;
 capability discovery and Server admission must not infer validator parity from

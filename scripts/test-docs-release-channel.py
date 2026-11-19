@@ -334,7 +334,7 @@ class DocumentationTerminalCollectorTest(unittest.TestCase):
                 if refusal:
                     raise ValueError("canonical fixture refusal")
             package.php_linux_qualification.qualify = qualify
-            source = "5c1ddbff59bcfad8a686a72a9b09804b359c382a"
+            source = "cba1285ddd43696ac9f445d7d04e8aff8fcad545"
             def git_output(arguments, **options):
                 return source if arguments[-2:] == ["rev-parse", "HEAD"] else ""
             output = io.StringIO()

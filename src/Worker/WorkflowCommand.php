@@ -10,6 +10,7 @@ use DurableWorkflow\Codec\AvroMapValue;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Codec\PayloadCodec;
 use DurableWorkflow\Exception\InvalidLocalActivityReport;
+use DurableWorkflow\Exception\InvalidSignalName;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\FailureReportRefused;
 use DurableWorkflow\Failure\LocalFailureReports;
@@ -294,6 +295,39 @@ final class WorkflowCommand
         }
 
         return $policies;
+    }
+
+    /**
+     * Signal another workflow in this namespace (Server signal-external-workflow
+     * contract). The arguments travel as the Avro payload envelope, as for a
+     * child start; no arguments is an encoded empty array.
+     *
+     * @param array<array-key, mixed> $arguments positional values; a map is refused
+     */
+    public static function signalExternalWorkflow(
+        string $workflowId,
+        string $signalName,
+        array $arguments = [],
+        ?string $runId = null,
+    ): self {
+        $length = preg_match_all('/./su', $workflowId);
+        if ($length === false || $length < 1 || $length > 191 || trim($workflowId) === '') {
+            throw new InvalidArgumentException('The target workflow ID must be a non-blank string of 1 to 191 characters.');
+        }
+        InvalidSignalName::assertValid($signalName);
+        if ($runId !== null && trim($runId) === '') {
+            throw new InvalidArgumentException('The target run ID must be null or a non-blank string.');
+        }
+        if (!array_is_list($arguments)) {
+            throw new InvalidArgumentException('Signal arguments must be a list of positional values.');
+        }
+
+        return new self('signal_external_workflow', 'external_signal', [
+            'workflow_id' => $workflowId,
+            'run_id' => $runId,
+            'signal_name' => $signalName,
+            'arguments_value' => $arguments,
+        ]);
     }
 
     /** @param callable(): mixed $operation */

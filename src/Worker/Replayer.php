@@ -12,6 +12,8 @@ use DurableWorkflow\Exception\DurableOperationCancelled;
 use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Exception\WorkflowFiberDiscarded;
+use DurableWorkflow\Model\ExternalSignalOutcome;
+use DurableWorkflow\Model\ExternalSignalResult;
 use DurableWorkflow\Telemetry\ExecutionTelemetry;
 use Closure;
 use Fiber;
@@ -50,6 +52,8 @@ final class Replayer
         'ServiceCallCompleted' => 'service_call', 'ServiceCallFailed' => 'service_call',
         'ServiceCallCancelled' => 'service_call', 'ServiceCallTimedOut' => 'service_call',
         'SideEffectRecorded' => 'side_effect',
+        'ExternalSignalRequested' => 'external_signal', 'ExternalSignalDelivered' => 'external_signal',
+        'ExternalSignalFailed' => 'external_signal',
         'VersionMarkerRecorded' => 'version_marker',
         'MemoUpserted' => 'memo',
         'SearchAttributesUpserted' => 'search_attributes',
@@ -1753,7 +1757,8 @@ final class Replayer
      *     cancellation_scope_id?: string,
      *     cancellation_cleanup?: array<string, string>,
      *     scope_parent?: string,
-     *     scope_shield?: bool
+     *     scope_shield?: bool,
+     *     external_signal?: array{workflow_id: string, run_id: ?string, signal_name: string, arguments: string}
      * }>
      */
     private function recordedSteps(array $history, bool $preserveConditionReopens, CancellationScopeHistory $scopes): array
@@ -2070,6 +2075,49 @@ final class Replayer
                     $this->decodeResult($payload),
                     resolutionOrder: $resolutionOrder,
                 );
+            } elseif ($type === 'ExternalSignalRequested') {
+                if (isset($steps[$key])) {
+                    throw new NonDeterministicWorkflow(
+                        "Workflow sequence {$sequence} records a signal to another workflow and another durable command.",
+                        $sequence,
+                        'one durable command shape',
+                        $steps[$key]['shape'].' and external_signal',
+                        'durable_command_sequence_collision',
+                    );
+                }
+                $steps[$key] = [
+                    ...$this->step($sequence, 'external_signal'),
+                    'external_signal' => $this->externalSignalRequest($payload, $sequence),
+                ];
+            } elseif (in_array($type, ['ExternalSignalDelivered', 'ExternalSignalFailed'], true)) {
+                $request = $steps[$key]['external_signal'] ?? null;
+                if (($steps[$key]['shape'] ?? null) !== 'external_signal' || !is_array($request)) {
+                    throw new NonDeterministicWorkflow(
+                        "{$type} history at sequence {$sequence} has no ExternalSignalRequested before it.",
+                        $sequence,
+                        'ExternalSignalRequested before its outcome',
+                        $type,
+                        'external_signal_history_invalid',
+                    );
+                }
+                if ($steps[$key]['resolved'] === true) {
+                    throw new NonDeterministicWorkflow(
+                        "Workflow sequence {$sequence} records more than one outcome for a signal to another workflow.",
+                        $sequence,
+                        'one ExternalSignalDelivered or ExternalSignalFailed event',
+                        "another {$type}",
+                        'external_signal_history_invalid',
+                    );
+                }
+                $steps[$key] = [
+                    ...$this->resolvedStep(
+                        $sequence,
+                        'external_signal',
+                        $this->externalSignalResult($type, $payload, $request, $sequence),
+                        resolutionOrder: $resolutionOrder,
+                    ),
+                    'external_signal' => $request,
+                ];
             } elseif ($type === 'VersionMarkerRecorded') {
                 if (isset($versionMarkerSequences[$key])) {
                     throw new NonDeterministicWorkflow(
@@ -2991,6 +3039,136 @@ final class Replayer
     }
 
     /**
+     * The identity a signal to another workflow recorded in ExternalSignalRequested:
+     * target, optional run, signal name and the canonical Avro bytes of its arguments.
+     *
+     * @param array<string, mixed> $payload
+     * @return array{workflow_id: string, run_id: ?string, signal_name: string, arguments: string}
+     */
+    private function externalSignalRequest(array $payload, int $sequence): array
+    {
+        $invalid = static function (string $detail) use ($sequence): never {
+            throw new NonDeterministicWorkflow(
+                "ExternalSignalRequested history at sequence {$sequence} {$detail}.",
+                $sequence,
+                'target_workflow_instance_id, signal_name and Avro arguments',
+                $detail,
+                'external_signal_history_invalid',
+            );
+        };
+        if (($this->sequence($payload) ?? 0) <= 0) {
+            $invalid('has no positive workflow sequence');
+        }
+        $workflowId = $payload['target_workflow_instance_id'] ?? null;
+        $runId = $payload['target_workflow_run_id'] ?? null;
+        $signalName = $payload['signal_name'] ?? null;
+        if (!is_string($workflowId) || $workflowId === '') {
+            $invalid('is missing its target workflow instance');
+        }
+        if ($runId !== null && (!is_string($runId) || $runId === '')) {
+            $invalid('has an invalid target run');
+        }
+        if (!is_string($signalName) || $signalName === '') {
+            $invalid('is missing its signal name');
+        }
+        $arguments = $payload['arguments'] ?? null;
+        if (!is_array($arguments) && !is_string($arguments)) {
+            $invalid('is missing its arguments');
+        }
+        if (is_string($arguments)) {
+            $arguments = ['codec' => $payload['payload_codec'] ?? $this->codec->name(), 'blob' => $arguments];
+        }
+        try {
+            $canonical = $this->codec->encode($this->codec->decodeEnvelope($arguments));
+        } catch (Throwable) {
+            $invalid('has arguments this worker cannot decode');
+        }
+
+        return ['workflow_id' => $workflowId, 'run_id' => $runId, 'signal_name' => $signalName, 'arguments' => $canonical];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @param array{workflow_id: string, run_id: ?string, signal_name: string, arguments: string} $request
+     */
+    private function externalSignalResult(string $type, array $payload, array $request, int $sequence): ExternalSignalResult
+    {
+        $outcome = ExternalSignalOutcome::tryFrom(is_string($payload['outcome'] ?? null)
+            ? $payload['outcome']
+            : ($type === 'ExternalSignalDelivered' ? 'delivered' : ''));
+        if ($outcome === null || ($outcome === ExternalSignalOutcome::Delivered) !== ($type === 'ExternalSignalDelivered')) {
+            throw new NonDeterministicWorkflow(
+                "{$type} history at sequence {$sequence} records an unsupported outcome.",
+                $sequence,
+                $type === 'ExternalSignalDelivered' ? 'delivered' : 'target_not_found, target_closed or rejected',
+                is_scalar($payload['outcome'] ?? null) ? (string) $payload['outcome'] : get_debug_type($payload['outcome'] ?? null),
+                'external_signal_history_invalid',
+            );
+        }
+        foreach (['target_workflow_instance_id' => 'workflow_id', 'signal_name' => 'signal_name'] as $field => $requested) {
+            if (array_key_exists($field, $payload) && $payload[$field] !== $request[$requested]) {
+                throw new NonDeterministicWorkflow(
+                    "{$type} history at sequence {$sequence} changes the {$field} of its request.",
+                    $sequence,
+                    $request[$requested],
+                    is_scalar($payload[$field]) ? (string) $payload[$field] : get_debug_type($payload[$field]),
+                    'external_signal_history_invalid',
+                );
+            }
+        }
+        $string = static fn (mixed $value): ?string => is_string($value) && $value !== '' ? $value : null;
+
+        return new ExternalSignalResult(
+            $outcome,
+            $request['workflow_id'],
+            $request['signal_name'],
+            $string($payload['target_workflow_run_id'] ?? null),
+            $outcome === ExternalSignalOutcome::Delivered ? null : $string($payload['reason'] ?? null),
+            $string($payload['message'] ?? null),
+            $string($payload['target_command_id'] ?? null),
+            $string($payload['target_signal_id'] ?? null),
+            $string($payload['request_id'] ?? null),
+            ($payload['retained'] ?? false) === true,
+        );
+    }
+
+    /**
+     * A replayed signal must name the same target, run, signal and arguments
+     * it recorded. Diagnostics never include argument values.
+     *
+     * @param array<string, mixed> $step
+     */
+    private function assertExternalSignalMatches(WorkflowCommand $command, array $step): void
+    {
+        $recorded = $step['external_signal'] ?? null;
+        if (!is_array($recorded)) {
+            throw new NonDeterministicWorkflow('A signal to another workflow has no recorded request.', $step['sequence'],
+                reason: 'external_signal_history_invalid');
+        }
+        $authored = $command->attributes;
+        foreach (['workflow_id' => 'target workflow', 'run_id' => 'target run', 'signal_name' => 'signal name'] as $field => $label) {
+            if (($authored[$field] ?? null) !== $recorded[$field]) {
+                throw new NonDeterministicWorkflow(
+                    "A replayed signal to another workflow changed its {$label}.",
+                    $step['sequence'],
+                    $recorded[$field] ?? '<none>',
+                    $authored[$field] ?? '<none>',
+                    'external_signal_mismatch',
+                );
+            }
+        }
+        if ($this->codec->encode($authored['arguments_value'] ?? []) !== $recorded['arguments']) {
+            throw new NonDeterministicWorkflow(
+                'A replayed signal to another workflow changed its arguments.',
+                $step['sequence'],
+                'the recorded arguments',
+                'different arguments',
+                'external_signal_mismatch',
+            );
+        }
+    }
+
+    /**
      * @param list<array<string, mixed>> $parallelPath
      * @return array{
      *     sequence: int,
@@ -3119,6 +3297,10 @@ final class Replayer
                     $step['sequence'], reason: 'search_attribute_type_mismatch',
                 );
             }
+        }
+
+        if ($command->historyShape === 'external_signal') {
+            $this->assertExternalSignalMatches($command, $step);
         }
 
         $actualDetail = $this->commandDetail($command);
@@ -3794,6 +3976,7 @@ final class Replayer
         return match ($type) {
             'CancellationScopeOpened' => 'cancellation_scope',
             'SideEffectRecorded' => 'side_effect',
+            'ExternalSignalRequested', 'ExternalSignalDelivered', 'ExternalSignalFailed' => 'external_signal',
             'VersionMarkerRecorded' => 'version_marker',
             'MemoUpserted' => 'memo',
             'SearchAttributesUpserted' => 'search_attributes',

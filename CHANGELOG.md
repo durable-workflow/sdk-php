@@ -8,6 +8,26 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `WorkflowContext::signalExternalWorkflow($workflowId, $signalName, $arguments, runId: null)`
+  signals another workflow in the namespace from workflow code as a durable
+  `signal_external_workflow` command (durable-workflow/.github#223, Server
+  #1134). The runtime records the signal, delivers it and records the outcome,
+  then gives the sender a new turn. The call returns an `ExternalSignalResult`
+  whose `ExternalSignalOutcome` is `delivered`, `target_not_found`,
+  `target_closed` or `rejected`, with the recorded `reason`, target run,
+  target command and signal IDs. A failed outcome is a returned value, not an
+  exception. `ChildWorkflowHandle::signal()` signals a started child's current
+  run the same way. Replay matches `ExternalSignalRequested` at the command's
+  sequence and returns the result from `ExternalSignalDelivered` or
+  `ExternalSignalFailed` without sending the signal again; a changed target,
+  run, signal name or arguments fails replay with `external_signal_mismatch`.
+  The worker abandons the task with `signal_external_workflow_unavailable`
+  before submitting a new signal when the runtime does not advertise
+  `signal_external_workflow`. The call cannot run inside `all()`,
+  `parallel()` or `select()` groups. A signal name the Server would refuse
+  (blank, a control character, more than 191 characters or 255 bytes) throws
+  the new `InvalidSignalName` in workflow code before any command is sent.
+
 - `Client::signalWithStart()` starts a workflow or reuses its open run and records one
   signal on it in a single Server transaction, so the run cannot close between a separate
   start and signal (durable-workflow/.github#222, server#1133). It needs a Server that
