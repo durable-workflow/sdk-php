@@ -36,7 +36,7 @@ cd sdk-php/examples/laravel-http
 ```
 
 The exact PHP SDK, Laravel and Octane versions live in `composer.json` and the
-resolved dependencies in `composer.lock`. The image uses PHP 8.3.36 FPM on
+resolved dependencies in `composer.lock`. The image uses PHP 8.3.37 FPM on
 Bookworm/amd64. Its [parent inventory](runtime/apt-parent.json) binds the fixed
 APT/libapt package set; the first build command refuses an unsupported or
 below-floor installed package/client before any package download. This source

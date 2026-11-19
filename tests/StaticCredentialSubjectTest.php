@@ -19,11 +19,11 @@ final class StaticCredentialSubjectTest extends TestCase
     public function testDependencyIntentHasExactVersionsAndFutureInputs(): void
     {
         $intent = StaticCredentialSubject::intent(self::intentPath());
-        self::assertSame('8.4.27', $intent['requirements']['php']);
+        self::assertSame('8.4.28', $intent['requirements']['php']);
         self::assertSame('3.10.0', $intent['requirements']['durable-workflow/sdk']);
         // The selected #307 graph: FrameworkBundle 7.4.21 is refused by advisory
         // GHSA-xg2q-4rrq-657q, so the intent names the patched 7.4.23 release.
-        self::assertSame(['php' => '8.4.27', 'durable-workflow/sdk' => '3.10.0', 'laravel/framework' => '12.72.0',
+        self::assertSame(['php' => '8.4.28', 'durable-workflow/sdk' => '3.10.0', 'laravel/framework' => '12.72.0',
             'symfony/framework-bundle' => '7.4.23'], $intent['requirements']);
         self::assertSame(['laravel/framework' => 'b089d3020e508f49b3625726ab4a2c897f1b78d5',
             'symfony/framework-bundle' => '6a749f2c37cb9def53793633ec72958aaad4b359'], $intent['framework_source_references']);

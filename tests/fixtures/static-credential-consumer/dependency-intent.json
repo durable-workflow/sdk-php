@@ -1,7 +1,7 @@
 {
     "schema": "durable-workflow.php-static-credential-intent/v1",
     "requirements": {
-        "php": "8.4.27",
+        "php": "8.4.28",
         "durable-workflow/sdk": "3.10.0",
         "laravel/framework": "12.72.0",
         "symfony/framework-bundle": "7.4.23"

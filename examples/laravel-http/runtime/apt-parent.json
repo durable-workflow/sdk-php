@@ -1,18 +1,18 @@
 {
   "schema": "durable-workflow.example-apt-parent.v1",
   "image": "docker.io/library/php",
-  "php": "8.3.36-fpm-bookworm",
+  "php": "8.3.37-fpm-bookworm",
   "os": "debian",
   "release": "12",
   "architecture": "amd64",
   "minimum_apt": "2.6.2",
-  "index": "sha256:d7677e2a3c1579fbe52848cc446bc24860187c876c383a43b7d4b8e06dce537e",
-  "child": "sha256:dd334c86ae15a5a77e77ea1cdcbad84a86f891f46a760bfa797a5a8873b7ad4a",
-  "config": "sha256:ef8c9d707d4b1241249cf5ca39f4ff90023f73fab53fdff366248e6fe4baf3f7",
-  "attestation": "sha256:aefceea882cf43ae490d5a26dfa48767627e59fc461cad00b33149b33d3b1845",
-  "spdx": "sha256:484298045b1f260c3751891f32bc2b90618d38c082a8b204d8ab6193ef7f857f",
+  "index": "sha256:ff3db7724750bf02a3c7d65be2790feb63f6173c2fb201328eb0a2295ca32041",
+  "child": "sha256:777cca828fa4b9d4a21b14272f4268fdaf67a0fc74eb03e04736c715d4dc2c2d",
+  "config": "sha256:2474be3d44310c6d3032cfac0f87694290dc58659596028d1d02b0d587eeb0f0",
+  "attestation": "sha256:0c1af7a7ef586cb4187280d8242e5d70fe96342a71f26526eb2f65d9745bb9ae",
+  "spdx": "sha256:ae7eeade365bda00e7c24f924490af58a0f137209a1ba150b1af938292a4fb9d",
   "spdx_bytes": 6408541,
   "packages": {"apt": "2.6.2", "libapt-pkg6.0": "2.6.2"},
   "advisory": "https://security-tracker.debian.org/tracker/DLA-4880-1",
-  "source_inventory": "https://github.com/durable-workflow/.github/issues/295#issuecomment-6662173761"
+  "source_inventory": "https://github.com/durable-workflow/sdk-php/pull/441#issuecomment-7014872948"
 }

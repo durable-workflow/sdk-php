@@ -14,8 +14,9 @@ Octane, which uses more memory. Production capacity remains workload-specific.
 
 These inputs describe the measured cohort. The application's `composer.json`
 has since moved to a later SDK release that these runs have not covered.
-The later fixed-APT PHP 8.3.36 parent refresh is also outside this measured
-PHP 8.3.35 cohort; its source inventory is not a new build or hosting result.
+The later fixed-APT PHP 8.3.36 and 8.3.37 parent refreshes are also outside
+this measured PHP 8.3.35 cohort; their source inventories are not a new build
+or hosting result.
 
 The October 18 cohort uses normally installed SDK 2.4.2 / `25d796ad`, published
 Server 2.8.7 / `964f9e3d` / immutable image index `27c08e15`, and Workflow

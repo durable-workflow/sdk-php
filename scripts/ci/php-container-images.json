@@ -1,5 +1,5 @@
 {
   "8.1": "php:8.1.34-cli-bookworm@sha256:482717722f08d9a6c2b4f98c40bfee6d7935bd1a17fef928881ecd5884dfd76e",
-  "8.2": "php:8.2.35-cli-bookworm@sha256:ce09ca1d4b532edf9b0347b44a1968a80d9175addb581c450ba0c9a43fa0c5ea",
-  "8.4": "php:8.4.27-cli-bookworm@sha256:b3e907a1108629c562c4bb313ce3449e34d49991f6bb2487913f6146f47200fe"
+  "8.2": "php:8.2.36-cli-bookworm@sha256:0a5ed0098915c11e1db8729b81bdb9a1bf12a998cc5e5b2f9a640afb6104dbe1",
+  "8.4": "php:8.4.28-cli-bookworm@sha256:85da896b3eeb8bcd83fe612e51a529b7d5983a1fab92ef5f63c7ac6e2842fc46"
 }
