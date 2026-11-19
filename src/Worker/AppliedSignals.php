@@ -65,28 +65,32 @@ final class AppliedSignals
         foreach ($history as $event) {
             $type = $event['event_type'] ?? $event['type'] ?? null;
             $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
-            $applied = $type === 'SignalApplied'
-                || ($type === 'SignalReceived' && self::recordedSequence($payload['workflow_sequence'] ?? null));
-            if (!$applied) {
-                continue;
-            }
-            if (($signalId = self::identity($payload['signal_id'] ?? null)) !== null) {
-                $signalIds[$signalId] = true;
-            }
-            if (($commandId = self::identity($payload['workflow_command_id'] ?? $event['workflow_command_id'] ?? null)) !== null) {
-                $commandIds[$commandId] = true;
+            if ($type === 'SignalApplied'
+                || ($type === 'SignalReceived' && self::recordedSequence($payload['workflow_sequence'] ?? null))) {
+                self::remember($signalIds, $commandIds, $payload['signal_id'] ?? null,
+                    $payload['workflow_command_id'] ?? $event['workflow_command_id'] ?? null);
             }
         }
         if (($task['resume_source_kind'] ?? null) === 'workflow_signal') {
-            if (($signalId = self::identity($task['workflow_signal_id'] ?? $task['resume_source_id'] ?? null)) !== null) {
-                $signalIds[$signalId] = true;
-            }
-            if (($commandId = self::identity($task['workflow_command_id'] ?? null)) !== null) {
-                $commandIds[$commandId] = true;
-            }
+            self::remember($signalIds, $commandIds, $task['workflow_signal_id'] ?? $task['resume_source_id'] ?? null,
+                $task['workflow_command_id'] ?? null);
         }
 
         return new self($signalIds, $commandIds);
+    }
+
+    /**
+     * @param array<string, true> $signalIds
+     * @param array<string, true> $commandIds
+     */
+    private static function remember(array &$signalIds, array &$commandIds, mixed $signalId, mixed $commandId): void
+    {
+        if (($signalId = self::identity($signalId)) !== null) {
+            $signalIds[$signalId] = true;
+        }
+        if (($commandId = self::identity($commandId)) !== null) {
+            $commandIds[$commandId] = true;
+        }
     }
 
     /**
@@ -121,20 +125,14 @@ final class AppliedSignals
      */
     public function observes(array $event, ?int $order = null): bool
     {
-        if ($order !== null && isset($this->observedOrders[$order])) {
-            return true;
-        }
         $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
-        if (self::recordedSequence($payload['workflow_sequence'] ?? null)) {
-            return true;
-        }
         $signalId = self::identity($payload['signal_id'] ?? null);
         $commandId = self::identity($payload['workflow_command_id'] ?? $event['workflow_command_id'] ?? null);
-        if ($signalId === null && $commandId === null) {
-            return true;
-        }
 
-        return ($signalId !== null && isset($this->signalIds[$signalId]))
+        return ($order !== null && isset($this->observedOrders[$order]))
+            || self::recordedSequence($payload['workflow_sequence'] ?? null)
+            || ($signalId === null && $commandId === null)
+            || ($signalId !== null && isset($this->signalIds[$signalId]))
             || ($commandId !== null && isset($this->commandIds[$commandId]));
     }
 
@@ -178,6 +176,6 @@ final class AppliedSignals
 
     private static function recordedSequence(mixed $value): bool
     {
-        return (is_int($value) && $value > 0) || (is_string($value) && preg_match('/\A[1-9][0-9]*\z/', $value) === 1);
+        return (is_int($value) && $value > 0) || (is_string($value) && preg_match('/\A[1-9]\d*\z/', $value) === 1);
     }
 }

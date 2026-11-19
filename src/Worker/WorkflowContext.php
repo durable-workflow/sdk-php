@@ -906,14 +906,10 @@ final class WorkflowContext
     {
         $signals = [];
         foreach ($this->history as $order => $event) {
-            if (($event['event_type'] ?? $event['type'] ?? null) !== 'SignalReceived') {
-                continue;
-            }
-            if ($applied !== null && !$applied->observes($event, $order)) {
-                continue;
-            }
             $payload = isset($event['payload']) && is_array($event['payload']) ? $event['payload'] : [];
-            if (($payload['signal_name'] ?? null) !== $signalName) {
+            if (($event['event_type'] ?? $event['type'] ?? null) !== 'SignalReceived'
+                || ($payload['signal_name'] ?? null) !== $signalName
+                || ($applied !== null && !$applied->observes($event, $order))) {
                 continue;
             }
             $raw = $payload['value'] ?? $payload['input'] ?? $payload['arguments'] ?? null;

@@ -679,7 +679,7 @@ final class ReplayRegressionConsumer
                 'arguments' => $codec->envelope($input),
                 'history_events' => $layout === 'inline' ? $history : [],
                 'next_history_page_token' => $layout === 'paginated' ? 'regression-page-1' : '',
-            ], self::taskAttributes($workflowType), self::workerTaskAttributes($identity, $fixture));
+            ], self::taskAttributes($workflowType), self::workerTaskAttributes($fixture));
             $pagedHistory[$taskId] = $layout === 'paginated' ? $history : [];
         }
         $transport = new ReplayRegressionTransport(
@@ -1408,12 +1408,9 @@ final class ReplayRegressionConsumer
      * @param array<string, mixed> $fixture
      * @return array<string, mixed>
      */
-    private static function workerTaskAttributes(string $identity, array $fixture): array
+    private static function workerTaskAttributes(array $fixture): array
     {
-        $workerTask = $fixture['worker_task'] ?? [];
-        if (!is_array($workerTask)) {
-            throw new RuntimeException("{$identity}.worker_task must be an object.");
-        }
+        $workerTask = is_array($fixture['worker_task'] ?? null) ? $fixture['worker_task'] : [];
 
         return array_intersect_key($workerTask, array_flip([
             'resume_source_kind', 'resume_source_id', 'workflow_signal_id', 'workflow_command_id', 'signal_name',
