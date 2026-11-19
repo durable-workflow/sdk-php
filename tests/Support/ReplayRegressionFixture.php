@@ -806,17 +806,6 @@ final class ReplayRegressionFixture
             },
             'golden.completion-too-large' => static fn (WorkflowContext $context): string => 'refused-as-too-large',
             'golden.completion-history-limit' => static fn (WorkflowContext $context): string => 'refused-over-history-budget',
-            // .github#228: the fan-out whose completion was refused over the history
-            // budget. Replaying its recorded structural failure reproduces the same
-            // refused commands instead of a replay block.
-            'golden.completion-history-limit-fanout' => static function (WorkflowContext $context, int $count): array {
-                $operations = [];
-                for ($index = 0; $index < $count; ++$index) {
-                    $operations[] = $context->deferActivity('history.length', [str_repeat('x', 16)]);
-                }
-
-                return $context->all($operations);
-            },
             'golden.completion-backend-loss', 'golden.completion-lock-pressure' => static fn (WorkflowContext $context): string =>
                 'completion-after-backend-recovery',
             'golden.workflow-lease-recovery' => static fn (WorkflowContext $context): mixed =>

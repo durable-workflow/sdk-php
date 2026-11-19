@@ -13,6 +13,7 @@ use DurableWorkflow\Exception\WorkflowTaskHistoryLimitExceeded;
 use DurableWorkflow\Tests\Support\FakeTransport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -259,6 +260,43 @@ final class WorkflowTaskHistoryLimitExceededTest extends TestCase
             => $event[0] === 'worker.activity_continuation_history_limit_exceeded'));
         self::assertCount(1, $logged);
         self::assertSame('history_transaction_size', $logged[0][1]['limit_kind']);
+    }
+
+    /**
+     * The history native Server 3.13.0 recorded for this failure (StartAccepted,
+     * WorkflowStarted, then the structural WorkflowFailed) replays through the
+     * official Replayer to the same refused commands. The failure adds no command
+     * or history shape, so it is neither a replay block nor a nondeterminism
+     * failure, and histories recorded before this change replay unchanged.
+     */
+    public function testTheRecordedStructuralFailureReplaysToTheRefusedCommands(): void
+    {
+        $recorded = json_decode((string) file_get_contents(__DIR__.'/fixtures/history-transaction-limit-recorded-failure.json'),
+            true, flags: JSON_THROW_ON_ERROR);
+        $types = array_column($recorded['history'], 'event_type');
+        self::assertSame(['StartAccepted', 'WorkflowStarted', 'WorkflowFailed'], $types);
+        $failed = $recorded['history'][2]['payload'];
+        self::assertSame('structural_limit', $failed['failure_category']);
+        self::assertTrue($failed['non_retryable']);
+        self::assertStringStartsWith('Structural limit exceeded: history_transaction_bytes: ', $failed['message']);
+
+        $replay = (new Replayer(new AvroPayloadCodec()))->replay(
+            static function (WorkflowContext $context, int $count): array {
+                $operations = [];
+                for ($index = 0; $index < $count; ++$index) {
+                    $operations[] = $context->deferActivity('history.length', [str_repeat('x', 16)]);
+                }
+
+                return $context->all($operations);
+            },
+            $recorded['history'],
+            $recorded['workflow']['input'],
+            'history-limit',
+            ['workflow_type' => $recorded['workflow']['type'], 'workflow_id' => 'history-limit-workflow', 'run_id' => 'history-limit-run'],
+        );
+
+        self::assertSame($recorded['replayed_commands'], array_column($replay->commands, 'type'));
+        self::assertSame(['history.length'], array_values(array_unique(array_column($replay->commands, 'activity_type'))));
     }
 
     /** @param array<string, mixed> $events */

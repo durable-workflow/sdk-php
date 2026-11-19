@@ -80,7 +80,7 @@ jobs:
         with:
           php-version: '8.3'
           ini-file: production
-          tools: composer:2.10.3
+          tools: composer:2.10.3,phpunit:11.5.57
           coverage: none
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust

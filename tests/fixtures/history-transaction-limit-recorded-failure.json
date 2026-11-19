@@ -1,14 +1,7 @@
 {
-  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
-  "fixture_schema": "durable-workflow.replay-regression/v1",
-  "id": "php-workflow-completion-history-limit-recorded-failure",
-  "protocol_version": "1.20",
-  "bindings": [
-    "php"
-  ],
   "source": "Recorded on published native Server 3.13.0 with DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES=65536 (durable-workflow/.github#228): the fan-out's completion was refused with 409 history_transaction_limit_exceeded and the Worker failed the run once with a structural-limit failure. Replaying that history reproduces the refused commands; it is not a replay block or a nondeterminism failure.",
   "workflow": {
-    "type": "golden.completion-history-limit-fanout",
+    "type": "history.fanout",
     "input": [
       3
     ]
@@ -111,34 +104,9 @@
       }
     }
   ],
-  "command_sequence": [
-    {
-      "type": "schedule_activity",
-      "activity_type": "history.length"
-    },
-    {
-      "type": "schedule_activity",
-      "activity_type": "history.length"
-    },
-    {
-      "type": "schedule_activity",
-      "activity_type": "history.length"
-    }
-  ],
-  "expected": {
-    "command_sequence": [
-      {
-        "type": "schedule_activity",
-        "activity_type": "history.length"
-      },
-      {
-        "type": "schedule_activity",
-        "activity_type": "history.length"
-      },
-      {
-        "type": "schedule_activity",
-        "activity_type": "history.length"
-      }
-    ]
-  }
+  "replayed_commands": [
+    "schedule_activity",
+    "schedule_activity",
+    "schedule_activity"
+  ]
 }
