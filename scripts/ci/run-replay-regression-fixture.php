@@ -101,6 +101,7 @@ final class ReplayRegressionTransport implements Transport
         private readonly bool $completionLockPressure = false,
         private readonly bool $occurrenceDeadline = false,
         private readonly bool $completionTooLarge = false,
+        private readonly bool $historyLimit = false,
     ) {
     }
 
@@ -213,6 +214,29 @@ final class ReplayRegressionTransport implements Transport
                     || !str_starts_with($message, 'Structural limit exceeded: workflow_task_completion_bytes: ')
                     || !str_contains($message, 'over the server limit of 64 bytes')) {
                     throw new RuntimeException('The structural-limit failure does not name the completion limit.');
+                }
+            }
+            if ($this->historyLimit) {
+                // .github#228: native Server 3.13.0 rolls back a completion over its
+                // history-transaction budget and answers a typed 409.
+                if ($this->refusedCompletion !== null && $body === $this->refusedCompletion) {
+                    throw new RuntimeException('The Worker resent the over-budget workflow completion.');
+                }
+                if ($this->completionRefusals++ === 0) {
+                    $this->refusedCompletion = $body;
+                    $refusal = [
+                        'task_id' => $completionTask['task_id'], 'workflow_task_attempt' => $completionTask['workflow_task_attempt'],
+                        'outcome' => 'completed', 'recorded' => false, 'run_id' => null, 'run_status' => null,
+                        'created_task_ids' => [], 'reason' => 'history_transaction_limit_exceeded',
+                        'limit_kind' => 'history_transaction_bytes', 'current_value' => 65, 'configured_limit' => 64,
+                    ];
+                    throw TransportException::fromResponse(409, $refusal, json_encode($refusal, JSON_THROW_ON_ERROR));
+                }
+                $message = $body['commands'][0]['message'] ?? null;
+                if (!is_string($message)
+                    || !str_starts_with($message, 'Structural limit exceeded: history_transaction_bytes: ')
+                    || !str_contains($message, 'over the server limit of 64 history bytes')) {
+                    throw new RuntimeException('The structural-limit failure does not name the history budget.');
                 }
             }
             if ($this->storagePressure) {
@@ -692,6 +716,7 @@ final class ReplayRegressionConsumer
             completionLockPressure: $workflowType === 'golden.completion-lock-pressure',
             occurrenceDeadline: self::occurrenceDeadlineAdvertised($workflowType, $history),
             completionTooLarge: $workflowType === 'golden.completion-too-large',
+            historyLimit: $workflowType === 'golden.completion-history-limit',
         );
         $now = 0.0;
         $worker = new Worker(
@@ -1190,6 +1215,7 @@ final class ReplayRegressionConsumer
             'golden.completion-backend-loss', 'golden.completion-lock-pressure' => static fn (WorkflowContext $context): string =>
                 'completion-after-backend-recovery',
             'golden.completion-too-large' => static fn (WorkflowContext $context): string => 'refused-as-too-large',
+            'golden.completion-history-limit' => static fn (WorkflowContext $context): string => 'refused-over-history-budget',
             'golden.workflow-lease-recovery' => static fn (WorkflowContext $context): mixed =>
                 $context->activity('golden.lease-receipt'),
             'golden.activity-completion-backend-loss' => static fn (WorkflowContext $context): mixed =>

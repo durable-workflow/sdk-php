@@ -818,6 +818,31 @@ refused the same way falls back to an ordinary activity completion; the run's
 own workflow task then reports the limit. Other 413 responses and 5xx errors
 keep their existing `ServerException` behavior.
 
+### History-transaction budget
+
+The Server records a completion in one history transaction, bounded by its
+`history_transaction_size` (events), `history_transaction_bytes` and
+`history_transaction_rows` structural limits. `ActivityScheduled` events repeat
+their arguments, so a fan-out that fits the completion size limit can still
+exceed a lowered `DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES`. Native Server 3.13.0
+defaults that budget to four times the completion size limit, and refuses a
+completion over it with 409 `history_transaction_limit_exceeded`, naming
+`limit_kind`, the measured `current_value` and the `configured_limit`. The
+transaction rolls back, so nothing is recorded.
+
+The PHP Worker raises `WorkflowTaskHistoryLimitExceeded`, a `ServerException`
+with `limitKind`, `currentValue` and `configuredLimit` (`null` when the Server
+does not report them; `limitKind` is then the refusal reason, which may also be
+`completion_budget_exceeded`). It handles the refusal like the oversized
+completion above: it never resends the completion, completes the same task once
+with a non-retryable `fail_workflow` command whose message starts `Structural
+limit exceeded: <limit kind>:`, and logs
+`worker.workflow_task_history_limit_exceeded`. The run fails with
+`failure_category: structural_limit`. Replaying that history reproduces the
+refused commands; it is not a replay block. A refused activity continuation
+falls back to an ordinary activity completion. Other 409 responses keep their
+existing behavior.
+
 ## Completion pipelining (opt-in)
 
 `Worker::create($client, $taskQueue, enableCompletionPipelining: true)` allows
