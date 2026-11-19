@@ -199,6 +199,16 @@ final class ReplayRegressionFixture
         $codec = new AvroPayloadCodec();
         $scopedCleanup = $workflowType === 'golden.prepared-local-scoped-cleanup';
         $task = self::taskAttributes($workflowType);
+        $workerTask = $fixture['worker_task'] ?? [];
+        if (!is_array($workerTask)) {
+            throw new RuntimeException("{$identity}.worker_task must be an object.");
+        }
+        // The resume context a signal-delivering task carries (sdk-php#434).
+        foreach (['resume_source_kind', 'resume_source_id', 'workflow_signal_id', 'workflow_command_id', 'signal_name'] as $field) {
+            if (array_key_exists($field, $workerTask)) {
+                $task[$field] = $workerTask[$field];
+            }
+        }
         if ($scopedCleanup) {
             foreach ($history as $event) {
                 if (($event['event_type'] ?? $event['type'] ?? null) === 'WorkflowStarted') {
@@ -524,6 +534,15 @@ final class ReplayRegressionFixture
                 }
 
                 return $result;
+            },
+            // sdk-php#434: only applied signals, and the one this task delivers.
+            'golden.signal-applied' => static fn (WorkflowContext $context): array => ['signals' => $context->signals('approve')],
+            // sdk-php#434: a decision taken from the signals visible to this task.
+            'golden.signal-decision' => static function (WorkflowContext $context): array {
+                $approved = $context->signals('approve') !== [];
+                $result = $context->activity($approved ? 'golden.approved' : 'golden.waiting');
+
+                return ['result' => $result, 'signals' => $context->signals('approve')];
             },
             'golden.immediate-condition' => static function (WorkflowContext $context): array {
                 $first = $context->activity('golden.first');

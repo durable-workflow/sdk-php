@@ -1,0 +1,116 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-signals-observe-only-applied",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.signal-applied",
+    "input": []
+  },
+  "worker_task": {
+    "resume_source_kind": "workflow_signal",
+    "resume_source_id": "signal-current",
+    "workflow_signal_id": "signal-current",
+    "workflow_command_id": "command-current",
+    "signal_name": "approve"
+  },
+  "history": [
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "signal-first",
+        "workflow_command_id": "command-first",
+        "signal_name": "approve",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCgpmaXJzdAA="
+        }
+      }
+    },
+    {
+      "event_type": "SignalApplied",
+      "payload": {
+        "signal_id": "signal-first",
+        "workflow_command_id": "command-first",
+        "signal_name": "approve",
+        "value": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCgpmaXJzdAA="
+        }
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "signal-current",
+        "workflow_command_id": "command-current",
+        "signal_name": "approve",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCg5jdXJyZW50AA=="
+        }
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "signal-unapplied",
+        "workflow_command_id": "command-unapplied",
+        "signal_name": "approve",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCgxzZWNvbmQA"
+        }
+      }
+    }
+  ],
+  "command_sequence": [
+    {
+      "type": "record_version_marker",
+      "change_id": "durable-workflow.sdk-php.signals-applied-only",
+      "version": 1,
+      "min_supported": -1,
+      "max_supported": 1
+    },
+    {
+      "type": "complete_workflow",
+      "result": {
+        "signals": [
+          [
+            "first"
+          ],
+          [
+            "current"
+          ]
+        ]
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "record_version_marker",
+        "change_id": "durable-workflow.sdk-php.signals-applied-only",
+        "version": 1,
+        "min_supported": -1,
+        "max_supported": 1
+      },
+      {
+        "type": "complete_workflow",
+        "result": {
+          "signals": [
+            [
+              "first"
+            ],
+            [
+              "current"
+            ]
+          ]
+        }
+      }
+    ]
+  }
+}

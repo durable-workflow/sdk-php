@@ -703,7 +703,7 @@ final class ReplayRegressionConsumer
                 'arguments' => $codec->envelope($input),
                 'history_events' => $layout === 'inline' ? $history : [],
                 'next_history_page_token' => $layout === 'paginated' ? 'regression-page-1' : '',
-            ], self::taskAttributes($workflowType));
+            ], self::taskAttributes($workflowType), self::workerTaskAttributes($fixture));
             $pagedHistory[$taskId] = $layout === 'paginated' ? $history : [];
         }
         $transport = new ReplayRegressionTransport(
@@ -958,6 +958,15 @@ final class ReplayRegressionConsumer
                 }
 
                 return $result;
+            },
+            // sdk-php#434: only applied signals, and the one this task delivers.
+            'golden.signal-applied' => static fn (WorkflowContext $context): array => ['signals' => $context->signals('approve')],
+            // sdk-php#434: a decision taken from the signals visible to this task.
+            'golden.signal-decision' => static function (WorkflowContext $context): array {
+                $approved = $context->signals('approve') !== [];
+                $result = $context->activity($approved ? 'golden.approved' : 'golden.waiting');
+
+                return ['result' => $result, 'signals' => $context->signals('approve')];
             },
             'golden.immediate-condition' => static function (WorkflowContext $context): array {
                 $first = $context->activity('golden.first');
@@ -1417,6 +1426,21 @@ final class ReplayRegressionConsumer
 
             return ['winner' => $selected->key];
         };
+    }
+
+    /**
+     * The resume context a signal-delivering workflow task carries (sdk-php#434).
+     *
+     * @param array<string, mixed> $fixture
+     * @return array<string, mixed>
+     */
+    private static function workerTaskAttributes(array $fixture): array
+    {
+        $workerTask = is_array($fixture['worker_task'] ?? null) ? $fixture['worker_task'] : [];
+
+        return array_intersect_key($workerTask, array_flip([
+            'resume_source_kind', 'resume_source_id', 'workflow_signal_id', 'workflow_command_id', 'signal_name',
+        ]));
     }
 
     /** @return array<string, mixed> */

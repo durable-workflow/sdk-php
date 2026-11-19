@@ -174,6 +174,7 @@ final class WorkflowContext
         private bool $hasAuthoredCancellationScopes = false,
         private readonly bool $allowScopedPreparedLocalActivities = false,
         private readonly ?BusinessReplayClock $businessReplayClock = null,
+        private readonly ?AppliedSignals $appliedSignals = null,
     ) {
         $this->execution = $execution;
         $this->loadMessageStreamMessages();
@@ -883,18 +884,43 @@ final class WorkflowContext
         ($this->cancellationReplayClock ??= new CancellationReplayClock())->observe($event);
     }
 
-    /** @return list<list<mixed>> */
+    /**
+     * The arguments of each signal with this name applied to the run, in the
+     * order the Server received them.
+     *
+     * A signal the Server has received but not yet applied is not included:
+     * the Server applies signals in message order with updates, when the
+     * workflow task that delivers the signal completes, and can still reject
+     * one it has not applied (sdk-php#434). The signal the current workflow
+     * task delivers is included. Runs recorded before this rule keep their
+     * earlier view: the first live call that hides a received signal records
+     * the version marker `durable-workflow.sdk-php.signals-applied-only`
+     * (see {@see AppliedSignals}).
+     *
+     * @return list<list<mixed>>
+     */
     public function signals(string $signalName): array
     {
-        $signals = [];
-        foreach ($this->history as $event) {
-            if (($event['event_type'] ?? $event['type'] ?? null) !== 'SignalReceived') {
-                continue;
-            }
+        return $this->receivedSignals($signalName, $this->appliedSignals);
+    }
+
+    /** @return list<list<mixed>> */
+    private function receivedSignals(string $signalName, ?AppliedSignals $applied): array
+    {
+        $received = [];
+        foreach ($this->history as $order => $event) {
             $payload = isset($event['payload']) && is_array($event['payload']) ? $event['payload'] : [];
-            if (($payload['signal_name'] ?? null) !== $signalName) {
-                continue;
+            if (($event['event_type'] ?? $event['type'] ?? null) === 'SignalReceived'
+                && ($payload['signal_name'] ?? null) === $signalName) {
+                $received[$order] = $payload;
             }
+        }
+        if ($applied !== null) {
+            $received = array_intersect_key($received, $applied->select(array_map(
+                static fn (array $payload): array => ['event_type' => 'SignalReceived', 'payload' => $payload], $received)));
+        }
+        $signals = [];
+        foreach ($received as $payload) {
             $raw = $payload['value'] ?? $payload['input'] ?? $payload['arguments'] ?? null;
             $decoded = (is_array($raw) || is_string($raw)) ? $this->codec->decodeEnvelope($raw) : null;
             $signals[] = is_array($decoded) && array_is_list($decoded) ? $decoded : [$decoded];
@@ -935,7 +961,8 @@ final class WorkflowContext
     {
         $seenPositions = [];
         $seenMessageIds = [];
-        foreach ($this->signals(self::MESSAGE_STREAM_SIGNAL) as $arguments) {
+        // Message streams keep their own cursor over every received message.
+        foreach ($this->receivedSignals(self::MESSAGE_STREAM_SIGNAL, null) as $arguments) {
             if (count($arguments) !== 1 || !is_array($arguments[0])) {
                 continue;
             }
