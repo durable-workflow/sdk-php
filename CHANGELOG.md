@@ -6,6 +6,16 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.21.0] - 2026-11-19
+
+### Added
+
+- `SignalFailed::isRequestIdAmbiguous()` and `UpdateFailed::isRequestIdAmbiguous()`
+  detect the 409 `request_id_ambiguous` refusal native Server 3.9.2 and later
+  return when a command key matches an ambiguous legacy retained identity
+  (durable-workflow/.github#216). Nothing was written and no receipt was
+  selected, so the refusal is never resent automatically.
+
 ### Fixed
 
 - A workflow-task completion the Server refuses over its history-transaction
@@ -24,14 +34,6 @@ project follows [Semantic Versioning](https://semver.org/).
   the completion size limit. An activity continuation refused the same way
   falls back to an ordinary activity completion. Other 409 responses are
   unchanged (durable-workflow/.github#228).
-
-### Added
-
-- `SignalFailed::isRequestIdAmbiguous()` and `UpdateFailed::isRequestIdAmbiguous()`
-  detect the 409 `request_id_ambiguous` refusal native Server 3.9.2 and later
-  return when a command key matches an ambiguous legacy retained identity
-  (durable-workflow/.github#216). Nothing was written and no receipt was
-  selected, so the refusal is never resent automatically.
 
 ## [3.20.0] - 2026-11-18
 
