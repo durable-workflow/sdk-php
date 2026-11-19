@@ -19,6 +19,7 @@ use DurableWorkflow\Exception\ScheduleAlreadyExists;
 use DurableWorkflow\Exception\ServerCapabilityUnavailable;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\SignalFailed;
+use DurableWorkflow\Exception\SignalWithStartFailed;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Exception\UpdateFailed;
 use DurableWorkflow\Exception\UpdateStillPending;
@@ -105,6 +106,8 @@ final class Client implements WorkflowClientInterface
     private bool $claimedTaskReadyAgeSupported = false;
     /** Cached once a Server has advertised update_outcome_reads (server#1131). */
     private ?bool $updateOutcomeReadsSupported = null;
+    /** Cached once a Server has advertised signal_with_start (server#1133). */
+    private ?bool $signalWithStartSupported = null;
     private MetricsObserver $metricsObserver;
     private ?ClientRequestObservation $metricsRequest = null;
     /** @var (\Closure(string, array<string, mixed>|null, array<string, mixed>, RequestBudget|null): (?\Closure))|null */
@@ -1131,6 +1134,99 @@ final class Client implements WorkflowClientInterface
             'input' => $this->codec->envelope($arguments),
             'request_id' => $requestId,
         ]), 'signal', $requestId);
+
+        return $response + ['request_id' => $requestId];
+    }
+
+    /**
+     * Start the workflow or reuse its open run, and signal it, in one Server transaction.
+     *
+     * Unlike startWorkflow(duplicatePolicy: 'use-existing') followed by signalWorkflow(), the
+     * run cannot close in between. Needs a Server that advertises `signal_with_start` (native
+     * Server, server#1133); otherwise this throws ServerCapabilityUnavailable before sending.
+     *
+     * - No run: a new run starts with `$input` and the start options (`start_outcome`
+     *   `started_new`, HTTP 201).
+     * - An open run, including the newest run after continue-as-new: the signal joins it
+     *   (`start_outcome` `returned_existing_active`). Its input, deadlines and history are
+     *   unchanged. `$duplicatePolicy` defaults to `use-existing`; `fail` refuses an open run
+     *   with reason `instance_already_started`.
+     * - A closed run: refused with reason `run_not_active` unless `$closedRunPolicy` is
+     *   `start_new_run`, which starts a fresh run after it with this call's input and timeouts
+     *   (`closed_run_id` names the closed run, which keeps its outcome).
+     *
+     * `$workflowType` must be the instance's type and `$taskQueue` the open run's queue.
+     * `$requestId` is the signal's command key (1 to 255 Unicode characters); omit it to
+     * generate `sdk-php-signal-with-start-<hex>` once per call. A retry with the same key,
+     * signal name, arguments and workflow type returns the original receipt (`retained: true`),
+     * even after the run closed or continued, and starts nothing.
+     *
+     * The receipt carries the signal's `command_id`, `command_sequence`, `run_id` and `outcome`,
+     * the start's `start_command_id`, `start_outcome` and `start_command_status`,
+     * `intake_group_id` and `request_id`. Every refusal throws SignalWithStartFailed with nothing
+     * written. An admitted signal is admitted once; effects it triggers still need their own
+     * idempotency.
+     *
+     * @param list<mixed> $signalArguments
+     * @param list<mixed> $input
+     * @param array<string, mixed>|null $memo
+     * @param array<string, mixed>|null $searchAttributes
+     * @return array<string, mixed>
+     * @throws SignalWithStartFailed
+     * @throws ServerCapabilityUnavailable
+     */
+    public function signalWithStart(
+        string $workflowType,
+        string $workflowId,
+        string $taskQueue,
+        string $signalName,
+        array $signalArguments = [],
+        array $input = [],
+        ?string $requestId = null,
+        ?string $duplicatePolicy = null,
+        ?string $closedRunPolicy = null,
+        int $executionTimeoutSeconds = 3600,
+        int $runTimeoutSeconds = 600,
+        ?array $memo = null,
+        ?array $searchAttributes = null,
+        ?string $businessKey = null,
+        ?int $priority = null,
+        ?string $fairnessKey = null,
+        ?int $fairnessWeight = null,
+    ): array {
+        if ($closedRunPolicy !== null && !in_array($closedRunPolicy, ['reject', 'start_new_run'], true)) {
+            throw new InvalidArgumentException('The closed run policy must be "reject" or "start_new_run".');
+        }
+        if ($this->signalWithStartSupported !== true) {
+            $this->signalWithStartSupported = ($this->clusterInfo()->capabilities[ClusterInfo::SIGNAL_WITH_START] ?? null) === true;
+        }
+        if (!$this->signalWithStartSupported) {
+            throw new ServerCapabilityUnavailable(
+                ClusterInfo::SIGNAL_WITH_START,
+                'This Server does not advertise signal_with_start. Separate startWorkflow() and signalWorkflow() '
+                .'calls are not atomic: the run can close between them and the signal is then refused.',
+            );
+        }
+        $requestId = $this->commandRequestId('signal-with-start', $requestId);
+        $body = $this->withoutNulls([
+            'workflow_type' => $workflowType,
+            'task_queue' => $taskQueue,
+            'input' => $this->codec->envelope($input),
+            'signal_input' => $signalArguments === [] ? null : $this->codec->envelope($signalArguments),
+            'request_id' => $requestId,
+            'duplicate_policy' => $duplicatePolicy,
+            'closed_run_policy' => $closedRunPolicy,
+            'execution_timeout_seconds' => $executionTimeoutSeconds,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'memo' => $memo,
+            'search_attributes' => $searchAttributes,
+            'business_key' => $businessKey,
+            'priority' => $priority,
+            'fairness_key' => $fairnessKey,
+            'fairness_weight' => $fairnessWeight,
+        ]);
+        $path = '/workflows/'.$this->segment($workflowId).'/signal-with-start/'.$this->segment($signalName);
+        $response = $this->control('POST', $path, $this->withObservabilityContext($body), 'signal-with-start', $requestId);
 
         return $response + ['request_id' => $requestId];
     }
@@ -3395,6 +3491,9 @@ final class Client implements WorkflowClientInterface
             }
             if ($operation === 'signal') {
                 throw new SignalFailed($message, $status, $reason, $details, $exception, $requestId);
+            }
+            if ($operation === 'signal-with-start') {
+                throw new SignalWithStartFailed($message, $status, $reason, $details, $exception, $requestId);
             }
             if ($worker && $method === 'POST' && $body !== null && self::isWorkflowCommandCompletion($path)
                 && WorkflowTaskCompletionTooLarge::matches($status, $details)) {
