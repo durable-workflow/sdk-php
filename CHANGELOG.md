@@ -6,6 +6,20 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `Client::signalWithStart()` starts a workflow or reuses its open run and records one
+  signal on it in a single Server transaction, so the run cannot close between a separate
+  start and signal (durable-workflow/.github#222, server#1133). It needs a Server that
+  advertises `signal_with_start` (`ClusterInfo::supportsSignalWithStart()`, native Server)
+  and throws `ServerCapabilityUnavailable` before sending otherwise. An open run, including
+  the newest run after continue-as-new, is reused with its input and deadlines unchanged;
+  the `fail` duplicate policy refuses it. A closed run is refused with `run_not_active`
+  unless the closed run policy is `start_new_run`, which starts a fresh run after it. The
+  request ID is the signal's command key (`sdk-php-signal-with-start-<hex>` when omitted):
+  a retry returns the original receipt, even after the run closed. Every refusal throws the
+  new `SignalWithStartFailed` with the Server's reason, and nothing was written.
+
 ## [3.21.0] - 2026-11-19
 
 ### Added

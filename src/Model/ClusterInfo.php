@@ -13,6 +13,9 @@ final class ClusterInfo
     /** Signal and update `request_id` is a durable command key (native Server 3.9.0 and later). */
     public const COMMAND_REQUEST_KEYS = 'command_request_keys';
 
+    /** Atomic signal-with-start intake (native Server, server#1133). */
+    public const SIGNAL_WITH_START = 'signal_with_start';
+
     /** Read-only v1 open-run version usage; availability is discovered, never inferred from a version. */
     public const WORKFLOW_VERSION_USAGE = 'workflow_version_usage';
 
@@ -70,6 +73,11 @@ final class ClusterInfo
     public function supportsCommandRequestKeys(): bool
     {
         return ($this->capabilities[self::COMMAND_REQUEST_KEYS] ?? null) === true;
+    }
+
+    public function supportsSignalWithStart(): bool
+    {
+        return ($this->capabilities[self::SIGNAL_WITH_START] ?? null) === true;
     }
 
     public function supportsWorkflowVersionUsage(): bool
