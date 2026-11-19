@@ -35,6 +35,25 @@ project follows [Semantic Versioning](https://semver.org/).
   falls back to an ordinary activity completion. Other 409 responses are
   unchanged (durable-workflow/.github#228).
 
+- `WorkflowContext::signals()` returns only signals the Server has applied to
+  the run (a `SignalApplied` event, or a `SignalReceived` carrying the
+  `workflow_sequence` of the wait that consumed it), plus the signal the current
+  workflow task delivers. It previously returned every received signal, so
+  workflow code could act on a signal the Server had not applied yet and later
+  rejected, for example closing the run before a queued update was applied.
+  Signals now reach workflow code in message order with updates, as in embedded
+  Workflow, Python and Rust. `SignalReceived` records that name neither a
+  signal ID nor a command ID are still returned. Replay compatibility: the
+  change is gated by the version marker
+  `durable-workflow.sdk-php.signals-applied-only`. The worker records it the
+  first time hiding an unapplied signal changes what `signals()` returns to a
+  live decision (a call at the end of the recorded history, or the predicate of
+  a condition wait whose outcome is not recorded). A history without the marker
+  replays with every received signal visible; with it, live decisions and calls
+  replayed at or after the marker's sequence use the applied-only view, and
+  calls replayed before it keep the earlier view. Runs that never meet an
+  unapplied signal record no marker (#434).
+
 ## [3.20.0] - 2026-11-18
 
 ### Added

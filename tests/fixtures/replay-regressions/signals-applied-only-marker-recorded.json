@@ -1,0 +1,87 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-signals-applied-only-marker-recorded",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.signal-decision",
+    "input": []
+  },
+  "history": [
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "signal-pending",
+        "workflow_command_id": "command-pending",
+        "signal_name": "approve",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCgpmaXJzdAA="
+        }
+      }
+    },
+    {
+      "event_type": "VersionMarkerRecorded",
+      "payload": {
+        "sequence": 1,
+        "change_id": "durable-workflow.sdk-php.signals-applied-only",
+        "version": 1,
+        "min_supported": -1,
+        "max_supported": 1
+      }
+    },
+    {
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "golden.waiting"
+      }
+    },
+    {
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "golden.waiting",
+        "result": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwocd2FpdGluZy1yZXN1bHQ="
+        }
+      }
+    },
+    {
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "signal-later",
+        "workflow_command_id": "command-later",
+        "signal_name": "approve",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCgxzZWNvbmQA"
+        }
+      }
+    }
+  ],
+  "command_sequence": [
+    {
+      "type": "complete_workflow",
+      "result": {
+        "result": "waiting-result",
+        "signals": []
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "complete_workflow",
+        "result": {
+          "result": "waiting-result",
+          "signals": []
+        }
+      }
+    ]
+  }
+}
