@@ -109,8 +109,8 @@ final class ReplayRegressionFixture
             return self::executeFreshWorkflowPoll($identity, $input, $history, $fixture);
         }
 
-        if ($workflowType === 'golden.completion-too-large') {
-            return self::executeCompletionTooLarge($identity, $input, $fixture);
+        if ($workflowType === 'golden.completion-too-large' || $workflowType === 'golden.completion-history-limit') {
+            return self::executeCompletionTooLarge($identity, $input, $fixture, $workflowType);
         }
 
         if ($workflowType === 'golden.activity-continuation-untimed-result') {
@@ -805,6 +805,7 @@ final class ReplayRegressionFixture
                 throw new RuntimeException('Workflow failed after the local activity returned.');
             },
             'golden.completion-too-large' => static fn (WorkflowContext $context): string => 'refused-as-too-large',
+            'golden.completion-history-limit' => static fn (WorkflowContext $context): string => 'refused-over-history-budget',
             'golden.completion-backend-loss', 'golden.completion-lock-pressure' => static fn (WorkflowContext $context): string =>
                 'completion-after-backend-recovery',
             'golden.workflow-lease-recovery' => static fn (WorkflowContext $context): mixed =>
@@ -1128,23 +1129,26 @@ final class ReplayRegressionFixture
 
     /**
      * .github#228: Server 3.6.0 refuses an oversized completion with a typed 413 before
-     * reading it. The Worker fails the run on the same lease and never resends it.
+     * reading it, and native Server 3.13.0 refuses one over its history-transaction
+     * budget with a typed 409. The Worker fails the run on the same lease and never
+     * resends it.
      *
      * @param list<mixed> $input
      * @param array<string, mixed> $fixture
      * @return list<array<string, mixed>>
      */
-    private static function executeCompletionTooLarge(string $identity, array $input, array $fixture): array
+    private static function executeCompletionTooLarge(string $identity, array $input, array $fixture, string $workflowType): array
     {
+        $historyLimit = $workflowType === 'golden.completion-history-limit';
         $codec = new AvroPayloadCodec();
         $fence = ['task_id' => 'too-large-task', 'workflow_task_attempt' => 1, 'lease_owner' => 'too-large-worker'];
         $bodies = [];
         $transport = new FakeTransport(handler: static function (string $method, string $uri, array $headers, ?array $body) use (
-            $input, $codec, $fence, &$bodies,
+            $input, $codec, $fence, &$bodies, $historyLimit, $workflowType,
         ): array {
             if (str_ends_with($uri, '/workflow-tasks/poll')) {
                 return $bodies === [] ? ['poll_status' => 'leased', 'task' => $fence + ['workflow_id' => 'too-large-workflow',
-                    'run_id' => 'too-large-run', 'workflow_type' => 'golden.completion-too-large', 'payload_codec' => 'avro',
+                    'run_id' => 'too-large-run', 'workflow_type' => $workflowType, 'payload_codec' => 'avro',
                     'arguments' => $codec->envelope($input), 'history_events' => []]] : ['task' => null, 'poll_status' => 'empty'];
             }
             if (str_ends_with($uri, '/too-large-task/heartbeat')) {
@@ -1159,6 +1163,13 @@ final class ReplayRegressionFixture
                     throw new RuntimeException('The Worker resent the oversized workflow completion.');
                 }
                 $bodies[] = $body;
+                if (count($bodies) === 1 && $historyLimit) {
+                    $refusal = $fence + ['outcome' => 'completed', 'recorded' => false, 'run_id' => null, 'run_status' => null,
+                        'created_task_ids' => [], 'reason' => 'history_transaction_limit_exceeded',
+                        'limit_kind' => 'history_transaction_bytes', 'current_value' => 65, 'configured_limit' => 64];
+                    unset($refusal['lease_owner']);
+                    throw TransportException::fromResponse(409, $refusal, json_encode($refusal, JSON_THROW_ON_ERROR));
+                }
                 if (count($bodies) === 1) {
                     $refusal = ['message' => 'Workflow task completion exceeds the maximum allowed size of 64 bytes.',
                         'reason' => 'payload_too_large', 'limit' => 64, 'limit_kind' => 'workflow_task_completion_bytes'];
@@ -1175,16 +1186,18 @@ final class ReplayRegressionFixture
         });
         $worker = new Worker(new Client('https://replay.invalid', transport: $transport, codec: $codec),
             'regression-corpus', workerId: 'too-large-worker');
-        $worker->registerWorkflow('golden.completion-too-large', self::workflow('golden.completion-too-large'));
+        $worker->registerWorkflow($workflowType, self::workflow($workflowType));
         $worker->tick(0);
         if (count($bodies) !== 2) {
-            throw new RuntimeException("{$identity} must send one oversized completion and one structural failure.");
+            throw new RuntimeException("{$identity} must send one refused completion and one structural failure.");
         }
         $commands = array_map(static fn (array $command): array => self::decodeEnvelopes($command, $codec), $bodies[1]['commands']);
         $message = $commands[0]['message'] ?? null;
-        if (!is_string($message) || !str_starts_with($message, 'Structural limit exceeded: workflow_task_completion_bytes: ')
-            || !str_contains($message, 'over the server limit of 64 bytes')) {
-            throw new RuntimeException("{$identity} must name the completion limit in its structural failure.");
+        [$prefix, $limit] = $historyLimit
+            ? ['Structural limit exceeded: history_transaction_bytes: ', 'would write 65 history bytes in one history transaction, over the server limit of 64 history bytes']
+            : ['Structural limit exceeded: workflow_task_completion_bytes: ', 'over the server limit of 64 bytes'];
+        if (!is_string($message) || !str_starts_with($message, $prefix) || !str_contains($message, $limit)) {
+            throw new RuntimeException("{$identity} must name the refused limit in its structural failure.");
         }
         self::assertMatches($fixture['command_sequence'], $commands, "{$identity}.command_sequence");
         self::assertMatches($fixture['expected'], ['command_sequence' => $commands] + $commands[0], "{$identity}.expected");

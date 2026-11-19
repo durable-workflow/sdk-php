@@ -16,6 +16,7 @@ use DurableWorkflow\Exception\SagaCompensationFailed;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Exception\WorkflowTaskCompletionTooLarge;
+use DurableWorkflow\Exception\WorkflowTaskHistoryLimitExceeded;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\ActivityLeaseProcess;
 use DurableWorkflow\Worker\ActivityLeaseMaintenanceException;
@@ -1985,20 +1986,30 @@ final class Worker
                 }, ['task_id' => $taskId, 'lease_owner' => $leaseOwner, 'attempt' => $attempt]);
             try {
                 $completion = $complete($commands, $messageStreamCursors, $messageStreamWaits);
-            } catch (WorkflowTaskCompletionTooLarge $tooLarge) {
-                // .github#228: the Server refused the whole completion before reading it,
-                // so the lease is unchanged. Replaying gives the same commands, and a
-                // task failure would only be retried into the same refusal. Never send
-                // the oversized completion again: fail the run with a structural-limit
-                // failure on the same lease instead.
+            } catch (WorkflowTaskCompletionTooLarge|WorkflowTaskHistoryLimitExceeded $tooLarge) {
+                // .github#228: the Server refused the whole completion before reading it
+                // (413) or rolled its history transaction back over the history budget
+                // (409), so nothing was recorded and the lease is unchanged. Replaying
+                // gives the same commands, and a task failure would only be retried into
+                // the same refusal. Never send the refused completion again: fail the run
+                // with a structural-limit failure on the same lease instead.
                 $commands = [$tooLarge->failWorkflowCommand()];
-                $this->diagnostic('worker.workflow_task_completion_too_large', [
-                    'worker_id' => $this->workerId, 'task_id' => $taskId, 'workflow_task_attempt' => $attempt,
+                $fields = ['worker_id' => $this->workerId, 'task_id' => $taskId, 'workflow_task_attempt' => $attempt,
                     'workflow_id' => $task['workflow_id'] ?? null, 'run_id' => $task['run_id'] ?? null,
-                    'workflow_type' => $workflowType, 'limit_kind' => WorkflowTaskCompletionTooLarge::LIMIT_KIND,
-                    'limit_bytes' => $tooLarge->limitBytes, 'size_bytes' => $tooLarge->sizeBytes,
-                    'message' => $tooLarge->getMessage(), 'exception' => $tooLarge,
-                ], 'error');
+                    'workflow_type' => $workflowType];
+                if ($tooLarge instanceof WorkflowTaskCompletionTooLarge) {
+                    $this->diagnostic('worker.workflow_task_completion_too_large', $fields + [
+                        'limit_kind' => WorkflowTaskCompletionTooLarge::LIMIT_KIND,
+                        'limit_bytes' => $tooLarge->limitBytes, 'size_bytes' => $tooLarge->sizeBytes,
+                        'message' => $tooLarge->getMessage(), 'exception' => $tooLarge,
+                    ], 'error');
+                } else {
+                    $this->diagnostic('worker.workflow_task_history_limit_exceeded', $fields + [
+                        'reason' => $tooLarge->reason, 'limit_kind' => $tooLarge->limitKind,
+                        'current_value' => $tooLarge->currentValue, 'configured_limit' => $tooLarge->configuredLimit,
+                        'message' => $tooLarge->getMessage(), 'exception' => $tooLarge,
+                    ], 'error');
+                }
                 ExecutionTelemetry::failure($tooLarge);
                 $this->notifyDeliveredWorkflowHistory('completion', $taskId, $attempt, $commands);
                 $completion = $complete($commands, [], []);
@@ -3401,6 +3412,15 @@ final class Worker
                                 $this->diagnostic('worker.activity_continuation_too_large', [
                                     'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
                                     'limit_bytes' => $tooLarge->limitBytes, 'size_bytes' => $tooLarge->sizeBytes,
+                                ], 'warning');
+                                $continuation = null;
+                            } catch (WorkflowTaskHistoryLimitExceeded $overBudget) {
+                                // The same for a continuation over the history budget: its
+                                // transaction rolled back, so complete the activity alone.
+                                $this->diagnostic('worker.activity_continuation_history_limit_exceeded', [
+                                    'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
+                                    'limit_kind' => $overBudget->limitKind, 'current_value' => $overBudget->currentValue,
+                                    'configured_limit' => $overBudget->configuredLimit,
                                 ], 'warning');
                                 $continuation = null;
                             }
