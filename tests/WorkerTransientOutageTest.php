@@ -97,10 +97,11 @@ final class WorkerTransientOutageTest extends TestCase
         self::assertLessThanOrEqual(1.75, $state->slept);
     }
 
-    public function testATransientFailureThatEscapesATickDoesNotStopTheWorker(): void
+    public function testAnOutageThatOutlastsPublishingAResultIsNeverReportedAsAFailure(): void
     {
-        // The activity's completion and its failure report both meet the
-        // outage, so the error leaves the tick; the Worker waits and polls on.
+        // The activity's completion keeps meeting the outage until its retries
+        // are spent. The result is left to the Server (lease expiry and
+        // re-delivery), never turned into an activity failure report.
         $workflowPolls = 0;
         $activityPolls = 0;
         $reports = [];
@@ -129,9 +130,6 @@ final class WorkerTransientOutageTest extends TestCase
                 return $workflowPolls >= 2 ? ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped']
                     : ['task' => null, 'poll_status' => 'empty'];
             }
-            if (str_ends_with($uri, '/api/worker/heartbeat')) {
-                return ['worker_id' => 'worker-1', 'acknowledged' => true];
-            }
             self::fail("Unexpected worker request: {$method} {$uri}");
         };
         $events = [];
@@ -145,10 +143,121 @@ final class WorkerTransientOutageTest extends TestCase
 
         $worker->run(0);
 
-        self::assertContains('complete', $reports);
+        self::assertSame(array_fill(0, 9, 'complete'), $reports, 'The first try and eight bounded retries, never a failure report.');
+        self::assertContains('worker.outcome_retry_exhausted', $events);
+        self::assertContains('worker.outcome_unpublished', $events);
         self::assertGreaterThanOrEqual(2, $workflowPolls, 'The Worker kept polling after the outage.');
-        self::assertNotContains('worker.fatal_failure', $events);
+    }
+
+    public function testATransientFailureThatEscapesATickDoesNotStopTheWorker(): void
+    {
+        // A worker heartbeat meets the outage after a tick; the run loop
+        // absorbs it, waits with jitter and keeps polling.
+        $now = 0.0;
+        $workflowPolls = 0;
+        $heartbeats = 0;
+        $handler = static function (string $method, string $uri) use (&$now, &$workflowPolls, &$heartbeats): ?array {
+            if (str_ends_with($uri, '/api/worker/register')) {
+                return ['registered' => true, 'heartbeat_interval_seconds' => 1];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
+                ++$workflowPolls;
+                $now += 2.0;
+
+                return ['task' => null, 'poll_status' => 'empty'];
+            }
+            if (str_ends_with($uri, '/api/worker/heartbeat')) {
+                if (++$heartbeats === 1) {
+                    throw self::storageUnavailable();
+                }
+
+                return ['worker_id' => 'worker-1', 'acknowledged' => true, 'heartbeat_interval_seconds' => 1];
+            }
+            if (str_ends_with($uri, '/poll')) {
+                return $workflowPolls >= 3 && str_ends_with($uri, '/query-tasks/poll')
+                    ? ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped']
+                    : ['task' => null, 'poll_status' => 'empty'];
+            }
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        };
+        $events = [];
+        $worker = new Worker(new Client('https://server.example', transport: new FakeTransport(handler: $handler)), 'orders',
+            workerId: 'worker-1',
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $microseconds) use (&$now): void { $now += $microseconds / 1_000_000; },
+            diagnosticListener: static function (string $event, array $context) use (&$events): void { $events[] = $event; });
+
+        $worker->run(0);
+
+        self::assertGreaterThanOrEqual(1, $heartbeats);
         self::assertContains('worker.transient_failure', $events, 'The outage left the tick and was absorbed by the run loop.');
+        self::assertNotContains('worker.fatal_failure', $events);
+        self::assertGreaterThanOrEqual(3, $workflowPolls, 'The Worker kept polling after the outage.');
+    }
+
+    /**
+     * The Server commits the completion but the Worker sees 503 storage_unavailable.
+     * The retried completion is answered as Server 3.17.0 answers a duplicate, and
+     * the Worker treats it as its own committed completion: no failure report.
+     */
+    #[DataProvider('completionRetryAnswers')]
+    public function testACompletionMetByAnOutageIsRetriedAndADuplicateCountsAsCommitted(array|TransportException $second): void
+    {
+        $completions = [];
+        $failures = 0;
+        $handler = static function (string $method, string $uri, array $headers, ?array $body) use (&$completions, &$failures, $second): ?array {
+            if (str_ends_with($uri, '/api/worker/register')) {
+                return ['registered' => true];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'empty'];
+            }
+            if (str_ends_with($uri, '/api/worker/activity-tasks/poll')) {
+                return $completions === [] ? ['poll_status' => 'leased', 'task' => ['task_id' => 'activity-1',
+                    'activity_attempt_id' => 'attempt-1', 'lease_owner' => 'worker-1', 'activity_type' => 'orders.charge',
+                    'payload_codec' => 'avro']] : ['task' => null, 'poll_status' => 'empty'];
+            }
+            if (str_ends_with($uri, '/api/worker/activity-tasks/activity-1/complete')) {
+                $completions[] = $body;
+                if (count($completions) === 1) {
+                    throw self::storageUnavailable();
+                }
+                if ($second instanceof TransportException) {
+                    throw $second;
+                }
+
+                return $second;
+            }
+            if (str_ends_with($uri, '/api/worker/activity-tasks/activity-1/fail')) {
+                ++$failures;
+
+                return ['recorded' => true];
+            }
+            if (str_ends_with($uri, '/api/worker/query-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        };
+        [$worker, , $state] = $this->worker($handler);
+
+        $worker->run(0);
+
+        self::assertSame(1, $state->calls, 'The handler ran once; only the request was retried.');
+        self::assertCount(2, $completions);
+        self::assertSame($completions[0], $completions[1], 'The same completion, with the same attempt fence.');
+        self::assertSame(0, $failures, 'An outage never turns a computed result into a failure report.');
+    }
+
+    /** @return iterable<string, array{array<string, mixed>|TransportException}> */
+    public static function completionRetryAnswers(): iterable
+    {
+        yield 'first answer was lost; retry recorded' => [['task_id' => 'activity-1', 'activity_attempt_id' => 'attempt-1',
+            'outcome' => 'completed', 'recorded' => true, 'reason' => null]];
+        $duplicate = ['task_id' => 'activity-1', 'activity_attempt_id' => 'attempt-1', 'outcome' => 'completed',
+            'recorded' => false, 'reason' => 'stale_attempt', 'next_task_id' => null, 'lease_owner' => 'worker-1',
+            'activity_status' => 'completed', 'attempt_status' => 'completed', 'task_status' => 'completed'];
+        yield 'first was committed; duplicate answered as Server 3.17.0 does' => [
+            TransportException::fromResponse(409, $duplicate, json_encode($duplicate, JSON_THROW_ON_ERROR))];
     }
 
     /** @return iterable<string, array{TransportException, int}> */
@@ -196,7 +305,15 @@ final class WorkerTransientOutageTest extends TestCase
     {
         self::assertTrue(TransientFailure::is(self::storageUnavailable()));
         self::assertTrue(TransientFailure::is(new ServerException('x', 503, 'backend_unavailable', ['reason' => 'backend_unavailable'])));
-        self::assertTrue(TransientFailure::is(new ServerException('x', 502, 'anything', ['retryable' => true])));
+        self::assertTrue(TransientFailure::is(new ServerException('x', 502, null, ['retryable' => true])));
+        // An unclassified answer cannot authorize repeating an acknowledgement.
+        self::assertFalse(TransientFailure::is(new ServerException('x', 503, null, ['retryable' => true]), acknowledgement: true));
+        self::assertTrue(TransientFailure::is(self::storageUnavailable(), acknowledgement: true));
+        // A typed refusal keeps its own protocol classification.
+        self::assertFalse(TransientFailure::is(new ServerException('x', 503, 'backend_lock_pressure',
+            ['reason' => 'backend_lock_pressure', 'retryable' => true, 'retry_after_seconds' => PHP_INT_MAX])));
+        self::assertLessThanOrEqual(60.0, TransientFailure::delay(1, PHP_INT_MAX));
+        self::assertGreaterThanOrEqual(3.0, TransientFailure::delay(1, 3));
         self::assertTrue(TransientFailure::is(new TransportException('reset', transientConnectionFailure: true)));
         self::assertFalse(TransientFailure::is(new ServerException('x', 503, 'storage_unavailable', ['retryable' => false])));
         self::assertFalse(TransientFailure::is(new ServerException('x', 503, 'backend_lock_pressure', ['reason' => 'backend_lock_pressure'])));

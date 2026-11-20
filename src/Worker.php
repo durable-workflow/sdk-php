@@ -74,6 +74,8 @@ use Throwable;
 final class Worker
 {
     private const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
+    /** Untyped-outage retries of one outcome without a maintained lease: up to about 15 s of jittered waits. */
+    private const UNTYPED_OUTAGE_MAX_ATTEMPTS = 8;
     /** A release must land this long before the claim's grant ends. */
     private const RELEASE_MARGIN_SECONDS = 0.5;
     private const WORKFLOW_HISTORY_PAGE_SIZE = 500;
@@ -1445,7 +1447,7 @@ final class Worker
         // Typed refusals keep their protocol backoff; an untyped outage uses
         // the shared jittered schedule so Workers do not retry in step.
         $delay = !PollResponse::isTransientFailure($error) && TransientFailure::is($error)
-            ? max(TransientFailure::delay($attempt), is_int($retryAfter) ? (float) $retryAfter : 0.0)
+            ? TransientFailure::delay($attempt, $retryAfter)
             : $this->transientRetryDelay($attempt, $retryAfter);
         ($this->transientPollRetryObserver)?->__invoke($kind, $attempt, $delay, $error);
         $this->diagnostic('worker.retrying', ['worker_id' => $this->workerId, 'operation' => "{$kind}_poll",
@@ -1533,9 +1535,15 @@ final class Worker
                 $backendUnavailable = $workflowBackendUnavailable || $activityBackendUnavailable;
                 // These requests retain their original lease fence and computed
                 // outcome. An uncertain reply retries the request, never the handler.
+                // An untyped outage (#448), such as 503 storage_unavailable, is
+                // just as uncertain: the Server may have committed the request.
+                $untypedOutage = !$exception->isStorageAdmissionFailure() && !$backendUnavailable
+                    && !$exception->isTransientConnectionFailure() && !$exception->isTransientUpstreamFailure()
+                    && TransientFailure::is($exception, acknowledgement: true);
                 $claimedTaskTransportFailure = ($workflowTaskLease !== null
                         || ($operation === 'activity_complete' && $activityTaskLease !== null))
-                    && ($exception->isTransientConnectionFailure() || $exception->isTransientUpstreamFailure());
+                    && ($exception->isTransientConnectionFailure() || $exception->isTransientUpstreamFailure()
+                        || $untypedOutage);
                 if ((!$exception->isStorageAdmissionFailure() && !$backendUnavailable && !$activityDiscoveryUnavailable
                     && !$workflowCompletionDeferred && !$claimedTaskTransportFailure)
                     || $this->shutdownRequested) {
@@ -1546,9 +1554,25 @@ final class Worker
                 }
                 $uncertainActivityCompletion = $uncertainActivityCompletion || $activityBackendUnavailable
                     || ($operation === 'activity_complete' && $claimedTaskTransportFailure);
+                if ($untypedOutage && $attempt >= $this->untypedOutageAttemptLimit($operation)) {
+                    // Retries stay inside the claim: with lease maintenance the
+                    // publication fence ends them when the grant ends; without
+                    // it, a bounded number of attempts does. The Server then
+                    // settles the attempt (lease expiry and re-delivery).
+                    $this->diagnostic('worker.outcome_retry_exhausted', ['worker_id' => $this->workerId,
+                        'operation' => $operation, 'attempts' => $attempt + 1, 'exception' => $exception], 'error');
+                    throw $exception;
+                }
 
                 ++$attempt;
-                $delaySeconds = $this->transientRetryDelay($attempt, $exception->details['retry_after_seconds'] ?? null);
+                $retryAfter = $exception->details['retry_after_seconds'] ?? null;
+                // An untyped outage uses the shared jittered schedule; typed
+                // refusals keep their protocol backoff. The lease fence still
+                // bounds every retry: once the claim's grant ends, publication
+                // is refused and the Server settles the attempt.
+                $delaySeconds = $untypedOutage
+                    ? TransientFailure::delay($attempt, $retryAfter)
+                    : $this->transientRetryDelay($attempt, $retryAfter);
                 if ($this->transientPollRetryObserver !== null) {
                     ($this->transientPollRetryObserver)($operation, $attempt, $delaySeconds, $exception);
                 }
@@ -1569,6 +1593,14 @@ final class Worker
                 }
             }
         }
+    }
+
+    /** Retries of one outcome through an untyped outage before the Server's lease handling takes over. */
+    private function untypedOutageAttemptLimit(string $operation): int
+    {
+        // A maintained activity lease fences publication at the grant's end.
+        return str_starts_with($operation, 'activity_') && $this->activityLeaseProcess !== null
+            ? PHP_INT_MAX : self::UNTYPED_OUTAGE_MAX_ATTEMPTS;
     }
 
     /** @param array{task_id: string, activity_attempt_id: string, lease_owner: string} $lease */
@@ -3402,6 +3434,7 @@ final class Worker
         $activityType = (string) ($task['activity_type'] ?? '');
         $callbackStopped = false;
         $callbackStarted = false;
+        $resultComputed = false;
         try {
             $this->trackWorkerSessionFromTask($task);
             $handler = $this->activities[$activityType] ?? null;
@@ -3474,6 +3507,7 @@ final class Worker
                 $result = $this->invokeActivity($handler, $context, $arguments,
                     ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), authorizedTask: $task);
             }
+            $resultComputed = true;
             $carried = $this->reserveWorkflowPoll($leaseOwner);
             $continuation = $carried === null ? null : $this->speculateActivityContinuation($task, $result);
             $completion = $this->retryStorageAdmission(
@@ -3537,6 +3571,16 @@ final class Worker
             }
         } catch (Throwable $exception) {
             if ($exception instanceof ServerException && $this->discardClosedActivityAttempt($task, $exception)) {
+                return;
+            }
+            if ($resultComputed && TransientFailure::is($exception, acknowledgement: true)) {
+                // An outage outlasted publishing a computed result. It is not
+                // an activity failure: leave the attempt to the Server, which
+                // re-delivers it when the lease ends (a committed completion
+                // is answered as a duplicate then).
+                $this->diagnostic('worker.outcome_unpublished', ['task_id' => $taskId,
+                    'activity_attempt_id' => $attemptId, 'task_kind' => 'activity', 'exception' => $exception], 'error');
+
                 return;
             }
             if ($this->activityLeaseProcess !== null && !$exception instanceof WorkflowClaimRevoked) {

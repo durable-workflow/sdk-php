@@ -16,6 +16,12 @@ project follows [Semantic Versioning](https://semver.org/).
   doubling to a 4 s cap). Authentication, authorization, protocol refusals and
   explicit `retryable: false` still stop the Worker, after a
   `worker.fatal_failure` diagnostic.
+- A completion that meets an untyped outage is retried with the same attempt
+  fence, inside the claim's lease, instead of being reported as an activity
+  failure. A duplicate of a completion the Server already committed (Server
+  3.17.0: `409 stale_attempt`, `recorded: false`, attempt `completed`) counts as
+  committed. A result that cannot be published in time is logged
+  (`worker.outcome_unpublished`) and left to the Server's lease handling.
 
 ### Fixed
 

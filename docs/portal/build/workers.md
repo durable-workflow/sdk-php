@@ -99,6 +99,10 @@ An activity option such as `['queue' => 'payments-v2']` selects the queue of a n
 
 An untyped outage does not stop the Worker either. That covers a connection that is refused, reset or timed out; a 502/503/504 with no protocol body; a 503 `storage_unavailable` or `backend_unavailable`, for example while the Server's database warms up; and any 5xx or 429 with `retryable: true`. The Worker retries using the schedule all SDKs share: 0.25 s doubling to a 4 s cap, with full random jitter. This applies to polls, and to any request that fails a tick, such as a completion; the Server re-delivers a claimed task when its lease ends. Authentication and authorization failures, other protocol refusals, and explicit `retryable: false` stay fatal. They are reported as a `worker.fatal_failure` diagnostic before `run()` rethrows.
 
+**Completions.** A completion that meets an outage is retried with the same attempt fence on that schedule. With activity lease maintenance, the retries stop when the claim's grant ends; without it, they stop after a bounded number of attempts. Retrying is safe: the Server records one outcome per attempt. A retry of a completion the Server already committed is answered `409 stale_attempt` with `recorded: false` and the attempt `completed`, and the Worker treats that as its own committed completion. A result that cannot be published before the retries end is logged as `worker.outcome_unpublished` and left to the Server, which re-delivers the attempt when its lease ends. It is never reported as an activity failure.
+
+**Across SDKs.** PHP and Rust Workers stop on a 401 or 403 after logging it as an error. Python Workers keep retrying polls through a 401 or 403 so that credentials can be rotated without a restart, and log every refusal at error level.
+
 ### Activity continuations
 
 Activity continuations are an explicit constructor opt-in:
