@@ -97,6 +97,8 @@ An activity option such as `['queue' => 'payments-v2']` selects the queue of a n
 
 `Worker::run()` registers, negotiates heartbeat cadence, polls workflow/activity/query tasks, renews workflow-task leases, and reports terminal outcomes. Typed transient poll pressure is retried with capped backoff while registration heartbeats and shutdown checks remain responsive.
 
+An untyped outage does not stop the Worker either. That covers a connection that is refused, reset or timed out; a 502/503/504 with no protocol body; a 503 `storage_unavailable` or `backend_unavailable`, for example while the Server's database warms up; and any 5xx or 429 with `retryable: true`. The Worker retries using the schedule all SDKs share: 0.25 s doubling to a 4 s cap, with full random jitter. This applies to polls, and to any request that fails a tick, such as a completion; the Server re-delivers a claimed task when its lease ends. Authentication and authorization failures, other protocol refusals, and explicit `retryable: false` stay fatal. They are reported as a `worker.fatal_failure` diagnostic before `run()` rethrows.
+
 ### Activity continuations
 
 Activity continuations are an explicit constructor opt-in:

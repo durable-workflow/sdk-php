@@ -22,6 +22,7 @@ use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\ActivityLeaseProcess;
 use DurableWorkflow\Worker\ActivityLeaseAuthority;
 use DurableWorkflow\Worker\ActivityLeaseMaintenanceException;
+use DurableWorkflow\Worker\TransientFailure;
 use DurableWorkflow\Worker\ActivityExecutionFailure;
 use DurableWorkflow\Worker\CapabilityManifest;
 use DurableWorkflow\Worker\CancellationHistory;
@@ -484,6 +485,7 @@ final class Worker
                 return;
             }
             $this->establishRegistration($registration);
+            $transientAttempt = 0;
             while (!$this->shutdownRequested || $this->staleRegistrationObserved) {
                 try {
                     if ($this->completionPipeline !== null) {
@@ -492,11 +494,28 @@ final class Worker
                         $this->tick($pollTimeoutSeconds);
                     }
                     $this->heartbeatIfDue();
+                    $transientAttempt = 0;
                 } catch (Throwable $exception) {
-                    if (!$this->recoversFromStaleRegistration($exception)) {
+                    if ($this->recoversFromStaleRegistration($exception)) {
+                        $this->staleRegistrationObserved = true;
+                    } elseif (TransientFailure::is($exception)) {
+                        // The Server or network was briefly unavailable (for
+                        // example a database warming up). Keep the Worker
+                        // running; any claimed task is re-delivered by the
+                        // Server when its lease ends.
+                        $delay = TransientFailure::delay(++$transientAttempt);
+                        $this->diagnostic('worker.transient_failure', ['worker_id' => $this->workerId,
+                            'task_queue' => $this->taskQueue, 'attempt' => $transientAttempt,
+                            'delay_seconds' => $delay, 'exception' => $exception], 'warning');
+                        $this->waitForTransientRetry($delay);
+                    } else {
+                        $this->diagnostic('worker.fatal_failure', ['worker_id' => $this->workerId,
+                            'task_queue' => $this->taskQueue,
+                            'status' => $exception instanceof ServerException ? $exception->status : null,
+                            'reason' => $exception instanceof ServerException ? $exception->reason : null,
+                            'exception' => $exception], 'error');
                         throw $exception;
                     }
-                    $this->staleRegistrationObserved = true;
                 }
                 if ($this->staleRegistrationObserved && !$this->recoverStaleRegistration()) {
                     break;
@@ -1422,7 +1441,12 @@ final class Worker
 
     private function waitForPollRetry(string $kind, int $attempt, ServerException $error): void
     {
-        $delay = $this->transientRetryDelay($attempt, $error->details['retry_after_seconds'] ?? null);
+        $retryAfter = $error->details['retry_after_seconds'] ?? null;
+        // Typed refusals keep their protocol backoff; an untyped outage uses
+        // the shared jittered schedule so Workers do not retry in step.
+        $delay = !PollResponse::isTransientFailure($error) && TransientFailure::is($error)
+            ? max(TransientFailure::delay($attempt), is_int($retryAfter) ? (float) $retryAfter : 0.0)
+            : $this->transientRetryDelay($attempt, $retryAfter);
         ($this->transientPollRetryObserver)?->__invoke($kind, $attempt, $delay, $error);
         $this->diagnostic('worker.retrying', ['worker_id' => $this->workerId, 'operation' => "{$kind}_poll",
             'attempt' => $attempt, 'delay_seconds' => $delay, 'exception' => $error], 'warning');
@@ -1439,12 +1463,14 @@ final class Worker
             'backend_unavailable' => $database,
             'storage_pressure', 'storage_admission_unavailable' => $storage,
             'workflow_poll_normalization_pending' => $normalization,
-            default => PollResponse::isTransientFailure($error),
+            default => PollResponse::isTransientFailure($error) || TransientFailure::is($error),
         };
 
         return ['retry' => $retry, 'retain' => $database || $storage || $normalization
             || $error->isTransientConnectionFailure() || $error->isTransientUpstreamFailure()
-            || PollResponse::isTransientPayloadFailure($error)];
+            || PollResponse::isTransientPayloadFailure($error)
+            // An untyped outage committed nothing; a typed refusal keeps its own identity rule.
+            || (!PollResponse::isTransientFailure($error) && TransientFailure::is($error))];
     }
 
     /**
