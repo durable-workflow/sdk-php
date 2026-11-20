@@ -63,6 +63,41 @@ project follows [Semantic Versioning](https://semver.org/).
   activity retry policy is unchanged, because retrying a non-idempotent
   activity by default could repeat its side effects.
 
+### Changed
+
+- The default transport asks for gzip on every request when it owns a Guzzle
+  client with cURL and zlib, and decodes a gzip body a custom client left
+  encoded. Servers that compress (PHP Server, and native Server with its
+  response compression) then send several times fewer bytes.
+- Worker requests send `X-Durable-Workflow-Server-Capabilities-Digest`. A
+  Server that supports it replaces repeated `server_capabilities` objects
+  (about 17 KB on native, sent on every worker answer and again inside
+  carried polls) with their digest, and the transport restores the held object
+  before any caller sees the answer. Older Servers ignore the header. An
+  answer naming a digest the transport does not hold is recovered without
+  repeating any request that may have changed state: that answer is kept as
+  received (a completion's answer can carry the next leased task), the
+  capabilities are read from `GET /api/cluster/info`, and the held pair is
+  forgotten. Only a task poll is sent again without the header. A digest in
+  an error body never replaces the HTTP error.
+- A gzip response is inflated by the transport within a decoded-size limit
+  (`Psr18Transport` `maxDecodedResponseBytes`; by default 32 MiB, or a quarter
+  of `memory_limit` when that is lower). A larger body fails with
+  `DurableWorkflow\Exception\ResponseTooLarge`, which reaches callers as
+  itself.
+- A `409 stale_attempt` that proves this Worker's own activity completion was
+  already committed (`recorded: false`, its owner and attempt, every status
+  `completed`) is accepted as committed on any answer: the first, after a
+  transient failure, or a resend by the HTTP client.
+- `result()` of a completed run reads the output from the terminal status
+  read instead of downloading the run's whole history again. Failed,
+  cancelled, terminated and timed-out runs, and Servers that omit
+  `output_envelope`, still read the history.
+
+In a lab DW Standard Workflow v1 run (native Server with compression and the
+digest, 1 workflow/second), response bytes per workflow went from about
+385 KB to about 18 KB.
+
 ## [3.22.0] - 2026-11-19
 
 Signal-with-start and durable signal-external need native Server 3.15.0 or

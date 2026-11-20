@@ -35,7 +35,8 @@ final class ClientWorkflowResultTest extends TestCase
     #[DataProvider('historyFields')]
     public function testOnlyTheTerminalHistoryPayloadIsDownloaded(string $historyField): void
     {
-        [$client, $requests] = $this->payloadClient('completed', $historyField);
+        // A terminal read without the run output falls back to the history.
+        [$client, $requests] = $this->payloadClient('completed', $historyField, describeOutput: false);
         self::assertSame(['finished' => true], $client->workflowHandle('order', 'run')->resultOfSelectedRun(timeoutSeconds: 0));
         self::assertSame(['/api/workflows/order/runs/run', '/api/workflows/order/runs/run/history',
             '/api/external-payloads/v1/ep_01ARZ3NDEKTSV4RRFFQ69G5FAV'], array_map(static fn (RequestInterface $request): string => $request->getUri()->getPath(), $requests->value));
@@ -48,12 +49,16 @@ final class ClientWorkflowResultTest extends TestCase
         yield 'history_events' => ['history_events'];
     }
 
-    public function testMissingTerminalHistoryStillUsesTheRunOutput(): void
+    public function testACompletedRunOutputNeedsNoHistoryRead(): void
     {
         [$client, $requests] = $this->payloadClient('completed', emptyHistory: true);
         self::assertSame(['finished' => true], $client->workflowHandle('order', 'run')->resultOfSelectedRun(timeoutSeconds: 0));
-        self::assertCount(3, $requests->value);
-        self::assertStringEndsWith('/ep_01ARZ3NDEKTSV4RRFFQ69G5FAV', (string) $requests->value[2]->getUri());
+        self::assertSame(['/api/workflows/order/runs/run', '/api/external-payloads/v1/ep_01ARZ3NDEKTSV4RRFFQ69G5FAV'],
+            array_map(static fn (RequestInterface $request): string => $request->getUri()->getPath(), $requests->value));
+        [$client, $requests] = $this->payloadClient('completed', emptyHistory: true);
+        self::assertSame(['finished' => true], $client->workflowHandle('order', 'run')->result(timeoutSeconds: 0));
+        self::assertSame(['/api/workflows/order', '/api/external-payloads/v1/ep_01ARZ3NDEKTSV4RRFFQ69G5FAV'],
+            array_map(static fn (RequestInterface $request): string => $request->getUri()->getPath(), $requests->value));
     }
 
     public function testAnUnreadableInputDoesNotHideTheTerminalFailure(): void
@@ -81,7 +86,7 @@ final class ClientWorkflowResultTest extends TestCase
     }
 
     /** @return array{Client, object} */
-    private function payloadClient(string $status, string $historyField = 'events', bool $emptyHistory = false, bool $corruptOutput = false): array
+    private function payloadClient(string $status, string $historyField = 'events', bool $emptyHistory = false, bool $corruptOutput = false, bool $describeOutput = true): array
     {
         $codec = new AvroPayloadCodec();
         $blob = $codec->encode(['finished' => true]);
@@ -89,7 +94,7 @@ final class ClientWorkflowResultTest extends TestCase
         $output = ['codec' => 'avro', 'external_payload' => $reference];
         $unused = ['codec' => 'avro', 'external_payload' => array_replace($reference, ['reference_id' => 'ep_01ARZ3NDEKTSV4RRFFQ69G5FAW'])];
         $requests = new class { public array $value = []; };
-        $http = new GuzzleClient(['handler' => static function (RequestInterface $request) use ($requests, $status, $historyField, $emptyHistory, $blob, $output, $unused, $corruptOutput) {
+        $http = new GuzzleClient(['handler' => static function (RequestInterface $request) use ($requests, $status, $historyField, $emptyHistory, $blob, $output, $unused, $corruptOutput, $describeOutput) {
             $requests->value[] = $request;
             $path = $request->getUri()->getPath();
             if (str_ends_with($path, '/ep_01ARZ3NDEKTSV4RRFFQ69G5FAW')) {
@@ -109,8 +114,8 @@ final class ClientWorkflowResultTest extends TestCase
                         : ['event_type' => 'WorkflowCompleted', 'payload' => ['output' => $output, 'result' => $unused]],
                 ]];
             } else {
-                $body = ['workflow_id' => 'order', 'run_id' => 'run', 'status' => $status,
-                    'input_envelope' => $unused, 'output_envelope' => $output];
+                $body = ['workflow_id' => 'order', 'run_id' => 'run', 'status' => $status, 'input_envelope' => $unused]
+                    + ($describeOutput ? ['output_envelope' => $output] : []);
             }
 
             return Create::promiseFor(new Response(200, [], json_encode($body, JSON_THROW_ON_ERROR)));

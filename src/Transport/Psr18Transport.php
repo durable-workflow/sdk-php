@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Transport;
 
 use DurableWorkflow\Exception\ExternalPayloadException;
+use DurableWorkflow\Exception\ResponseTooLarge;
 use DurableWorkflow\Exception\TransportException;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Psr7\FnStream;
@@ -28,6 +29,13 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     public const DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0;
     /** Worker lifecycle requests (register, heartbeat, complete, fail, deregister); long polls keep their own budget. */
     public const DEFAULT_WORKER_REQUEST_TIMEOUT_SECONDS = 60.0;
+    /**
+     * The most bytes a compressed JSON response may decode to by default:
+     * 32 MiB, or a quarter of PHP's memory_limit when that is lower, so the
+     * decoded body and its JSON decoding fit under the default 128 MB limit.
+     */
+    public const DEFAULT_MAX_DECODED_RESPONSE_BYTES = 32 * 1024 * 1024;
+    private readonly int $maxDecodedResponseBytes;
 
     private readonly ClientInterface $client;
     private readonly RequestFactoryInterface $requestFactory;
@@ -42,6 +50,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     private ?string $completionUri = null;
     private bool $completionArmed = false;
     private ?CompletionRequestHandler $completionHandler = null;
+    private readonly ServerCapabilitiesDigest $capabilitiesDigest;
 
     public function lastResponseStatus(): ?int
     {
@@ -55,7 +64,12 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         private readonly int $payloadTransferTimeoutSeconds = 30,
         ?float $requestTimeoutSeconds = null,
         ?float $workerRequestTimeoutSeconds = null,
+        ?int $maxDecodedResponseBytes = null,
     ) {
+        if ($maxDecodedResponseBytes !== null && $maxDecodedResponseBytes < 1) {
+            throw new \InvalidArgumentException('maxDecodedResponseBytes must be positive.');
+        }
+        $this->maxDecodedResponseBytes = $maxDecodedResponseBytes ?? self::defaultMaxDecodedResponseBytes();
         if ($payloadTransferTimeoutSeconds < 1 || $payloadTransferTimeoutSeconds > 900) {
             throw new \InvalidArgumentException('Supervised payload transfers require a timeout from 1 through 900 seconds.');
         }
@@ -71,6 +85,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         $this->workerRequestTimeoutSeconds = $client === null
             ? ($workerRequestTimeoutSeconds ?? self::DEFAULT_WORKER_REQUEST_TIMEOUT_SECONDS) : null;
         $factory = new HttpFactory();
+        $this->capabilitiesDigest = new ServerCapabilitiesDigest();
         $this->defaultProcessConfiguration = $client === null && $requestFactory === null && $streamFactory === null;
         $this->client = $client ?? new GuzzleClient(['http_errors' => false]);
         $this->requestFactory = $requestFactory ?? $factory;
@@ -85,6 +100,81 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
     {
         return $this->sendJson($method, $uri, $headers, $body);
+    }
+
+    /** The owned Guzzle client over cURL can ask for gzip; this transport inflates it. */
+    private function decodesCompressedResponses(): bool
+    {
+        return $this->client instanceof GuzzleClient && extension_loaded('curl') && extension_loaded('zlib');
+    }
+
+    /** min(32 MiB, memory_limit / 4); an unlimited memory_limit keeps 32 MiB. */
+    public static function defaultMaxDecodedResponseBytes(?string $memoryLimit = null): int
+    {
+        $limit = trim($memoryLimit ?? (string) ini_get('memory_limit'));
+        if ($limit === '' || $limit === '-1' || preg_match('/\A(\d+)\s*([kmg]?)\z/i', $limit, $match) !== 1) {
+            return self::DEFAULT_MAX_DECODED_RESPONSE_BYTES;
+        }
+        $bytes = (int) $match[1] * match (strtolower($match[2])) {
+            'g' => 1024 ** 3, 'm' => 1024 ** 2, 'k' => 1024, default => 1,
+        };
+
+        return max(1024 * 1024, min(self::DEFAULT_MAX_DECODED_RESPONSE_BYTES, intdiv($bytes, 4)));
+    }
+
+    /**
+     * The Server's current worker capabilities from cluster info, a read-only
+     * call; null when it cannot be read.
+     *
+     * @param array<string, string> $headers
+     * @return array<string, mixed>|null
+     */
+    private function fetchCapabilities(string $uri, array $headers): ?array
+    {
+        $position = strpos($uri, '/api/');
+        if ($position === false) {
+            return null;
+        }
+        try {
+            $info = $this->sendJson('GET', substr($uri, 0, $position).'/api/cluster/info',
+                array_diff_key($headers, ['Content-Type' => true]), null);
+        } catch (Throwable) {
+            return null;
+        }
+        $capabilities = is_array($info['worker_protocol'] ?? null) ? ($info['worker_protocol']['server_capabilities'] ?? null) : null;
+
+        return is_array($capabilities) && !array_is_list($capabilities) ? $capabilities : null;
+    }
+
+    /** Inflate a gzip body, refusing to produce more than the decoded-size limit. */
+    private function inflate(string $body): string
+    {
+        $context = @inflate_init(ZLIB_ENCODING_GZIP);
+        if ($context === false) {
+            throw new TransportException('The server returned an invalid gzip response body.');
+        }
+        $decoded = '';
+        // Small input chunks bound how far one step can overshoot the limit.
+        foreach (str_split($body, 8192) as $chunk) {
+            $part = @inflate_add($context, $chunk, ZLIB_SYNC_FLUSH);
+            if ($part === false) {
+                throw new TransportException('The server returned an invalid gzip response body.');
+            }
+            $decoded .= $part;
+            if (strlen($decoded) > $this->maxDecodedResponseBytes) {
+                throw new ResponseTooLarge($this->maxDecodedResponseBytes);
+            }
+        }
+        $tail = @inflate_add($context, '', ZLIB_FINISH);
+        if ($tail === false) {
+            throw new TransportException('The server returned an invalid gzip response body.');
+        }
+        $decoded .= $tail;
+        if (strlen($decoded) > $this->maxDecodedResponseBytes) {
+            throw new ResponseTooLarge($this->maxDecodedResponseBytes);
+        }
+
+        return $decoded;
     }
 
     public function supportsBoundedRequests(): bool
@@ -182,11 +272,45 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             if ($poll) {
                 $request = $request->withHeader('Accept', PollTransport::MEDIA_TYPE.', application/json;q=0.9');
             }
-            $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout ?? 30,
-                bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout, control: $control);
-            $this->responseStatus = $response->getStatusCode();
+            if ($this->decodesCompressedResponses() && !$request->hasHeader('Accept-Encoding')) {
+                // The transport inflates the body itself, within its size limit.
+                $request = $request->withHeader('Accept-Encoding', 'gzip');
+            }
+            $send = function (RequestInterface $request, ?array $captured) use ($timeoutSeconds, $controlTimeout, $control, $poll): ?array {
+                $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout ?? 30,
+                    bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout, control: $control);
+                $this->responseStatus = $response->getStatusCode();
 
-            return $this->decodeJsonResponse($response, $poll);
+                return $this->decodeJsonResponse($response, $poll, $captured);
+            };
+            if ($control) {
+                return $send($request, null);
+            }
+            // The answer is resolved against the pair this request was sent with.
+            $captured = $this->capabilitiesDigest->capture();
+            try {
+                return $send($request->withHeader(ServerCapabilitiesDigest::HEADER, $this->capabilitiesDigest->header($captured)), $captured);
+            } catch (UnknownServerCapabilitiesDigest $unknown) {
+                // The answer named capabilities this worker does not hold.
+                // Forget the held pair; the next request asks for a tagged copy.
+                $this->capabilitiesDigest->forget();
+                if (PollTransport::taskKind($method, $uri) !== null) {
+                    // A task poll is safe to repeat: ask again without the header.
+                    return $send($request->withoutHeader(ServerCapabilitiesDigest::HEADER), [null, null]);
+                }
+                if ($unknown->answer === null) {
+                    throw $unknown;
+                }
+                // Anything else may have changed state (a completion can carry
+                // the next leased task), so it is never repeated. Its answer is
+                // kept as received; only the capabilities are fetched again,
+                // with a read-only cluster-info call.
+                $answer = $unknown->answer;
+                $this->capabilitiesDigest->restore($answer,
+                    [$unknown->digest, $this->fetchCapabilities($uri, $headers) ?? $captured[1] ?? []]);
+
+                return $answer;
+            }
         } catch (TransportException $exception) {
             throw $exception;
         } catch (JsonException $exception) {
@@ -209,14 +333,26 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             ? min($timeout, (float) $configured) : $timeout;
     }
 
-    /** @return array<string, mixed>|list<mixed>|null */
-    private function decodeJsonResponse(ResponseInterface $response, bool $poll = false): ?array
+    /**
+     * @param array{0: ?string, 1: array<string, mixed>|null}|null $captured The digest pair a worker request was sent with.
+     * @return array<string, mixed>|list<mixed>|null
+     */
+    private function decodeJsonResponse(ResponseInterface $response, bool $poll = false, ?array $captured = null): ?array
     {
         $rawBody = (string) $response->getBody();
+        if (str_starts_with($rawBody, "\x1f\x8b") && function_exists('inflate_init')
+            && strtolower(trim($response->getHeaderLine('Content-Encoding'))) === 'gzip') {
+            // A body left gzip-encoded: the owned client asks for gzip without
+            // letting cURL inflate it, so the size limit always applies.
+            $rawBody = $this->inflate($rawBody);
+        }
         $status = $response->getStatusCode();
         $mediaType = strtolower(trim(explode(';', $response->getHeaderLine('Content-Type'), 2)[0]));
         if ($poll && $mediaType === PollTransport::MEDIA_TYPE) {
             $frame = PollTransport::decode($rawBody, $status);
+            if ($captured !== null) {
+                $this->capabilitiesDigest->restore($frame['body'], $captured);
+            }
             if ($frame['status'] >= 300) {
                 throw TransportException::fromResponse($frame['status'], $frame['body'], $rawBody, $frame['headers']);
             }
@@ -227,12 +363,30 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             // An upstream proxy can return HTML or an empty body. Preserve
             // its status without interpreting it as a successful protocol reply.
             $decoded = json_decode($rawBody, true);
+            if ($captured !== null && is_array($decoded)) {
+                try {
+                    $this->capabilitiesDigest->restore($decoded, $captured);
+                } catch (UnknownServerCapabilitiesDigest) {
+                    // The HTTP error is the answer; an unusable digest in it
+                    // never replaces it. Ask for full capabilities next time.
+                    $this->capabilitiesDigest->forget();
+                    unset($decoded['server_capabilities']);
+                }
+            }
             throw TransportException::fromResponse($status, is_array($decoded) ? $decoded : null, $rawBody);
         }
 
         $decoded = $rawBody === '' ? null : json_decode($rawBody, true, 512, JSON_THROW_ON_ERROR);
         if ($decoded !== null && !is_array($decoded)) {
             throw new TransportException('The server returned a JSON value instead of an object or array.');
+        }
+        if ($captured !== null && $decoded !== null) {
+            $received = $decoded;
+            try {
+                $this->capabilitiesDigest->restore($decoded, $captured);
+            } catch (UnknownServerCapabilitiesDigest $unknown) {
+                throw $unknown->withAnswer($received);
+            }
         }
 
         return $decoded;
@@ -515,6 +669,10 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
                 $onStats = $http->getConfig('on_stats');
 
                 $options = $this->guzzleRequestOptions($stream, $timeoutSeconds, $bounded, $sink, $progress);
+                if (!$stream && $sink === null && $request->getHeaderLine('Accept-Encoding') === 'gzip') {
+                    // Keep the body encoded: decodeJsonResponse() inflates it within its size limit.
+                    $options['decode_content'] = false;
+                }
                 $options['on_stats'] = static function (TransferStats $stats) use (&$connectionFailure, &$timedOut, $onStats): void {
                     // Guzzle 8 no longer attaches cURL errno to exceptions.
                     // Accept only DNS/connect/timeout/closed-connection errors,
