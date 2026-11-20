@@ -222,21 +222,27 @@ final class WorkerUpstreamRecoveryTest extends TestCase
         yield 'unknown structured error' => [503, '{"error":"refused"}'];
     }
 
-    public function testRegistrationDoesNotBlindlyRepeatAnUncertainRequest(): void
+    /**
+     * A load balancer answering a bodiless 503 at registration is an outage,
+     * and registration is idempotent (Server 3.17.0 accepts the same worker ID
+     * registering again), so the Worker waits and registers once the Server
+     * answers (#448).
+     */
+    public function testRegistrationBehindAnUnavailableLoadBalancerIsRepeated(): void
     {
-        $calls = 0;
-        $worker = new Worker(self::client(static function () use (&$calls): ResponseInterface {
-            ++$calls;
-            return new Response(503, [], '<html>Unavailable</html>');
+        $registrations = 0;
+        $worker = new Worker(self::client(static function (RequestInterface $request) use (&$registrations): ResponseInterface {
+            $path = $request->getUri()->getPath();
+            if (str_ends_with($path, '/worker/register')) {
+                return ++$registrations <= 2 ? new Response(503, [], '<html>Unavailable</html>') : self::json(['registered' => true]);
+            }
+
+            return self::json(['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped']);
         }), 'orders');
-        try {
-            $worker->run(0);
-            self::fail('Registration requires reconciliation, not blind retry.');
-        } catch (ServerException $exception) {
-            self::assertSame(503, $exception->status);
-            self::assertTrue($exception->isTransientUpstreamFailure());
-            self::assertSame(1, $calls);
-        }
+
+        $worker->run(0);
+
+        self::assertSame(3, $registrations);
     }
 
     #[DataProvider('upstreamStatuses')]

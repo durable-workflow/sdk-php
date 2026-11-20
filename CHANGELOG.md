@@ -16,6 +16,13 @@ project follows [Semantic Versioning](https://semver.org/).
   doubling to a 4 s cap). Authentication, authorization, protocol refusals and
   explicit `retryable: false` still stop the Worker, after a
   `worker.fatal_failure` diagnostic.
+- A Worker started while the Server is down or warming up waits for it.
+  Registration retries refused or reset connections, empty replies, bodiless
+  502/503/504 answers from a load balancer, and `503 storage_unavailable` /
+  `backend_unavailable`. Registration is idempotent: Server 3.17.0 accepts the
+  same worker ID registering again. An outage lasting 60 s is reported once as
+  a `worker.outage_persisting` error, then every 5 minutes until a request
+  succeeds.
 - A completion that meets an untyped outage is retried with the same attempt
   fence, inside the claim's lease, instead of being reported as an activity
   failure. A duplicate of a completion the Server already committed (Server

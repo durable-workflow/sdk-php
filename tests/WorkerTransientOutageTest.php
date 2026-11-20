@@ -223,6 +223,88 @@ final class WorkerTransientOutageTest extends TestCase
         self::assertLessThanOrEqual(1.75, $state->slept, 'Jittered waits of at most 0.25, 0.5 and 1 s.');
     }
 
+    /** @return iterable<string, array{TransportException}> */
+    public static function startupOutages(): iterable
+    {
+        yield 'server down: connection refused' => [new TransportException('Connection refused', transientConnectionFailure: true)];
+        yield 'empty reply from the server' => [new TransportException('Empty reply from server', transientConnectionFailure: true)];
+        yield 'load balancer: bare 502' => [TransportException::fromResponse(502, null, '')];
+        yield 'load balancer: bare 504' => [TransportException::fromResponse(504, null, '')];
+    }
+
+    /** A Worker started while the Server (or its load balancer) is down waits for it instead of exiting. */
+    #[DataProvider('startupOutages')]
+    public function testAWorkerStartedDuringAnOutageWaitsForTheServer(TransportException $outage): void
+    {
+        $registrations = [];
+        $handler = static function (string $method, string $uri, array $headers, ?array $body) use (&$registrations, $outage): ?array {
+            if (str_ends_with($uri, '/api/worker/register')) {
+                $registrations[] = $body;
+                if (count($registrations) <= 4) {
+                    throw $outage;
+                }
+
+                return ['registered' => true];
+            }
+            if (str_ends_with($uri, '/query-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+            if (str_ends_with($uri, '/poll')) {
+                return ['task' => null, 'poll_status' => 'empty'];
+            }
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        };
+        [$worker] = $this->worker($handler);
+
+        $worker->run(0);
+
+        self::assertCount(5, $registrations);
+        self::assertCount(1, array_unique(array_map('serialize', $registrations)), 'Repeated with its original identity.');
+    }
+
+    public function testALastingOutageIsReportedAsAnErrorAfterAMinuteThenEveryFiveMinutes(): void
+    {
+        $now = 0.0;
+        $registrations = 0;
+        $handler = static function (string $method, string $uri) use (&$now, &$registrations): ?array {
+            if (str_ends_with($uri, '/api/worker/register')) {
+                ++$registrations;
+                // Down for about 12 minutes of simulated time.
+                if ($now < 720.0) {
+                    $now += 5.0;
+                    throw new TransportException('Connection refused', transientConnectionFailure: true);
+                }
+
+                return ['registered' => true];
+            }
+            if (str_ends_with($uri, '/query-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+            if (str_ends_with($uri, '/poll')) {
+                return ['task' => null, 'poll_status' => 'empty'];
+            }
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        };
+        $errors = [];
+        $worker = new Worker(new Client('https://server.example', transport: new FakeTransport(handler: $handler)), 'orders',
+            workerId: 'worker-1',
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $microseconds) use (&$now): void { $now += $microseconds / 1_000_000; },
+            diagnosticListener: static function (string $event, array $context) use (&$errors): void {
+                if ($event === 'worker.outage_persisting') {
+                    $errors[] = $context['outage_seconds'];
+                }
+            });
+
+        $worker->run(0);
+
+        self::assertCount(3, $errors, 'At about 60 s, then about every 5 minutes: '.json_encode($errors));
+        self::assertGreaterThanOrEqual(60.0, $errors[0]);
+        self::assertLessThan(75.0, $errors[0]);
+        self::assertGreaterThanOrEqual(300.0, $errors[1] - $errors[0]);
+        self::assertGreaterThanOrEqual(300.0, $errors[2] - $errors[1]);
+    }
+
     /** Review HIGH 2: a failing heartbeat during a poll retry wait must not end run(). */
     public function testAnOutageThatAlsoFailsTheHeartbeatDuringARetryWaitDoesNotEndTheRun(): void
     {
