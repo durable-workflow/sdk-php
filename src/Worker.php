@@ -998,10 +998,14 @@ final class Worker
                     workflowDefinitionFingerprints: $this->workflowDefinitionFingerprints(),
                 );
             } catch (ServerException $exception) {
-                // A typed registration refusal keeps its protocol backoff; an
-                // untyped outage (a Server warming up, #448) uses the shared
-                // jittered schedule.
-                $untypedOutage = !$this->isTransientRegistrationFailure($exception) && TransientFailure::is($exception);
+                // A typed registration refusal keeps its protocol backoff. A
+                // definite outage answer (503 storage_unavailable or
+                // backend_unavailable: a Server warming up, #448) uses the
+                // shared jittered schedule. A lost connection stays ambiguous
+                // (the Server may have registered) and is not repeated.
+                $untypedOutage = !$this->isTransientRegistrationFailure($exception)
+                    && !$exception->isTransientConnectionFailure() && !$exception->isTransientUpstreamFailure()
+                    && TransientFailure::is($exception, acknowledgement: true);
                 if (!$untypedOutage && !$this->isTransientRegistrationFailure($exception)) {
                     throw $exception;
                 }
