@@ -24,8 +24,9 @@ project follows [Semantic Versioning](https://semver.org/).
   encodes the same outcome under it (externalising what the new limit
   requires) and sends it once more, without recomputing the result. A
   discovery outage then is retried under the outage rules. An activity result
-  that is still too large is reported as a non-retryable
-  `DurableWorkflow\Exception\ActivityResultTooLarge` failure.
+  that is still too large is reported as a non-retryable failure whose
+  `failure.type` and `failure.class` are `ActivityResultTooLarge`, as in the
+  other SDKs.
 - A managed Worker no longer exits on a transient Server or network outage
   (#448). For example, native Server answers `503 storage_unavailable` while
   its database warms up. Polls retry untyped transients with the poll's

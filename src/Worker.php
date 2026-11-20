@@ -3738,11 +3738,16 @@ final class Worker
                         $attemptId,
                         $leaseOwner,
                         $failure->getMessage(),
-                        $failure instanceof ActivityExecutionFailure ? $failure->originalType : $failure::class,
+                        match (true) {
+                            $failure instanceof ActivityExecutionFailure => $failure->originalType,
+                            $failure instanceof ActivityResultTooLarge => ActivityResultTooLarge::FAILURE_TYPE,
+                            default => $failure::class,
+                        },
                         $failure instanceof ActivityCancelled || $failure instanceof ActivityResultTooLarge
                             || ($failure instanceof ActivityExecutionFailure && $failure->cancelled),
                         stackTrace: $failure instanceof ActivityExecutionFailure ? $failure->originalStackTrace : $failure->getTraceAsString(),
                         diagnostics: $failure instanceof ActivityExecutionFailure ? $failure->originalDiagnostics : null,
+                        failureClass: $failure instanceof ActivityResultTooLarge ? ActivityResultTooLarge::FAILURE_TYPE : null,
                     );
                 },
             );

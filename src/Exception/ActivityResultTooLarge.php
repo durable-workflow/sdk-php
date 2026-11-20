@@ -11,6 +11,9 @@ namespace DurableWorkflow\Exception;
  */
 final class ActivityResultTooLarge extends DurableWorkflowException
 {
+    /** `failure.type` and `failure.class` on the wire, the same in every SDK. */
+    public const FAILURE_TYPE = 'ActivityResultTooLarge';
+
     public function __construct(ServerException $refusal)
     {
         parent::__construct('The activity result exceeds the Server\'s payload limit: '.$refusal->getMessage(), 0, $refusal);

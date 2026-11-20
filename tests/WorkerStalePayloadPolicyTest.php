@@ -205,7 +205,8 @@ final class WorkerStalePayloadPolicyTest extends TestCase
         self::assertSame(2, $server->discoveries, 'The policy was read again before giving up.');
         self::assertNull($server->completion);
         self::assertIsArray($server->failure, 'The attempt is reported as failed.');
-        self::assertSame(\DurableWorkflow\Exception\ActivityResultTooLarge::class, $server->failure['failure']['type'] ?? null);
+        self::assertSame('ActivityResultTooLarge', $server->failure['failure']['type'] ?? null, 'The same in every SDK.');
+        self::assertSame('ActivityResultTooLarge', $server->failure['failure']['class'] ?? null);
         self::assertTrue($server->failure['failure']['non_retryable'] ?? null, 'The same result would be refused again.');
         self::assertNotContains('worker.fatal_failure', $events->getArrayCopy());
         self::assertNotContains('worker.failed', $events->getArrayCopy());
