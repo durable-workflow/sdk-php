@@ -82,7 +82,7 @@ final class ServerCapabilitiesDigest
                     $value = match (true) {
                         $value === $captured[0] && $captured[1] !== null => $captured[1],
                         $value === $learned[0] && $learned[1] !== null => $learned[1],
-                        default => throw new UnknownServerCapabilitiesDigest(),
+                        default => throw new UnknownServerCapabilitiesDigest($value),
                     };
                 } elseif (is_array($value) && !array_is_list($value) && is_string($value['digest'] ?? null)
                     && str_starts_with($value['digest'], 'sha256:')) {

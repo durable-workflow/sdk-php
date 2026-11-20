@@ -178,22 +178,23 @@ final class ServerCapabilitiesDigestTest extends TestCase
         self::assertSame('none', $http->requests[2]->getHeaderLine(ServerCapabilitiesDigest::HEADER));
     }
 
-    public function testACommittedCompletionRetriedAfterAnUnknownDigestSurfacesTheServersDuplicateAnswer(): void
+    public function testAGarbledDigestOnAMutatingAnswerKeepsTheBodyAndReadsCapabilitiesInstead(): void
     {
-        $duplicate = ['reason' => 'task_not_leased', 'message' => 'The task is not leased.', 'server_capabilities' => self::CAPABILITIES];
         $http = $this->http([
-            [200, [], json_encode(['outcome' => 'completed', 'server_capabilities' => 'sha256:'.str_repeat('e', 64)], JSON_THROW_ON_ERROR)],
-            [409, [], json_encode($duplicate, JSON_THROW_ON_ERROR)],
+            [200, [], json_encode(['outcome' => 'completed', 'recorded' => true, 'next' => 'kept',
+                'server_capabilities' => 'sha256:'.str_repeat('e', 64)], JSON_THROW_ON_ERROR)],
+            [200, [], json_encode(['worker_protocol' => ['version' => '1.20', 'server_capabilities' => self::CAPABILITIES]], JSON_THROW_ON_ERROR)],
         ]);
-        try {
-            (new Psr18Transport(client: $http))->send('POST', 'https://runtime.test/api/worker/workflow-tasks/t/complete',
-                ['X-Durable-Workflow-Protocol-Version' => '1.20'], ['commands' => []]);
-            self::fail('The duplicate answer is the Server\'s, and the Worker handles it as a 409.');
-        } catch (TransportException $exception) {
-            self::assertSame(409, $exception->status);
-            self::assertSame('task_not_leased', $exception->response['reason']);
-        }
-        self::assertCount(2, $http->requests);
+        $answer = (new Psr18Transport(client: $http))->send('POST', 'https://runtime.test/api/worker/workflow-tasks/t/complete',
+            ['X-Durable-Workflow-Protocol-Version' => '1.20', 'Authorization' => 'Bearer w'], ['commands' => []]);
+
+        self::assertSame('kept', $answer['next'], 'The answer as received is processed.');
+        self::assertSame(self::CAPABILITIES, $answer['server_capabilities']);
+        self::assertCount(2, $http->requests, 'The completion is never repeated.');
+        self::assertSame('POST', $http->requests[0]->getMethod());
+        self::assertSame('GET', $http->requests[1]->getMethod());
+        self::assertSame('/api/cluster/info', $http->requests[1]->getUri()->getPath());
+        self::assertSame('Bearer w', $http->requests[1]->getHeaderLine('Authorization'));
     }
 
     public function testAGarbledDigestOnAPollDoesNotStopAManagedWorker(): void
@@ -235,68 +236,72 @@ final class ServerCapabilitiesDigestTest extends TestCase
     }
 
     /**
-     * End to end: a garbled 200 to an activity completion forces the no-digest
-     * resend; the Server answers 409 stale_attempt for the completion it already
-     * committed; the Worker treats that as its own committed completion, keeps
-     * running, and the activity runs once.
+     * The reviewer's scenario: a workflow-task completion whose answer carries
+     * the next leased activity arrives with every capabilities copy garbled.
+     * The completion is never repeated (a repeat would lose the carried task);
+     * the answer is kept, capabilities are read from cluster info, the carried
+     * activity runs once and completes once, and the Worker keeps running.
      */
-    public function testAGarbledCompletionAnswerResentAsADuplicateKeepsTheWorkerRunning(): void
+    public function testAGarbledCompletionAnswerCarryingTheNextActivityIsKeptNotResent(): void
     {
-        $http = new class implements ClientInterface {
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $caps = ['workflow_task_completion_activity_poll' => true];
+        $codec = new \DurableWorkflow\Codec\AvroPayloadCodec();
+        $garbled = 'sha256:'.str_repeat('9', 64);
+        $answer = static fn (array $task, mixed $capabilities): array => ['task' => $task + ['lease_owner' => 'worker-1',
+            'payload_codec' => 'avro', 'lease_expires_at' => $now->modify('+30 seconds')->format('Y-m-d\TH:i:s.u\Z')],
+            'poll_status' => 'leased', 'protocol_version' => '1.20', 'server_capabilities' => $capabilities,
+            'server_time' => $now->format('Y-m-d\TH:i:s.u\Z')];
+        $http = new class ($answer, $caps, $codec, $garbled) implements ClientInterface {
             /** @var list<RequestInterface> */
             public array $requests = [];
-            public bool $leased = false;
+            public int $workflowPolls = 0;
+
+            public function __construct(private \Closure $answer, private array $caps, private object $codec, private string $garbled)
+            {
+            }
 
             public function sendRequest(RequestInterface $request): ResponseInterface
             {
                 $this->requests[] = $request;
                 $path = $request->getUri()->getPath();
-                $status = 200;
-                if (str_ends_with($path, '/worker/register')) {
-                    $body = ['registered' => true];
-                } elseif (str_ends_with($path, '/activity-tasks/poll') && !$this->leased) {
-                    $this->leased = true;
-                    $body = ['poll_status' => 'leased', 'task' => ['task_id' => 'activity-1', 'activity_attempt_id' => 'attempt-1',
-                        'lease_owner' => 'worker-1', 'activity_type' => 'orders.charge', 'payload_codec' => 'avro']];
-                } elseif (str_ends_with($path, '/activity-tasks/activity-1/complete')) {
-                    if ($request->hasHeader(ServerCapabilitiesDigest::HEADER)) {
-                        // Committed, but the answer names a digest nobody holds.
-                        $body = ['task_id' => 'activity-1', 'outcome' => 'completed', 'recorded' => true,
-                            'server_capabilities' => 'sha256:'.str_repeat('b', 64)];
-                    } else {
-                        $status = 409;
-                        $body = ['task_id' => 'activity-1', 'activity_attempt_id' => 'attempt-1', 'outcome' => 'completed',
-                            'recorded' => false, 'reason' => 'stale_attempt', 'next_task_id' => null, 'lease_owner' => 'worker-1',
-                            'activity_status' => 'completed', 'attempt_status' => 'completed', 'task_status' => 'completed'];
-                    }
-                } elseif (str_ends_with($path, '/query-tasks/poll') && $this->leased) {
-                    $body = ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
-                } else {
-                    $body = ['task' => null, 'poll_status' => 'empty'];
-                }
+                $answer = $this->answer;
+                $body = match (true) {
+                    str_ends_with($path, '/worker/register') => ['registered' => true],
+                    str_ends_with($path, '/cluster/info') => ['worker_protocol' => ['version' => '1.20', 'server_capabilities' => $this->caps]],
+                    str_ends_with($path, '/workflow-tasks/poll') && ++$this->workflowPolls === 1 => $answer(['task_id' => 'workflow-task',
+                        'workflow_task_attempt' => 1, 'workflow_id' => 'workflow', 'run_id' => 'run', 'workflow_type' => 'carry',
+                        'history_events' => []], $this->caps),
+                    str_ends_with($path, '/workflow-tasks/workflow-task/complete') => ['completed' => true,
+                        'activity_poll' => ['leased' => true, 'answer' => $answer(['task_id' => 'activity-1',
+                            'activity_attempt_id' => 'attempt-1', 'activity_type' => 'carried.activity',
+                            'arguments' => $this->codec->envelope([7])], $this->garbled)],
+                        'server_capabilities' => $this->garbled],
+                    str_ends_with($path, '/activity-tasks/activity-1/complete') => ['recorded' => true, 'outcome' => 'completed'],
+                    str_ends_with($path, '/query-tasks/poll') && $this->workflowPolls >= 2 => ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'],
+                    default => ['task' => null, 'poll_status' => 'empty'],
+                };
 
-                return new Response($status, ['Content-Type' => 'application/json'], json_encode($body, JSON_THROW_ON_ERROR));
+                return new Response(200, ['Content-Type' => 'application/json'], json_encode($body, JSON_THROW_ON_ERROR));
             }
         };
         $runs = 0;
-        $events = [];
         $worker = new \DurableWorkflow\Worker(new \DurableWorkflow\Client('https://runtime.test',
-            transport: new Psr18Transport(client: $http), workerToken: 'w'), 'orders', workerId: 'worker-1',
-            diagnosticListener: static function (string $event) use (&$events): void { $events[] = $event; });
-        $worker->registerActivity('orders.charge', static function (\DurableWorkflow\Worker\ActivityContext $context) use (&$runs): string {
+            transport: new Psr18Transport(client: $http), workerToken: 'w'), 'orders', workerId: 'worker-1');
+        $worker->registerWorkflow('carry', static fn (\DurableWorkflow\Worker\WorkflowContext $context): string => 'done');
+        $worker->registerActivity('carried.activity', static function (\DurableWorkflow\Worker\ActivityContext $context, int $value) use (&$runs): int {
             ++$runs;
 
-            return 'charged';
+            return $value;
         });
 
         $worker->run(0);
 
         $paths = array_map(static fn (RequestInterface $request): string => $request->getUri()->getPath(), $http->requests);
-        self::assertSame(1, $runs, 'The activity ran once.');
-        self::assertSame(2, count(array_keys($paths, '/api/worker/activity-tasks/activity-1/complete')), 'Sent, then resent without the digest.');
-        self::assertNotContains('/api/worker/activity-tasks/activity-1/fail', $paths);
-        self::assertContains('worker.completion_already_committed', $events);
-        self::assertContains('/api/worker/query-tasks/poll', $paths, 'The Worker kept running.');
+        self::assertSame(1, count(array_keys($paths, '/api/worker/workflow-tasks/workflow-task/complete')), 'Never repeated.');
+        self::assertContains('/api/cluster/info', $paths, 'Capabilities were read, not re-requested by repeating.');
+        self::assertSame(1, $runs, 'The carried activity ran exactly once.');
+        self::assertSame(1, count(array_keys($paths, '/api/worker/activity-tasks/activity-1/complete')), 'And completed once.');
     }
 
     public function testAnUnknownDigestInAnErrorBodyNeverReplacesTheHttpError(): void

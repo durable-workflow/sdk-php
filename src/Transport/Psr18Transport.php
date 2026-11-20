@@ -122,6 +122,30 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         return max(1024 * 1024, min(self::DEFAULT_MAX_DECODED_RESPONSE_BYTES, intdiv($bytes, 4)));
     }
 
+    /**
+     * The Server's current worker capabilities from cluster info, a read-only
+     * call; null when it cannot be read.
+     *
+     * @param array<string, string> $headers
+     * @return array<string, mixed>|null
+     */
+    private function fetchCapabilities(string $uri, array $headers): ?array
+    {
+        $position = strpos($uri, '/api/');
+        if ($position === false) {
+            return null;
+        }
+        try {
+            $info = $this->sendJson('GET', substr($uri, 0, $position).'/api/cluster/info',
+                array_diff_key($headers, ['Content-Type' => true]), null);
+        } catch (Throwable) {
+            return null;
+        }
+        $capabilities = is_array($info['worker_protocol'] ?? null) ? ($info['worker_protocol']['server_capabilities'] ?? null) : null;
+
+        return is_array($capabilities) && !array_is_list($capabilities) ? $capabilities : null;
+    }
+
     /** Inflate a gzip body, refusing to produce more than the decoded-size limit. */
     private function inflate(string $body): string
     {
@@ -266,14 +290,26 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             $captured = $this->capabilitiesDigest->capture();
             try {
                 return $send($request->withHeader(ServerCapabilitiesDigest::HEADER, $this->capabilitiesDigest->header($captured)), $captured);
-            } catch (UnknownServerCapabilitiesDigest) {
-                // The answer named capabilities this worker does not hold. Forget
-                // the held pair and ask once more without the header, which gets
-                // the full object. Worker requests are fenced, so a request the
-                // Server already committed is answered as a duplicate (409).
+            } catch (UnknownServerCapabilitiesDigest $unknown) {
+                // The answer named capabilities this worker does not hold.
+                // Forget the held pair; the next request asks for a tagged copy.
                 $this->capabilitiesDigest->forget();
+                if (PollTransport::taskKind($method, $uri) !== null) {
+                    // A task poll is safe to repeat: ask again without the header.
+                    return $send($request->withoutHeader(ServerCapabilitiesDigest::HEADER), [null, null]);
+                }
+                if ($unknown->answer === null) {
+                    throw $unknown;
+                }
+                // Anything else may have changed state (a completion can carry
+                // the next leased task), so it is never repeated. Its answer is
+                // kept as received; only the capabilities are fetched again,
+                // with a read-only cluster-info call.
+                $answer = $unknown->answer;
+                $this->capabilitiesDigest->restore($answer,
+                    [$unknown->digest, $this->fetchCapabilities($uri, $headers) ?? $captured[1] ?? []]);
 
-                return $send($request->withoutHeader(ServerCapabilitiesDigest::HEADER), [null, null]);
+                return $answer;
             }
         } catch (TransportException $exception) {
             throw $exception;
@@ -345,7 +381,12 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             throw new TransportException('The server returned a JSON value instead of an object or array.');
         }
         if ($captured !== null && $decoded !== null) {
-            $this->capabilitiesDigest->restore($decoded, $captured);
+            $received = $decoded;
+            try {
+                $this->capabilitiesDigest->restore($decoded, $captured);
+            } catch (UnknownServerCapabilitiesDigest $unknown) {
+                throw $unknown->withAnswer($received);
+            }
         }
 
         return $decoded;

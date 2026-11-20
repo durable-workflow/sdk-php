@@ -74,11 +74,12 @@ project follows [Semantic Versioning](https://semver.org/).
   (about 17 KB on native, sent on every worker answer and again inside
   carried polls) with their digest, and the transport restores the held object
   before any caller sees the answer. Older Servers ignore the header. An
-  answer naming a digest the transport does not hold is recovered: the held
-  pair is forgotten and that request is sent once more without the header,
-  which returns the full object. A Server answers a request it had already
-  committed as a duplicate (409). A digest in an error body never replaces
-  the HTTP error.
+  answer naming a digest the transport does not hold is recovered without
+  repeating any request that may have changed state: that answer is kept as
+  received (a completion's answer can carry the next leased task), the
+  capabilities are read from `GET /api/cluster/info`, and the held pair is
+  forgotten. Only a task poll is sent again without the header. A digest in
+  an error body never replaces the HTTP error.
 - A gzip response is inflated by the transport within a decoded-size limit
   (`Psr18Transport` `maxDecodedResponseBytes`; by default 32 MiB, or a quarter
   of `memory_limit` when that is lower). A larger body fails with
@@ -87,7 +88,7 @@ project follows [Semantic Versioning](https://semver.org/).
 - A `409 stale_attempt` that proves this Worker's own activity completion was
   already committed (`recorded: false`, its owner and attempt, every status
   `completed`) is accepted as committed on any answer: the first, after a
-  transient failure, or after a digest resend.
+  transient failure, or a resend by the HTTP client.
 - `result()` of a completed run reads the output from the terminal status
   read instead of downloading the run's whole history again. Failed,
   cancelled, terminated and timed-out runs, and Servers that omit
