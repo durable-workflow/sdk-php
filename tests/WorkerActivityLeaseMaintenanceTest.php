@@ -408,9 +408,10 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
 
     public function testFlakyRenewalsAreRetriedWithBackoffUntilOneSucceeds(): void
     {
+        // Jittered retries after three 503s wait at most 0.25 + 0.5 + 1 s.
         $worker = $this->worker(['lease_seconds' => 8, 'renew_unavailable_first' => 3]);
         $worker->registerActivity('slow', static function (ActivityContext $context): string {
-            usleep(3_500_000);
+            usleep(2_600_000);
             return 'kept';
         });
         self::assertTrue($worker->tick(0));
@@ -447,9 +448,10 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
     {
         // The callback returns after the grant ends: the Server's lease expiry
         // settles the attempt, and no release can overlap another execution.
-        $worker = $this->worker(['lease_seconds' => 5, 'renew_unavailable_first' => 1000]);
+        // A grant of at least 3 s is kept through unavailable renewal.
+        $worker = $this->worker(['lease_seconds' => 4, 'renew_unavailable_first' => 1000]);
         $worker->registerActivity('slow', static function (ActivityContext $context): string {
-            usleep(5_600_000);
+            usleep(4_400_000);
             return 'expired';
         });
         $worker->tick(0);
@@ -468,7 +470,7 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
         $calls = 0;
         $worker->registerActivity('slow', static function (ActivityContext $context) use (&$calls): string {
             ++$calls;
-            usleep(3_500_000);
+            usleep(2_800_000);
             return 'must not publish';
         });
         $worker->tick(0);
