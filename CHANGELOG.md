@@ -8,6 +8,30 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A managed Worker no longer exits on a transient Server or network outage
+  (#448). For example, native Server answers `503 storage_unavailable` while
+  its database warms up. Polls retry untyped transients with the poll's
+  identity kept, and `Worker::run()` absorbs a transient failure that escapes a
+  tick (a completion, for example), using the shared jittered schedule (0.25 s
+  doubling to a 4 s cap). Authentication, authorization, protocol refusals and
+  explicit `retryable: false` still stop the Worker, after a
+  `worker.fatal_failure` diagnostic.
+- A Worker started while the Server is down or warming up waits for it.
+  Registration retries refused or reset connections, empty replies, bodiless
+  502/503/504 answers from a load balancer, and `503 storage_unavailable` /
+  `backend_unavailable`. Registration is idempotent: Server 3.17.0 accepts the
+  same worker ID registering again. An outage lasting 60 s is reported once as
+  a `worker.outage_persisting` error, then every 5 minutes until a request
+  succeeds.
+- A completion that meets an untyped outage is retried with the same attempt
+  fence, inside the claim's lease, instead of being reported as an activity
+  failure. A duplicate of a completion the Server already committed (Server
+  3.17.0: `409 stale_attempt`, `recorded: false`, attempt `completed`) counts as
+  committed. A result that cannot be published in time is logged
+  (`worker.outcome_unpublished`) and left to the Server's lease handling.
+
+### Fixed
+
 - An activity worker no longer drops a claimed task when the lease renewal at
   activity start is slow or fails transiently (#445). The worker keeps working
   under the poll's original lease, charged conservatively from the poll's own

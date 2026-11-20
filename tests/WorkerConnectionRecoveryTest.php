@@ -354,18 +354,26 @@ final class WorkerConnectionRecoveryTest extends TestCase
         }
     }
 
-    public function testAmbiguousRegistrationIsNotRepeated(): void
+    /**
+     * Registration is idempotent: Server 3.17.0 accepts the same worker ID
+     * registering again (both answers `registered: true`), so a registration
+     * whose reply was lost is repeated with its original identity (#448).
+     */
+    public function testRegistrationAfterALostConnectionIsRepeatedWithItsIdentity(): void
     {
-        $transport = new FakeTransport([self::disconnected()]);
-        $worker = new Worker(new Client('https://server.example', transport: $transport), 'orders');
+        $transport = new FakeTransport([
+            self::disconnected(),
+            ['registered' => true],
+            ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'],
+        ]);
+        $worker = new Worker(new Client('https://server.example', transport: $transport), 'orders',
+            sleeper: static function (int $microseconds): void {});
 
-        try {
-            $worker->run(0);
-            self::fail('Registration requires explicit reconciliation, not blind retry.');
-        } catch (ServerException $exception) {
-            self::assertTrue($exception->isTransientConnectionFailure());
-        }
-        self::assertCount(1, $transport->requests);
+        $worker->run(0);
+
+        self::assertStringEndsWith('/api/worker/register', $transport->requests[0]['uri']);
+        self::assertStringEndsWith('/api/worker/register', $transport->requests[1]['uri']);
+        self::assertSame($transport->requests[0]['body'], $transport->requests[1]['body']);
     }
 
     public function testAnActivityCompletionConnectionFailureDoesNotRepeatTheHandler(): void
