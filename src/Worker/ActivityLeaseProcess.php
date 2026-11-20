@@ -289,11 +289,19 @@ final class ActivityLeaseProcess
     {
         while (!str_contains($this->buffer, "\n")) {
             $part = stream_get_contents($this->pipes[1], 65537 - strlen($this->buffer));
-            if ($part === false || feof($this->pipes[1]) || strlen($this->buffer) + strlen($part) > 65536
-                || hrtime(true) / 1e9 >= $deadline) {
+            if ($part === false || strlen($this->buffer) + strlen($part) > 65536) {
                 $this->refuse('activity_maintenance_unavailable');
             }
+            // Keep what was read before judging end of file: a helper that
+            // writes its final reply and exits can report EOF on the same read
+            // (PHP 8.1), and that reply must not be lost.
             $this->buffer .= $part;
+            if (str_contains($this->buffer, "\n")) {
+                break;
+            }
+            if (feof($this->pipes[1]) || hrtime(true) / 1e9 >= $deadline) {
+                $this->refuse('activity_maintenance_unavailable');
+            }
             usleep(1000);
         }
         [$raw, $this->buffer] = explode("\n", $this->buffer, 2);
