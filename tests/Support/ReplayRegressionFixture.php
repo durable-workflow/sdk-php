@@ -167,6 +167,18 @@ final class ReplayRegressionFixture
             return $observed['commands'];
         }
 
+        if (in_array($workflowType, ['golden.activity-slow-renewal', 'golden.activity-renewal-refused'], true)) {
+            $refused = $workflowType === 'golden.activity-renewal-refused';
+            $observed = ActivityGrantScenario::runWithRouter(
+                static fn (string $uri, string $state): array => ActivityGrantScenario::runRenewalFault($uri, $state, $refused),
+                __DIR__.'/activity-lease-http.php');
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
+            self::assertMatches($fixture['expected'], ($observed['commands'][0] ?? [])
+                + ['activity_callback_count' => $observed['callbacks']], $identity.'.expected');
+
+            return $observed['commands'];
+        }
+
         if ($workflowType === 'golden.activity-poll-transit') {
             $observed = ActivityGrantScenario::runIsolated();
             self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
