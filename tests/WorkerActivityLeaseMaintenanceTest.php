@@ -436,7 +436,8 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
         $outcomes = $this->state()['outcomes'] ?? [];
         self::assertCount(1, $outcomes, 'The claim is released through the Server, never dropped silently.');
         self::assertSame('attempt', $outcomes[0]['activity_attempt_id']);
-        self::assertSame(ActivityFailed::WORKER_LOST_TYPE, $outcomes[0]['failure']['type']);
+        self::assertSame('worker_lost', $outcomes[0]['failure']['type']);
+        self::assertSame(ActivityFailed::WORKER_LOST_CLASS, $outcomes[0]['failure']['class']);
         self::assertFalse($outcomes[0]['failure']['non_retryable']);
         self::assertStringContainsString('activity_maintenance_', $outcomes[0]['failure']['message']);
     }

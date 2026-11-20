@@ -4718,8 +4718,8 @@ final class Worker
             $client = $this->client->supportsBoundedWorkerRequests() ? $this->client->withBoundedWorkerRequests() : $this->client;
             $client->failActivityTask($taskId, $attemptId, $leaseOwner,
                 'The Worker could not maintain this activity attempt\'s lease ('.$reason.') and released it.',
-                ActivityFailed::WORKER_LOST_TYPE, details: ['reason' => 'worker_lost', 'cause' => $reason],
-                budget: $client === $this->client ? null : new RequestBudget(10));
+                ActivityFailed::WORKER_LOST_TYPE, details: ['reason' => ActivityFailed::WORKER_LOST_TYPE, 'cause' => $reason],
+                budget: $client === $this->client ? null : new RequestBudget(10), failureClass: ActivityFailed::WORKER_LOST_CLASS);
         } catch (Throwable $error) {
             $outcome = 'release_refused';
             $cause = $error instanceof ServerException ? $error->reason : $error::class;

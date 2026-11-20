@@ -23,9 +23,16 @@ final class ActivityFailedLeaseLossTest extends TestCase
 
     public function testAWorkerReleasedClaimIsWorkerLost(): void
     {
-        $released = new ActivityFailed('released', 'echo', ActivityFailed::WORKER_LOST_TYPE, false,
-            ['exception_type' => ActivityFailed::WORKER_LOST_TYPE], 'ActivityFailed');
+        $released = new ActivityFailed('released', 'echo', 'worker_lost', false,
+            ['exception_type' => 'worker_lost', 'exception_class' => ActivityFailed::WORKER_LOST_CLASS], 'ActivityFailed');
         self::assertSame('worker_lost', $released->leaseLossReason());
+        // Another SDK's class name with the same reason code.
+        $python = new ActivityFailed('released', 'echo', null, false,
+            ['exception_type' => 'worker_lost', 'exception_class' => 'ActivityWorkerLost'], 'ActivityFailed');
+        self::assertSame('worker_lost', $python->leaseLossReason());
+        // The class alone is not the reason code.
+        self::assertNull((new ActivityFailed('x', 'echo', null, false,
+            ['exception_class' => ActivityFailed::WORKER_LOST_CLASS]))->leaseLossReason());
     }
 
     public function testOtherFailuresHaveNoLeaseLossReason(): void

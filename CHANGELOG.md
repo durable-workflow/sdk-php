@@ -17,7 +17,8 @@ project follows [Semantic Versioning](https://semver.org/).
   for its full lease and then failed it.
 - A claim that the Worker's lease maintenance cannot keep (the helper fails,
   times out or cannot start) is released explicitly through the Server as a
-  retryable activity failure of type `DurableWorkflow\Worker\ActivityWorkerLost`,
+  retryable activity failure with type (reason code) `worker_lost`, the same in
+  every SDK, and class `DurableWorkflow\Worker\ActivityWorkerLost`,
   never dropped silently. When the Server itself refused, cancelled, expired
   or timed out the attempt, it already owns the outcome and nothing is sent.
 - Lease renewals no longer read `/api/cluster/info` (about 44 KB on native

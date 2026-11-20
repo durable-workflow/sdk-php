@@ -8,8 +8,14 @@ final class ActivityFailed extends DurableWorkflowException
 {
     /** The class the Server records when an attempt's task lease is lost. */
     public const SERVER_LEASE_LOST_TYPE = 'Workflow\\V2\\Exceptions\\ActivityLeaseExpiredException';
-    /** The failure type a Worker reports when it releases a claim it can no longer maintain. */
-    public const WORKER_LOST_TYPE = 'DurableWorkflow\\Worker\\ActivityWorkerLost';
+    /**
+     * The reason code every SDK reports, as the failure `type`, when a Worker
+     * releases a claim it can no longer maintain. Identical across SDKs and
+     * matchable in a retry policy's `non_retryable_error_types`.
+     */
+    public const WORKER_LOST_TYPE = 'worker_lost';
+    /** The failure `class` this SDK reports with it; each SDK names its own. */
+    public const WORKER_LOST_CLASS = 'DurableWorkflow\\Worker\\ActivityWorkerLost';
 
     /** @param array<string, mixed>|null $failure */
     public function __construct(
@@ -32,10 +38,10 @@ final class ActivityFailed extends DurableWorkflowException
      */
     public function leaseLossReason(): ?string
     {
-        $types = [$this->failureType, $this->failure['exception_type'] ?? null, $this->failure['exception_class'] ?? null];
-        if (in_array(self::WORKER_LOST_TYPE, $types, true)) {
+        if (in_array(self::WORKER_LOST_TYPE, [$this->failureType, $this->failure['exception_type'] ?? null], true)) {
             return 'worker_lost';
         }
+        $types = [$this->failureType, $this->failure['exception_type'] ?? null, $this->failure['exception_class'] ?? null];
         if (in_array(self::SERVER_LEASE_LOST_TYPE, $types, true)) {
             $reason = $this->failure['failure_reason'] ?? null;
 

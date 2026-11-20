@@ -2937,6 +2937,7 @@ final class Client implements WorkflowClientInterface
         ?string $stackTrace = null,
         ?array $diagnostics = null,
         ?RequestBudget $budget = null,
+        ?string $failureClass = null,
     ): array {
         return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/fail', [
             'activity_attempt_id' => $activityAttemptId,
@@ -2944,6 +2945,7 @@ final class Client implements WorkflowClientInterface
             'failure' => $this->withoutNulls([
                 'message' => $message,
                 'type' => $failureType,
+                'class' => $failureClass,
                 'non_retryable' => $nonRetryable,
                 'details' => $details !== null ? $this->codec->envelope($details) : null,
                 'stack_trace' => $stackTrace,

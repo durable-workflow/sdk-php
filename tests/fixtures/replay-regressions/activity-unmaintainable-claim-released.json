@@ -10,7 +10,7 @@
   },
   "expected": {
     "type": "fail_activity",
-    "failure_type": "DurableWorkflow\\Worker\\ActivityWorkerLost",
+    "failure_type": "worker_lost",
     "non_retryable": false,
     "activity_callback_count": 0
   },
@@ -18,7 +18,7 @@
     {
       "type": "fail_activity",
       "activity_attempt_id": "attempt",
-      "failure_type": "DurableWorkflow\\Worker\\ActivityWorkerLost",
+      "failure_type": "worker_lost",
       "non_retryable": false
     }
   ]
