@@ -7,6 +7,7 @@ namespace DurableWorkflow\Worker;
 use DurableWorkflow\Auth\StaticHeadersAuthentication;
 use DurableWorkflow\Client;
 use DurableWorkflow\Exception\ServerException;
+use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Transport\RequestBudget;
 use Throwable;
 
@@ -17,6 +18,12 @@ final class ActivityLeaseMaintainer
     private ?string $lostReason = null;
     private float $nextRenewal = 0;
     private float $nextPresence = 0;
+    /** Seconds before the next retry of an unavailable renewal; 0 after a confirmed one. */
+    private float $retryDelay = 0;
+    private const RETRY_FIRST_SECONDS = 0.1;
+    private const RETRY_MAX_SECONDS = 2.0;
+    /** One initial renewal that a conservative poll grant can outlive, inside the parent's start deadline. */
+    private const INITIAL_RENEWAL_SECONDS = 3;
     private readonly ActivityLeaseAuthority $authority;
     private readonly Client $client;
 
@@ -30,6 +37,10 @@ final class ActivityLeaseMaintainer
             throw new \UnexpectedValueException('Malformed private activity maintenance configuration.');
         }
         $this->client = $client ?? self::client($configuration)->withBoundedWorkerRequests();
+        if (($start['lease_renewal_discovered'] ?? false) === true) {
+            // The original Worker's registration advertised it; skip per-renewal discovery.
+            $this->client->confirmActivityLeaseRenewalDiscovered();
+        }
         $this->authority = new ActivityLeaseAuthority($start['task'], $this->client->namespace,
             $start['owner'], $start['queue'], $start['server_time'] ?? null, (float) $start['captured_at']);
         $due = $start['presence_due_in'] ?? 0;
@@ -234,6 +245,7 @@ final class ActivityLeaseMaintainer
         }
         try {
             $this->authority->acknowledge($reply, $started);
+            $this->retryDelay = 0;
             $this->scheduleRenewal();
         } catch (Throwable $error) {
             $this->recordMaintenanceError($error);
@@ -248,13 +260,69 @@ final class ActivityLeaseMaintainer
             $this->scheduleRenewal();
             return;
         }
+        // A conservative grant is charged from the poll's own start, so it
+        // never outlasts the Server's lease. While it lasts, an unavailable
+        // renewal is retried in the background instead of abandoning a claim
+        // the Server still holds (sdk-php#445).
+        $conservative = ($this->start['conservative_poll_grant'] ?? false) === true
+            && $this->authority->remaining() >= 3;
         $started = hrtime(true) / 1e9;
-        $this->authority->acknowledge($this->requestRenewal(), $started);
+        try {
+            $reply = $this->requestRenewal($conservative
+                ? $this->budget(self::INITIAL_RENEWAL_SECONDS) : null);
+        } catch (Throwable $error) {
+            if (!$conservative || !self::unavailable($error)) {
+                throw $error;
+            }
+            // Retries stay inside the grant; retryLater() records its expiry.
+            $this->retryLater();
+
+            return;
+        }
+        $this->authority->acknowledge($reply, $started);
+        $this->retryDelay = 0;
         $this->scheduleRenewal();
     }
 
+    /**
+     * The renewal did not reach a definite answer: no connection, a timeout,
+     * an exhausted request budget or an upstream 5xx/429. A refusal from the
+     * Server (4xx), a revoked or invalid grant and local misuse stay final.
+     */
+    private static function unavailable(Throwable $error): bool
+    {
+        if ($error instanceof WorkflowClaimRevoked) {
+            return false;
+        }
+        if ($error instanceof TransportException) {
+            return $error->status === null || $error->status >= 500 || $error->status === 429;
+        }
+        if ($error instanceof ServerException) {
+            return $error->status === 0 || $error->status >= 500 || $error->status === 429;
+        }
+
+        return false;
+    }
+
+    /** Exponential backoff, bounded by the remaining grant; unavailability adds no time. */
+    private function retryLater(): void
+    {
+        try {
+            $remaining = $this->authority->remaining();
+        } catch (WorkflowClaimRevoked $lost) {
+            // The grant ran out while the runtime stayed unreachable.
+            $this->lostReason = $lost->reason;
+
+            return;
+        }
+        $this->retryDelay = $this->retryDelay <= 0 ? self::RETRY_FIRST_SECONDS
+            : min(self::RETRY_MAX_SECONDS, $this->retryDelay * 2);
+        $this->nextRenewal = hrtime(true) / 1e9 + min($this->retryDelay, max(0.0, $remaining / 3));
+        $this->nextPresence = max($this->nextPresence, $this->nextRenewal);
+    }
+
     /** @return array<string, mixed> */
-    private function requestRenewal(): array
+    private function requestRenewal(?RequestBudget $budget = null): array
     {
         if (!$this->parentPresent()) {
             throw new WorkflowClaimRevoked('activity_parent_stopped', 'Original activity process has stopped.');
@@ -262,7 +330,7 @@ final class ActivityLeaseMaintainer
         $identity = $this->authority->identity();
         if (($this->start['registered'] ?? false) === true && hrtime(true) / 1e9 >= $this->nextPresence) {
             $ack = $this->client->heartbeatWorker((string) $identity['lease_owner'],
-                ['workflow_available' => 0, 'activity_available' => 0, 'session_available' => 0], $this->budget(),
+                ['workflow_available' => 0, 'activity_available' => 0, 'session_available' => 0], $budget ?? $this->budget(),
                 $this->start['parent_pid']);
             if (($ack['worker_id'] ?? null) !== $identity['lease_owner'] || ($ack['acknowledged'] ?? null) !== true) {
                 throw new WorkflowClaimRevoked('activity_worker_unconfirmed', 'Original Worker presence was not acknowledged.');
@@ -272,12 +340,12 @@ final class ActivityLeaseMaintainer
         }
 
         return $this->client->renewActivityTaskLease((string) $identity['task_id'],
-            (string) $identity['activity_attempt_id'], (string) $identity['lease_owner'], $this->budget());
+            (string) $identity['activity_attempt_id'], (string) $identity['lease_owner'], $budget ?? $this->budget());
     }
 
-    private function budget(): RequestBudget
+    private function budget(int $seconds = 5): RequestBudget
     {
-        return new RequestBudget(5, hrtime(true) / 1e9 + $this->authority->remaining());
+        return new RequestBudget($seconds, hrtime(true) / 1e9 + $this->authority->remaining());
     }
 
     private function scheduleRenewal(): void
@@ -287,11 +355,11 @@ final class ActivityLeaseMaintainer
 
     private function recordMaintenanceError(Throwable $error): void
     {
-        if ($error instanceof ServerException && ($error->isTransientConnectionFailure()
-            || $error->isTransientUpstreamFailure() || $error->isStorageAdmissionFailure())) {
+        if (($error instanceof ServerException && ($error->isTransientConnectionFailure()
+            || $error->isTransientUpstreamFailure() || $error->isStorageAdmissionFailure()))
+            || self::unavailable($error)) {
             // Unavailability adds no time. Retry only within the preceding grant.
-            $this->nextRenewal = hrtime(true) / 1e9 + 0.1;
-            $this->nextPresence = max($this->nextPresence, $this->nextRenewal);
+            $this->retryLater();
 
             return;
         }

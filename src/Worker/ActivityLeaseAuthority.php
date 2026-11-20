@@ -59,28 +59,34 @@ final class ActivityLeaseAuthority
 
     /** Unknown or slow deliveries retain confirmation; a fast grant charges the
      * entire poll before its lease, business and heartbeat bounds are captured.
+     *
+     * The fourth member says whether the returned grant is conservative: it is
+     * charged from the poll's own start, so it never outlasts the Server's
+     * lease however long the delivery took. A conservative slow grant still
+     * asks for confirmation, but a transient renewal failure can keep working
+     * under it instead of abandoning the claim (sdk-php#445).
      * @param array<string, mixed> $task
-     * @return array{self, float, bool}
+     * @return array{self, float, bool, bool}
      */
     public static function capturePollGrant(array $task, string $namespace, string $owner, string $queue,
         mixed $serverTime, float $received, mixed $started): array
     {
         $authority = new self($task, $namespace, $owner, $queue, $serverTime, $received);
         if ((!is_int($started) && !is_float($started)) || !is_finite($started)
-            || $started < 0 || $started > $received || $received - $started >= 1) {
-            return [$authority, $received, false];
+            || $started < 0 || $started > $received) {
+            return [$authority, $received, false, false];
         }
         try {
             $original = new self($task, $namespace, $owner, $queue, $serverTime, (float) $started);
             if ($original->remaining() >= 3) {
-                return [$original, (float) $started, true];
+                return [$original, (float) $started, $received - $started < 1, true];
             }
         } catch (WorkflowClaimRevoked) {
             // The response can arrive after the conservative original bound.
             // A renewal must confirm it before an application callback starts.
         }
 
-        return [$authority, $received, false];
+        return [$authority, $received, false, false];
     }
 
     /** @param array<string, mixed> $task

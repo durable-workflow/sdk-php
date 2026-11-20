@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow;
 
 use DurableWorkflow\Exception\ActivityCancelled;
+use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Exception\CodecException;
 use DurableWorkflow\Exception\FailureReportRefused;
 use DurableWorkflow\Exception\InvalidLocalActivityReport;
@@ -135,6 +136,10 @@ final class Worker
     private bool $groupedConditionWaitsAdvertised = false;
     private ?ActivityLeaseProcess $activityLeaseProcess = null;
     private ?ActivityLeaseProcess $activityLeaseHelper = null;
+    /** @var array<string, mixed>|null The activity claim whose lease maintenance is starting. */
+    private ?array $claimingActivityTask = null;
+    /** @var array{0: array<string, mixed>, 1: string}|null A claim to release once its lease binding is gone. */
+    private ?array $abandonedActivityClaim = null;
     private ?WorkflowPollGrant $workflowPollGrant = null;
     private ?float $workflowPollStartedAt = null;
     private ?float $activityPollStartedAt = null;
@@ -1326,6 +1331,9 @@ final class Worker
         $requestId = $carried === null ? 'php-'.$taskKind.'-poll-'.bin2hex(random_bytes(16))
             : $carried->request['poll_request_id'];
         $answer = $carried?->takeAnswer();
+        if ($taskKind === 'activity') {
+            $this->claimingActivityTask = null;
+        }
         while (!$this->shutdownRequested) {
             try {
                 $timeoutSeconds = $this->preparePoll($requestedTimeoutSeconds);
@@ -1349,8 +1357,11 @@ final class Worker
 
                 return $this->observePoll($taskKind, fn (): array => $poll($requestId, $timeoutSeconds), $carried?->startedAt);
             } catch (WorkflowClaimRevoked $exception) {
+                $claim = null;
                 if ($taskKind === 'activity') {
                     $this->stopActivityLease();
+                    $claim = $this->claimingActivityTask;
+                    $this->claimingActivityTask = null;
                 }
                 if ($taskKind === 'query') {
                     $this->queryTaskAuthority = null;
@@ -1361,6 +1372,10 @@ final class Worker
                     'cause_reason' => $cause instanceof ServerException ? $cause->reason : null,
                     'cause_type' => $cause === null ? null : $cause::class,
                     'message' => $exception->getMessage()], 'warning');
+                if ($claim !== null) {
+                    // The Server still holds this claim; never let its lease run out silently.
+                    $this->releaseAbandonedActivityClaim($claim, $exception->reason);
+                }
 
                 return ['task' => null, 'poll_status' => 'empty'];
             } catch (ServerException $exception) {
@@ -1764,6 +1779,11 @@ final class Worker
             if ($taskKind === 'activity') {
                 --$this->activityTasksInFlight;
                 $this->stopActivityLease();
+                if ($this->abandonedActivityClaim !== null) {
+                    [$claim, $reason] = $this->abandonedActivityClaim;
+                    $this->abandonedActivityClaim = null;
+                    $this->releaseAbandonedActivityClaim($claim, $reason);
+                }
             } elseif ($taskKind === 'workflow') {
                 --$this->workflowTasksInFlight;
             }
@@ -2400,6 +2420,7 @@ final class Worker
                     'presence_due_in' => max(0.0, $this->heartbeatIntervalSeconds - $this->elapsedSinceHeartbeat()),
                     'poll_started_at' => $this->activityPollStartedAt];
                 $this->activityPollStartedAt = null;
+                $this->claimingActivityTask = $task;
                 if ($this->activityLeaseHelper === null) {
                     $this->activityLeaseHelper = new ActivityLeaseProcess($this->client, $task, $this->workerId,
                         $this->taskQueue, $response['server_time'] ?? null, hrtime(true) / 1e9, $presence);
@@ -3493,6 +3514,9 @@ final class Worker
                 || ($this->enableCooperativeCancellation && $exception instanceof WorkflowClaimAborted)) {
                 if ($callbackStopped) {
                     $this->acknowledgeStoppedRemoteActivity($taskId, $attemptId, $leaseOwner);
+                } elseif ($exception instanceof WorkflowClaimRevoked) {
+                    // Released after the lease binding stops (dispatchPolledTask).
+                    $this->abandonedActivityClaim = [$task, $exception->reason];
                 }
                 $this->diagnostic('worker.claim_aborted', [
                     'task_id' => $taskId, 'activity_attempt_id' => $attemptId,
@@ -4661,6 +4685,52 @@ final class Worker
             throw new ActivityLeaseMaintenanceException('Automatic activity lease maintenance requires PHP CLI proc_open.');
         }
         $this->client->activityLeaseProcessConfiguration();
+    }
+
+    /**
+     * Release an activity claim this Worker can no longer maintain, so the
+     * Server retries it under the activity's retry policy or records a typed
+     * `worker_lost` failure now, instead of holding the attempt until its
+     * lease expires. The Server fences the attempt: if the lease already
+     * moved on, it refuses and nothing changes. Never throws.
+     *
+     * @param array<string, mixed> $task
+     */
+    private function releaseAbandonedActivityClaim(array $task, string $reason): void
+    {
+        // Only a loss this Worker caused. When the Server answered (refused,
+        // cancelled, expired or timed out the attempt) it already owns the
+        // outcome, and a Worker failure could misstate it.
+        if (!str_starts_with($reason, 'activity_maintenance_')
+            && !in_array($reason, ['activity_supervisor_conflict', 'worker_stopped', 'worker_shutdown'], true)) {
+            return;
+        }
+        $taskId = $task['task_id'] ?? null;
+        $attemptId = $task['activity_attempt_id'] ?? $task['attempt_id'] ?? null;
+        $leaseOwner = $task['lease_owner'] ?? $this->workerId;
+        if (!is_string($taskId) || $taskId === '' || !is_string($attemptId) || $attemptId === ''
+            || !is_string($leaseOwner) || $leaseOwner === '') {
+            return;
+        }
+        $outcome = 'released';
+        $cause = null;
+        try {
+            $client = $this->client->supportsBoundedWorkerRequests() ? $this->client->withBoundedWorkerRequests() : $this->client;
+            $client->failActivityTask($taskId, $attemptId, $leaseOwner,
+                'The Worker could not maintain this activity attempt\'s lease ('.$reason.') and released it.',
+                ActivityFailed::WORKER_LOST_TYPE, details: ['reason' => 'worker_lost', 'cause' => $reason],
+                budget: $client === $this->client ? null : new RequestBudget(10));
+        } catch (Throwable $error) {
+            $outcome = 'release_refused';
+            $cause = $error instanceof ServerException ? $error->reason : $error::class;
+        }
+        try {
+            $this->diagnostic('worker.claim_released', ['task_kind' => 'activity', 'task_id' => $taskId,
+                'activity_attempt_id' => $attemptId, 'reason' => $reason, 'outcome' => $outcome,
+                'cause_reason' => $cause], 'warning');
+        } catch (Throwable) {
+            // A diagnostic failure cannot change the released claim.
+        }
     }
 
     private function stopActivityLease(): void

@@ -6,6 +6,32 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- An activity worker no longer drops a claimed task when the lease renewal at
+  activity start is slow or fails transiently (#445). The worker keeps working
+  under the poll's original lease, charged conservatively from the poll's own
+  start, and retries renewal in the background with exponential backoff
+  (0.1 s doubling to 2 s) inside that lease. Previously one renewal over the
+  5 s start deadline dropped the claim silently; the Server held the attempt
+  for its full lease and then failed it.
+- A claim that the Worker's lease maintenance cannot keep (the helper fails,
+  times out or cannot start) is released explicitly through the Server as a
+  retryable activity failure of type `DurableWorkflow\Worker\ActivityWorkerLost`,
+  never dropped silently. When the Server itself refused, cancelled, expired
+  or timed out the attempt, it already owns the outcome and nothing is sent.
+- Lease renewals no longer read `/api/cluster/info` (about 44 KB on native
+  Server) before every renewal; the Worker's registration already discovered
+  `activity_lease_renewal`.
+
+### Added
+
+- `ActivityFailed::leaseLossReason()` returns `lease_expired` or
+  `worker_deregistered` (settled by the Server), `worker_lost` (released by a
+  Worker), or null. Retrying on these is the caller's choice: the default
+  activity retry policy is unchanged, because retrying a non-idempotent
+  activity by default could repeat its side effects.
+
 ## [3.22.0] - 2026-11-19
 
 Signal-with-start and durable signal-external need native Server 3.15.0 or

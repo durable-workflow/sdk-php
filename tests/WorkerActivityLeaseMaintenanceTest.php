@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Client;
+use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Tests\Support\ActivityGrantScenario;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
@@ -124,7 +125,8 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
         self::assertCount(3, $state['outcomes']);
         self::assertSame(['attempt', 'attempt-2', 'attempt-3'], array_column($state['outcomes'], 'activity_attempt_id'));
         self::assertSame(1, $state['renewals']);
-        self::assertCount(2, array_filter($state['requests'],
+        // Registration discovered activity_lease_renewal; renewals never read cluster info again.
+        self::assertCount(1, array_filter($state['requests'],
             static fn (array $request): bool => $request['path'] === '/api/cluster/info'));
         self::assertSame([], array_filter($state['requests'],
             static fn (array $request): bool => $request['path'] === '/api/worker/heartbeat'));
@@ -380,6 +382,69 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
         self::assertSame([], $this->state()['outcomes'] ?? []);
         self::assertSame([], array_values(array_filter($this->state()['requests'],
             static fn (array $request): bool => str_ends_with($request['path'], '/complete') || str_ends_with($request['path'], '/fail'))));
+    }
+
+    /** sdk-php#445: a renewal slower than the start deadline no longer drops a claim the Server holds. */
+    public function testASlowInitialRenewalKeepsTheClaimUnderTheConservativePollGrant(): void
+    {
+        // The first renewal answers after 6 s: past the 3 s initial budget and
+        // the parent's 5 s start deadline, well inside the 9 s Server lease.
+        $worker = $this->worker(['lease_seconds' => 9, 'renew_delay_first' => 1, 'renew_delay_micros' => 6_000_000]);
+        $calls = 0;
+        $worker->registerActivity('slow', static function (ActivityContext $context) use (&$calls): string {
+            ++$calls;
+            return 'kept';
+        });
+        $started = microtime(true);
+        self::assertTrue($worker->tick(0));
+        self::assertSame(1, $calls, 'The callback runs under the original grant while renewal is retried.');
+        $state = $this->state();
+        self::assertCount(1, $state['outcomes']);
+        self::assertSame('attempt', $state['outcomes'][0]['activity_attempt_id']);
+        self::assertArrayHasKey('result', $state['outcomes'][0], 'The attempt completes; it is not released.');
+        self::assertLessThan(9, microtime(true) - $started);
+        self::assertCount(1, $this->paths($state, '/api/cluster/info'), 'Only the Worker\'s own discovery; renewals read none.');
+    }
+
+    public function testFlakyRenewalsAreRetriedWithBackoffUntilOneSucceeds(): void
+    {
+        $worker = $this->worker(['lease_seconds' => 6, 'renew_unavailable_first' => 3]);
+        $worker->registerActivity('slow', static function (ActivityContext $context): string {
+            usleep(1_500_000);
+            return 'kept';
+        });
+        self::assertTrue($worker->tick(0));
+        $state = $this->state();
+        self::assertGreaterThanOrEqual(4, $state['renew_attempts'], 'Three 503s, then a retry that renews.');
+        self::assertGreaterThanOrEqual(1, $state['renewals'] ?? 0);
+        self::assertCount(1, $state['outcomes']);
+        self::assertArrayHasKey('result', $state['outcomes'][0]);
+    }
+
+    public function testAClaimTheHelperCannotMaintainIsReleasedWithATypedReason(): void
+    {
+        // Renewal is refused outright and the first claim has no proven helper,
+        // so maintenance cannot start. The Server still holds the attempt.
+        $worker = $this->worker(['lease_seconds' => 9, 'renew_status' => 403]);
+        $calls = 0;
+        $worker->registerActivity('slow', static function (ActivityContext $context) use (&$calls): string {
+            ++$calls;
+            return 'must not run';
+        });
+        $worker->tick(0);
+        self::assertSame(0, $calls);
+        $outcomes = $this->state()['outcomes'] ?? [];
+        self::assertCount(1, $outcomes, 'The claim is released through the Server, never dropped silently.');
+        self::assertSame('attempt', $outcomes[0]['activity_attempt_id']);
+        self::assertSame(ActivityFailed::WORKER_LOST_TYPE, $outcomes[0]['failure']['type']);
+        self::assertFalse($outcomes[0]['failure']['non_retryable']);
+        self::assertStringContainsString('activity_maintenance_', $outcomes[0]['failure']['message']);
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function paths(array $state, string $path): array
+    {
+        return array_values(array_filter($state['requests'], static fn (array $request): bool => $request['path'] === $path));
     }
 
     public function testCustomHttpConfigurationMustNotSilentlyBecomeDefaultTransport(): void
