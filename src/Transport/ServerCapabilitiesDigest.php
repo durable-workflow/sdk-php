@@ -40,6 +40,13 @@ final class ServerCapabilitiesDigest
         return [$this->digest, $this->capabilities];
     }
 
+    /** Forget the held pair; the next request asks for full capabilities again. */
+    public function forget(): void
+    {
+        $this->digest = null;
+        $this->capabilities = null;
+    }
+
     /** @param array{0: ?string, 1: array<string, mixed>|null}|null $captured */
     public function header(?array $captured = null): string
     {
@@ -75,7 +82,7 @@ final class ServerCapabilitiesDigest
                     $value = match (true) {
                         $value === $captured[0] && $captured[1] !== null => $captured[1],
                         $value === $learned[0] && $learned[1] !== null => $learned[1],
-                        default => throw new TransportException('The server omitted capabilities this worker does not hold.'),
+                        default => throw new UnknownServerCapabilitiesDigest(),
                     };
                 } elseif (is_array($value) && !array_is_list($value) && is_string($value['digest'] ?? null)
                     && str_starts_with($value['digest'], 'sha256:')) {

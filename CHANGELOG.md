@@ -73,7 +73,15 @@ project follows [Semantic Versioning](https://semver.org/).
   Server that supports it replaces repeated `server_capabilities` objects
   (about 17 KB on native, sent on every worker answer and again inside
   carried polls) with their digest, and the transport restores the held object
-  before any caller sees the answer. Older Servers ignore the header.
+  before any caller sees the answer. Older Servers ignore the header. An
+  answer naming a digest the transport does not hold is recovered: the held
+  pair is forgotten and that request is sent once more without the header,
+  which returns the full object. A Server answers a request it had already
+  committed as a duplicate (409). A digest in an error body never replaces
+  the HTTP error.
+- A gzip response is inflated by the transport within a decoded-size limit
+  (`Psr18Transport` `maxDecodedResponseBytes`, default 128 MiB). A larger body
+  fails with `DurableWorkflow\Exception\ResponseTooLarge`.
 - `result()` of a completed run reads the output from the terminal status
   read instead of downloading the run's whole history again. Failed,
   cancelled, terminated and timed-out runs, and Servers that omit

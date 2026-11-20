@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Transport;
 
 use DurableWorkflow\Exception\ExternalPayloadException;
+use DurableWorkflow\Exception\ResponseTooLarge;
 use DurableWorkflow\Exception\TransportException;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Psr7\FnStream;
@@ -28,6 +29,8 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     public const DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0;
     /** Worker lifecycle requests (register, heartbeat, complete, fail, deregister); long polls keep their own budget. */
     public const DEFAULT_WORKER_REQUEST_TIMEOUT_SECONDS = 60.0;
+    /** The most bytes a compressed JSON response may decode to. */
+    public const DEFAULT_MAX_DECODED_RESPONSE_BYTES = 128 * 1024 * 1024;
 
     private readonly ClientInterface $client;
     private readonly RequestFactoryInterface $requestFactory;
@@ -56,7 +59,11 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         private readonly int $payloadTransferTimeoutSeconds = 30,
         ?float $requestTimeoutSeconds = null,
         ?float $workerRequestTimeoutSeconds = null,
+        private readonly int $maxDecodedResponseBytes = self::DEFAULT_MAX_DECODED_RESPONSE_BYTES,
     ) {
+        if ($maxDecodedResponseBytes < 1) {
+            throw new \InvalidArgumentException('maxDecodedResponseBytes must be positive.');
+        }
         if ($payloadTransferTimeoutSeconds < 1 || $payloadTransferTimeoutSeconds > 900) {
             throw new \InvalidArgumentException('Supervised payload transfers require a timeout from 1 through 900 seconds.');
         }
@@ -89,10 +96,41 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         return $this->sendJson($method, $uri, $headers, $body);
     }
 
-    /** The owned Guzzle client over cURL decodes gzip bodies it asked for. */
+    /** The owned Guzzle client over cURL can ask for gzip; this transport inflates it. */
     private function decodesCompressedResponses(): bool
     {
         return $this->client instanceof GuzzleClient && extension_loaded('curl') && extension_loaded('zlib');
+    }
+
+    /** Inflate a gzip body, refusing to produce more than the decoded-size limit. */
+    private function inflate(string $body): string
+    {
+        $context = @inflate_init(ZLIB_ENCODING_GZIP);
+        if ($context === false) {
+            throw new TransportException('The server returned an invalid gzip response body.');
+        }
+        $decoded = '';
+        // Small input chunks bound how far one step can overshoot the limit.
+        foreach (str_split($body, 8192) as $chunk) {
+            $part = @inflate_add($context, $chunk, ZLIB_SYNC_FLUSH);
+            if ($part === false) {
+                throw new TransportException('The server returned an invalid gzip response body.');
+            }
+            $decoded .= $part;
+            if (strlen($decoded) > $this->maxDecodedResponseBytes) {
+                throw new ResponseTooLarge($this->maxDecodedResponseBytes);
+            }
+        }
+        $tail = @inflate_add($context, '', ZLIB_FINISH);
+        if ($tail === false) {
+            throw new TransportException('The server returned an invalid gzip response body.');
+        }
+        $decoded .= $tail;
+        if (strlen($decoded) > $this->maxDecodedResponseBytes) {
+            throw new ResponseTooLarge($this->maxDecodedResponseBytes);
+        }
+
+        return $decoded;
     }
 
     public function supportsBoundedRequests(): bool
@@ -190,20 +228,33 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             if ($poll) {
                 $request = $request->withHeader('Accept', PollTransport::MEDIA_TYPE.', application/json;q=0.9');
             }
-            // The answer is resolved against the pair this request was sent with.
-            $captured = $control ? null : $this->capabilitiesDigest->capture();
-            if ($captured !== null) {
-                $request = $request->withHeader(ServerCapabilitiesDigest::HEADER, $this->capabilitiesDigest->header($captured));
-            }
             if ($this->decodesCompressedResponses() && !$request->hasHeader('Accept-Encoding')) {
-                // cURL decodes the body; Guzzle then moves Content-Encoding aside.
+                // The transport inflates the body itself, within its size limit.
                 $request = $request->withHeader('Accept-Encoding', 'gzip');
             }
-            $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout ?? 30,
-                bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout, control: $control);
-            $this->responseStatus = $response->getStatusCode();
+            $send = function (RequestInterface $request, ?array $captured) use ($timeoutSeconds, $controlTimeout, $control, $poll): ?array {
+                $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout ?? 30,
+                    bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout, control: $control);
+                $this->responseStatus = $response->getStatusCode();
 
-            return $this->decodeJsonResponse($response, $poll, $captured);
+                return $this->decodeJsonResponse($response, $poll, $captured);
+            };
+            if ($control) {
+                return $send($request, null);
+            }
+            // The answer is resolved against the pair this request was sent with.
+            $captured = $this->capabilitiesDigest->capture();
+            try {
+                return $send($request->withHeader(ServerCapabilitiesDigest::HEADER, $this->capabilitiesDigest->header($captured)), $captured);
+            } catch (UnknownServerCapabilitiesDigest) {
+                // The answer named capabilities this worker does not hold. Forget
+                // the held pair and ask once more without the header, which gets
+                // the full object. Worker requests are fenced, so a request the
+                // Server already committed is answered as a duplicate (409).
+                $this->capabilitiesDigest->forget();
+
+                return $send($request->withoutHeader(ServerCapabilitiesDigest::HEADER), [null, null]);
+            }
         } catch (TransportException $exception) {
             throw $exception;
         } catch (JsonException $exception) {
@@ -233,15 +284,11 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     private function decodeJsonResponse(ResponseInterface $response, bool $poll = false, ?array $captured = null): ?array
     {
         $rawBody = (string) $response->getBody();
-        if (str_starts_with($rawBody, "\x1f\x8b") && function_exists('gzdecode')
+        if (str_starts_with($rawBody, "\x1f\x8b") && function_exists('inflate_init')
             && strtolower(trim($response->getHeaderLine('Content-Encoding'))) === 'gzip') {
-            // A client that left the gzip body encoded. Decoding clients
-            // either drop the header or already return the JSON bytes.
-            $inflated = @gzdecode($rawBody);
-            if (!is_string($inflated)) {
-                throw new TransportException('The server returned an invalid gzip response body.');
-            }
-            $rawBody = $inflated;
+            // A body left gzip-encoded: the owned client asks for gzip without
+            // letting cURL inflate it, so the size limit always applies.
+            $rawBody = $this->inflate($rawBody);
         }
         $status = $response->getStatusCode();
         $mediaType = strtolower(trim(explode(';', $response->getHeaderLine('Content-Type'), 2)[0]));
@@ -261,7 +308,14 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             // its status without interpreting it as a successful protocol reply.
             $decoded = json_decode($rawBody, true);
             if ($captured !== null && is_array($decoded)) {
-                $this->capabilitiesDigest->restore($decoded, $captured);
+                try {
+                    $this->capabilitiesDigest->restore($decoded, $captured);
+                } catch (UnknownServerCapabilitiesDigest) {
+                    // The HTTP error is the answer; an unusable digest in it
+                    // never replaces it. Ask for full capabilities next time.
+                    $this->capabilitiesDigest->forget();
+                    unset($decoded['server_capabilities']);
+                }
             }
             throw TransportException::fromResponse($status, is_array($decoded) ? $decoded : null, $rawBody);
         }
@@ -554,6 +608,10 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
                 $onStats = $http->getConfig('on_stats');
 
                 $options = $this->guzzleRequestOptions($stream, $timeoutSeconds, $bounded, $sink, $progress);
+                if (!$stream && $sink === null && $request->getHeaderLine('Accept-Encoding') === 'gzip') {
+                    // Keep the body encoded: decodeJsonResponse() inflates it within its size limit.
+                    $options['decode_content'] = false;
+                }
                 $options['on_stats'] = static function (TransferStats $stats) use (&$connectionFailure, &$timedOut, $onStats): void {
                     // Guzzle 8 no longer attaches cURL errno to exceptions.
                     // Accept only DNS/connect/timeout/closed-connection errors,

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Tests;
 
+use DurableWorkflow\Exception\ResponseTooLarge;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Transport\ServerCapabilitiesDigest;
@@ -156,13 +157,115 @@ final class ServerCapabilitiesDigestTest extends TestCase
         self::assertFalse($http->requests[0]->hasHeader('Accept-Encoding'));
     }
 
-    public function testAnUnknownDigestIsAProtocolFailure(): void
+    public function testAnUnknownDigestIsRecoveredByAskingAgainInFull(): void
     {
-        $http = $this->http([[200, [], json_encode(['server_capabilities' => self::DIGEST], JSON_THROW_ON_ERROR)]]);
-        $this->expectException(TransportException::class);
-        $this->expectExceptionMessage('The server omitted capabilities this worker does not hold.');
-        (new Psr18Transport(client: $http))->send('POST', 'https://runtime.test/api/worker/heartbeat',
-            ['X-Durable-Workflow-Protocol-Version' => '1.20'], []);
+        $http = $this->http([
+            [200, [], json_encode(['task' => null, 'server_capabilities' => 'sha256:'.str_repeat('f', 64)], JSON_THROW_ON_ERROR)],
+            [200, [], json_encode(['task' => null, 'server_capabilities' => self::CAPABILITIES], JSON_THROW_ON_ERROR)],
+            [200, [], json_encode(['task' => null, 'server_capabilities' => self::tagged()], JSON_THROW_ON_ERROR)],
+        ]);
+        $transport = new Psr18Transport(client: $http);
+        $worker = ['X-Durable-Workflow-Protocol-Version' => '1.20'];
+
+        $answer = $transport->send('POST', 'https://runtime.test/api/worker/workflow-tasks/poll', $worker, ['timeout_seconds' => 0]);
+        self::assertSame(self::CAPABILITIES, $answer['server_capabilities']);
+        self::assertCount(2, $http->requests);
+        self::assertSame('none', $http->requests[0]->getHeaderLine(ServerCapabilitiesDigest::HEADER));
+        self::assertFalse($http->requests[1]->hasHeader(ServerCapabilitiesDigest::HEADER), 'Retried without the header.');
+        self::assertSame((string) $http->requests[0]->getBody(), (string) $http->requests[1]->getBody());
+        // The next request asks for tagged capabilities again and learns them.
+        $transport->send('POST', 'https://runtime.test/api/worker/heartbeat', $worker, []);
+        self::assertSame('none', $http->requests[2]->getHeaderLine(ServerCapabilitiesDigest::HEADER));
+    }
+
+    public function testACommittedCompletionRetriedAfterAnUnknownDigestSurfacesTheServersDuplicateAnswer(): void
+    {
+        $duplicate = ['reason' => 'task_not_leased', 'message' => 'The task is not leased.', 'server_capabilities' => self::CAPABILITIES];
+        $http = $this->http([
+            [200, [], json_encode(['outcome' => 'completed', 'server_capabilities' => 'sha256:'.str_repeat('e', 64)], JSON_THROW_ON_ERROR)],
+            [409, [], json_encode($duplicate, JSON_THROW_ON_ERROR)],
+        ]);
+        try {
+            (new Psr18Transport(client: $http))->send('POST', 'https://runtime.test/api/worker/workflow-tasks/t/complete',
+                ['X-Durable-Workflow-Protocol-Version' => '1.20'], ['commands' => []]);
+            self::fail('The duplicate answer is the Server\'s, and the Worker handles it as a 409.');
+        } catch (TransportException $exception) {
+            self::assertSame(409, $exception->status);
+            self::assertSame('task_not_leased', $exception->response['reason']);
+        }
+        self::assertCount(2, $http->requests);
+    }
+
+    public function testAGarbledDigestOnAPollDoesNotStopAManagedWorker(): void
+    {
+        $polls = 0;
+        $http = new class ($polls) implements ClientInterface {
+            /** @var list<RequestInterface> */
+            public array $requests = [];
+
+            public function __construct(public int $polls)
+            {
+            }
+
+            public function sendRequest(RequestInterface $request): ResponseInterface
+            {
+                $this->requests[] = $request;
+                $path = $request->getUri()->getPath();
+                $garbled = 'sha256:'.str_repeat('c', 64);
+                $body = match (true) {
+                    str_ends_with($path, '/worker/register') => ['registered' => true],
+                    str_ends_with($path, '/workflow-tasks/poll') => ['task' => null, 'poll_status' => 'empty',
+                        'server_capabilities' => ++$this->polls === 1 && $request->hasHeader(ServerCapabilitiesDigest::HEADER)
+                            ? $garbled : ['query_tasks' => true]],
+                    str_ends_with($path, '/query-tasks/poll') => ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'],
+                    default => ['task' => null, 'poll_status' => 'empty'],
+                };
+
+                return new Response(200, ['Content-Type' => 'application/json'], json_encode($body, JSON_THROW_ON_ERROR));
+            }
+        };
+        $worker = new \DurableWorkflow\Worker(new \DurableWorkflow\Client('https://runtime.test',
+            transport: new Psr18Transport(client: $http), workerToken: 'w'), 'orders', workerId: 'worker-1');
+
+        $worker->run(0);
+
+        $paths = array_map(static fn (RequestInterface $request): string => $request->getUri()->getPath(), $http->requests);
+        self::assertSame(2, count(array_keys($paths, '/api/worker/workflow-tasks/poll')), 'The garbled poll was asked again in full.');
+        self::assertContains('/api/worker/query-tasks/poll', $paths, 'The Worker kept running.');
+    }
+
+    public function testAnUnknownDigestInAnErrorBodyNeverReplacesTheHttpError(): void
+    {
+        $http = $this->http([[409, [], json_encode(['reason' => 'stale_attempt', 'server_capabilities' => 'sha256:'.str_repeat('d', 64)], JSON_THROW_ON_ERROR)]]);
+        try {
+            (new Psr18Transport(client: $http))->send('POST', 'https://runtime.test/api/worker/activity-tasks/a/complete',
+                ['X-Durable-Workflow-Protocol-Version' => '1.20'], []);
+            self::fail('The 409 must surface.');
+        } catch (TransportException $exception) {
+            self::assertSame(409, $exception->status);
+            self::assertSame('stale_attempt', $exception->response['reason']);
+            self::assertArrayNotHasKey('server_capabilities', $exception->response);
+        }
+        self::assertCount(1, $http->requests, 'An error answer is not retried.');
+    }
+
+    public function testAGzipBodyThatDecodesPastTheLimitIsRefused(): void
+    {
+        $body = (string) gzencode(json_encode(['blob' => str_repeat('z', 64 * 1024)], JSON_THROW_ON_ERROR));
+        self::assertLessThan(1024, strlen($body));
+        $http = $this->http([[200, ['Content-Encoding' => 'gzip'], $body]]);
+        try {
+            (new Psr18Transport(client: $http, maxDecodedResponseBytes: 16 * 1024))->send('GET', 'https://runtime.test/api/workflows/x',
+                ['X-Durable-Workflow-Control-Plane-Version' => '2']);
+            self::fail('A bomb must be refused.');
+        } catch (ResponseTooLarge $exception) {
+            self::assertSame(16 * 1024, $exception->limitBytes);
+            self::assertSame('response_too_large', $exception->response['reason']);
+        }
+        // Within the default limit it decodes normally.
+        $http = $this->http([[200, ['Content-Encoding' => 'gzip'], $body]]);
+        self::assertSame(64 * 1024, strlen((new Psr18Transport(client: $http))->send('GET', 'https://runtime.test/api/workflows/x',
+            ['X-Durable-Workflow-Control-Plane-Version' => '2'])['blob']));
     }
 
     public function testAGzipBodyLeftEncodedByTheClientIsDecoded(): void
