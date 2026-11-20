@@ -77,6 +77,68 @@ final class ServerCapabilitiesDigestTest extends TestCase
         }
     }
 
+    /**
+     * Rolling deploy: a completion is in flight under D1 while another worker
+     * request (as completion pipelining overlaps them) learns D2. The server
+     * answers the completion with the digest it was sent, D1, after committing
+     * it; the transport must restore the D1 object, not refuse the answer.
+     */
+    public function testOverlappingRequestsAcrossTwoDigestsEachRestoreTheirOwnCapabilities(): void
+    {
+        $d2 = 'sha256:'.str_repeat('2', 64);
+        $capabilities2 = ['query_tasks' => true, 'activity_lease_renewal' => true, 'new_after_deploy' => true];
+        $http = new class (self::DIGEST, self::CAPABILITIES, $d2, $capabilities2) implements ClientInterface {
+            public ?Psr18Transport $transport = null;
+            /** @var list<array{string, string}> */
+            public array $sent = [];
+            public ?array $overlapped = null;
+
+            public function __construct(private string $d1, private array $c1, private string $d2, private array $c2)
+            {
+            }
+
+            public function sendRequest(RequestInterface $request): ResponseInterface
+            {
+                $path = $request->getUri()->getPath();
+                $held = $request->getHeaderLine(ServerCapabilitiesDigest::HEADER);
+                $this->sent[] = [$path, $held];
+                $body = match ($path) {
+                    // Learn D1.
+                    '/api/worker/heartbeat' => ['server_capabilities' => $this->c1 + ['digest' => $this->d1]],
+                    // The deploy lands; this answer moves the transport to D2.
+                    '/api/worker/activity-tasks/poll' => ['task' => null, 'server_capabilities' => $this->c2 + ['digest' => $this->d2]],
+                    // Committed under D1: the server elides with the digest this request sent.
+                    default => ['outcome' => 'completed', 'recorded' => true, 'server_capabilities' => $held],
+                };
+                if ($path === '/api/worker/workflow-tasks/t/complete') {
+                    // Another request runs while the completion is in flight.
+                    $this->overlapped = $this->transport->send('POST', 'https://runtime.test/api/worker/activity-tasks/poll',
+                        ['X-Durable-Workflow-Protocol-Version' => '1.20'], ['timeout_seconds' => 0]);
+                }
+
+                return new Response(200, ['Content-Type' => 'application/json'], json_encode($body, JSON_THROW_ON_ERROR));
+            }
+        };
+        $transport = new Psr18Transport(client: $http);
+        $http->transport = $transport;
+        $worker = ['X-Durable-Workflow-Protocol-Version' => '1.20'];
+
+        $transport->send('POST', 'https://runtime.test/api/worker/heartbeat', $worker, []);
+        $completion = $transport->send('POST', 'https://runtime.test/api/worker/workflow-tasks/t/complete', $worker, []);
+
+        self::assertSame(self::CAPABILITIES, $completion['server_capabilities'], 'Resolved against the pair it was sent with.');
+        self::assertTrue($completion['recorded']);
+        self::assertSame($capabilities2, $http->overlapped['server_capabilities']);
+        self::assertSame([['/api/worker/heartbeat', 'none'], ['/api/worker/workflow-tasks/t/complete', self::DIGEST],
+            ['/api/worker/activity-tasks/poll', self::DIGEST]], $http->sent);
+
+        // Requests sent after the overlap carry the newest digest.
+        $http->overlapped = null;
+        $after = $transport->send('POST', 'https://runtime.test/api/worker/workflow-tasks/u/complete', $worker, []);
+        self::assertSame($d2, $http->sent[3][1]);
+        self::assertSame($capabilities2, $after['server_capabilities']);
+    }
+
     public function testControlRequestsAndFullCapabilitiesAreUnchanged(): void
     {
         $http = $this->http([

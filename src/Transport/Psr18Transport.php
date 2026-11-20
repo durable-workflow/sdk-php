@@ -190,8 +190,10 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             if ($poll) {
                 $request = $request->withHeader('Accept', PollTransport::MEDIA_TYPE.', application/json;q=0.9');
             }
-            if (!$control) {
-                $request = $request->withHeader(ServerCapabilitiesDigest::HEADER, $this->capabilitiesDigest->header());
+            // The answer is resolved against the pair this request was sent with.
+            $captured = $control ? null : $this->capabilitiesDigest->capture();
+            if ($captured !== null) {
+                $request = $request->withHeader(ServerCapabilitiesDigest::HEADER, $this->capabilitiesDigest->header($captured));
             }
             if ($this->decodesCompressedResponses() && !$request->hasHeader('Accept-Encoding')) {
                 // cURL decodes the body; Guzzle then moves Content-Encoding aside.
@@ -201,7 +203,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
                 bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout, control: $control);
             $this->responseStatus = $response->getStatusCode();
 
-            return $this->decodeJsonResponse($response, $poll, !$control);
+            return $this->decodeJsonResponse($response, $poll, $captured);
         } catch (TransportException $exception) {
             throw $exception;
         } catch (JsonException $exception) {
@@ -224,8 +226,11 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             ? min($timeout, (float) $configured) : $timeout;
     }
 
-    /** @return array<string, mixed>|list<mixed>|null */
-    private function decodeJsonResponse(ResponseInterface $response, bool $poll = false, bool $worker = false): ?array
+    /**
+     * @param array{0: ?string, 1: array<string, mixed>|null}|null $captured The digest pair a worker request was sent with.
+     * @return array<string, mixed>|list<mixed>|null
+     */
+    private function decodeJsonResponse(ResponseInterface $response, bool $poll = false, ?array $captured = null): ?array
     {
         $rawBody = (string) $response->getBody();
         if (str_starts_with($rawBody, "\x1f\x8b") && function_exists('gzdecode')
@@ -242,8 +247,8 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         $mediaType = strtolower(trim(explode(';', $response->getHeaderLine('Content-Type'), 2)[0]));
         if ($poll && $mediaType === PollTransport::MEDIA_TYPE) {
             $frame = PollTransport::decode($rawBody, $status);
-            if ($worker) {
-                $this->capabilitiesDigest->restore($frame['body']);
+            if ($captured !== null) {
+                $this->capabilitiesDigest->restore($frame['body'], $captured);
             }
             if ($frame['status'] >= 300) {
                 throw TransportException::fromResponse($frame['status'], $frame['body'], $rawBody, $frame['headers']);
@@ -255,8 +260,8 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             // An upstream proxy can return HTML or an empty body. Preserve
             // its status without interpreting it as a successful protocol reply.
             $decoded = json_decode($rawBody, true);
-            if ($worker && is_array($decoded)) {
-                $this->capabilitiesDigest->restore($decoded);
+            if ($captured !== null && is_array($decoded)) {
+                $this->capabilitiesDigest->restore($decoded, $captured);
             }
             throw TransportException::fromResponse($status, is_array($decoded) ? $decoded : null, $rawBody);
         }
@@ -265,8 +270,8 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         if ($decoded !== null && !is_array($decoded)) {
             throw new TransportException('The server returned a JSON value instead of an object or array.');
         }
-        if ($worker && $decoded !== null) {
-            $this->capabilitiesDigest->restore($decoded);
+        if ($captured !== null && $decoded !== null) {
+            $this->capabilitiesDigest->restore($decoded, $captured);
         }
 
         return $decoded;
