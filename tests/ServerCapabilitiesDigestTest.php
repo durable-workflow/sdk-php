@@ -234,6 +234,71 @@ final class ServerCapabilitiesDigestTest extends TestCase
         self::assertContains('/api/worker/query-tasks/poll', $paths, 'The Worker kept running.');
     }
 
+    /**
+     * End to end: a garbled 200 to an activity completion forces the no-digest
+     * resend; the Server answers 409 stale_attempt for the completion it already
+     * committed; the Worker treats that as its own committed completion, keeps
+     * running, and the activity runs once.
+     */
+    public function testAGarbledCompletionAnswerResentAsADuplicateKeepsTheWorkerRunning(): void
+    {
+        $http = new class implements ClientInterface {
+            /** @var list<RequestInterface> */
+            public array $requests = [];
+            public bool $leased = false;
+
+            public function sendRequest(RequestInterface $request): ResponseInterface
+            {
+                $this->requests[] = $request;
+                $path = $request->getUri()->getPath();
+                $status = 200;
+                if (str_ends_with($path, '/worker/register')) {
+                    $body = ['registered' => true];
+                } elseif (str_ends_with($path, '/activity-tasks/poll') && !$this->leased) {
+                    $this->leased = true;
+                    $body = ['poll_status' => 'leased', 'task' => ['task_id' => 'activity-1', 'activity_attempt_id' => 'attempt-1',
+                        'lease_owner' => 'worker-1', 'activity_type' => 'orders.charge', 'payload_codec' => 'avro']];
+                } elseif (str_ends_with($path, '/activity-tasks/activity-1/complete')) {
+                    if ($request->hasHeader(ServerCapabilitiesDigest::HEADER)) {
+                        // Committed, but the answer names a digest nobody holds.
+                        $body = ['task_id' => 'activity-1', 'outcome' => 'completed', 'recorded' => true,
+                            'server_capabilities' => 'sha256:'.str_repeat('b', 64)];
+                    } else {
+                        $status = 409;
+                        $body = ['task_id' => 'activity-1', 'activity_attempt_id' => 'attempt-1', 'outcome' => 'completed',
+                            'recorded' => false, 'reason' => 'stale_attempt', 'next_task_id' => null, 'lease_owner' => 'worker-1',
+                            'activity_status' => 'completed', 'attempt_status' => 'completed', 'task_status' => 'completed'];
+                    }
+                } elseif (str_ends_with($path, '/query-tasks/poll') && $this->leased) {
+                    $body = ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+                } else {
+                    $body = ['task' => null, 'poll_status' => 'empty'];
+                }
+
+                return new Response($status, ['Content-Type' => 'application/json'], json_encode($body, JSON_THROW_ON_ERROR));
+            }
+        };
+        $runs = 0;
+        $events = [];
+        $worker = new \DurableWorkflow\Worker(new \DurableWorkflow\Client('https://runtime.test',
+            transport: new Psr18Transport(client: $http), workerToken: 'w'), 'orders', workerId: 'worker-1',
+            diagnosticListener: static function (string $event) use (&$events): void { $events[] = $event; });
+        $worker->registerActivity('orders.charge', static function (\DurableWorkflow\Worker\ActivityContext $context) use (&$runs): string {
+            ++$runs;
+
+            return 'charged';
+        });
+
+        $worker->run(0);
+
+        $paths = array_map(static fn (RequestInterface $request): string => $request->getUri()->getPath(), $http->requests);
+        self::assertSame(1, $runs, 'The activity ran once.');
+        self::assertSame(2, count(array_keys($paths, '/api/worker/activity-tasks/activity-1/complete')), 'Sent, then resent without the digest.');
+        self::assertNotContains('/api/worker/activity-tasks/activity-1/fail', $paths);
+        self::assertContains('worker.completion_already_committed', $events);
+        self::assertContains('/api/worker/query-tasks/poll', $paths, 'The Worker kept running.');
+    }
+
     public function testAnUnknownDigestInAnErrorBodyNeverReplacesTheHttpError(): void
     {
         $http = $this->http([[409, [], json_encode(['reason' => 'stale_attempt', 'server_capabilities' => 'sha256:'.str_repeat('d', 64)], JSON_THROW_ON_ERROR)]]);
@@ -266,6 +331,24 @@ final class ServerCapabilitiesDigestTest extends TestCase
         $http = $this->http([[200, ['Content-Encoding' => 'gzip'], $body]]);
         self::assertSame(64 * 1024, strlen((new Psr18Transport(client: $http))->send('GET', 'https://runtime.test/api/workflows/x',
             ['X-Durable-Workflow-Control-Plane-Version' => '2'])['blob']));
+    }
+
+    public function testTheDefaultDecodeLimitFitsPhpsMemoryLimit(): void
+    {
+        self::assertSame(32 * 1024 * 1024, Psr18Transport::defaultMaxDecodedResponseBytes('128M'));
+        self::assertSame(16 * 1024 * 1024, Psr18Transport::defaultMaxDecodedResponseBytes('64M'));
+        self::assertSame(32 * 1024 * 1024, Psr18Transport::defaultMaxDecodedResponseBytes('-1'));
+        self::assertSame(32 * 1024 * 1024, Psr18Transport::defaultMaxDecodedResponseBytes('2G'));
+        self::assertSame(1024 * 1024, Psr18Transport::defaultMaxDecodedResponseBytes('2M'));
+    }
+
+    public function testAnOversizedResponseReachesAClientCallerAsResponseTooLarge(): void
+    {
+        $body = (string) gzencode(json_encode(['blob' => str_repeat('z', 64 * 1024)], JSON_THROW_ON_ERROR));
+        $client = new \DurableWorkflow\Client('https://runtime.test', transport: new Psr18Transport(
+            client: $this->http([[200, ['Content-Encoding' => 'gzip'], $body]]), maxDecodedResponseBytes: 16 * 1024));
+        $this->expectException(ResponseTooLarge::class);
+        $client->describeWorkflow('x');
     }
 
     public function testAGzipBodyLeftEncodedByTheClientIsDecoded(): void

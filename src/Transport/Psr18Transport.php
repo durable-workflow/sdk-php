@@ -29,8 +29,13 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     public const DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0;
     /** Worker lifecycle requests (register, heartbeat, complete, fail, deregister); long polls keep their own budget. */
     public const DEFAULT_WORKER_REQUEST_TIMEOUT_SECONDS = 60.0;
-    /** The most bytes a compressed JSON response may decode to. */
-    public const DEFAULT_MAX_DECODED_RESPONSE_BYTES = 128 * 1024 * 1024;
+    /**
+     * The most bytes a compressed JSON response may decode to by default:
+     * 32 MiB, or a quarter of PHP's memory_limit when that is lower, so the
+     * decoded body and its JSON decoding fit under the default 128 MB limit.
+     */
+    public const DEFAULT_MAX_DECODED_RESPONSE_BYTES = 32 * 1024 * 1024;
+    private readonly int $maxDecodedResponseBytes;
 
     private readonly ClientInterface $client;
     private readonly RequestFactoryInterface $requestFactory;
@@ -59,11 +64,12 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         private readonly int $payloadTransferTimeoutSeconds = 30,
         ?float $requestTimeoutSeconds = null,
         ?float $workerRequestTimeoutSeconds = null,
-        private readonly int $maxDecodedResponseBytes = self::DEFAULT_MAX_DECODED_RESPONSE_BYTES,
+        ?int $maxDecodedResponseBytes = null,
     ) {
-        if ($maxDecodedResponseBytes < 1) {
+        if ($maxDecodedResponseBytes !== null && $maxDecodedResponseBytes < 1) {
             throw new \InvalidArgumentException('maxDecodedResponseBytes must be positive.');
         }
+        $this->maxDecodedResponseBytes = $maxDecodedResponseBytes ?? self::defaultMaxDecodedResponseBytes();
         if ($payloadTransferTimeoutSeconds < 1 || $payloadTransferTimeoutSeconds > 900) {
             throw new \InvalidArgumentException('Supervised payload transfers require a timeout from 1 through 900 seconds.');
         }
@@ -100,6 +106,20 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     private function decodesCompressedResponses(): bool
     {
         return $this->client instanceof GuzzleClient && extension_loaded('curl') && extension_loaded('zlib');
+    }
+
+    /** min(32 MiB, memory_limit / 4); an unlimited memory_limit keeps 32 MiB. */
+    public static function defaultMaxDecodedResponseBytes(?string $memoryLimit = null): int
+    {
+        $limit = trim($memoryLimit ?? (string) ini_get('memory_limit'));
+        if ($limit === '' || $limit === '-1' || preg_match('/\A(\d+)\s*([kmg]?)\z/i', $limit, $match) !== 1) {
+            return self::DEFAULT_MAX_DECODED_RESPONSE_BYTES;
+        }
+        $bytes = (int) $match[1] * match (strtolower($match[2])) {
+            'g' => 1024 ** 3, 'm' => 1024 ** 2, 'k' => 1024, default => 1,
+        };
+
+        return max(1024 * 1024, min(self::DEFAULT_MAX_DECODED_RESPONSE_BYTES, intdiv($bytes, 4)));
     }
 
     /** Inflate a gzip body, refusing to produce more than the decoded-size limit. */

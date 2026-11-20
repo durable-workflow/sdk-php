@@ -80,8 +80,14 @@ project follows [Semantic Versioning](https://semver.org/).
   committed as a duplicate (409). A digest in an error body never replaces
   the HTTP error.
 - A gzip response is inflated by the transport within a decoded-size limit
-  (`Psr18Transport` `maxDecodedResponseBytes`, default 128 MiB). A larger body
-  fails with `DurableWorkflow\Exception\ResponseTooLarge`.
+  (`Psr18Transport` `maxDecodedResponseBytes`; by default 32 MiB, or a quarter
+  of `memory_limit` when that is lower). A larger body fails with
+  `DurableWorkflow\Exception\ResponseTooLarge`, which reaches callers as
+  itself.
+- A `409 stale_attempt` that proves this Worker's own activity completion was
+  already committed (`recorded: false`, its owner and attempt, every status
+  `completed`) is accepted as committed on any answer: the first, after a
+  transient failure, or after a digest resend.
 - `result()` of a completed run reads the output from the terminal status
   read instead of downloading the run's whole history again. Failed,
   cancelled, terminated and timed-out runs, and Servers that omit

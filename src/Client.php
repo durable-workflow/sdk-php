@@ -17,6 +17,7 @@ use DurableWorkflow\Failure\LocalFailureReports;
 use DurableWorkflow\Exception\QueryFailed;
 use DurableWorkflow\Exception\ScheduleAlreadyExists;
 use DurableWorkflow\Exception\ServerCapabilityUnavailable;
+use DurableWorkflow\Exception\ResponseTooLarge;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\SignalFailed;
 use DurableWorkflow\Exception\SignalWithStartFailed;
@@ -3495,7 +3496,8 @@ final class Client implements WorkflowClientInterface
             return $this->resolveResponsePayloads($response, $path, $worker, $body, $headers,
                 $budget, $callerBudget, $poll, $payloadPaths);
         } catch (TransportException $exception) {
-            if ($exception instanceof FailureReportRefused) {
+            if ($exception instanceof FailureReportRefused || $exception instanceof ResponseTooLarge) {
+                // Typed transport outcomes reach the caller as themselves.
                 throw $exception;
             }
             $details = $exception->response;
@@ -3573,7 +3575,8 @@ final class Client implements WorkflowClientInterface
                 $this->requestHeaders(true), $this->boundedWorkerRequests ? new RequestBudget(5) : null,
                 null, true, null);
         } catch (TransportException $exception) {
-            if ($exception instanceof FailureReportRefused) {
+            if ($exception instanceof FailureReportRefused || $exception instanceof ResponseTooLarge) {
+                // Typed transport outcomes reach the caller as themselves.
                 throw $exception;
             }
             $details = $exception->response;
