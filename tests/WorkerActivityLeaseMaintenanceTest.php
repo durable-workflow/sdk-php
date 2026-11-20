@@ -462,11 +462,13 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
     #[DataProvider('serverRefusals')]
     public function testAServerRefusalDuringRenewalIsLeftToTheServer(array $configuration, int $expectedCalls): void
     {
-        $worker = $this->worker(['lease_seconds' => 3] + $configuration);
+        // A 6 s lease leaves a slow CI runner time to start the helper; the
+        // first steady renewal (the refused one) comes about 2 s in.
+        $worker = $this->worker(['lease_seconds' => 6] + $configuration);
         $calls = 0;
         $worker->registerActivity('slow', static function (ActivityContext $context) use (&$calls): string {
             ++$calls;
-            usleep(2_500_000);
+            usleep(3_500_000);
             return 'must not publish';
         });
         $worker->tick(0);
