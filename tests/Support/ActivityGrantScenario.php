@@ -54,6 +54,41 @@ final class ActivityGrantScenario
         }
     }
 
+    /**
+     * sdk-php#445: the initial renewal is slow (6 s), or every renewal is
+     * refused. The claim is either kept under its conservative poll grant and
+     * completed, or released explicitly; it is never dropped silently.
+     * @return array{callbacks: int, commands: list<array<string, mixed>>}
+     */
+    public static function runRenewalFault(string $uri, string $statePath, bool $refused): array
+    {
+        file_put_contents($statePath, json_encode($refused ? ['lease_seconds' => 9, 'renew_status' => 403]
+            : ['lease_seconds' => 9, 'renew_delay_first' => 1, 'renew_delay_micros' => 6_000_000], JSON_THROW_ON_ERROR));
+        $worker = new Worker(new Client($uri, namespace: 'tenant', workerToken: 'fixture-worker'),
+            'queue', workerId: 'owner');
+        (new ReflectionProperty($worker, 'registered'))->setValue($worker, true);
+        (new ReflectionProperty($worker, 'lastHeartbeatAt'))->setValue($worker, microtime(true));
+        (new ReflectionMethod($worker, 'captureRegistrationFence'))->invoke($worker,
+            ['server_capabilities' => ['activity_lease_renewal' => true]]);
+        $calls = 0;
+        $worker->registerActivity('slow', static function (ActivityContext $context) use (&$calls): int { return ++$calls; });
+        try {
+            $worker->tick(0);
+            $state = json_decode((string) file_get_contents($statePath), true, flags: JSON_THROW_ON_ERROR);
+            $codec = new AvroPayloadCodec();
+            $commands = array_map(static fn (array $body): array => isset($body['result'])
+                ? ['type' => 'complete_activity', 'activity_attempt_id' => $body['activity_attempt_id'],
+                    'result' => $codec->decodeEnvelope($body['result'])]
+                : ['type' => 'fail_activity', 'activity_attempt_id' => $body['activity_attempt_id'],
+                    'failure_type' => $body['failure']['type'], 'non_retryable' => $body['failure']['non_retryable']],
+                $state['outcomes'] ?? []);
+
+            return ['callbacks' => $calls, 'commands' => $commands];
+        } finally {
+            $worker->requestShutdown();
+        }
+    }
+
     /** Parent and helper must load the selected immutable SDK, not a cached vendor's SDK.
      * @return array{callbacks: int, commands: list<array<string, mixed>>}
      */
