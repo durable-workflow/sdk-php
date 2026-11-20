@@ -159,6 +159,19 @@ class ServerException extends DurableWorkflowException
             && $response['retry_after_seconds'] > 0;
     }
 
+    /** Runtime discovery (cluster info) failed before this request was sent, so it may be repeated. */
+    public function isPayloadDiscoveryUnavailable(): bool
+    {
+        $details = $this->details;
+
+        return $this instanceof ExternalPayloadException
+            && $this->status === 503
+            && $this->reason === 'payload_discovery_unavailable'
+            && $details !== null && !array_is_list($details)
+            && ($details['request_admitted'] ?? null) === false
+            && ($details['retryable'] ?? null) === true;
+    }
+
     /** Discovery failed before any activity-completion request was submitted. */
     public function isActivityCompletionPayloadDiscoveryUnavailable(string $taskId, string $attemptId, string $leaseOwner): bool
     {

@@ -8,6 +8,16 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- An outage of `GET /api/cluster/info` no longer stops a managed Worker.
+  Previously a plain 500 from it, read before a workflow-task completion for
+  the payload policy, ended `Worker::run()`. Cluster info is read-only, so a
+  refused, reset or timed-out connection and any 5xx or 429 (unless
+  `retryable: false`) are retried with the shared jittered schedule and
+  reported as `worker.outage_persisting` when they last. Startup discovery
+  waits like registration. The transport keeps the last discovered payload
+  policy through an outage and tries discovery again later. Without one, the
+  request that needed it is not sent and is retried. Authentication and
+  authorization refusals still stop the Worker.
 - A managed Worker no longer exits on a transient Server or network outage
   (#448). For example, native Server answers `503 storage_unavailable` while
   its database warms up. Polls retry untyped transients with the poll's

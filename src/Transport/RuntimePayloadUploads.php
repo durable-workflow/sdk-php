@@ -8,6 +8,7 @@ use DurableWorkflow\Exception\ExternalPayloadException;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Version;
 use DurableWorkflow\Failure\FailureReportLimiter;
+use DurableWorkflow\Worker\TransientFailure;
 
 /** Namespace-scoped discovery and request-local, content-addressed uploads.
  * @phpstan-type PayloadSlot array{path: list<int|string>, blob: string}
@@ -16,6 +17,9 @@ use DurableWorkflow\Failure\FailureReportLimiter;
  */
 final class RuntimePayloadUploads
 {
+    /** How long a policy kept through a discovery outage is used before discovery is tried again. */
+    private const STALE_POLICY_RETRY_SECONDS = 10;
+
     private const COMPLETION_SCHEMA = 'durable-workflow.v2.payload-completion-context.v1';
     private const PREPARED_COMPLETION_SCHEMA = 'durable-workflow.v2.payload-completion-context.v2';
     private const COMPLETION_HEADER = 'X-Durable-Workflow-Payload-Completion';
@@ -152,6 +156,15 @@ final class RuntimePayloadUploads
         try {
             return $this->policy($headers, $worker, $budget);
         } catch (TransportException $exception) {
+            $key = (int) $worker;
+            if (isset($this->policies[$key]) && TransientFailure::isReadOutage($exception)) {
+                // Discovery is read-only and the Server validates every request,
+                // so an outage of it keeps the last policy this transport read.
+                // The read is tried again later, not before every request.
+                $this->policies[$key]['expires'] = time() + self::STALE_POLICY_RETRY_SECONDS;
+
+                return $this->policies[$key]['policy'];
+            }
             $discovery = $exception->response;
             if ($worker
                 && preg_match('~\A/worker/activity-tasks/([^/]+)/complete\z~', $path, $matches) === 1
@@ -183,6 +196,15 @@ final class RuntimePayloadUploads
                     ],
                     $exception,
                 );
+            }
+            if ($worker && TransientFailure::isReadOutage($exception)) {
+                // Nothing has been sent: the Worker may repeat this request
+                // once discovery answers again.
+                $retryAfter = is_array($discovery) ? ($discovery['retry_after_seconds'] ?? null) : null;
+                throw new ExternalPayloadException('Runtime payload policy discovery is temporarily unavailable.', 503,
+                    'payload_discovery_unavailable', ['reason' => 'payload_discovery_unavailable', 'operation' => 'cluster_info',
+                        'request_admitted' => false, 'retryable' => true,
+                        'retry_after_seconds' => is_int($retryAfter) && $retryAfter > 0 ? $retryAfter : 1], $exception);
             }
 
             throw $exception;

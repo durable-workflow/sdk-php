@@ -1592,8 +1592,12 @@ final class Worker
                 // An untyped outage (#448), such as 503 storage_unavailable, is
                 // just as uncertain: the Server may have committed the request.
                 $untypedOutage = !$exception->isStorageAdmissionFailure() && !$backendUnavailable
+                    && !$activityDiscoveryUnavailable
                     && !$exception->isTransientConnectionFailure() && !$exception->isTransientUpstreamFailure()
                     && TransientFailure::is($exception, acknowledgement: true);
+                // Cluster info failed before this request was sent (see
+                // RuntimePayloadUploads); repeating it is safe.
+                $discoveryOutage = $untypedOutage && $exception->isPayloadDiscoveryUnavailable();
                 $claimedTaskTransportFailure = ($workflowTaskLease !== null
                         || ($operation === 'activity_complete' && $activityTaskLease !== null))
                     && ($exception->isTransientConnectionFailure() || $exception->isTransientUpstreamFailure()
@@ -1632,11 +1636,14 @@ final class Worker
                 }
                 $this->diagnostic('worker.retrying', [
                     'worker_id' => $this->workerId,
-                    'operation' => $operation,
+                    'operation' => $discoveryOutage ? 'cluster_info' : $operation,
                     'attempt' => $attempt,
                     'delay_seconds' => $delaySeconds,
                     'exception' => $exception,
                 ], 'warning');
+                if ($discoveryOutage) {
+                    $this->observeOutage('cluster_info', $exception);
+                }
                 $this->waitForTransientRetry($delaySeconds);
                 if ($this->shutdownRequested) {
                     if ($workflowCompletionDeferred) {
@@ -1650,8 +1657,9 @@ final class Worker
     }
 
     /**
-     * Repeat an idempotent read through an untyped outage, using the shared
-     * jittered schedule, until it succeeds, fails otherwise, or shutdown.
+     * Repeat a read-only request (cluster info) through an outage, using the
+     * shared jittered schedule and reporting a lasting outage, until it
+     * succeeds, fails otherwise, or shutdown.
      *
      * @template T
      * @param \Closure(): T $call
@@ -1663,13 +1671,15 @@ final class Worker
         while (true) {
             try {
                 return $call();
-            } catch (ServerException $exception) {
-                if (!TransientFailure::is($exception) || $this->shutdownRequested) {
+            } catch (ServerException|TransportException $exception) {
+                if (!TransientFailure::isReadOutage($exception) || $this->shutdownRequested) {
                     throw $exception;
                 }
-                $delay = TransientFailure::delay(++$attempt, $exception->details['retry_after_seconds'] ?? null);
+                $details = $exception instanceof ServerException ? $exception->details : $exception->response;
+                $delay = TransientFailure::delay(++$attempt, $details['retry_after_seconds'] ?? null);
                 $this->diagnostic('worker.retrying', ['worker_id' => $this->workerId, 'operation' => $operation,
                     'attempt' => $attempt, 'delay_seconds' => $delay, 'exception' => $exception], 'warning');
+                $this->observeOutage($operation, $exception);
                 $this->waitForTransientRetry($delay);
                 if ($this->shutdownRequested) {
                     throw $exception;
