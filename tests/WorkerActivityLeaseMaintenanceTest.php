@@ -408,38 +408,80 @@ final class WorkerActivityLeaseMaintenanceTest extends TestCase
 
     public function testFlakyRenewalsAreRetriedWithBackoffUntilOneSucceeds(): void
     {
-        $worker = $this->worker(['lease_seconds' => 6, 'renew_unavailable_first' => 3]);
+        $worker = $this->worker(['lease_seconds' => 8, 'renew_unavailable_first' => 3]);
         $worker->registerActivity('slow', static function (ActivityContext $context): string {
-            usleep(1_500_000);
+            usleep(3_500_000);
             return 'kept';
         });
         self::assertTrue($worker->tick(0));
         $state = $this->state();
-        self::assertGreaterThanOrEqual(4, $state['renew_attempts'], 'Three 503s, then a retry that renews.');
+        self::assertGreaterThanOrEqual(4, $state['renew_attempts'], 'Three 503s, then a jittered retry that renews.');
         self::assertGreaterThanOrEqual(1, $state['renewals'] ?? 0);
         self::assertCount(1, $state['outcomes']);
         self::assertArrayHasKey('result', $state['outcomes'][0]);
     }
 
-    public function testAClaimTheHelperCannotMaintainIsReleasedWithATypedReason(): void
+    public function testAStoppedCallbackThatOutlivedMaintenanceIsReleasedBeforeTheGrantEnds(): void
     {
-        // Renewal is refused outright and the first claim has no proven helper,
-        // so maintenance cannot start. The Server still holds the attempt.
-        $worker = $this->worker(['lease_seconds' => 9, 'renew_status' => 403]);
+        // Renewal never recovers. Maintenance gives the claim up once only the
+        // reserve is left (6.4 s of 8 s); the inline callback has returned, so
+        // execution has stopped, and the release lands before the lease ends.
+        $worker = $this->worker(['lease_seconds' => 8, 'renew_unavailable_first' => 1000]);
         $calls = 0;
         $worker->registerActivity('slow', static function (ActivityContext $context) use (&$calls): string {
             ++$calls;
-            return 'must not run';
+            usleep(7_000_000);
+            return 'too late to publish';
         });
         $worker->tick(0);
-        self::assertSame(0, $calls);
+        self::assertSame(1, $calls);
         $outcomes = $this->state()['outcomes'] ?? [];
-        self::assertCount(1, $outcomes, 'The claim is released through the Server, never dropped silently.');
-        self::assertSame('attempt', $outcomes[0]['activity_attempt_id']);
+        self::assertCount(1, $outcomes, 'Released through the Server, never dropped silently.');
         self::assertSame('worker_lost', $outcomes[0]['failure']['type']);
         self::assertSame(ActivityFailed::WORKER_LOST_CLASS, $outcomes[0]['failure']['class']);
         self::assertFalse($outcomes[0]['failure']['non_retryable']);
-        self::assertStringContainsString('activity_maintenance_', $outcomes[0]['failure']['message']);
+        self::assertStringContainsString('activity_maintenance_unavailable', $outcomes[0]['failure']['message']);
+    }
+
+    public function testACallbackThatCannotStopBeforeTheDeadlineIsNeverReleased(): void
+    {
+        // The callback returns after the grant ends: the Server's lease expiry
+        // settles the attempt, and no release can overlap another execution.
+        $worker = $this->worker(['lease_seconds' => 5, 'renew_unavailable_first' => 1000]);
+        $worker->registerActivity('slow', static function (ActivityContext $context): string {
+            usleep(5_600_000);
+            return 'expired';
+        });
+        $worker->tick(0);
+        $state = $this->state();
+        self::assertSame([], $state['outcomes'] ?? []);
+        self::assertSame([], $this->paths($state, '/api/worker/activity-tasks/task/fail'));
+    }
+
+    /** A Server refusal is the Server's decision: stop, and send nothing. */
+    #[DataProvider('serverRefusals')]
+    public function testAServerRefusalDuringRenewalIsLeftToTheServer(array $configuration, int $expectedCalls): void
+    {
+        $worker = $this->worker(['lease_seconds' => 3] + $configuration);
+        $calls = 0;
+        $worker->registerActivity('slow', static function (ActivityContext $context) use (&$calls): string {
+            ++$calls;
+            usleep(2_500_000);
+            return 'must not publish';
+        });
+        $worker->tick(0);
+        self::assertSame($expectedCalls, $calls);
+        $state = $this->state();
+        self::assertSame([], $state['outcomes'] ?? []);
+        self::assertSame([], $this->paths($state, '/api/worker/activity-tasks/task/fail'));
+        self::assertSame([], $this->paths($state, '/api/worker/activity-tasks/task/complete'));
+    }
+
+    public static function serverRefusals(): iterable
+    {
+        yield 'run cancelled before the callback starts' => [['renew_status' => 409, 'renew_refuse_reason' => 'run_cancelled'], 0];
+        // The first renewal succeeds; the activity alone is then cancelled while its run stays open.
+        yield 'activity cancelled while the callback runs' => [['renew_refuse_after' => 1, 'renew_refuse_reason' => 'activity_cancelled'], 1];
     }
 
     /** @return list<array<string, mixed>> */

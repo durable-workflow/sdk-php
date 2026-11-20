@@ -12,7 +12,7 @@
     "type": "fail_activity",
     "failure_type": "worker_lost",
     "non_retryable": false,
-    "activity_callback_count": 0
+    "activity_callback_count": 1
   },
   "command_sequence": [
     {

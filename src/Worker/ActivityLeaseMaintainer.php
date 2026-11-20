@@ -18,10 +18,15 @@ final class ActivityLeaseMaintainer
     private ?string $lostReason = null;
     private float $nextRenewal = 0;
     private float $nextPresence = 0;
-    /** Seconds before the next retry of an unavailable renewal; 0 after a confirmed one. */
-    private float $retryDelay = 0;
-    private const RETRY_FIRST_SECONDS = 0.1;
-    private const RETRY_MAX_SECONDS = 2.0;
+    /** Unavailable renewals since the last confirmed one. */
+    private int $retryAttempt = 0;
+    /** The grant this claim started with, which sizes the release reserve. */
+    private float $grantSeconds = 0;
+    /** Shared by every SDK: 0.25 s doubling to a 4 s cap, with full random jitter. */
+    private const RETRY_FIRST_SECONDS = 0.25;
+    private const RETRY_MAX_SECONDS = 4.0;
+    /** The reserve kept before the grant ends: min(10 s, a fifth of the grant). */
+    private const RESERVE_MAX_SECONDS = 10.0;
     /** One initial renewal that a conservative poll grant can outlive, inside the parent's start deadline. */
     private const INITIAL_RENEWAL_SECONDS = 3;
     private readonly ActivityLeaseAuthority $authority;
@@ -43,6 +48,7 @@ final class ActivityLeaseMaintainer
         }
         $this->authority = new ActivityLeaseAuthority($start['task'], $this->client->namespace,
             $start['owner'], $start['queue'], $start['server_time'] ?? null, (float) $start['captured_at']);
+        $this->grantSeconds = $this->authority->remaining();
         $due = $start['presence_due_in'] ?? 0;
         $this->nextPresence = (float) $start['captured_at']
             + (is_int($due) || is_float($due) ? max(0, min(10, $due)) : 0);
@@ -75,11 +81,12 @@ final class ActivityLeaseMaintainer
                 if (!$maintainer->loop()) {
                     return;
                 }
-            } catch (Throwable) {
+            } catch (Throwable $error) {
                 // Bootstrap exceptions can contain application secrets. Only a
                 // bounded protocol reason is ever written to the parent pipe.
-                self::write(['id' => $start['id'] ?? 0,
-                    'can_continue' => false, 'reason' => 'activity_maintenance_bootstrap_failed']);
+                // A Server refusal is the Server's decision, not a lost Worker.
+                self::write(['id' => $start['id'] ?? 0, 'can_continue' => false,
+                    'reason' => self::serverRefusal($error) ? 'activity_server_refused' : 'activity_maintenance_bootstrap_failed']);
                 return;
             }
         }
@@ -245,7 +252,7 @@ final class ActivityLeaseMaintainer
         }
         try {
             $this->authority->acknowledge($reply, $started);
-            $this->retryDelay = 0;
+            $this->retryAttempt = 0;
             $this->scheduleRenewal();
         } catch (Throwable $error) {
             $this->recordMaintenanceError($error);
@@ -280,8 +287,16 @@ final class ActivityLeaseMaintainer
             return;
         }
         $this->authority->acknowledge($reply, $started);
-        $this->retryDelay = 0;
+        $this->retryAttempt = 0;
         $this->scheduleRenewal();
+    }
+
+    /** The Server answered with a refusal (4xx other than 429): it owns the outcome. */
+    private static function serverRefusal(Throwable $error): bool
+    {
+        $status = $error instanceof ServerException || $error instanceof TransportException ? $error->status : null;
+
+        return is_int($status) && $status >= 400 && $status < 500 && $status !== 429;
     }
 
     /**
@@ -304,7 +319,14 @@ final class ActivityLeaseMaintainer
         return false;
     }
 
-    /** Exponential backoff, bounded by the remaining grant; unavailability adds no time. */
+    /**
+     * Retry an unavailable renewal: 0.25 s doubling to a 4 s cap, with full
+     * random jitter so an outage does not synchronise Workers' retries, and
+     * never past a third of the remaining grant. Unavailability adds no time.
+     * Once only the reserve is left, maintenance gives up the claim so the
+     * Worker can release it while the Server lease still holds; the Worker
+     * releases it only after its execution has stopped.
+     */
     private function retryLater(): void
     {
         try {
@@ -315,9 +337,15 @@ final class ActivityLeaseMaintainer
 
             return;
         }
-        $this->retryDelay = $this->retryDelay <= 0 ? self::RETRY_FIRST_SECONDS
-            : min(self::RETRY_MAX_SECONDS, $this->retryDelay * 2);
-        $this->nextRenewal = hrtime(true) / 1e9 + min($this->retryDelay, max(0.0, $remaining / 3));
+        if ($remaining <= min(self::RESERVE_MAX_SECONDS, $this->grantSeconds / 5)) {
+            $this->lostReason = 'activity_maintenance_unavailable';
+
+            return;
+        }
+        $ceiling = min(self::RETRY_MAX_SECONDS, self::RETRY_FIRST_SECONDS * 2 ** min($this->retryAttempt, 16));
+        ++$this->retryAttempt;
+        $delay = $ceiling * random_int(0, 1_000_000) / 1_000_000;
+        $this->nextRenewal = hrtime(true) / 1e9 + min($delay, max(0.0, $remaining / 3));
         $this->nextPresence = max($this->nextPresence, $this->nextRenewal);
     }
 
@@ -363,7 +391,12 @@ final class ActivityLeaseMaintainer
 
             return;
         }
-        $this->lostReason = $error instanceof WorkflowClaimRevoked ? $error->reason : 'activity_maintenance_refused';
+        $this->lostReason = match (true) {
+            $error instanceof WorkflowClaimRevoked => $error->reason,
+            // The Server refused (cancelled run or activity, lease gone): its decision.
+            self::serverRefusal($error) => 'activity_server_refused',
+            default => 'activity_maintenance_refused',
+        };
     }
 
     /** @return list<array<string, mixed>> */

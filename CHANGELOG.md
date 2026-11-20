@@ -11,16 +11,22 @@ project follows [Semantic Versioning](https://semver.org/).
 - An activity worker no longer drops a claimed task when the lease renewal at
   activity start is slow or fails transiently (#445). The worker keeps working
   under the poll's original lease, charged conservatively from the poll's own
-  start, and retries renewal in the background with exponential backoff
-  (0.1 s doubling to 2 s) inside that lease. Previously one renewal over the
+  start, and retries renewal in the background inside that lease, using the
+  schedule all SDKs share: 0.25 s doubling to a 4 s cap, with full random
+  jitter. Previously one renewal over the
   5 s start deadline dropped the claim silently; the Server held the attempt
   for its full lease and then failed it.
-- A claim that the Worker's lease maintenance cannot keep (the helper fails,
-  times out or cannot start) is released explicitly through the Server as a
+- A claim that the Worker's lease maintenance cannot keep (the helper fails or
+  times out, or renewal stays unavailable until only a reserve of
+  min(10 s, a fifth of the grant) is left) is released explicitly through the
+  Server, only after its execution has stopped and before the grant ends, as a
   retryable activity failure with type (reason code) `worker_lost`, the same in
   every SDK, and class `DurableWorkflow\Worker\ActivityWorkerLost`,
-  never dropped silently. When the Server itself refused, cancelled, expired
-  or timed out the attempt, it already owns the outcome and nothing is sent.
+  never dropped silently. If execution can't be confirmed stopped in time,
+  nothing is sent and the Server's lease expiry records `lease_expired`. When
+  the Server itself refused the renewal (any 4xx, such as a cancelled run or
+  activity), cancelled, expired or timed out the attempt, it already owns the
+  outcome and nothing is sent.
 - Lease renewals no longer read `/api/cluster/info` (about 44 KB on native
   Server) before every renewal; the Worker's registration already discovered
   `activity_lease_renewal`.

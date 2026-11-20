@@ -19,7 +19,8 @@ $state['requests'][] = ['path' => $path, 'body' => $body,
 $status = 200;
 $response = [];
 // Slow or flaky runtime renewals (sdk-php#445): the first N renew-lease
-// requests are delayed or answered 503; renew_status refuses every one.
+// requests are delayed or answered 503; renew_status refuses every one, and
+// renew_refuse_after refuses each one after the first N.
 $renewDelay = 0;
 $renewUnavailable = false;
 if (str_ends_with($path, '/renew-lease')) {
@@ -60,9 +61,11 @@ if (($_SERVER['HTTP_AUTHORIZATION'] ?? '') !== 'Bearer '.$expectedToken) {
         'server_time' => $stamp($now), 'poll_status' => 'leased'];
 } elseif (str_ends_with($path, '/poll')) {
     $response = ['task' => null, 'poll_status' => 'empty'];
-} elseif (str_ends_with($path, '/renew-lease') && isset($state['renew_status'])) {
-    $status = $state['renew_status'];
-    $response = ['reason' => 'fixture_refused_renewal'];
+} elseif (str_ends_with($path, '/renew-lease') && (isset($state['renew_status'])
+    || ($state['renew_attempts'] ?? 0) > ($state['renew_refuse_after'] ?? PHP_INT_MAX))) {
+    // A Server decision, such as a cancelled run or activity.
+    $status = $state['renew_status'] ?? 409;
+    $response = ['reason' => $state['renew_refuse_reason'] ?? 'fixture_refused_renewal'];
 } elseif ($renewUnavailable) {
     // An upstream outage: no protocol body.
     $status = 503;
