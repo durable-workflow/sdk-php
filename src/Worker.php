@@ -901,13 +901,15 @@ final class Worker
             if ($this->client->workerProtocolVersion !== '1.20' || !$this->client->supportsSupervisedQueryRequests()) {
                 throw new WorkflowClaimAborted('Query authority requires protocol 1.20 and bounded Worker transport.');
             }
-            $protocol = $this->client->withBoundedWorkerRequests()->workerClusterInfo()->raw['worker_protocol'] ?? null;
+            $protocol = $this->retryUntypedOutage('cluster_info',
+                fn (): array => $this->client->withBoundedWorkerRequests()->workerClusterInfo()->raw)['worker_protocol'] ?? null;
             if (!is_array($protocol) || ($protocol['server_capabilities']['query_task_authority'] ?? null) !== true) {
                 throw new WorkflowClaimAborted('The runtime does not advertise query task authority.');
             }
         }
         if ($this->enableCooperativeCancellation) {
-            $protocol = $this->client->workerClusterInfo()->raw['worker_protocol'] ?? null;
+            $protocol = $this->retryUntypedOutage('cluster_info',
+                fn (): array => $this->client->workerClusterInfo()->raw)['worker_protocol'] ?? null;
             if (!is_array($protocol) || !is_string($protocol['version'] ?? null)
                 || !Version::supportsCooperativeCancellation($protocol['version'])
                 || ($protocol['server_capabilities']['cooperative_cancellation'] ?? null) !== true) {
@@ -996,15 +998,18 @@ final class Worker
                     workflowDefinitionFingerprints: $this->workflowDefinitionFingerprints(),
                 );
             } catch (ServerException $exception) {
-                if (!$this->isTransientRegistrationFailure($exception)) {
+                // A typed registration refusal keeps its protocol backoff; an
+                // untyped outage (a Server warming up, #448) uses the shared
+                // jittered schedule.
+                $untypedOutage = !$this->isTransientRegistrationFailure($exception) && TransientFailure::is($exception);
+                if (!$untypedOutage && !$this->isTransientRegistrationFailure($exception)) {
                     throw $exception;
                 }
 
                 ++$attempt;
-                $delaySeconds = $this->transientRetryDelay(
-                    $attempt,
-                    $exception->details['retry_after_seconds'] ?? null,
-                );
+                $delaySeconds = $untypedOutage
+                    ? TransientFailure::delay($attempt, $exception->details['retry_after_seconds'] ?? null)
+                    : $this->transientRetryDelay($attempt, $exception->details['retry_after_seconds'] ?? null);
                 if ($this->transientPollRetryObserver !== null) {
                     ($this->transientPollRetryObserver)('registration', $attempt, $delaySeconds, $exception);
                 }
@@ -1528,8 +1533,18 @@ final class Worker
                         $activityTaskLease['activity_attempt_id'],
                         $activityTaskLease['lease_owner'],
                     );
-                if ($uncertainActivityCompletion && $activityTaskLease !== null
+                // Only this Worker can complete this attempt as its lease owner,
+                // so this exact refusal proves our completion was committed,
+                // even on the first answer: cURL can resend a POST whose reply
+                // was lost on a reused connection before the Worker sees it.
+                if ($operation === 'activity_complete' && $activityTaskLease !== null
                     && $this->isCommittedActivityCompletion($exception, $activityTaskLease)) {
+                    if (!$uncertainActivityCompletion) {
+                        $this->diagnostic('worker.completion_already_committed', ['worker_id' => $this->workerId,
+                            'task_id' => $activityTaskLease['task_id'],
+                            'activity_attempt_id' => $activityTaskLease['activity_attempt_id']], 'info');
+                    }
+
                     return null;
                 }
                 $backendUnavailable = $workflowBackendUnavailable || $activityBackendUnavailable;
@@ -1589,6 +1604,35 @@ final class Worker
                         throw new WorkflowClaimDeferred('Shutdown stopped the fenced workflow completion retry.');
                     }
                     // Leave the task unacknowledged; shutdown is not completion.
+                    throw $exception;
+                }
+            }
+        }
+    }
+
+    /**
+     * Repeat an idempotent read through an untyped outage, using the shared
+     * jittered schedule, until it succeeds, fails otherwise, or shutdown.
+     *
+     * @template T
+     * @param \Closure(): T $call
+     * @return T
+     */
+    private function retryUntypedOutage(string $operation, \Closure $call): mixed
+    {
+        $attempt = 0;
+        while (true) {
+            try {
+                return $call();
+            } catch (ServerException $exception) {
+                if (!TransientFailure::is($exception) || $this->shutdownRequested) {
+                    throw $exception;
+                }
+                $delay = TransientFailure::delay(++$attempt, $exception->details['retry_after_seconds'] ?? null);
+                $this->diagnostic('worker.retrying', ['worker_id' => $this->workerId, 'operation' => $operation,
+                    'attempt' => $attempt, 'delay_seconds' => $delay, 'exception' => $exception], 'warning');
+                $this->waitForTransientRetry($delay);
+                if ($this->shutdownRequested) {
                     throw $exception;
                 }
             }
@@ -4870,7 +4914,13 @@ final class Worker
                 'activity_available' => $this->carriedActivityPoll === null ? 1 : 0,
             ], $budget);
         } catch (ServerException $exception) {
-            if (!$exception->isTransientConnectionFailure()
+            $untypedOutage = !$exception->isTransientConnectionFailure()
+                && !$exception->isTransientUpstreamFailure()
+                && !$this->isTransientDatabaseFailure($exception, 'heartbeat_worker')
+                && !$exception->isStorageAdmissionFailure()
+                && TransientFailure::is($exception);
+            if (!$untypedOutage
+                && !$exception->isTransientConnectionFailure()
                 && !$exception->isTransientUpstreamFailure()
                 && !$this->isTransientDatabaseFailure($exception, 'heartbeat_worker')
                 && !$exception->isStorageAdmissionFailure()) {
@@ -4879,8 +4929,11 @@ final class Worker
 
             // Do not enter the heartbeat-aware wait recursively or delay an
             // already leased task. The next poll/wait services this deadline.
+            // An outage during a retry wait therefore never ends run() (#448).
             $attempt = ++$this->heartbeatRetryAttempt;
-            $delaySeconds = $this->transientRetryDelay($attempt, $exception->details['retry_after_seconds'] ?? null);
+            $delaySeconds = $untypedOutage
+                ? TransientFailure::delay($attempt, $exception->details['retry_after_seconds'] ?? null)
+                : $this->transientRetryDelay($attempt, $exception->details['retry_after_seconds'] ?? null);
             $this->heartbeatRetryAt = $this->now() + $delaySeconds;
             if ($this->transientPollRetryObserver !== null) {
                 ($this->transientPollRetryObserver)('heartbeat', $attempt, $delaySeconds, $exception);

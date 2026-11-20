@@ -149,10 +149,10 @@ final class WorkerTransientOutageTest extends TestCase
         self::assertGreaterThanOrEqual(2, $workflowPolls, 'The Worker kept polling after the outage.');
     }
 
-    public function testATransientFailureThatEscapesATickDoesNotStopTheWorker(): void
+    public function testAHeartbeatOutageBetweenTicksIsDeferredAndTheWorkerKeepsRunning(): void
     {
-        // A worker heartbeat meets the outage after a tick; the run loop
-        // absorbs it, waits with jitter and keeps polling.
+        // A worker heartbeat meets the outage after a tick. It is deferred on
+        // the shared schedule; it never ends run().
         $now = 0.0;
         $workflowPolls = 0;
         $heartbeats = 0;
@@ -189,10 +189,138 @@ final class WorkerTransientOutageTest extends TestCase
 
         $worker->run(0);
 
-        self::assertGreaterThanOrEqual(1, $heartbeats);
-        self::assertContains('worker.transient_failure', $events, 'The outage left the tick and was absorbed by the run loop.');
+        self::assertGreaterThanOrEqual(2, $heartbeats, 'The deferred heartbeat was sent again.');
+        self::assertContains('worker.retrying', $events);
         self::assertNotContains('worker.fatal_failure', $events);
         self::assertGreaterThanOrEqual(3, $workflowPolls, 'The Worker kept polling after the outage.');
+    }
+
+    /** Review HIGH 1: the original incident, a Server warming up while the Worker registers. */
+    public function testStorageUnavailableDuringRegistrationIsRetried(): void
+    {
+        $registrations = 0;
+        $handler = static function (string $method, string $uri) use (&$registrations): ?array {
+            if (str_ends_with($uri, '/api/worker/register')) {
+                if (++$registrations <= 3) {
+                    throw self::storageUnavailable();
+                }
+
+                return ['registered' => true];
+            }
+            if (str_ends_with($uri, '/query-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+            if (str_ends_with($uri, '/poll')) {
+                return ['task' => null, 'poll_status' => 'empty'];
+            }
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        };
+        [$worker, , $state] = $this->worker($handler);
+
+        $worker->run(0);
+
+        self::assertSame(4, $registrations, 'Three 503 storage_unavailable answers, then registration succeeds.');
+        self::assertLessThanOrEqual(1.75, $state->slept, 'Jittered waits of at most 0.25, 0.5 and 1 s.');
+    }
+
+    /** Review HIGH 2: a failing heartbeat during a poll retry wait must not end run(). */
+    public function testAnOutageThatAlsoFailsTheHeartbeatDuringARetryWaitDoesNotEndTheRun(): void
+    {
+        $now = 0.0;
+        $workflowPolls = 0;
+        $heartbeats = 0;
+        $handler = static function (string $method, string $uri) use (&$workflowPolls, &$heartbeats): ?array {
+            if (str_ends_with($uri, '/api/worker/register')) {
+                return ['registered' => true, 'heartbeat_interval_seconds' => 1];
+            }
+            if (str_ends_with($uri, '/api/worker/heartbeat')) {
+                if (++$heartbeats <= 3) {
+                    throw self::storageUnavailable();
+                }
+
+                return ['worker_id' => 'worker-1', 'acknowledged' => true, 'heartbeat_interval_seconds' => 1];
+            }
+            if (str_ends_with($uri, '/workflow-tasks/poll')) {
+                // A 12-attempt outage: long enough for heartbeats to fall due inside the retry waits.
+                if (++$workflowPolls <= 12) {
+                    throw self::storageUnavailable();
+                }
+
+                return ['task' => null, 'poll_status' => 'empty'];
+            }
+            if (str_ends_with($uri, '/query-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+            if (str_ends_with($uri, '/poll')) {
+                return ['task' => null, 'poll_status' => 'empty'];
+            }
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        };
+        $events = [];
+        $worker = new Worker(new Client('https://server.example', transport: new FakeTransport(handler: $handler)), 'orders',
+            workerId: 'worker-1',
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $microseconds) use (&$now): void { $now += $microseconds / 1_000_000; },
+            diagnosticListener: static function (string $event, array $context) use (&$events): void { $events[] = $event; });
+
+        $worker->run(0);
+
+        self::assertSame(13, $workflowPolls);
+        self::assertGreaterThanOrEqual(1, $heartbeats, 'A heartbeat fell due inside a retry wait and met the outage.');
+        self::assertNotContains('worker.fatal_failure', $events);
+    }
+
+    /**
+     * Review HIGH 3: cURL resent a completion whose reply was lost on a reused
+     * connection, and the first answer the Worker sees is the Server's
+     * duplicate: 409 stale_attempt, recorded false, every status completed.
+     * That is our own committed completion, not an error.
+     */
+    public function testACommittedCompletionReportedOnTheFirstAnswerIsOurs(): void
+    {
+        $completions = 0;
+        $failures = 0;
+        $duplicate = ['task_id' => 'activity-1', 'activity_attempt_id' => 'attempt-1', 'outcome' => 'completed',
+            'recorded' => false, 'reason' => 'stale_attempt', 'next_task_id' => null, 'lease_owner' => 'worker-1',
+            'activity_status' => 'completed', 'attempt_status' => 'completed', 'task_status' => 'completed'];
+        $handler = static function (string $method, string $uri) use (&$completions, &$failures, $duplicate): ?array {
+            if (str_ends_with($uri, '/api/worker/register')) {
+                return ['registered' => true];
+            }
+            if (str_ends_with($uri, '/activity-tasks/poll')) {
+                return $completions === 0 ? ['poll_status' => 'leased', 'task' => ['task_id' => 'activity-1',
+                    'activity_attempt_id' => 'attempt-1', 'lease_owner' => 'worker-1', 'activity_type' => 'orders.charge',
+                    'payload_codec' => 'avro']] : ['task' => null, 'poll_status' => 'empty'];
+            }
+            if (str_ends_with($uri, '/activity-1/complete')) {
+                ++$completions;
+                throw TransportException::fromResponse(409, $duplicate, json_encode($duplicate, JSON_THROW_ON_ERROR));
+            }
+            if (str_ends_with($uri, '/activity-1/fail')) {
+                ++$failures;
+
+                return ['recorded' => true];
+            }
+            if (str_ends_with($uri, '/query-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+            if (str_ends_with($uri, '/poll')) {
+                return ['task' => null, 'poll_status' => 'empty'];
+            }
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        };
+        $events = [];
+        $worker = new Worker(new Client('https://server.example', transport: new FakeTransport(handler: $handler)), 'orders',
+            workerId: 'worker-1', sleeper: static function (int $microseconds): void {},
+            diagnosticListener: static function (string $event, array $context) use (&$events): void { $events[] = $event; });
+        $worker->registerActivity('orders.charge', static fn (ActivityContext $context): string => 'charged');
+
+        $worker->run(0);
+
+        self::assertSame(1, $completions, 'Not resent: the answer already proves the completion committed.');
+        self::assertSame(0, $failures);
+        self::assertContains('worker.completion_already_committed', $events);
+        self::assertNotContains('worker.fatal_failure', $events);
     }
 
     /**
