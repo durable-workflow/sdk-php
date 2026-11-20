@@ -51,6 +51,30 @@ final class ActivityLeaseRenewalClientTest extends TestCase
         }
     }
 
+    public function testDiscoveryIsReadOnceOrNotAtAllWhenRegistrationConfirmedIt(): void
+    {
+        $paths = [];
+        $ack = ['lease_renewed' => true, 'heartbeat_recorded' => false];
+        $http = new GuzzleClient(['handler' => static function (RequestInterface $request) use (&$paths, $ack) {
+            $paths[] = $request->getUri()->getPath();
+
+            return Create::promiseFor(new Response(200, [], json_encode(
+                str_ends_with($request->getUri()->getPath(), '/cluster/info') ? self::discovery(true) : $ack, JSON_THROW_ON_ERROR,
+            )));
+        }]);
+        $client = new Client('https://server.example', transport: new Psr18Transport($http), workerToken: 'worker');
+        $client->renewActivityTaskLease('task', 'attempt', 'owner');
+        $client->renewActivityTaskLease('task', 'attempt', 'owner');
+        self::assertSame(['/api/cluster/info', '/api/worker/activity-tasks/task/renew-lease',
+            '/api/worker/activity-tasks/task/renew-lease'], $paths);
+
+        $paths = [];
+        $confirmed = new Client('https://server.example', transport: new Psr18Transport($http), workerToken: 'worker');
+        $confirmed->confirmActivityLeaseRenewalDiscovered();
+        $confirmed->renewActivityTaskLease('task', 'attempt', 'owner');
+        self::assertSame(['/api/worker/activity-tasks/task/renew-lease'], $paths);
+    }
+
     #[DataProvider('incapableRuntimeProvider')]
     public function testOnlyAffirmativeCapabilityAllowsRenewal(array $discovery): void
     {

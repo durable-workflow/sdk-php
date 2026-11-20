@@ -612,6 +612,19 @@ final class ReplayRegressionConsumer
             return;
         }
 
+        if (in_array($workflowType, ['golden.activity-slow-renewal', 'golden.activity-renewal-refused'], true)) {
+            require_once __DIR__.'/../../tests/Support/ActivityGrantScenario.php';
+            $refused = $workflowType === 'golden.activity-renewal-refused';
+            $observed = \DurableWorkflow\Tests\Support\ActivityGrantScenario::runWithRouter(
+                static fn (string $uri, string $state): array => \DurableWorkflow\Tests\Support\ActivityGrantScenario::runRenewalFault($uri, $state, $refused),
+                __DIR__.'/../../tests/Support/activity-lease-http.php');
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.self::COMMAND_SEQUENCE_CONTEXT);
+            self::assertMatches($fixture['expected'], ($observed['commands'][0] ?? [])
+                + ['activity_callback_count' => $observed['callbacks']], $identity.self::EXPECTED_CONTEXT);
+
+            return;
+        }
+
         if ($workflowType === 'golden.activity-poll-transit') {
             require_once __DIR__.'/../../tests/Support/ActivityGrantScenario.php';
             $observed = \DurableWorkflow\Tests\Support\ActivityGrantScenario::runIsolated();

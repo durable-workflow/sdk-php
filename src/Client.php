@@ -104,6 +104,8 @@ final class Client implements WorkflowClientInterface
     private ?ExecutionTelemetry $executionTelemetry = null;
     private bool $observabilityContextSupported = false;
     private bool $claimedTaskReadyAgeSupported = false;
+    /** Explicit activity_lease_renewal discovery, kept for this Client's lifetime. */
+    private bool $activityLeaseRenewalDiscovered = false;
     /** Cached once a Server has advertised update_outcome_reads (server#1131). */
     private ?bool $updateOutcomeReadsSupported = null;
     /** Cached once a Server has advertised signal_with_start (server#1133). */
@@ -339,6 +341,15 @@ final class Client implements WorkflowClientInterface
         $copy->boundedWorkerRequests = true;
 
         return $copy;
+    }
+
+    /**
+     * @internal The original Worker's registration already discovered
+     * activity_lease_renewal; renewals then skip the per-renewal discovery read.
+     */
+    public function confirmActivityLeaseRenewalDiscovered(): void
+    {
+        $this->activityLeaseRenewalDiscovered = true;
     }
 
     /** @internal Whether lifecycle requests can enforce their complete I/O budget. */
@@ -2925,6 +2936,8 @@ final class Client implements WorkflowClientInterface
         ?array $details = null,
         ?string $stackTrace = null,
         ?array $diagnostics = null,
+        ?RequestBudget $budget = null,
+        ?string $failureClass = null,
     ): array {
         return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/fail', [
             'activity_attempt_id' => $activityAttemptId,
@@ -2932,12 +2945,13 @@ final class Client implements WorkflowClientInterface
             'failure' => $this->withoutNulls([
                 'message' => $message,
                 'type' => $failureType,
+                'class' => $failureClass,
                 'non_retryable' => $nonRetryable,
                 'details' => $details !== null ? $this->codec->envelope($details) : null,
                 'stack_trace' => $stackTrace,
                 'diagnostics' => $diagnostics,
             ]),
-        ]);
+        ], $budget);
     }
 
     /**
@@ -2960,6 +2974,8 @@ final class Client implements WorkflowClientInterface
     /**
      * Renew only the original runtime lease, without recording application progress.
      * Discovery and transport share at most five seconds and any earlier caller ceiling.
+     * Explicit discovery of activity_lease_renewal is read once per Client, or
+     * not at all when the original Worker's registration already confirmed it.
      * The caller must validate the returned original identity and actual grant before use.
      *
      * @return array<string, mixed>
@@ -2979,11 +2995,14 @@ final class Client implements WorkflowClientInterface
         $budget->restrictRequestDuration(5);
         $budget->remainingSeconds();
         $client = $this->withBoundedWorkerRequests();
-        $info = $client->worker('GET', self::CLUSTER_INFO_PATH, budget: $budget);
-        $protocol = $info['worker_protocol'] ?? null;
-        $capabilities = is_array($protocol) ? ($protocol['server_capabilities'] ?? null) : null;
-        if (!is_array($capabilities) || ($capabilities['activity_lease_renewal'] ?? null) !== true) {
-            throw new \LogicException('Runtime must explicitly discover activity_lease_renewal before activity lease maintenance.');
+        if (!$this->activityLeaseRenewalDiscovered) {
+            $info = $client->worker('GET', self::CLUSTER_INFO_PATH, budget: $budget);
+            $protocol = $info['worker_protocol'] ?? null;
+            $capabilities = is_array($protocol) ? ($protocol['server_capabilities'] ?? null) : null;
+            if (!is_array($capabilities) || ($capabilities['activity_lease_renewal'] ?? null) !== true) {
+                throw new \LogicException('Runtime must explicitly discover activity_lease_renewal before activity lease maintenance.');
+            }
+            $this->activityLeaseRenewalDiscovered = true;
         }
 
         return $client->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/renew-lease', [

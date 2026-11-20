@@ -52,7 +52,7 @@ final class ActivityLeaseProcess
         if ($this->parentPid !== getmypid() || $this->active) {
             throw new ActivityLeaseMaintenanceException('Only the original idle Worker can start activity maintenance.');
         }
-        [$authority, $captured, $fresh] = ActivityLeaseAuthority::capturePollGrant($task, $client->namespace, $owner, $queue,
+        [$authority, $captured, $fresh, $conservative] = ActivityLeaseAuthority::capturePollGrant($task, $client->namespace, $owner, $queue,
             $serverTime, $captured, $presence['poll_started_at'] ?? null);
         $this->identity = $authority->identity();
         $this->until = hrtime(true) / 1e9 + $authority->remaining();
@@ -94,6 +94,9 @@ final class ActivityLeaseProcess
                     'attempt_number', 'lease_owner', 'task_queue', 'namespace', 'lease_expires_at',
                     'deadlines', 'retry_policy', 'worker_session'])),
                 'server_time' => $serverTime, 'captured_at' => $captured, 'fresh_poll_grant' => $fresh,
+                'conservative_poll_grant' => $conservative,
+                // Only a Worker whose registration advertised activity_lease_renewal starts this helper.
+                'lease_renewal_discovered' => true,
                 'owner' => $owner, 'queue' => $queue,
                 'parent_pid' => getmypid()] + $presence);
         } catch (Throwable $error) {
@@ -286,11 +289,19 @@ final class ActivityLeaseProcess
     {
         while (!str_contains($this->buffer, "\n")) {
             $part = stream_get_contents($this->pipes[1], 65537 - strlen($this->buffer));
-            if ($part === false || feof($this->pipes[1]) || strlen($this->buffer) + strlen($part) > 65536
-                || hrtime(true) / 1e9 >= $deadline) {
+            if ($part === false || strlen($this->buffer) + strlen($part) > 65536) {
                 $this->refuse('activity_maintenance_unavailable');
             }
+            // Keep what was read before judging end of file: a helper that
+            // writes its final reply and exits can report EOF on the same read
+            // (PHP 8.1), and that reply must not be lost.
             $this->buffer .= $part;
+            if (str_contains($this->buffer, "\n")) {
+                break;
+            }
+            if (feof($this->pipes[1]) || hrtime(true) / 1e9 >= $deadline) {
+                $this->refuse('activity_maintenance_unavailable');
+            }
             usleep(1000);
         }
         [$raw, $this->buffer] = explode("\n", $this->buffer, 2);

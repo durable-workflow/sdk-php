@@ -18,6 +18,16 @@ $state['requests'][] = ['path' => $path, 'body' => $body,
     'bootstrap' => $_SERVER['HTTP_X_MAINTENANCE_BOOTSTRAP'] ?? null];
 $status = 200;
 $response = [];
+// Slow or flaky runtime renewals (sdk-php#445): the first N renew-lease
+// requests are delayed or answered 503; renew_status refuses every one, and
+// renew_refuse_after refuses each one after the first N.
+$renewDelay = 0;
+$renewUnavailable = false;
+if (str_ends_with($path, '/renew-lease')) {
+    $attempt = $state['renew_attempts'] = ($state['renew_attempts'] ?? 0) + 1;
+    $renewDelay = $attempt <= ($state['renew_delay_first'] ?? 0) ? ($state['renew_delay_micros'] ?? 0) : 0;
+    $renewUnavailable = $attempt <= ($state['renew_unavailable_first'] ?? 0);
+}
 $expectedToken = isset($state['authentication_file']) ? trim(file_get_contents($state['authentication_file'])) : 'fixture-worker';
 if (($_SERVER['HTTP_AUTHORIZATION'] ?? '') !== 'Bearer '.$expectedToken) {
     $status = 401;
@@ -51,6 +61,15 @@ if (($_SERVER['HTTP_AUTHORIZATION'] ?? '') !== 'Bearer '.$expectedToken) {
         'server_time' => $stamp($now), 'poll_status' => 'leased'];
 } elseif (str_ends_with($path, '/poll')) {
     $response = ['task' => null, 'poll_status' => 'empty'];
+} elseif (str_ends_with($path, '/renew-lease') && (isset($state['renew_status'])
+    || ($state['renew_attempts'] ?? 0) > ($state['renew_refuse_after'] ?? PHP_INT_MAX))) {
+    // A Server decision, such as a cancelled run or activity.
+    $status = $state['renew_status'] ?? 409;
+    $response = ['reason' => $state['renew_refuse_reason'] ?? 'fixture_refused_renewal'];
+} elseif ($renewUnavailable) {
+    // An upstream outage: no protocol body.
+    $status = 503;
+    $response = null;
 } elseif (str_ends_with($path, '/renew-lease') || str_ends_with($path, '/heartbeat')) {
     $heartbeat = str_ends_with($path, '/heartbeat');
     $live = $now < $state['expiry'] && !($state['closed'] ?? false)
@@ -112,10 +131,13 @@ ftruncate($handle, 0);
 fwrite($handle, json_encode($state, JSON_THROW_ON_ERROR));
 flock($handle, LOCK_UN);
 fclose($handle);
+if ($renewDelay > 0) {
+    usleep($renewDelay);
+}
 http_response_code($status);
 header('Content-Type: application/json');
 if (($response['poll_status'] ?? null) === 'leased'
     && ($state['delivery_count'] ?? 0) === ($state['delay_poll_delivery'] ?? null)) {
     usleep($state['poll_reply_delay_micros'] ?? 0);
 }
-echo json_encode($response, JSON_THROW_ON_ERROR);
+echo $response === null ? '' : json_encode($response, JSON_THROW_ON_ERROR);

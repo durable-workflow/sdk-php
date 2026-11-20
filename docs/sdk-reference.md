@@ -912,6 +912,27 @@ deadline. A heartbeat reply without `heartbeat_deadline_at` advances it by the
 original `heartbeat_timeout` only.
 An activity with a heartbeat timeout must still call `$context->heartbeat()`.
 
+**Slow or failed renewal.** The claim is first held under the poll's own
+grant, measured conservatively from when the poll started. If a renewal does
+not reach a definite answer (timeout, connection failure, 5xx or 429), the
+Worker keeps working under that grant and retries. Every SDK uses the same
+retry schedule: 0.25 s, doubling to a 4 s cap, with full random jitter (each
+delay is uniform between zero and the cap), and never more than a third of the
+remaining grant. Once only a reserve of min(10 s, a fifth of the grant) is left,
+maintenance gives the claim up. A refusal from the Server (a 4xx, such as a
+cancelled run or activity) is the Server's decision: the Worker stops
+publishing for that attempt and sends nothing.
+
+**Releasing a claim.** A claim that maintenance gave up is released through
+`POST /fail` as a retryable failure with type `worker_lost`, the reason code
+every SDK uses, and class `DurableWorkflow\Worker\ActivityWorkerLost`. It is
+released only after the activity's execution has confirmed stopped (the inline
+callback returned, or never started), and only before the grant ends. If
+execution cannot be confirmed stopped in time, nothing is sent and the Server's
+lease expiry records `lease_expired`, so two executions never overlap.
+`ActivityFailed::leaseLossReason()` returns `worker_lost`, `lease_expired` or
+`worker_deregistered`.
+
 The helper exits when its owning process dies or its private input closes.
 Server recovery then uses the last acknowledged lease and recorded retry
 policy. Ordinary inline PHP callbacks cannot be forcibly stopped safely by
