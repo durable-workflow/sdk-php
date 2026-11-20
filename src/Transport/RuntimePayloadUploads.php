@@ -147,6 +147,12 @@ final class RuntimePayloadUploads
         return $results;
     }
 
+    /** @internal Forget discovered policies; the next request reads cluster info again. */
+    public function forgetPolicies(): void
+    {
+        $this->policies = [];
+    }
+
     /** @param array<string, mixed> $body
      * @param array<string, string> $headers
      * @return UploadPolicy

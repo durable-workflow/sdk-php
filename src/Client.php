@@ -3472,24 +3472,37 @@ final class Client implements WorkflowClientInterface
             $poll = str_ends_with($path, '/poll') && is_int($body['timeout_seconds'] ?? null);
             $pollSeconds = $poll ? max(0, min(60, $body['timeout_seconds'])) : 0;
             $budget ??= $worker && $this->boundedWorkerRequests ? new RequestBudget($pollSeconds + 5) : null;
-            if ($body !== null) {
-                $body = $this->failureReports->request($path, $body, false);
-                $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers, $budget,
-                    $this->failureReports);
-                $body = $this->failureReports->request($path, $body);
-            }
-            $activityLease = $worker ? $this->activityLeaseBinding->current() : null;
-            if ($activityLease !== null && $activityLease->governs($path)) {
-                // Uploading an external result is not publication authority.
-                // Check again before its final Worker POST and bound the send
-                // by the latest acknowledged grant, not an old cached lease.
-                $activityLease->checkRequest($body);
-                $budget?->restrictAuthorityDeadline($activityLease->publicationDeadline());
-            }
+            $sourceBody = $body;
+            $body = $this->encodeRequestBody($sourceBody, $method, $path, $worker, $headers, $budget);
             try {
-                $response = $this->sendTransportRequest($method, $path, $worker, $headers, $body, $budget);
-            } finally {
-                $observation?->captureStatus($this->transport);
+                try {
+                    $response = $this->sendTransportRequest($method, $path, $worker, $headers, $body, $budget);
+                } finally {
+                    $observation?->captureStatus($this->transport);
+                }
+            } catch (TransportException $refusal) {
+                if (!$worker || $method !== 'POST' || $sourceBody === null || !self::isCompletion($path)
+                    || !self::isPayloadSizeRefusal($refusal)) {
+                    throw $refusal;
+                }
+                // The Server refused the body's size before reading it, so
+                // nothing was recorded. The payload policy this transport held
+                // may be older than the Server's limit: read it again and
+                // encode the same outcome under it (externalising what the new
+                // limit requires). Send once more only if that changes the
+                // body; otherwise the refusal stands. A discovery outage here
+                // fails as not sent, and the Worker repeats the request.
+                $this->payloadUploads->forgetPolicies();
+                $reencoded = $this->encodeRequestBody($sourceBody, $method, $path, $worker, $headers, $budget);
+                if ($reencoded === $body) {
+                    throw $refusal;
+                }
+                $body = $reencoded;
+                try {
+                    $response = $this->sendTransportRequest($method, $path, $worker, $headers, $body, $budget);
+                } finally {
+                    $observation?->captureStatus($this->transport);
+                }
             }
 
             $budget?->remainingSeconds();
@@ -3530,6 +3543,48 @@ final class Client implements WorkflowClientInterface
 
             throw new ServerException($message, $status, $reason, $details, $exception);
         }
+    }
+
+    /**
+     * Apply failure-report limits and the payload policy to a request body,
+     * then check an activity outcome against its current lease.
+     *
+     * @param array<string, mixed>|null $body
+     * @param array<string, string> $headers
+     * @return array<string, mixed>|null
+     */
+    private function encodeRequestBody(?array $body, string $method, string $path, bool $worker, array $headers, ?RequestBudget $budget): ?array
+    {
+        if ($body !== null) {
+            $body = $this->failureReports->request($path, $body, false);
+            $body = $this->payloadUploads->request($body, $method, $path, $worker, $headers, $budget,
+                $this->failureReports);
+            $body = $this->failureReports->request($path, $body);
+        }
+        $activityLease = $worker ? $this->activityLeaseBinding->current() : null;
+        if ($activityLease !== null && $activityLease->governs($path)) {
+            // Uploading an external result is not publication authority.
+            // Check again before its final Worker POST and bound the send
+            // by the latest acknowledged grant, not an old cached lease.
+            $activityLease->checkRequest($body);
+            $budget?->restrictAuthorityDeadline($activityLease->publicationDeadline());
+        }
+
+        return $body;
+    }
+
+    /** Activity and workflow-task completions, whose outcome is already computed. */
+    private static function isCompletion(string $path): bool
+    {
+        return preg_match('~\A/worker/(?:workflow-tasks/[^/]+/complete|activity-tasks/[^/]+/(?:continuation/)?complete)\z~', $path) === 1;
+    }
+
+    /** The Server's structural size refusal (413 payload_too_large), answered before the body is read. */
+    private static function isPayloadSizeRefusal(TransportException $refusal): bool
+    {
+        $details = $refusal->response;
+
+        return $refusal->status === 413 && is_array($details) && ($details['reason'] ?? null) === 'payload_too_large';
     }
 
     /**

@@ -18,6 +18,14 @@ project follows [Semantic Versioning](https://semver.org/).
   policy through an outage and tries discovery again later. Without one, the
   request that needed it is not sent and is retried. Authentication and
   authorization refusals still stop the Worker.
+- A completion refused for its size (`413 payload_too_large`) no longer stops
+  the Worker. The Server's inline limit can be lowered while the Worker holds
+  an older payload policy. The Worker drops that policy, reads it again,
+  encodes the same outcome under it (externalising what the new limit
+  requires) and sends it once more, without recomputing the result. A
+  discovery outage then is retried under the outage rules. An activity result
+  that is still too large is reported as a non-retryable
+  `DurableWorkflow\Exception\ActivityResultTooLarge` failure.
 - A managed Worker no longer exits on a transient Server or network outage
   (#448). For example, native Server answers `503 storage_unavailable` while
   its database warms up. Polls retry untyped transients with the poll's

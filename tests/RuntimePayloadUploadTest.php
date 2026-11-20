@@ -248,7 +248,8 @@ final class RuntimePayloadUploadTest extends TestCase
             self::assertSame(strlen((string) $http->requests[1]->getBody()), $error->sizeBytes);
             self::assertGreaterThan($limit, $error->sizeBytes);
         }
-        self::assertCount(2, $http->requests, 'Discover once, submit once, with no upload or retry.');
+        // A refusal re-reads the policy once; an unchanged body is not sent again.
+        self::assertCount($overLimit ? 3 : 2, $http->requests, 'Discover once, submit once, with no upload or retry.');
         self::assertSame($commands, $this->body($http->requests[1])['commands']);
     }
 
@@ -299,11 +300,13 @@ final class RuntimePayloadUploadTest extends TestCase
         } catch (WorkflowTaskCompletionTooLarge $error) {
             self::assertTrue($overLimit);
             self::assertSame($limit, $error->limitBytes);
-            self::assertCount(2, $http->requests);
+            self::assertCount(3, $http->requests, 'The policy is read again; the unchanged body is not sent again.');
+            self::assertStringEndsWith('/cluster/info', $http->requests[2]->getUri()->getPath());
             self::assertSame(strlen((string) $http->requests[1]->getBody()), $error->sizeBytes);
             self::assertGreaterThan($limit, $error->sizeBytes);
         }
-        self::assertCount(2, $http->requests, 'Discover once, submit once; no upload or retry.');
+        // A refusal re-reads the policy once; an unchanged body is not sent again.
+        self::assertCount($overLimit ? 3 : 2, $http->requests, 'Discover once, submit once; no upload or retry.');
         $sent = $this->body($http->requests[1]);
         self::assertSame($continuation, $sent['continuation']);
         self::assertSame(['codec' => 'avro', 'blob' => $blob], $sent['result']);
@@ -380,7 +383,7 @@ final class RuntimePayloadUploadTest extends TestCase
                 self::assertTrue($continuation);
                 self::assertSame(64, $error->limitBytes);
             }
-            self::assertCount($continuation ? 2 : 1, $http->requests);
+            self::assertCount($continuation ? 3 : 1, $http->requests);
         }
     }
 
@@ -468,7 +471,7 @@ final class RuntimePayloadUploadTest extends TestCase
             } catch (WorkflowTaskCompletionTooLarge $error) {
                 self::assertSame(500, $error->limitBytes);
             }
-            self::assertCount(2, $http->requests);
+            self::assertCount(3, $http->requests, 'The policy is read again; the unchanged body is not sent again.');
             $sent = $this->body($http->requests[1]);
             self::assertSame($continuation, $sent['continuation']);
             self::assertSame(['codec' => 'avro', 'blob' => $blob], $sent['result']);
