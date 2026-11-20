@@ -63,6 +63,26 @@ project follows [Semantic Versioning](https://semver.org/).
   activity retry policy is unchanged, because retrying a non-idempotent
   activity by default could repeat its side effects.
 
+### Changed
+
+- The default transport asks for gzip on every request when it owns a Guzzle
+  client with cURL and zlib, and decodes a gzip body a custom client left
+  encoded. Servers that compress (PHP Server, and native Server with its
+  response compression) then send several times fewer bytes.
+- Worker requests send `X-Durable-Workflow-Server-Capabilities-Digest`. A
+  Server that supports it replaces repeated `server_capabilities` objects
+  (about 17 KB on native, sent on every worker answer and again inside
+  carried polls) with their digest, and the transport restores the held object
+  before any caller sees the answer. Older Servers ignore the header.
+- `result()` of a completed run reads the output from the terminal status
+  read instead of downloading the run's whole history again. Failed,
+  cancelled, terminated and timed-out runs, and Servers that omit
+  `output_envelope`, still read the history.
+
+In a lab DW Standard Workflow v1 run (native Server with compression and the
+digest, 1 workflow/second), response bytes per workflow went from about
+385 KB to about 18 KB.
+
 ## [3.22.0] - 2026-11-19
 
 Signal-with-start and durable signal-external need native Server 3.15.0 or

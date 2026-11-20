@@ -3634,6 +3634,12 @@ final class Client implements WorkflowClientInterface
         string $status,
         WorkflowExecution $execution,
     ): mixed {
+        if ($status === 'completed' && is_array($execution->raw['output_envelope'] ?? null)
+            && ($execution->raw['run_id'] ?? null) === $runId) {
+            // The terminal read already names the run's output; reading the
+            // whole history again only repeats it.
+            return $this->completedRunOutput($workflowId, $runId, $execution);
+        }
         $history = $this->request(
             'GET', '/workflows/'.$this->segment($workflowId).'/runs/'.$this->segment($runId).'/history', false,
             payloadPaths: self::terminalHistoryPayloadPaths(...),
@@ -3673,16 +3679,21 @@ final class Client implements WorkflowClientInterface
         }
 
         return match ($status) {
-            'completed' => $this->decodedResponsePayload(
-                (new RuntimePayloads($this->transport, $this->baseUri, $this->requestHeaders(false), $this->maxExternalPayloadBytes))
-                    ->response($execution->raw, '/workflows/'.$this->segment($workflowId).'/runs/'.$this->segment($runId), false, [['output_envelope']]),
-                'output',
-            ),
+            'completed' => $this->completedRunOutput($workflowId, $runId, $execution),
             'cancelled', 'canceled' => throw new WorkflowCancelled('Workflow was cancelled.'),
             'terminated' => throw new WorkflowTerminated('Workflow was terminated.'),
             'timed_out', 'timeout' => throw new WorkflowTimedOut('Workflow execution timed out.'),
             default => throw new WorkflowFailed('Workflow failed.'),
         };
+    }
+
+    private function completedRunOutput(string $workflowId, string $runId, WorkflowExecution $execution): mixed
+    {
+        return $this->decodedResponsePayload(
+            (new RuntimePayloads($this->transport, $this->baseUri, $this->requestHeaders(false), $this->maxExternalPayloadBytes))
+                ->response($execution->raw, '/workflows/'.$this->segment($workflowId).'/runs/'.$this->segment($runId), false, [['output_envelope']]),
+            'output',
+        );
     }
 
     /** @param array<string, mixed> $response

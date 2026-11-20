@@ -42,6 +42,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     private ?string $completionUri = null;
     private bool $completionArmed = false;
     private ?CompletionRequestHandler $completionHandler = null;
+    private readonly ServerCapabilitiesDigest $capabilitiesDigest;
 
     public function lastResponseStatus(): ?int
     {
@@ -71,6 +72,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         $this->workerRequestTimeoutSeconds = $client === null
             ? ($workerRequestTimeoutSeconds ?? self::DEFAULT_WORKER_REQUEST_TIMEOUT_SECONDS) : null;
         $factory = new HttpFactory();
+        $this->capabilitiesDigest = new ServerCapabilitiesDigest();
         $this->defaultProcessConfiguration = $client === null && $requestFactory === null && $streamFactory === null;
         $this->client = $client ?? new GuzzleClient(['http_errors' => false]);
         $this->requestFactory = $requestFactory ?? $factory;
@@ -85,6 +87,12 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
     {
         return $this->sendJson($method, $uri, $headers, $body);
+    }
+
+    /** The owned Guzzle client over cURL decodes gzip bodies it asked for. */
+    private function decodesCompressedResponses(): bool
+    {
+        return $this->client instanceof GuzzleClient && extension_loaded('curl') && extension_loaded('zlib');
     }
 
     public function supportsBoundedRequests(): bool
@@ -182,11 +190,18 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             if ($poll) {
                 $request = $request->withHeader('Accept', PollTransport::MEDIA_TYPE.', application/json;q=0.9');
             }
+            if (!$control) {
+                $request = $request->withHeader(ServerCapabilitiesDigest::HEADER, $this->capabilitiesDigest->header());
+            }
+            if ($this->decodesCompressedResponses() && !$request->hasHeader('Accept-Encoding')) {
+                // cURL decodes the body; Guzzle then moves Content-Encoding aside.
+                $request = $request->withHeader('Accept-Encoding', 'gzip');
+            }
             $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout ?? 30,
                 bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout, control: $control);
             $this->responseStatus = $response->getStatusCode();
 
-            return $this->decodeJsonResponse($response, $poll);
+            return $this->decodeJsonResponse($response, $poll, !$control);
         } catch (TransportException $exception) {
             throw $exception;
         } catch (JsonException $exception) {
@@ -210,13 +225,26 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     }
 
     /** @return array<string, mixed>|list<mixed>|null */
-    private function decodeJsonResponse(ResponseInterface $response, bool $poll = false): ?array
+    private function decodeJsonResponse(ResponseInterface $response, bool $poll = false, bool $worker = false): ?array
     {
         $rawBody = (string) $response->getBody();
+        if (str_starts_with($rawBody, "\x1f\x8b") && function_exists('gzdecode')
+            && strtolower(trim($response->getHeaderLine('Content-Encoding'))) === 'gzip') {
+            // A client that left the gzip body encoded. Decoding clients
+            // either drop the header or already return the JSON bytes.
+            $inflated = @gzdecode($rawBody);
+            if (!is_string($inflated)) {
+                throw new TransportException('The server returned an invalid gzip response body.');
+            }
+            $rawBody = $inflated;
+        }
         $status = $response->getStatusCode();
         $mediaType = strtolower(trim(explode(';', $response->getHeaderLine('Content-Type'), 2)[0]));
         if ($poll && $mediaType === PollTransport::MEDIA_TYPE) {
             $frame = PollTransport::decode($rawBody, $status);
+            if ($worker) {
+                $this->capabilitiesDigest->restore($frame['body']);
+            }
             if ($frame['status'] >= 300) {
                 throw TransportException::fromResponse($frame['status'], $frame['body'], $rawBody, $frame['headers']);
             }
@@ -227,12 +255,18 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             // An upstream proxy can return HTML or an empty body. Preserve
             // its status without interpreting it as a successful protocol reply.
             $decoded = json_decode($rawBody, true);
+            if ($worker && is_array($decoded)) {
+                $this->capabilitiesDigest->restore($decoded);
+            }
             throw TransportException::fromResponse($status, is_array($decoded) ? $decoded : null, $rawBody);
         }
 
         $decoded = $rawBody === '' ? null : json_decode($rawBody, true, 512, JSON_THROW_ON_ERROR);
         if ($decoded !== null && !is_array($decoded)) {
             throw new TransportException('The server returned a JSON value instead of an object or array.');
+        }
+        if ($worker && $decoded !== null) {
+            $this->capabilitiesDigest->restore($decoded);
         }
 
         return $decoded;
