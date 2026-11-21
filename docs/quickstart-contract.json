@@ -5,7 +5,7 @@
     "name": "durable-workflow/sdk",
     "published_version": "3.23.0",
     "composer_requirement": "3.23.0",
-    "onboarding_requirement": "^3.22"
+    "onboarding_requirement": "^3.23"
   },
   "runtime_targets": {
     "server": {
