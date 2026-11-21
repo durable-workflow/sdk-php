@@ -6,6 +6,11 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The client rejects request path identifiers with a `.` or `..` segment
+  before sending them. Names such as `nightly.v2` and `...` still work (#444).
+
 ## [3.23.1] - 2026-11-21
 
 ### Fixed

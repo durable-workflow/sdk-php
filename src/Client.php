@@ -3873,6 +3873,12 @@ final class Client implements WorkflowClientInterface
             throw new InvalidArgumentException('Durable Workflow request path identifiers cannot be empty.');
         }
 
+        // Intermediaries can decode an escaped slash before normalizing the path.
+        $segments = explode('/', $value);
+        if (in_array('.', $segments, true) || in_array('..', $segments, true)) {
+            throw new InvalidArgumentException('Durable Workflow request path identifiers cannot contain dot segments.');
+        }
+
         return rawurlencode($value);
     }
 

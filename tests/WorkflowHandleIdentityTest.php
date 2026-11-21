@@ -67,4 +67,43 @@ final class WorkflowHandleIdentityTest extends TestCase
         }
         self::assertSame([], $transport->requests);
     }
+
+    public function testDotSegmentsAreRejectedBeforeSendingARequest(): void
+    {
+        $transport = new FakeTransport();
+        $client = new Client('https://server.example', transport: $transport);
+
+        foreach ([
+            static fn () => $client->describeWorkflow('.'),
+            static fn () => $client->describeWorkflow('workflow', '..'),
+            static fn () => $client->describeSchedule('..'),
+            static fn () => $client->describeSchedule('daily/./west'),
+            static fn () => $client->describeTaskQueue('.'),
+            static fn () => $client->describeTaskQueue('orders/../west'),
+        ] as $call) {
+            try {
+                $call();
+                self::fail('A dot segment reached the transport.');
+            } catch (InvalidArgumentException $exception) {
+                self::assertSame('Durable Workflow request path identifiers cannot contain dot segments.', $exception->getMessage());
+            }
+        }
+        self::assertSame([], $transport->requests);
+    }
+
+    public function testOrdinaryDottedIdentifiersRetainTheirPathEncoding(): void
+    {
+        $transport = new FakeTransport(array_fill(0, 3, ['ok' => true]));
+        $client = new Client('https://server.example', transport: $transport);
+
+        $client->describeWorkflow('order.1', '...');
+        $client->describeSchedule('nightly.v2/...');
+        $client->describeTaskQueue('orders.v2/eu west');
+
+        self::assertSame([
+            'https://server.example/api/workflows/order.1/runs/...',
+            'https://server.example/api/schedules/nightly.v2%2F...',
+            'https://server.example/api/task-queues/orders.v2%2Feu%20west',
+        ], array_column($transport->requests, 'uri'));
+    }
 }
