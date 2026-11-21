@@ -21,6 +21,7 @@ use PHPUnit\Framework\TestCase;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
+use RuntimeException;
 
 final class WorkerPollTransportTest extends TestCase
 {
@@ -138,15 +139,18 @@ final class WorkerPollTransportTest extends TestCase
         self::assertSame(['renewed' => true], (new Psr18Transport($http))->send('POST', 'https://server.example/api/worker/workflow-tasks/task/heartbeat', ['Accept' => 'application/json']));
     }
 
-    public function testAConnectionRetryKeepsTheSamePollIdentityAndWarnsBeforeTheRetrySucceeds(): void
+    #[DataProvider('retryablePollTransportFailures')]
+    public function testAnInterruptedPollRetryKeepsTheSameIdentityAndWarnsBeforeItSucceeds(?int $responseStatus, int $curlError): void
     {
         $ids = [];
-        $http = new GuzzleClient(['handler' => static function (RequestInterface $request, array $options) use (&$ids) {
+        $http = new GuzzleClient(['handler' => static function (RequestInterface $request, array $options) use (&$ids, $responseStatus, $curlError) {
             $ids[] = json_decode((string) $request->getBody(), true)['poll_request_id'];
             if (count($ids) === 1) {
-                $options['on_stats'](new TransferStats($request, null, 0, 7));
+                $response = $responseStatus === null ? null : new Response($responseStatus, ['Content-Type' => self::MEDIA_TYPE]);
+                $options['on_stats'](new TransferStats($request, $response, 0, $curlError));
 
-                return Create::rejectionFor(new ConnectException('Fixture connection failure.', $request));
+                return Create::rejectionFor($response === null ? new ConnectException('Fixture connection failure.', $request)
+                    : new RuntimeException('Fixture response timed out.'));
             }
 
             return Create::promiseFor(new Response(200, ['Content-Type' => 'application/json'], '{"task":null,"poll_status":"stopped"}'));
@@ -164,7 +168,13 @@ final class WorkerPollTransportTest extends TestCase
         self::assertArrayNotHasKey('exception', $warnings[0]['context']);
     }
 
-    public function testProgressBytesCannotExtendTheRealCurlDeadline(): void
+    public static function retryablePollTransportFailures(): array
+    {
+        return ['connect failure' => [null, 7], 'response timeout' => [200, 28]];
+    }
+
+    #[DataProvider('realPollDeadlineCases')]
+    public function testProgressBytesCannotExtendTheRealCurlDeadline(?string $pollRequestId, int $responseStatus, bool $retryable): void
     {
         if (!extension_loaded('curl') || !function_exists('pcntl_fork') || !function_exists('posix_kill')) {
             self::markTestSkipped('Real cURL and process control are required.');
@@ -178,7 +188,7 @@ final class WorkerPollTransportTest extends TestCase
             $connection = stream_socket_accept($listener, 3);
             if ($connection !== false) {
                 while (($line = fgets($connection)) !== false && $line !== "\r\n") {}
-                fwrite($connection, "HTTP/1.1 200 OK\r\nContent-Type: ".self::MEDIA_TYPE."\r\nConnection: close\r\n\r\n");
+                fwrite($connection, "HTTP/1.1 {$responseStatus} Fixture\r\nContent-Type: ".self::MEDIA_TYPE."\r\nConnection: close\r\n\r\n");
                 for ($i = 0; $i < 30; ++$i) {
                     @fwrite($connection, "\n");
                     @fflush($connection);
@@ -192,16 +202,24 @@ final class WorkerPollTransportTest extends TestCase
         fclose($listener);
         $started = hrtime(true);
         try {
-            (new Psr18Transport())->sendBounded('POST', 'http://'.$address.'/api/worker/query-tasks/poll', [], ['timeout_seconds' => 0], 1);
+            (new Psr18Transport())->sendBounded('POST', 'http://'.$address.'/api/worker/query-tasks/poll', [],
+                ['timeout_seconds' => 0, 'poll_request_id' => $pollRequestId], 1);
             self::fail('Progress extended the absolute request deadline.');
-        } catch (TransportException) {
+        } catch (TransportException $exception) {
             $observed = (hrtime(true) - $started) / 1_000_000_000;
             self::assertGreaterThanOrEqual(0.8, $observed);
             self::assertLessThan(2.5, $observed);
+            self::assertSame($retryable, $exception->transientConnectionFailure);
         } finally {
             posix_kill($pid, SIGKILL);
             self::assertSame($pid, pcntl_waitpid($pid, $status));
         }
+    }
+
+    public static function realPollDeadlineCases(): array
+    {
+        return ['identified poll' => ['same-poll', 200, true], 'no request identity' => [null, 200, false],
+            'authorization rejection' => ['same-poll', 401, false]];
     }
 
     #[DataProvider('cutoffStatuses')]

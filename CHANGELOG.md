@@ -6,6 +6,12 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A Worker keeps its original poll request ID and retries with backoff when
+  cURL times out while receiving a successful poll response (#453). The
+  per-request deadline still applies even if progress bytes have arrived.
+
 ## [3.23.0] - 2026-11-21
 
 ### Fixed

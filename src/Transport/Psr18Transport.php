@@ -254,6 +254,8 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     {
         $this->responseStatus = null;
         $poll = PollTransport::taskKind($method, $uri) !== null && $this->supportsBoundedRequests();
+        $pollRequestId = $body['poll_request_id'] ?? null;
+        $hasPollRequestIdentity = $poll && is_string($pollRequestId) && $pollRequestId !== '';
         if ($poll && $timeoutSeconds === null) {
             // cURL's total timeout includes all progress bytes. Opaque PSR-18
             // clients retain ordinary JSON because their deadline is unknown.
@@ -276,9 +278,10 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
                 // The transport inflates the body itself, within its size limit.
                 $request = $request->withHeader('Accept-Encoding', 'gzip');
             }
-            $send = function (RequestInterface $request, ?array $captured) use ($timeoutSeconds, $controlTimeout, $control, $poll): ?array {
+            $send = function (RequestInterface $request, ?array $captured) use ($timeoutSeconds, $controlTimeout, $control, $poll, $hasPollRequestIdentity): ?array {
                 $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout ?? 30,
-                    bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout, control: $control);
+                    bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout, control: $control,
+                    hasPollRequestIdentity: $hasPollRequestIdentity);
                 $this->responseStatus = $response->getStatusCode();
 
                 return $this->decodeJsonResponse($response, $poll, $captured);
@@ -645,10 +648,11 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         ] + $this->client->getConfig());
     }
 
-    private function sendRequest(RequestInterface $request, bool $stream = false, int|float $timeoutSeconds = 30, bool $bounded = false, ?StreamInterface $sink = null, ?\Closure $progress = null, ?float $controlTimeout = null, bool $control = true): ResponseInterface
+    private function sendRequest(RequestInterface $request, bool $stream = false, int|float $timeoutSeconds = 30, bool $bounded = false, ?StreamInterface $sink = null, ?\Closure $progress = null, ?float $controlTimeout = null, bool $control = true, bool $hasPollRequestIdentity = false): ResponseInterface
     {
         $connectionFailure = false;
         $timedOut = false;
+        $pollResponseTimedOut = false;
         $owner = $this->completionOwner;
         $armed = $owner !== null && $owner === \Fiber::getCurrent() && $this->completionArmed;
         $suspend = $armed && $request->getMethod() === 'POST' && (string) $request->getUri() === $this->completionUri
@@ -673,13 +677,15 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
                     // Keep the body encoded: decodeJsonResponse() inflates it within its size limit.
                     $options['decode_content'] = false;
                 }
-                $options['on_stats'] = static function (TransferStats $stats) use (&$connectionFailure, &$timedOut, $onStats): void {
+                $options['on_stats'] = static function (TransferStats $stats) use (&$connectionFailure, &$timedOut, &$pollResponseTimedOut, $hasPollRequestIdentity, $onStats): void {
                     // Guzzle 8 no longer attaches cURL errno to exceptions.
                     // Accept only DNS/connect/timeout/closed-connection errors,
                     // never TLS, invalid options, or an unclassified PSR error.
                     $connectionFailure = !$stats->hasResponse()
                         && in_array($stats->getHandlerErrorData(), [5, 6, 7, 28, 52, 55, 56], true);
                     $timedOut = $stats->getHandlerErrorData() === 28;
+                    $pollResponseTimedOut = $hasPollRequestIdentity && $timedOut
+                        && $stats->getResponse()?->getStatusCode() === 200;
                     if (is_callable($onStats)) {
                         $onStats($stats);
                     }
@@ -690,6 +696,12 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
 
             return $this->client->sendRequest($request);
         } catch (Throwable $exception) {
+            if ($pollResponseTimedOut) {
+                // Headers and progress bytes may arrive before the claim reply.
+                // The managed worker reconciles the uncertain outcome with the original poll ID.
+                throw new TransportException('The worker poll response timed out before completion.',
+                    previous: $exception, transientConnectionFailure: true);
+            }
             throw $this->requestFailure($exception, $controlTimeout, $timedOut, $connectionFailure, $control);
         } finally {
             if ($armed) {
