@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.24.1] - 2026-11-21
+
+### Fixed
+
+- A worker handles a workflow lease already delivered with a task completion
+  before making another query poll. Query polling still gets a turn under
+  sustained activity (#460).
+
 ## [3.24.0] - 2026-11-21
 
 ### Added
