@@ -254,6 +254,8 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     {
         $this->responseStatus = null;
         $poll = PollTransport::taskKind($method, $uri) !== null && $this->supportsBoundedRequests();
+        $pollRequestId = $body['poll_request_id'] ?? null;
+        $hasPollRequestIdentity = $poll && is_string($pollRequestId) && $pollRequestId !== '';
         if ($poll && $timeoutSeconds === null) {
             // cURL's total timeout includes all progress bytes. Opaque PSR-18
             // clients retain ordinary JSON because their deadline is unknown.
@@ -276,9 +278,9 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
                 // The transport inflates the body itself, within its size limit.
                 $request = $request->withHeader('Accept-Encoding', 'gzip');
             }
-            $send = function (RequestInterface $request, ?array $captured) use ($timeoutSeconds, $controlTimeout, $control, $poll): ?array {
-                $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout ?? 30,
-                    bounded: $timeoutSeconds !== null || $controlTimeout !== null, controlTimeout: $controlTimeout, control: $control);
+            $send = function (RequestInterface $request, ?array $captured) use ($timeoutSeconds, $controlTimeout, $poll, $hasPollRequestIdentity): ?array {
+                $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout, controlTimeout: $controlTimeout,
+                    hasPollRequestIdentity: $hasPollRequestIdentity);
                 $this->responseStatus = $response->getStatusCode();
 
                 return $this->decodeJsonResponse($response, $poll, $captured);
@@ -410,7 +412,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         return $request;
     }
 
-    /** @param array<string, string> $headers */
+    /** @param array<array-key, mixed> $headers */
     private function isControlRequest(array $headers): bool
     {
         $names = array_change_key_case($headers, CASE_LOWER);
@@ -618,7 +620,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             },
         ]);
         try {
-            return $this->sendRequest($request, timeoutSeconds: $timeoutSeconds, bounded: true, sink: $sink, progress: $supervise);
+            return $this->sendRequest($request, timeoutSeconds: $timeoutSeconds, sink: $sink, progress: $supervise);
         } catch (Throwable $exception) {
             $sink->close();
             // cURL invokes the callback while sendRequest() is running.
@@ -645,10 +647,17 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         ] + $this->client->getConfig());
     }
 
-    private function sendRequest(RequestInterface $request, bool $stream = false, int|float $timeoutSeconds = 30, bool $bounded = false, ?StreamInterface $sink = null, ?\Closure $progress = null, ?float $controlTimeout = null, bool $control = true): ResponseInterface
+    private function sendRequest(
+        RequestInterface $request,
+        bool $stream = false,
+        int|float|null $timeoutSeconds = null,
+        ?StreamInterface $sink = null,
+        ?\Closure $progress = null,
+        ?float $controlTimeout = null,
+        bool $hasPollRequestIdentity = false,
+    ): ResponseInterface
     {
-        $connectionFailure = false;
-        $timedOut = false;
+        $transfer = null;
         $owner = $this->completionOwner;
         $armed = $owner !== null && $owner === \Fiber::getCurrent() && $this->completionArmed;
         $suspend = $armed && $request->getMethod() === 'POST' && (string) $request->getUri() === $this->completionUri
@@ -665,32 +674,27 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
                     static fn (RequestInterface $request, array $options) => $handler($request, $options, $owner),
                 )] + $this->client->getConfig());
             }
-            if ($http instanceof GuzzleClient) {
-                $onStats = $http->getConfig('on_stats');
-
-                $options = $this->guzzleRequestOptions($stream, $timeoutSeconds, $bounded, $sink, $progress);
-                if (!$stream && $sink === null && $request->getHeaderLine('Accept-Encoding') === 'gzip') {
-                    // Keep the body encoded: decodeJsonResponse() inflates it within its size limit.
-                    $options['decode_content'] = false;
-                }
-                $options['on_stats'] = static function (TransferStats $stats) use (&$connectionFailure, &$timedOut, $onStats): void {
-                    // Guzzle 8 no longer attaches cURL errno to exceptions.
-                    // Accept only DNS/connect/timeout/closed-connection errors,
-                    // never TLS, invalid options, or an unclassified PSR error.
-                    $connectionFailure = !$stats->hasResponse()
-                        && in_array($stats->getHandlerErrorData(), [5, 6, 7, 28, 52, 55, 56], true);
-                    $timedOut = $stats->getHandlerErrorData() === 28;
-                    if (is_callable($onStats)) {
-                        $onStats($stats);
-                    }
-                };
-
-                return $http->send($request, $options);
+            if (!$http instanceof GuzzleClient) {
+                return $http->sendRequest($request);
             }
 
-            return $this->client->sendRequest($request);
+            $options = $this->guzzleRequestOptions($stream, $timeoutSeconds, $sink, $progress);
+            if (!$stream && $sink === null && $request->getHeaderLine('Accept-Encoding') === 'gzip') {
+                // Keep the body encoded: decodeJsonResponse() inflates it within its size limit.
+                $options['decode_content'] = false;
+            }
+            $onStats = $http->getConfig('on_stats');
+            $options['on_stats'] = static function (TransferStats $stats) use (&$transfer, $onStats): void {
+                $transfer = $stats;
+                if (is_callable($onStats)) {
+                    $onStats($stats);
+                }
+            };
+
+            return $http->send($request, $options);
         } catch (Throwable $exception) {
-            throw $this->requestFailure($exception, $controlTimeout, $timedOut, $connectionFailure, $control);
+            throw $this->requestFailure($exception, $controlTimeout, $transfer,
+                $this->isControlRequest($request->getHeaders()), $hasPollRequestIdentity);
         } finally {
             if ($armed) {
                 $this->disarmCompletionSuspension($owner);
@@ -699,10 +703,10 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     }
 
     /** @return array<string, mixed> */
-    private function guzzleRequestOptions(bool $stream, int|float $timeoutSeconds, bool $bounded, ?StreamInterface $sink, ?\Closure $progress): array
+    private function guzzleRequestOptions(bool $stream, int|float|null $timeoutSeconds, ?StreamInterface $sink, ?\Closure $progress): array
     {
         $options = ['synchronous' => true, 'http_errors' => false, 'allow_redirects' => false];
-        if ($bounded || $sink !== null) {
+        if ((!$stream && $timeoutSeconds !== null) || $sink !== null) {
             $options['stream'] = false;
         } elseif ($stream) {
             $options['stream'] = true;
@@ -713,15 +717,18 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         if ($progress !== null) {
             $options['progress'] = $progress;
         }
-        if ($stream || $bounded) {
-            $options += ['timeout' => $timeoutSeconds, 'read_timeout' => $timeoutSeconds, 'connect_timeout' => $timeoutSeconds];
+        if ($stream || $timeoutSeconds !== null) {
+            $timeout = $timeoutSeconds ?? 30;
+            $options += ['timeout' => $timeout, 'read_timeout' => $timeout, 'connect_timeout' => $timeout];
         }
 
         return $options;
     }
 
-    private function requestFailure(Throwable $exception, ?float $controlTimeout, bool $timedOut, bool $connectionFailure, bool $control = true): TransportException
+    private function requestFailure(Throwable $exception, ?float $controlTimeout, ?TransferStats $transfer, bool $control, bool $hasPollRequestIdentity): TransportException
     {
+        $curlError = $transfer?->getHandlerErrorData();
+        $timedOut = $curlError === 28;
         if ($controlTimeout !== null) {
             if ($exception instanceof TransportException) {
                 // The native handler reports its own deadline; name the worker plane.
@@ -733,6 +740,16 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
                 return $this->controlTimeoutFailure($exception, $controlTimeout, $control);
             }
         }
+
+        if ($hasPollRequestIdentity && $timedOut && $transfer->getResponse()?->getStatusCode() === 200) {
+            // Headers and progress bytes may arrive before the claim reply.
+            // The managed worker reconciles the uncertain outcome with the original poll ID.
+            return new TransportException('The worker poll response timed out before completion.',
+                previous: $exception, transientConnectionFailure: true);
+        }
+
+        // Accept only cURL DNS/connect/timeout/closed-connection failures.
+        $connectionFailure = $transfer?->hasResponse() === false && in_array($curlError, [5, 6, 7, 28, 52, 55, 56], true);
 
         return new TransportException('HTTP request failed: '.$exception->getMessage(), previous: $exception,
             transientConnectionFailure: $connectionFailure && $exception instanceof NetworkExceptionInterface);
