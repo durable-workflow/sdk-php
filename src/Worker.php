@@ -163,6 +163,7 @@ final class Worker
     private bool $activityCompletionWorkflowPollSupported = false;
     private bool $workflowCompletionWorkflowPollSupported = false;
     private ?CarriedPoll $carriedWorkflowPoll = null;
+    private bool $queryPollDeferredForCarriedWorkflow = false;
     /** @var array<string, mixed>|null The server's advertised activity_workflow_continuation v1 contract. */
     private ?array $activityContinuation = null;
     private int $workflowTasksInFlight = 0;
@@ -683,6 +684,7 @@ final class Worker
         $this->completionPipeline?->finish();
         $this->completionPipeline = null;
         $this->carriedWorkflowPoll = null;
+        $this->queryPollDeferredForCarriedWorkflow = false;
         $this->carriedActivityPoll = null;
         $this->workflowPollGrant = null;
         $this->claimCancellation = null;
@@ -1219,6 +1221,13 @@ final class Worker
         if ($this->shutdownRequested) {
             return $this->drainCarriedWorkflowLease() || $handled;
         }
+        if ($this->carriedWorkflowPoll?->hasLease() ?? false) {
+            // Handle the already-leased workflow next. One deferred query poll
+            // prevents a new workflow lease from being carried in the meantime.
+            $this->queryPollDeferredForCarriedWorkflow = true;
+            return $handled;
+        }
+        $this->queryPollDeferredForCarriedWorkflow = false;
 
         $queryPoll = $this->pollWithRetry(
             'query',
@@ -2486,6 +2495,7 @@ final class Worker
         $supported = $workflowCompletion ? $this->workflowCompletionWorkflowPollSupported : $this->activityCompletionWorkflowPollSupported;
         if (!$supported || $this->workflows === []
             || $leaseOwner !== $this->workerId || $this->shutdownRequested || $this->drainingCarriedLease
+            || $this->queryPollDeferredForCarriedWorkflow
             || $this->workflowTasksInFlight !== ($workflowCompletion ? 1 : 0) || $this->carriedWorkflowPoll !== null
             || ($this->completionPipeline?->hasAhead() ?? false)) {
             return null;

@@ -29,15 +29,36 @@ final class WorkerCarriedWorkflowPollTest extends TestCase
         $worker = self::worker($transport, $calls);
         self::assertTrue($worker->tick(0));
         self::assertSame(['activity'], $calls, 'An ordinary tick still executes at most one workflow.');
+        self::assertSame([], self::requests($transport, '/query-tasks/poll'));
         self::assertTrue($worker->tick(0));
         self::assertSame(['activity', 'workflow'], $calls);
         self::assertCount(1, self::requests($transport, '/workflow-tasks/poll'));
+        $paths = array_map(static fn (array $request) => parse_url($request['uri'], PHP_URL_PATH), $transport->requests);
+        $completionAndQuery = ['/api/worker/workflow-tasks/workflow/complete', '/api/worker/query-tasks/poll'];
+        self::assertSame($completionAndQuery, array_values(array_intersect($paths, $completionAndQuery)));
         $carried = self::requests($transport, '/activity-tasks/activity/complete')[0]['body']['workflow_poll'];
         self::assertSame('worker', $carried['worker_id']);
         self::assertSame('queue', $carried['task_queue']);
         self::assertSame(['workflow'], $carried['task_kinds']);
         self::assertSame(0, $carried['timeout_seconds']);
         self::assertGreaterThan(0, $carried['history_page_size']);
+    }
+
+    public function testAnotherReadyActivityCannotDeferTheSameQueryPollAgain(): void
+    {
+        $transport = self::transport(static fn (array $request): array => isset($request['workflow_poll'])
+            ? ['workflow_poll' => ['leased' => true, 'answer' => self::workflowAnswer()]]
+            : ['completed' => true], activityCount: 2);
+        $calls = [];
+        $worker = self::worker($transport, $calls);
+
+        self::assertTrue($worker->tick(0));
+        self::assertSame([], self::requests($transport, '/query-tasks/poll'));
+        self::assertTrue($worker->tick(0));
+
+        self::assertSame(['activity', 'workflow', 'activity'], $calls);
+        self::assertArrayNotHasKey('workflow_poll', self::requests($transport, '/activity-tasks/activity-2/complete')[0]['body']);
+        self::assertCount(1, self::requests($transport, '/query-tasks/poll'));
     }
 
     #[DataProvider('noCapability')]
@@ -294,11 +315,11 @@ final class WorkerCarriedWorkflowPollTest extends TestCase
         return $worker;
     }
 
-    private static function transport(\Closure $complete, mixed $capability = true, ?array $followup = null): FakeTransport
+    private static function transport(\Closure $complete, mixed $capability = true, ?array $followup = null, int $activityCount = 1): FakeTransport
     {
         $workflows = $activities = 0;
         return new FakeTransport(handler: static function (string $method, string $uri, array $headers, ?array $body) use (
-            $complete, $capability, $followup, &$workflows, &$activities,
+            $complete, $capability, $followup, $activityCount, &$workflows, &$activities,
         ): array {
             $caps = $capability === null ? [] : ['activity_completion_workflow_poll' => $capability];
             if (str_ends_with($uri, '/workflow-tasks/poll')) {
@@ -306,11 +327,13 @@ final class WorkerCarriedWorkflowPollTest extends TestCase
                     : ($followup ?? self::workflowAnswer());
             }
             if (str_ends_with($uri, '/activity-tasks/poll')) {
-                return ++$activities === 1 ? ['task' => ['task_id' => 'activity', 'activity_attempt_id' => 'activity-attempt',
+                $number = ++$activities;
+                $taskId = $number === 1 ? 'activity' : 'activity-'.$number;
+                return $number <= $activityCount ? ['task' => ['task_id' => $taskId, 'activity_attempt_id' => 'activity-attempt',
                     'lease_owner' => 'worker', 'activity_type' => 'test.activity', 'payload_codec' => 'avro'],
                     'poll_status' => 'leased', 'server_capabilities' => $caps] : ['task' => null, 'poll_status' => 'empty'];
             }
-            if (str_ends_with($uri, '/activity-tasks/activity/complete')) return $complete($body);
+            if (preg_match('~/activity-tasks/activity(?:-\d+)?/complete$~', $uri) === 1) return $complete($body);
             if (str_ends_with($uri, '/workflow-tasks/workflow/complete')) return ['completed' => true];
             if (str_ends_with($uri, '/workflow-tasks/workflow/heartbeat')) {
                 return ['task_id' => 'workflow', 'workflow_task_attempt' => 3, 'lease_owner' => 'worker', 'renewed' => true];
