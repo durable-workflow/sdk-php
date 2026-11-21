@@ -57,11 +57,56 @@ final class RuntimePayloadUploadTest extends TestCase
                     ->completeActivityTask('task', 'attempt', 'worker', 'small');
                 self::fail("{$name}: expected discovery failure.");
             } catch (ServerException $exception) {
-                self::assertSame($status, $exception->status, $name);
                 self::assertFalse($exception->isActivityCompletionPayloadDiscoveryUnavailable('task', 'attempt', 'worker'), $name);
                 self::assertSame(1, $transport->requests, $name);
+                // A discovery outage (any 5xx) is a generic not-admitted failure the
+                // Worker may repeat; a refusal (401) is surfaced as itself.
+                self::assertSame($status >= 500, $exception->isPayloadDiscoveryUnavailable(), $name);
+                $cause = $exception->getPrevious();
+                self::assertSame($status, $cause instanceof TransportException ? $cause->status : $exception->status, $name);
             }
         }
+    }
+
+    public function testADiscoveryOutageKeepsTheLastPolicyAndTriesDiscoveryAgainLater(): void
+    {
+        $transport = new class implements PayloadUploadTransport {
+            public int $discoveries = 0;
+            public int $completions = 0;
+            public bool $down = false;
+            public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
+            {
+                if (str_ends_with($uri, '/api/cluster/info')) {
+                    ++$this->discoveries;
+                    if ($this->down) {
+                        throw TransportException::fromResponse(500, ['message' => 'Server Error'], '');
+                    }
+
+                    return ['limits' => ['max_payload_bytes' => 2097152]];
+                }
+                ++$this->completions;
+
+                return ['recorded' => true, 'outcome' => 'completed'];
+            }
+            public function uploadPayload(string $uri, array $headers, string $blob, int $timeoutSeconds): array
+            {
+                throw new \LogicException('No upload is needed.');
+            }
+        };
+        $client = new Client('https://runtime.test', transport: $transport);
+        $client->completeActivityTask('task', 'attempt', 'worker', 'small');
+        self::assertSame([1, 1], [$transport->discoveries, $transport->completions]);
+
+        // The cached policy expires while discovery is down.
+        $transport->down = true;
+        $uploads = (new \ReflectionProperty(Client::class, 'payloadUploads'))->getValue($client);
+        $policies = new \ReflectionProperty($uploads, 'policies');
+        $policies->setValue($uploads, array_map(static fn (array $entry): array => ['expires' => 0] + $entry, $policies->getValue($uploads)));
+
+        $client->completeActivityTask('task', 'attempt', 'worker', 'small');
+        $client->completeActivityTask('task', 'attempt', 'worker', 'small');
+        self::assertSame(3, $transport->completions, 'Completions proceed with the last policy.');
+        self::assertSame(2, $transport->discoveries, 'Discovery is tried again later, not before every request.');
     }
 
     public function testClientUploadsEncodedBytesWithNamespaceAndClientCredential(): void
@@ -203,7 +248,8 @@ final class RuntimePayloadUploadTest extends TestCase
             self::assertSame(strlen((string) $http->requests[1]->getBody()), $error->sizeBytes);
             self::assertGreaterThan($limit, $error->sizeBytes);
         }
-        self::assertCount(2, $http->requests, 'Discover once, submit once, with no upload or retry.');
+        // A refusal re-reads the policy once; an unchanged body is not sent again.
+        self::assertCount($overLimit ? 3 : 2, $http->requests, 'Discover once, submit once, with no upload or retry.');
         self::assertSame($commands, $this->body($http->requests[1])['commands']);
     }
 
@@ -254,11 +300,13 @@ final class RuntimePayloadUploadTest extends TestCase
         } catch (WorkflowTaskCompletionTooLarge $error) {
             self::assertTrue($overLimit);
             self::assertSame($limit, $error->limitBytes);
-            self::assertCount(2, $http->requests);
+            self::assertCount(3, $http->requests, 'The policy is read again; the unchanged body is not sent again.');
+            self::assertStringEndsWith('/cluster/info', $http->requests[2]->getUri()->getPath());
             self::assertSame(strlen((string) $http->requests[1]->getBody()), $error->sizeBytes);
             self::assertGreaterThan($limit, $error->sizeBytes);
         }
-        self::assertCount(2, $http->requests, 'Discover once, submit once; no upload or retry.');
+        // A refusal re-reads the policy once; an unchanged body is not sent again.
+        self::assertCount($overLimit ? 3 : 2, $http->requests, 'Discover once, submit once; no upload or retry.');
         $sent = $this->body($http->requests[1]);
         self::assertSame($continuation, $sent['continuation']);
         self::assertSame(['codec' => 'avro', 'blob' => $blob], $sent['result']);
@@ -335,7 +383,7 @@ final class RuntimePayloadUploadTest extends TestCase
                 self::assertTrue($continuation);
                 self::assertSame(64, $error->limitBytes);
             }
-            self::assertCount($continuation ? 2 : 1, $http->requests);
+            self::assertCount($continuation ? 3 : 1, $http->requests);
         }
     }
 
@@ -423,7 +471,7 @@ final class RuntimePayloadUploadTest extends TestCase
             } catch (WorkflowTaskCompletionTooLarge $error) {
                 self::assertSame(500, $error->limitBytes);
             }
-            self::assertCount(2, $http->requests);
+            self::assertCount(3, $http->requests, 'The policy is read again; the unchanged body is not sent again.');
             $sent = $this->body($http->requests[1]);
             self::assertSame($continuation, $sent['continuation']);
             self::assertSame(['codec' => 'avro', 'blob' => $blob], $sent['result']);

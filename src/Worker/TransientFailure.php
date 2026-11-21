@@ -38,6 +38,10 @@ final class TransientFailure
 
     public static function is(Throwable $error, bool $acknowledgement = false): bool
     {
+        if ($error instanceof ServerException && $error->isPayloadDiscoveryUnavailable()) {
+            // Discovery failed before the request was sent: repeating it is safe.
+            return true;
+        }
         if ($error instanceof ServerException) {
             if ($error->isTransientConnectionFailure() || $error->isTransientUpstreamFailure()) {
                 return true;
@@ -55,6 +59,34 @@ final class TransientFailure
         }
 
         return false;
+    }
+
+    /**
+     * An outage of a read-only request (cluster info), which is always safe to
+     * repeat: a connection that could not be made, was reset or timed out, or
+     * any 5xx or 429 answer unless it says `retryable: false`. Authentication,
+     * authorization and other 4xx refusals are not outages.
+     */
+    public static function isReadOutage(Throwable $error): bool
+    {
+        if ($error instanceof ServerException) {
+            if ($error->isTransientConnectionFailure() || $error->isPayloadDiscoveryUnavailable()) {
+                return true;
+            }
+            $status = $error->status;
+            $details = $error->details;
+        } elseif ($error instanceof TransportException) {
+            if ($error->transientConnectionFailure) {
+                return true;
+            }
+            $status = $error->status;
+            $details = $error->response;
+        } else {
+            return false;
+        }
+
+        return $status !== null && ($status === 429 || ($status >= 500 && $status <= 599))
+            && (!is_array($details) || ($details['retryable'] ?? null) !== false);
     }
 
     /** Full-jitter delay for the given 1-based attempt, never shorter than a bounded retry_after. */

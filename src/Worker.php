@@ -6,6 +6,7 @@ namespace DurableWorkflow;
 
 use DurableWorkflow\Exception\ActivityCancelled;
 use DurableWorkflow\Exception\ActivityFailed;
+use DurableWorkflow\Exception\ActivityResultTooLarge;
 use DurableWorkflow\Exception\CodecException;
 use DurableWorkflow\Exception\FailureReportRefused;
 use DurableWorkflow\Exception\InvalidLocalActivityReport;
@@ -147,8 +148,10 @@ final class Worker
     private ?ActivityLeaseProcess $activityLeaseHelper = null;
     /** @var array<string, mixed>|null The activity claim whose lease maintenance is starting. */
     private ?array $claimingActivityTask = null;
-    private ?float $outageStartedAt = null;
-    private ?float $outageErrorLoggedAt = null;
+    /** @var array<string, float> When each tracked outage began, by tracker. */
+    private array $outageStartedAt = [];
+    /** @var array<string, float> */
+    private array $outageErrorLoggedAt = [];
     /** Monotonic end of that claim's conservative poll grant. */
     private float $claimingActivityDeadline = 0;
     /** @var array{0: array<string, mixed>, 1: string, 2: float}|null A stopped claim to release once its lease binding is gone. */
@@ -1045,24 +1048,28 @@ final class Worker
      * Escalate a lasting outage: one `worker.outage_persisting` error once it
      * has lasted 60 s, then one every 5 minutes, until a request succeeds.
      */
-    private function observeOutage(string $operation, Throwable $exception): void
+    private function observeOutage(string $operation, Throwable $exception, string $tracker = 'server'): void
     {
         $now = $this->now();
-        $this->outageStartedAt ??= $now;
-        $lasted = $now - $this->outageStartedAt;
-        if ($lasted < self::OUTAGE_ERROR_AFTER_SECONDS || ($this->outageErrorLoggedAt !== null
-            && $now - $this->outageErrorLoggedAt < self::OUTAGE_ERROR_EVERY_SECONDS)) {
+        $this->outageStartedAt[$tracker] ??= $now;
+        $lasted = $now - $this->outageStartedAt[$tracker];
+        if ($lasted < self::OUTAGE_ERROR_AFTER_SECONDS || (isset($this->outageErrorLoggedAt[$tracker])
+            && $now - $this->outageErrorLoggedAt[$tracker] < self::OUTAGE_ERROR_EVERY_SECONDS)) {
             return;
         }
-        $this->outageErrorLoggedAt = $now;
+        $this->outageErrorLoggedAt[$tracker] = $now;
         $this->diagnostic('worker.outage_persisting', ['worker_id' => $this->workerId, 'task_queue' => $this->taskQueue,
             'operation' => $operation, 'outage_seconds' => round($lasted, 1), 'exception' => $exception], 'error');
     }
 
-    private function clearOutage(): void
+    /**
+     * End a tracked outage. Ordinary requests succeeding end the `server`
+     * outage; only a request that needed cluster info ends that one, because
+     * polls keep succeeding while discovery alone is down.
+     */
+    private function clearOutage(string $tracker = 'server'): void
     {
-        $this->outageStartedAt = null;
-        $this->outageErrorLoggedAt = null;
+        unset($this->outageStartedAt[$tracker], $this->outageErrorLoggedAt[$tracker]);
     }
 
     private function isTransientRegistrationFailure(ServerException $exception): bool
@@ -1543,7 +1550,13 @@ final class Worker
                 $this->assertCancellationDeadline();
             }
             try {
-                return $request();
+                $result = $request();
+                if (str_ends_with($operation, '_complete')) {
+                    // A completion got through, so its payload policy was available.
+                    $this->clearOutage('cluster_info');
+                }
+
+                return $result;
             } catch (ServerException $exception) {
                 $workflowCompletionDeferred = $operation === 'workflow_complete' && $workflowTaskLease !== null
                     && ($exception->isWorkflowTaskCompletionDeferred(
@@ -1592,8 +1605,12 @@ final class Worker
                 // An untyped outage (#448), such as 503 storage_unavailable, is
                 // just as uncertain: the Server may have committed the request.
                 $untypedOutage = !$exception->isStorageAdmissionFailure() && !$backendUnavailable
+                    && !$activityDiscoveryUnavailable
                     && !$exception->isTransientConnectionFailure() && !$exception->isTransientUpstreamFailure()
                     && TransientFailure::is($exception, acknowledgement: true);
+                // Cluster info failed before this request was sent (see
+                // RuntimePayloadUploads); repeating it is safe.
+                $discoveryOutage = $untypedOutage && $exception->isPayloadDiscoveryUnavailable();
                 $claimedTaskTransportFailure = ($workflowTaskLease !== null
                         || ($operation === 'activity_complete' && $activityTaskLease !== null))
                     && ($exception->isTransientConnectionFailure() || $exception->isTransientUpstreamFailure()
@@ -1632,11 +1649,14 @@ final class Worker
                 }
                 $this->diagnostic('worker.retrying', [
                     'worker_id' => $this->workerId,
-                    'operation' => $operation,
+                    'operation' => $discoveryOutage ? 'cluster_info' : $operation,
                     'attempt' => $attempt,
                     'delay_seconds' => $delaySeconds,
                     'exception' => $exception,
                 ], 'warning');
+                if ($discoveryOutage) {
+                    $this->observeOutage('cluster_info', $exception, 'cluster_info');
+                }
                 $this->waitForTransientRetry($delaySeconds);
                 if ($this->shutdownRequested) {
                     if ($workflowCompletionDeferred) {
@@ -1650,8 +1670,9 @@ final class Worker
     }
 
     /**
-     * Repeat an idempotent read through an untyped outage, using the shared
-     * jittered schedule, until it succeeds, fails otherwise, or shutdown.
+     * Repeat a read-only request (cluster info) through an outage, using the
+     * shared jittered schedule and reporting a lasting outage, until it
+     * succeeds, fails otherwise, or shutdown.
      *
      * @template T
      * @param \Closure(): T $call
@@ -1662,14 +1683,19 @@ final class Worker
         $attempt = 0;
         while (true) {
             try {
-                return $call();
-            } catch (ServerException $exception) {
-                if (!TransientFailure::is($exception) || $this->shutdownRequested) {
+                $result = $call();
+                $this->clearOutage('cluster_info');
+
+                return $result;
+            } catch (ServerException|TransportException $exception) {
+                if (!TransientFailure::isReadOutage($exception) || $this->shutdownRequested) {
                     throw $exception;
                 }
-                $delay = TransientFailure::delay(++$attempt, $exception->details['retry_after_seconds'] ?? null);
+                $details = $exception instanceof ServerException ? $exception->details : $exception->response;
+                $delay = TransientFailure::delay(++$attempt, $details['retry_after_seconds'] ?? null);
                 $this->diagnostic('worker.retrying', ['worker_id' => $this->workerId, 'operation' => $operation,
                     'attempt' => $attempt, 'delay_seconds' => $delay, 'exception' => $exception], 'warning');
+                $this->observeOutage($operation, $exception, 'cluster_info');
                 $this->waitForTransientRetry($delay);
                 if ($this->shutdownRequested) {
                     throw $exception;
@@ -3666,6 +3692,12 @@ final class Worker
 
                 return;
             }
+            if ($resultComputed && $exception instanceof ServerException && ActivityResultTooLarge::matches($exception)) {
+                // The Server cannot accept this result even under the payload
+                // policy read again after its refusal. That is this attempt's
+                // failure, not the Worker's: report it and keep running.
+                $exception = new ActivityResultTooLarge($exception);
+            }
             if ($this->activityLeaseProcess !== null && !$exception instanceof WorkflowClaimRevoked) {
                 try {
                     $this->activityLeaseProcess->check();
@@ -3706,10 +3738,16 @@ final class Worker
                         $attemptId,
                         $leaseOwner,
                         $failure->getMessage(),
-                        $failure instanceof ActivityExecutionFailure ? $failure->originalType : $failure::class,
-                        $failure instanceof ActivityCancelled || ($failure instanceof ActivityExecutionFailure && $failure->cancelled),
+                        match (true) {
+                            $failure instanceof ActivityExecutionFailure => $failure->originalType,
+                            $failure instanceof ActivityResultTooLarge => ActivityResultTooLarge::FAILURE_TYPE,
+                            default => $failure::class,
+                        },
+                        $failure instanceof ActivityCancelled || $failure instanceof ActivityResultTooLarge
+                            || ($failure instanceof ActivityExecutionFailure && $failure->cancelled),
                         stackTrace: $failure instanceof ActivityExecutionFailure ? $failure->originalStackTrace : $failure->getTraceAsString(),
                         diagnostics: $failure instanceof ActivityExecutionFailure ? $failure->originalDiagnostics : null,
+                        failureClass: $failure instanceof ActivityResultTooLarge ? ActivityResultTooLarge::FAILURE_TYPE : null,
                     );
                 },
             );

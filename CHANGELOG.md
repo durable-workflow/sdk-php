@@ -8,6 +8,25 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- An outage of `GET /api/cluster/info` no longer stops a managed Worker.
+  Previously a plain 500 from it, read before a workflow-task completion for
+  the payload policy, ended `Worker::run()`. Cluster info is read-only, so a
+  refused, reset or timed-out connection and any 5xx or 429 (unless
+  `retryable: false`) are retried with the shared jittered schedule and
+  reported as `worker.outage_persisting` when they last. Startup discovery
+  waits like registration. The transport keeps the last discovered payload
+  policy through an outage and tries discovery again later. Without one, the
+  request that needed it is not sent and is retried. Authentication and
+  authorization refusals still stop the Worker.
+- A completion refused for its size (`413 payload_too_large`) no longer stops
+  the Worker. The Server's inline limit can be lowered while the Worker holds
+  an older payload policy. The Worker drops that policy, reads it again,
+  encodes the same outcome under it (externalising what the new limit
+  requires) and sends it once more, without recomputing the result. A
+  discovery outage then is retried under the outage rules. An activity result
+  that is still too large is reported as a non-retryable failure whose
+  `failure.type` and `failure.class` are `ActivityResultTooLarge`, as in the
+  other SDKs.
 - A managed Worker no longer exits on a transient Server or network outage
   (#448). For example, native Server answers `503 storage_unavailable` while
   its database warms up. Polls retry untyped transients with the poll's
