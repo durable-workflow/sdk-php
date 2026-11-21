@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests;
 
 use DurableWorkflow\Client;
+use DurableWorkflow\Exception\ServerCapabilityUnavailable;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Model\SchedulePage;
@@ -82,6 +83,34 @@ final class ControlPlaneParityTest extends TestCase
         );
         self::assertSame('orders-prod', $transport->requests[0]['headers']['X-Namespace']);
         self::assertSame('Bearer secret', $transport->requests[0]['headers']['Authorization']);
+    }
+
+    public function testWorkflowTaskAttentionFilterIsSentForEveryPage(): void
+    {
+        $transport = new FakeTransport([
+            ['workflows' => [], 'task_attention_filter' => true],
+            ['workflows' => [['workflow_id' => 'order-1', 'run_id' => 'run-1']], 'next_page_token' => 'page-2', 'task_attention_filter' => false],
+            ['workflows' => [['workflow_id' => 'order-2', 'run_id' => 'run-2']], 'next_page_token' => null, 'task_attention_filter' => false],
+        ]);
+        $client = new Client('https://server.example', transport: $transport);
+
+        $client->listWorkflows(taskAttention: true);
+        $workflows = iterator_to_array($client->iterateWorkflows(status: 'running', taskAttention: false));
+
+        self::assertCount(2, $workflows);
+        self::assertSame('https://server.example/api/workflows?task_attention=1', $transport->requests[0]['uri']);
+        self::assertSame('https://server.example/api/workflows?status=running&task_attention=0', $transport->requests[1]['uri']);
+        self::assertSame('https://server.example/api/workflows?status=running&next_page_token=page-2&task_attention=0', $transport->requests[2]['uri']);
+    }
+
+    public function testWorkflowTaskAttentionFilterRefusesUnconfirmedResults(): void
+    {
+        $transport = new FakeTransport([['workflows' => [['workflow_id' => 'unfiltered']]]]);
+        $client = new Client('https://server.example', transport: $transport);
+
+        $this->expectException(ServerCapabilityUnavailable::class);
+        $this->expectExceptionMessage('The Server did not apply the workflow task attention filter.');
+        $client->listWorkflows(taskAttention: false);
     }
 
     public function testSearchAttributesAndExternalStorageUseNamespaceControlRoutes(): void

@@ -652,12 +652,14 @@ final class Client implements WorkflowClientInterface
         );
     }
 
+    /** The task attention filter requires the Server's task_attention_workflow_list capability. */
     public function listWorkflows(
         ?string $workflowType = null,
         ?string $status = null,
         ?string $query = null,
         ?int $pageSize = null,
         ?string $nextPageToken = null,
+        ?bool $taskAttention = null,
     ): WorkflowPage {
         $path = $this->pathWithQuery('/workflows', [
             'workflow_type' => $workflowType,
@@ -665,8 +667,13 @@ final class Client implements WorkflowClientInterface
             'query' => $query,
             'page_size' => $pageSize,
             'next_page_token' => $nextPageToken,
+            'task_attention' => $taskAttention,
         ]);
         $response = $this->control('GET', $path);
+        if ($taskAttention !== null && ($response['task_attention_filter'] ?? null) !== $taskAttention) {
+            throw new ServerCapabilityUnavailable(ClusterInfo::WORKFLOW_TASK_ATTENTION_FILTER,
+                'The Server did not apply the workflow task attention filter.');
+        }
         $executions = [];
         foreach ((is_array($response['workflows'] ?? null) ? $response['workflows'] : []) as $value) {
             if (is_array($value)) {
@@ -685,6 +692,7 @@ final class Client implements WorkflowClientInterface
     /**
      * Lazily enumerate workflow visibility results in the Server's order.
      * This is not a snapshot across concurrent changes.
+     * The task attention filter requires the Server's task_attention_workflow_list capability.
      *
      * @return \Generator<int, WorkflowExecution>
      */
@@ -694,9 +702,10 @@ final class Client implements WorkflowClientInterface
         ?string $query = null,
         ?int $pageSize = null,
         ?string $nextPageToken = null,
+        ?bool $taskAttention = null,
     ): \Generator {
-        return $this->iteratePages(function (?string $token) use ($workflowType, $status, $query, $pageSize): array {
-            $page = $this->listWorkflows($workflowType, $status, $query, $pageSize, $token);
+        return $this->iteratePages(function (?string $token) use ($workflowType, $status, $query, $pageSize, $taskAttention): array {
+            $page = $this->listWorkflows($workflowType, $status, $query, $pageSize, $token, $taskAttention);
             $this->paginationItems($page->raw, 'workflows');
 
             return [$page->executions, $page->raw];
