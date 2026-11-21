@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.23.1] - 2026-11-21
+
 ### Fixed
 
 - A Worker keeps its original poll request ID and retries with backoff when
