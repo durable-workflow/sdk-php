@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.24.0] - 2026-11-21
+
+### Added
+
+- `listWorkflows()` and `iterateWorkflows()` accept an optional `taskAttention`
+  filter on Servers that advertise `task_attention_workflow_list`. The SDK
+  checks that the Server applied the selection on each page.
+
 ## [3.23.2] - 2026-11-21
 
 ### Fixed
