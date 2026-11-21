@@ -19,6 +19,9 @@ final class ClusterInfo
     /** Read-only v1 open-run version usage; availability is discovered, never inferred from a version. */
     public const WORKFLOW_VERSION_USAGE = 'workflow_version_usage';
 
+    /** Authoritative workflow list filtering by repeated task lease loss. */
+    public const WORKFLOW_TASK_ATTENTION_FILTER = 'task_attention_workflow_list';
+
     /**
      * @param array<string, mixed> $namespace
      * @param array<string, mixed> $capabilities
@@ -83,6 +86,11 @@ final class ClusterInfo
     public function supportsWorkflowVersionUsage(): bool
     {
         return ($this->capabilities[self::WORKFLOW_VERSION_USAGE] ?? null) === true;
+    }
+
+    public function supportsWorkflowTaskAttentionFilter(): bool
+    {
+        return ($this->capabilities[self::WORKFLOW_TASK_ATTENTION_FILTER] ?? null) === true;
     }
 
     /** @return array<string, mixed> */
