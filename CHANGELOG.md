@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.23.2] - 2026-11-21
+
 ### Fixed
 
 - The client rejects request path identifiers with a `.` or `..` segment
