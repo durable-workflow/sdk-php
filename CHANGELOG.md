@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.23.0] - 2026-11-21
+
 ### Fixed
 
 - An outage of `GET /api/cluster/info` no longer stops a managed Worker.
