@@ -197,6 +197,25 @@ final class ServerCapabilitiesDigestTest extends TestCase
         self::assertSame('Bearer w', $http->requests[1]->getHeaderLine('Authorization'));
     }
 
+    public function testTaskAcceptanceRemainsACommitWhenCapabilitiesNeedARefresh(): void
+    {
+        $reply = ['poll_status' => 'leased', 'task' => ['task_id' => 'accepted-task'],
+            'server_capabilities' => 'sha256:'.str_repeat('b', 64)];
+        $http = $this->http([
+            [200, [], json_encode($reply, JSON_THROW_ON_ERROR)],
+            [200, [], json_encode(['worker_protocol' => ['version' => '1.20', 'server_capabilities' => self::CAPABILITIES]], JSON_THROW_ON_ERROR)],
+        ]);
+        $answer = (new Psr18Transport(client: $http))->send('POST', 'https://runtime.test/api/worker/workflow-tasks/offers',
+            ['X-Durable-Workflow-Protocol-Version' => '1.20'], ['task_offer_token' => 'fixture-offer']);
+
+        self::assertSame($reply['task'], $answer['task']);
+        self::assertSame(self::CAPABILITIES, $answer['server_capabilities']);
+        self::assertCount(2, $http->requests);
+        self::assertSame('POST', $http->requests[0]->getMethod());
+        self::assertSame('GET', $http->requests[1]->getMethod());
+        self::assertSame('/api/cluster/info', $http->requests[1]->getUri()->getPath());
+    }
+
     public function testAGarbledDigestOnAPollDoesNotStopAManagedWorker(): void
     {
         $polls = 0;

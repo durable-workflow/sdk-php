@@ -278,12 +278,15 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
                 // The transport inflates the body itself, within its size limit.
                 $request = $request->withHeader('Accept-Encoding', 'gzip');
             }
-            $send = function (RequestInterface $request, ?array $captured) use ($timeoutSeconds, $controlTimeout, $poll, $hasPollRequestIdentity): ?array {
+            $acceptance = PollTransport::taskKind($method, $uri) !== null
+                && str_ends_with((string) parse_url($uri, PHP_URL_PATH), '/offers')
+                && is_string($body['task_offer_token'] ?? null) && $body['task_offer_token'] !== '';
+            $send = function (RequestInterface $request, ?array $captured) use ($timeoutSeconds, $controlTimeout, $poll, $hasPollRequestIdentity, $acceptance): ?array {
                 $response = $this->sendRequest($request, timeoutSeconds: $timeoutSeconds ?? $controlTimeout, controlTimeout: $controlTimeout,
                     hasPollRequestIdentity: $hasPollRequestIdentity);
                 $this->responseStatus = $response->getStatusCode();
 
-                return $this->decodeJsonResponse($response, $poll, $captured);
+                return $this->decodeJsonResponse($response, $poll, $captured, $acceptance);
             };
             if ($control) {
                 return $send($request, null);
@@ -296,7 +299,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
                 // The answer named capabilities this worker does not hold.
                 // Forget the held pair; the next request asks for a tagged copy.
                 $this->capabilitiesDigest->forget();
-                if (PollTransport::taskKind($method, $uri) !== null) {
+                if (!$acceptance && PollTransport::taskKind($method, $uri) !== null) {
                     // A task poll is safe to repeat: ask again without the header.
                     return $send($request->withoutHeader(ServerCapabilitiesDigest::HEADER), [null, null]);
                 }
@@ -339,7 +342,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
      * @param array{0: ?string, 1: array<string, mixed>|null}|null $captured The digest pair a worker request was sent with.
      * @return array<string, mixed>|list<mixed>|null
      */
-    private function decodeJsonResponse(ResponseInterface $response, bool $poll = false, ?array $captured = null): ?array
+    private function decodeJsonResponse(ResponseInterface $response, bool $poll = false, ?array $captured = null, bool $acceptance = false): ?array
     {
         $rawBody = (string) $response->getBody();
         if (str_starts_with($rawBody, "\x1f\x8b") && function_exists('inflate_init')
@@ -350,13 +353,12 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         }
         $status = $response->getStatusCode();
         $mediaType = strtolower(trim(explode(';', $response->getHeaderLine('Content-Type'), 2)[0]));
+        $proof = $acceptance ? TaskDeliveryRefusal::fromJson($status, $rawBody, $poll && $mediaType === PollTransport::MEDIA_TYPE) : null;
         if ($poll && $mediaType === PollTransport::MEDIA_TYPE) {
             $frame = PollTransport::decode($rawBody, $status);
-            if ($captured !== null) {
-                $this->capabilitiesDigest->restore($frame['body'], $captured);
-            }
+            $this->restoreReportedCapabilities($frame['body'], $captured, $frame['status']);
             if ($frame['status'] >= 300) {
-                throw TransportException::fromResponse($frame['status'], $frame['body'], $rawBody, $frame['headers']);
+                throw $this->responseFailure($frame['status'], $frame['body'], $rawBody, $frame['headers'], $acceptance, $proof);
             }
 
             return $frame['body'];
@@ -365,33 +367,54 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             // An upstream proxy can return HTML or an empty body. Preserve
             // its status without interpreting it as a successful protocol reply.
             $decoded = json_decode($rawBody, true);
-            if ($captured !== null && is_array($decoded)) {
-                try {
-                    $this->capabilitiesDigest->restore($decoded, $captured);
-                } catch (UnknownServerCapabilitiesDigest) {
-                    // The HTTP error is the answer; an unusable digest in it
-                    // never replaces it. Ask for full capabilities next time.
-                    $this->capabilitiesDigest->forget();
-                    unset($decoded['server_capabilities']);
-                }
+            if (is_array($decoded)) {
+                $this->restoreReportedCapabilities($decoded, $captured, $status);
             }
-            throw TransportException::fromResponse($status, is_array($decoded) ? $decoded : null, $rawBody);
+            throw $this->responseFailure($status, is_array($decoded) ? $decoded : null, $rawBody, [], $acceptance, $proof);
         }
 
         $decoded = $rawBody === '' ? null : json_decode($rawBody, true, 512, JSON_THROW_ON_ERROR);
         if ($decoded !== null && !is_array($decoded)) {
             throw new TransportException('The server returned a JSON value instead of an object or array.');
         }
-        if ($captured !== null && $decoded !== null) {
-            $received = $decoded;
-            try {
-                $this->capabilitiesDigest->restore($decoded, $captured);
-            } catch (UnknownServerCapabilitiesDigest $unknown) {
-                throw $unknown->withAnswer($received);
-            }
+        if ($decoded !== null) {
+            $this->restoreReportedCapabilities($decoded, $captured, $status);
         }
 
         return $decoded;
+    }
+
+    /**
+     * @param array<string, mixed>|list<mixed> $body
+     * @param array{0: ?string, 1: array<string, mixed>|null}|null $captured
+     */
+    private function restoreReportedCapabilities(array &$body, ?array $captured, int $status): void
+    {
+        if ($captured === null) {
+            return;
+        }
+        $received = $body;
+        try {
+            $this->capabilitiesDigest->restore($body, $captured);
+        } catch (UnknownServerCapabilitiesDigest $unknown) {
+            if ($status < 300) {
+                throw $unknown->withAnswer($received);
+            }
+            // Preserve the refusal and request full capabilities next time.
+            $this->capabilitiesDigest->forget();
+            unset($body['server_capabilities']);
+        }
+    }
+
+    /**
+     * @param array<string, mixed>|list<mixed>|null $body
+     * @param array<string, string> $headers
+     */
+    private function responseFailure(int $status, ?array $body, string $raw, array $headers, bool $acceptance, ?TaskDeliveryRefusal $proof): TransportException
+    {
+        return $acceptance
+            ? new TransportException('Task acceptance is not confirmed.', $status, $body, headers: $headers, taskDeliveryRefusal: $proof)
+            : TransportException::fromResponse($status, $body, $raw, $headers);
     }
 
     /**
