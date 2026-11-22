@@ -385,7 +385,7 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
     }
 
     /**
-     * @param array<string, mixed>|list<mixed> $body
+     * @param array<array-key, mixed> $body
      * @param array{0: ?string, 1: array<string, mixed>|null}|null $captured
      */
     private function restoreReportedCapabilities(array &$body, ?array $captured, int $status): void
