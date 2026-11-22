@@ -353,15 +353,10 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         }
         $status = $response->getStatusCode();
         $mediaType = strtolower(trim(explode(';', $response->getHeaderLine('Content-Type'), 2)[0]));
-        $proof = $acceptance ? TaskDeliveryRefusal::fromJson($status, $rawBody, $poll && $mediaType === PollTransport::MEDIA_TYPE) : null;
-        if ($poll && $mediaType === PollTransport::MEDIA_TYPE) {
-            $frame = PollTransport::decode($rawBody, $status);
-            $this->restoreReportedCapabilities($frame['body'], $captured, $frame['status']);
-            if ($frame['status'] >= 300) {
-                throw $this->responseFailure($frame['status'], $frame['body'], $rawBody, $frame['headers'], $acceptance, $proof);
-            }
-
-            return $frame['body'];
+        $framed = $poll && $mediaType === PollTransport::MEDIA_TYPE;
+        $proof = $acceptance ? TaskDeliveryRefusal::fromJson($status, $rawBody, $framed) : null;
+        if ($framed) {
+            return $this->decodePollResponse($rawBody, $status, $captured, $acceptance, $proof);
         }
         if ($status < 200 || $status >= 300) {
             // An upstream proxy can return HTML or an empty body. Preserve
@@ -382,6 +377,21 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
         }
 
         return $decoded;
+    }
+
+    /**
+     * @param array{0: ?string, 1: array<string, mixed>|null}|null $captured
+     * @return array<string, mixed>
+     */
+    private function decodePollResponse(string $rawBody, int $status, ?array $captured, bool $acceptance, ?TaskDeliveryRefusal $proof): array
+    {
+        $frame = PollTransport::decode($rawBody, $status);
+        $this->restoreReportedCapabilities($frame['body'], $captured, $frame['status']);
+        if ($frame['status'] >= 300) {
+            throw $this->responseFailure($frame['status'], $frame['body'], $rawBody, $frame['headers'], $acceptance, $proof);
+        }
+
+        return $frame['body'];
     }
 
     /**
