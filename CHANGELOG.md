@@ -6,6 +6,16 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.26.0] - 2026-11-23
+
+### Added
+
+- Workers can replay reopened conditions inside `all()` when native Server
+  advertises `grouped_condition_waits` at registration. A false wake can
+  replace the physical wait while keeping its original group position.
+  Upgrade every worker eligible for these workflows before authoring
+  grouped conditions. (durable-workflow/server#1142)
+
 ## [3.25.0] - 2026-11-23
 
 ### Added
