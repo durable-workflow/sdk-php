@@ -6,6 +6,21 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.28.0] - 2026-11-23
+
+### Added
+
+- Workers can report a durable wait for a selected child workflow or a child-only
+  `all()` member when the Server advertises `selection_child_await`. Cold replay
+  reports when it consumes the original handle, so Server can recover a missing
+  parent wake-up.
+
+### Fixed
+
+- A selected condition retains its original group member when it reopens at a
+  later history position. Replay uses the original operation identity when that
+  condition wins. (durable-workflow/workflow#1233)
+
 ## [3.27.0] - 2026-11-23
 
 ### Added
