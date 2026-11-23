@@ -953,6 +953,7 @@ final class Worker
                         'query_tasks',
                         'workflow_updates',
                         'durable_history_replay',
+                        'grouped_condition_wait_replay',
                         'workflow_entry_arguments_validation',
                         'graceful_shutdown',
                         'message_streams',
