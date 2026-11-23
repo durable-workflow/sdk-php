@@ -76,6 +76,12 @@ class ParallelWorkflowCommand
         return $count;
     }
 
+    /** @internal */
+    public function containsOnlyChildWorkflows(): bool
+    {
+        return self::kind($this->operations) === 'child';
+    }
+
     /**
      * @return list<array{
      *     operation: DeferredWorkflowOperation,

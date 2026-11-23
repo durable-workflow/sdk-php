@@ -714,7 +714,9 @@ final class Replayer
                         $selectionCancellations,
                         $selectionCancellationOrders,
                     );
-                    if ($suspended->kind === 'child' && $suspended->size === 1) {
+                    if (($suspended->kind === 'child' && $suspended->size === 1)
+                        || ($suspended->operation instanceof ParallelWorkflowCommand
+                            && $suspended->operation->containsOnlyChildWorkflows())) {
                         $handle = [
                             'selection_group_id' => $suspended->selectionGroupId,
                             'member_base_sequence' => $suspended->baseSequence,
