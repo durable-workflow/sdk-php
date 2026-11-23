@@ -70,6 +70,16 @@ Rolling a Server's SQLite database back in place is not supported once anchored
 waits exist (restore the pre-upgrade backup instead), and a wait chain that an
 older Server has already recorded inconsistently is not repaired automatically.
 
+## Grouped condition waits
+
+Before using `deferCondition()` inside `all()` on native Server, upgrade every
+worker that can claim tasks for those workflows, including standby and
+autoscaling pools. Use a native Server that returns the
+`grouped_condition_waits` capability at worker registration. A condition
+that is still false after a signal can reopen at its original group position.
+Keep workers that can replay those histories on the queue until the runs
+finish.
+
 ## Condition fingerprints and replay
 
 The worker records a condition predicate's identity in durable history. The

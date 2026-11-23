@@ -1164,6 +1164,46 @@ final class ReplayerTest extends TestCase
         self::assertSame(300, $commands[0]['timeout_seconds']);
     }
 
+    public function testAGroupedReplacementWaitRetainsItsSlotAndConsumesItsPhysicalSequence(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context): array {
+            $context->all([
+                $context->deferCondition(static fn (): bool => $context->signals('approve') !== [], 'approval', 300),
+                $context->deferTimer(5),
+            ]);
+
+            return $context->all([$context->deferTimer(10), $context->deferTimer(20)]);
+        };
+        [$condition, $timer] = (new Replayer($codec))->replay($workflow, [], [], 'php-workers')->commands;
+        unset($condition['type'], $timer['type']);
+        $event = static fn (string $type, int $second, array $payload): array => [
+            'event_type' => $type,
+            'recorded_at' => sprintf('2026-11-22T12:00:%02dZ', $second),
+            'payload' => $payload,
+        ];
+        $original = [...$condition, 'condition_wait_id' => 'condition-1', 'sequence' => 1];
+        $replacement = [...$condition, 'condition_wait_id' => 'condition-3', 'sequence' => 3];
+        $sibling = [...$timer, 'timer_id' => 'timer-2', 'sequence' => 2];
+        $history = [
+            $event('ConditionWaitOpened', 0, $original),
+            $event('TimerScheduled', 0, $sibling),
+            $event('ConditionWaitSatisfied', 1, $original),
+            $event('ConditionWaitOpened', 1, $replacement),
+        ];
+
+        $pending = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers')->commands;
+        self::assertSame(['open_condition_wait'], array_column($pending, 'type'));
+        self::assertSame($condition['condition_wait_occurrence_id'], $pending[0]['condition_wait_occurrence_id']);
+        self::assertSame($condition['parallel_group_path'], $pending[0]['parallel_group_path']);
+
+        $history[] = $event('TimerFired', 5, $sibling);
+        $history[] = $event('ConditionWaitSatisfied', 6, $replacement);
+        $next = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers')->commands;
+        self::assertSame(['start_timer', 'start_timer'], array_column($next, 'type'));
+        self::assertSame([4, 4], array_column($next, 'parallel_group_base_sequence'));
+    }
+
     /** Two keyless members of one group are separate waits, never a reopen (#271 review). */
     public function testKeylessGroupMembersAreNotLinkedAsReopens(): void
     {
