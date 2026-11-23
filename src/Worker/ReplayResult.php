@@ -12,6 +12,7 @@ final class ReplayResult
      * @param list<array<string, mixed>> $commands
      * @param list<array{stream_name: string, through_position: int}> $messageStreamCursors
      * @param list<array{stream_name: string, after_position: int}> $messageStreamWaits
+     * @param array<string, int|string>|null $selectionChildAwait
      */
     public function __construct(
         public readonly array $commands,
@@ -25,6 +26,7 @@ final class ReplayResult
         public readonly ?PreparedLocalActivityGroup $preparedLocalActivityGroup = null,
         public readonly ?CancellationScopeOpening $cancellationScopeOpening = null,
         public readonly ?CancellationScopeDeliveryIntent $cancellationScopeDelivery = null,
+        public readonly ?array $selectionChildAwait = null,
     ) {
     }
 }

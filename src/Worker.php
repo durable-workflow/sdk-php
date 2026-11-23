@@ -148,6 +148,7 @@ final class Worker
     /** Lazily discovered: false = not native, string = native Server description (sdk-php#278). */
     private string|false|null $nativeServerVersion = null;
     private bool $groupedConditionWaitsAdvertised = false;
+    private bool $selectionChildAwaitAdvertised = false;
     private ?ActivityLeaseProcess $activityLeaseProcess = null;
     private ?ActivityLeaseProcess $activityLeaseHelper = null;
     /** @var array<string, mixed>|null The activity claim whose lease maintenance is starting. */
@@ -1352,6 +1353,8 @@ final class Worker
             && ($capabilities['child_workflow_start_turn'] ?? null) === true;
         $this->childWorkflowIdSupported = is_array($capabilities)
             && ($capabilities['child_workflow_explicit_id'] ?? null) === true;
+        $this->selectionChildAwaitAdvertised = is_array($capabilities)
+            && ($capabilities['selection_child_await'] ?? null) === true;
         $this->signalExternalWorkflowSupported = is_array($capabilities)
             && ($capabilities['signal_external_workflow'] ?? null) === true;
         $this->replayer->useConditionOccurrenceDeadline(is_array($capabilities)
@@ -2114,6 +2117,7 @@ final class Worker
         $leaseOwner = (string) ($task['lease_owner'] ?? $this->workerId);
         $messageStreamCursors = [];
         $messageStreamWaits = [];
+        $selectionChildAwait = null;
         try {
             if (array_key_exists('cancellation_request', $task) && $task['cancellation_request'] !== null) {
                 $this->observeClaimCancellation($task['cancellation_request']);
@@ -2148,6 +2152,7 @@ final class Worker
                     $commands = $replay->commands;
                     $messageStreamCursors = $replay->messageStreamCursors;
                     $messageStreamWaits = $replay->messageStreamWaits;
+                    $selectionChildAwait = $this->selectionChildAwaitAdvertised ? $replay->selectionChildAwait : null;
                     if ($replay->terminalFailure instanceof ServerException
                         && $replay->terminalFailure->isStorageAdmissionFailure()) {
                         throw $replay->terminalFailure;
@@ -2195,13 +2200,13 @@ final class Worker
             $carried = $this->reserveActivityPoll($leaseOwner, $canCarryPoll);
             $workflowCarried = $canCarryPoll ? $this->reserveWorkflowPoll($leaseOwner, workflowCompletion: true) : null;
             $this->notifyDeliveredWorkflowHistory('completion', $taskId, $attempt, $commands);
-            $complete = fn (array $commands, array $messageStreamCursors, array $messageStreamWaits): array
+            $complete = fn (array $commands, array $messageStreamCursors, array $messageStreamWaits, ?array $selectionChildAwait = null): array
                 => $this->retryStorageAdmission('workflow_complete', function () use (
-                    $taskId, $leaseOwner, $attempt, $commands, $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried, $workflowCarried, $promotedContinuation,
+                    $taskId, $leaseOwner, $attempt, $commands, $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried, $workflowCarried, $promotedContinuation, $selectionChildAwait,
                 ): array {
                     try {
                         return $this->client->completeWorkflowTask($taskId, $leaseOwner, $attempt, $commands,
-                            $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried?->request, $workflowCarried?->request);
+                            $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried?->request, $workflowCarried?->request, $selectionChildAwait);
                     } catch (ServerException $error) {
                         $carried?->uncertainCompletion();
                         $workflowCarried?->uncertainCompletion();
@@ -2218,7 +2223,7 @@ final class Worker
                     }
                 }, ['task_id' => $taskId, 'lease_owner' => $leaseOwner, 'attempt' => $attempt]);
             try {
-                $completion = $complete($commands, $messageStreamCursors, $messageStreamWaits);
+                $completion = $complete($commands, $messageStreamCursors, $messageStreamWaits, $selectionChildAwait);
             } catch (WorkflowTaskCompletionTooLarge|WorkflowTaskHistoryLimitExceeded $tooLarge) {
                 // .github#228: the Server refused the whole completion before reading it
                 // (413) or rolled its history transaction back over the history budget

@@ -534,6 +534,13 @@ final class ReplayRegressionConsumer
             throw new RuntimeException("{$identity}.history must not be empty.");
         }
 
+        if ($workflowType === 'golden.selection-child-group-await') {
+            require_once __DIR__.'/../../tests/Support/ReplayRegressionFixture.php';
+            \DurableWorkflow\Tests\Support\ReplayRegressionFixture::execute($fixture);
+
+            return;
+        }
+
         if ($workflowType === 'golden.activity-continuation-untimed-result') {
             // Server #1078: replay directly so the fixture can assert that the replayer
             // reports a business-time read it could not answer at an untimed result.

@@ -714,6 +714,28 @@ final class Replayer
                         $selectionCancellations,
                         $selectionCancellationOrders,
                     );
+                    if (($suspended->kind === 'child' && $suspended->size === 1)
+                        || ($suspended->operation instanceof ParallelWorkflowCommand
+                            && $suspended->operation->containsOnlyChildWorkflows())) {
+                        $handle = [
+                            'selection_group_id' => $suspended->selectionGroupId,
+                            'member_base_sequence' => $suspended->baseSequence,
+                            'member_size' => $suspended->size,
+                            'operation_identity' => $suspended->identity,
+                            'await_position' => $nextSequence,
+                            'status' => 'waiting',
+                        ];
+                        $activePosition = $this->activeSelectionChildAwaitPosition($history, $handle);
+                        if ($activePosition !== null) {
+                            $handle['await_position'] = $activePosition;
+                        }
+                        if (!$resolution['resolved']) {
+                            $context?->rememberSelectionChildAwait($handle);
+                        } elseif ($activePosition !== null) {
+                            $handle['status'] = 'resumed';
+                            $context?->rememberSelectionChildAwait($handle);
+                        }
+                    }
                     if (!$resolution['resolved']) {
                         return $this->result($commands, $context);
                     }
@@ -1234,7 +1256,51 @@ final class Replayer
             preparedLocalActivity: $preparedLocalActivity,
             preparedLocalActivityGroup: $preparedLocalActivityGroup,
             cancellationScopeOpening: $cancellationScopeOpening,
+            selectionChildAwait: $context?->selectionChildAwait(),
         );
+    }
+
+    /**
+     * @param list<array<string, mixed>> $history
+     * @param array{selection_group_id: string, member_base_sequence: int, member_size: int,
+     *     operation_identity: string, await_position: int, status: string} $handle
+     */
+    private function activeSelectionChildAwaitPosition(array $history, array $handle): ?int
+    {
+        for ($index = count($history) - 1; $index >= 0; --$index) {
+            $event = $history[$index];
+            $type = $event['event_type'] ?? $event['type'] ?? null;
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            if ($type === 'SignalWaitOpened' || ($type === 'ConditionWaitOpened'
+                && !$this->isSelectedConditionReopen($payload))) {
+                return null;
+            }
+            if ($type !== 'ChildWorkflowAwaited' || !is_array($payload['selection_handle'] ?? null)) {
+                continue;
+            }
+            $recorded = $payload['selection_handle'];
+            foreach ($handle as $key => $value) {
+                if ($key !== 'await_position' && ($recorded[$key] ?? null) !== $value) {
+                    return null;
+                }
+            }
+            $position = $recorded['await_position'] ?? null;
+            return is_int($position)
+                && $position >= $handle['member_base_sequence'] + $handle['member_size']
+                && $position <= $handle['await_position'] ? $position : null;
+        }
+
+        return null;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function isSelectedConditionReopen(array $payload): bool
+    {
+        return ($payload['parallel_group_mode'] ?? null) === 'select'
+            && ($payload['selection_member_kind'] ?? null) === 'condition'
+            && is_int($payload['sequence'] ?? null)
+            && is_int($payload['selection_member_base_sequence'] ?? null)
+            && $payload['sequence'] > $payload['selection_member_base_sequence'];
     }
 
     /** @param array<int, array<string, mixed>> $stepsBySequence */
@@ -1509,7 +1575,6 @@ final class Replayer
         $positions = [];
         foreach ($steps as $step) {
             $occurrence = ($step['shape'] ?? null) === 'condition_wait' && $step['parallel_path'] !== []
-                && !in_array('select', array_column($step['parallel_path'], 'parallel_group_mode'), true)
                 ? $this->stepOccurrence($step)
                 : null;
             if ($occurrence === null || !isset($positions[$occurrence])) {
@@ -2357,7 +2422,7 @@ final class Replayer
                     throw new NonDeterministicWorkflow('A grouped condition reopen is missing its group path.',
                         $sequence, reason: 'condition_wait_occurrence_mismatch');
                 }
-                if ($occurrence !== null && $path !== [] && !in_array('select', array_column($path, 'parallel_group_mode'), true)) {
+                if ($occurrence !== null && $path !== []) {
                     $groupedConditionSequences[$occurrence] ??= $sequence;
                 }
                 $steps[$key] ??= $this->step(
@@ -2712,6 +2777,14 @@ final class Replayer
                 $type = (string) ($event['event_type'] ?? $event['type'] ?? '');
                 $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
                 $sequence = $this->sequence($payload);
+                if ($memberKind === 'condition' && in_array($type, ['ConditionWaitSatisfied', 'TimerFired'], true)
+                    && ($payload['parallel_group_id'] ?? null) === $expectedGroupId
+                    && ($payload['selection_member_base_sequence'] ?? null) === $memberBase) {
+                    if (($payload['condition_wait_reopened'] ?? null) === true) {
+                        continue;
+                    }
+                    $sequence = $memberBase;
+                }
                 if (!in_array($type, $terminalTypes, true)
                     || self::settledAtRunClose($type, $payload)
                     || $sequence === null
