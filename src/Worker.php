@@ -51,6 +51,7 @@ use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\QueryTaskAuthority;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\ReplayResult;
+use DurableWorkflow\Worker\ConditionInputOrder;
 use DurableWorkflow\Worker\ScopedActivityCancellationObserved;
 use DurableWorkflow\Worker\WorkflowClaimAborted;
 use DurableWorkflow\Worker\WorkflowClaimDeferred;
@@ -956,6 +957,7 @@ final class Worker
                         'query_tasks',
                         'workflow_updates',
                         'durable_history_replay',
+                        ConditionInputOrder::CAPABILITY,
                         'grouped_condition_wait_replay',
                         'workflow_entry_arguments_validation',
                         'graceful_shutdown',
@@ -1359,6 +1361,7 @@ final class Worker
             && ($capabilities['signal_external_workflow'] ?? null) === true;
         $this->replayer->useConditionOccurrenceDeadline(is_array($capabilities)
             && ($capabilities['condition_wait_occurrence_deadline'] ?? null) === true);
+        $this->replayer->useConditionInputOrder(is_array($capabilities) && ConditionInputOrder::marked($capabilities));
         if (self::advertisesGroupedConditionWaits($capabilities)) {
             $this->groupedConditionWaitsAdvertised = true;
         }
@@ -2179,6 +2182,12 @@ final class Worker
             }
             $this->completionPipeline?->join();
             $this->assertPipelineAuthority();
+            if ($commands === [] && array_key_exists(ConditionInputOrder::PENDING_INPUT, $task)) {
+                $this->client->failWorkflowTask($taskId, $leaseOwner, $attempt,
+                    'Workflow task waiting for scheduled history.', 'WorkflowTaskWaitingForHistory');
+
+                return;
+            }
             $this->assertWorkflowMemoUpdatesAvailable($commands);
             $this->assertServiceOperationsAvailable($commands);
             $this->assertChildStartTurnAvailable($commands);

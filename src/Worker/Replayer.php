@@ -89,6 +89,13 @@ final class Replayer
     /** Whether this task's Server advertises condition_wait_occurrence_deadline. */
     private bool $conditionOccurrenceDeadline = false;
 
+    private bool $conditionInputOrder = false;
+
+    public function useConditionInputOrder(bool $supported): void
+    {
+        $this->conditionInputOrder = $supported;
+    }
+
     public function __construct(private readonly PayloadCodec $codec)
     {
     }
@@ -230,6 +237,7 @@ final class Replayer
         // sdk-php#434: the applied-only signal marker is transparent to the
         // authored command sequence; only its position selects the view.
         $appliedSignals = AppliedSignals::fromHistory($history, $task);
+        $orderedConditions = new ConditionInputOrder($history);
         $signalMarkerSequences = [];
         $steps = array_values(array_filter($steps, static function (array $step) use (&$signalMarkerSequences): bool {
             if ($step['shape'] === 'version_marker' && $step['detail'] === AppliedSignals::CHANGE_ID) {
@@ -533,6 +541,10 @@ final class Replayer
                                 ...$metadata,
                                 'parallel_group_path' => $path,
                             ]);
+                            if ($suspended->mode === 'select' && $command->type === 'open_condition_wait'
+                                && $this->conditionInputOrder) {
+                                $command = $this->anchorNewConditionChain($command);
+                            }
                             if (($encodingFailure = $this->appendWorkflowCommand(
                                 $commands,
                                 $command,
@@ -565,6 +577,18 @@ final class Replayer
                                     $history, $cancellation, $context, $cancellationConsumed);
                             }
                             if ($command->type === 'open_condition_wait') {
+                                $waitId = $this->stringValue($step['condition_wait_id'] ?? null);
+                                if ($waitId !== null && $orderedConditions->has($waitId)) {
+                                    $groupId = $path[0]['parallel_group_id'] ?? '';
+                                    if (!isset($selectionResolutions[$groupId])) {
+                                        $decision = $orderedConditions->decide($waitId, $task, $context, $command);
+                                        if ($decision !== null) {
+                                            $commands[] = $decision;
+                                        }
+                                    }
+                                    $pending = true;
+                                    continue;
+                                }
                                 if ($command->conditionSatisfied()) {
                                     $results[$offset] = true;
                                     continue;
@@ -961,6 +985,16 @@ final class Replayer
                             $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($step));
                             $consumedConditionTail = $this->conditionTailAfterConsumption($step, $suspended, $step['value'] === true);
                             $suspended = $this->resumeExecution($execution, $businessReplayClock, $step['value'], $step);
+                            continue;
+                        }
+                        $waitId = $this->stringValue($step['condition_wait_id'] ?? null);
+                        if ($waitId !== null && $orderedConditions->has($waitId)) {
+                            $decision = $orderedConditions->decide($waitId, $task, $context, $suspended);
+                            if ($decision === null) {
+                                return $this->result($commands, $context);
+                            }
+                            $commands[] = $decision;
+                            $suspended = $this->resumeExecution($execution, $businessReplayClock, $decision['satisfied']);
                             continue;
                         }
                         $satisfied = $appliedSignals->live(static fn (): bool => $suspended->conditionSatisfied());
@@ -1667,13 +1701,14 @@ final class Replayer
         $timeout = $command->attributes['timeout_seconds'] ?? null;
         if (!$this->conditionOccurrenceDeadline || !is_int($timeout)
             || !is_string($command->attributes['condition_wait_occurrence_id'] ?? null)
-            || array_key_exists('parallel_group_path', $command->attributes)) {
+            || (!$this->conditionInputOrder && array_key_exists('parallel_group_path', $command->attributes))) {
             return $command;
         }
 
         return $command->withAttributes([
             'deadline_policy' => self::CONDITION_DEADLINE_POLICY,
             'condition_wait_timeout_budget_seconds' => $timeout,
+            ...($this->conditionInputOrder ? [ConditionInputOrder::CAPABILITY => ConditionInputOrder::ORDER] : []),
         ]);
     }
 
@@ -2127,6 +2162,9 @@ final class Replayer
                 }
             } elseif ($type === 'TimerFired') {
                 if (($payload['timer_kind'] ?? null) === 'condition_timeout') {
+                    if (ConditionInputOrder::marked($payload)) {
+                        continue;
+                    }
                     $conditionStepKey = $this->conditionStepKey($payload, $conditionStepsByWaitId);
                     if ($conditionStepKey !== null
                         && isset($steps[$conditionStepKey])
