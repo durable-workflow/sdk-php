@@ -13,6 +13,7 @@ use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ChildWorkflowHandle;
 use DurableWorkflow\Worker\ParentClosePolicy;
 use DurableWorkflow\Worker\Replayer;
+use DurableWorkflow\Worker\WorkflowCommand;
 use DurableWorkflow\Worker\WorkflowContext;
 use InvalidArgumentException;
 use LogicException;
@@ -167,55 +168,133 @@ final class ChildWorkflowHandleTest extends TestCase
         (new Replayer($this->codec))->replay($workflow, [], [], 'php-workers');
     }
 
-    /**
-     * A runtime without child_workflow_start_turn ignores the await field and
-     * gives no parent turn, so the worker refuses before submitting the start.
-     */
     public function testTheWorkerSubmitsAStartedChildOnlyWhenTheRuntimeAdvertisesTheTurn(): void
     {
-        foreach ([false, true] as $supported) {
-            $commands = null;
-            $failure = null;
-            $transport = new FakeTransport(handler: static function (
-                string $method, string $uri, array $headers, ?array $body,
-            ) use ($supported, &$commands, &$failure): array {
-                if (str_ends_with($uri, '/workflow-tasks/poll')) {
-                    return ['server_capabilities' => ['child_workflow_start_turn' => $supported],
-                        'poll_status' => 'leased', 'task' => ['task_id' => 'parent-task', 'workflow_task_attempt' => 1,
-                            'lease_owner' => 'worker-1', 'workflow_id' => 'parent', 'run_id' => 'parent-run',
-                            'workflow_type' => 'billing.parent', 'payload_codec' => 'avro', 'history_events' => []]];
-                }
-                if (str_ends_with($uri, '/parent-task/heartbeat')) {
-                    return ['task_id' => 'parent-task', 'workflow_task_attempt' => 1, 'lease_owner' => 'worker-1', 'renewed' => true];
-                }
-                if (str_ends_with($uri, '/parent-task/complete')) {
-                    $commands = $body['commands'];
+        [$commands, $failure] = $this->submittedChildStart(['child_workflow_start_turn' => false]);
+        self::assertNull($commands);
+        self::assertStringContainsString('child_workflow_start_turn_unavailable', (string) $failure);
 
-                    return ['completed' => true];
-                }
-                if (str_ends_with($uri, '/parent-task/fail')) {
-                    $failure = $body['failure']['message'] ?? null;
+        [$commands, $failure] = $this->submittedChildStart(['child_workflow_start_turn' => true]);
+        self::assertNull($failure);
+        self::assertSame('started', $commands[0]['await'] ?? null);
+        self::assertArrayNotHasKey('workflow_id', $commands[0]);
+    }
 
-                    return ['recorded' => true];
-                }
-                if (str_ends_with($uri, '/activity-tasks/poll')) {
-                    return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
-                }
-                self::fail("Unexpected request {$method} {$uri}");
-            });
-            $worker = new Worker(new Client('https://runtime.test', transport: $transport), 'parents', workerId: 'worker-1');
-            $worker->registerWorkflow('billing.parent', static fn (WorkflowContext $context): mixed =>
-                $context->startChildWorkflow('billing.reconcile', ['acct-1'])->await());
+    public function testTheWorkerSubmitsAnExplicitIdOnlyToARuntimeWithTheCapability(): void
+    {
+        $capabilities = ['child_workflow_start_turn' => true];
+        $options = ['workflow_id' => 'billing:acct-1'];
+        [$commands, $failure] = $this->submittedChildStart($capabilities, $options);
+        self::assertNull($commands);
+        self::assertStringContainsString('child_workflow_explicit_id_unavailable', (string) $failure);
 
-            self::assertTrue($worker->tick(0));
-            if ($supported) {
-                self::assertNull($failure);
-                self::assertSame('started', $commands[0]['await'] ?? null);
-            } else {
-                self::assertNull($commands, 'nothing is submitted without the advertised turn');
-                self::assertStringContainsString('child_workflow_start_turn_unavailable', (string) $failure);
+        [$commands, $failure] = $this->submittedChildStart(
+            [...$capabilities, 'child_workflow_explicit_id' => true],
+            $options,
+        );
+        self::assertNull($failure);
+        self::assertSame('billing:acct-1', $commands[0]['workflow_id'] ?? null);
+    }
+
+    public function testReplayUsesTheCommittedExplicitIdThroughChildContinuation(): void
+    {
+        $history = $this->started();
+        $history[0]['payload']['requested_child_id'] = 'child-instance';
+        $history[] = ['event_type' => 'ChildRunStarted', 'payload' => [
+            'sequence' => 1, 'child_call_id' => 'call-1', 'child_workflow_instance_id' => 'child-instance',
+            'child_workflow_run_id' => 'child-run-2',
+        ]];
+        $history[] = $this->resolved('ChildRunCompleted', [
+            'child_workflow_run_id' => 'child-run-2',
+            'result' => $this->codec->envelope('done'),
+        ]);
+
+        $commands = (new Replayer($this->codec))->replay(
+            static function (WorkflowContext $context): array {
+                $child = $context->startChildWorkflow('billing.reconcile', [], ['workflow_id' => 'child-instance']);
+
+                return [$child->identity()->workflowId, $child->identity()->initialRunId, $child->await()];
+            },
+            $history, [], 'php-workers',
+        )->commands;
+
+        self::assertSame(['complete_workflow'], array_column($commands, 'type'));
+        self::assertSame(['child-instance', 'child-run-1', 'done'], $this->codec->decodeEnvelope($commands[0]['result']));
+    }
+
+    public function testReplayRefusesChangingOrDroppingAnExplicitId(): void
+    {
+        $history = $this->started();
+        $history[0]['payload']['requested_child_id'] = 'child-instance';
+        foreach ([[], ['workflow_id' => 'different-child']] as $options) {
+            try {
+                (new Replayer($this->codec))->replay(
+                    static fn (WorkflowContext $context): mixed =>
+                        $context->childWorkflow('billing.reconcile', [], $options),
+                    $history, [], 'php-workers',
+                );
+                self::fail('Expected the change to the recorded child workflow ID to be refused.');
+            } catch (NonDeterministicWorkflow $failure) {
+                self::assertSame('child_workflow_identity_mismatch', $failure->reason);
             }
         }
+    }
+
+    public function testInvalidExplicitIdDoesNotBecomeACommand(): void
+    {
+        foreach (['', 'account/child', ' child', str_repeat('x', 129), null, 5] as $id) {
+            try {
+                WorkflowCommand::childWorkflow('billing.reconcile', [], ['workflow_id' => $id]);
+                self::fail('Expected invalid child workflow ID.');
+            } catch (InvalidArgumentException $failure) {
+                self::assertStringContainsString('workflow_id', $failure->getMessage());
+            }
+        }
+    }
+
+    /**
+     * @param array<string, bool> $capabilities
+     * @param array<string, mixed> $options
+     * @return array{null|list<array<string, mixed>>, null|string}
+     */
+    private function submittedChildStart(array $capabilities, array $options = []): array
+    {
+        $commands = null;
+        $failure = null;
+        $transport = new FakeTransport(handler: static function (
+            string $method, string $uri, array $headers, ?array $body,
+        ) use ($capabilities, &$commands, &$failure): array {
+            if (str_ends_with($uri, '/workflow-tasks/poll')) {
+                return ['server_capabilities' => $capabilities,
+                    'poll_status' => 'leased', 'task' => ['task_id' => 'parent-task', 'workflow_task_attempt' => 1,
+                        'lease_owner' => 'worker-1', 'workflow_id' => 'parent', 'run_id' => 'parent-run',
+                        'workflow_type' => 'billing.parent', 'payload_codec' => 'avro', 'history_events' => []]];
+            }
+            if (str_ends_with($uri, '/parent-task/heartbeat')) {
+                return ['task_id' => 'parent-task', 'workflow_task_attempt' => 1, 'lease_owner' => 'worker-1', 'renewed' => true];
+            }
+            if (str_ends_with($uri, '/parent-task/complete')) {
+                $commands = $body['commands'];
+
+                return ['completed' => true];
+            }
+            if (str_ends_with($uri, '/parent-task/fail')) {
+                $failure = $body['failure']['message'] ?? null;
+
+                return ['recorded' => true];
+            }
+            if (str_ends_with($uri, '/activity-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+            self::fail("Unexpected request {$method} {$uri}");
+        });
+        $worker = new Worker(new Client('https://runtime.test', transport: $transport), 'parents', workerId: 'worker-1');
+        $worker->registerWorkflow('billing.parent', static fn (WorkflowContext $context): mixed =>
+            $context->startChildWorkflow('billing.reconcile', ['acct-1'], $options)->await());
+
+        self::assertTrue($worker->tick(0));
+
+        return [$commands, $failure];
     }
 
     /** @param list<array<string, mixed>> $history

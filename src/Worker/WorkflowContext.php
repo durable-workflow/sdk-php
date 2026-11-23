@@ -491,6 +491,9 @@ final class WorkflowContext
     }
 
     /**
+     * Use the workflow_id option to name the child instance when the runtime advertises
+     * child_workflow_explicit_id. Omitting it leaves the ID to the runtime.
+     *
      * @param list<mixed> $arguments
      * @param array<string, mixed> $options
      */

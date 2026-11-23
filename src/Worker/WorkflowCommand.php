@@ -248,6 +248,12 @@ final class WorkflowCommand
         if (array_key_exists('await', $options)) {
             throw new InvalidArgumentException('Child workflow await is chosen by the API: use startChildWorkflow() for a committed start handle.');
         }
+        if (array_key_exists('workflow_id', $options)) {
+            $id = $options['workflow_id'];
+            if (!is_string($id) || strlen($id) > 128 || preg_match('/\A[A-Za-z0-9._:-]+\z/', $id) !== 1) {
+                throw new InvalidArgumentException('Child workflow_id must be a non-empty URL-safe string of at most 128 characters.');
+            }
+        }
         $policies = self::canonicalChildWorkflowPolicies($options);
         unset($options['parent_close_policy'], $options['cancellation_policy']);
         foreach (self::CHILD_WORKFLOW_TIMEOUT_FIELDS as $field) {
