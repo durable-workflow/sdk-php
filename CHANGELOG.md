@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.24.2] - 2026-11-23
+
+### Fixed
+
+- Replay mismatches report the authored PHP function or method, filename and
+  source line when the worker can identify the suspended call. Offline replay
+  exposes the same location through `NonDeterministicWorkflow::workflowSource()`.
+
 ## [3.24.1] - 2026-11-21
 
 ### Fixed
