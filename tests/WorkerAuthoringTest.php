@@ -172,6 +172,7 @@ final class WorkerAuthoringTest extends TestCase
                     'query_tasks',
                     'workflow_updates',
                     'durable_history_replay',
+                    'condition_wait_input_order',
                     'grouped_condition_wait_replay',
                     'workflow_entry_arguments_validation',
                     'graceful_shutdown',

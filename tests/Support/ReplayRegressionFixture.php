@@ -232,7 +232,10 @@ final class ReplayRegressionFixture
             throw new RuntimeException("{$identity}.worker_task must be an object.");
         }
         // The resume context a signal-delivering task carries (sdk-php#434).
-        foreach (['resume_source_kind', 'resume_source_id', 'workflow_signal_id', 'workflow_command_id', 'signal_name'] as $field) {
+        foreach ([
+            'resume_source_kind', 'resume_source_id', 'workflow_signal_id', 'workflow_command_id', 'signal_name',
+            'condition_wait_pending_input_sequence',
+        ] as $field) {
             if (array_key_exists($field, $workerTask)) {
                 $task[$field] = $workerTask[$field];
             }
@@ -525,6 +528,7 @@ final class ReplayRegressionFixture
     private static function workflow(string $workflowType): callable
     {
         return match ($workflowType) {
+            'golden.ordered-condition' => self::workflow('golden.signal'),
             'golden.signal-occurrence-unavailable', 'golden.signal-occurrence-deferred' => self::workflow('golden.signal'),
             'golden.telemetry-context' => static function (WorkflowContext $context): array {
                 $result = $context->activity('golden.greet', ['Ada']);
