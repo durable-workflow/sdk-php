@@ -534,6 +534,17 @@ final class ReplayRegressionConsumer
             throw new RuntimeException("{$identity}.history must not be empty.");
         }
 
+        if ($workflowType === 'golden.selection-child-group-await') {
+            $replayer = new \DurableWorkflow\Worker\Replayer(new AvroPayloadCodec());
+            $replay = $replayer->replay(self::workflow($workflowType), $history, $input, 'regression-corpus');
+            if ($replay->commands !== []) {
+                throw new RuntimeException("{$identity} must park without authoring commands.");
+            }
+            self::assertExpected($identity, $fixture, ['selection_child_await' => $replay->selectionChildAwait ?? null]);
+
+            return;
+        }
+
         if ($workflowType === 'golden.activity-continuation-untimed-result') {
             // Server #1078: replay directly so the fixture can assert that the replayer
             // reports a business-time read it could not answer at an untimed result.
@@ -1210,6 +1221,20 @@ final class ReplayRegressionConsumer
                 ];
             },
             'golden.selection-handle-isolation' => self::selectionHandleIsolationWorkflow(),
+            'golden.selection-child-group-await' => static function (WorkflowContext $context): array {
+                $selected = $context->select([
+                    'children' => static fn () => $context->all([
+                        static fn () => $context->childWorkflow('golden.selection-child'),
+                        static fn () => $context->childWorkflow('golden.selection-child'),
+                    ]),
+                    'deadline' => static function () use ($context): void {
+                        $context->sleep(1);
+                    },
+                ]);
+
+                return $selected->handles['children']->await();
+            },
+
             'golden.selection-incomplete-nested-member' => static function (WorkflowContext $context): array {
                 $selected = $context->select([
                     'deadline' => static function () use ($context): void {
