@@ -2268,7 +2268,7 @@ final class Worker
                         $failure::class,
                         $failure instanceof NonDeterministicWorkflow || $failure instanceof WorkflowEntryArgumentsMismatch ? $failure->reason : null,
                         $failure instanceof NonDeterministicWorkflow ? $failure->sequence : null,
-                        $failure->getTraceAsString(),
+                        $failure instanceof NonDeterministicWorkflow ? null : $failure->getTraceAsString(),
                     );
                 },
                 $attempt,

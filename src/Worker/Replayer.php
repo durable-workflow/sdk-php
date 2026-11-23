@@ -314,261 +314,218 @@ final class Replayer
         $consumedScopeDeliveries = [];
         $consumedConditionTail = null;
 
-        while (!$execution->isTerminated()) {
-            while (isset($signalMarkerSequences[$nextSequence])) {
-                ++$nextSequence;
-            }
-            if (($encodingFailure = $this->recordAppliedSignalMarker($appliedSignals, $commands, $nextSequence, $taskQueue, $context)) !== null) {
-                return $encodingFailure;
-            }
-            if ($consumedConditionTail !== null) {
-                $remaining = $this->restoreConsumedConditionTail($suspended, $consumedConditionTail);
-                if ($remaining !== []) {
-                    array_splice($steps, $stepCursor, 0, $remaining);
+        try {
+            while (!$execution->isTerminated()) {
+                while (isset($signalMarkerSequences[$nextSequence])) {
+                    ++$nextSequence;
                 }
-                $consumedConditionTail = null;
-            }
-            $conditionResult = $suspended instanceof WorkflowCommand && !isset($cancelledConditionSequences[$nextSequence])
-                ? $this->unrecordedConditionResult($suspended, $steps[$stepCursor] ?? null) : null;
-            if (($encodingFailure = $this->recordAppliedSignalMarker($appliedSignals, $commands, $nextSequence, $taskQueue, $context)) !== null) {
-                return $encodingFailure;
-            }
-            if ($conditionResult !== null) {
-                $suspended = $this->resumeExecution($execution, $businessReplayClock, $conditionResult);
-                continue;
-            }
-            if (!$cancellationConsumed && $cancellation->delivery?->sequence === $nextSequence
-                && !$this->isRootCancellationBoundary($suspended, $cancellation->delivery, $stepsBySequence, $context)) {
-                throw new NonDeterministicWorkflow('Committed root cancellation cannot replace a scoped operation.', $nextSequence,
-                    reason: 'cooperative_cancellation_boundary_mismatch');
-            }
-            foreach ($scopeDeliveries as $scopeSequence => $scopeDelivery) {
-                if (isset($consumedScopeDeliveries[$scopeSequence])) {
+                if (($encodingFailure = $this->recordAppliedSignalMarker($appliedSignals, $commands, $nextSequence, $taskQueue, $context)) !== null) {
+                    return $encodingFailure;
+                }
+                if ($consumedConditionTail !== null) {
+                    $remaining = $this->restoreConsumedConditionTail($suspended, $consumedConditionTail);
+                    if ($remaining !== []) {
+                        array_splice($steps, $stepCursor, 0, $remaining);
+                    }
+                    $consumedConditionTail = null;
+                }
+                $conditionResult = $suspended instanceof WorkflowCommand && !isset($cancelledConditionSequences[$nextSequence])
+                    ? $this->unrecordedConditionResult($suspended, $steps[$stepCursor] ?? null) : null;
+                if (($encodingFailure = $this->recordAppliedSignalMarker($appliedSignals, $commands, $nextSequence, $taskQueue, $context)) !== null) {
+                    return $encodingFailure;
+                }
+                if ($conditionResult !== null) {
+                    $suspended = $this->resumeExecution($execution, $businessReplayClock, $conditionResult);
                     continue;
                 }
-                $delivery = $scopeDelivery['boundary'];
-                if ($scopeSequence < $nextSequence) {
-                    throw new NonDeterministicWorkflow('Workflow passed its committed scope cancellation boundary.', $scopeSequence,
-                        reason: 'cancellation_scope_boundary_mismatch');
+                if (!$cancellationConsumed && $cancellation->delivery?->sequence === $nextSequence
+                    && !$this->isRootCancellationBoundary($suspended, $cancellation->delivery, $stepsBySequence, $context)) {
+                    throw new NonDeterministicWorkflow('Committed root cancellation cannot replace a scoped operation.', $nextSequence,
+                        reason: 'cooperative_cancellation_boundary_mismatch');
                 }
-                if ($scopeSequence !== $nextSequence) {
-                    break;
-                }
-                $boundary = $this->cancellationBoundary($suspended, $nextSequence, $stepsBySequence, $delivery->requestId, $delivery);
-                $activeScope = $context->currentCancellationScopeId();
-                if ($boundary != $delivery || !isset($scopeDelivery['states'][$activeScope])
-                    || $context->isCancellationShielded()) {
-                    throw new NonDeterministicWorkflow('Committed scope cancellation changed its authored call, membership or shielding.', $scopeSequence,
-                        reason: 'cancellation_scope_boundary_mismatch');
-                }
-                $this->assertCancellationCallMatches($suspended, $delivery, $stepsBySequence, $context);
-                while (isset($steps[$stepCursor]) && $steps[$stepCursor]['sequence'] < $scopeSequence + $delivery->sequenceSpan) {
-                    if ($steps[$stepCursor]['sequence'] < $scopeSequence) {
-                        throw new NonDeterministicWorkflow('Scope cancellation skipped an earlier authored operation.', $steps[$stepCursor]['sequence'],
+                foreach ($scopeDeliveries as $scopeSequence => $scopeDelivery) {
+                    if (isset($consumedScopeDeliveries[$scopeSequence])) {
+                        continue;
+                    }
+                    $delivery = $scopeDelivery['boundary'];
+                    if ($scopeSequence < $nextSequence) {
+                        throw new NonDeterministicWorkflow('Workflow passed its committed scope cancellation boundary.', $scopeSequence,
                             reason: 'cancellation_scope_boundary_mismatch');
                     }
-                    ++$stepCursor;
-                }
-                $nextSequence = $scopeSequence + $delivery->sequenceSpan;
-                $consumedScopeDeliveries[$scopeSequence] = true;
-                $context->observeCancellationReplayTime($scopeDelivery['event']);
-                $suspended = $this->throwIntoExecution($execution, $businessReplayClock, $context->deliveredScopeCascade(array_map(
-                    static fn (array $state): ScopedCancellationContext => $state['context'], $scopeDelivery['states'],
-                ), array_map(static fn (array $state): array => CancellationScopeTimerCleanup::snapshot(
-                    $state['context'], $state['authority_deadline_at'], $scopeDelivery['event'],
-                ), $scopeDelivery['states'])));
-                continue 2;
-            }
-            if ($prepareCancellationScopeDelivery && !$context->isCancellationShielded()) {
-                $pending = $committedScopes->pendingRequestForScope($context->currentCancellationScopeId(), $scopes);
-                if ($pending !== null) {
-                    $request = $pending['context'];
-                    $preparation = $committedScopes->preparations[$request->scopeId] ?? null;
-                    $original = $preparation['boundary'] ?? null;
-                    if ($original !== null && $original->sequence < $nextSequence) {
-                        throw new NonDeterministicWorkflow('Workflow passed its original prepared scope boundary.', $original->sequence,
+                    if ($scopeSequence !== $nextSequence) {
+                        break;
+                    }
+                    $boundary = $this->cancellationBoundary($suspended, $nextSequence, $stepsBySequence, $delivery->requestId, $delivery);
+                    $activeScope = $context->currentCancellationScopeId();
+                    if ($boundary != $delivery || !isset($scopeDelivery['states'][$activeScope])
+                        || $context->isCancellationShielded()) {
+                        throw new NonDeterministicWorkflow('Committed scope cancellation changed its authored call, membership or shielding.', $scopeSequence,
                             reason: 'cancellation_scope_boundary_mismatch');
-                    }
-                    $boundary = $this->cancellationBoundary($suspended, $nextSequence, $stepsBySequence, $request->requestId, $original);
-                    $atOriginal = $original !== null && $original->sequence === $nextSequence;
-                    if ($atOriginal || ($original === null && $boundary !== null
-                        && CancellationHistory::rangeEligibleBefore($history, $pending['index'], $boundary->sequence, $boundary->sequenceSpan))) {
-                        if ($boundary === null || ($original !== null && $boundary != $original)) {
-                            throw new NonDeterministicWorkflow('Pending scope delivery changed its original prepared call.', $nextSequence,
-                                reason: 'cancellation_scope_boundary_mismatch');
-                        }
-                        if (!in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child', 'parallel'], true)
-                            && !($boundary->callKind === 'local_activity' && $allowScopedPreparedLocalActivities)) {
-                            throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this pending operation kind is not qualified by this PHP worker.');
-                        }
-                        $this->assertCancellationCallMatches($suspended, $boundary, $stepsBySequence, $context);
-                        if ($suspended instanceof ParallelWorkflowCommand) {
-                            $this->assertPendingScopeGroup($suspended, $boundary, $stepsBySequence, $context->currentCancellationScopeId());
-                        }
-                        if ($preparation !== null && !isset($committedScopes->scopeStatesForDelivery($preparation)[$context->currentCancellationScopeId()])) {
-                            throw new NonDeterministicWorkflow('Pending scope call is absent from its original frozen subtree.', $nextSequence,
-                                reason: 'cancellation_scope_boundary_mismatch');
-                        }
-
-                        return new ReplayResult($commands, $context->messageStreamCursorAcknowledgements(), $context->messageStreamPendingWaits(),
-                            cancellationScopeDelivery: new CancellationScopeDeliveryIntent($request, $boundary,
-                                $preparation['event']['id'] ?? null,
-                                $preparation === null ? null : new \DateTimeImmutable($preparation['event']['payload']['authority_deadline_at'])));
-                    }
-                }
-            }
-            if ($cancellation->request !== null && !$cancellationConsumed) {
-                $boundary = $this->cancellationBoundary($suspended, $nextSequence, $stepsBySequence, $cancellation->request->requestId, $cancellation->delivery);
-                $delivery = $cancellation->delivery;
-                if ($delivery !== null && $delivery->sequence < $nextSequence) {
-                    throw new NonDeterministicWorkflow(
-                        'Workflow passed its committed cancellation boundary.', $delivery->sequence,
-                        reason: 'cooperative_cancellation_boundary_mismatch',
-                    );
-                }
-                if ($delivery !== null && $delivery->sequence === $nextSequence) {
-                    if ($boundary != $delivery || $context->isCancellationShielded()
-                        || !$this->isRootCancellationBoundary($suspended, $delivery, $stepsBySequence, $context)) {
-                        throw new NonDeterministicWorkflow(
-                            'Committed cancellation call kind, operation range or shielding changed.', $delivery->sequence,
-                            reason: 'cooperative_cancellation_boundary_mismatch',
-                        );
                     }
                     $this->assertCancellationCallMatches($suspended, $delivery, $stepsBySequence, $context);
-                    while (isset($steps[$stepCursor]) && $steps[$stepCursor]['sequence'] < $delivery->sequence + $delivery->sequenceSpan) {
-                        if ($steps[$stepCursor]['sequence'] < $delivery->sequence) {
-                            throw new NonDeterministicWorkflow('Cancellation skipped an earlier authored operation.', $steps[$stepCursor]['sequence']);
+                    while (isset($steps[$stepCursor]) && $steps[$stepCursor]['sequence'] < $scopeSequence + $delivery->sequenceSpan) {
+                        if ($steps[$stepCursor]['sequence'] < $scopeSequence) {
+                            throw new NonDeterministicWorkflow('Scope cancellation skipped an earlier authored operation.', $steps[$stepCursor]['sequence'],
+                                reason: 'cancellation_scope_boundary_mismatch');
                         }
                         ++$stepCursor;
                     }
-                    $nextSequence = $delivery->sequence + $delivery->sequenceSpan;
-                    $cancellationConsumed = true;
-                    $context->observeCancellationReplayTime($cancellation->deliveryIndex === null
-                        ? null : ($history[$cancellation->deliveryIndex] ?? null));
-                    $suspended = $this->throwIntoExecution($execution, $businessReplayClock, $context->deliveredCancellation($delivery->requestId, $cancellation->request->context));
-                    continue;
+                    $nextSequence = $scopeSequence + $delivery->sequenceSpan;
+                    $consumedScopeDeliveries[$scopeSequence] = true;
+                    $context->observeCancellationReplayTime($scopeDelivery['event']);
+                    $suspended = $this->throwIntoExecution($execution, $businessReplayClock, $context->deliveredScopeCascade(array_map(
+                        static fn (array $state): ScopedCancellationContext => $state['context'], $scopeDelivery['states'],
+                    ), array_map(static fn (array $state): array => CancellationScopeTimerCleanup::snapshot(
+                        $state['context'], $state['authority_deadline_at'], $scopeDelivery['event'],
+                    ), $scopeDelivery['states'])));
+                    continue 2;
                 }
-                if ($delivery === null && $boundary !== null && !$context->isCancellationShielded()
-                    && $cancellation->eligible(
-                        $boundary->operationSequence ?? $boundary->sequence,
-                        $boundary->operationSequence === null ? $boundary->sequenceSpan : $boundary->operationSequenceSpan,
-                    )) {
-                    if ($this->isRootCancellationBoundary($suspended, $boundary, $stepsBySequence, $context)) {
-                        $this->assertCancellationCallMatches($suspended, $boundary, $stepsBySequence, $context);
+                if ($prepareCancellationScopeDelivery && !$context->isCancellationShielded()) {
+                    $pending = $committedScopes->pendingRequestForScope($context->currentCancellationScopeId(), $scopes);
+                    if ($pending !== null) {
+                        $request = $pending['context'];
+                        $preparation = $committedScopes->preparations[$request->scopeId] ?? null;
+                        $original = $preparation['boundary'] ?? null;
+                        if ($original !== null && $original->sequence < $nextSequence) {
+                            throw new NonDeterministicWorkflow('Workflow passed its original prepared scope boundary.', $original->sequence,
+                                reason: 'cancellation_scope_boundary_mismatch');
+                        }
+                        $boundary = $this->cancellationBoundary($suspended, $nextSequence, $stepsBySequence, $request->requestId, $original);
+                        $atOriginal = $original !== null && $original->sequence === $nextSequence;
+                        if ($atOriginal || ($original === null && $boundary !== null
+                            && CancellationHistory::rangeEligibleBefore($history, $pending['index'], $boundary->sequence, $boundary->sequenceSpan))) {
+                            if ($boundary === null || ($original !== null && $boundary != $original)) {
+                                throw new NonDeterministicWorkflow('Pending scope delivery changed its original prepared call.', $nextSequence,
+                                    reason: 'cancellation_scope_boundary_mismatch');
+                            }
+                            if (!in_array($boundary->callKind, ['activity', 'timer', 'condition', 'child', 'parallel'], true)
+                                && !($boundary->callKind === 'local_activity' && $allowScopedPreparedLocalActivities)) {
+                                throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: this pending operation kind is not qualified by this PHP worker.');
+                            }
+                            $this->assertCancellationCallMatches($suspended, $boundary, $stepsBySequence, $context);
+                            if ($suspended instanceof ParallelWorkflowCommand) {
+                                $this->assertPendingScopeGroup($suspended, $boundary, $stepsBySequence, $context->currentCancellationScopeId());
+                            }
+                            if ($preparation !== null && !isset($committedScopes->scopeStatesForDelivery($preparation)[$context->currentCancellationScopeId()])) {
+                                throw new NonDeterministicWorkflow('Pending scope call is absent from its original frozen subtree.', $nextSequence,
+                                    reason: 'cancellation_scope_boundary_mismatch');
+                            }
 
-                        return new ReplayResult(
-                            $commands, $context->messageStreamCursorAcknowledgements(), $context->messageStreamPendingWaits(),
-                            cancellationDelivery: $boundary,
+                            return new ReplayResult($commands, $context->messageStreamCursorAcknowledgements(), $context->messageStreamPendingWaits(),
+                                cancellationScopeDelivery: new CancellationScopeDeliveryIntent($request, $boundary,
+                                    $preparation['event']['id'] ?? null,
+                                    $preparation === null ? null : new \DateTimeImmutable($preparation['event']['payload']['authority_deadline_at'])));
+                        }
+                    }
+                }
+                if ($cancellation->request !== null && !$cancellationConsumed) {
+                    $boundary = $this->cancellationBoundary($suspended, $nextSequence, $stepsBySequence, $cancellation->request->requestId, $cancellation->delivery);
+                    $delivery = $cancellation->delivery;
+                    if ($delivery !== null && $delivery->sequence < $nextSequence) {
+                        throw new NonDeterministicWorkflow(
+                            'Workflow passed its committed cancellation boundary.', $delivery->sequence,
+                            reason: 'cooperative_cancellation_boundary_mismatch',
                         );
                     }
-                    if ($context->currentCancellationScopeId() === 'root') {
-                        throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: root delivery cannot replace deferred scoped group or selection members.');
-                    }
-                }
-            }
-            if ($suspended instanceof ParallelWorkflowCommand) {
-                $commandsBeforeGroup = count($commands);
-                $baseSequence = !$strictSequences && isset($steps[$stepCursor])
-                    ? $steps[$stepCursor]['sequence']
-                    : $nextSequence;
-                $descriptors = $suspended->leafDescriptors($baseSequence);
-                $preparedGroup = false;
-                if ($prepareLocalActivities) {
-                    foreach ($descriptors as $descriptor) {
-                        if ($descriptor['operation']->command->type === 'record_local_activity') {
-                            if (!$prepareLocalActivityGroups || $suspended->mode !== 'all') {
-                                throw new WorkflowClaimAborted(
-                                    'prepared_local_parallel_admission_unavailable: a complete all group requires the negotiated atomic admission capability.',
-                                );
+                    if ($delivery !== null && $delivery->sequence === $nextSequence) {
+                        if ($boundary != $delivery || $context->isCancellationShielded()
+                            || !$this->isRootCancellationBoundary($suspended, $delivery, $stepsBySequence, $context)) {
+                            throw new NonDeterministicWorkflow(
+                                'Committed cancellation call kind, operation range or shielding changed.', $delivery->sequence,
+                                reason: 'cooperative_cancellation_boundary_mismatch',
+                            );
+                        }
+                        $this->assertCancellationCallMatches($suspended, $delivery, $stepsBySequence, $context);
+                        while (isset($steps[$stepCursor]) && $steps[$stepCursor]['sequence'] < $delivery->sequence + $delivery->sequenceSpan) {
+                            if ($steps[$stepCursor]['sequence'] < $delivery->sequence) {
+                                throw new NonDeterministicWorkflow('Cancellation skipped an earlier authored operation.', $steps[$stepCursor]['sequence']);
                             }
-                            $preparedGroup = true;
+                            ++$stepCursor;
                         }
-                    }
-                }
-                if ($preparedGroup && count($descriptors) > 100) {
-                    throw new WorkflowClaimAborted('prepared_local_group_limit_exceeded: atomic admission supports at most 100 members.');
-                }
-                if ($preparedGroup) {
-                    foreach ($descriptors as $descriptor) {
-                        if (in_array($descriptor['operation']->command->type, ['open_condition_wait', 'open_signal_wait'], true)) {
-                            throw new WorkflowClaimAborted('prepared_local_group_wait_admission_unavailable: this atomic group cannot include turn-closing waits.');
-                        }
-                    }
-                }
-                $preparedCalls = [];
-                $results = [];
-                $pending = false;
-                $matched = 0;
-                $failure = null;
-                $failures = [];
-                $resolvedOrders = [];
-                $clockMembers = [];
-                $missingMember = false;
-
-                foreach ($descriptors as $offset => $descriptor) {
-                    $command = $descriptor['operation']->command;
-                    $path = $descriptor['group_path'];
-                    $step = $steps[$stepCursor + $offset] ?? null;
-                    if ($step === null) {
-                        $missingMember = true;
-                        if ($this->groupedConditionWaitRefusal !== null
-                            && in_array($command->type, ['open_condition_wait', 'open_signal_wait'], true)
-                            && ($server = ($this->groupedConditionWaitRefusal)()) !== null) {
-                            // Recorded groups still replay; only a new grouped wait is refused (server#1142).
-                            throw new WorkflowClaimAborted(sprintf(
-                                'grouped_condition_wait_unsupported: condition waits inside all()/parallel() aren\'t supported; '
-                                .'await the condition outside the group (server#1142). Refused by Server %s.',
-                                $server,
-                            ));
-                        }
-                        if ($preparedGroup) {
-                            continue;
-                        }
-                        $metadata = $path[array_key_last($path)] ?? [];
-                        $command = $command->withAttributes([
-                            ...$metadata,
-                            'parallel_group_path' => $path,
-                        ]);
-                        if (($encodingFailure = $this->appendWorkflowCommand(
-                            $commands,
-                            $command,
-                            $taskQueue,
-                            $context,
-                        )) !== null) {
-                            return $encodingFailure;
-                        }
+                        $nextSequence = $delivery->sequence + $delivery->sequenceSpan;
+                        $cancellationConsumed = true;
+                        $context->observeCancellationReplayTime($cancellation->deliveryIndex === null
+                            ? null : ($history[$cancellation->deliveryIndex] ?? null));
+                        $suspended = $this->throwIntoExecution($execution, $businessReplayClock, $context->deliveredCancellation($delivery->requestId, $cancellation->request->context));
                         continue;
                     }
+                    if ($delivery === null && $boundary !== null && !$context->isCancellationShielded()
+                        && $cancellation->eligible(
+                            $boundary->operationSequence ?? $boundary->sequence,
+                            $boundary->operationSequence === null ? $boundary->sequenceSpan : $boundary->operationSequenceSpan,
+                        )) {
+                        if ($this->isRootCancellationBoundary($suspended, $boundary, $stepsBySequence, $context)) {
+                            $this->assertCancellationCallMatches($suspended, $boundary, $stepsBySequence, $context);
 
-                    ++$matched;
-                    if ($strictSequences && $step['sequence'] !== $baseSequence + $offset) {
-                        throw new NonDeterministicWorkflow('Recorded parallel member belongs to a different authored call.', $baseSequence + $offset);
-                    }
-                    $this->assertCommandMatchesStep($command, $step);
-                    $this->assertParallelPathMatches($step, $path);
-                    if ($command->type === 'open_condition_wait') {
-                        $this->assertConditionWaitCompatible($step, $command);
-                        $command = $command->withRecordedConditionDefinition($step['condition_definition_fingerprint']);
-                    }
-                    $nextSequence = max($nextSequence, $step['sequence'] + 1);
-
-                    if (!$step['resolved']) {
-                        if ($preparedGroup && $command->type === 'record_local_activity') {
-                            $metadata = $path[array_key_last($path)] ?? [];
-                            $preparedCalls[] = $this->preparedLocalCall($command->withAttributes([
-                                ...$metadata, 'parallel_group_path' => $path,
-                            ]), $step['sequence'], PreparedLocalActivityCall::needsRecovery($history, $step['sequence']),
-                                $history, $cancellation, $context, $cancellationConsumed);
+                            return new ReplayResult(
+                                $commands, $context->messageStreamCursorAcknowledgements(), $context->messageStreamPendingWaits(),
+                                cancellationDelivery: $boundary,
+                            );
                         }
-                        if ($command->type === 'open_condition_wait') {
-                            if ($command->conditionSatisfied()) {
-                                $results[$offset] = true;
+                        if ($context->currentCancellationScopeId() === 'root') {
+                            throw new WorkflowClaimAborted('cancellation_scope_execution_not_supported: root delivery cannot replace deferred scoped group or selection members.');
+                        }
+                    }
+                }
+                if ($suspended instanceof ParallelWorkflowCommand) {
+                    $commandsBeforeGroup = count($commands);
+                    $baseSequence = !$strictSequences && isset($steps[$stepCursor])
+                        ? $steps[$stepCursor]['sequence']
+                        : $nextSequence;
+                    $descriptors = $suspended->leafDescriptors($baseSequence);
+                    $preparedGroup = false;
+                    if ($prepareLocalActivities) {
+                        foreach ($descriptors as $descriptor) {
+                            if ($descriptor['operation']->command->type === 'record_local_activity') {
+                                if (!$prepareLocalActivityGroups || $suspended->mode !== 'all') {
+                                    throw new WorkflowClaimAborted(
+                                        'prepared_local_parallel_admission_unavailable: a complete all group requires the negotiated atomic admission capability.',
+                                    );
+                                }
+                                $preparedGroup = true;
+                            }
+                        }
+                    }
+                    if ($preparedGroup && count($descriptors) > 100) {
+                        throw new WorkflowClaimAborted('prepared_local_group_limit_exceeded: atomic admission supports at most 100 members.');
+                    }
+                    if ($preparedGroup) {
+                        foreach ($descriptors as $descriptor) {
+                            if (in_array($descriptor['operation']->command->type, ['open_condition_wait', 'open_signal_wait'], true)) {
+                                throw new WorkflowClaimAborted('prepared_local_group_wait_admission_unavailable: this atomic group cannot include turn-closing waits.');
+                            }
+                        }
+                    }
+                    $preparedCalls = [];
+                    $results = [];
+                    $pending = false;
+                    $matched = 0;
+                    $failure = null;
+                    $failures = [];
+                    $resolvedOrders = [];
+                    $clockMembers = [];
+                    $missingMember = false;
+
+                    foreach ($descriptors as $offset => $descriptor) {
+                        $command = $descriptor['operation']->command;
+                        $path = $descriptor['group_path'];
+                        $step = $steps[$stepCursor + $offset] ?? null;
+                        if ($step === null) {
+                            $missingMember = true;
+                            if ($this->groupedConditionWaitRefusal !== null
+                                && in_array($command->type, ['open_condition_wait', 'open_signal_wait'], true)
+                                && ($server = ($this->groupedConditionWaitRefusal)()) !== null) {
+                                // Recorded groups still replay; only a new grouped wait is refused (server#1142).
+                                throw new WorkflowClaimAborted(sprintf(
+                                    'grouped_condition_wait_unsupported: condition waits inside all()/parallel() aren\'t supported; '
+                                    .'await the condition outside the group (server#1142). Refused by Server %s.',
+                                    $server,
+                                ));
+                            }
+                            if ($preparedGroup) {
                                 continue;
                             }
-
                             $metadata = $path[array_key_last($path)] ?? [];
-                            // Grouped reopens keep the authored timeout: replay of a
-                            // grouped physical reopen is not qualified yet (#278).
                             $command = $command->withAttributes([
                                 ...$metadata,
                                 'parallel_group_path' => $path,
@@ -581,358 +538,231 @@ final class Replayer
                             )) !== null) {
                                 return $encodingFailure;
                             }
+                            continue;
                         }
-                        $pending = true;
-                        continue;
-                    }
-                    foreach ($this->blockingResolutionOrders($step) as $order) {
-                        $resolvedOrders[] = $order;
-                    }
-                    $clockMembers[] = ['step' => $step, 'path' => $path, 'offset' => $offset];
-                    if ($step['failure'] instanceof Throwable) {
-                        $failures[$offset] = $step['failure'];
-                        if ($failure === null
-                            || $step['resolution_order'] < $failure['resolution_order']
-                            || ($step['resolution_order'] === $failure['resolution_order'] && $offset < $failure['offset'])) {
-                            $failure = [
-                                'exception' => $step['failure'],
-                                'resolution_order' => $step['resolution_order'],
-                                'offset' => $offset,
-                            ];
+
+                        ++$matched;
+                        if ($strictSequences && $step['sequence'] !== $baseSequence + $offset) {
+                            throw new NonDeterministicWorkflow('Recorded parallel member belongs to a different authored call.', $baseSequence + $offset);
                         }
-                        continue;
+                        $this->assertCommandMatchesStep($command, $step);
+                        $this->assertParallelPathMatches($step, $path);
+                        if ($command->type === 'open_condition_wait') {
+                            $this->assertConditionWaitCompatible($step, $command);
+                            $command = $command->withRecordedConditionDefinition($step['condition_definition_fingerprint']);
+                        }
+                        $nextSequence = max($nextSequence, $step['sequence'] + 1);
+
+                        if (!$step['resolved']) {
+                            if ($preparedGroup && $command->type === 'record_local_activity') {
+                                $metadata = $path[array_key_last($path)] ?? [];
+                                $preparedCalls[] = $this->preparedLocalCall($command->withAttributes([
+                                    ...$metadata, 'parallel_group_path' => $path,
+                                ]), $step['sequence'], PreparedLocalActivityCall::needsRecovery($history, $step['sequence']),
+                                    $history, $cancellation, $context, $cancellationConsumed);
+                            }
+                            if ($command->type === 'open_condition_wait') {
+                                if ($command->conditionSatisfied()) {
+                                    $results[$offset] = true;
+                                    continue;
+                                }
+
+                                $metadata = $path[array_key_last($path)] ?? [];
+                                // Grouped reopens keep the authored timeout: replay of a
+                                // grouped physical reopen is not qualified yet (#278).
+                                $command = $command->withAttributes([
+                                    ...$metadata,
+                                    'parallel_group_path' => $path,
+                                ]);
+                                if (($encodingFailure = $this->appendWorkflowCommand(
+                                    $commands,
+                                    $command,
+                                    $taskQueue,
+                                    $context,
+                                )) !== null) {
+                                    return $encodingFailure;
+                                }
+                            }
+                            $pending = true;
+                            continue;
+                        }
+                        foreach ($this->blockingResolutionOrders($step) as $order) {
+                            $resolvedOrders[] = $order;
+                        }
+                        $clockMembers[] = ['step' => $step, 'path' => $path, 'offset' => $offset];
+                        if ($step['failure'] instanceof Throwable) {
+                            $failures[$offset] = $step['failure'];
+                            if ($failure === null
+                                || $step['resolution_order'] < $failure['resolution_order']
+                                || ($step['resolution_order'] === $failure['resolution_order'] && $offset < $failure['offset'])) {
+                                $failure = [
+                                    'exception' => $step['failure'],
+                                    'resolution_order' => $step['resolution_order'],
+                                    'offset' => $offset,
+                                ];
+                            }
+                            continue;
+                        }
+
+                        $results[$offset] = $step['value'];
                     }
 
-                    $results[$offset] = $step['value'];
-                }
+                    $stepCursor += $matched;
+                    $nextSequence = max($nextSequence, $baseSequence + count($descriptors));
+                    if ($preparedGroup && $missingMember) {
+                        if ($matched !== 0) {
+                            throw new NonDeterministicWorkflow(
+                                'Prepared local group history is missing a declared member.', $baseSequence,
+                                'all parallel members scheduled', 'partial prepared local group',
+                                'parallel_group_partially_scheduled',
+                            );
+                        }
+                        $groupCommands = [];
+                        foreach ($descriptors as $offset => $descriptor) {
+                            $path = $descriptor['group_path'];
+                            $metadata = $path[array_key_last($path)] ?? [];
+                            $command = $descriptor['operation']->command->withAttributes([
+                                ...$metadata, 'parallel_group_path' => $path,
+                            ]);
+                            if ($command->type === 'record_local_activity') {
+                                $call = $this->preparedLocalCall($command, $baseSequence + $offset, false,
+                                    $history, $cancellation, $context, $cancellationConsumed);
+                                $preparedCalls[] = $call;
+                                $groupCommands[] = [...$call->descriptor($this->codec), 'type' => 'prepare_local_activity'];
+                            } else {
+                                $groupCommands[] = $command->toWire($this->codec, $taskQueue);
+                            }
+                        }
+                        json_encode($groupCommands, JSON_THROW_ON_ERROR);
 
-                $stepCursor += $matched;
-                $nextSequence = max($nextSequence, $baseSequence + count($descriptors));
-                if ($preparedGroup && $missingMember) {
-                    if ($matched !== 0) {
+                        return $this->result($commands, $context, preparedLocalActivityGroup: new PreparedLocalActivityGroup(
+                            $baseSequence, count($descriptors), $groupCommands, $preparedCalls, false,
+                        ));
+                    }
+                    if ($missingMember && $failure !== null) {
                         throw new NonDeterministicWorkflow(
-                            'Prepared local group history is missing a declared member.', $baseSequence,
-                            'all parallel members scheduled', 'partial prepared local group',
+                            'Parallel history contains a failure before every declared member was durably scheduled.',
+                            $baseSequence,
+                            'all parallel members scheduled',
+                            'failed group with missing members',
                             'parallel_group_partially_scheduled',
                         );
                     }
-                    $groupCommands = [];
-                    foreach ($descriptors as $offset => $descriptor) {
-                        $path = $descriptor['group_path'];
-                        $metadata = $path[array_key_last($path)] ?? [];
-                        $command = $descriptor['operation']->command->withAttributes([
-                            ...$metadata, 'parallel_group_path' => $path,
-                        ]);
-                        if ($command->type === 'record_local_activity') {
-                            $call = $this->preparedLocalCall($command, $baseSequence + $offset, false,
-                                $history, $cancellation, $context, $cancellationConsumed);
-                            $preparedCalls[] = $call;
-                            $groupCommands[] = [...$call->descriptor($this->codec), 'type' => 'prepare_local_activity'];
-                        } else {
-                            $groupCommands[] = $command->toWire($this->codec, $taskQueue);
+                    if ($suspended->mode === 'select') {
+                        $groupId = $descriptors[0]['group_path'][0]['parallel_group_id'] ?? null;
+                        $winner = is_string($groupId) ? ($selectionResolutions[$groupId] ?? null) : null;
+                        if (is_array($winner)) {
+                            $winner = $this->validatedSelectionResolution(
+                                $suspended,
+                                $baseSequence,
+                                $winner,
+                                $stepsBySequence,
+                                $history,
+                                $selectionOperationIdentities,
+                            );
+                            ksort($results);
+                            ksort($failures);
+                            $selection = $suspended->selectionResult(
+                                $baseSequence,
+                                $winner,
+                                $results,
+                                $failures,
+                                $context->workflowId,
+                                $context->runId,
+                                $selectionOperationIdentities,
+                            );
+                            $this->validateSelectionCancellationsForHandles(
+                                $selection->handles,
+                                $selectionCancellations,
+                            );
+                            $this->advanceCancellationClock($context, $history, [$selectionResolutionOrders[(string) $groupId]]);
+                            $suspended = $this->resumeExecution($execution, $businessReplayClock, $selection);
+                            continue;
                         }
+                        return $this->result($commands, $context);
                     }
-                    json_encode($groupCommands, JSON_THROW_ON_ERROR);
-
-                    return $this->result($commands, $context, preparedLocalActivityGroup: new PreparedLocalActivityGroup(
-                        $baseSequence, count($descriptors), $groupCommands, $preparedCalls, false,
-                    ));
-                }
-                if ($missingMember && $failure !== null) {
-                    throw new NonDeterministicWorkflow(
-                        'Parallel history contains a failure before every declared member was durably scheduled.',
-                        $baseSequence,
-                        'all parallel members scheduled',
-                        'failed group with missing members',
-                        'parallel_group_partially_scheduled',
-                    );
-                }
-                if ($suspended->mode === 'select') {
-                    $groupId = $descriptors[0]['group_path'][0]['parallel_group_id'] ?? null;
-                    $winner = is_string($groupId) ? ($selectionResolutions[$groupId] ?? null) : null;
-                    if (is_array($winner)) {
-                        $winner = $this->validatedSelectionResolution(
-                            $suspended,
-                            $baseSequence,
-                            $winner,
-                            $stepsBySequence,
-                            $history,
-                            $selectionOperationIdentities,
-                        );
-                        ksort($results);
-                        ksort($failures);
-                        $selection = $suspended->selectionResult(
-                            $baseSequence,
-                            $winner,
-                            $results,
-                            $failures,
-                            $context->workflowId,
-                            $context->runId,
-                            $selectionOperationIdentities,
-                        );
-                        $this->validateSelectionCancellationsForHandles(
-                            $selection->handles,
-                            $selectionCancellations,
-                        );
-                        $this->advanceCancellationClock($context, $history, [$selectionResolutionOrders[(string) $groupId]]);
-                        $suspended = $this->resumeExecution($execution, $businessReplayClock, $selection);
+                    if ($failure !== null) {
+                        $this->advanceCancellationClock($context, $history, array_values(array_filter($resolvedOrders,
+                            static fn (int $order): bool => $order <= $failure['resolution_order'])));
+                        $suspended = $this->throwGroupIntoExecution($execution, $businessReplayClock, $failure['exception'],
+                            $clockMembers, count($descriptors), $failure['resolution_order']);
                         continue;
                     }
-                    return $this->result($commands, $context);
-                }
-                if ($failure !== null) {
-                    $this->advanceCancellationClock($context, $history, array_values(array_filter($resolvedOrders,
-                        static fn (int $order): bool => $order <= $failure['resolution_order'])));
-                    $suspended = $this->throwGroupIntoExecution($execution, $businessReplayClock, $failure['exception'],
-                        $clockMembers, count($descriptors), $failure['resolution_order']);
-                    continue;
-                }
-                if ($preparedCalls !== []) {
-                    return $this->result($commands, $context, preparedLocalActivityGroup: new PreparedLocalActivityGroup(
-                        $baseSequence, count($descriptors), [], $preparedCalls, true,
-                    ));
-                }
-                if ($pending || count($commands) > $commandsBeforeGroup) {
-                    return $this->result($commands, $context);
-                }
-
-                ksort($results);
-                $this->advanceCancellationClock($context, $history, $resolvedOrders);
-                $suspended = $this->resumeGroupExecution($execution, $businessReplayClock,
-                    $suspended->nestedResults(array_values($results)), $clockMembers, count($descriptors));
-                continue;
-            }
-
-            if ($suspended instanceof DurableOperationHandle) {
-                $this->assertDurableHandleExecutionIdentity($suspended, $context);
-                $resolution = $this->durableHandleResolution(
-                    $suspended,
-                    $stepsBySequence,
-                    $selectionCancellations,
-                    $selectionCancellationOrders,
-                );
-                if (!$resolution['resolved']) {
-                    return $this->result($commands, $context);
-                }
-                $this->advanceCancellationClock($context, $history, $resolution['resolution_orders']);
-                $suspended = $resolution['failure'] instanceof Throwable
-                    ? $this->throwIntoExecution($execution, $businessReplayClock, $resolution['failure'])
-                    : $this->resumeExecution($execution, $businessReplayClock, $resolution['value']);
-                continue;
-            }
-
-            if ($suspended instanceof CancelDurableOperationCommand) {
-                $this->assertDurableHandleExecutionIdentity($suspended->handle, $context);
-                if ($this->selectionCancellationForHandle($suspended->handle, $selectionCancellations) === null) {
-                    $commands[] = $suspended->toWire();
-                }
-                $suspended = $this->resumeExecution($execution, $businessReplayClock, null);
-                continue;
-            }
-
-            if (!$suspended instanceof WorkflowCommand) {
-                throw new NonDeterministicWorkflow('Workflow suspended with an unsupported value instead of WorkflowCommand.');
-            }
-
-            if ($suspended->type === 'open_cancellation_scope') {
-                $step = $steps[$stepCursor] ?? null;
-                if ($step === null) {
-                    if ($completedHistory) {
-                        throw new NonDeterministicWorkflow('Completed history has no authored scope opening.', $nextSequence);
+                    if ($preparedCalls !== []) {
+                        return $this->result($commands, $context, preparedLocalActivityGroup: new PreparedLocalActivityGroup(
+                            $baseSequence, count($descriptors), [], $preparedCalls, true,
+                        ));
+                    }
+                    if ($pending || count($commands) > $commandsBeforeGroup) {
+                        return $this->result($commands, $context);
                     }
 
-                    return $this->result($commands, $context, cancellationScopeOpening: new CancellationScopeOpening(
-                        $nextSequence, (string) $suspended->attributes['parent_scope_id'], (bool) $suspended->attributes['shield_parent'],
-                    ));
-                }
-                if ($step['shape'] !== 'cancellation_scope' || $step['sequence'] !== $nextSequence
-                    || ($step['scope_parent'] ?? null) !== $suspended->attributes['parent_scope_id']
-                    || ($step['scope_shield'] ?? null) !== $suspended->attributes['shield_parent']) {
-                    throw new NonDeterministicWorkflow('Authored scope opening, parent or shielding changed.', $nextSequence,
-                        reason: 'cancellation_scope_opening_changed');
-                }
-                ++$stepCursor;
-                ++$nextSequence;
-                $suspended = $this->resumeExecution($execution, $businessReplayClock, $step['value']);
-                continue;
-            }
-            if ($suspended->type === 'continue_as_new') {
-                $this->assertCancellationConsumed($cancellation, $cancellationConsumed);
-                $this->assertNoRemainingSteps($steps, $stepCursor, 'continue_as_new');
-                if (($encodingFailure = $this->appendWorkflowCommand(
-                    $commands,
-                    $suspended,
-                    $taskQueue,
-                    $context,
-                )) !== null) {
-                    return $encodingFailure;
-                }
-
-                return $this->result($commands, $context);
-            }
-
-            if ($suspended->type === 'record_version_marker') {
-                $changeId = (string) $suspended->attributes['change_id'];
-                $decision = $versionDecisions[$changeId] ?? null;
-                if ($decision !== null) {
-                    $this->assertVersionDecisionCompatible($changeId, $decision, $suspended);
-                    $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->versionResult($decision['version']));
+                    ksort($results);
+                    $this->advanceCancellationClock($context, $history, $resolvedOrders);
+                    $suspended = $this->resumeGroupExecution($execution, $businessReplayClock,
+                        $suspended->nestedResults(array_values($results)), $clockMembers, count($descriptors));
                     continue;
                 }
 
-                $step = $steps[$stepCursor] ?? null;
-                if ($step !== null) {
-                    if ($step['shape'] !== 'version_marker') {
-                        $version = -1;
-                        $this->assertVersionSupported(
-                            $changeId,
-                            $version,
-                            (int) $suspended->attributes['min_supported'],
-                            (int) $suspended->attributes['max_supported'],
-                            $step['sequence'],
-                        );
-                        $versionDecisions[$changeId] = [
-                            'version' => $version,
-                            'sequence' => $step['sequence'],
-                        ];
-                        $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->versionResult($version));
-                        continue;
-                    }
-                    if ($step['detail'] !== $changeId) {
-                        throw new NonDeterministicWorkflow(
-                            "Recorded version marker {$step['detail']} does not match change ID {$changeId}.",
-                            $step['sequence'],
-                            $step['detail'],
-                            $changeId,
-                            'version_change_id_mismatch',
-                        );
-                    }
-                    $version = (int) $step['value'];
-                    $this->assertVersionSupported(
-                        $changeId,
-                        $version,
-                        (int) $suspended->attributes['min_supported'],
-                        (int) $suspended->attributes['max_supported'],
-                        $step['sequence'],
+                if ($suspended instanceof DurableOperationHandle) {
+                    $this->assertDurableHandleExecutionIdentity($suspended, $context);
+                    $resolution = $this->durableHandleResolution(
+                        $suspended,
+                        $stepsBySequence,
+                        $selectionCancellations,
+                        $selectionCancellationOrders,
                     );
+                    if (!$resolution['resolved']) {
+                        return $this->result($commands, $context);
+                    }
+                    $this->advanceCancellationClock($context, $history, $resolution['resolution_orders']);
+                    $suspended = $resolution['failure'] instanceof Throwable
+                        ? $this->throwIntoExecution($execution, $businessReplayClock, $resolution['failure'])
+                        : $this->resumeExecution($execution, $businessReplayClock, $resolution['value']);
+                    continue;
+                }
+
+                if ($suspended instanceof CancelDurableOperationCommand) {
+                    $this->assertDurableHandleExecutionIdentity($suspended->handle, $context);
+                    if ($this->selectionCancellationForHandle($suspended->handle, $selectionCancellations) === null) {
+                        $commands[] = $suspended->toWire();
+                    }
+                    $suspended = $this->resumeExecution($execution, $businessReplayClock, null);
+                    continue;
+                }
+
+                if (!$suspended instanceof WorkflowCommand) {
+                    throw new NonDeterministicWorkflow('Workflow suspended with an unsupported value instead of WorkflowCommand.');
+                }
+
+                if ($suspended->type === 'open_cancellation_scope') {
+                    $step = $steps[$stepCursor] ?? null;
+                    if ($step === null) {
+                        if ($completedHistory) {
+                            throw new NonDeterministicWorkflow('Completed history has no authored scope opening.', $nextSequence);
+                        }
+
+                        return $this->result($commands, $context, cancellationScopeOpening: new CancellationScopeOpening(
+                            $nextSequence, (string) $suspended->attributes['parent_scope_id'], (bool) $suspended->attributes['shield_parent'],
+                        ));
+                    }
+                    if ($step['shape'] !== 'cancellation_scope' || $step['sequence'] !== $nextSequence
+                        || ($step['scope_parent'] ?? null) !== $suspended->attributes['parent_scope_id']
+                        || ($step['scope_shield'] ?? null) !== $suspended->attributes['shield_parent']) {
+                        throw new NonDeterministicWorkflow('Authored scope opening, parent or shielding changed.', $nextSequence,
+                            reason: 'cancellation_scope_opening_changed');
+                    }
                     ++$stepCursor;
-                    $nextSequence = max($nextSequence, $step['sequence'] + 1);
-                    $versionDecisions[$changeId] = [
-                        'version' => $version,
-                        'sequence' => $step['sequence'],
-                    ];
-                    $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->versionResult($version));
+                    ++$nextSequence;
+                    $suspended = $this->resumeExecution($execution, $businessReplayClock, $step['value']);
                     continue;
                 }
-
-                if ($completedHistory) {
-                    $version = -1;
-                    $this->assertVersionSupported(
-                        $changeId,
-                        $version,
-                        (int) $suspended->attributes['min_supported'],
-                        (int) $suspended->attributes['max_supported'],
-                        null,
-                    );
-                    $versionDecisions[$changeId] = [
-                        'version' => $version,
-                        'sequence' => null,
-                    ];
-                    $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->versionResult($version));
-                    continue;
-                }
-
-                $version = (int) $suspended->attributes['max_supported'];
-                if (($encodingFailure = $this->appendWorkflowCommand(
-                    $commands,
-                    $suspended,
-                    $taskQueue,
-                    $context,
-                )) !== null) {
-                    return $encodingFailure;
-                }
-                ++$nextSequence;
-                $versionDecisions[$changeId] = [
-                    'version' => $version,
-                    'sequence' => null,
-                ];
-                $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->versionResult($version));
-                continue;
-            }
-
-            if ($suspended->type === 'await_child_workflow') {
-                // A started child's await consumes no sequence: it reads the
-                // original call's resolution, through continuation and retries.
-                $awaited = $stepsBySequence[$suspended->attributes['sequence']] ?? null;
-                if (($awaited['shape'] ?? null) !== 'child_workflow') {
-                    throw new NonDeterministicWorkflow('An awaited child workflow has no recorded child call.',
-                        (int) $suspended->attributes['sequence'], reason: 'child_workflow_handle_mismatch');
-                }
-                if ($awaited['resolved'] !== true) {
-                    return $this->result($commands, $context);
-                }
-                $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($awaited));
-                $suspended = $awaited['failure'] instanceof Throwable
-                    ? $this->throwIntoExecution($execution, $businessReplayClock, $awaited['failure'], $awaited)
-                    : $this->resumeExecution($execution, $businessReplayClock, $awaited['value'], $awaited);
-                continue;
-            }
-
-            $step = $steps[$stepCursor] ?? null;
-            if ($step !== null) {
-                if ($strictSequences && $step['sequence'] !== $nextSequence) {
-                    throw new NonDeterministicWorkflow('Recorded result belongs to a different authored call.', $nextSequence);
-                }
-                $this->assertCommandMatchesStep($suspended, $step);
-                if ($step['value'] instanceof ServiceOperationHistory) {
-                    $step = array_replace($step, $step['value']->delivery($suspended));
-                }
-                if ($step['parallel_path'] !== []) {
-                    throw new NonDeterministicWorkflow(
-                        'Recorded parallel-group history was replaced by a sequential workflow operation.',
-                        $step['sequence'],
-                        'parallel barrier',
-                        $suspended->historyShape,
-                        'parallel_group_missing_from_workflow',
-                    );
-                }
-                ++$stepCursor;
-                $nextSequence = max($nextSequence, $step['sequence'] + 1);
-                if ($suspended->type === 'start_child_workflow' && ($suspended->attributes['await'] ?? null) === 'started') {
-                    $identity = $this->stepChildIdentity($step);
-                    if ($identity === null) {
-                        throw new NonDeterministicWorkflow('A committed child start lacks its child call, instance or run identity.',
-                            $step['sequence'], reason: 'child_start_identity_missing');
-                    }
-                    $suspended = $this->resumeExecution($execution, $businessReplayClock, new ChildWorkflowHandle($context, $step['sequence'], $identity));
-                    continue;
-                }
-                if ($suspended->type === 'open_condition_wait') {
-                    $this->assertConditionWaitCompatible($step, $suspended);
-                    $nextStep = $steps[$stepCursor] ?? null;
-                    if ($cancellation->request !== null && $nextStep !== null
-                        && $this->isConditionReopen($step, $nextStep)) {
-                        continue;
-                    }
-                    if ($step['resolved']) {
-                        $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($step));
-                        $consumedConditionTail = $this->conditionTailAfterConsumption($step, $suspended, $step['value'] === true);
-                        $suspended = $this->resumeExecution($execution, $businessReplayClock, $step['value'], $step);
-                        continue;
-                    }
-                    $satisfied = $appliedSignals->live(static fn (): bool => $suspended->conditionSatisfied());
-                    if (($encodingFailure = $this->recordAppliedSignalMarker($appliedSignals, $commands, $nextSequence, $taskQueue, $context)) !== null) {
-                        return $encodingFailure;
-                    }
-                    if ($satisfied) {
-                        $consumedConditionTail = $this->conditionTailAfterConsumption($step, $suspended, true);
-                        $suspended = $this->resumeExecution($execution, $businessReplayClock, true);
-                        continue;
-                    }
-
+                if ($suspended->type === 'continue_as_new') {
+                    $this->assertCancellationConsumed($cancellation, $cancellationConsumed);
+                    $this->assertNoRemainingSteps($steps, $stepCursor, 'continue_as_new');
                     if (($encodingFailure = $this->appendWorkflowCommand(
                         $commands,
-                        $this->conditionReopen($suspended, $step, $history),
+                        $suspended,
                         $taskQueue,
                         $context,
                     )) !== null) {
@@ -941,55 +771,249 @@ final class Replayer
 
                     return $this->result($commands, $context);
                 }
-                if ($step['resolved'] === false) {
-                    if ($prepareLocalActivities && $suspended->type === 'record_local_activity') {
-                        return $this->result($commands, $context, preparedLocalActivity: $this->preparedLocalCall(
-                            $suspended, $step['sequence'], PreparedLocalActivityCall::needsRecovery($history, $step['sequence']),
-                            $history, $cancellation, $context, $cancellationConsumed,
-                        ));
+
+                if ($suspended->type === 'record_version_marker') {
+                    $changeId = (string) $suspended->attributes['change_id'];
+                    $decision = $versionDecisions[$changeId] ?? null;
+                    if ($decision !== null) {
+                        $this->assertVersionDecisionCompatible($changeId, $decision, $suspended);
+                        $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->versionResult($decision['version']));
+                        continue;
                     }
-                    return $this->result($commands, $context);
+
+                    $step = $steps[$stepCursor] ?? null;
+                    if ($step !== null) {
+                        if ($step['shape'] !== 'version_marker') {
+                            $version = -1;
+                            $this->assertVersionSupported(
+                                $changeId,
+                                $version,
+                                (int) $suspended->attributes['min_supported'],
+                                (int) $suspended->attributes['max_supported'],
+                                $step['sequence'],
+                            );
+                            $versionDecisions[$changeId] = [
+                                'version' => $version,
+                                'sequence' => $step['sequence'],
+                            ];
+                            $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->versionResult($version));
+                            continue;
+                        }
+                        if ($step['detail'] !== $changeId) {
+                            throw new NonDeterministicWorkflow(
+                                "Recorded version marker {$step['detail']} does not match change ID {$changeId}.",
+                                $step['sequence'],
+                                $step['detail'],
+                                $changeId,
+                                'version_change_id_mismatch',
+                            );
+                        }
+                        $version = (int) $step['value'];
+                        $this->assertVersionSupported(
+                            $changeId,
+                            $version,
+                            (int) $suspended->attributes['min_supported'],
+                            (int) $suspended->attributes['max_supported'],
+                            $step['sequence'],
+                        );
+                        ++$stepCursor;
+                        $nextSequence = max($nextSequence, $step['sequence'] + 1);
+                        $versionDecisions[$changeId] = [
+                            'version' => $version,
+                            'sequence' => $step['sequence'],
+                        ];
+                        $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->versionResult($version));
+                        continue;
+                    }
+
+                    if ($completedHistory) {
+                        $version = -1;
+                        $this->assertVersionSupported(
+                            $changeId,
+                            $version,
+                            (int) $suspended->attributes['min_supported'],
+                            (int) $suspended->attributes['max_supported'],
+                            null,
+                        );
+                        $versionDecisions[$changeId] = [
+                            'version' => $version,
+                            'sequence' => null,
+                        ];
+                        $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->versionResult($version));
+                        continue;
+                    }
+
+                    $version = (int) $suspended->attributes['max_supported'];
+                    if (($encodingFailure = $this->appendWorkflowCommand(
+                        $commands,
+                        $suspended,
+                        $taskQueue,
+                        $context,
+                    )) !== null) {
+                        return $encodingFailure;
+                    }
+                    ++$nextSequence;
+                    $versionDecisions[$changeId] = [
+                        'version' => $version,
+                        'sequence' => null,
+                    ];
+                    $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->versionResult($version));
+                    continue;
                 }
-                if ($prepareLocalActivities || $suspended->type !== 'record_local_activity') {
-                    $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($step));
+
+                if ($suspended->type === 'await_child_workflow') {
+                    // A started child's await consumes no sequence: it reads the
+                    // original call's resolution, through continuation and retries.
+                    $awaited = $stepsBySequence[$suspended->attributes['sequence']] ?? null;
+                    if (($awaited['shape'] ?? null) !== 'child_workflow') {
+                        throw new NonDeterministicWorkflow('An awaited child workflow has no recorded child call.',
+                            (int) $suspended->attributes['sequence'], reason: 'child_workflow_handle_mismatch');
+                    }
+                    if ($awaited['resolved'] !== true) {
+                        return $this->result($commands, $context);
+                    }
+                    $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($awaited));
+                    $suspended = $awaited['failure'] instanceof Throwable
+                        ? $this->throwIntoExecution($execution, $businessReplayClock, $awaited['failure'], $awaited)
+                        : $this->resumeExecution($execution, $businessReplayClock, $awaited['value'], $awaited);
+                    continue;
                 }
-                if ($step['failure'] instanceof Throwable) {
-                    try {
-                        $suspended = $this->throwIntoExecution($execution, $businessReplayClock, $step['failure'], $step);
-                    } catch (Throwable $failure) {
-                        $activityId = $failure instanceof ActivityFailed && is_array($failure->failure)
-                            ? ($failure->failure['activity_execution_id'] ?? null)
-                            : null;
-                        if ($failure === $step['failure']
-                            && $failure instanceof ActivityFailed
-                            && $failure->historyEventType === 'ActivityFailed'
-                            && is_string($activityId)
-                            && $activityId !== ''
-                        ) {
-                            return $this->result($commands, $context, $failure, $step['sequence'], $activityId);
+
+                $step = $steps[$stepCursor] ?? null;
+                if ($step !== null) {
+                    if ($strictSequences && $step['sequence'] !== $nextSequence) {
+                        throw new NonDeterministicWorkflow('Recorded result belongs to a different authored call.', $nextSequence);
+                    }
+                    $this->assertCommandMatchesStep($suspended, $step);
+                    if ($step['value'] instanceof ServiceOperationHistory) {
+                        $step = array_replace($step, $step['value']->delivery($suspended));
+                    }
+                    if ($step['parallel_path'] !== []) {
+                        throw new NonDeterministicWorkflow(
+                            'Recorded parallel-group history was replaced by a sequential workflow operation.',
+                            $step['sequence'],
+                            'parallel barrier',
+                            $suspended->historyShape,
+                            'parallel_group_missing_from_workflow',
+                        );
+                    }
+                    ++$stepCursor;
+                    $nextSequence = max($nextSequence, $step['sequence'] + 1);
+                    if ($suspended->type === 'start_child_workflow' && ($suspended->attributes['await'] ?? null) === 'started') {
+                        $identity = $this->stepChildIdentity($step);
+                        if ($identity === null) {
+                            throw new NonDeterministicWorkflow('A committed child start lacks its child call, instance or run identity.',
+                                $step['sequence'], reason: 'child_start_identity_missing');
+                        }
+                        $suspended = $this->resumeExecution($execution, $businessReplayClock, new ChildWorkflowHandle($context, $step['sequence'], $identity));
+                        continue;
+                    }
+                    if ($suspended->type === 'open_condition_wait') {
+                        $this->assertConditionWaitCompatible($step, $suspended);
+                        $nextStep = $steps[$stepCursor] ?? null;
+                        if ($cancellation->request !== null && $nextStep !== null
+                            && $this->isConditionReopen($step, $nextStep)) {
+                            continue;
+                        }
+                        if ($step['resolved']) {
+                            $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($step));
+                            $consumedConditionTail = $this->conditionTailAfterConsumption($step, $suspended, $step['value'] === true);
+                            $suspended = $this->resumeExecution($execution, $businessReplayClock, $step['value'], $step);
+                            continue;
+                        }
+                        $satisfied = $appliedSignals->live(static fn (): bool => $suspended->conditionSatisfied());
+                        if (($encodingFailure = $this->recordAppliedSignalMarker($appliedSignals, $commands, $nextSequence, $taskQueue, $context)) !== null) {
+                            return $encodingFailure;
+                        }
+                        if ($satisfied) {
+                            $consumedConditionTail = $this->conditionTailAfterConsumption($step, $suspended, true);
+                            $suspended = $this->resumeExecution($execution, $businessReplayClock, true);
+                            continue;
                         }
 
-                        throw $failure;
-                    }
-                } else {
-                    $suspended = $this->resumeExecution($execution, $businessReplayClock, $step['value'], $step);
-                }
-                continue;
-            }
+                        if (($encodingFailure = $this->appendWorkflowCommand(
+                            $commands,
+                            $this->conditionReopen($suspended, $step, $history),
+                            $taskQueue,
+                            $context,
+                        )) !== null) {
+                            return $encodingFailure;
+                        }
 
-            if ($suspended->type === 'record_side_effect') {
-                $suspended = $suspended->resolveSideEffect();
-            }
-            if ($suspended->type === 'record_local_activity') {
-                if ($prepareLocalActivities) {
-                    return $this->result($commands, $context, preparedLocalActivity: $this->preparedLocalCall(
-                        $suspended, $nextSequence, false, $history, $cancellation, $context, $cancellationConsumed,
-                    ));
+                        return $this->result($commands, $context);
+                    }
+                    if ($step['resolved'] === false) {
+                        if ($prepareLocalActivities && $suspended->type === 'record_local_activity') {
+                            return $this->result($commands, $context, preparedLocalActivity: $this->preparedLocalCall(
+                                $suspended, $step['sequence'], PreparedLocalActivityCall::needsRecovery($history, $step['sequence']),
+                                $history, $cancellation, $context, $cancellationConsumed,
+                            ));
+                        }
+                        return $this->result($commands, $context);
+                    }
+                    if ($prepareLocalActivities || $suspended->type !== 'record_local_activity') {
+                        $this->advanceCancellationClock($context, $history, $this->blockingResolutionOrders($step));
+                    }
+                    if ($step['failure'] instanceof Throwable) {
+                        try {
+                            $suspended = $this->throwIntoExecution($execution, $businessReplayClock, $step['failure'], $step);
+                        } catch (Throwable $failure) {
+                            $activityId = $failure instanceof ActivityFailed && is_array($failure->failure)
+                                ? ($failure->failure['activity_execution_id'] ?? null)
+                                : null;
+                            if ($failure === $step['failure']
+                                && $failure instanceof ActivityFailed
+                                && $failure->historyEventType === 'ActivityFailed'
+                                && is_string($activityId)
+                                && $activityId !== ''
+                            ) {
+                                return $this->result($commands, $context, $failure, $step['sequence'], $activityId);
+                            }
+
+                            throw $failure;
+                        }
+                    } else {
+                        $suspended = $this->resumeExecution($execution, $businessReplayClock, $step['value'], $step);
+                    }
+                    continue;
                 }
-                try {
-                    $suspended = $suspended->resolveLocalActivity($this->codec);
-                } catch (Throwable $failure) {
-                    return $this->payloadEncodingFailure($commands, $context, $failure);
+
+                if ($suspended->type === 'record_side_effect') {
+                    $suspended = $suspended->resolveSideEffect();
+                }
+                if ($suspended->type === 'record_local_activity') {
+                    if ($prepareLocalActivities) {
+                        return $this->result($commands, $context, preparedLocalActivity: $this->preparedLocalCall(
+                            $suspended, $nextSequence, false, $history, $cancellation, $context, $cancellationConsumed,
+                        ));
+                    }
+                    try {
+                        $suspended = $suspended->resolveLocalActivity($this->codec);
+                    } catch (Throwable $failure) {
+                        return $this->payloadEncodingFailure($commands, $context, $failure);
+                    }
+                    if (($encodingFailure = $this->appendWorkflowCommand(
+                        $commands,
+                        $suspended,
+                        $taskQueue,
+                        $context,
+                    )) !== null) {
+                        return $encodingFailure;
+                    }
+                    ++$nextSequence;
+                    try {
+                        if ($suspended->localResult instanceof Throwable) {
+                            $suspended = $this->throwIntoExecution($execution, $businessReplayClock, $suspended->localResult);
+                        } else {
+                            $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->localResult);
+                        }
+                    } catch (Throwable $failure) {
+                        return $this->result($commands, $context, $failure);
+                    }
+                    continue;
+                }
+                if ($suspended->type === 'open_condition_wait') {
+                    $suspended = $this->anchorNewConditionChain($suspended);
                 }
                 if (($encodingFailure = $this->appendWorkflowCommand(
                     $commands,
@@ -1000,35 +1024,20 @@ final class Replayer
                     return $encodingFailure;
                 }
                 ++$nextSequence;
-                try {
-                    if ($suspended->localResult instanceof Throwable) {
-                        $suspended = $this->throwIntoExecution($execution, $businessReplayClock, $suspended->localResult);
-                    } else {
-                        $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->localResult);
-                    }
-                } catch (Throwable $failure) {
-                    return $this->result($commands, $context, $failure);
+                if (in_array($suspended->type, ['record_side_effect', 'upsert_memo', 'upsert_search_attributes'], true)) {
+                    $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->localResult);
+                    continue;
                 }
-                continue;
+
+                return $this->result($commands, $context);
             }
-            if ($suspended->type === 'open_condition_wait') {
-                $suspended = $this->anchorNewConditionChain($suspended);
-            }
-            if (($encodingFailure = $this->appendWorkflowCommand(
-                $commands,
-                $suspended,
-                $taskQueue,
-                $context,
-            )) !== null) {
-                return $encodingFailure;
-            }
-            ++$nextSequence;
-            if (in_array($suspended->type, ['record_side_effect', 'upsert_memo', 'upsert_search_attributes'], true)) {
-                $suspended = $this->resumeExecution($execution, $businessReplayClock, $suspended->localResult);
-                continue;
+        } catch (NonDeterministicWorkflow $mismatch) {
+            $source = WorkflowFiberSuspension::workflowSource($execution);
+            if ($source !== null) {
+                $mismatch->recordWorkflowSource($source);
             }
 
-            return $this->result($commands, $context);
+            throw $mismatch;
         }
 
         $this->assertCancellationConsumed($cancellation, $cancellationConsumed);

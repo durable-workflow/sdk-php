@@ -329,11 +329,13 @@ final class ReplayRegressionFixture
                 'reason' => str_contains($message, ': ') ? strstr($message, ': ', true) : $message,
             ]];
         } catch (NonDeterministicWorkflow|WorkflowEntryArgumentsMismatch $exception) {
+            $source = $exception instanceof NonDeterministicWorkflow ? $exception->workflowSource() : null;
             $commands = [[
                 'type' => 'replay_error',
                 'message' => $exception->getMessage(),
                 'reason' => $exception->reason,
                 'sequence' => $exception instanceof NonDeterministicWorkflow ? $exception->sequence : null,
+                ...($source === null ? [] : ['workflow_source' => $source]),
             ]];
         } catch (\Throwable $exception) {
             $commands = [[
@@ -547,6 +549,7 @@ final class ReplayRegressionFixture
 
                 return $result;
             },
+            'golden.authored-replay-source' => [new ReplaySourceWorkflow(), 'reordered'],
             // sdk-php#434: only applied signals, and the one this task delivers.
             'golden.signal-applied' => static fn (WorkflowContext $context): array => ['signals' => $context->signals('approve')],
             // sdk-php#434: a decision taken from the signals visible to this task.
