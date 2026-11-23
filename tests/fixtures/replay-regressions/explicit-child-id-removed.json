@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-explicit-child-id-removed",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.child-workflow", "input": ["golden.child"]},
+  "history": [
+    {"event_type": "ChildWorkflowScheduled", "payload": {
+      "sequence": 1,
+      "requested_child_id": "order:104-shipment_1",
+      "child_workflow_instance_id": "order:104-shipment_1",
+      "child_workflow_run_id": "child-run-1",
+      "child_call_id": "call-1",
+      "child_workflow_type": "golden.child",
+      "parent_close_policy": "abandon",
+      "cancellation_policy": "abandon"
+    }},
+    {"event_type": "ChildRunCompleted", "payload": {
+      "sequence": 1,
+      "child_workflow_instance_id": "order:104-shipment_1",
+      "child_workflow_run_id": "child-run-1",
+      "child_call_id": "call-1",
+      "child_workflow_type": "golden.child"
+    }}
+  ],
+  "expected": {"command_sequence": [{"type": "replay_error", "reason": "child_workflow_identity_mismatch", "sequence": 1}]}
+}
