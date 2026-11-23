@@ -18,6 +18,7 @@ use DurableWorkflow\Model\WorkflowStreamAppendItem;
 use DurableWorkflow\Testing\WorkerTestHarness;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\ContinueAsNewTargetBuild;
 use DurableWorkflow\Worker\DurableOperationHandle;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\Saga;
@@ -626,6 +627,9 @@ final class ReplayRegressionFixture
             },
             'golden.continue-as-new' => static function (WorkflowContext $context, mixed $value): never {
                 $context->continueAsNew([$value], taskQueue: 'regression-corpus');
+            },
+            'golden.continue-as-new-promoted' => static function (WorkflowContext $context, mixed $value): never {
+                $context->continueAsNew([$value], targetBuild: ContinueAsNewTargetBuild::Promoted);
             },
             'golden.search-attributes' => static function (WorkflowContext $context, mixed $status): string {
                 $context->upsertSearchAttributes(['status' => $status]);

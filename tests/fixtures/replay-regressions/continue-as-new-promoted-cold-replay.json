@@ -1,0 +1,34 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "continue-as-new-promoted-cold-replay",
+  "protocol_version": "1.21",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "golden.continue-as-new-promoted",
+    "input": ["cursor"]
+  },
+  "history": [
+    {
+      "event_type": "WorkflowStarted",
+      "sequence": 1,
+      "payload": {"workflow_run_id": "original-run", "workflow_type": "golden.continue-as-new-promoted"}
+    },
+    {
+      "event_type": "WorkflowContinuedAsNew",
+      "sequence": 2,
+      "payload": {
+        "sequence": 1,
+        "continued_to_run_id": "successor-run",
+        "continued_to_run_number": 2,
+        "closed_reason": "continued",
+        "build_transition": {
+          "from_compatibility": "build-a",
+          "to_compatibility": "build-b",
+          "resolution": "promoted"
+        }
+      }
+    }
+  ],
+  "expected": {"command_sequence": []}
+}

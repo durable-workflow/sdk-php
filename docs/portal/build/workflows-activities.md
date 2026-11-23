@@ -731,4 +731,27 @@ $context->continueAsNew(
 
 Clients can keep using ordinary `WorkflowHandle` methods across the run boundary. Use selected-run methods only when crossing that boundary would be a correctness bug.
 
+### Move the next run to the promoted build
+
+By default, the next run stays on the predecessor's build. When you need a
+long-lived chain to move to the currently promoted build, opt in at the next
+continue-as-new boundary:
+
+```php
+use DurableWorkflow\Worker\ContinueAsNewTargetBuild;
+
+$context->continueAsNew(
+    arguments: [['cursor' => $nextCursor]],
+    targetBuild: ContinueAsNewTargetBuild::Promoted,
+);
+```
+
+The promoted build must accept the arguments you pass and serve the successor's
+workflow type on its task queue. The Server records the selected build in both
+runs. If the runtime advertises the capability and no eligible build is
+available, the current task reports the refusal and follows its normal retry
+path. If the runtime lacks the capability, the PHP worker reports
+`unsupported_target_build` in its diagnostics and leaves the claim without
+sending the command.
+
 <div class="outcome"><strong>Design check</strong><p>If repeating a line after a process crash would be unsafe, that line belongs behind an idempotent activity or another durable command.</p></div>

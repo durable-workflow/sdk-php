@@ -176,6 +176,7 @@ final class Replayer
         bool $replayCommittedCancellationScopes = false,
         bool $prepareCancellationScopeDelivery = false,
         bool $allowScopedPreparedLocalActivities = false,
+        bool $allowContinueAsNewTargetBuild = false,
     ): ReplayResult {
         if ($prepareLocalActivityGroups && !$prepareLocalActivities) {
             throw new LogicException('Prepared local groups require prepared local activity admission.');
@@ -261,13 +262,14 @@ final class Replayer
         $selectionCancellationOrders = [];
         $selectionCancellations = $this->selectionCancellations($history, $selectionCancellationOrders);
         $selectionOperationIdentities = $this->selectionOperationIdentities($history);
-        $completedHistory = $this->hasCompletedHistory($history);
+        [$completedHistory, $recordedContinueAsNew, $hasBuildTransition] = $this->terminalHistory($history);
+        $allowContinueAsNewTargetBuild = $allowContinueAsNewTargetBuild || $recordedContinueAsNew !== null;
         $allowScopeAuthoring = $allowCancellationScopeAuthoring
             && ($cancellation->request === null || $replayCommittedCancellationScopes);
         $context = null;
         $businessReplayClock = new BusinessReplayClock($history, (string) ($task['workflow_id'] ?? ''), (string) ($task['run_id'] ?? ''));
         $this->lastBusinessReplayClock = $businessReplayClock;
-        $execution = new Fiber(ExecutionTelemetry::bind(function () use ($handler, $history, $input, $task, $businessReplayClock, $appliedSignals, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, $allowScopedPreparedLocalActivities, &$context): mixed {
+        $execution = new Fiber(ExecutionTelemetry::bind(function () use ($handler, $history, $input, $task, $businessReplayClock, $appliedSignals, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, $allowScopedPreparedLocalActivities, $allowContinueAsNewTargetBuild, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -291,6 +293,7 @@ final class Replayer
                 $allowScopedPreparedLocalActivities,
                 $businessReplayClock,
                 $appliedSignals,
+                $allowContinueAsNewTargetBuild,
             );
 
             try {
@@ -759,6 +762,24 @@ final class Replayer
                 if ($suspended->type === 'continue_as_new') {
                     $this->assertCancellationConsumed($cancellation, $cancellationConsumed);
                     $this->assertNoRemainingSteps($steps, $stepCursor, 'continue_as_new');
+                    if ($recordedContinueAsNew !== null) {
+                        $authored = $suspended->attributes['target_build'] ?? ContinueAsNewTargetBuild::Inherited->value;
+                        if ($authored !== $recordedContinueAsNew->value) {
+                            throw new NonDeterministicWorkflow('The authored continuation changed after its build transition was recorded.',
+                                $nextSequence, reason: 'continue_as_new_target_changed');
+                        }
+                        if ($hasBuildTransition || isset($suspended->attributes['target_build'])) {
+                            if ($commands !== []) {
+                                throw new NonDeterministicWorkflow('The recorded build transition cannot follow new commands.',
+                                    $nextSequence, reason: 'continue_as_new_target_changed');
+                            }
+
+                            return $this->result([], $context);
+                        }
+                    } elseif ($completedHistory) {
+                        throw new NonDeterministicWorkflow('A completed workflow cannot replay as a continuation.',
+                            $nextSequence, reason: 'continue_as_new_target_changed');
+                    }
                     if (($encodingFailure = $this->appendWorkflowCommand(
                         $commands,
                         $suspended,
@@ -1055,6 +1076,10 @@ final class Replayer
             }
         }
         $this->assertNoRemainingSteps($steps, $stepCursor, 'complete_workflow');
+        if ($recordedContinueAsNew !== null) {
+            throw new NonDeterministicWorkflow('Workflow replay finished without its recorded continue-as-new.',
+                $nextSequence, reason: 'continue_as_new_target_changed');
+        }
         if (($encodingFailure = $this->recordAppliedSignalMarker($appliedSignals, $commands, $nextSequence, $taskQueue, $context)) !== null) {
             return $encodingFailure;
         }
@@ -3081,16 +3106,46 @@ final class Replayer
         }
     }
 
-    /** @param list<array<string, mixed>> $history */
-    private function hasCompletedHistory(array $history): bool
+    /**
+     * @param list<array<string, mixed>> $history
+     * @return array{bool, ?ContinueAsNewTargetBuild, bool}
+     */
+    private function terminalHistory(array $history): array
     {
+        $completed = false;
+        $continuation = null;
+        $hasBuildTransition = false;
         foreach ($history as $event) {
-            if (($event['event_type'] ?? $event['type'] ?? null) === 'WorkflowCompleted') {
-                return true;
+            $type = $event['event_type'] ?? $event['type'] ?? null;
+            if ($type === 'WorkflowCompleted') {
+                $completed = true;
+            } elseif ($type === 'WorkflowContinuedAsNew') {
+                if ($continuation !== null) {
+                    throw new NonDeterministicWorkflow('History records multiple continuations for the same run.',
+                        reason: 'invalid_continue_as_new_transition');
+                }
+                $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+                $continuation = ContinueAsNewTargetBuild::Inherited;
+                if (array_key_exists('build_transition', $payload)) {
+                    $transition = $payload['build_transition'];
+                    $resolution = is_array($transition) && is_string($transition['resolution'] ?? null)
+                        ? ContinueAsNewTargetBuild::tryFrom($transition['resolution'])
+                        : null;
+                    if (!is_array($transition) || $resolution === null
+                        || !array_key_exists('from_compatibility', $transition)
+                        || !array_key_exists('to_compatibility', $transition)
+                        || ($transition['from_compatibility'] !== null && !is_string($transition['from_compatibility']))
+                        || ($transition['to_compatibility'] !== null && !is_string($transition['to_compatibility']))) {
+                        throw new NonDeterministicWorkflow('History records an invalid continue-as-new build transition.',
+                            reason: 'invalid_continue_as_new_transition');
+                    }
+                    $continuation = $resolution;
+                    $hasBuildTransition = true;
+                }
             }
         }
 
-        return false;
+        return [$completed || $continuation !== null, $continuation, $hasBuildTransition];
     }
 
     /**

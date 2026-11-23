@@ -1040,6 +1040,9 @@ final class ReplayRegressionConsumer
             'golden.continue-as-new' => static function (WorkflowContext $context, mixed $value): never {
                 $context->continueAsNew([$value], taskQueue: 'regression-corpus');
             },
+            'golden.continue-as-new-promoted' => static function (WorkflowContext $context, mixed $value): never {
+                $context->continueAsNew([$value], targetBuild: \DurableWorkflow\Worker\ContinueAsNewTargetBuild::Promoted);
+            },
             'golden.search-attributes' => static function (WorkflowContext $context, mixed $status): string {
                 $context->upsertSearchAttributes(['status' => $status]);
 
