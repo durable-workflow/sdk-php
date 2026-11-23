@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Worker;
 
 use DurableWorkflow\Exception\ServerException;
+use DurableWorkflow\Version;
 
 /** @internal One reserved slot and its original request identity. */
 final class CarriedPoll
@@ -82,7 +83,8 @@ final class CarriedPoll
             || ($answer['task']['lease_owner'] ?? null) !== $this->request['worker_id']
             || ($this->workflow && ($answer['task']['task_kind'] ?? 'workflow') !== 'workflow')
             || $answer['poll_status'] !== 'leased'
-            || $answer['protocol_version'] !== '1.20' || !is_array($answer['server_capabilities'])
+            || !Version::supportsWorkerProtocol($answer['protocol_version'], Version::WORKER_PROTOCOL)
+            || !is_array($answer['server_capabilities'])
             || !is_string($answer['server_time'])) {
             throw self::invalid();
         }

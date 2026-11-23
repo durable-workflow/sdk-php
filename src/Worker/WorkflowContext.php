@@ -176,6 +176,7 @@ final class WorkflowContext
         private readonly bool $allowScopedPreparedLocalActivities = false,
         private readonly ?BusinessReplayClock $businessReplayClock = null,
         private readonly ?AppliedSignals $appliedSignals = null,
+        private readonly bool $allowContinueAsNewTargetBuild = false,
     ) {
         $this->execution = $execution;
         $this->loadMessageStreamMessages();
@@ -762,8 +763,14 @@ final class WorkflowContext
         array $arguments = [],
         ?string $workflowType = null,
         ?string $taskQueue = null,
+        ?ContinueAsNewTargetBuild $targetBuild = null,
     ): never {
-        $this->suspend(WorkflowCommand::continueAsNew($arguments, $workflowType, $taskQueue));
+        $this->assertActiveFiber();
+        if ($targetBuild !== null && !$this->allowContinueAsNewTargetBuild) {
+            throw new WorkflowClaimDeferred('unsupported_target_build: the Server did not advertise continue-as-new build selection for this worker session.');
+        }
+
+        $this->suspend(WorkflowCommand::continueAsNew($arguments, $workflowType, $taskQueue, $targetBuild));
 
         throw new LogicException('A continue-as-new command cannot resume the current workflow execution.');
     }

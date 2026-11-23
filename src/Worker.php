@@ -31,6 +31,7 @@ use DurableWorkflow\Worker\CancellationDelivery;
 use DurableWorkflow\Worker\CancellationRequest;
 use DurableWorkflow\Worker\CancellationScopeDeliveryClaim;
 use DurableWorkflow\Worker\CarriedPoll;
+use DurableWorkflow\Worker\ContinueAsNewTargetBuild;
 use DurableWorkflow\Worker\CompletionPipeline;
 use DurableWorkflow\Worker\WorkflowPrefetch;
 use DurableWorkflow\Worker\WorkflowPollRetry;
@@ -45,6 +46,7 @@ use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\PreparedLocalActivityAttempt;
 use DurableWorkflow\Worker\PreparedLocalActivityCall;
 use DurableWorkflow\Worker\PreparedLocalActivityRunner;
+use DurableWorkflow\Worker\PromotedBuildUnavailable;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\QueryTaskAuthority;
 use DurableWorkflow\Worker\Replayer;
@@ -2177,12 +2179,21 @@ final class Worker
             $stickyClaim = $this->stickyCacheClaim($task);
             $this->prepareCompletionPipeline($task, $commands);
             $this->assertPipelineAuthority();
-            $carried = $this->reserveActivityPoll($leaseOwner, $commands !== []);
-            $workflowCarried = $commands === [] ? null : $this->reserveWorkflowPoll($leaseOwner, workflowCompletion: true);
+            $promotedContinuation = false;
+            foreach ($commands as $command) {
+                if (($command['type'] ?? null) === 'continue_as_new'
+                    && ($command['target_build'] ?? null) === ContinueAsNewTargetBuild::Promoted->value) {
+                    $promotedContinuation = true;
+                    break;
+                }
+            }
+            $canCarryPoll = $commands !== [] && !$promotedContinuation;
+            $carried = $this->reserveActivityPoll($leaseOwner, $canCarryPoll);
+            $workflowCarried = $canCarryPoll ? $this->reserveWorkflowPoll($leaseOwner, workflowCompletion: true) : null;
             $this->notifyDeliveredWorkflowHistory('completion', $taskId, $attempt, $commands);
             $complete = fn (array $commands, array $messageStreamCursors, array $messageStreamWaits): array
                 => $this->retryStorageAdmission('workflow_complete', function () use (
-                    $taskId, $leaseOwner, $attempt, $commands, $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried, $workflowCarried,
+                    $taskId, $leaseOwner, $attempt, $commands, $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried, $workflowCarried, $promotedContinuation,
                 ): array {
                     try {
                         return $this->client->completeWorkflowTask($taskId, $leaseOwner, $attempt, $commands,
@@ -2192,6 +2203,12 @@ final class Worker
                         $workflowCarried?->uncertainCompletion();
                         if ($this->completionPipeline?->abandoningCurrent() ?? false) {
                             throw new WorkflowClaimDeferred('The owned completion request was abandoned during pipeline cleanup.');
+                        }
+                        if ($promotedContinuation
+                            && $error->status === 409 && $error->reason === PromotedBuildUnavailable::REASON
+                            && ($error->details['request_admitted'] ?? null) === false
+                            && ($error->details['retryable'] ?? null) === true) {
+                            throw new PromotedBuildUnavailable('The promoted build is unavailable for the successor workflow.', previous: $error);
                         }
                         throw $error;
                     }
@@ -2267,7 +2284,11 @@ final class Worker
                         $attempt,
                         'PHP workflow task execution failed: '.$failure->getMessage(),
                         $failure::class,
-                        $failure instanceof NonDeterministicWorkflow || $failure instanceof WorkflowEntryArgumentsMismatch ? $failure->reason : null,
+                        match (true) {
+                            $failure instanceof NonDeterministicWorkflow, $failure instanceof WorkflowEntryArgumentsMismatch => $failure->reason,
+                            $failure instanceof PromotedBuildUnavailable => PromotedBuildUnavailable::REASON,
+                            default => null,
+                        },
                         $failure instanceof NonDeterministicWorkflow ? $failure->sequence : null,
                         $failure instanceof NonDeterministicWorkflow ? null : $failure->getTraceAsString(),
                     );
@@ -2913,7 +2934,8 @@ final class Worker
                     $this->preparedLocalActivityCancellationPolicies, allowCancellationScopeAuthoring: $this->enableCooperativeCancellation,
                     replayCommittedCancellationScopes: $this->enableCancellationScopes,
                     prepareCancellationScopeDelivery: $this->enableCancellationScopes,
-                    allowScopedPreparedLocalActivities: $this->enableCancellationScopes && $this->enablePreparedLocalActivities);
+                    allowScopedPreparedLocalActivities: $this->enableCancellationScopes && $this->enablePreparedLocalActivities,
+                    allowContinueAsNewTargetBuild: $this->client->supportsContinueAsNewTargetBuild((string) ($task['lease_owner'] ?? $this->workerId)));
             } catch (CooperativeCancellationObserved) {
                 if (++$cancellationPasses > 3) {
                     throw new WorkflowClaimAborted('Cancellation replay did not converge on its canonical delivery.');
