@@ -6,6 +6,17 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.29.0] - 2026-11-24
+
+### Fixed
+
+- On a compatible Native Server with ordered condition authoring enabled,
+  timed conditions evaluate signal effects in durable receipt order before
+  the original timer fires. Replay preserves the first satisfied prefix.
+  In a selection, that prefix can win before a competing child completes
+  or fails. Existing waits retain their recorded outcome.
+  ([Durable Workflow #230](https://github.com/durable-workflow/.github/issues/230))
+
 ## [3.28.0] - 2026-11-23
 
 ### Added
