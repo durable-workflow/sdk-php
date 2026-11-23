@@ -952,6 +952,7 @@ final class ReplayRegressionConsumer
         }
 
         return match ($workflowType) {
+            'golden.ordered-condition' => self::workflow('golden.signal'),
             'golden.signal-occurrence-unavailable', 'golden.signal-occurrence-deferred' => self::workflow('golden.signal'),
             'golden.telemetry-context' => static function (WorkflowContext $context): array {
                 $result = $context->activity('golden.greet', ['Ada']);
@@ -1493,6 +1494,7 @@ final class ReplayRegressionConsumer
 
         return array_intersect_key($workerTask, array_flip([
             'resume_source_kind', 'resume_source_id', 'workflow_signal_id', 'workflow_command_id', 'signal_name',
+            'condition_wait_pending_input_sequence',
         ]));
     }
 
