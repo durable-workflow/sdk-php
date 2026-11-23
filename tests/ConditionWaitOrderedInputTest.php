@@ -23,8 +23,9 @@ final class ConditionWaitOrderedInputTest extends TestCase
         };
         $worker = new Replayer($codec);
         $worker->useConditionOccurrenceDeadline(true);
-        $worker->useConditionInputOrder(true);
-        $opening = $worker->replay($workflow, [], [], 'test')->commands[0];
+        $legacyOpening = $worker->replay($workflow, [], [], 'test')->commands[0];
+        self::assertArrayNotHasKey('condition_wait_input_order', $legacyOpening);
+        $opening = $worker->replay($workflow, [], [], 'test', ['condition_wait_input_order_authoring' => true])->commands[0];
         self::assertSame('open_condition_wait', $opening['type']);
         self::assertSame('durable_receipt_order', $opening['condition_wait_input_order']);
         unset($opening['type']);

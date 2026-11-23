@@ -1361,7 +1361,6 @@ final class Worker
             && ($capabilities['signal_external_workflow'] ?? null) === true;
         $this->replayer->useConditionOccurrenceDeadline(is_array($capabilities)
             && ($capabilities['condition_wait_occurrence_deadline'] ?? null) === true);
-        $this->replayer->useConditionInputOrder(is_array($capabilities) && ConditionInputOrder::marked($capabilities));
         if (self::advertisesGroupedConditionWaits($capabilities)) {
             $this->groupedConditionWaitsAdvertised = true;
         }

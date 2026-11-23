@@ -89,13 +89,6 @@ final class Replayer
     /** Whether this task's Server advertises condition_wait_occurrence_deadline. */
     private bool $conditionOccurrenceDeadline = false;
 
-    private bool $conditionInputOrder = false;
-
-    public function useConditionInputOrder(bool $supported): void
-    {
-        $this->conditionInputOrder = $supported;
-    }
-
     public function __construct(private readonly PayloadCodec $codec)
     {
     }
@@ -238,6 +231,7 @@ final class Replayer
         // authored command sequence; only its position selects the view.
         $appliedSignals = AppliedSignals::fromHistory($history, $task);
         $orderedConditions = new ConditionInputOrder($history);
+        $authorOrderedConditions = ($task[ConditionInputOrder::AUTHORING] ?? null) === true;
         $signalMarkerSequences = [];
         $steps = array_values(array_filter($steps, static function (array $step) use (&$signalMarkerSequences): bool {
             if ($step['shape'] === 'version_marker' && $step['detail'] === AppliedSignals::CHANGE_ID) {
@@ -542,8 +536,8 @@ final class Replayer
                                 'parallel_group_path' => $path,
                             ]);
                             if ($suspended->mode === 'select' && $command->type === 'open_condition_wait'
-                                && $this->conditionInputOrder) {
-                                $command = $this->anchorNewConditionChain($command);
+                                && $authorOrderedConditions) {
+                                $command = $this->anchorNewConditionChain($command, true);
                             }
                             if (($encodingFailure = $this->appendWorkflowCommand(
                                 $commands,
@@ -1089,7 +1083,7 @@ final class Replayer
                     continue;
                 }
                 if ($suspended->type === 'open_condition_wait') {
-                    $suspended = $this->anchorNewConditionChain($suspended);
+                    $suspended = $this->anchorNewConditionChain($suspended, $authorOrderedConditions);
                 }
                 if (($encodingFailure = $this->appendWorkflowCommand(
                     $commands,
@@ -1696,19 +1690,19 @@ final class Replayer
      * the authored timeout; timeout_seconds stays the replay input (#269).
      * Grouped waits keep their authored per-open timeout.
      */
-    private function anchorNewConditionChain(WorkflowCommand $command): WorkflowCommand
+    private function anchorNewConditionChain(WorkflowCommand $command, bool $authorOrderedConditions): WorkflowCommand
     {
         $timeout = $command->attributes['timeout_seconds'] ?? null;
         if (!$this->conditionOccurrenceDeadline || !is_int($timeout)
             || !is_string($command->attributes['condition_wait_occurrence_id'] ?? null)
-            || (!$this->conditionInputOrder && array_key_exists('parallel_group_path', $command->attributes))) {
+            || (!$authorOrderedConditions && array_key_exists('parallel_group_path', $command->attributes))) {
             return $command;
         }
 
         return $command->withAttributes([
             'deadline_policy' => self::CONDITION_DEADLINE_POLICY,
             'condition_wait_timeout_budget_seconds' => $timeout,
-            ...($this->conditionInputOrder ? [ConditionInputOrder::CAPABILITY => ConditionInputOrder::ORDER] : []),
+            ...($authorOrderedConditions ? [ConditionInputOrder::CAPABILITY => ConditionInputOrder::ORDER] : []),
         ]);
     }
 

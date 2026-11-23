@@ -12,6 +12,8 @@ final class ConditionInputOrder
 {
     public const CAPABILITY = 'condition_wait_input_order';
 
+    public const AUTHORING = 'condition_wait_input_order_authoring';
+
     public const ORDER = 'durable_receipt_order';
 
     public const PENDING_INPUT = 'condition_wait_pending_input_sequence';
