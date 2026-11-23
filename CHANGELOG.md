@@ -6,6 +6,16 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.27.0] - 2026-11-23
+
+### Added
+
+- A workflow can use `ContinueAsNewTargetBuild::Promoted` to put its successor
+  on the queue's eligible promoted build. The worker checks the capability on
+  its current registration. Plain continue-as-new keeps the predecessor's
+  build. When no promotion is eligible, the worker reports the refusal through
+  the normal workflow-task retry path. (durable-workflow/workflow#880)
+
 ## [3.26.0] - 2026-11-23
 
 ### Added
