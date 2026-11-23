@@ -67,15 +67,19 @@ final class ContinueAsNewTargetBuildTest extends TestCase
 
     public function testClientGatesExplicitTargetsOnTheCurrentRegistrationAndUsesTheNewProtocolOnlyForContinuation(): void
     {
-        $registration = static fn (string $version, mixed $flag): array => [
+        $registration = static fn (string $version, mixed $flag, string $namespace = 'default', string $queue = 'queue'): array => [
             'registered' => true,
             'worker_id' => 'worker',
+            'namespace' => $namespace,
+            'task_queue' => $queue,
             'protocol_version' => $version,
             'server_capabilities' => ['continue_as_new_target_build' => $flag],
         ];
         $transport = new FakeTransport([
             $registration('1.20', true),
             $registration('1.21', 'true'),
+            $registration('1.21', true, 'different-namespace'),
+            $registration('1.21', true, queue: 'different-queue'),
             $registration('1.21', true),
             ['recorded' => true],
             ['recorded' => true],
@@ -92,10 +96,10 @@ final class ContinueAsNewTargetBuildTest extends TestCase
                 self::assertStringContainsString('unsupported_target_build', $error->getMessage());
             }
         };
-        $client->registerWorker('worker', 'queue', [], []);
-        $assertUnsupported($client, 'worker');
-        $client->registerWorker('worker', 'queue', [], []);
-        $assertUnsupported($client, 'worker');
+        for ($i = 0; $i < 4; $i++) {
+            $client->registerWorker('worker', 'queue', [], []);
+            $assertUnsupported($client, 'worker');
+        }
         $client->registerWorker('worker', 'queue', [], []);
         $assertUnsupported($client, 'another-worker');
         foreach ([null, false, [], 1, 'Promoted', 'promoted '] as $invalid) {
@@ -106,18 +110,18 @@ final class ContinueAsNewTargetBuildTest extends TestCase
                 self::assertStringContainsString('invalid_target_build', $error->getMessage());
             }
         }
-        self::assertCount(3, $transport->requests);
+        self::assertCount(5, $transport->requests);
         $client->completeWorkflowTask('task', 'worker', 1, $explicit);
         $client->completeWorkflowTask('legacy-task', 'worker', 1, [['type' => 'continue_as_new']]);
         $client->completeWorkflowTask('other-task', 'worker', 1, [['type' => 'complete_workflow']]);
         $client->registerWorker('worker', 'queue', [], []);
         $assertUnsupported($client, 'worker');
-        self::assertCount(7, $transport->requests);
-        self::assertSame('1.21', $transport->requests[3]['headers'][self::PROTOCOL_HEADER]);
-        self::assertSame('inherited', $transport->requests[3]['body']['commands'][0]['target_build']);
-        self::assertSame('1.21', $transport->requests[4]['headers'][self::PROTOCOL_HEADER]);
-        self::assertArrayNotHasKey('target_build', $transport->requests[4]['body']['commands'][0]);
-        self::assertSame('1.20', $transport->requests[5]['headers'][self::PROTOCOL_HEADER]);
+        self::assertCount(9, $transport->requests);
+        self::assertSame('1.21', $transport->requests[5]['headers'][self::PROTOCOL_HEADER]);
+        self::assertSame('inherited', $transport->requests[5]['body']['commands'][0]['target_build']);
+        self::assertSame('1.21', $transport->requests[6]['headers'][self::PROTOCOL_HEADER]);
+        self::assertArrayNotHasKey('target_build', $transport->requests[6]['body']['commands'][0]);
+        self::assertSame('1.20', $transport->requests[7]['headers'][self::PROTOCOL_HEADER]);
     }
 
     #[DataProvider('workerCapabilities')]
@@ -128,7 +132,8 @@ final class ContinueAsNewTargetBuildTest extends TestCase
         $transport = new FakeTransport(handler: static function (string $method, string $uri) use ($supported, &$polls): array {
             if (str_ends_with($uri, '/worker/register')) {
                 return [
-                    'registered' => true, 'worker_id' => 'worker', 'protocol_version' => $supported ? '1.21' : '1.20',
+                    'registered' => true, 'worker_id' => 'worker', 'namespace' => 'default', 'task_queue' => 'queue',
+                    'protocol_version' => $supported ? '1.21' : '1.20',
                     'server_capabilities' => $supported ? ['continue_as_new_target_build' => true] : [],
                 ];
             }
@@ -172,6 +177,8 @@ final class ContinueAsNewTargetBuildTest extends TestCase
             ['next'], targetBuild: ContinueAsNewTargetBuild::Promoted,
         ));
         $worker->run(0);
+        self::assertSame(['supported' => true, 'minimum_protocol_version' => '1.21'],
+            $transport->requests[0]['body']['capability_manifest'][ContinueAsNewTargetBuild::CAPABILITY]);
         $writes = array_values(array_filter($transport->requests,
             static fn (array $request): bool => preg_match('#/workflow-tasks/task-[12]/(?:complete|fail)$#', $request['uri']) === 1));
         if (!$supported) {

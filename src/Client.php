@@ -2285,8 +2285,11 @@ final class Client implements WorkflowClientInterface
         if (array_key_exists('server_capabilities', $registration)) {
             $this->rememberClaimedTaskReadyAge($registration['server_capabilities']);
         }
-        if (($registration['registered'] ?? null) === true
+        if ($this->workerProtocolVersion === Version::WORKER_PROTOCOL
+            && ($registration['registered'] ?? null) === true
             && ($registration['worker_id'] ?? null) === $workerId
+            && ($registration['namespace'] ?? null) === $this->namespace
+            && ($registration['task_queue'] ?? null) === $taskQueue
             && is_array($registration['server_capabilities'] ?? null)
             && ($registration['server_capabilities'][ContinueAsNewTargetBuild::CAPABILITY] ?? null) === true
             && Version::supportsWorkerProtocol($registration['protocol_version'] ?? null, Version::CONTINUE_AS_NEW_TARGET_BUILD_PROTOCOL)) {

@@ -976,6 +976,10 @@ final class Worker
                     workflowCommandContracts: $this->workflowCommandContracts(),
                     capabilityManifest: [
                         ...CapabilityManifest::portableWorkerAffinity(),
+                        ContinueAsNewTargetBuild::CAPABILITY => [
+                            'supported' => true,
+                            'minimum_protocol_version' => Version::CONTINUE_AS_NEW_TARGET_BUILD_PROTOCOL,
+                        ],
                         // Server #1017: a suffix is accepted only when it continues the cached prefix exactly.
                         'sticky_history_suffix' => ['supported' => true, 'minimum_protocol_version' => '1.18', 'version' => 1],
                         ...($this->preparedLocalActivityCancellationPolicies !== [] ? [
