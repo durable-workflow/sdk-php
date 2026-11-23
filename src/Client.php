@@ -2801,6 +2801,7 @@ final class Client implements WorkflowClientInterface
      * }|null $stickyCache
      * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int}|null $activityPoll
      * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int, history_page_size: int, task_kinds: list<string>}|null $workflowPoll
+     * @param array<string, int|string>|null $selectionChildAwait
      * @return array<string, mixed>
      */
     public function completeWorkflowTask(
@@ -2813,6 +2814,7 @@ final class Client implements WorkflowClientInterface
         ?array $stickyCache = null,
         ?array $activityPoll = null,
         ?array $workflowPoll = null,
+        ?array $selectionChildAwait = null,
     ): array {
         if (($messageStreamCursors !== [] || $messageStreamWaits !== []) && !Version::supportsMessageStreams()) {
             throw new InvalidArgumentException('Message stream completion metadata requires worker protocol 1.15 or newer.');
@@ -2825,6 +2827,7 @@ final class Client implements WorkflowClientInterface
                 $attempt,
                 self::WORKFLOW_TASK_WAITING_FOR_HISTORY_MESSAGE,
                 self::WORKFLOW_TASK_WAITING_FOR_HISTORY_TYPE,
+                selectionChildAwait: $selectionChildAwait,
             );
         }
 
@@ -2864,10 +2867,14 @@ final class Client implements WorkflowClientInterface
             'sticky_cache' => $stickyCache,
             'activity_poll' => $activityPoll,
             'workflow_poll' => $workflowPoll,
+            'selection_handle' => $selectionChildAwait,
         ], static fn (mixed $value): bool => $value !== [] && $value !== null));
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @param array<string, int|string>|null $selectionChildAwait
+     * @return array<string, mixed>
+     */
     public function failWorkflowTask(
         string $taskId,
         string $leaseOwner,
@@ -2877,6 +2884,7 @@ final class Client implements WorkflowClientInterface
         ?string $reason = null,
         ?int $sequence = null,
         ?string $stackTrace = null,
+        ?array $selectionChildAwait = null,
     ): array {
         $client = $this;
         if ($reason === PromotedBuildUnavailable::REASON) {
@@ -2895,6 +2903,7 @@ final class Client implements WorkflowClientInterface
                 'reason' => $reason,
                 'sequence' => $sequence,
                 'stack_trace' => $stackTrace,
+                'selection_handle' => $selectionChildAwait,
             ], static fn (mixed $value): bool => $value !== null),
         ]);
     }

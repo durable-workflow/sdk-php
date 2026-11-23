@@ -153,6 +153,8 @@ final class WorkflowContext
 
     /** @var array<string, int> */
     private array $messageStreamWaits = [];
+    /** @var array<string, int|string>|null */
+    private ?array $selectionChildAwait = null;
 
     /**
      * @param list<array<string, mixed>> $history
@@ -287,6 +289,24 @@ final class WorkflowContext
             array_keys($this->messageStreamWaits),
             array_values($this->messageStreamWaits),
         );
+    }
+
+    /**
+     * @internal
+     * @param array<string, int|string> $handle
+     */
+    public function rememberSelectionChildAwait(array $handle): void
+    {
+        $this->selectionChildAwait = $handle;
+    }
+
+    /**
+     * @internal
+     * @return array<string, int|string>|null
+     */
+    public function selectionChildAwait(): ?array
+    {
+        return $this->selectionChildAwait;
     }
 
     /**

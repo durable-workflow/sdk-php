@@ -2180,6 +2180,51 @@ final class ReplayerTest extends TestCase
         self::assertSame('child-run', $result->commands[0]['operation_identity']);
     }
 
+    public function testSelectionChildAwaitReportsAndConsumesTheOriginalHandle(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $paths = self::selectionPaths(['child', 'deadline'], ['child', 'timer']);
+        $history = [
+            self::parallelEvent('ChildWorkflowScheduled', 1, 'child-workflow', $paths[0]),
+            self::parallelEvent('TimerScheduled', 2, '1', $paths[1]),
+            self::parallelEvent('TimerFired', 2, '1', $paths[1]),
+            self::selectionResolved('deadline', 1, 2, 'timer', 'timer-2'),
+        ];
+        $history[0]['payload']['child_workflow_instance_id'] = 'child-instance';
+        $workflow = static function (WorkflowContext $context): mixed {
+            $selected = $context->select([
+                'child' => static fn () => $context->childWorkflow('child-workflow'),
+                'deadline' => static function () use ($context): void {
+                    $context->sleep(1);
+                },
+            ]);
+
+            return $selected->handles['child']->await();
+        };
+
+        $waiting = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+        $handle = [
+            'selection_group_id' => 'select-calls:1:2',
+            'member_base_sequence' => 1,
+            'member_size' => 1,
+            'operation_identity' => 'child-run-1',
+            'await_position' => 3,
+            'status' => 'waiting',
+        ];
+        self::assertSame([], $waiting->commands);
+        self::assertSame($handle, $waiting->selectionChildAwait);
+
+        $history[] = ['event_type' => 'ChildWorkflowAwaited', 'payload' => ['selection_handle' => $handle]];
+        $history[] = self::parallelEvent('ChildRunCompleted', 1, 'child-workflow', $paths[0], $codec->envelope('late'));
+        $resumed = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+        $handle['status'] = 'resumed';
+        self::assertSame($handle, $resumed->selectionChildAwait);
+        self::assertSame('late', $codec->decodeEnvelope($resumed->commands[0]['result']));
+
+        $history[] = ['event_type' => 'ChildWorkflowAwaited', 'payload' => ['selection_handle' => $handle]];
+        self::assertNull((new Replayer($codec))->replay($workflow, $history, [], 'php-workers')->selectionChildAwait);
+    }
+
     public function testSelectionLoserCancellationEmitsOneIdempotentControlCommand(): void
     {
         $codec = new AvroPayloadCodec();

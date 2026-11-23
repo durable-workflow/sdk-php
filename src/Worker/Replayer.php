@@ -714,6 +714,22 @@ final class Replayer
                         $selectionCancellations,
                         $selectionCancellationOrders,
                     );
+                    if ($suspended->kind === 'child' && $suspended->size === 1) {
+                        $handle = [
+                            'selection_group_id' => $suspended->selectionGroupId,
+                            'member_base_sequence' => $suspended->baseSequence,
+                            'member_size' => $suspended->size,
+                            'operation_identity' => $suspended->identity,
+                            'await_position' => $nextSequence,
+                            'status' => 'waiting',
+                        ];
+                        if (!$resolution['resolved']) {
+                            $context?->rememberSelectionChildAwait($handle);
+                        } elseif ($this->hasActiveSelectionChildAwait($history, $handle)) {
+                            $handle['status'] = 'resumed';
+                            $context?->rememberSelectionChildAwait($handle);
+                        }
+                    }
                     if (!$resolution['resolved']) {
                         return $this->result($commands, $context);
                     }
@@ -1234,7 +1250,34 @@ final class Replayer
             preparedLocalActivity: $preparedLocalActivity,
             preparedLocalActivityGroup: $preparedLocalActivityGroup,
             cancellationScopeOpening: $cancellationScopeOpening,
+            selectionChildAwait: $context?->selectionChildAwait(),
         );
+    }
+
+    /**
+     * @param list<array<string, mixed>> $history
+     * @param array<string, int|string> $handle
+     */
+    private function hasActiveSelectionChildAwait(array $history, array $handle): bool
+    {
+        for ($index = count($history) - 1; $index >= 0; --$index) {
+            $event = $history[$index];
+            $type = $event['event_type'] ?? $event['type'] ?? null;
+            if (in_array($type, ['SignalWaitOpened', 'ConditionWaitOpened'], true)) {
+                return false;
+            }
+            if ($type !== 'ChildWorkflowAwaited' || !is_array($event['payload']['selection_handle'] ?? null)) {
+                continue;
+            }
+            foreach ($handle as $key => $value) {
+                if (($event['payload']['selection_handle'][$key] ?? null) !== $value) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        return false;
     }
 
     /** @param array<int, array<string, mixed>> $stepsBySequence */
