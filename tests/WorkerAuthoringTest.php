@@ -201,6 +201,7 @@ final class WorkerAuthoringTest extends TestCase
                         'minimum_protocol_version' => '1.18',
                         'implementation' => 'bounded_exact_identity_cache',
                 ],
+                    'continue_as_new_target_build' => ['supported' => true, 'minimum_protocol_version' => '1.21'],
                     'sticky_history_suffix' => ['supported' => true, 'minimum_protocol_version' => '1.18', 'version' => 1],
                 ],
                 'max_concurrent_workflow_tasks' => 1,
