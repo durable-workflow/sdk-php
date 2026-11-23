@@ -713,6 +713,41 @@ invoked. The workflow reads their committed values with
 `$context->signals('set-language')` during replay. Query and update methods are
 executed with immutable `QueryContext` state.
 
+### Locate a replay mismatch
+
+When replay finds a mismatch at a suspended workflow call,
+`NonDeterministicWorkflow::workflowSource()` reports the authored function or
+method, source filename, and line. A blocked worker task includes the same
+location in its failure message.
+
+To inspect a captured history offline, pass its events, the original workflow
+arguments, and the current workflow callable to the replayer.
+
+```php
+use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Exception\NonDeterministicWorkflow;
+use DurableWorkflow\Worker\Replayer;
+
+try {
+    (new Replayer(new AvroPayloadCodec()))->replay(
+        [$workflow, 'handle'],
+        $historyEvents,
+        $input,
+        'approvals',
+    );
+} catch (NonDeterministicWorkflow $failure) {
+    $location = $failure->workflowSource();
+    if ($location !== null) {
+        printf("%s (%s:%d)\n", $location['function'], $location['file'], $location['line']);
+    }
+}
+```
+
+For example, `ApproveOrder::reserve (ApproveOrder.php:42)` points to the
+call to review alongside the workflow sequence and expected shape. The
+filename omits its directory. A mismatch without a suspended authored call
+may have no source location.
+
 `signals()` returns only signals the Server has applied to the run, plus the
 signal the current workflow task delivers, in the order the Server received
 them. The Server applies signals in message order with updates, so an update

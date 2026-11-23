@@ -215,6 +215,7 @@ final class ReplayerTest extends TestCase
             self::assertSame(7, $exception->sequence);
             self::assertSame('activity', $exception->expected);
             self::assertSame('complete_workflow', $exception->actual);
+            self::assertNull($exception->workflowSource());
         }
     }
 

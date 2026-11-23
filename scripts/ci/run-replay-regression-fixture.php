@@ -14,6 +14,7 @@ use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Exception\WorkflowEntryArgumentsMismatch;
 use DurableWorkflow\Model\WorkflowStreamAppendItem;
+use DurableWorkflow\Tests\Support\ReplaySourceWorkflow;
 use DurableWorkflow\Transport\Transport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
@@ -298,11 +299,17 @@ final class ReplayRegressionTransport implements Transport
                 || !is_int($failure['sequence'] ?? null)) {
                 throw new RuntimeException('Official replay consumer reported an unexpected workflow task failure.');
             }
-            $this->completedCommands[] = [[
+            $replayError = [
                 'type' => 'replay_error',
                 'reason' => $failure['reason'],
                 'sequence' => $failure['sequence'],
-            ]];
+            ];
+            $message = $failure['message'] ?? null;
+            if (is_string($message) && !array_key_exists('stack_trace', $failure)
+                && preg_match('/ Authored at (.+) \(([^()]+):([1-9][0-9]*)\)\.\z/', $message, $source) === 1) {
+                $replayError['workflow_source'] = ['function' => $source[1], 'file' => $source[2], 'line' => (int) $source[3]];
+            }
+            $this->completedCommands[] = [$replayError];
 
             return ['failed' => true];
         }
@@ -931,6 +938,12 @@ final class ReplayRegressionConsumer
     /** @return callable(WorkflowContext, mixed ...$input): mixed */
     private static function workflow(string $workflowType): callable
     {
+        if ($workflowType === 'golden.authored-replay-source') {
+            require_once dirname(__DIR__, 2).'/tests/Support/ReplaySourceWorkflow.php';
+
+            return [new ReplaySourceWorkflow(), 'reordered'];
+        }
+
         return match ($workflowType) {
             'golden.signal-occurrence-unavailable', 'golden.signal-occurrence-deferred' => self::workflow('golden.signal'),
             'golden.telemetry-context' => static function (WorkflowContext $context): array {

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-authored-call-step-reorder",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "golden.authored-replay-source",
+    "input": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"event_type": "TimerScheduled", "payload": {"sequence": 1, "delay_seconds": 5}},
+    {"event_type": "TimerFired", "payload": {"sequence": 1, "delay_seconds": 5}}
+  ],
+  "expected": {
+    "type": "replay_error",
+    "reason": "workflow_nondeterministic",
+    "sequence": 1,
+    "workflow_source": {
+      "function": "DurableWorkflow\\Tests\\Support\\ReplaySourceWorkflow::greet",
+      "file": "ReplaySourceWorkflow.php"
+    }
+  }
+}
