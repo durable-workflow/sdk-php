@@ -30,11 +30,11 @@ final class ContinueAsNewTargetBuildTest extends TestCase
             'sequence' => 1,
             'build_transition' => ['from_compatibility' => null, 'to_compatibility' => 'build-b', 'resolution' => 'promoted'],
         ]];
-        $promoted = static fn (WorkflowContext $context): never => $context->continueAsNew(
+        $promoted = static fn (WorkflowContext $context) => $context->continueAsNew(
             ['next'], targetBuild: ContinueAsNewTargetBuild::Promoted,
         );
         self::assertSame([], $replayer->replay($promoted, [$start, $closed], [], 'queue')->commands);
-        $inherited = static fn (WorkflowContext $context): never => $context->continueAsNew(['next']);
+        $inherited = static fn (WorkflowContext $context) => $context->continueAsNew(['next']);
         $legacyClose = ['event_type' => 'WorkflowContinuedAsNew', 'payload' => ['sequence' => 1]];
         $legacy = $replayer->replay($inherited, [$start, $legacyClose], [], 'queue')->commands;
         self::assertSame(['continue_as_new'], array_column($legacy, 'type'));
@@ -56,7 +56,7 @@ final class ContinueAsNewTargetBuildTest extends TestCase
         ]]];
         try {
             (new Replayer(new AvroPayloadCodec()))->replay(
-                static fn (WorkflowContext $context): never => $context->continueAsNew(),
+                static fn (WorkflowContext $context) => $context->continueAsNew(),
                 $history, [], 'queue',
             );
             self::fail('Replay accepted a changed target.');
@@ -168,7 +168,7 @@ final class ContinueAsNewTargetBuildTest extends TestCase
                     $diagnostics[] = $context['reason'];
                 }
             });
-        $worker->registerWorkflow('continue', static fn (WorkflowContext $context): never => $context->continueAsNew(
+        $worker->registerWorkflow('continue', static fn (WorkflowContext $context) => $context->continueAsNew(
             ['next'], targetBuild: ContinueAsNewTargetBuild::Promoted,
         ));
         $worker->run(0);
