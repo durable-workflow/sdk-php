@@ -22,14 +22,33 @@ final class ConditionInputOrder
     /** @var list<int> */
     private array $appliedPositions = [];
 
+    /** @var array<string, array{id: string, sequence: int}> */
+    private array $competingSelections = [];
+
     /** @param list<array<string, mixed>> $history */
     public function __construct(array $history)
     {
         $receipts = [];
+        $terminals = [];
         foreach ($history as $event) {
             $type = $event['event_type'] ?? $event['type'] ?? null;
             $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
             $sequence = $event['sequence'] ?? null;
+            if (is_int($sequence) && in_array($type, ['ChildRunCompleted', 'ChildRunFailed', 'ChildRunCancelled', 'ChildRunTerminated'], true)) {
+                $terminals[$sequence] = [$event['id'] ?? $event['event_id'] ?? null, $type];
+            }
+            if ($type === 'SelectionCandidateReady') {
+                $group = $payload['selection_group_id'] ?? null;
+                $position = $payload['resolution_event_sequence'] ?? null;
+                $terminalId = $payload['resolution_event_id'] ?? null;
+                if (!is_string($group) || $group === '' || isset($this->competingSelections[$group])
+                    || !is_int($position) || $position < 1 || !is_int($sequence) || $position >= $sequence
+                    || !is_string($terminalId) || $terminalId === ''
+                    || ($terminals[$position] ?? null) !== [$terminalId, $payload['resolution_event_type'] ?? null]) {
+                    throw $this->mismatch();
+                }
+                $this->competingSelections[$group] = ['id' => $terminalId, 'sequence' => $position];
+            }
             $commandId = $event['workflow_command_id'] ?? $payload['workflow_command_id'] ?? null;
             if (is_int($sequence) && $sequence > 0 && is_string($commandId) && $commandId !== '') {
                 if ($type === 'SignalReceived' || $type === 'UpdateAccepted') {
@@ -107,7 +126,13 @@ final class ConditionInputOrder
      * @param array<string, mixed> $task
      * @return array<string, mixed>|null
      */
-    public function decide(string $id, array $task, WorkflowContext $context, WorkflowCommand $command): ?array
+    public function decide(
+        string $id,
+        array $task,
+        WorkflowContext $context,
+        WorkflowCommand $command,
+        ?string $selectionGroup = null,
+    ): ?array
     {
         if (!array_key_exists(self::PENDING_INPUT, $task)) {
             throw new WorkflowClaimDeferred('condition_input_snapshot_missing: ordered condition replay requires the original worker snapshot.');
@@ -118,7 +143,9 @@ final class ConditionInputOrder
         }
         $wait = $this->waits[$id];
         $fire = $wait['fire'];
-        $limit = min($pending ?? PHP_INT_MAX, $fire ?? PHP_INT_MAX);
+        $candidate = $selectionGroup === null ? null : ($this->competingSelections[$selectionGroup] ?? null);
+        $terminal = min($fire ?? PHP_INT_MAX, $candidate['sequence'] ?? PHP_INT_MAX);
+        $limit = min($pending ?? PHP_INT_MAX, $terminal);
         $prefix = [];
         $entryReceipt = null;
         foreach ($this->appliedPositions as $receipt) {
@@ -156,9 +183,12 @@ final class ConditionInputOrder
                 return $result + ['satisfied' => true, 'input_receipt_sequence' => $receipt];
             }
         }
-        if ($pending === null || ($fire !== null && $pending >= $fire)) {
+        if ($pending === null || $pending >= $terminal) {
             if ($error !== null) {
                 throw $error;
+            }
+            if ($candidate !== null && $candidate['sequence'] === $terminal) {
+                return $result + ['satisfied' => false, 'competing_resolution_event_id' => $candidate['id']];
             }
             if ($fire !== null) {
                 return $result + ['satisfied' => false];

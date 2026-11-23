@@ -581,7 +581,7 @@ final class Replayer
                                 if ($waitId !== null && $orderedConditions->has($waitId)) {
                                     $groupId = $path[0]['parallel_group_id'] ?? '';
                                     if (!isset($selectionResolutions[$groupId])) {
-                                        $decision = $orderedConditions->decide($waitId, $task, $context, $command);
+                                        $decision = $orderedConditions->decide($waitId, $task, $context, $command, $groupId);
                                         if ($decision !== null) {
                                             $commands[] = $decision;
                                         }
