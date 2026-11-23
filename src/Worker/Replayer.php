@@ -1779,6 +1779,7 @@ final class Replayer
         $conditionStepsByWaitId = [];
         $conditionOpenedAt = [];
         $childIdentities = [];
+        $requestedChildIds = [];
         $conditionOpenedOrder = [];
         $conditionOccurrences = [];
         $conditionWaitIds = [];
@@ -2042,6 +2043,17 @@ final class Replayer
                     $this->payloadDetail($payload, 'child_workflow'),
                     parallelPath: $this->parallelPath($payload, $sequence),
                 );
+                if ($type === 'ChildWorkflowScheduled' && array_key_exists('requested_child_id', $payload)) {
+                    $requested = $payload['requested_child_id'];
+                    if (!is_string($requested) || $requested === ''
+                        || $requested !== ($payload['child_workflow_instance_id'] ?? null)) {
+                        throw new NonDeterministicWorkflow(
+                            'A recorded child start does not match its requested workflow ID.',
+                            $sequence, reason: 'child_workflow_identity_mismatch',
+                        );
+                    }
+                    $requestedChildIds[$key] = $requested;
+                }
                 // Preserve a missing initial identity too. A later continued
                 // or retried run cannot establish which run started the child.
                 if (!array_key_exists($key, $childIdentities)) {
@@ -2348,6 +2360,9 @@ final class Replayer
                 // metadata. This is internal replay state, never a wire field.
                 $steps[$key]['physical_condition_steps'] = [$steps[$key]];
             }
+        }
+        foreach ($requestedChildIds as $key => $requested) {
+            $steps[$key]['requested_child_id'] = $requested;
         }
         foreach ($childIdentities as $key => $identity) {
             if (($steps[$key]['shape'] ?? null) === 'child_workflow' && $identity !== null) {
@@ -3310,6 +3325,14 @@ final class Replayer
 
         if ($command->historyShape === 'external_signal') {
             $this->assertExternalSignalMatches($command, $step);
+        }
+
+        if ($command->type === 'start_child_workflow'
+            && ($command->attributes['workflow_id'] ?? null) !== ($step['requested_child_id'] ?? null)) {
+            throw new NonDeterministicWorkflow(
+                'The requested child workflow ID changed during replay.',
+                $step['sequence'], reason: 'child_workflow_identity_mismatch',
+            );
         }
 
         $actualDetail = $this->commandDetail($command);
