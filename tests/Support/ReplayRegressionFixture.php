@@ -86,6 +86,21 @@ final class ReplayRegressionFixture
             throw new RuntimeException("{$identity}.history must not be empty.");
         }
 
+        if ($workflowType === 'golden.selection-child-group-await') {
+            $replayer = new Replayer(new AvroPayloadCodec());
+            $replay = $replayer->replay(self::workflow($workflowType), $history, $input, 'regression-corpus');
+            if ($replay->commands !== []) {
+                throw new RuntimeException("{$identity} must park without authoring commands.");
+            }
+            self::assertMatches(
+                $fixture['expected'],
+                ['selection_child_await' => $replay->selectionChildAwait ?? null],
+                "{$identity}.expected",
+            );
+
+            return [];
+        }
+
         if ($workflowType === 'golden.sticky-suffix') {
             $observed = StickySuffixScenario::run();
             self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
@@ -801,6 +816,21 @@ final class ReplayRegressionFixture
                 ];
             },
             'golden.selection-handle-isolation' => self::selectionHandleIsolationWorkflow(),
+            'golden.selection-child-group-await' => static function (WorkflowContext $context, bool $condition = false): array {
+                $selected = $context->select([
+                    'children' => static fn () => $context->all([
+                        static fn () => $context->childWorkflow('golden.selection-child'),
+                        static fn () => $context->childWorkflow('golden.selection-child'),
+                    ]),
+                    'deadline' => $condition
+                        ? static fn () => $context->waitCondition(static fn (): bool => false, key: 'approval')
+                        : static function () use ($context): void {
+                            $context->sleep(1);
+                        },
+                ]);
+
+                return $selected->handles['children']->await();
+            },
             'golden.selection-incomplete-nested-member' => static function (WorkflowContext $context): array {
                 $selected = $context->select([
                     'deadline' => static function () use ($context): void {

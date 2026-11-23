@@ -535,12 +535,8 @@ final class ReplayRegressionConsumer
         }
 
         if ($workflowType === 'golden.selection-child-group-await') {
-            $replayer = new \DurableWorkflow\Worker\Replayer(new AvroPayloadCodec());
-            $replay = $replayer->replay(self::workflow($workflowType), $history, $input, 'regression-corpus');
-            if ($replay->commands !== []) {
-                throw new RuntimeException("{$identity} must park without authoring commands.");
-            }
-            self::assertExpected($identity, $fixture, ['selection_child_await' => $replay->selectionChildAwait ?? null]);
+            require_once __DIR__.'/../../tests/Support/ReplayRegressionFixture.php';
+            \DurableWorkflow\Tests\Support\ReplayRegressionFixture::execute($fixture);
 
             return;
         }
@@ -1221,20 +1217,6 @@ final class ReplayRegressionConsumer
                 ];
             },
             'golden.selection-handle-isolation' => self::selectionHandleIsolationWorkflow(),
-            'golden.selection-child-group-await' => static function (WorkflowContext $context): array {
-                $selected = $context->select([
-                    'children' => static fn () => $context->all([
-                        static fn () => $context->childWorkflow('golden.selection-child'),
-                        static fn () => $context->childWorkflow('golden.selection-child'),
-                    ]),
-                    'deadline' => static function () use ($context): void {
-                        $context->sleep(1);
-                    },
-                ]);
-
-                return $selected->handles['children']->await();
-            },
-
             'golden.selection-incomplete-nested-member' => static function (WorkflowContext $context): array {
                 $selected = $context->select([
                     'deadline' => static function () use ($context): void {
