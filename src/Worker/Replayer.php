@@ -551,7 +551,7 @@ final class Replayer
                             $this->assertConditionWaitCompatible($step, $command);
                             $command = $command->withRecordedConditionDefinition($step['condition_definition_fingerprint']);
                         }
-                        $nextSequence = max($nextSequence, $step['sequence'] + 1);
+                        $nextSequence = max($nextSequence, ($step['last_physical_sequence'] ?? $step['sequence']) + 1);
 
                         if (!$step['resolved']) {
                             if ($preparedGroup && $command->type === 'record_local_activity') {
@@ -568,8 +568,7 @@ final class Replayer
                                 }
 
                                 $metadata = $path[array_key_last($path)] ?? [];
-                                // Grouped reopens keep the authored timeout: replay of a
-                                // grouped physical reopen is not qualified yet (#278).
+                                // Grouped reopens keep the authored timeout and group position.
                                 $command = $command->withAttributes([
                                     ...$metadata,
                                     'parallel_group_path' => $path,
@@ -1397,7 +1396,7 @@ final class Replayer
     /** @param array<string, mixed> $previous
      *  @param array<string, mixed> $next
      */
-    private function isConditionReopen(array $previous, array $next): bool
+    private function isConditionReopen(array $previous, array $next, bool $grouped = false): bool
     {
         return $previous['shape'] === 'condition_wait' && $next['shape'] === 'condition_wait'
             && $previous['condition_key'] === $next['condition_key']
@@ -1409,8 +1408,11 @@ final class Replayer
             // Two physical opens with different recorded occurrences are two calls (#281).
             && ($this->stepOccurrence($previous) === null || $this->stepOccurrence($next) === null
                 || $this->stepOccurrence($previous) === $this->stepOccurrence($next))
-            // Grouped members are separate calls; grouped reopens are #278.
-            && $previous['parallel_path'] === [] && $next['parallel_path'] === [];
+            && $previous['parallel_path'] === $next['parallel_path']
+            && ($grouped
+                ? $previous['parallel_path'] !== [] && $this->stepOccurrence($previous) !== null
+                    && $this->stepOccurrence($previous) === $this->stepOccurrence($next)
+                : $previous['parallel_path'] === []);
     }
 
     /**
@@ -1470,6 +1472,52 @@ final class Replayer
     }
 
     /**
+     * Group members can reopen after intervening sibling events. Keep their
+     * original slot while accounting for each committed physical sequence.
+     *
+     * @param list<array<string, mixed>> $steps
+     * @return list<array<string, mixed>>
+     */
+    private function collapseGroupedConditionReopens(array $steps): array
+    {
+        $result = [];
+        $positions = [];
+        foreach ($steps as $step) {
+            $occurrence = ($step['shape'] ?? null) === 'condition_wait' && $step['parallel_path'] !== []
+                && !in_array('select', array_column($step['parallel_path'], 'parallel_group_mode'), true)
+                ? $this->stepOccurrence($step)
+                : null;
+            if ($occurrence === null || !isset($positions[$occurrence])) {
+                if ($occurrence !== null) {
+                    $positions[$occurrence] = count($result);
+                }
+                $result[] = $step;
+                continue;
+            }
+
+            $index = $positions[$occurrence];
+            $original = $result[$index];
+            if (!$this->isConditionReopen($original, $step, grouped: true)
+                || $step['sequence'] <= ($original['last_physical_sequence'] ?? $original['sequence'])) {
+                throw new NonDeterministicWorkflow('A grouped condition reopen changed its authored wait.',
+                    $step['sequence'], reason: 'condition_wait_occurrence_mismatch');
+            }
+            $this->assertConditionChainPolicy($original, $step);
+            $step['last_physical_sequence'] = $step['sequence'];
+            $step['sequence'] = $original['sequence'];
+            $step['timeout_seconds'] = $original['timeout_seconds'];
+            $step['opened_at'] = $original['opened_at'] ?? null;
+            $step['physical_condition_steps'] = [
+                ...($original['physical_condition_steps'] ?? []),
+                ...($step['physical_condition_steps'] ?? []),
+            ];
+            $result[$index] = $step;
+        }
+
+        return $result;
+    }
+
+    /**
      * Every physical open of one anchored chain names the same policy, its
      * original authored budget and the chain's occurrence; a chain that began
      * without the policy never gains it (#269).
@@ -1522,8 +1570,7 @@ final class Replayer
      * A new top-level chain opts in only when the Server advertises the
      * capability and the call has an occurrence id and a timeout. The budget is
      * the authored timeout; timeout_seconds stays the replay input (#269).
-     * Grouped waits keep the authored timeout until grouped reopens are
-     * qualified (#278).
+     * Grouped waits keep their authored per-open timeout.
      */
     private function anchorNewConditionChain(WorkflowCommand $command): WorkflowCommand
     {
@@ -1782,6 +1829,7 @@ final class Replayer
         $requestedChildIds = [];
         $conditionOpenedOrder = [];
         $conditionOccurrences = [];
+        $groupedConditionSequences = [];
         $conditionWaitIds = [];
         $conditionOpenSequences = [];
         $conditionDeadlinePolicies = [];
@@ -2277,6 +2325,16 @@ final class Replayer
                     $payload['condition_definition_fingerprint'] ?? null,
                 );
                 $timeoutSeconds = $this->intValue($payload['timeout_seconds'] ?? null);
+                $occurrence = $this->stringValue($payload['condition_wait_occurrence_id'] ?? null);
+                $groupedSequence = $occurrence === null ? null : ($groupedConditionSequences[$occurrence] ?? null);
+                $path = $this->parallelPath($payload, $groupedSequence ?? $sequence);
+                if ($groupedSequence !== null && $path === []) {
+                    throw new NonDeterministicWorkflow('A grouped condition reopen is missing its group path.',
+                        $sequence, reason: 'condition_wait_occurrence_mismatch');
+                }
+                if ($occurrence !== null && $path !== [] && !in_array('select', array_column($path, 'parallel_group_mode'), true)) {
+                    $groupedConditionSequences[$occurrence] ??= $sequence;
+                }
                 $steps[$key] ??= $this->step(
                     $sequence,
                     'condition_wait',
@@ -2284,8 +2342,11 @@ final class Replayer
                     $conditionKey,
                     $conditionDefinitionFingerprint,
                     $timeoutSeconds,
-                    $this->parallelPath($payload, $sequence),
+                    $path,
                 );
+                if ($groupedSequence !== null) {
+                    $steps[$key]['group_slot_sequence'] = $groupedSequence;
+                }
                 $conditionWaitId = $this->stringValue($payload['condition_wait_id'] ?? null);
                 if ($conditionWaitId !== null) {
                     $conditionStepsByWaitId[$conditionWaitId] = $key;
@@ -2293,7 +2354,7 @@ final class Replayer
                 }
                 $conditionOpenedAt[$key] ??= $this->eventTime($event);
                 $conditionOpenedOrder[$key] ??= $resolutionOrder;
-                $conditionOccurrences[$key] ??= $this->stringValue($payload['condition_wait_occurrence_id'] ?? null);
+                $conditionOccurrences[$key] ??= $occurrence;
                 $conditionOpenSequences[$key] ??= $this->sequence($payload);
                 $conditionDeadlinePolicies[$key] ??= $this->recordedConditionDeadlinePolicy($payload, $sequence);
             } elseif (in_array($type, ['ConditionWaitSatisfied', 'ConditionWaitTimedOut'], true)) {
@@ -2370,7 +2431,7 @@ final class Replayer
             }
         }
         ksort($steps, SORT_NUMERIC);
-        $steps = $this->bindConditionReopens(array_values($steps));
+        $steps = $this->bindConditionReopens($this->collapseGroupedConditionReopens(array_values($steps)));
 
         return $preserveConditionReopens ? $steps : $this->collapseConditionReopens($steps);
     }
@@ -3575,7 +3636,7 @@ final class Replayer
      */
     private function resolutionParallelPath(array $payload, ?array $previous, int $sequence): array
     {
-        $current = $this->parallelPath($payload, $sequence);
+        $current = $this->parallelPath($payload, $previous['group_slot_sequence'] ?? $sequence);
         $recorded = is_array($previous['parallel_path'] ?? null) ? $previous['parallel_path'] : [];
         if ($current !== [] && $recorded !== [] && $current !== $recorded) {
             throw new NonDeterministicWorkflow(
