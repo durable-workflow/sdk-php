@@ -1153,6 +1153,14 @@ final class ReplayRegressionConsumer
                     return 'booked';
                 });
             },
+            'golden.grouped-condition-reopen' => static function (WorkflowContext $context): array {
+                $context->all([
+                    $context->deferCondition(static fn (): bool => $context->signals('approve') !== [], 'approval', 300),
+                    $context->deferTimer(5),
+                ]);
+
+                return $context->all([$context->deferTimer(10), $context->deferTimer(20)]);
+            },
             'golden.parallel' => static function (WorkflowContext $context, mixed $mode): array {
                 try {
                     return match ($mode) {
