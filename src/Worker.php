@@ -134,6 +134,8 @@ final class Worker
     private ?array $workflowMemoCapability = null;
     private bool $serviceOperationsSupported = false;
     private bool $childStartTurnSupported = false;
+
+    private bool $childWorkflowIdSupported = false;
     private bool $signalExternalWorkflowSupported = false;
     /** @var (\Closure(string, string, int, list<array<string, mixed>>): void)|null */
     private ?\Closure $deliveredWorkflowHistoryObserver = null;
@@ -1341,6 +1343,8 @@ final class Worker
             && in_array('start_service_operation', $supportedCommands, true);
         $this->childStartTurnSupported = is_array($capabilities)
             && ($capabilities['child_workflow_start_turn'] ?? null) === true;
+        $this->childWorkflowIdSupported = is_array($capabilities)
+            && ($capabilities['child_workflow_explicit_id'] ?? null) === true;
         $this->signalExternalWorkflowSupported = is_array($capabilities)
             && ($capabilities['signal_external_workflow'] ?? null) === true;
         $this->replayer->useConditionOccurrenceDeadline(is_array($capabilities)
@@ -2166,6 +2170,7 @@ final class Worker
             $this->assertWorkflowMemoUpdatesAvailable($commands);
             $this->assertServiceOperationsAvailable($commands);
             $this->assertChildStartTurnAvailable($commands);
+            $this->assertChildWorkflowIdsAvailable($commands);
             $this->assertSignalExternalWorkflowAvailable($commands);
             $this->assertCancellationPoliciesAvailable($commands);
             $stickyClaim = $this->stickyCacheClaim($task);
@@ -3072,6 +3077,7 @@ final class Worker
                 return $this->checkpointPreparedLocalPrefix($task, $replay->commands, $group->baseSequence);
             }
             if (!$group->committed) {
+                $this->assertChildWorkflowIdsAvailable($group->commands);
                 $checkpointId = PreparedLocalCheckpointId::for($taskId, $owner, $epoch, $group->baseSequence, $group->commands);
                 $receipt = $this->client->preparedLocalActivityOperation($taskId, $owner, $epoch, 'checkpoint-group', [
                     'checkpoint_id' => $checkpointId, 'start_sequence' => $group->baseSequence, 'commands' => $group->commands,
@@ -3150,6 +3156,7 @@ final class Worker
         $taskId = (string) $task['task_id'];
         $owner = (string) ($task['lease_owner'] ?? $this->workerId);
         $epoch = (int) ($task['workflow_task_attempt'] ?? 1);
+        $this->assertChildWorkflowIdsAvailable($commands);
         $start = $nextSequence - count($commands);
         $checkpointId = PreparedLocalCheckpointId::for($taskId, $owner, $epoch, $start, $commands);
         $body = ['checkpoint_id' => $checkpointId, 'start_sequence' => $start, 'commands' => $commands];
@@ -3447,6 +3454,22 @@ final class Worker
                 && !$this->childStartTurnSupported) {
                 throw new WorkflowClaimAborted(
                     'child_workflow_start_turn_unavailable: startChildWorkflow() needs a runtime that advertises child_workflow_start_turn.',
+                );
+            }
+        }
+    }
+
+    /** @param list<array<string, mixed>> $commands */
+    private function assertChildWorkflowIdsAvailable(array $commands): void
+    {
+        if ($this->childWorkflowIdSupported) {
+            return;
+        }
+
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'start_child_workflow' && array_key_exists('workflow_id', $command)) {
+                throw new WorkflowClaimAborted(
+                    'child_workflow_explicit_id_unavailable: the runtime did not advertise support for a requested child workflow_id.',
                 );
             }
         }
