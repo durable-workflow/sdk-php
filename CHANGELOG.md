@@ -6,6 +6,15 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.25.0] - 2026-11-23
+
+### Added
+
+- PHP workers can pass `workflow_id` when starting a child on a runtime that
+  advertises `child_workflow_explicit_id`. The requested instance ID is stable
+  across child retries and continue-as-new. Replay verifies it against the
+  scheduled child and preserves the separate run and call IDs. (#850)
+
 ## [3.24.2] - 2026-11-23
 
 ### Fixed
