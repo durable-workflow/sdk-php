@@ -20,6 +20,9 @@ final class TaskDeliveryAttempt
         public readonly string $taskKind,
         private readonly array $allowedKinds,
         private readonly array $body,
+        public readonly int $expiresAtMs,
+        /** Monotonic milliseconds after which an unconfirmed acceptance is released. */
+        public readonly int $releaseAtMs,
     ) {
     }
 
@@ -27,8 +30,10 @@ final class TaskDeliveryAttempt
      * @param array<string, mixed> $body
      * @param array<string, mixed> $response
      * @param list<string> $allowedKinds
+     * @param int $acceptanceTimeoutMs The negotiated offer acceptance timeout.
      */
-    public static function fromResponse(string $path, array $body, array $response, array $allowedKinds): self
+    public static function fromResponse(string $path, array $body, array $response, array $allowedKinds,
+        int $acceptanceTimeoutMs, int $wallNowMs, int $monotonicNowMs): self
     {
         $offer = $response['task_offer'] ?? null;
         if (!array_key_exists('task', $response) || $response['task'] !== null || ($response['poll_status'] ?? null) !== 'offered'
@@ -42,8 +47,13 @@ final class TaskDeliveryAttempt
             throw new ServerException('The server returned an invalid task offer.', 200, 'invalid_task_delivery_offer');
         }
 
+        // Anchor the packet's own deadline locally. The negotiated timeout caps a worker clock that runs
+        // behind the Server; the grace covers one that runs ahead and a replayable committed claim.
+        $remaining = max(0, min($acceptanceTimeoutMs, $offer['expires_at_ms'] - $wallNowMs));
+
         return new self((string) $body['worker_id'], $path, $offer['task_id'], $offer['task_kind'], $allowedKinds,
-            array_replace($body, ['task_offer_token' => $offer['token'], 'timeout_seconds' => 0]));
+            array_replace($body, ['task_offer_token' => $offer['token'], 'timeout_seconds' => 0]),
+            $offer['expires_at_ms'], $monotonicNowMs + $remaining + TaskDelivery::UNCONFIRMED_GRACE_MS);
     }
 
     /** @param list<string> $allowedKinds */

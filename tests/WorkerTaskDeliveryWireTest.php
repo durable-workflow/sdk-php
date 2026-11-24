@@ -26,6 +26,8 @@ use TypeError;
 final class WorkerTaskDeliveryWireTest extends TestCase
 {
     private const FIXTURE = __DIR__.'/fixtures/task-delivery-contract/acceptance-refusals.v1.json';
+    /** SDK supplement for the native producer's additional rolled-back acceptance outcomes. */
+    private const NATIVE_FIXTURE = __DIR__.'/fixtures/task-delivery-contract/native-refusals.v1.json';
 
     public function testFrozenCompanionIdentity(): void
     {
@@ -37,6 +39,22 @@ final class WorkerTaskDeliveryWireTest extends TestCase
         self::assertCount(24, $data['authority_cases']);
         $ids = array_column([...$data['wire_cases'], ...$data['raw_wire_cases'], ...$data['authority_cases']], 'id');
         self::assertCount(175, array_unique($ids));
+    }
+
+    public function testNativeSupplementDerivesFromTheFrozenCompanion(): void
+    {
+        $native = self::fixture(self::NATIVE_FIXTURE);
+        self::assertSame(hash_file('sha256', self::FIXTURE), $native['source']['derived_from_sha256']);
+        self::assertSame(['task_offer_unclaimable', 'task_offer_lease_ended', 'task_offer_conflict'], $native['reasons']);
+        $cases = [...$native['wire_cases'], ...$native['raw_wire_cases']];
+        self::assertCount(276, array_unique(array_column($cases, 'id')));
+        foreach ($native['reasons'] as $reason) {
+            $exact = array_values(array_filter($cases, static fn (array $case): bool =>
+                ($case['input']['decoded_body'] ?? null) === ['task' => null, 'poll_status' => $reason, 'reason' => $reason]
+                && $case['input']['http_status'] === 409 && !array_key_exists('exception_http_status', $case['input']) && !array_key_exists('exception_reason', $case['input'])));
+            self::assertCount(1, $exact, $reason);
+            self::assertSame('resolve_selected_packet', $exact[0]['expected_action']);
+        }
     }
 
     /** @param array<string, mixed> $input */
@@ -95,12 +113,19 @@ final class WorkerTaskDeliveryWireTest extends TestCase
     /** @return iterable<string, array{array<string, mixed>, string, string, string, bool, bool}> */
     public static function wireCases(): iterable
     {
-        foreach (['wire_cases' => false, 'raw_wire_cases' => true] as $group => $raw) {
-            foreach (self::fixture()[$group] as $case) {
-                foreach ([['workflow', 'workflow'], ['workflow', 'update_validation'], ['activity', 'activity'], ['query', 'query'], ['update-validation', 'update_validation']] as [$endpoint, $kind]) {
-                    foreach ($raw ? [false, true] : [false] as $progress) {
-                        yield $case['id'].' / '.$endpoint.' / '.$kind.($progress ? ' / progress' : '') => [$case['input'], $case['expected_action'], $endpoint, $kind, $raw, $progress];
-                    }
+        $groups = ['wire_cases' => false, 'raw_wire_cases' => true];
+        $cases = [];
+        foreach ([self::FIXTURE, self::NATIVE_FIXTURE] as $file) {
+            foreach ($groups as $group => $raw) {
+                foreach (self::fixture($file)[$group] as $case) {
+                    $cases[] = [$case, $raw];
+                }
+            }
+        }
+        foreach ($cases as [$case, $raw]) {
+            foreach ([['workflow', 'workflow'], ['workflow', 'update_validation'], ['activity', 'activity'], ['query', 'query'], ['update-validation', 'update_validation']] as [$endpoint, $kind]) {
+                foreach ($raw ? [false, true] : [false] as $progress) {
+                    yield $case['id'].' / '.$endpoint.' / '.$kind.($progress ? ' / progress' : '') => [$case['input'], $case['expected_action'], $endpoint, $kind, $raw, $progress];
                 }
             }
         }
@@ -168,7 +193,7 @@ JSON;
     }
 
     /** @return array<string, mixed> */
-    private static function fixture(): array { return json_decode((string) file_get_contents(self::FIXTURE), true, flags: JSON_THROW_ON_ERROR); }
+    private static function fixture(string $file = self::FIXTURE): array { return json_decode((string) file_get_contents($file), true, flags: JSON_THROW_ON_ERROR); }
 
     /** @return array<string, mixed> */
     private static function poll(Client $client, string $endpoint, string $poll): array

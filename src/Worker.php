@@ -1538,6 +1538,10 @@ final class Worker
         if ($error instanceof \DurableWorkflow\Exception\TaskDeliveryUncertain) {
             return ['retry' => true, 'retain' => true];
         }
+        if (\DurableWorkflow\Worker\TaskDelivery::isIssuanceUnavailable($error)) {
+            // An offer request selects nothing; retry after backoff while the Server renews its window.
+            return ['retry' => true, 'retain' => false];
+        }
 
         $database = $this->isTransientDatabaseFailure($error, "poll_{$kind}_task", $requestId);
         $storage = $error->isStorageAdmissionFailure($requestId);

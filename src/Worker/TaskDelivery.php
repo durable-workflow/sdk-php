@@ -17,13 +17,40 @@ final class TaskDelivery
     public const SCHEMA = 'durable-workflow.task-delivery.v1';
     public const HEADER = 'X-Durable-Workflow-Task-Delivery';
     public const VERSION = 'offer-accept.v1';
+    /** Synthetic reason for a selected packet released after its bounded uncertainty window. */
+    public const UNCONFIRMED_REASON = 'task_offer_unconfirmed';
+    /** How long an unconfirmed acceptance is retried after the packet's own deadline. */
+    public const UNCONFIRMED_GRACE_MS = 30_000;
+    public const ISSUANCE_UNAVAILABLE_REASON = 'task_offer_issuance_unavailable';
+    /** A managed worker carries one request per kind at a time; a few recent ones bound the memory. */
+    private const CARRIED_RETAINED = 8;
 
     /** @var array<string, array{queue: string, token: string}> */
     private array $registrations = [];
+    /** @var array<string, int> Negotiated acceptance timeout per worker, in milliseconds. */
+    private array $acceptanceTimeouts = [];
+    /** @var array<string, string> Registration token whose node refused the offer route before selection. */
+    private array $offersUnavailable = [];
+    /** @var array<string, list<string>> Recent completion-carried poll IDs per worker, queue and logical poll path. */
+    private array $carried = [];
     /** @var array<string, TaskDeliveryAttempt> */
     private array $pending = [];
     /** @var array<string, list<string>> */
     private array $accepting = [];
+    /** @var Closure(): int */
+    private readonly Closure $monotonicMs;
+    /** @var Closure(): int */
+    private readonly Closure $wallMs;
+
+    /**
+     * @param (Closure(): int)|null $monotonicMs Monotonic milliseconds that bound unconfirmed acceptances.
+     * @param (Closure(): int)|null $wallMs Epoch milliseconds compared with a packet's `expires_at_ms`.
+     */
+    public function __construct(?Closure $monotonicMs = null, ?Closure $wallMs = null)
+    {
+        $this->monotonicMs = $monotonicMs ?? static fn (): int => intdiv(hrtime(true), 1_000_000);
+        $this->wallMs = $wallMs ?? static fn (): int => (int) floor(microtime(true) * 1000);
+    }
 
     /**
      * @param list<string> $capabilities
@@ -58,6 +85,35 @@ final class TaskDelivery
             $this->forget($workerId);
         }
         $this->registrations[$workerId] = ['queue' => $queue, 'token' => $token];
+        $this->acceptanceTimeouts[$workerId] = $feature['acceptance_timeout_seconds'] * 1000;
+        // A new negotiation tries the offer route again.
+        unset($this->offersUnavailable[$workerId]);
+    }
+
+    /**
+     * Remember a poll request carried by a completion. The Server binds any lease it carries to the
+     * legacy poll identity, so recovering it must use the legacy route even in offer mode.
+     *
+     * @param array<string, mixed>|null $request
+     */
+    public function carried(string $path, ?array $request): void
+    {
+        $workerId = $request['worker_id'] ?? null;
+        $queue = $request['task_queue'] ?? null;
+        $pollRequestId = $request['poll_request_id'] ?? null;
+        if (is_string($workerId) && is_string($queue) && is_string($pollRequestId) && $pollRequestId !== '') {
+            $key = self::carriedKey($path, $workerId, $queue);
+            $recent = array_values(array_diff($this->carried[$key] ?? [], [$pollRequestId]));
+            $recent[] = $pollRequestId;
+            $this->carried[$key] = array_slice($recent, -self::CARRIED_RETAINED);
+        }
+    }
+
+    /** Native Server suspends new offers until it commits another issuance window. */
+    public static function isIssuanceUnavailable(ServerException $exception): bool
+    {
+        return $exception->status === 503 && $exception->reason === self::ISSUANCE_UNAVAILABLE_REASON
+            && !$exception instanceof TaskDeliveryUncertain;
     }
 
     /**
@@ -85,6 +141,11 @@ final class TaskDelivery
         if (isset($this->accepting[$key])) {
             return ['task' => null];
         }
+        if ($selected === null && (($this->offersUnavailable[$workerId] ?? null) === $registration['token']
+            || in_array($body['poll_request_id'], $this->carried[self::carriedKey($path, $workerId, (string) $body['task_queue'])] ?? [], true))) {
+            // No packet was selected for this poll: the legacy route is authoritative for it.
+            return null;
+        }
         // Hold ownership across both requests, including a suspended offer read.
         $this->accepting[$key] = $allowedKinds;
         try {
@@ -96,13 +157,18 @@ final class TaskDelivery
         }
     }
 
+    private static function carriedKey(string $path, string $workerId, string $queue): string
+    {
+        return hash('sha256', json_encode([$path, $workerId, $queue], JSON_THROW_ON_ERROR));
+    }
+
     /**
      * @param array<string, mixed> $body
      * @param list<string> $allowedKinds
      * @param Closure(string, array<string, mixed>, ?TaskDeliveryAttempt): array<string, mixed> $send
-     * @return array<string, mixed>
+     * @return array<string, mixed>|null Null means this node does not serve offers; use the legacy route.
      */
-    private function deliver(string $key, string $wirePath, array $body, array $allowedKinds, ?TaskDeliveryAttempt $selected, Closure $send): array
+    private function deliver(string $key, string $wirePath, array $body, array $allowedKinds, ?TaskDeliveryAttempt $selected, Closure $send): ?array
     {
         try {
             if ($selected === null) {
@@ -111,7 +177,8 @@ final class TaskDelivery
                 if (!array_key_exists('task_offer', $response)) {
                     return $response;
                 }
-                $candidate = TaskDeliveryAttempt::fromResponse($wirePath, $body, $response, $allowedKinds);
+                $candidate = TaskDeliveryAttempt::fromResponse($wirePath, $body, $response, $allowedKinds,
+                    $this->acceptanceTimeouts[(string) $body['worker_id']] ?? 10_000, ($this->wallMs)(), ($this->monotonicMs)());
                 $selected = $this->pending[$key] ??= $candidate;
             }
             $response = $send($selected->path, $selected->requestBody(), $selected);
@@ -122,6 +189,24 @@ final class TaskDelivery
         } catch (ServerException $exception) {
             $response = $selected === null ? null : $this->refusedResponse($exception, $selected->requestBody());
             if ($response === null) {
+                if ($selected === null && in_array($exception->status, [404, 405], true)
+                    && !$exception instanceof TaskDeliveryUncertain) {
+                    // Nothing was selected or accepted, so this is not an uncertain claim: this node
+                    // does not serve offers. Use legacy polling for the rest of this registration.
+                    $workerId = (string) $body['worker_id'];
+                    if (($this->registrations[$workerId]['token'] ?? null) === $body['registration_token']) {
+                        $this->offersUnavailable[$workerId] = $body['registration_token'];
+                    }
+
+                    return null;
+                }
+                if ($selected !== null && ($this->monotonicMs)() >= $selected->releaseAtMs) {
+                    // The packet's deadline and grace have passed without a definitive answer. Release it
+                    // without running anything; a lease that did commit expires and is redelivered.
+                    $this->resolved($key, $selected);
+
+                    return ['task' => null, 'poll_status' => 'empty', 'reason' => self::UNCONFIRMED_REASON];
+                }
                 if ($this->isUncertain($exception, $selected)) {
                     throw new TaskDeliveryUncertain((string) $body['poll_request_id'], $exception->status, $exception);
                 }
@@ -201,7 +286,7 @@ final class TaskDelivery
 
     public function forget(string $workerId): void
     {
-        unset($this->registrations[$workerId]);
+        unset($this->registrations[$workerId], $this->acceptanceTimeouts[$workerId], $this->offersUnavailable[$workerId]);
         foreach ($this->pending as $key => $attempt) {
             if ($attempt->workerId === $workerId) {
                 unset($this->pending[$key]);
@@ -225,7 +310,9 @@ final class TaskDelivery
             return null;
         }
         $response = $exception->details ?? [];
-        if ($exception->reason === 'task_offer_expired') {
+        if ($exception->reason !== 'worker_registration_lost_authority') {
+            // Expired, unclaimable, ended or conflicting: the selected packet is released and the
+            // next logical poll starts with a new identity.
             $response['poll_status'] = 'empty';
         } else {
             $workerId = (string) $request['worker_id'];
@@ -242,7 +329,7 @@ final class TaskDelivery
     private function isUncertain(ServerException $exception, ?TaskDeliveryAttempt $selected): bool
     {
         return !$exception instanceof TaskDeliveryUncertain && !PollResponse::isTransientPayloadFailure($exception)
-            && ($selected !== null || in_array($exception->status, [404, 405], true));
+            && $selected !== null;
     }
 
     private function resolved(string $key, ?TaskDeliveryAttempt $selected): void

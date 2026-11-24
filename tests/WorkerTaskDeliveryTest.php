@@ -229,19 +229,32 @@ final class WorkerTaskDeliveryTest extends TestCase
         }
     }
 
-    public function testAnOlderNodeCannotDowngradeTheNegotiatedEndpoint(): void
+    public function testAnOlderNodeCannotDowngradeASelectedPacket(): void
     {
-        $transport = new FakeTransport([self::registration(), new TransportException('Not found.', 404), ['task' => null]]);
+        $transport = new FakeTransport([self::registration(), self::offer('activity'), new TransportException('Not found.', 404),
+            self::claimed('activity')]);
         $client = new Client('https://server.example', transport: $transport);
         $client->registerWorker('worker', 'orders', [], []);
         try {
             self::poll($client, 'activity');
-            self::fail('Negotiated delivery cannot fall back to a legacy immediate claim.');
+            self::fail('Negotiated delivery cannot fall back to a legacy immediate claim after selection.');
         } catch (TaskDeliveryUncertain) {
-            self::assertSame(['task' => null], self::poll($client, 'activity'));
+            self::assertSame(self::claimed('activity'), self::poll($client, 'activity'));
         }
-        self::assertSame($transport->requests[1], $transport->requests[2]);
-        self::assertStringEndsWith('/activity-tasks/offers', $transport->requests[2]['uri']);
+        self::assertSame($transport->requests[2], $transport->requests[3]);
+        self::assertStringEndsWith('/activity-tasks/offers', $transport->requests[3]['uri']);
+    }
+
+    public function testAnOlderNodeBeforeSelectionSelectsLegacyPolling(): void
+    {
+        $transport = new FakeTransport([self::registration(), new TransportException('Not found.', 404), ['task' => null]]);
+        $client = new Client('https://server.example', transport: $transport);
+        $client->registerWorker('worker', 'orders', [], []);
+        // No packet was selected, so nothing can have been accepted: the same poll continues on the legacy route.
+        self::assertSame(['task' => null], self::poll($client, 'activity'));
+        self::assertStringEndsWith('/activity-tasks/offers', $transport->requests[1]['uri']);
+        self::assertStringEndsWith('/activity-tasks/poll', $transport->requests[2]['uri']);
+        self::assertSame($transport->requests[1]['body']['poll_request_id'], $transport->requests[2]['body']['poll_request_id']);
     }
 
     private static function refusal(string $status, string $reason): TransportException

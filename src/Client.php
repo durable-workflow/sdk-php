@@ -2873,6 +2873,10 @@ final class Client implements WorkflowClientInterface
             unset($command);
         }
 
+        // A lease carried by this completion is replayed only through the legacy poll identity.
+        $this->taskDelivery->carried('/worker/activity-tasks/poll', $activityPoll);
+        $this->taskDelivery->carried('/worker/workflow-tasks/poll', $workflowPoll);
+
         return $client->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX, array_filter([
             'lease_owner' => $leaseOwner,
             'workflow_task_attempt' => $attempt,
@@ -2975,6 +2979,7 @@ final class Client implements WorkflowClientInterface
         ];
         if ($workflowPoll !== null) {
             $body['workflow_poll'] = $workflowPoll;
+            $this->taskDelivery->carried('/worker/workflow-tasks/poll', $workflowPoll);
         }
 
         return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX, $body);
@@ -3013,6 +3018,8 @@ final class Client implements WorkflowClientInterface
                 throw new InvalidArgumentException('unsupported_target_build: submit a targeted continue-as-new through workflow-task completion.');
             }
         }
+
+        $this->taskDelivery->carried('/worker/workflow-tasks/poll', $workflowPoll);
 
         return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/continuation/complete', [
             'activity_attempt_id' => $activityAttemptId,

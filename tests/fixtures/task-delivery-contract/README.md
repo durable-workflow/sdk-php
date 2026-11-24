@@ -40,3 +40,15 @@ Supplementary client-state controls cover clones, pending-request isolation and
 replacement incarnations. These are in-memory PHP source tests. The 24 Server
 authority/receipt/race scenarios are inventoried only; neither those requirements
 nor native transactions, runtime behavior or installed packages are qualified.
+
+`native-refusals.v1.json` is SDK supplementary test data, not a Server fixture.
+It derives from the companion file above, recording that file's SHA-256. The
+native producer, Server #1291 at `897cac05fd7602dc79412cc234073a1252a195b8`,
+also rolls back acceptances as `task_offer_unclaimable`,
+`task_offer_lease_ended` and `task_offer_conflict`. Each expiry-bearing wire
+case above is copied for each reason, with `task_offer_expired` replaced and the
+expected action unchanged: 213 decoded and 60 raw cases. Three more raw cases
+record the producer's current enveloped variant, which adds `protocol_version`
+and `server_capabilities`. That variant is not the exact definitive shape, so
+it retains the packet until the bounded uncertainty window releases it.
+`WorkerTaskDeliveryWireTest` runs these cases the same way as the companion.
