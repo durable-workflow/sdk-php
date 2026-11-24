@@ -146,6 +146,27 @@ producer or introducing older serving nodes. No speedup is promised.
 
 ### Poll timeouts and early disconnects
 
+When the Server advertises `task_delivery`, the managed worker negotiates
+offer/accept delivery. Receiving an offer does not reserve a task or start an
+activity attempt. The SDK accepts the selected offer before running a handler.
+If that response is lost, it retries the same packet and poll identity until
+the Server confirms the claim or refuses it. The refusal can be expiry, a
+rolled-back acceptance (unclaimable, ended lease, or conflicting offer), or
+loss of registration authority. A retryable read-key outage on one replica
+keeps the packet for a later replay. Without a definitive answer, the worker
+releases the packet 30 seconds after its deadline and starts a new poll; a
+claim that did commit expires and is redelivered.
+After acceptance begins, an older node returning an error cannot switch that
+poll to legacy delivery. If a node returns `404` or `405` for the offer route
+before any packet is selected, the worker uses legacy polling for the rest of
+that registration. A temporary `503 task_offer_issuance_unavailable` is
+retried with backoff. A lease carried by a task completion is recovered
+through the legacy poll route, where the Server bound it.
+Servers without this capability continue using the existing poll protocol.
+During acceptance, stop/drain hints and malformed replies retain that packet.
+Only the protocol's closed HTTP `409` refusal shapes can release it or end
+the original registration; a later replacement registration is preserved.
+
 With the default cURL transport, supporting Servers send progress during idle
 worker polls. Progress keeps an idle connection active while the complete
 request remains bounded to the requested wait plus five seconds. Ordinary polls

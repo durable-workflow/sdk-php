@@ -80,6 +80,9 @@ use DurableWorkflow\Worker\WorkflowClaimDeferred;
 use DurableWorkflow\Worker\WorkerSessionOptions;
 use DurableWorkflow\Worker\ActivityLeaseBinding;
 use DurableWorkflow\Worker\ActivityLeaseProcess;
+use DurableWorkflow\Worker\TaskDelivery;
+use DurableWorkflow\Worker\TaskDeliveryAttempt;
+use DurableWorkflow\Transport\PollTransport;
 use DurableWorkflow\Exception\PaginationException;
 use InvalidArgumentException;
 
@@ -104,6 +107,7 @@ final class Client implements WorkflowClientInterface
     private FailureReportLimiter $failureReports;
     private bool $boundedWorkerRequests = false;
     private ActivityLeaseBinding $activityLeaseBinding;
+    private TaskDelivery $taskDelivery;
     private ?string $activityLeaseBootstrap = null;
     private ?ExecutionTelemetry $executionTelemetry = null;
     private bool $observabilityContextSupported = false;
@@ -187,6 +191,7 @@ final class Client implements WorkflowClientInterface
         $this->payloadUploads = new RuntimePayloadUploads($this->transport, $this->baseUri);
         $this->failureReports = new FailureReportLimiter(new FailureReportLimits(), $this->transport);
         $this->activityLeaseBinding = new ActivityLeaseBinding();
+        $this->taskDelivery = new TaskDelivery();
         /** @var \ArrayObject<string, true> $continueAsNewTargetWorkers */
         $continueAsNewTargetWorkers = new \ArrayObject();
         $this->continueAsNewTargetWorkers = $continueAsNewTargetWorkers;
@@ -2235,6 +2240,7 @@ final class Client implements WorkflowClientInterface
             'memo_upserts',
             'typed_search_attributes',
             'durable_selection',
+            TaskDelivery::CAPABILITY,
         ],
         int $maxConcurrentWorkflowTasks = 1,
         int $maxConcurrentActivityTasks = 1,
@@ -2244,6 +2250,10 @@ final class Client implements WorkflowClientInterface
         int $maxConcurrentWorkerSessions = 10,
         ?array $workflowDefinitionFingerprints = null,
     ): array {
+        if ($this->workerProtocolVersion !== '1.20') {
+            $capabilities = array_values(array_filter($capabilities,
+                static fn (string $capability): bool => $capability !== TaskDelivery::CAPABILITY));
+        }
         if (in_array('message_streams', $capabilities, true) && !Version::supportsMessageStreams()) {
             throw new InvalidArgumentException('Message streams require worker protocol 1.15 or newer.');
         }
@@ -2281,7 +2291,9 @@ final class Client implements WorkflowClientInterface
             'max_concurrent_activity_tasks' => $maxConcurrentActivityTasks,
             'max_concurrent_worker_sessions' => $maxConcurrentWorkerSessions,
             'build_id' => $buildId,
+            'process_metrics' => ['process_id' => getmypid(), 'process_uptime_seconds' => 0],
         ]));
+        $this->taskDelivery->registered($workerId, $taskQueue, $this->workerProtocolVersion, $capabilities, $registration);
         if (array_key_exists('server_capabilities', $registration)) {
             $this->rememberClaimedTaskReadyAge($registration['server_capabilities']);
         }
@@ -2368,6 +2380,7 @@ final class Client implements WorkflowClientInterface
     {
         unset($this->continueAsNewTargetWorkers[$workerId]);
         $this->control('DELETE', '/workers/'.$this->segment($workerId));
+        $this->taskDelivery->forget($workerId);
     }
 
     /** @return array{worker_id: string, outcome: string, recovered_workflow_task_count: int} */
@@ -2392,6 +2405,8 @@ final class Client implements WorkflowClientInterface
             throw new ServerException('The fenced deregistration receipt is invalid.', 200,
                 'invalid_worker_deregistration_receipt', $response);
         }
+
+        $this->taskDelivery->forget($workerId);
 
         /** @var array{worker_id: string, outcome: string, recovered_workflow_task_count: int} $response */
         return $response;
@@ -2858,6 +2873,10 @@ final class Client implements WorkflowClientInterface
             unset($command);
         }
 
+        // A lease carried by this completion is replayed only through the legacy poll identity.
+        $this->taskDelivery->carried('/worker/activity-tasks/poll', $activityPoll);
+        $this->taskDelivery->carried('/worker/workflow-tasks/poll', $workflowPoll);
+
         return $client->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX, array_filter([
             'lease_owner' => $leaseOwner,
             'workflow_task_attempt' => $attempt,
@@ -2960,6 +2979,7 @@ final class Client implements WorkflowClientInterface
         ];
         if ($workflowPoll !== null) {
             $body['workflow_poll'] = $workflowPoll;
+            $this->taskDelivery->carried('/worker/workflow-tasks/poll', $workflowPoll);
         }
 
         return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX, $body);
@@ -2998,6 +3018,8 @@ final class Client implements WorkflowClientInterface
                 throw new InvalidArgumentException('unsupported_target_build: submit a targeted continue-as-new through workflow-task completion.');
             }
         }
+
+        $this->taskDelivery->carried('/worker/workflow-tasks/poll', $workflowPoll);
 
         return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/continuation/complete', [
             'activity_attempt_id' => $activityAttemptId,
@@ -3410,7 +3432,14 @@ final class Client implements WorkflowClientInterface
         $retryTransientFailure = true;
         while (true) {
             try {
-                return $this->worker('POST', $path, $body);
+                return $this->taskDelivery->poll($path, $body,
+                    fn (string $wirePath, array $wireBody, ?TaskDeliveryAttempt $selected): array =>
+                        $this->request('POST', $wirePath, true, $wireBody,
+                            responseValidator: function (array $response) use ($wireBody, $wirePath, $selected): void {
+                                $this->taskDelivery->assertCurrentRegistration($wireBody);
+                                TaskDelivery::assertResponse($response, $wireBody, $wirePath, $selected);
+                            }))
+                    ?? $this->worker('POST', $path, $body);
             } catch (ServerException $exception) {
                 if ($retryTransientFailure && $exception->isTransientConnectionFailure()) {
                     $retryTransientFailure = false;
@@ -3477,7 +3506,7 @@ final class Client implements WorkflowClientInterface
     }
 
     /** @return array<string, string> */
-    private function requestHeaders(bool $worker): array
+    private function requestHeaders(bool $worker, string $path = ''): array
     {
         $workerProtocol = $this->continueAsNewTargetProtocol ? Version::CONTINUE_AS_NEW_TARGET_BUILD_PROTOCOL : $this->workerProtocolVersion;
         $headers = [
@@ -3490,6 +3519,9 @@ final class Client implements WorkflowClientInterface
         if ($this->authentication !== null) {
             $headers = array_merge($headers, $this->authentication->headers($worker));
         }
+        if ($worker && PollTransport::taskKind('POST', $path) !== null && str_ends_with($path, '/offers')) {
+            $headers[TaskDelivery::HEADER] = TaskDelivery::VERSION;
+        }
 
         return $headers;
     }
@@ -3497,6 +3529,7 @@ final class Client implements WorkflowClientInterface
     /**
      * @param array<string, mixed>|null $body
      * @param (\Closure(array<string, mixed>): list<list<int|string>>)|null $payloadPaths
+     * @param (\Closure(array<string, mixed>): void)|null $responseValidator
      * @return array<string, mixed>
      */
     private function request(
@@ -3508,14 +3541,16 @@ final class Client implements WorkflowClientInterface
         ?RequestBudget $budget = null,
         ?\Closure $payloadPaths = null,
         ?string $requestId = null,
+        ?\Closure $responseValidator = null,
     ): array {
         if ($this->metricsRequest !== null || !$this->metricsObserver->enabled()) {
-            return $this->performRequest($method, $path, $worker, $body, $operation, $budget, $payloadPaths, $requestId, $this->metricsRequest);
+            return $this->performRequest($method, $path, $worker, $body, $operation, $budget, $payloadPaths, $requestId,
+                $this->metricsRequest, $responseValidator);
         }
 
         return $this->observeRequest($method, $path, $worker,
             fn (ClientRequestObservation $observation): array => $this->performRequest(
-                $method, $path, $worker, $body, $operation, $budget, $payloadPaths, $requestId, $observation));
+                $method, $path, $worker, $body, $operation, $budget, $payloadPaths, $requestId, $observation, $responseValidator));
     }
 
     /** @param \Closure(ClientRequestObservation): array<string, mixed> $operation
@@ -3549,18 +3584,20 @@ final class Client implements WorkflowClientInterface
         ?\Closure $payloadPaths,
         ?string $requestId,
         ?ClientRequestObservation $observation,
+        ?\Closure $responseValidator,
     ): array {
         if ($observation !== null) {
             $observation->status = null;
         }
-        $headers = $this->requestHeaders($worker);
+        $headers = $this->requestHeaders($worker, $path);
+        $logicalPath = PollTransport::logicalPath($path);
         try {
             $callerBudget = $budget;
-            $poll = str_ends_with($path, '/poll') && is_int($body['timeout_seconds'] ?? null);
+            $poll = PollTransport::taskKind($method, $path) !== null && is_int($body['timeout_seconds'] ?? null);
             $pollSeconds = $poll ? max(0, min(60, $body['timeout_seconds'])) : 0;
             $budget ??= $worker && $this->boundedWorkerRequests ? new RequestBudget($pollSeconds + 5) : null;
             $sourceBody = $body;
-            $body = $this->encodeRequestBody($sourceBody, $method, $path, $worker, $headers, $budget);
+            $body = $this->encodeRequestBody($sourceBody, $method, $logicalPath, $worker, $headers, $budget);
             try {
                 try {
                     $response = $this->sendTransportRequest($method, $path, $worker, $headers, $body, $budget);
@@ -3580,7 +3617,7 @@ final class Client implements WorkflowClientInterface
                 // body; otherwise the refusal stands. A discovery outage here
                 // fails as not sent, and the Worker repeats the request.
                 $this->payloadUploads->forgetPolicies();
-                $reencoded = $this->encodeRequestBody($sourceBody, $method, $path, $worker, $headers, $budget);
+                $reencoded = $this->encodeRequestBody($sourceBody, $method, $logicalPath, $worker, $headers, $budget);
                 if ($reencoded === $body) {
                     throw $refusal;
                 }
@@ -3593,7 +3630,13 @@ final class Client implements WorkflowClientInterface
             }
 
             $budget?->remainingSeconds();
-            return $this->resolveResponsePayloads($response, $path, $worker, $body, $headers,
+            if ($responseValidator !== null) {
+                if (!is_array($response) || array_is_list($response)) {
+                    throw new ServerException('The task-delivery response is invalid.', 200, 'invalid_task_delivery_response');
+                }
+                $responseValidator($response);
+            }
+            return $this->resolveResponsePayloads($response, $logicalPath, $worker, $body, $headers,
                 $budget, $callerBudget, $poll, $payloadPaths);
         } catch (TransportException $exception) {
             if ($exception instanceof FailureReportRefused || $exception instanceof ResponseTooLarge) {
@@ -3601,7 +3644,8 @@ final class Client implements WorkflowClientInterface
                 throw $exception;
             }
             $details = $exception->response;
-            $reason = is_array($details) && isset($details['reason']) ? (string) $details['reason'] : null;
+            $reason = is_array($details) && isset($details['reason'])
+                && ($responseValidator === null || is_string($details['reason'])) ? (string) $details['reason'] : null;
             $status = $exception->status ?? 0;
             $message = $exception->getMessage();
             if ($operation === 'query') {

@@ -1,0 +1,3180 @@
+{
+  "schema": "durable-workflow.task-delivery-native-refusals.v1",
+  "status": "SDK supplementary source test data; not part of the frozen Server companion fixture",
+  "source": {
+    "producer": "https://github.com/durable-workflow/server/pull/1291",
+    "producer_head": "897cac05fd7602dc79412cc234073a1252a195b8",
+    "producer_outcomes": "handle_task_offer: Acceptance::Unclaimable, LeaseEnded and ConflictingOffer roll back without a claim",
+    "derived_from": "acceptance-refusals.v1.json",
+    "derived_from_sha256": "64a936382d4ce829d0e1de50e75247223711bf4011c830b257143b0a56c237ae",
+    "derivation": "Every expiry-bearing wire case with task_offer_expired replaced by each listed reason; expected actions unchanged."
+  },
+  "reasons": [
+    "task_offer_unclaimable",
+    "task_offer_lease_ended",
+    "task_offer_conflict"
+  ],
+  "wire_cases": [
+    {
+      "id": "native-unclaimable-refusal-expiry-exact",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-exact",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-exact",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-matching-exception",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_http_status": 409,
+        "exception_reason": "task_offer_unclaimable"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-matching-exception",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_http_status": 409,
+        "exception_reason": "task_offer_lease_ended"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-matching-exception",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_http_status": 409,
+        "exception_reason": "task_offer_conflict"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-matching-exception-status-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_http_status": 409
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-matching-exception-status-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_http_status": 409
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-matching-exception-status-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_http_status": 409
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-matching-exception-reason-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_reason": "task_offer_unclaimable"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-matching-exception-reason-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_reason": "task_offer_lease_ended"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-matching-exception-reason-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_reason": "task_offer_conflict"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-mismatching-exception-status-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_http_status": 500
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-mismatching-exception-status-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_http_status": 500
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-mismatching-exception-status-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_http_status": 500
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-mismatching-exception-reason-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_reason": "unrelated_terminal_reason"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-mismatching-exception-reason-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_reason": "unrelated_terminal_reason"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-mismatching-exception-reason-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_reason": "unrelated_terminal_reason"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-exception-status-only-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_http_status": true
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-exception-status-only-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_http_status": true
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-exception-status-only-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_http_status": true
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-exception-status-only-string",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_http_status": "409"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-exception-status-only-string",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_http_status": "409"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-exception-status-only-string",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_http_status": "409"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-exception-status-only-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_http_status": null
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-exception-status-only-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_http_status": null
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-exception-status-only-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_http_status": null
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-exception-reason-only-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_reason": false
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-exception-reason-only-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_reason": false
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-exception-reason-only-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_reason": false
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-exception-reason-only-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_reason": 409
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-exception-reason-only-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_reason": 409
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-exception-reason-only-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_reason": 409
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-exception-reason-only-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_reason": null
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-exception-reason-only-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_reason": null
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-exception-reason-only-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_reason": null
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-wrong-http-200",
+      "input": {
+        "http_status": 200,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-wrong-http-200",
+      "input": {
+        "http_status": 200,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-wrong-http-200",
+      "input": {
+        "http_status": 200,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-wrong-http-400",
+      "input": {
+        "http_status": 400,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-wrong-http-400",
+      "input": {
+        "http_status": 400,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-wrong-http-400",
+      "input": {
+        "http_status": 400,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-wrong-http-401",
+      "input": {
+        "http_status": 401,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-wrong-http-401",
+      "input": {
+        "http_status": 401,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-wrong-http-401",
+      "input": {
+        "http_status": 401,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-wrong-http-403",
+      "input": {
+        "http_status": 403,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-wrong-http-403",
+      "input": {
+        "http_status": 403,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-wrong-http-403",
+      "input": {
+        "http_status": 403,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-wrong-http-404",
+      "input": {
+        "http_status": 404,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-wrong-http-404",
+      "input": {
+        "http_status": 404,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-wrong-http-404",
+      "input": {
+        "http_status": 404,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-wrong-http-405",
+      "input": {
+        "http_status": 405,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-wrong-http-405",
+      "input": {
+        "http_status": 405,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-wrong-http-405",
+      "input": {
+        "http_status": 405,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-wrong-http-408",
+      "input": {
+        "http_status": 408,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-wrong-http-408",
+      "input": {
+        "http_status": 408,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-wrong-http-408",
+      "input": {
+        "http_status": 408,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-wrong-http-410",
+      "input": {
+        "http_status": 410,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-wrong-http-410",
+      "input": {
+        "http_status": 410,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-wrong-http-410",
+      "input": {
+        "http_status": 410,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-wrong-http-422",
+      "input": {
+        "http_status": 422,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-wrong-http-422",
+      "input": {
+        "http_status": 422,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-wrong-http-422",
+      "input": {
+        "http_status": 422,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-wrong-http-429",
+      "input": {
+        "http_status": 429,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-wrong-http-429",
+      "input": {
+        "http_status": 429,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-wrong-http-429",
+      "input": {
+        "http_status": 429,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-wrong-http-500",
+      "input": {
+        "http_status": 500,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-wrong-http-500",
+      "input": {
+        "http_status": 500,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-wrong-http-500",
+      "input": {
+        "http_status": 500,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-wrong-http-503",
+      "input": {
+        "http_status": 503,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-wrong-http-503",
+      "input": {
+        "http_status": 503,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-wrong-http-503",
+      "input": {
+        "http_status": 503,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-missing-task",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-missing-task",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-missing-task",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-missing-poll-status",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-missing-poll-status",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-missing-poll-status",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-missing-reason",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-missing-reason",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-missing-reason",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-extra-task-offer-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable",
+          "task_offer": null
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-extra-task-offer-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended",
+          "task_offer": null
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-extra-task-offer-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict",
+          "task_offer": null
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-extra-task-offer-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable",
+          "task_offer": {
+            "task_id": "synthetic-task-A"
+          }
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-extra-task-offer-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended",
+          "task_offer": {
+            "task_id": "synthetic-task-A"
+          }
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-extra-task-offer-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict",
+          "task_offer": {
+            "task_id": "synthetic-task-A"
+          }
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-extra-retryable-value",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable",
+          "retryable": false
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-extra-retryable-value",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended",
+          "retryable": false
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-extra-retryable-value",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict",
+          "retryable": false
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-extra-retry-after-ms-value",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable",
+          "retry_after_ms": 0
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-extra-retry-after-ms-value",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended",
+          "retry_after_ms": 0
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-extra-retry-after-ms-value",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict",
+          "retry_after_ms": 0
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-extra-task-id-value",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable",
+          "task_id": "synthetic-task-A"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-extra-task-id-value",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended",
+          "task_id": "synthetic-task-A"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-extra-task-id-value",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict",
+          "task_id": "synthetic-task-A"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-extra-result-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable",
+          "result": null
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-extra-result-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended",
+          "result": null
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-extra-result-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict",
+          "result": null
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-cross-pair",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-cross-pair",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-cross-pair",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-exception-reason-disagrees",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_http_status": 409,
+        "exception_reason": "worker_registration_lost_authority"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-exception-reason-disagrees",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_http_status": 409,
+        "exception_reason": "worker_registration_lost_authority"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-exception-reason-disagrees",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_http_status": 409,
+        "exception_reason": "worker_registration_lost_authority"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-exception-status-disagrees",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_http_status": 500,
+        "exception_reason": "task_offer_unclaimable"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-exception-status-disagrees",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_http_status": 500,
+        "exception_reason": "task_offer_lease_ended"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-exception-status-disagrees",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_http_status": 500,
+        "exception_reason": "task_offer_conflict"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-exception-reason-wrong-type",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_http_status": 409,
+        "exception_reason": false
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-exception-reason-wrong-type",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_http_status": 409,
+        "exception_reason": false
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-exception-reason-wrong-type",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_http_status": 409,
+        "exception_reason": false
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-exception-status-wrong-type",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_http_status": "409",
+        "exception_reason": "task_offer_unclaimable"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-exception-status-wrong-type",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_http_status": "409",
+        "exception_reason": "task_offer_lease_ended"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-exception-status-wrong-type",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_http_status": "409",
+        "exception_reason": "task_offer_conflict"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-exception-reason-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_http_status": 409,
+        "exception_reason": null
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-exception-reason-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_http_status": 409,
+        "exception_reason": null
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-exception-reason-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_http_status": 409,
+        "exception_reason": null
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-expiry-exception-status-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        },
+        "exception_http_status": true,
+        "exception_reason": "task_offer_unclaimable"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-expiry-exception-status-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        },
+        "exception_http_status": true,
+        "exception_reason": "task_offer_lease_ended"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-expiry-exception-status-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        },
+        "exception_http_status": true,
+        "exception_reason": "task_offer_conflict"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-authority-cross-pair",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-authority-cross-pair",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-authority-cross-pair",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-authority-exception-reason-disagrees",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_http_status": 409,
+        "exception_reason": "task_offer_unclaimable"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-authority-exception-reason-disagrees",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_http_status": 409,
+        "exception_reason": "task_offer_lease_ended"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-authority-exception-reason-disagrees",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_http_status": 409,
+        "exception_reason": "task_offer_conflict"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-http-status-string",
+      "input": {
+        "http_status": "409",
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-http-status-string",
+      "input": {
+        "http_status": "409",
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-http-status-string",
+      "input": {
+        "http_status": "409",
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-http-status-boolean",
+      "input": {
+        "http_status": true,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-http-status-boolean",
+      "input": {
+        "http_status": true,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-http-status-boolean",
+      "input": {
+        "http_status": true,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-http-status-null",
+      "input": {
+        "http_status": null,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-http-status-null",
+      "input": {
+        "http_status": null,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-http-status-null",
+      "input": {
+        "http_status": null,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-http-status-fraction",
+      "input": {
+        "http_status": 409.5,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-http-status-fraction",
+      "input": {
+        "http_status": 409.5,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-http-status-fraction",
+      "input": {
+        "http_status": 409.5,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-poll-status-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": null,
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-poll-status-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": null,
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-poll-status-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": null,
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-poll-status-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": false,
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-poll-status-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": false,
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-poll-status-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": false,
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-poll-status-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": 409,
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-poll-status-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": 409,
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-poll-status-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": 409,
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-poll-status-array",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": [],
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-poll-status-array",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": [],
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-poll-status-array",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": [],
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-poll-status-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": {},
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-poll-status-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": {},
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-poll-status-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": {},
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-reason-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": null
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-reason-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": null
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-reason-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": null
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-reason-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": false
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-reason-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": false
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-reason-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": false
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-reason-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": 409
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-reason-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": 409
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-reason-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": 409
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-reason-array",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": []
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-reason-array",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": []
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-reason-array",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": []
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-reason-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": {}
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-reason-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": {}
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-reason-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": {}
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-task-not-null-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": false,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-task-not-null-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": false,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-task-not-null-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": false,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-task-not-null-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": 0,
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-task-not-null-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": 0,
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-task-not-null-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": 0,
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-task-not-null-string",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": "",
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-task-not-null-string",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": "",
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-task-not-null-string",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": "",
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-task-not-null-array",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": [],
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-task-not-null-array",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": [],
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-task-not-null-array",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": [],
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-task-not-null-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": {},
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-task-not-null-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": {},
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-task-not-null-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": {},
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-task-not-null-payload",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": {
+            "task_id": "synthetic-task-A"
+          },
+          "poll_status": "task_offer_unclaimable",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-task-not-null-payload",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": {
+            "task_id": "synthetic-task-A"
+          },
+          "poll_status": "task_offer_lease_ended",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-task-not-null-payload",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": {
+            "task_id": "synthetic-task-A"
+          },
+          "poll_status": "task_offer_conflict",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-body-string",
+      "input": {
+        "http_status": 409,
+        "decoded_body": "task_offer_unclaimable"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-body-string",
+      "input": {
+        "http_status": 409,
+        "decoded_body": "task_offer_lease_ended"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-body-string",
+      "input": {
+        "http_status": 409,
+        "decoded_body": "task_offer_conflict"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-legacy-draining",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "draining",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-legacy-draining",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "draining",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-legacy-draining",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "draining",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-legacy-stopped",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stopped",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-legacy-stopped",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stopped",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-legacy-stopped",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stopped",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-legacy-stale",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-legacy-stale",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-legacy-stale",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-legacy-heartbeat-underscore-stale",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "heartbeat_stale",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-legacy-heartbeat-underscore-stale",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "heartbeat_stale",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-legacy-heartbeat-underscore-stale",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "heartbeat_stale",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-legacy-heartbeat-stale",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "heartbeat-stale",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-legacy-heartbeat-stale",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "heartbeat-stale",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-legacy-heartbeat-stale",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "heartbeat-stale",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-legacy-stale-underscore-worker-underscore-registration",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-legacy-stale-underscore-worker-underscore-registration",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-legacy-stale-underscore-worker-underscore-registration",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-reason-leading-space",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_unclaimable",
+          "reason": " task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-reason-leading-space",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_lease_ended",
+          "reason": " task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-reason-leading-space",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_conflict",
+          "reason": " task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-refusal-poll-status-case-change",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "TASK_OFFER_EXPIRED",
+          "reason": "task_offer_unclaimable"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-refusal-poll-status-case-change",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "TASK_OFFER_EXPIRED",
+          "reason": "task_offer_lease_ended"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-refusal-poll-status-case-change",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "TASK_OFFER_EXPIRED",
+          "reason": "task_offer_conflict"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    }
+  ],
+  "raw_wire_cases": [
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-exact",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_unclaimable\",\"reason\":\"task_offer_unclaimable\"}"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-exact",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_lease_ended\",\"reason\":\"task_offer_lease_ended\"}"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-exact",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_conflict\",\"reason\":\"task_offer_conflict\"}"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-unique-escaped-key",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_unclaimable\",\"re\\u0061son\":\"task_offer_unclaimable\"}"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-unique-escaped-key",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_lease_ended\",\"re\\u0061son\":\"task_offer_lease_ended\"}"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-unique-escaped-key",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_conflict\",\"re\\u0061son\":\"task_offer_conflict\"}"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-duplicate-task-identical",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"task\":null,\"poll_status\":\"task_offer_unclaimable\",\"reason\":\"task_offer_unclaimable\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-duplicate-task-identical",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"task\":null,\"poll_status\":\"task_offer_lease_ended\",\"reason\":\"task_offer_lease_ended\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-duplicate-task-identical",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"task\":null,\"poll_status\":\"task_offer_conflict\",\"reason\":\"task_offer_conflict\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-duplicate-task-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":{\"task_id\":\"synthetic-task-A\"},\"task\":null,\"poll_status\":\"task_offer_unclaimable\",\"reason\":\"task_offer_unclaimable\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-duplicate-task-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":{\"task_id\":\"synthetic-task-A\"},\"task\":null,\"poll_status\":\"task_offer_lease_ended\",\"reason\":\"task_offer_lease_ended\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-duplicate-task-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":{\"task_id\":\"synthetic-task-A\"},\"task\":null,\"poll_status\":\"task_offer_conflict\",\"reason\":\"task_offer_conflict\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-duplicate-poll-status-identical",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"poll_status\":\"task_offer_unclaimable\",\"task\":null,\"poll_status\":\"task_offer_unclaimable\",\"reason\":\"task_offer_unclaimable\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-duplicate-poll-status-identical",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"poll_status\":\"task_offer_lease_ended\",\"task\":null,\"poll_status\":\"task_offer_lease_ended\",\"reason\":\"task_offer_lease_ended\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-duplicate-poll-status-identical",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"poll_status\":\"task_offer_conflict\",\"task\":null,\"poll_status\":\"task_offer_conflict\",\"reason\":\"task_offer_conflict\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-duplicate-poll-status-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"poll_status\":\"draining\",\"task\":null,\"poll_status\":\"task_offer_unclaimable\",\"reason\":\"task_offer_unclaimable\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-duplicate-poll-status-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"poll_status\":\"draining\",\"task\":null,\"poll_status\":\"task_offer_lease_ended\",\"reason\":\"task_offer_lease_ended\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-duplicate-poll-status-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"poll_status\":\"draining\",\"task\":null,\"poll_status\":\"task_offer_conflict\",\"reason\":\"task_offer_conflict\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-duplicate-reason-identical",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"reason\":\"task_offer_unclaimable\",\"task\":null,\"poll_status\":\"task_offer_unclaimable\",\"reason\":\"task_offer_unclaimable\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-duplicate-reason-identical",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"reason\":\"task_offer_lease_ended\",\"task\":null,\"poll_status\":\"task_offer_lease_ended\",\"reason\":\"task_offer_lease_ended\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-duplicate-reason-identical",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"reason\":\"task_offer_conflict\",\"task\":null,\"poll_status\":\"task_offer_conflict\",\"reason\":\"task_offer_conflict\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-duplicate-reason-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"reason\":\"worker_registration_lost_authority\",\"task\":null,\"poll_status\":\"task_offer_unclaimable\",\"reason\":\"task_offer_unclaimable\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-duplicate-reason-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"reason\":\"worker_registration_lost_authority\",\"task\":null,\"poll_status\":\"task_offer_lease_ended\",\"reason\":\"task_offer_lease_ended\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-duplicate-reason-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"reason\":\"worker_registration_lost_authority\",\"task\":null,\"poll_status\":\"task_offer_conflict\",\"reason\":\"task_offer_conflict\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-duplicate-escaped-key",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_unclaimable\",\"re\\u0061son\":\"worker_registration_lost_authority\",\"reason\":\"task_offer_unclaimable\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-duplicate-escaped-key",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_lease_ended\",\"re\\u0061son\":\"worker_registration_lost_authority\",\"reason\":\"task_offer_lease_ended\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-duplicate-escaped-key",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_conflict\",\"re\\u0061son\":\"worker_registration_lost_authority\",\"reason\":\"task_offer_conflict\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-authority-duplicate-reason-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"reason\":\"task_offer_unclaimable\",\"task\":null,\"poll_status\":\"stale_worker_registration\",\"reason\":\"worker_registration_lost_authority\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-authority-duplicate-reason-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"reason\":\"task_offer_lease_ended\",\"task\":null,\"poll_status\":\"stale_worker_registration\",\"reason\":\"worker_registration_lost_authority\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-authority-duplicate-reason-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"reason\":\"task_offer_conflict\",\"task\":null,\"poll_status\":\"stale_worker_registration\",\"reason\":\"worker_registration_lost_authority\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-authority-duplicate-escaped-key",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"stale_worker_registration\",\"re\\u0061son\":\"task_offer_unclaimable\",\"reason\":\"worker_registration_lost_authority\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-authority-duplicate-escaped-key",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"stale_worker_registration\",\"re\\u0061son\":\"task_offer_lease_ended\",\"reason\":\"worker_registration_lost_authority\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-authority-duplicate-escaped-key",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"stale_worker_registration\",\"re\\u0061son\":\"task_offer_conflict\",\"reason\":\"worker_registration_lost_authority\"}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-truncated-object",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_unclaimable\",\"reason\":"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-truncated-object",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_lease_ended\",\"reason\":"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-truncated-object",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_conflict\",\"reason\":"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-trailing-json-whitespace",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_unclaimable\",\"reason\":\"task_offer_unclaimable\"} \r\n\t"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-trailing-json-whitespace",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_lease_ended\",\"reason\":\"task_offer_lease_ended\"} \r\n\t"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-trailing-json-whitespace",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_conflict\",\"reason\":\"task_offer_conflict\"} \r\n\t"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-trailing-text",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_unclaimable\",\"reason\":\"task_offer_unclaimable\"} trailing"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-trailing-text",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_lease_ended\",\"reason\":\"task_offer_lease_ended\"} trailing"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-trailing-text",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_conflict\",\"reason\":\"task_offer_conflict\"} trailing"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-trailing-second-object",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_unclaimable\",\"reason\":\"task_offer_unclaimable\"} {}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-trailing-second-object",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_lease_ended\",\"reason\":\"task_offer_lease_ended\"} {}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-trailing-second-object",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_conflict\",\"reason\":\"task_offer_conflict\"} {}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-trailing-second-scalar",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_unclaimable\",\"reason\":\"task_offer_unclaimable\"} null"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-trailing-second-scalar",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_lease_ended\",\"reason\":\"task_offer_lease_ended\"} null"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-trailing-second-scalar",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_conflict\",\"reason\":\"task_offer_conflict\"} null"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-utf8-invalid-leading",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f756e636c61696d61626c65222c22726561736f6e223a227461736b5f6f666665725f756e636c61696d61626c65ff227d",
+        "raw_body_bytes": 79
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-utf8-invalid-leading",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f6c656173655f656e646564222c22726561736f6e223a227461736b5f6f666665725f6c656173655f656e646564ff227d",
+        "raw_body_bytes": 79
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-utf8-invalid-leading",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f636f6e666c696374222c22726561736f6e223a227461736b5f6f666665725f636f6e666c696374ff227d",
+        "raw_body_bytes": 79
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-utf8-lone-continuation",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f756e636c61696d61626c65222c22726561736f6e223a227461736b5f6f666665725f756e636c61696d61626c6580227d",
+        "raw_body_bytes": 79
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-utf8-lone-continuation",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f6c656173655f656e646564222c22726561736f6e223a227461736b5f6f666665725f6c656173655f656e64656480227d",
+        "raw_body_bytes": 79
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-utf8-lone-continuation",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f636f6e666c696374222c22726561736f6e223a227461736b5f6f666665725f636f6e666c69637480227d",
+        "raw_body_bytes": 79
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-utf8-surrogate",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f756e636c61696d61626c65222c22726561736f6e223a227461736b5f6f666665725f756e636c61696d61626c65eda080227d",
+        "raw_body_bytes": 81
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-utf8-surrogate",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f6c656173655f656e646564222c22726561736f6e223a227461736b5f6f666665725f6c656173655f656e646564eda080227d",
+        "raw_body_bytes": 81
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-utf8-surrogate",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f636f6e666c696374222c22726561736f6e223a227461736b5f6f666665725f636f6e666c696374eda080227d",
+        "raw_body_bytes": 81
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-raw-refusal-expiry-utf8-truncated-multibyte",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f756e636c61696d61626c65222c22726561736f6e223a227461736b5f6f666665725f756e636c61696d61626c65e2227d",
+        "raw_body_bytes": 79
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-raw-refusal-expiry-utf8-truncated-multibyte",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f6c656173655f656e646564222c22726561736f6e223a227461736b5f6f666665725f6c656173655f656e646564e2227d",
+        "raw_body_bytes": 79
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-raw-refusal-expiry-utf8-truncated-multibyte",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f636f6e666c696374222c22726561736f6e223a227461736b5f6f666665725f636f6e666c696374e2227d",
+        "raw_body_bytes": 79
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-unclaimable-with-worker-envelope-members",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_unclaimable\",\"reason\":\"task_offer_unclaimable\",\"protocol_version\":\"1.20\",\"server_capabilities\":{}}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-lease-ended-with-worker-envelope-members",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_lease_ended\",\"reason\":\"task_offer_lease_ended\",\"protocol_version\":\"1.20\",\"server_capabilities\":{}}"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "native-conflict-with-worker-envelope-members",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_conflict\",\"reason\":\"task_offer_conflict\",\"protocol_version\":\"1.20\",\"server_capabilities\":{}}"
+      },
+      "expected_action": "retain_selected_packet"
+    }
+  ]
+}

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Exception;
 
 use Throwable;
+use DurableWorkflow\Transport\TaskDeliveryRefusal;
 
 class TransportException extends DurableWorkflowException
 {
@@ -17,6 +18,7 @@ class TransportException extends DurableWorkflowException
         public readonly bool $transientConnectionFailure = false,
         /** @var array<string, string> */
         public readonly array $headers = [],
+        public readonly ?TaskDeliveryRefusal $taskDeliveryRefusal = null,
     ) {
         parent::__construct($message, $status ?? 0, $previous);
     }

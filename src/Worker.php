@@ -970,6 +970,7 @@ final class Worker
                         'sticky_execution',
                         'cross_kind_poll_wake',
                         'sticky_history_suffix',
+                        ...($this->client->workerProtocolVersion === '1.20' ? [\DurableWorkflow\Worker\TaskDelivery::CAPABILITY] : []),
                         ...($this->enableCooperativeCancellation ? ['cooperative_cancellation', 'nexus_cooperative_cancellation'] : []),
                         ...($this->enablePreparedLocalActivities ? ['prepared_local_activities'] : []),
                         ...($this->preparedLocalActivityGroupsSupported ? ['prepared_local_activity_groups'] : []),
@@ -1534,6 +1535,14 @@ final class Worker
     /** @return array{retry: bool, retain: bool} */
     private function pollFailurePolicy(string $kind, string $requestId, ServerException $error): array
     {
+        if ($error instanceof \DurableWorkflow\Exception\TaskDeliveryUncertain) {
+            return ['retry' => true, 'retain' => true];
+        }
+        if (\DurableWorkflow\Worker\TaskDelivery::isIssuanceUnavailable($error)) {
+            // An offer request selects nothing; retry after backoff while the Server renews its window.
+            return ['retry' => true, 'retain' => false];
+        }
+
         $database = $this->isTransientDatabaseFailure($error, "poll_{$kind}_task", $requestId);
         $storage = $error->isStorageAdmissionFailure($requestId);
         $normalization = $kind === 'workflow' && PollResponse::isNormalizationPendingFailure($error, $requestId);

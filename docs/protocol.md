@@ -205,6 +205,53 @@ may have committed a claim before the connection disappeared, so `task=null`
 does not establish that no lease exists. This does not make arbitrary database
 errors or unrelated structured HTTP 500/503 responses retryable.
 
+With negotiated `task_delivery`, worker polls use `/offers`. An offer alone
+grants no execution authority. Positive acceptance includes the original
+registration token and selected offer packet; its request body remains fixed
+through uncertain replies. Managed workers retain this state across client
+clones and honor the normal retry backoff. If using the low-level
+`poll*TaskResponse()` methods, catch `TaskDeliveryUncertain` and retry with its
+`details['poll_request_id']` on the same Client. An ordinary empty response to
+an acceptance does not prove that no claim committed, and neither does a
+retryable `503 task_offer_read_key_unavailable` from a replica that cannot read
+the packet. Definitive refusal requires
+HTTP `409` and exactly `task`, `poll_status`, and `reason`, with literal
+`task: null`. The only accepted status/reason pairs are
+`task_offer_expired` / `task_offer_expired`,
+`task_offer_unclaimable` / `task_offer_unclaimable`,
+`task_offer_lease_ended` / `task_offer_lease_ended`,
+`task_offer_conflict` / `task_offer_conflict` and
+`stale_worker_registration` / `worker_registration_lost_authority`.
+The first four release only the selected packet and return an empty poll
+response; the next logical poll uses a new identity. Authority loss ends only
+its original registration incarnation. Other pending requests and replacement
+registrations remain separate. The Server must establish these outcomes from
+receipt-first reconciliation and authoritative claim/registration state.
+
+Uncertainty is bounded. The SDK anchors the packet's `expires_at_ms` to its
+monotonic clock, capped by the negotiated `acceptance_timeout_seconds`. If no
+definitive answer arrives 30 seconds after that deadline, the next uncertain
+reply releases the packet without running it. The poll returns `task: null`,
+`poll_status: empty`, and `reason: task_offer_unconfirmed`. A claim that did
+commit expires and is redelivered.
+
+Before any packet is selected, a `404` or `405` from the offer route selects
+legacy polling for the rest of that registration; the same logical poll
+continues on the legacy route. A later registration negotiates again. The
+managed worker retries `503 task_offer_issuance_unavailable` with backoff.
+A completion-carried poll keeps its legacy poll identity, because the Server
+binds the carried lease to it. Recovering that lease uses the legacy route even
+in offer mode.
+
+The default transport checks the complete original UTF-8 JSON response for
+duplicate decoded member names before associative decoding. This also applies
+inside a progress envelope. Invalid bytes, trailing data, extra fields, mixed
+pairs, conflicting exception fields and successful terminal hints retain the
+selected packet without running a handler. Discovery before selection keeps its
+existing poll classification. A custom transport must provide original-byte
+validation through `Transport\TaskDeliveryRefusal::fromJson()` and attach that
+evidence to `TransportException`; a decoded-only refusal remains uncertain.
+
 Before replaying or completing a workflow task, the managed worker requires a
 successful lease-renewal response whose task ID, attempt, and lease owner match
 the current claim. A typed `renewed=false`, `retryable=true` response is retried
