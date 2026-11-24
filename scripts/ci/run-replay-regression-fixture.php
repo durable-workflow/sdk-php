@@ -596,6 +596,16 @@ final class ReplayRegressionConsumer
             return;
         }
 
+        if ($workflowType === 'golden.offer-carried-workflow-poll') {
+            require_once __DIR__.'/../../tests/Support/FakeTransport.php';
+            require_once __DIR__.'/../../tests/Support/OfferCarriedWorkflowScenario.php';
+            $observed = \DurableWorkflow\Tests\Support\OfferCarriedWorkflowScenario::run();
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.self::COMMAND_SEQUENCE_CONTEXT);
+            self::assertMatches($fixture['expected'], $observed['commands'][0] + $observed, $identity.self::EXPECTED_CONTEXT);
+
+            return;
+        }
+
         if ($workflowType === 'golden.carried-activity-poll') {
             require_once __DIR__.'/../../tests/Support/FakeTransport.php';
             require_once __DIR__.'/../../tests/Support/CarriedActivityScenario.php';
