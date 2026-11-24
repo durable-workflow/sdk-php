@@ -10,7 +10,9 @@ final class TaskDeliveryRefusal
     private const PAIRS = [
         'task_offer_expired' => 'task_offer_expired',
         'stale_worker_registration' => 'worker_registration_lost_authority',
-        // Native Server #1291 rolls back these acceptances; none committed a claim.
+        // Native Server #1291 decides these under its transition lock. The selected
+        // packet can no longer authorize execution: the task went to another worker,
+        // its accepted lease already ended, or this poll is bound to another packet.
         'task_offer_unclaimable' => 'task_offer_unclaimable',
         'task_offer_lease_ended' => 'task_offer_lease_ended',
         'task_offer_conflict' => 'task_offer_conflict',
