@@ -7,6 +7,7 @@ namespace DurableWorkflow\Worker;
 use DurableWorkflow\Exception\ExternalPayloadException;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TaskDeliveryUncertain;
+use DurableWorkflow\Version;
 
 /** Classifies full worker poll response envelopes using protocol fields. */
 final class PollResponse
@@ -115,7 +116,8 @@ final class PollResponse
             && $response['reason'] === $exception->reason && $response['message'] === $exception->reason
             && $response['retryable'] === true && $response['retry_after_seconds'] === 1
             && $response['poll_request_id'] === $requestId && $response['retry_same_poll_request_id'] === true
-            && $response['claim_admitted'] === false && $response['protocol_version'] === '1.20'
+            && $response['claim_admitted'] === false
+            && Version::supportsWorkerProtocol($response['protocol_version'], Version::WORKER_PROTOCOL)
             && is_array($response['server_capabilities']) && !array_is_list($response['server_capabilities']);
     }
 

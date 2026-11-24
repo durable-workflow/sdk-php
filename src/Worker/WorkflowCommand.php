@@ -817,12 +817,17 @@ final class WorkflowCommand
     }
 
     /** @param list<mixed> $arguments */
-    public static function continueAsNew(array $arguments, ?string $workflowType = null, ?string $taskQueue = null): self
-    {
+    public static function continueAsNew(
+        array $arguments,
+        ?string $workflowType = null,
+        ?string $taskQueue = null,
+        ?ContinueAsNewTargetBuild $targetBuild = null,
+    ): self {
         return new self('continue_as_new', 'terminal', [
             'arguments_value' => $arguments,
             'workflow_type' => $workflowType,
             'queue' => $taskQueue,
+            ...($targetBuild === null ? [] : ['target_build' => $targetBuild->value]),
         ]);
     }
 

@@ -176,6 +176,7 @@ final class Replayer
         bool $replayCommittedCancellationScopes = false,
         bool $prepareCancellationScopeDelivery = false,
         bool $allowScopedPreparedLocalActivities = false,
+        bool $allowContinueAsNewTargetBuild = false,
     ): ReplayResult {
         if ($prepareLocalActivityGroups && !$prepareLocalActivities) {
             throw new LogicException('Prepared local groups require prepared local activity admission.');
@@ -229,6 +230,8 @@ final class Replayer
         // sdk-php#434: the applied-only signal marker is transparent to the
         // authored command sequence; only its position selects the view.
         $appliedSignals = AppliedSignals::fromHistory($history, $task);
+        $orderedConditions = new ConditionInputOrder($history);
+        $authorOrderedConditions = ($task[ConditionInputOrder::AUTHORING] ?? null) === true;
         $signalMarkerSequences = [];
         $steps = array_values(array_filter($steps, static function (array $step) use (&$signalMarkerSequences): bool {
             if ($step['shape'] === 'version_marker' && $step['detail'] === AppliedSignals::CHANGE_ID) {
@@ -261,13 +264,14 @@ final class Replayer
         $selectionCancellationOrders = [];
         $selectionCancellations = $this->selectionCancellations($history, $selectionCancellationOrders);
         $selectionOperationIdentities = $this->selectionOperationIdentities($history);
-        $completedHistory = $this->hasCompletedHistory($history);
+        [$completedHistory, $recordedContinueAsNew, $hasBuildTransition] = $this->terminalHistory($history);
+        $allowContinueAsNewTargetBuild = $allowContinueAsNewTargetBuild || $recordedContinueAsNew !== null;
         $allowScopeAuthoring = $allowCancellationScopeAuthoring
             && ($cancellation->request === null || $replayCommittedCancellationScopes);
         $context = null;
         $businessReplayClock = new BusinessReplayClock($history, (string) ($task['workflow_id'] ?? ''), (string) ($task['run_id'] ?? ''));
         $this->lastBusinessReplayClock = $businessReplayClock;
-        $execution = new Fiber(ExecutionTelemetry::bind(function () use ($handler, $history, $input, $task, $businessReplayClock, $appliedSignals, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, $allowScopedPreparedLocalActivities, &$context): mixed {
+        $execution = new Fiber(ExecutionTelemetry::bind(function () use ($handler, $history, $input, $task, $businessReplayClock, $appliedSignals, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, $allowScopedPreparedLocalActivities, $allowContinueAsNewTargetBuild, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -291,6 +295,7 @@ final class Replayer
                 $allowScopedPreparedLocalActivities,
                 $businessReplayClock,
                 $appliedSignals,
+                $allowContinueAsNewTargetBuild,
             );
 
             try {
@@ -530,6 +535,10 @@ final class Replayer
                                 ...$metadata,
                                 'parallel_group_path' => $path,
                             ]);
+                            if ($suspended->mode === 'select' && $command->type === 'open_condition_wait'
+                                && $authorOrderedConditions) {
+                                $command = $this->anchorNewConditionChain($command, true);
+                            }
                             if (($encodingFailure = $this->appendWorkflowCommand(
                                 $commands,
                                 $command,
@@ -562,6 +571,18 @@ final class Replayer
                                     $history, $cancellation, $context, $cancellationConsumed);
                             }
                             if ($command->type === 'open_condition_wait') {
+                                $waitId = $this->stringValue($step['condition_wait_id'] ?? null);
+                                if ($waitId !== null && $orderedConditions->has($waitId)) {
+                                    $groupId = $path[0]['parallel_group_id'] ?? '';
+                                    if (!isset($selectionResolutions[$groupId])) {
+                                        $decision = $orderedConditions->decide($waitId, $task, $context, $command, $groupId);
+                                        if ($decision !== null) {
+                                            $commands[] = $decision;
+                                        }
+                                    }
+                                    $pending = true;
+                                    continue;
+                                }
                                 if ($command->conditionSatisfied()) {
                                     $results[$offset] = true;
                                     continue;
@@ -711,6 +732,28 @@ final class Replayer
                         $selectionCancellations,
                         $selectionCancellationOrders,
                     );
+                    if (($suspended->kind === 'child' && $suspended->size === 1)
+                        || ($suspended->operation instanceof ParallelWorkflowCommand
+                            && $suspended->operation->containsOnlyChildWorkflows())) {
+                        $handle = [
+                            'selection_group_id' => $suspended->selectionGroupId,
+                            'member_base_sequence' => $suspended->baseSequence,
+                            'member_size' => $suspended->size,
+                            'operation_identity' => $suspended->identity,
+                            'await_position' => $nextSequence,
+                            'status' => 'waiting',
+                        ];
+                        $activePosition = $this->activeSelectionChildAwaitPosition($history, $handle);
+                        if ($activePosition !== null) {
+                            $handle['await_position'] = $activePosition;
+                        }
+                        if (!$resolution['resolved']) {
+                            $context?->rememberSelectionChildAwait($handle);
+                        } elseif ($activePosition !== null) {
+                            $handle['status'] = 'resumed';
+                            $context?->rememberSelectionChildAwait($handle);
+                        }
+                    }
                     if (!$resolution['resolved']) {
                         return $this->result($commands, $context);
                     }
@@ -759,6 +802,24 @@ final class Replayer
                 if ($suspended->type === 'continue_as_new') {
                     $this->assertCancellationConsumed($cancellation, $cancellationConsumed);
                     $this->assertNoRemainingSteps($steps, $stepCursor, 'continue_as_new');
+                    if ($recordedContinueAsNew !== null) {
+                        $authored = $suspended->attributes['target_build'] ?? ContinueAsNewTargetBuild::Inherited->value;
+                        if ($authored !== $recordedContinueAsNew->value) {
+                            throw new NonDeterministicWorkflow('The authored continuation changed after its build transition was recorded.',
+                                $nextSequence, reason: 'continue_as_new_target_changed');
+                        }
+                        if ($hasBuildTransition || isset($suspended->attributes['target_build'])) {
+                            if ($commands !== []) {
+                                throw new NonDeterministicWorkflow('The recorded build transition cannot follow new commands.',
+                                    $nextSequence, reason: 'continue_as_new_target_changed');
+                            }
+
+                            return $this->result([], $context);
+                        }
+                    } elseif ($completedHistory) {
+                        throw new NonDeterministicWorkflow('A completed workflow cannot replay as a continuation.',
+                            $nextSequence, reason: 'continue_as_new_target_changed');
+                    }
                     if (($encodingFailure = $this->appendWorkflowCommand(
                         $commands,
                         $suspended,
@@ -920,6 +981,16 @@ final class Replayer
                             $suspended = $this->resumeExecution($execution, $businessReplayClock, $step['value'], $step);
                             continue;
                         }
+                        $waitId = $this->stringValue($step['condition_wait_id'] ?? null);
+                        if ($waitId !== null && $orderedConditions->has($waitId)) {
+                            $decision = $orderedConditions->decide($waitId, $task, $context, $suspended);
+                            if ($decision === null) {
+                                return $this->result($commands, $context);
+                            }
+                            $commands[] = $decision;
+                            $suspended = $this->resumeExecution($execution, $businessReplayClock, $decision['satisfied']);
+                            continue;
+                        }
                         $satisfied = $appliedSignals->live(static fn (): bool => $suspended->conditionSatisfied());
                         if (($encodingFailure = $this->recordAppliedSignalMarker($appliedSignals, $commands, $nextSequence, $taskQueue, $context)) !== null) {
                             return $encodingFailure;
@@ -1012,7 +1083,7 @@ final class Replayer
                     continue;
                 }
                 if ($suspended->type === 'open_condition_wait') {
-                    $suspended = $this->anchorNewConditionChain($suspended);
+                    $suspended = $this->anchorNewConditionChain($suspended, $authorOrderedConditions);
                 }
                 if (($encodingFailure = $this->appendWorkflowCommand(
                     $commands,
@@ -1055,6 +1126,10 @@ final class Replayer
             }
         }
         $this->assertNoRemainingSteps($steps, $stepCursor, 'complete_workflow');
+        if ($recordedContinueAsNew !== null) {
+            throw new NonDeterministicWorkflow('Workflow replay finished without its recorded continue-as-new.',
+                $nextSequence, reason: 'continue_as_new_target_changed');
+        }
         if (($encodingFailure = $this->recordAppliedSignalMarker($appliedSignals, $commands, $nextSequence, $taskQueue, $context)) !== null) {
             return $encodingFailure;
         }
@@ -1209,7 +1284,51 @@ final class Replayer
             preparedLocalActivity: $preparedLocalActivity,
             preparedLocalActivityGroup: $preparedLocalActivityGroup,
             cancellationScopeOpening: $cancellationScopeOpening,
+            selectionChildAwait: $context?->selectionChildAwait(),
         );
+    }
+
+    /**
+     * @param list<array<string, mixed>> $history
+     * @param array{selection_group_id: string, member_base_sequence: int, member_size: int,
+     *     operation_identity: string, await_position: int, status: string} $handle
+     */
+    private function activeSelectionChildAwaitPosition(array $history, array $handle): ?int
+    {
+        for ($index = count($history) - 1; $index >= 0; --$index) {
+            $event = $history[$index];
+            $type = $event['event_type'] ?? $event['type'] ?? null;
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            if ($type === 'SignalWaitOpened' || ($type === 'ConditionWaitOpened'
+                && !$this->isSelectedConditionReopen($payload))) {
+                return null;
+            }
+            if ($type !== 'ChildWorkflowAwaited' || !is_array($payload['selection_handle'] ?? null)) {
+                continue;
+            }
+            $recorded = $payload['selection_handle'];
+            foreach ($handle as $key => $value) {
+                if ($key !== 'await_position' && ($recorded[$key] ?? null) !== $value) {
+                    return null;
+                }
+            }
+            $position = $recorded['await_position'] ?? null;
+            return is_int($position)
+                && $position >= $handle['member_base_sequence'] + $handle['member_size']
+                && $position <= $handle['await_position'] ? $position : null;
+        }
+
+        return null;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function isSelectedConditionReopen(array $payload): bool
+    {
+        return ($payload['parallel_group_mode'] ?? null) === 'select'
+            && ($payload['selection_member_kind'] ?? null) === 'condition'
+            && is_int($payload['sequence'] ?? null)
+            && is_int($payload['selection_member_base_sequence'] ?? null)
+            && $payload['sequence'] > $payload['selection_member_base_sequence'];
     }
 
     /** @param array<int, array<string, mixed>> $stepsBySequence */
@@ -1484,7 +1603,6 @@ final class Replayer
         $positions = [];
         foreach ($steps as $step) {
             $occurrence = ($step['shape'] ?? null) === 'condition_wait' && $step['parallel_path'] !== []
-                && !in_array('select', array_column($step['parallel_path'], 'parallel_group_mode'), true)
                 ? $this->stepOccurrence($step)
                 : null;
             if ($occurrence === null || !isset($positions[$occurrence])) {
@@ -1572,18 +1690,19 @@ final class Replayer
      * the authored timeout; timeout_seconds stays the replay input (#269).
      * Grouped waits keep their authored per-open timeout.
      */
-    private function anchorNewConditionChain(WorkflowCommand $command): WorkflowCommand
+    private function anchorNewConditionChain(WorkflowCommand $command, bool $authorOrderedConditions): WorkflowCommand
     {
         $timeout = $command->attributes['timeout_seconds'] ?? null;
         if (!$this->conditionOccurrenceDeadline || !is_int($timeout)
             || !is_string($command->attributes['condition_wait_occurrence_id'] ?? null)
-            || array_key_exists('parallel_group_path', $command->attributes)) {
+            || (!$authorOrderedConditions && array_key_exists('parallel_group_path', $command->attributes))) {
             return $command;
         }
 
         return $command->withAttributes([
             'deadline_policy' => self::CONDITION_DEADLINE_POLICY,
             'condition_wait_timeout_budget_seconds' => $timeout,
+            ...($authorOrderedConditions ? [ConditionInputOrder::CAPABILITY => ConditionInputOrder::ORDER] : []),
         ]);
     }
 
@@ -2037,6 +2156,9 @@ final class Replayer
                 }
             } elseif ($type === 'TimerFired') {
                 if (($payload['timer_kind'] ?? null) === 'condition_timeout') {
+                    if (ConditionInputOrder::marked($payload)) {
+                        continue;
+                    }
                     $conditionStepKey = $this->conditionStepKey($payload, $conditionStepsByWaitId);
                     if ($conditionStepKey !== null
                         && isset($steps[$conditionStepKey])
@@ -2332,7 +2454,7 @@ final class Replayer
                     throw new NonDeterministicWorkflow('A grouped condition reopen is missing its group path.',
                         $sequence, reason: 'condition_wait_occurrence_mismatch');
                 }
-                if ($occurrence !== null && $path !== [] && !in_array('select', array_column($path, 'parallel_group_mode'), true)) {
+                if ($occurrence !== null && $path !== []) {
                     $groupedConditionSequences[$occurrence] ??= $sequence;
                 }
                 $steps[$key] ??= $this->step(
@@ -2687,6 +2809,14 @@ final class Replayer
                 $type = (string) ($event['event_type'] ?? $event['type'] ?? '');
                 $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
                 $sequence = $this->sequence($payload);
+                if ($memberKind === 'condition' && in_array($type, ['ConditionWaitSatisfied', 'TimerFired'], true)
+                    && ($payload['parallel_group_id'] ?? null) === $expectedGroupId
+                    && ($payload['selection_member_base_sequence'] ?? null) === $memberBase) {
+                    if (($payload['condition_wait_reopened'] ?? null) === true) {
+                        continue;
+                    }
+                    $sequence = $memberBase;
+                }
                 if (!in_array($type, $terminalTypes, true)
                     || self::settledAtRunClose($type, $payload)
                     || $sequence === null
@@ -3081,16 +3211,46 @@ final class Replayer
         }
     }
 
-    /** @param list<array<string, mixed>> $history */
-    private function hasCompletedHistory(array $history): bool
+    /**
+     * @param list<array<string, mixed>> $history
+     * @return array{bool, ?ContinueAsNewTargetBuild, bool}
+     */
+    private function terminalHistory(array $history): array
     {
+        $completed = false;
+        $continuation = null;
+        $hasBuildTransition = false;
         foreach ($history as $event) {
-            if (($event['event_type'] ?? $event['type'] ?? null) === 'WorkflowCompleted') {
-                return true;
+            $type = $event['event_type'] ?? $event['type'] ?? null;
+            if ($type === 'WorkflowCompleted') {
+                $completed = true;
+            } elseif ($type === 'WorkflowContinuedAsNew') {
+                if ($continuation !== null) {
+                    throw new NonDeterministicWorkflow('History records multiple continuations for the same run.',
+                        reason: 'invalid_continue_as_new_transition');
+                }
+                $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+                $continuation = ContinueAsNewTargetBuild::Inherited;
+                if (array_key_exists('build_transition', $payload)) {
+                    $transition = $payload['build_transition'];
+                    $resolution = is_array($transition) && is_string($transition['resolution'] ?? null)
+                        ? ContinueAsNewTargetBuild::tryFrom($transition['resolution'])
+                        : null;
+                    if (!is_array($transition) || $resolution === null
+                        || !array_key_exists('from_compatibility', $transition)
+                        || !array_key_exists('to_compatibility', $transition)
+                        || ($transition['from_compatibility'] !== null && !is_string($transition['from_compatibility']))
+                        || ($transition['to_compatibility'] !== null && !is_string($transition['to_compatibility']))) {
+                        throw new NonDeterministicWorkflow('History records an invalid continue-as-new build transition.',
+                            reason: 'invalid_continue_as_new_transition');
+                    }
+                    $continuation = $resolution;
+                    $hasBuildTransition = true;
+                }
             }
         }
 
-        return false;
+        return [$completed || $continuation !== null, $continuation, $hasBuildTransition];
     }
 
     /**

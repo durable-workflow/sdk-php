@@ -1,0 +1,105 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-ordered-condition-early-signal-after-timer",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.ordered-condition",
+    "input": [
+      "condition:signal"
+    ],
+    "payload_codec": "avro"
+  },
+  "worker_task": {
+    "condition_wait_pending_input_sequence": null
+  },
+  "history": [
+    {
+      "sequence": 3,
+      "event_type": "ConditionWaitOpened",
+      "payload": {
+        "condition_key": "approval",
+        "timeout_seconds": 30,
+        "condition_wait_input_order": "durable_receipt_order",
+        "deadline_policy": "occurrence",
+        "condition_wait_timeout_budget_seconds": 30,
+        "condition_wait_id": "approval-wait",
+        "sequence": 1,
+        "condition_wait_occurrence_id": "php:condition-wait:0"
+      }
+    },
+    {
+      "sequence": 4,
+      "event_type": "TimerScheduled",
+      "payload": {
+        "condition_key": "approval",
+        "timeout_seconds": 30,
+        "condition_wait_input_order": "durable_receipt_order",
+        "deadline_policy": "occurrence",
+        "condition_wait_timeout_budget_seconds": 30,
+        "condition_wait_id": "approval-wait",
+        "sequence": 1,
+        "timer_id": "approval-timer",
+        "timer_kind": "condition_timeout",
+        "delay_seconds": 30,
+        "condition_wait_occurrence_id": "php:condition-wait:0"
+      }
+    },
+    {
+      "sequence": 5,
+      "event_type": "SignalReceived",
+      "payload": {
+        "workflow_command_id": "receipt-approve",
+        "signal_name": "approve",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCAgEA"
+        }
+      }
+    },
+    {
+      "sequence": 6,
+      "event_type": "TimerFired",
+      "payload": {
+        "condition_key": "approval",
+        "timeout_seconds": 30,
+        "condition_wait_input_order": "durable_receipt_order",
+        "deadline_policy": "occurrence",
+        "condition_wait_timeout_budget_seconds": 30,
+        "condition_wait_id": "approval-wait",
+        "sequence": 1,
+        "timer_id": "approval-timer",
+        "timer_kind": "condition_timeout",
+        "delay_seconds": 30,
+        "condition_wait_occurrence_id": "php:condition-wait:0"
+      }
+    },
+    {
+      "sequence": 7,
+      "event_type": "SignalApplied",
+      "payload": {
+        "workflow_command_id": "receipt-approve",
+        "signal_name": "approve"
+      }
+    }
+  ],
+  "expected": {
+    "command_sequence": [
+      {
+        "type": "resolve_condition_wait",
+        "condition_wait_id": "approval-wait",
+        "satisfied": true,
+        "input_receipt_sequence": 5
+      },
+      {
+        "type": "complete_workflow",
+        "result": {
+          "satisfied": true
+        }
+      }
+    ]
+  }
+}

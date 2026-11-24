@@ -534,6 +534,13 @@ final class ReplayRegressionConsumer
             throw new RuntimeException("{$identity}.history must not be empty.");
         }
 
+        if ($workflowType === 'golden.selection-child-group-await') {
+            require_once __DIR__.'/../../tests/Support/ReplayRegressionFixture.php';
+            \DurableWorkflow\Tests\Support\ReplayRegressionFixture::execute($fixture);
+
+            return;
+        }
+
         if ($workflowType === 'golden.activity-continuation-untimed-result') {
             // Server #1078: replay directly so the fixture can assert that the replayer
             // reports a business-time read it could not answer at an untimed result.
@@ -945,6 +952,7 @@ final class ReplayRegressionConsumer
         }
 
         return match ($workflowType) {
+            'golden.ordered-condition' => self::workflow('golden.signal'),
             'golden.signal-occurrence-unavailable', 'golden.signal-occurrence-deferred' => self::workflow('golden.signal'),
             'golden.telemetry-context' => static function (WorkflowContext $context): array {
                 $result = $context->activity('golden.greet', ['Ada']);
@@ -1039,6 +1047,9 @@ final class ReplayRegressionConsumer
             },
             'golden.continue-as-new' => static function (WorkflowContext $context, mixed $value): never {
                 $context->continueAsNew([$value], taskQueue: 'regression-corpus');
+            },
+            'golden.continue-as-new-promoted' => static function (WorkflowContext $context, mixed $value): never {
+                $context->continueAsNew([$value], targetBuild: \DurableWorkflow\Worker\ContinueAsNewTargetBuild::Promoted);
             },
             'golden.search-attributes' => static function (WorkflowContext $context, mixed $status): string {
                 $context->upsertSearchAttributes(['status' => $status]);
@@ -1483,6 +1494,7 @@ final class ReplayRegressionConsumer
 
         return array_intersect_key($workerTask, array_flip([
             'resume_source_kind', 'resume_source_id', 'workflow_signal_id', 'workflow_command_id', 'signal_name',
+            'condition_wait_pending_input_sequence',
         ]));
     }
 

@@ -39,3 +39,28 @@ dependencies, then run:
 ```bash
 python scripts/ci/validate-regression-corpus.py --base-ref <target>
 ```
+
+## Managed worker presence against published artifacts
+
+Start an isolated native Server from the published image digest with
+`DW_WORKER_HEARTBEAT_INTERVAL_SECONDS=2` and `DW_WORKER_STALE_AFTER_SECONDS=9`.
+Use a fresh database and a disposable token. Set `DURABLE_WORKFLOW_SERVER_URL`
+and `DURABLE_WORKFLOW_AUTH_TOKEN` for that Server, and set `SERVER_VERSION`
+to its published version.
+
+Install the selected stable SDK with Composer in a fresh consumer directory.
+Set `SDK_VERSION` and `SDK_REFERENCE` to the exact installed version and
+source commit from the lock. Run with a PHP CLI that has `pcntl` and
+`proc_open`. The PHP process needs an unused loopback TCP port 1 for one
+deliberately refused connection.
+
+```sh
+php tests/smoke/managed-worker-heartbeat.php /path/to/consumer/vendor/autoload.php
+```
+
+The runner checks real acknowledgements from the managed `Worker::run()`
+loop. It verifies retry on the same registration, graceful deregistration,
+staleness after process loss and completion by a replacement worker. A pass
+prints a JSON receipt with the exact SDK reference and Server version.
+The runner reaps its local workers and temporary logs. Retire the disposable
+Server and database when finished.

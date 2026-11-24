@@ -80,6 +80,25 @@ final class WorkflowContext
 
     public const MAX_PARALLEL_OPERATIONS = 1000;
 
+    /** @var array<int, true>|null */
+    private ?array $conditionInputReceipts = null;
+
+    /**
+     * @internal Limit only a condition predicate's observations to the applied input prefix.
+     * @param array<int, true> $receipts
+     * @param Closure(): bool $predicate
+     */
+    public function withConditionInputReceipts(array $receipts, Closure $predicate): bool
+    {
+        $previous = $this->conditionInputReceipts;
+        $this->conditionInputReceipts = $receipts;
+        try {
+            return $predicate();
+        } finally {
+            $this->conditionInputReceipts = $previous;
+        }
+    }
+
     /**
      * Call a registered service through a durable workflow command, without HTTP in workflow code.
      * The default waits for completion. Set wait_for=accepted to receive the original acceptance.
@@ -153,6 +172,8 @@ final class WorkflowContext
 
     /** @var array<string, int> */
     private array $messageStreamWaits = [];
+    /** @var array<string, int|string>|null */
+    private ?array $selectionChildAwait = null;
 
     /**
      * @param list<array<string, mixed>> $history
@@ -176,6 +197,7 @@ final class WorkflowContext
         private readonly bool $allowScopedPreparedLocalActivities = false,
         private readonly ?BusinessReplayClock $businessReplayClock = null,
         private readonly ?AppliedSignals $appliedSignals = null,
+        private readonly bool $allowContinueAsNewTargetBuild = false,
     ) {
         $this->execution = $execution;
         $this->loadMessageStreamMessages();
@@ -286,6 +308,24 @@ final class WorkflowContext
             array_keys($this->messageStreamWaits),
             array_values($this->messageStreamWaits),
         );
+    }
+
+    /**
+     * @internal
+     * @param array<string, int|string> $handle
+     */
+    public function rememberSelectionChildAwait(array $handle): void
+    {
+        $this->selectionChildAwait = $handle;
+    }
+
+    /**
+     * @internal
+     * @return array<string, int|string>|null
+     */
+    public function selectionChildAwait(): ?array
+    {
+        return $this->selectionChildAwait;
     }
 
     /**
@@ -762,8 +802,14 @@ final class WorkflowContext
         array $arguments = [],
         ?string $workflowType = null,
         ?string $taskQueue = null,
+        ?ContinueAsNewTargetBuild $targetBuild = null,
     ): never {
-        $this->suspend(WorkflowCommand::continueAsNew($arguments, $workflowType, $taskQueue));
+        $this->assertActiveFiber();
+        if ($targetBuild !== null && !$this->allowContinueAsNewTargetBuild) {
+            throw new WorkflowClaimDeferred('unsupported_target_build: the Server did not advertise continue-as-new build selection for this worker session.');
+        }
+
+        $this->suspend(WorkflowCommand::continueAsNew($arguments, $workflowType, $taskQueue, $targetBuild));
 
         throw new LogicException('A continue-as-new command cannot resume the current workflow execution.');
     }
@@ -954,11 +1000,12 @@ final class WorkflowContext
         foreach ($this->history as $order => $event) {
             $payload = isset($event['payload']) && is_array($event['payload']) ? $event['payload'] : [];
             if (($event['event_type'] ?? $event['type'] ?? null) === 'SignalReceived'
-                && ($payload['signal_name'] ?? null) === $signalName) {
+                && ($payload['signal_name'] ?? null) === $signalName
+                && $this->includesConditionReceipt($event)) {
                 $received[$order] = $payload;
             }
         }
-        if ($applied !== null) {
+        if ($applied !== null && $this->conditionInputReceipts === null) {
             $received = array_intersect_key($received, $applied->select(array_map(
                 static fn (array $payload): array => ['event_type' => 'SignalReceived', 'payload' => $payload], $received)));
         }
@@ -978,7 +1025,8 @@ final class WorkflowContext
         $updates = [];
         $seen = [];
         foreach ($this->history as $event) {
-            if (!in_array($event['event_type'] ?? $event['type'] ?? null, ['UpdateAccepted', 'UpdateApplied'], true)) {
+            if (!in_array($event['event_type'] ?? $event['type'] ?? null, ['UpdateAccepted', 'UpdateApplied'], true)
+                || !$this->includesConditionReceipt($event)) {
                 continue;
             }
             $payload = isset($event['payload']) && is_array($event['payload']) ? $event['payload'] : [];
@@ -998,6 +1046,15 @@ final class WorkflowContext
         }
 
         return $updates;
+    }
+
+    /** @param array<string, mixed> $event */
+    private function includesConditionReceipt(array $event): bool
+    {
+        $sequence = $event['sequence'] ?? null;
+
+        return $this->conditionInputReceipts === null
+            || (is_int($sequence) && isset($this->conditionInputReceipts[$sequence]));
     }
 
     private function loadMessageStreamMessages(): void

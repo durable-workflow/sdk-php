@@ -6,6 +6,42 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.29.0] - 2026-11-24
+
+### Fixed
+
+- On a compatible Native Server with ordered condition authoring enabled,
+  timed conditions evaluate signal effects in durable receipt order before
+  the original timer fires. Replay preserves the first satisfied prefix.
+  In a selection, that prefix can win before a competing child completes
+  or fails. Existing waits retain their recorded outcome.
+  ([Durable Workflow #230](https://github.com/durable-workflow/.github/issues/230))
+
+## [3.28.0] - 2026-11-23
+
+### Added
+
+- Workers can report a durable wait for a selected child workflow or a child-only
+  `all()` member when the Server advertises `selection_child_await`. Cold replay
+  reports when it consumes the original handle, so Server can recover a missing
+  parent wake-up.
+
+### Fixed
+
+- A selected condition retains its original group member when it reopens at a
+  later history position. Replay uses the original operation identity when that
+  condition wins. (durable-workflow/workflow#1233)
+
+## [3.27.0] - 2026-11-23
+
+### Added
+
+- A workflow can use `ContinueAsNewTargetBuild::Promoted` to put its successor
+  on the queue's eligible promoted build. The worker checks the capability on
+  its current registration. Plain continue-as-new keeps the predecessor's
+  build. When no promotion is eligible, the worker reports the refusal through
+  the normal workflow-task retry path. (durable-workflow/workflow#880)
+
 ## [3.26.0] - 2026-11-23
 
 ### Added

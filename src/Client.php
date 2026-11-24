@@ -73,7 +73,10 @@ use DurableWorkflow\Worker\CancellationRequest;
 use DurableWorkflow\Worker\CancellationDelivery;
 use DurableWorkflow\Worker\CancellationScopeOpenReceipt;
 use DurableWorkflow\Worker\CancellationScopeDeliveryReceipt;
+use DurableWorkflow\Worker\ContinueAsNewTargetBuild;
+use DurableWorkflow\Worker\PromotedBuildUnavailable;
 use DurableWorkflow\Worker\WorkflowClaimAborted;
+use DurableWorkflow\Worker\WorkflowClaimDeferred;
 use DurableWorkflow\Worker\WorkerSessionOptions;
 use DurableWorkflow\Worker\ActivityLeaseBinding;
 use DurableWorkflow\Worker\ActivityLeaseProcess;
@@ -109,6 +112,9 @@ final class Client implements WorkflowClientInterface
     private ?ExecutionTelemetry $executionTelemetry = null;
     private bool $observabilityContextSupported = false;
     private bool $claimedTaskReadyAgeSupported = false;
+    /** @var \ArrayObject<string, true> */
+    private readonly \ArrayObject $continueAsNewTargetWorkers;
+    private bool $continueAsNewTargetProtocol = false;
     /** Explicit activity_lease_renewal discovery, kept for this Client's lifetime. */
     private bool $activityLeaseRenewalDiscovered = false;
     /** Cached once a Server has advertised update_outcome_reads (server#1131). */
@@ -186,6 +192,9 @@ final class Client implements WorkflowClientInterface
         $this->failureReports = new FailureReportLimiter(new FailureReportLimits(), $this->transport);
         $this->activityLeaseBinding = new ActivityLeaseBinding();
         $this->taskDelivery = new TaskDelivery();
+        /** @var \ArrayObject<string, true> $continueAsNewTargetWorkers */
+        $continueAsNewTargetWorkers = new \ArrayObject();
+        $this->continueAsNewTargetWorkers = $continueAsNewTargetWorkers;
         $this->metricsObserver = new MetricsObserver($metrics ?? new NoopMetricsRecorder());
     }
 
@@ -2266,6 +2275,7 @@ final class Client implements WorkflowClientInterface
             }
         }
 
+        unset($this->continueAsNewTargetWorkers[$workerId]);
         $registration = $this->worker('POST', '/worker/register', $this->withoutNulls([
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
@@ -2287,8 +2297,32 @@ final class Client implements WorkflowClientInterface
         if (array_key_exists('server_capabilities', $registration)) {
             $this->rememberClaimedTaskReadyAge($registration['server_capabilities']);
         }
+        if ($this->workerProtocolVersion === Version::WORKER_PROTOCOL
+            && ($registration['registered'] ?? null) === true
+            && ($registration['worker_id'] ?? null) === $workerId
+            && ($registration['namespace'] ?? null) === $this->namespace
+            && ($registration['task_queue'] ?? null) === $taskQueue
+            && is_array($registration['server_capabilities'] ?? null)
+            && ($registration['server_capabilities'][ContinueAsNewTargetBuild::CAPABILITY] ?? null) === true
+            && Version::supportsWorkerProtocol($registration['protocol_version'] ?? null, Version::CONTINUE_AS_NEW_TARGET_BUILD_PROTOCOL)) {
+            $this->continueAsNewTargetWorkers[$workerId] = true;
+        }
 
         return $registration;
+    }
+
+    /** @internal The current registration advertised support for this worker. */
+    public function supportsContinueAsNewTargetBuild(string $workerId): bool
+    {
+        return isset($this->continueAsNewTargetWorkers[$workerId]);
+    }
+
+    private function withContinueAsNewTargetProtocol(): self
+    {
+        $copy = clone $this;
+        $copy->continueAsNewTargetProtocol = true;
+
+        return $copy;
     }
 
     /** @return array<string, mixed> */
@@ -2344,6 +2378,7 @@ final class Client implements WorkflowClientInterface
 
     public function deregisterWorker(string $workerId): void
     {
+        unset($this->continueAsNewTargetWorkers[$workerId]);
         $this->control('DELETE', '/workers/'.$this->segment($workerId));
         $this->taskDelivery->forget($workerId);
     }
@@ -2354,6 +2389,7 @@ final class Client implements WorkflowClientInterface
         if ($registrationToken !== null && preg_match('/^[a-f0-9]{32}$/D', $registrationToken) !== 1) {
             throw new InvalidArgumentException('A registration fence must be the token returned by worker registration.');
         }
+        unset($this->continueAsNewTargetWorkers[$workerId]);
         $client = $budget === null ? $this : $this->withBoundedWorkerRequests();
         $path = '/worker/registrations/'.$this->segment($workerId);
         $response = $registrationToken === null
@@ -2780,6 +2816,7 @@ final class Client implements WorkflowClientInterface
      * }|null $stickyCache
      * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int}|null $activityPoll
      * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int, history_page_size: int, task_kinds: list<string>}|null $workflowPoll
+     * @param array<string, int|string>|null $selectionChildAwait
      * @return array<string, mixed>
      */
     public function completeWorkflowTask(
@@ -2792,6 +2829,7 @@ final class Client implements WorkflowClientInterface
         ?array $stickyCache = null,
         ?array $activityPoll = null,
         ?array $workflowPoll = null,
+        ?array $selectionChildAwait = null,
     ): array {
         if (($messageStreamCursors !== [] || $messageStreamWaits !== []) && !Version::supportsMessageStreams()) {
             throw new InvalidArgumentException('Message stream completion metadata requires worker protocol 1.15 or newer.');
@@ -2804,7 +2842,26 @@ final class Client implements WorkflowClientInterface
                 $attempt,
                 self::WORKFLOW_TASK_WAITING_FOR_HISTORY_MESSAGE,
                 self::WORKFLOW_TASK_WAITING_FOR_HISTORY_TYPE,
+                selectionChildAwait: $selectionChildAwait,
             );
+        }
+
+        $client = $this;
+        $supportsTarget = $this->supportsContinueAsNewTargetBuild($leaseOwner);
+        foreach ($commands as $command) {
+            $isContinuation = ($command['type'] ?? null) === 'continue_as_new';
+            if (array_key_exists('target_build', $command)) {
+                $target = $command['target_build'];
+                if (!$isContinuation || !is_string($target) || ContinueAsNewTargetBuild::tryFrom($target) === null) {
+                    throw new InvalidArgumentException('invalid_target_build: use the exact inherited or promoted target on a continue-as-new command.');
+                }
+                if (!$supportsTarget) {
+                    throw new WorkflowClaimDeferred('unsupported_target_build: the Server did not advertise continue-as-new build selection for this worker session.');
+                }
+            }
+            if ($isContinuation && $supportsTarget && $client === $this) {
+                $client = $this->withContinueAsNewTargetProtocol();
+            }
         }
 
         if ($this->executionTelemetry !== null && $this->observabilityContextSupported) {
@@ -2816,7 +2873,7 @@ final class Client implements WorkflowClientInterface
             unset($command);
         }
 
-        return $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX, array_filter([
+        return $client->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX, array_filter([
             'lease_owner' => $leaseOwner,
             'workflow_task_attempt' => $attempt,
             'commands' => $commands,
@@ -2825,10 +2882,14 @@ final class Client implements WorkflowClientInterface
             'sticky_cache' => $stickyCache,
             'activity_poll' => $activityPoll,
             'workflow_poll' => $workflowPoll,
+            'selection_handle' => $selectionChildAwait,
         ], static fn (mixed $value): bool => $value !== [] && $value !== null));
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @param array<string, int|string>|null $selectionChildAwait
+     * @return array<string, mixed>
+     */
     public function failWorkflowTask(
         string $taskId,
         string $leaseOwner,
@@ -2838,8 +2899,17 @@ final class Client implements WorkflowClientInterface
         ?string $reason = null,
         ?int $sequence = null,
         ?string $stackTrace = null,
+        ?array $selectionChildAwait = null,
     ): array {
-        return $this->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/fail', [
+        $client = $this;
+        if ($reason === PromotedBuildUnavailable::REASON) {
+            if (!$this->supportsContinueAsNewTargetBuild($leaseOwner)) {
+                throw new WorkflowClaimDeferred('unsupported_target_build: the Server did not advertise continue-as-new build selection for this worker session.');
+            }
+            $client = $this->withContinueAsNewTargetProtocol();
+        }
+
+        return $client->worker('POST', '/worker/workflow-tasks/'.$this->segment($taskId).'/fail', [
             'lease_owner' => $leaseOwner,
             'workflow_task_attempt' => $attempt,
             'failure' => array_filter([
@@ -2848,6 +2918,7 @@ final class Client implements WorkflowClientInterface
                 'reason' => $reason,
                 'sequence' => $sequence,
                 'stack_trace' => $stackTrace,
+                'selection_handle' => $selectionChildAwait,
             ], static fn (mixed $value): bool => $value !== null),
         ]);
     }
@@ -2937,6 +3008,12 @@ final class Client implements WorkflowClientInterface
         array $workflowPoll,
         array $continuation,
     ): array {
+        foreach ($continuation['commands'] as $command) {
+            if (array_key_exists('target_build', $command)) {
+                throw new InvalidArgumentException('unsupported_target_build: submit a targeted continue-as-new through workflow-task completion.');
+            }
+        }
+
         return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/continuation/complete', [
             'activity_attempt_id' => $activityAttemptId,
             'lease_owner' => $leaseOwner,
@@ -3424,12 +3501,13 @@ final class Client implements WorkflowClientInterface
     /** @return array<string, string> */
     private function requestHeaders(bool $worker, string $path = ''): array
     {
+        $workerProtocol = $this->continueAsNewTargetProtocol ? Version::CONTINUE_AS_NEW_TARGET_BUILD_PROTOCOL : $this->workerProtocolVersion;
         $headers = [
             'Accept' => 'application/json',
             'Content-Type' => 'application/json',
             'X-Namespace' => $this->namespace,
             $worker ? 'X-Durable-Workflow-Protocol-Version' : 'X-Durable-Workflow-Control-Plane-Version'
-                => $worker ? $this->workerProtocolVersion : Version::CONTROL_PLANE_PROTOCOL,
+                => $worker ? $workerProtocol : Version::CONTROL_PLANE_PROTOCOL,
         ];
         if ($this->authentication !== null) {
             $headers = array_merge($headers, $this->authentication->headers($worker));

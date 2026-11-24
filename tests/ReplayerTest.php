@@ -2180,6 +2180,80 @@ final class ReplayerTest extends TestCase
         self::assertSame('child-run', $result->commands[0]['operation_identity']);
     }
 
+    public function testSelectionChildAwaitReportsAndConsumesTheOriginalHandle(): void
+    {
+        $this->assertSelectionChildAwait(false);
+    }
+
+    public function testSelectionChildGroupAwaitRemainsOpenUntilBothResultsAreRecorded(): void
+    {
+        $this->assertSelectionChildAwait(true);
+    }
+
+    private function assertSelectionChildAwait(bool $nested): void
+    {
+        $codec = new AvroPayloadCodec();
+        $workflow = static function (WorkflowContext $context) use ($nested): mixed {
+            $selected = $context->select([
+                'child' => static fn () => $nested ? $context->all([
+                    static fn () => $context->childWorkflow('child-workflow'),
+                    static fn () => $context->childWorkflow('child-workflow'),
+                ]) : $context->childWorkflow('child-workflow'),
+                'deadline' => static function () use ($context): void {
+                    $context->sleep(1);
+                },
+            ]);
+
+            return $selected->handles['child']->await();
+        };
+
+        $author = (new Replayer($codec))->replay($workflow, [], [], 'php-workers');
+        $paths = array_column($author->commands, 'parallel_group_path');
+        $size = $nested ? 2 : 1;
+        $deadline = $size + 1;
+        $group = 'select-calls:1:'.$deadline;
+        $history = [];
+        foreach (range(1, $size) as $sequence) {
+            $scheduled = self::parallelEvent('ChildWorkflowScheduled', $sequence, 'child-workflow', $paths[$sequence - 1]);
+            $scheduled['payload']['child_workflow_instance_id'] = "child-instance-{$sequence}";
+            $history[] = $scheduled;
+        }
+        $history[] = self::parallelEvent('TimerScheduled', $deadline, '1', $paths[$size]);
+        $history[] = self::parallelEvent('TimerFired', $deadline, '1', $paths[$size]);
+        $resolved = self::selectionResolved('deadline', 1, $deadline, 'timer', 'timer-'.$deadline);
+        $resolved['payload']['selection_group_id'] = $group;
+        $resolved['payload']['selection_group_size'] = $deadline;
+        $history[] = $resolved;
+
+        $waiting = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+        $handle = [
+            'selection_group_id' => $group,
+            'member_base_sequence' => 1,
+            'member_size' => $size,
+            'operation_identity' => $nested ? 'group:1:2' : 'child-run-1',
+            'await_position' => $deadline + 1,
+            'status' => 'waiting',
+        ];
+        self::assertSame([], $waiting->commands);
+        self::assertSame($handle, $waiting->selectionChildAwait);
+
+        $history[] = ['event_type' => 'ChildWorkflowAwaited', 'payload' => ['selection_handle' => $handle]];
+        $history[] = self::parallelEvent('ChildRunCompleted', 1, 'child-workflow', $paths[0], $codec->envelope('late'));
+        if ($nested) {
+            $stillWaiting = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+            self::assertSame([], $stillWaiting->commands);
+            self::assertSame($handle, $stillWaiting->selectionChildAwait);
+            $history[] = self::parallelEvent('ChildRunCompleted', 2, 'child-workflow', $paths[1], $codec->envelope('later'));
+        }
+        $resumed = (new Replayer($codec))->replay($workflow, $history, [], 'php-workers');
+        $handle['status'] = 'resumed';
+        self::assertSame($handle, $resumed->selectionChildAwait);
+        self::assertSame($nested ? ['late', 'later'] : 'late', $codec->decodeEnvelope($resumed->commands[0]['result']));
+
+        $history[] = ['event_type' => 'ChildWorkflowAwaited', 'payload' => ['selection_handle' => $handle]];
+        self::assertNull((new Replayer($codec))->replay($workflow, $history, [], 'php-workers')->selectionChildAwait);
+    }
+
     public function testSelectionLoserCancellationEmitsOneIdempotentControlCommand(): void
     {
         $codec = new AvroPayloadCodec();
