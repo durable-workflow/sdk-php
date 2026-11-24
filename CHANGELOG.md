@@ -6,6 +6,21 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.30.0] - 2026-11-24
+
+### Added
+
+- Workers receive tasks through signed offers when Native Server 3.28.0 or
+  later advertises `task_delivery_offers` at registration. A worker accepts an
+  offer before running the task, and repeats the exact acceptance after a lost
+  response instead of waiting for the lease to expire. A refusal for a task
+  that another worker took, whose lease ended, or whose poll is bound to
+  another offer releases the offer and starts a new poll. An unconfirmed
+  acceptance is released after the offer's deadline. If the Server stops
+  serving offers before a task is selected, the worker falls back to ordinary
+  polling. Servers that do not advertise offers keep the existing poll path.
+  ([Server #931](https://github.com/durable-workflow/server/issues/931))
+
 ## [3.29.0] - 2026-11-24
 
 ### Fixed
