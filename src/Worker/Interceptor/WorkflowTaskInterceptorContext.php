@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Worker\Interceptor;
 
+use DurableWorkflow\Worker\WorkflowReplayState;
+
 /** Immutable context passed to workflow-task interceptor hooks. */
 final class WorkflowTaskInterceptorContext
 {
@@ -46,6 +48,17 @@ final class WorkflowTaskInterceptorContext
         public readonly ?string $updateId = null,
         public readonly bool $observabilitySupported = false,
     ) {
+    }
+
+    /**
+     * The task-level replay state, in the same terms as {@see \DurableWorkflow\Worker\WorkflowContext::replayState()}:
+     * `Replaying` when the task starts by re-running a committed prefix, `Executing`
+     * when no earlier task recorded commands. Like the boolean, it is not a
+     * deduplication key: the commands this task submits are always new.
+     */
+    public function replayState(): WorkflowReplayState
+    {
+        return $this->replaying ? WorkflowReplayState::Replaying : WorkflowReplayState::Executing;
     }
 
     /**

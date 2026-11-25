@@ -49,7 +49,8 @@ project follows [Semantic Versioning](https://semver.org/).
   worker's PSR-11 container, and Laravel and Symfony service mode read them
   from `worker.interceptors`. With interceptors configured,
   `enableActivityContinuation` keeps the ordinary activity completion so every
-  workflow task is wrapped.
+  workflow task is wrapped. `WorkflowTaskInterceptorContext::replayState()`
+  reports the task's replay state as a `WorkflowReplayState`.
   ([Durable Workflow #226](https://github.com/durable-workflow/.github/issues/226))
 - Update validators. `#[UpdateValidator('update-name')]`, or
   `Worker::registerUpdateValidator()`, declares a validator that the Server
