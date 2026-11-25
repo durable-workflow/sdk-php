@@ -627,6 +627,20 @@ final class ReplayRegressionConsumer
             return;
         }
 
+        if ($workflowType === 'golden.worker-interceptor') {
+            require_once __DIR__.'/../../tests/Support/FakeTransport.php';
+            require_once __DIR__.'/../../tests/Support/WorkerInterceptorScenario.php';
+            $history = $fixture['history'] ?? [];
+            $input = $fixture['workflow']['input'] ?? [];
+            if (!is_array($history) || !array_is_list($history) || !is_array($input) || !array_is_list($input)) {
+                throw new RuntimeException("{$identity} must supply list history and input.");
+            }
+            $observed = \DurableWorkflow\Tests\Support\WorkerInterceptorScenario::run($history, $input);
+            self::assertMatches($fixture['expected'], $observed, $identity.self::EXPECTED_CONTEXT);
+
+            return;
+        }
+
         if ($workflowType === 'golden.grouped-condition') {
             require_once __DIR__.'/../../tests/Support/FakeTransport.php';
             require_once __DIR__.'/../../tests/Support/GroupedConditionRefusalScenario.php';
