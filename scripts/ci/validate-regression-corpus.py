@@ -333,7 +333,7 @@ def _list(value: Any, context: str, *, nonempty: bool = False) -> Sequence[Any]:
     return value
 
 
-_WORKER_REPLAY_CLOCK_INSTANT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
+_WORKER_REPLAY_CLOCK_INSTANT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z", re.ASCII)
 
 
 def _worker_replay_clock(value: Any, context: str) -> Mapping[str, Any]:

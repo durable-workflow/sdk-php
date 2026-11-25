@@ -72,6 +72,11 @@ try {
     exit(1);
 }
 
+/** A fixture task's replay_clock is not the exact WorkerReplayClock v1 shape. */
+final class ReplayRegressionCarrierShapeInvalid extends RuntimeException
+{
+}
+
 final class ReplayRegressionTransport implements Transport
 {
     /** @var list<list<array<string, mixed>>> */
@@ -723,31 +728,31 @@ final class ReplayRegressionConsumer
     private static function assertWorkerReplayClock(mixed $clock, string $context): void
     {
         if (!is_array($clock) || array_is_list($clock)) {
-            throw new RuntimeException("{$context} must be an object.");
+            throw new ReplayRegressionCarrierShapeInvalid("{$context} must be an object.");
         }
         $keys = array_keys($clock);
         sort($keys);
         if ($keys !== ['schema', 'source', 'started_at', 'workflow_run_id']) {
-            throw new RuntimeException(
+            throw new ReplayRegressionCarrierShapeInvalid(
                 "{$context} must contain exactly schema, workflow_run_id, started_at and source.",
             );
         }
         if ($clock['schema'] !== 'durable-workflow.worker-replay-clock/v1') {
-            throw new RuntimeException("{$context}.schema must be durable-workflow.worker-replay-clock/v1.");
+            throw new ReplayRegressionCarrierShapeInvalid("{$context}.schema must be durable-workflow.worker-replay-clock/v1.");
         }
         if (!is_string($clock['workflow_run_id']) || $clock['workflow_run_id'] === '') {
-            throw new RuntimeException("{$context}.workflow_run_id must be a non-empty string.");
+            throw new ReplayRegressionCarrierShapeInvalid("{$context}.workflow_run_id must be a non-empty string.");
         }
         $startedAt = $clock['started_at'];
         $parsed = is_string($startedAt)
-            && preg_match('/\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z\z/', $startedAt) === 1
+            && preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\z/', $startedAt) === 1
             ? \DateTimeImmutable::createFromFormat('!Y-m-d\TH:i:s.u\Z', $startedAt, new \DateTimeZone('UTC'))
             : false;
         if ($parsed === false || $parsed->format('Y-m-d\TH:i:s.u\Z') !== $startedAt) {
-            throw new RuntimeException("{$context}.started_at must be a real UTC instant with six fractional digits and Z.");
+            throw new ReplayRegressionCarrierShapeInvalid("{$context}.started_at must be a real UTC instant with six fractional digits and Z.");
         }
         if (!in_array($clock['source'], ['run_started_at', 'redrive_replayed_started_at'], true)) {
-            throw new RuntimeException("{$context}.source is not a WorkerReplayClock v1 source.");
+            throw new ReplayRegressionCarrierShapeInvalid("{$context}.source is not a WorkerReplayClock v1 source.");
         }
     }
 
