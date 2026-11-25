@@ -266,6 +266,66 @@ final class WorkflowLoggerTest extends TestCase
             implode(', ', $uris));
     }
 
+    public function testCancellingALoserBeforeAPendingAwaitLogsEachLineOnce(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $logger = new WorkflowLogRecorder();
+        $workflow = static function (WorkflowContext $context): mixed {
+            $selected = $context->select([
+                'a' => static fn () => $context->activity('lookup-a'),
+                'b' => static fn () => $context->activity('lookup-b'),
+                'deadline' => static function () use ($context): void {
+                    $context->sleep(0);
+                },
+            ]);
+            $context->logger()->info('selection resolved');
+            $selected->handles['a']->cancel();
+            $context->logger()->info('loser cancelled');
+            $result = $selected->handles['b']->await();
+            $context->logger()->info('other loser done', ['result' => $result]);
+
+            return $result;
+        };
+        $paths = self::replayerHelper('selectionPaths', ['a', 'b', 'deadline'], ['activity', 'activity', 'timer']);
+        $resolved = self::replayerHelper('selectionResolved', 'deadline', 2, 3, 'timer', 'timer-3');
+        $resolved['payload']['selection_group_id'] = 'select-calls:1:3';
+        $resolved['payload']['selection_group_size'] = 3;
+        $history = [
+            self::replayerHelper('parallelEvent', 'ActivityScheduled', 1, 'lookup-a', $paths[0]),
+            self::replayerHelper('parallelEvent', 'ActivityScheduled', 2, 'lookup-b', $paths[1]),
+            self::replayerHelper('parallelEvent', 'TimerScheduled', 3, '0', $paths[2]),
+            self::replayerHelper('parallelEvent', 'TimerFired', 3, '0', $paths[2]),
+            $resolved,
+        ];
+
+        // The cancellation is a new control command, then the pending await parks.
+        $first = self::flushed($codec, $logger, $workflow, $history, []);
+        self::assertSame(['cancel_selection_operation'], array_column($first->commands, 'type'));
+        self::assertSame([], array_column($logger->records, 'message'));
+
+        // Replay finds the recorded cancellation (no new command) and the result.
+        $history[] = ['event_type' => 'SelectionOperationCancelled', 'payload' => [
+            'selection_group_id' => 'select-calls:1:3', 'member_key' => 'a', 'member_index' => 0,
+            'member_base_sequence' => 1, 'member_size' => 1, 'operation_kind' => 'activity',
+            'operation_identity' => 'activity-1', 'cancelled_at' => '2026-11-25T00:00:00Z',
+        ]];
+        $history[] = self::replayerHelper('parallelEvent', 'ActivityCompleted', 2, 'lookup-b', $paths[1], $codec->envelope('b-done'));
+        $done = self::flushed($codec, $logger, $workflow, $history, []);
+        self::assertSame(['complete_workflow'], array_column($done->commands, 'type'));
+        self::assertSame(
+            ['selection resolved', 'loser cancelled', 'other loser done'],
+            array_column($logger->records, 'message'),
+        );
+    }
+
+    /** Reuse ReplayerTest's selection history builders. */
+    private static function replayerHelper(string $name, mixed ...$arguments): mixed
+    {
+        $method = new \ReflectionMethod(ReplayerTest::class, $name);
+
+        return $method->invoke(null, ...$arguments);
+    }
+
     public function testWorkerRoutesWorkflowLogsThroughItsLoggerOncePerStep(): void
     {
         $logger = new WorkflowLogRecorder();

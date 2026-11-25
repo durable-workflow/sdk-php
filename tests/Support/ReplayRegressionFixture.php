@@ -136,12 +136,13 @@ final class ReplayRegressionFixture
             return self::executeUpdateValidation($identity, $input, $history, $fixture);
         }
 
-        if ($workflowType === 'golden.workflow-logger') {
+        if ($workflowType === 'golden.workflow-logger' || $workflowType === 'golden.workflow-logger-selection-cancel') {
             $boundaries = $fixture['workflow_task_history_lengths'] ?? null;
             if (!is_array($boundaries) || !array_is_list($boundaries)) {
                 throw new RuntimeException("{$identity}.workflow_task_history_lengths must be a list.");
             }
-            $observed = WorkflowLoggerScenario::run($history, $boundaries, $input);
+            $observed = WorkflowLoggerScenario::run($history, $boundaries, $input,
+                $workflowType === 'golden.workflow-logger-selection-cancel' ? 'selection-cancel' : 'activities');
             self::assertMatches($fixture['expected'], $observed, "{$identity}.expected");
 
             return [];
