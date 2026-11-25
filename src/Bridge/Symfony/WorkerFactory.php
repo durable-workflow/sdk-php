@@ -9,6 +9,7 @@ use DurableWorkflow\Bridge\ServiceConfiguration;
 use DurableWorkflow\Client;
 use DurableWorkflow\Telemetry\ExecutionTelemetry;
 use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\Interceptor\WorkerInterceptor;
 use DurableWorkflow\Worker\WorkflowFactory;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
@@ -20,6 +21,7 @@ final class WorkerFactory
 {
     /**
      * @param ServiceProviderInterface<object>|iterable<object> $handlers
+     * @param iterable<WorkerInterceptor> $interceptors ordered; the first is outermost
      */
     public function __construct(
         private readonly ServiceConfiguration $configuration,
@@ -28,6 +30,7 @@ final class WorkerFactory
         private readonly ?LoggerInterface $logger = null,
         private readonly ?EventDispatcherInterface $events = null,
         private readonly ?ExecutionTelemetry $telemetry = null,
+        private readonly iterable $interceptors = [],
     ) {
     }
 
@@ -44,6 +47,7 @@ final class WorkerFactory
             stickyCacheCapacity: $this->configuration->stickyCacheCapacity,
             stickyCacheTtlSeconds: $this->configuration->stickyCacheTtlSeconds,
             telemetry: $this->telemetry,
+            interceptors: $this->interceptors,
         );
 
         $handlers = [];

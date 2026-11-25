@@ -947,6 +947,121 @@ refused commands; it is not a replay block. A refused activity continuation
 falls back to an ordinary activity completion. Other 409 responses keep their
 existing behavior.
 
+## Worker interceptors
+
+Pass ordered `interceptors` to `Worker::create()` (or the `Worker`
+constructor) to add audit logging, metric tags, tenant context or tracing
+around every task once, instead of in each handler. Each interceptor
+implements `DurableWorkflow\Worker\Interceptor\WorkerInterceptor`; extend
+`PassthroughWorkerInterceptor` to implement only the hooks you need. The first
+interceptor is the outermost wrapper, and each hook calls `$next($context)` to
+continue the chain.
+
+```php
+use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\Interceptor\ActivityInterceptorContext;
+use DurableWorkflow\Worker\Interceptor\PassthroughWorkerInterceptor;
+use DurableWorkflow\Worker\Interceptor\WorkflowTaskInterceptorContext;
+use DurableWorkflow\Worker\Interceptor\WorkflowTaskOutcome;
+use Psr\Log\LoggerInterface;
+
+final class AuditInterceptor extends PassthroughWorkerInterceptor
+{
+    public function __construct(private readonly LoggerInterface $audit)
+    {
+    }
+
+    public function executeWorkflowTask(WorkflowTaskInterceptorContext $context, callable $next): WorkflowTaskOutcome
+    {
+        $outcome = $next($context);
+        $this->audit->info('workflow task', [
+            'workflow_id' => $context->workflowId,
+            'workflow_type' => $context->workflowType,
+            'attempt' => $context->workflowTaskAttempt,
+            'replayed_history' => $context->replaying,
+            'commands' => $outcome->commandTypes(),
+        ]);
+
+        return $outcome;
+    }
+
+    public function executeActivity(ActivityInterceptorContext $context, callable $next): mixed
+    {
+        $this->audit->info('activity started', [
+            'activity_type' => $context->activityType,
+            'attempt' => $context->attemptNumber,
+            'workflow_id' => $context->workflowId,
+        ]);
+        try {
+            return $next($context);
+        } finally {
+            $this->audit->info('activity finished', ['activity_type' => $context->activityType]);
+        }
+    }
+}
+
+$worker = Worker::create($client, 'orders', container: $container,
+    interceptors: [AuditInterceptor::class]);
+```
+
+Pass instances or class names. Class names are resolved from the PSR-11
+container passed to the worker, the same way attributed handlers are; without a
+container a class name must have no required constructor arguments.
+
+| Hook | Context | `$next` returns |
+| --- | --- | --- |
+| `executeWorkflowTask($context, $next)` | `workerId`, `taskQueue`, `namespace`, `task`, `taskId`, `workflowType`, `workflowId`, `runId`, `workflowTaskAttempt`, `historyLength`, `replaying`, `updateId`, `observabilitySupported` | `WorkflowTaskOutcome` with a copy of the commands |
+| `executeActivity($context, $next)` | `workerId`, `taskQueue`, `namespace`, `task`, `activityType`, `arguments`, `attemptNumber`, `taskId`, `activityAttemptId`, `workflowId`, `runId`, `local`, `activityContext`, `observabilitySupported` | the activity result |
+| `executeQueryTask($context, $next)` | `workerId`, `taskQueue`, `namespace`, `task`, `taskId`, `workflowType`, `queryName`, `workflowId`, `runId`, `arguments`, `queryContext`, `observabilitySupported` | the query result |
+
+Workflow-task interceptors cannot break determinism:
+
+- `executeWorkflowTask` wraps the run of workflow code that produces one
+  workflow task's commands, once per task attempt. `replaying` is `true` when
+  the delivered history already holds commands recorded by earlier workflow
+  tasks, so the workflow code re-ran that committed prefix before reaching new
+  code. The outcome holds only the commands this task adds; replayed commands
+  are never resubmitted. A retried attempt (`workflowTaskAttempt > 1`) can
+  repeat an outcome whose task failed, so make external audit writes
+  idempotent.
+- The worker submits exactly the commands the workflow code produced. The
+  outcome is a copy; returning a different outcome, or passing a different
+  context to `$next`, changes nothing.
+- A failure from the workflow code reaches the worker unchanged, even if an
+  interceptor catches it and returns normally.
+- An exception thrown by an interceptor fails the workflow task. Nothing is
+  recorded and the Server retries the task. Skipping `$next`, or calling it
+  more than once, fails the task with `WorkflowTaskInterceptorViolation`.
+
+Activity and query interceptors may change arguments with
+`$context->withArguments(...)` and may change the returned value, because
+activity results are recorded once and queries record nothing. Activity
+exceptions pass through every interceptor unless one handles them. Activity
+interceptors wrap remote and local activities (`local` tells them apart). With
+cooperative cancellation, remote activity callbacks and their interceptors run
+in the activity's child process, so memory changes there do not reach the
+worker process. When tracing is configured, the built-in worker spans stay
+outermost, so interceptors run inside the active task span.
+
+In Laravel and Symfony service mode, list interceptor classes under
+`worker.interceptors`; they are resolved from the framework container in that
+order:
+
+```php
+// config/durable-workflow.php
+'worker' => [
+    'interceptors' => [App\Durable\AuditInterceptor::class],
+],
+```
+
+```yaml
+# config/packages/durable_workflow.yaml
+durable_workflow:
+  worker:
+    interceptors:
+      - App\Durable\AuditInterceptor
+```
+
 ## Completion pipelining (opt-in)
 
 `Worker::create($client, $taskQueue, enableCompletionPipelining: true)` allows

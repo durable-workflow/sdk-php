@@ -24,6 +24,15 @@ project follows [Semantic Versioning](https://semver.org/).
   `replayNow()` stays unavailable. `WorkerTestHarness::runWorkflow()` accepts
   the carrier as `replay_clock` in its task argument
   (durable-workflow/.github#215).
+- Workers accept ordered `interceptors` around workflow tasks, activities and
+  query tasks, with the task context the Python SDK exposes. The first
+  interceptor is the outermost wrapper; extend `PassthroughWorkerInterceptor`
+  to implement only some hooks. Workflow-task interceptors see whether the task
+  replays a committed history prefix and cannot change the submitted commands,
+  swap the task or hide a workflow-code failure. Class names resolve from the
+  worker's PSR-11 container, and Laravel and Symfony service mode read them
+  from `worker.interceptors`.
+  ([Durable Workflow #226](https://github.com/durable-workflow/.github/issues/226))
 
 ## [3.31.0] - 2026-11-25
 

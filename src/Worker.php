@@ -45,6 +45,11 @@ use DurableWorkflow\Worker\HandlerDefinition;
 use DurableWorkflow\Worker\WorkflowDefinitionFingerprint;
 use DurableWorkflow\Worker\HandlerResolver;
 use DurableWorkflow\Worker\PollResponse;
+use DurableWorkflow\Worker\Interceptor\ActivityInterceptorContext;
+use DurableWorkflow\Worker\Interceptor\QueryTaskInterceptorContext;
+use DurableWorkflow\Worker\Interceptor\WorkerInterceptor;
+use DurableWorkflow\Worker\Interceptor\WorkerInterceptorChain;
+use DurableWorkflow\Worker\Interceptor\WorkflowTaskInterceptorContext;
 use DurableWorkflow\Worker\PreparedLocalActivityAttempt;
 use DurableWorkflow\Worker\PreparedLocalActivityCall;
 use DurableWorkflow\Worker\PreparedLocalActivityRunner;
@@ -132,6 +137,7 @@ final class Worker
     private readonly LoggerInterface $logger;
     private readonly StickyWorkflowCache $stickyCache;
     private readonly MetricsObserver $metricsObserver;
+    private readonly WorkerInterceptorChain $interceptors;
     private ?WorkerTaskObservation $taskObservation = null;
     /** @var array<string, WorkerSessionOptions> */
     private array $activeWorkerSessions = [];
@@ -193,6 +199,7 @@ final class Worker
     /** @var (\Closure(string, array<string, mixed>): void)|null */
     private readonly ?\Closure $diagnosticListener;
 
+    /** @param iterable<WorkerInterceptor|class-string<WorkerInterceptor>> $interceptors */
     public function __construct(
         Client $client,
         public readonly string $taskQueue,
@@ -234,6 +241,11 @@ final class Worker
          * re-registers as a new incarnation. Set true to keep the pre-3.13 behavior and stop instead.
          */
         private readonly bool $stopOnStaleRegistration = false,
+        /**
+         * Ordered worker interceptors; the first is the outermost wrapper. Class names
+         * resolve through $container when one is given.
+         */
+        iterable $interceptors = [],
     ) {
         if ($enableCancellationScopes && !$enableCooperativeCancellation) {
             throw new \InvalidArgumentException('Cancellation scopes require the cooperative worker opt-in.');
@@ -260,6 +272,7 @@ final class Worker
         };
         $this->replayer = new Replayer($client->payloadCodec());
         $this->handlerDiscovery = new HandlerDiscovery(new HandlerResolver($container));
+        $this->interceptors = WorkerInterceptorChain::resolve($interceptors, new HandlerResolver($container));
         $this->logger = $logger ?? new NullLogger();
         $this->diagnosticListener = $diagnosticListener === null
             ? null
@@ -272,6 +285,7 @@ final class Worker
      * Construct the preferred class-oriented worker surface.
      *
      * @param (callable(string, array<string, mixed>): void)|null $diagnosticListener
+     * @param iterable<WorkerInterceptor|class-string<WorkerInterceptor>> $interceptors
      */
     public static function create(
         Client $client,
@@ -285,6 +299,7 @@ final class Worker
         ?ExecutionTelemetry $telemetry = null,
         ?MetricsRecorder $metrics = null,
         bool $enableCompletionPipelining = false,
+        iterable $interceptors = [],
     ): self {
         return new self(
             $client,
@@ -298,6 +313,7 @@ final class Worker
             telemetry: $telemetry,
             metrics: $metrics,
             enableCompletionPipelining: $enableCompletionPipelining,
+            interceptors: $interceptors,
         );
     }
 
@@ -2158,52 +2174,61 @@ final class Worker
             }
             $workflowType = (string) ($task['workflow_type'] ?? '');
             $updateId = isset($task['workflow_update_id']) ? (string) $task['workflow_update_id'] : null;
-            if ($updateId !== null && $updateId !== '') {
-                $commands = [$this->executeUpdate($workflowType, $updateId, $history, $task)];
-            } else {
-                $handler = $this->workflows[$workflowType] ?? null;
-                if ($handler === null) {
-                    throw new \RuntimeException("No workflow handler is registered for {$workflowType}.");
-                }
-                $input = $this->decodeArguments($task['arguments'] ?? $task['input'] ?? null);
-                // Keep pre-entry refusal outside the application-error boundary.
-                // A valid-bound body throwing the same exception is still a body failure.
-                WorkflowEntryArguments::validate($handler, $input, $workflowType);
-                try {
-                    $replay = $this->replayWorkflowClaim(
-                        $handler,
-                        $history,
-                        $input,
-                        $task,
-                    );
-                    $commands = $replay->commands;
-                    $messageStreamCursors = $replay->messageStreamCursors;
-                    $messageStreamWaits = $replay->messageStreamWaits;
-                    $selectionChildAwait = $this->selectionChildAwaitAdvertised ? $replay->selectionChildAwait : null;
-                    if ($replay->terminalFailure instanceof ServerException
-                        && $replay->terminalFailure->isStorageAdmissionFailure()) {
-                        throw $replay->terminalFailure;
-                    }
-                    if ($replay->terminalFailure instanceof Throwable) {
-                        $this->handlerFailure('workflow', $workflowType, $replay->terminalFailure);
-                        $commands[] = $this->workflowFailureCommand(
-                            $replay->terminalFailure,
-                            $replay->failedActivitySequence,
-                            $replay->failedActivityExecutionId,
-                        );
+            $commands = $this->interceptors->workflowTask(
+                fn (): WorkflowTaskInterceptorContext => WorkflowTaskInterceptorContext::forTask(
+                    $this->workerId, $this->taskQueue, $this->client->namespace, $task, $history,
+                    $this->client->observabilityContextAvailable()),
+                function () use ($task, $history, $workflowType, $updateId, &$messageStreamCursors, &$messageStreamWaits, &$selectionChildAwait): array {
+                    if ($updateId !== null && $updateId !== '') {
+                        $commands = [$this->executeUpdate($workflowType, $updateId, $history, $task)];
                     } else {
-                        $this->diagnoseWorkflowWait($task, $commands);
+                        $handler = $this->workflows[$workflowType] ?? null;
+                        if ($handler === null) {
+                            throw new \RuntimeException("No workflow handler is registered for {$workflowType}.");
+                        }
+                        $input = $this->decodeArguments($task['arguments'] ?? $task['input'] ?? null);
+                        // Keep pre-entry refusal outside the application-error boundary.
+                        // A valid-bound body throwing the same exception is still a body failure.
+                        WorkflowEntryArguments::validate($handler, $input, $workflowType);
+                        try {
+                            $replay = $this->replayWorkflowClaim(
+                                $handler,
+                                $history,
+                                $input,
+                                $task,
+                            );
+                            $commands = $replay->commands;
+                            $messageStreamCursors = $replay->messageStreamCursors;
+                            $messageStreamWaits = $replay->messageStreamWaits;
+                            $selectionChildAwait = $this->selectionChildAwaitAdvertised ? $replay->selectionChildAwait : null;
+                            if ($replay->terminalFailure instanceof ServerException
+                                && $replay->terminalFailure->isStorageAdmissionFailure()) {
+                                throw $replay->terminalFailure;
+                            }
+                            if ($replay->terminalFailure instanceof Throwable) {
+                                $this->handlerFailure('workflow', $workflowType, $replay->terminalFailure);
+                                $commands[] = $this->workflowFailureCommand(
+                                    $replay->terminalFailure,
+                                    $replay->failedActivitySequence,
+                                    $replay->failedActivityExecutionId,
+                                );
+                            } else {
+                                $this->diagnoseWorkflowWait($task, $commands);
+                            }
+                        } catch (NonDeterministicWorkflow|WorkflowClaimAborted $exception) {
+                            throw $exception;
+                        } catch (Throwable $exception) {
+                            if ($exception instanceof ServerException && $exception->isStorageAdmissionFailure()) {
+                                throw $exception;
+                            }
+                            $this->handlerFailure('workflow', $workflowType, $exception);
+                            $commands = [$this->workflowFailureCommand($exception)];
+                        }
                     }
-                } catch (NonDeterministicWorkflow|WorkflowClaimAborted $exception) {
-                    throw $exception;
-                } catch (Throwable $exception) {
-                    if ($exception instanceof ServerException && $exception->isStorageAdmissionFailure()) {
-                        throw $exception;
-                    }
-                    $this->handlerFailure('workflow', $workflowType, $exception);
-                    $commands = [$this->workflowFailureCommand($exception)];
-                }
-            }
+
+                    return $commands;
+                },
+            );
             $this->completionPipeline?->join();
             $this->assertPipelineAuthority();
             if ($commands === [] && array_key_exists(ConditionInputOrder::PENDING_INPUT, $task)) {
@@ -4053,7 +4078,12 @@ final class Worker
                 throw new WorkflowClaimRevoked('worker_stopped', 'Worker stopped before query dispatch.');
             }
             $authority?->confirm();
-            $result = $handler($context, ...$arguments);
+            $result = $this->interceptors->queryTask(
+                new QueryTaskInterceptorContext($this->workerId, $this->taskQueue, $this->client->namespace, $task, $taskId,
+                    $workflowType, $queryName, $context->workflowId, $context->runId, $arguments, $context,
+                    $this->client->observabilityContextAvailable()),
+                static fn (QueryTaskInterceptorContext $ctx): mixed => $handler($ctx->queryContext, ...$ctx->arguments),
+            );
             $authority?->confirm();
             $this->retryStorageAdmission('query_complete', fn (): array =>
                 $this->client->completeQueryTask($taskId, $leaseOwner, $attempt, $result, $this->queryRequestBudget($authority)));
@@ -5426,6 +5456,14 @@ final class Worker
      */
     private function invokeActivity(callable $handler, ActivityContext $context, array $arguments, array $fields, bool $local = false, ?array $authorizedTask = null): mixed
     {
+        if (!$this->interceptors->isEmpty()) {
+            $intercepted = new ActivityInterceptorContext($this->workerId, $this->taskQueue, $this->client->namespace,
+                $local ? [] : ($authorizedTask ?? []), $context->activityType, $arguments, $context->attemptNumber,
+                $context->taskId, $context->activityAttemptId, $context->workflowId, $context->runId, $local, $context,
+                $this->client->observabilityContextAvailable());
+            $handler = fn (ActivityContext $context, mixed ...$arguments): mixed => $this->interceptors->activity(
+                $intercepted, static fn (ActivityInterceptorContext $ctx): mixed => $handler($ctx->activityContext, ...$ctx->arguments));
+        }
         if ($this->telemetry === null) {
             return $handler($context, ...$arguments);
         }
