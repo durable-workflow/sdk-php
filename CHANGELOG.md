@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.31.0] - 2026-11-25
+
 ### Added
 
 - `ActivityContext::lastHeartbeatCheckpoint()` returns the last acknowledged
