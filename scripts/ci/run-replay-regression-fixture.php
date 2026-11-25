@@ -723,9 +723,11 @@ final class ReplayRegressionConsumer
                         "{$identity}.workflow_tasks.{$index} must contain only workflow_id, run_id and an optional replay_clock.",
                     );
                 }
-                if (array_key_exists('replay_clock', $workflowTask)
-                    && (!is_array($workflowTask['replay_clock']) || array_is_list($workflowTask['replay_clock']))) {
-                    throw new RuntimeException("{$identity}.workflow_tasks.{$index}.replay_clock must be an object.");
+                if (array_key_exists('replay_clock', $workflowTask)) {
+                    self::assertWorkerReplayClock(
+                        $workflowTask['replay_clock'],
+                        "{$identity}.workflow_tasks.{$index}.replay_clock",
+                    );
                 }
                 foreach (['workflow_id', 'run_id'] as $field) {
                     if (!is_string($workflowTask[$field] ?? null) || $workflowTask[$field] === '') {
@@ -748,6 +750,47 @@ final class ReplayRegressionConsumer
                 $layout,
                 $workflowTasks,
             );
+        }
+    }
+
+    /**
+     * Require the exact WorkerReplayClock v1 shape a workflow task can carry,
+     * as the corpus validator does (.github#215). The run is not compared
+     * with the task's run_id, so a fixture can pin the SDK refusing a carrier
+     * for another run.
+     */
+    private static function assertWorkerReplayClock(mixed $clock, string $context): void
+    {
+        $keys = ['schema', 'workflow_run_id', 'started_at', 'source'];
+        if (!is_array($clock) || array_is_list($clock)) {
+            throw new RuntimeException("{$context} must be an object.");
+        }
+        $actual = array_keys($clock);
+        sort($actual);
+        $expected = $keys;
+        sort($expected);
+        if ($actual !== $expected) {
+            throw new RuntimeException("{$context} must contain exactly schema, workflow_run_id, started_at and source.");
+        }
+        if ($clock['schema'] !== 'durable-workflow.worker-replay-clock/v1') {
+            throw new RuntimeException("{$context}.schema must be durable-workflow.worker-replay-clock/v1.");
+        }
+        if (!is_string($clock['workflow_run_id']) || $clock['workflow_run_id'] === '') {
+            throw new RuntimeException("{$context}.workflow_run_id must be a non-empty string.");
+        }
+        $startedAt = $clock['started_at'];
+        if (!is_string($startedAt)
+            || preg_match('/\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z\z/', $startedAt) !== 1) {
+            throw new RuntimeException("{$context}.started_at must be UTC with six fractional digits and Z.");
+        }
+        // A real instant: no rollover, and year 0000 is refused as Python's strptime refuses it.
+        $instant = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i:s.u\Z', $startedAt, new DateTimeZone('UTC'));
+        if ($instant === false || str_starts_with($startedAt, '0000-')
+            || $instant->format('Y-m-d\TH:i:s.u\Z') !== $startedAt) {
+            throw new RuntimeException("{$context}.started_at is not a real instant.");
+        }
+        if (!in_array($clock['source'], ['run_started_at', 'redrive_replayed_started_at'], true)) {
+            throw new RuntimeException("{$context}.source is not a WorkerReplayClock v1 source.");
         }
     }
 
