@@ -6,6 +6,25 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `WorkflowContext::replayNow()` is available at ordinary workflow entry,
+  before any durable step. It returns the run's entry instant from the
+  workflow task's `replay_clock` (`durable-workflow.worker-replay-clock/v1`,
+  sent by Server 3.6.0 and later): the run's canonical start, or the original
+  start a redrive replays from. The value is the same on every replay and every
+  lease. The first consumed durable boundary replaces it as before. A task
+  without a valid carrier for its own run, or whose `source` disagrees with
+  whether the history is a redrive, keeps the clock unavailable at entry, and
+  a redrive entry already proved from history is unchanged. The carrier must
+  have exactly the four v1 keys. Step times still come from history; only the
+  entry value comes from the task. An unhandled `ReplayClockUnavailable` fails
+  the workflow, as before. Query and update handlers read a history snapshot
+  rather than re-running the workflow body, so they are unaffected and their
+  `replayNow()` stays unavailable. `WorkerTestHarness::runWorkflow()` accepts
+  the carrier as `replay_clock` in its task argument
+  (durable-workflow/.github#215).
+
 ## [3.31.0] - 2026-11-25
 
 ### Added

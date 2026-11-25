@@ -22,7 +22,15 @@ use WeakReference;
 /** Straight-line deterministic operations available while a workflow Fiber is replayed. */
 final class WorkflowContext
 {
-    /** The recorded time at this invocation's consumed replay boundary. */
+    /**
+     * The recorded time at this invocation's consumed replay boundary. Step
+     * times come from history. Before the first durable boundary the value is
+     * the run's entry instant from the workflow task's `replay_clock`, when the
+     * Server supplies one; otherwise it is unavailable. Repeated reads between
+     * durable steps return the same value. An unhandled ReplayClockUnavailable
+     * fails the workflow. Order emitted events by stream offset, outbox
+     * sequence or a workflow-local counter, not by this timestamp.
+     */
     public function replayNow(): DateTimeImmutable
     {
         if ($this->execution === null || Fiber::getCurrent() !== $this->execution || $this->isCapturing()

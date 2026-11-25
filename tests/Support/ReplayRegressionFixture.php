@@ -458,7 +458,7 @@ final class ReplayRegressionFixture
                     array_merge(self::taskAttributes($workflowType), [
                         'workflow_id' => $workflowId,
                         'run_id' => $runId,
-                    ]),
+                    ], array_intersect_key($task, ['replay_clock' => true])),
                 );
                 $commands = array_map(
                     static fn (array $command): array => self::decodeEnvelopes($command, $codec),

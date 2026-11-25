@@ -673,11 +673,16 @@ final class ReplayRegressionConsumer
                 if (!is_array($workflowTask)) {
                     throw new RuntimeException("{$identity}.workflow_tasks.{$index} must be an object.");
                 }
-                if (count($workflowTask) !== 2
-                    || array_diff(array_keys($workflowTask), ['workflow_id', 'run_id']) !== []) {
+                // replay_clock is the task's optional Server entry carrier (.github#215).
+                if (count($workflowTask) !== 2 + (array_key_exists('replay_clock', $workflowTask) ? 1 : 0)
+                    || array_diff(array_keys($workflowTask), ['workflow_id', 'run_id', 'replay_clock']) !== []) {
                     throw new RuntimeException(
-                        "{$identity}.workflow_tasks.{$index} must contain only workflow_id and run_id.",
+                        "{$identity}.workflow_tasks.{$index} must contain only workflow_id, run_id and an optional replay_clock.",
                     );
+                }
+                if (array_key_exists('replay_clock', $workflowTask)
+                    && (!is_array($workflowTask['replay_clock']) || array_is_list($workflowTask['replay_clock']))) {
+                    throw new RuntimeException("{$identity}.workflow_tasks.{$index}.replay_clock must be an object.");
                 }
                 foreach (['workflow_id', 'run_id'] as $field) {
                     if (!is_string($workflowTask[$field] ?? null) || $workflowTask[$field] === '') {
@@ -740,7 +745,8 @@ final class ReplayRegressionConsumer
                 'arguments' => $codec->envelope($input),
                 'history_events' => $layout === 'inline' ? $history : [],
                 'next_history_page_token' => $layout === 'paginated' ? 'regression-page-1' : '',
-            ], self::taskAttributes($workflowType), self::workerTaskAttributes($fixture));
+            ], array_intersect_key($taskIdentity, ['replay_clock' => true]),
+                self::taskAttributes($workflowType), self::workerTaskAttributes($fixture));
             $pagedHistory[$taskId] = $layout === 'paginated' ? $history : [];
         }
         $transport = new ReplayRegressionTransport(
