@@ -21,6 +21,9 @@ final class WorkerReplayClock
     public const RUN_STARTED = 'run_started_at';
     public const REDRIVE_ANCHOR = 'redrive_replayed_started_at';
 
+    /** The exact v1 key set, sorted. */
+    private const FIELDS = ['schema', 'source', 'started_at', 'workflow_run_id'];
+
     private function __construct(public readonly DateTimeImmutable $startedAt, public readonly string $source)
     {
     }
@@ -29,6 +32,12 @@ final class WorkerReplayClock
     public static function fromTask(mixed $carrier, string $runId): ?self
     {
         if (!is_array($carrier) || array_is_list($carrier) || $runId === '') {
+            return null;
+        }
+        // WorkerReplayClock v1 has additionalProperties: false, so any other key set is not v1.
+        $keys = array_keys($carrier);
+        sort($keys, SORT_STRING);
+        if ($keys !== self::FIELDS) {
             return null;
         }
         if (($carrier['schema'] ?? null) !== self::SCHEMA || ($carrier['workflow_run_id'] ?? null) !== $runId

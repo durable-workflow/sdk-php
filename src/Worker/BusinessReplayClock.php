@@ -51,7 +51,7 @@ final class BusinessReplayClock
         }
         if (count($starts) === 1) {
             $this->initializeRedrive($starts[0], $workflowId, $runId);
-            $this->adoptEntry($entry);
+            $this->adoptEntry($entry, $starts[0]);
         }
     }
 
@@ -59,14 +59,24 @@ final class BusinessReplayClock
      * The Server's entry instant supplies time before the first consumed
      * boundary. Its source must match whether this history is a redrive. A
      * redrive entry already proved from history stays authoritative, so a
-     * disagreeing carrier is ignored rather than trusted.
+     * disagreeing carrier is ignored rather than trusted. An unproved redrive
+     * whose start still records a readable replayed_started_at must agree
+     * with the carrier too.
      */
-    private function adoptEntry(?WorkerReplayClock $entry): void
+    private function adoptEntry(?WorkerReplayClock $entry, int $start): void
     {
         $source = $this->redriveClaimed ? WorkerReplayClock::REDRIVE_ANCHOR : WorkerReplayClock::RUN_STARTED;
-        if ($entry !== null && $entry->source === $source && $this->time === null) {
-            $this->time = $entry->startedAt;
+        if ($entry === null || $entry->source !== $source || $this->time !== null) {
+            return;
         }
+        if ($this->redriveClaimed) {
+            $payload = $this->history[$start]['payload'] ?? null;
+            $recorded = is_array($payload) ? ReplayClockHistory::parseTime($payload['replayed_started_at'] ?? null) : null;
+            if ($recorded !== null && $recorded->format('Y-m-d\TH:i:s.u') !== $entry->startedAt->format('Y-m-d\TH:i:s.u')) {
+                return;
+            }
+        }
+        $this->time = $entry->startedAt;
     }
 
     public function time(): DateTimeImmutable

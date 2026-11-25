@@ -7,6 +7,7 @@ namespace DurableWorkflow\Tests;
 use DateTimeImmutable;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\ReplayClockUnavailable;
+use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkerReplayClock;
 use DurableWorkflow\Worker\WorkflowContext;
@@ -63,6 +64,10 @@ final class EntryBusinessReplayClockTest extends TestCase
             'task without run' => [self::carrier(['workflow_run_id' => '']), ''],
             'missing source' => [$without('source')],
             'unknown source' => [self::carrier(['source' => 'history_inserted_at'])],
+            'integer source' => [self::carrier(['source' => 7])],
+            'array source' => [self::carrier(['source' => ['run_started_at']])],
+            'extra key' => [self::carrier(['lease_started_at' => self::STARTED])],
+            'integer key' => [self::carrier() + [0 => 'extra']],
             'missing started_at' => [$without('started_at')],
             'null started_at' => [self::carrier(['started_at' => null])],
             'numeric started_at' => [self::carrier(['started_at' => 1762941600])],
@@ -204,6 +209,21 @@ final class EntryBusinessReplayClockTest extends TestCase
         self::assertSame([null, null, null], self::replayResult(self::redriveReads(), $fixture['history'],
             $task + ['replay_clock' => $carrier + ['source' => 'run_started_at']]));
         self::assertSame([null, null, null], self::replayResult(self::redriveReads(), $fixture['history'], $task));
+        // The start still records a readable original start; a carrier that disagrees with it is ignored.
+        self::assertSame([null, null, null], self::replayResult(self::redriveReads(), $fixture['history'],
+            $task + ['replay_clock' => ['started_at' => '2026-11-02T23:00:00.000000Z'] + $carrier + ['source' => 'redrive_replayed_started_at']]));
+        unset($fixture['history'][0]['payload']['replayed_started_at']);
+        self::assertSame(['2026-11-03T00:00:00.000000+00:00', null, null], self::replayResult(self::redriveReads(), $fixture['history'],
+            $task + ['replay_clock' => $carrier + ['source' => 'redrive_replayed_started_at']]));
+    }
+
+    public function testQueryAndUpdateHandlerReadsStayUnavailableWithACarrier(): void
+    {
+        // Query and update handlers read a history snapshot, not a rebuilt workflow body.
+        $context = new QueryContext('workflow', 'run', self::ordinaryStart(), self::task());
+
+        $this->expectException(ReplayClockUnavailable::class);
+        $context->replayNow();
     }
 
     public function testCancellationStillHidesTheEntryInstant(): void
