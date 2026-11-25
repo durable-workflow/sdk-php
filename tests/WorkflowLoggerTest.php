@@ -31,17 +31,17 @@ final class WorkflowLoggerTest extends TestCase
 
         // Every workflow task replays from history with a new Replayer, as a
         // restarted worker does.
-        $first = self::replayer($codec, $logger)->replay(self::workflow(), $history, ['Ada'], 'php-workers', $task);
+        $first = self::flushed($codec, $logger, self::workflow(), $history, ['Ada'], $task);
         self::assertSame(['schedule_activity'], array_column($first->commands, 'type'));
 
         $history[] = ['event_type' => 'ActivityScheduled', 'payload' => ['sequence' => 1, 'activity_type' => 'reserve']];
         $history[] = ['event_type' => 'ActivityCompleted', 'payload' => ['sequence' => 1, 'result' => $codec->envelope('reserved')]];
-        $second = self::replayer($codec, $logger)->replay(self::workflow(), $history, ['Ada'], 'php-workers', $task);
+        $second = self::flushed($codec, $logger, self::workflow(), $history, ['Ada'], $task);
         self::assertSame(['schedule_activity'], array_column($second->commands, 'type'));
 
         $history[] = ['event_type' => 'ActivityScheduled', 'payload' => ['sequence' => 2, 'activity_type' => 'charge']];
         $history[] = ['event_type' => 'ActivityCompleted', 'payload' => ['sequence' => 2, 'result' => $codec->envelope('charged')]];
-        $third = self::replayer($codec, $logger)->replay(self::workflow(), $history, ['Ada'], 'php-workers', $task);
+        $third = self::flushed($codec, $logger, self::workflow(), $history, ['Ada'], $task);
         self::assertSame(['complete_workflow'], array_column($third->commands, 'type'));
 
         self::assertSame(
@@ -67,7 +67,7 @@ final class WorkflowLoggerTest extends TestCase
         // A cold replay of the completed run writes nothing.
         $history[] = ['event_type' => 'WorkflowCompleted', 'payload' => ['result' => $codec->envelope('done')]];
         self::$states = [];
-        self::replayer($codec, $logger)->replay(self::workflow(), $history, ['Ada'], 'php-workers', $task);
+        self::flushed($codec, $logger, self::workflow(), $history, ['Ada'], $task);
         self::assertCount(3, $logger->records);
         self::assertSame(['start:replaying', 'after-reserve:replaying', 'after-charge:replaying'], self::$states);
     }
@@ -83,7 +83,7 @@ final class WorkflowLoggerTest extends TestCase
             return $value;
         };
 
-        $result = self::replayer($codec, $logger)->replay($workflow, [], [], 'php-workers', ['workflow_type' => 'stamp']);
+        $result = self::flushed($codec, $logger, $workflow, [], [], ['workflow_type' => 'stamp']);
 
         self::assertContains('complete_workflow', array_column($result->commands, 'type'));
         self::assertSame(['side effect recorded'], array_column($logger->records, 'message'));
@@ -101,7 +101,7 @@ final class WorkflowLoggerTest extends TestCase
             return 'done';
         };
 
-        self::replayer($codec, $logger)->replay($workflow, [], [], 'php-workers');
+        self::flushed($codec, $logger, $workflow, [], []);
 
         self::assertInstanceOf(WorkflowContext::class, $retained);
         self::assertSame(WorkflowReplayState::Unavailable, $retained->replayState());
@@ -122,13 +122,50 @@ final class WorkflowLoggerTest extends TestCase
         $plain = (new Replayer($codec))->replay($workflow, [], [], 'php-workers');
         self::assertSame(['complete_workflow'], array_column($plain->commands, 'type'));
 
-        $broken = self::replayer($codec, new class() extends AbstractLogger {
-            public function log($level, string|Stringable $message, array $context = []): void
-            {
-                throw new RuntimeException('log handler down');
-            }
-        })->replay($workflow, [], [], 'php-workers');
-        self::assertSame(['complete_workflow'], array_column($broken->commands, 'type'));
+        // A replay only collects lines; nothing is written until the Worker
+        // submits it, and a superseded replay's lines are discarded.
+        $replayer = new Replayer($codec);
+        $replayer->useWorkflowLogger(new WorkflowLogRecorder(), 'payments');
+        $replayer->replay($workflow, [], [], 'php-workers');
+        $replayer->replay($workflow, [], [], 'php-workers');
+        self::assertSame(['ignored'], array_column($replayer->takeWorkflowLogs(), 'message'));
+        self::assertSame([], $replayer->takeWorkflowLogs());
+    }
+
+    public function testCodeBeforeAwaitingAStartedChildLogsOnce(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $logger = new WorkflowLogRecorder();
+        $workflow = static function (WorkflowContext $context): string {
+            $context->logger()->info('child flow started');
+            $child = $context->startChildWorkflow('billing.reconcile', ['acct-1']);
+            $context->logger()->info('child flow awaiting');
+            $result = (string) $child->await();
+            $context->logger()->info('child flow finished', ['result' => $result]);
+
+            return $result;
+        };
+        $identity = ['sequence' => 1, 'child_call_id' => 'call-1', 'workflow_link_id' => 'call-1',
+            'child_workflow_instance_id' => 'child-instance', 'child_workflow_run_id' => 'child-run-1',
+            'child_workflow_type' => 'billing.reconcile'];
+        $started = [
+            ['event_type' => 'ChildWorkflowScheduled', 'payload' => $identity],
+            ['event_type' => 'ChildRunStarted', 'payload' => $identity],
+        ];
+        $completed = ['event_type' => 'ChildRunCompleted', 'payload' => [...$identity, 'result' => $codec->envelope('reconciled')]];
+
+        self::assertSame(['start_child_workflow'], array_column(self::flushed($codec, $logger, $workflow, [], [])->commands, 'type'));
+        // The child is running: the await parks without a command or a new step,
+        // so the code after the start runs again in the next task.
+        self::assertSame([], self::flushed($codec, $logger, $workflow, $started, [])->commands);
+        self::assertSame(['child flow started'], array_column($logger->records, 'message'));
+
+        $done = self::flushed($codec, $logger, $workflow, [...$started, $completed], []);
+        self::assertSame(['complete_workflow'], array_column($done->commands, 'type'));
+        self::assertSame(
+            ['child flow started', 'child flow awaiting', 'child flow finished'],
+            array_column($logger->records, 'message'),
+        );
     }
 
     public function testWorkerRoutesWorkflowLogsThroughItsLoggerOncePerStep(): void
@@ -180,12 +217,29 @@ final class WorkflowLoggerTest extends TestCase
         self::assertSame('payments', $workflowLines[1]['context']['namespace']);
     }
 
-    private static function replayer(AvroPayloadCodec $codec, \Psr\Log\LoggerInterface $logger): Replayer
-    {
+    /**
+     * Replay like the Worker: the lines of a submitted replay are written after it returns.
+     *
+     * @param list<array<string, mixed>> $history
+     * @param list<mixed> $input
+     * @param array<string, mixed> $task
+     */
+    private static function flushed(
+        AvroPayloadCodec $codec,
+        \Psr\Log\LoggerInterface $logger,
+        callable $workflow,
+        array $history,
+        array $input,
+        array $task = [],
+    ): \DurableWorkflow\Worker\ReplayResult {
         $replayer = new Replayer($codec);
         $replayer->useWorkflowLogger($logger, 'payments');
+        $result = $replayer->replay($workflow, $history, $input, 'php-workers', $task);
+        foreach ($replayer->takeWorkflowLogs() as $record) {
+            $logger->log($record['level'], $record['message'], $record['context']);
+        }
 
-        return $replayer;
+        return $result;
     }
 
     private static function workflow(): \Closure
@@ -236,3 +290,4 @@ final class WorkflowLogRecorder extends AbstractLogger
         $this->records[] = ['level' => $level, 'message' => $message, 'context' => $context];
     }
 }
+

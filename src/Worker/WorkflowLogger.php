@@ -16,10 +16,12 @@ use Throwable;
  * its committed history, so a line is written once per committed step instead
  * of once per workflow task. Each line carries the run's identity.
  *
- * This is a process logger, not an exactly-once outbox: a workflow task that
- * fails before it commits runs its new code, and its log lines, again. Keep
- * handlers fast and non-blocking, because a slow handler stalls the worker.
- * Logger failures are swallowed and never change the workflow's commands.
+ * Lines are written once the workflow task that ran the code has been
+ * submitted: a replay that is superseded, speculative or refused writes
+ * nothing, and code parked on a pending handle without recording a step logs
+ * in the task that moves past it. It is not an outbox for business effects.
+ * Keep handlers fast and non-blocking, because a slow handler stalls the
+ * worker. Logger failures are swallowed and never change the commands.
  */
 final class WorkflowLogger implements LoggerInterface
 {
@@ -28,7 +30,6 @@ final class WorkflowLogger implements LoggerInterface
     /** @param array<string, string|null> $identity */
     public function __construct(
         private readonly WorkflowContext $context,
-        private readonly LoggerInterface $logger,
         private readonly array $identity,
     ) {
     }
@@ -44,7 +45,7 @@ final class WorkflowLogger implements LoggerInterface
         }
 
         try {
-            $this->logger->log($level, $message, array_merge($context, $this->identity));
+            $this->context->collectWorkflowLog($level, (string) $message, array_merge($context, $this->identity));
         } catch (Throwable) {
             // Logging is an observation; it never fails workflow code.
         }

@@ -17,8 +17,6 @@ use Closure;
 use DateTimeImmutable;
 use Fiber;
 use LogicException;
-use Psr\Log\LoggerInterface;
-use Psr\Log\NullLogger;
 use WeakReference;
 
 /** Straight-line deterministic operations available while a workflow Fiber is replayed. */
@@ -75,7 +73,7 @@ final class WorkflowContext
      */
     public function logger(): WorkflowLogger
     {
-        return new WorkflowLogger($this, $this->hostLogger ?? new NullLogger(), [
+        return new WorkflowLogger($this, [
             ...$this->logIdentity,
             'workflow_id' => $this->workflowId,
             'workflow_run_id' => $this->runId,
@@ -86,13 +84,27 @@ final class WorkflowContext
      * @internal Bound by the Replayer before workflow code starts.
      *
      * @param Closure(): bool $replaying
+     * @param Closure(mixed, string, array<array-key, mixed>): void $logSink collects new-code lines
      * @param array<string, string|null> $identity
      */
-    public function bindReplayObservation(Closure $replaying, ?LoggerInterface $logger, array $identity): void
+    public function bindReplayObservation(Closure $replaying, Closure $logSink, array $identity): void
     {
         $this->replaying = $replaying;
-        $this->hostLogger = $logger;
+        $this->logSink = $logSink;
         $this->logIdentity = $identity;
+    }
+
+    /**
+     * @internal Hand a new-code line to the Replayer, which writes it once the
+     * workflow task that ran it is submitted.
+     *
+     * @param array<array-key, mixed> $context
+     */
+    public function collectWorkflowLog(mixed $level, string $message, array $context): void
+    {
+        if ($this->logSink !== null) {
+            ($this->logSink)($level, $message, $context);
+        }
     }
 
     /**
@@ -238,7 +250,8 @@ final class WorkflowContext
     /** @var (Closure(): bool)|null true while recorded steps remain to be replayed */
     private ?Closure $replaying = null;
 
-    private ?LoggerInterface $hostLogger = null;
+    /** @var (Closure(mixed, string, array<array-key, mixed>): void)|null */
+    private ?Closure $logSink = null;
 
     /** @var array<string, string|null> */
     private array $logIdentity = [];

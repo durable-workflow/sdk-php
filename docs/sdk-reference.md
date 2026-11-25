@@ -828,6 +828,7 @@ workflow polls, so validation tasks keep their turn.
 `validationErrors()` returns its field errors. `validationFailed()` is true
 when the Server couldn't get a decision, for example because no capable worker
 answered in time; nothing was accepted, so retry with the same request ID.
+
 ### Log from workflow code
 
 The worker replays a workflow from its history on every workflow task, so an
@@ -860,11 +861,15 @@ code re-runs over committed history, `Executing` past it, and `Unavailable`
 outside the workflow's own Fiber. `isReplaying()` is the boolean form. Use them
 for diagnostics only; never choose workflow commands from them.
 
-This is a process logger, not an exactly-once outbox. A workflow task that
-fails or loses its lease before it commits runs its new code, and its log
-lines, again. Keep log handlers fast and non-blocking: a handler that waits on
-the network stalls the worker and can cost it the task lease. Logger failures
-are caught and never change the workflow's commands.
+Lines are written after the worker submits the workflow task that ran the
+code. A replay that is superseded, speculative and declined, or refused
+writes nothing, and code that parks on a pending child or operation handle
+without recording a step logs once, in the task that moves past it. If the
+worker dies between the Server accepting a task and the write, those lines
+are lost; the logger is not an outbox for business effects. Keep log handlers
+fast and non-blocking, because a handler that waits on the network stalls
+the worker. Logger failures are caught and never change the workflow's
+commands.
 
 ### Locate a replay mismatch
 

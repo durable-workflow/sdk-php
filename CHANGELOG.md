@@ -12,13 +12,14 @@ project follows [Semantic Versioning](https://semver.org/).
   through the Worker's configured logger only when workflow code runs past
   committed history, so each line is written once per step instead of once per
   workflow task, and adds `namespace`, `workflow_type`, `workflow_id` and
-  `workflow_run_id` to its context. `WorkflowContext::replayState()` returns
-  `WorkflowReplayState::Replaying`, `Executing` or `Unavailable`, and
-  `isReplaying()` is its boolean form. `Replayer::useWorkflowLogger()` routes the
-  logger for direct Replayer use. A task that fails before it commits repeats
-  its new lines; logger failures never affect the workflow.
-
-### Added
+  `workflow_run_id` to its context. Lines are written after the Worker submits
+  the workflow task that ran the code: superseded, speculative or refused
+  replays write nothing, and code parked on a pending child or operation handle
+  logs once, in the task that moves past it. `WorkflowContext::replayState()`
+  returns `WorkflowReplayState::Replaying`, `Executing` or `Unavailable`, and
+  `isReplaying()` is its boolean form. `Replayer::useWorkflowLogger()` and
+  `Replayer::takeWorkflowLogs()` serve direct Replayer use. Logger failures
+  never affect the workflow.
 
 - `WorkflowContext::replayNow()` is available at ordinary workflow entry,
   before any durable step. It returns the run's entry instant from the

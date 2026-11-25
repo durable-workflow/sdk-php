@@ -52,6 +52,7 @@ final class WorkflowLoggerScenario
             $replayer->useWorkflowLogger($logger, 'default');
             $result = $replayer->replay($workflow, array_slice($history, 0, $length), $input, 'regression-corpus', $task);
             $commands[] = array_column($result->commands, 'type');
+            self::write($logger, $replayer);
         }
         $logged = $logger->messages;
 
@@ -59,7 +60,16 @@ final class WorkflowLoggerScenario
         $replayer = new Replayer($codec);
         $replayer->useWorkflowLogger($logger, 'default');
         $replayer->replay($workflow, $history, $input, 'regression-corpus', $task);
+        self::write($logger, $replayer);
 
         return ['logged' => $logged, 'cold_replay_logged' => $logger->messages, 'commands' => $commands];
+    }
+
+    /** Write a submitted replay's lines, as the Worker does after completing its task. */
+    private static function write(\Psr\Log\LoggerInterface $logger, Replayer $replayer): void
+    {
+        foreach ($replayer->takeWorkflowLogs() as $record) {
+            $logger->log($record['level'], $record['message'], $record['context']);
+        }
     }
 }
