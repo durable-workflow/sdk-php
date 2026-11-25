@@ -4230,7 +4230,8 @@ final class Worker
         if ($carried !== null) {
             $kinds = $carried->request['task_kinds'] ?? null;
 
-            return isset($kinds[0]) ? $kinds : null;
+            // Workflow-only is the Server default; keep the original wire shape.
+            return isset($kinds[0]) && $kinds !== ['workflow'] ? $kinds : null;
         }
 
         return $this->updateValidationTasksEnabled ? ['workflow', 'update_validation'] : null;

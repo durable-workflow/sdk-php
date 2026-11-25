@@ -815,9 +815,9 @@ validator against the run's committed history:
 Validators aren't recorded in history and never run during replay, so they
 don't affect determinism. The same committed history gives the same decision.
 
-Validators read committed history, not uncommitted state: updates that the
-Server accepted but the workflow hasn't applied yet aren't visible to them, so
-concurrent updates can each pass a check that only one of them should. The
+Each validation sees only the history committed before its own task. Two
+validations running at the same time therefore can't see each other's
+updates, and both can pass a check that only one of them should. The
 validator runs in its own Fiber, so a library that suspends Fibers can't be
 used inside it. Update validation tasks don't pass through worker
 interceptors, and a validator worker doesn't use carried or prefetched
