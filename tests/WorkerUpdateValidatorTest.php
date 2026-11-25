@@ -233,6 +233,56 @@ final class WorkerUpdateValidatorTest extends TestCase
             ->registerUpdateValidator('orders', 'approve', static fn (QueryContext $context): null => null);
     }
 
+    public function testValidatorWorkersNeverCarryWorkflowOnlyPolls(): void
+    {
+        $polls = [];
+        $transport = new FakeTransport(handler: function (string $method, string $uri, array $headers, ?array $body) use (&$polls): ?array {
+            $this->requests[] = [$method, $uri, $body];
+            if (str_ends_with($uri, '/api/cluster/info')) {
+                return ['worker_protocol' => ['version' => '1.20', 'server_capabilities' => self::capabilities()]];
+            }
+            if (str_ends_with($uri, '/api/worker/register')) {
+                return ['registered' => true];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
+                $polls[] = $body['task_kinds'] ?? null;
+                if (count($polls) > 1) {
+                    return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+                }
+
+                return ['poll_status' => 'leased', 'server_capabilities' => [
+                    'workflow_task_completion_workflow_poll' => true,
+                    'workflow_task_completion_activity_poll' => true,
+                    'activity_completion_workflow_poll' => true,
+                ], 'task' => [
+                    'task_kind' => 'workflow', 'task_id' => 'wf-1', 'workflow_task_attempt' => 1, 'lease_owner' => 'worker-1',
+                    'workflow_id' => 'orders-1', 'run_id' => 'run-1', 'workflow_type' => 'orders', 'payload_codec' => 'avro',
+                    'history_events' => [],
+                ]];
+            }
+            if (preg_match('#/workflow-tasks/wf-1/heartbeat$#', $uri) === 1) {
+                return ['task_id' => 'wf-1', 'workflow_task_attempt' => 1, 'lease_owner' => 'worker-1', 'renewed' => true, 'reason' => null];
+            }
+            if (str_ends_with($uri, '/workflow-tasks/wf-1/complete')) {
+                return ['completed' => true];
+            }
+
+            return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+        });
+        $worker = new Worker(new Client('https://server.example', transport: $transport), 'queue', workerId: 'worker-1');
+        $worker->registerWorkflow('orders', static fn (WorkflowContext $context): string => 'done')
+            ->registerUpdate('orders', 'approve', static fn (QueryContext $context, int $amount): int => $amount)
+            ->registerUpdateValidator('orders', 'approve', static fn (QueryContext $context, int $amount): null => null);
+
+        $worker->run(0);
+
+        $completion = $this->request('/api/worker/workflow-tasks/wf-1/complete');
+        self::assertIsArray($completion);
+        self::assertArrayNotHasKey('workflow_poll', $completion, 'Carried polls are workflow-only and would starve validation tasks.');
+        self::assertNotSame([], $polls);
+        self::assertSame(array_fill(0, count($polls), ['workflow', 'update_validation']), $polls);
+    }
+
     public function testClientSurfacesTheValidatorRejection(): void
     {
         $http = new \GuzzleHttp\Client(['handler' => static function (\Psr\Http\Message\RequestInterface $request) {

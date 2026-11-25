@@ -1433,7 +1433,7 @@ final class Worker
                         $timeoutSeconds,
                         $requestId,
                         self::WORKFLOW_HISTORY_PAGE_SIZE,
-                        $this->updateValidationTasksEnabled ? ['workflow', 'update_validation'] : null,
+                        $this->workflowPollTaskKinds($carriedWorkflow),
                     ),
                     $pollTimeoutSeconds,
                     $carriedWorkflow,
@@ -2551,6 +2551,7 @@ final class Worker
     {
         $pipeline = $this->completionPipeline;
         if ($pipeline === null || !$pipeline->canPrefetch() || !$this->pipelineManagedTick
+            || $this->updateValidationTasksEnabled
             || !$this->workflowExecutedLocalActivity || $this->claimCancellation !== null
             || $this->shutdownRequested || $this->drainingCarriedLease || $this->carriedWorkflowPoll !== null
             || ($task['lease_owner'] ?? null) !== $this->workerId
@@ -2689,7 +2690,9 @@ final class Worker
     private function reserveWorkflowPoll(string $leaseOwner, bool $workflowCompletion = false): ?CarriedPoll
     {
         $supported = $workflowCompletion ? $this->workflowCompletionWorkflowPollSupported : $this->activityCompletionWorkflowPollSupported;
-        if (!$supported || $this->workflows === []
+        // The Server carries only workflow-only polls. A validator worker polls
+        // both kinds itself, so update validation tasks keep their turn (#234).
+        if (!$supported || $this->workflows === [] || $this->updateValidationTasksEnabled
             || $leaseOwner !== $this->workerId || $this->shutdownRequested || $this->drainingCarriedLease
             || $this->queryPollDeferredForCarriedWorkflow
             || $this->workflowTasksInFlight !== ($workflowCompletion ? 1 : 0) || $this->carriedWorkflowPoll !== null
@@ -4215,6 +4218,24 @@ final class Worker
         }
     }
 
+    /**
+     * A poll request id is bound to its task-kind set, so a carried or retried
+     * poll keeps the kinds it was created with. Only a fresh poll on a
+     * validator worker asks for update validation tasks too.
+     *
+     * @return list<string>|null
+     */
+    private function workflowPollTaskKinds(?CarriedPoll $carried): ?array
+    {
+        if ($carried !== null) {
+            $kinds = $carried->request['task_kinds'] ?? null;
+
+            return isset($kinds[0]) ? $kinds : null;
+        }
+
+        return $this->updateValidationTasksEnabled ? ['workflow', 'update_validation'] : null;
+    }
+
     /** @param array<string, mixed> $task */
     private function polledWorkflowTaskKind(array $task): string
     {
@@ -4375,13 +4396,20 @@ final class Worker
                 default => 'failed',
             });
         } catch (ServerException $exception) {
-            if (!in_array($exception->reason, self::UPDATE_VALIDATION_FENCES, true)) {
-                throw $exception;
+            if (in_array($exception->reason, self::UPDATE_VALIDATION_FENCES, true)) {
+                // Another completion or a lease change already settled this validation.
+                $this->diagnostic('worker.update_validation_fenced', ['task_id' => $taskId,
+                    'reason' => $exception->reason], 'info');
+                $this->taskObservation?->outcome('expired');
+
+                return;
             }
-            // Another completion or a lease change already settled this validation.
-            $this->diagnostic('worker.update_validation_fenced', ['task_id' => $taskId,
-                'reason' => $exception->reason], 'info');
-            $this->taskObservation?->outcome('expired');
+            // As sdk-python does, a lost answer is logged, not fatal: the Server
+            // times the validation out and the caller can retry its request id.
+            $this->diagnostic('worker.update_validation_completion_failed', ['task_id' => $taskId,
+                'reason' => $exception->reason, 'status' => $exception->status,
+                'message' => $exception->getMessage()], 'warning');
+            $this->taskObservation?->outcome('failed');
         }
     }
 
