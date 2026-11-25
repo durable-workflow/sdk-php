@@ -1,0 +1,167 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-business-replay-clock-entry-instant",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.business-replay-clock",
+    "input": [
+      "Taylor",
+      5
+    ]
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-12T10:00:03.000000+00:00",
+      "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestRedriveTimerWorkflow",
+        "workflow_type": "golden.business-replay-clock",
+        "workflow_instance_id": "regression-corpus-entry-instant",
+        "workflow_run_id": "regression-corpus-entry-run",
+        "workflow_command_id": "01JBENTRYCOMMAND0000000000",
+        "execution_deadline_at": null,
+        "run_deadline_at": null
+      }
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-11-12T10:00:03.000000+00:00",
+      "payload": {
+        "activity_execution_id": "01JBENTRYACTIVITY000000000",
+        "activity_class": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "sequence": 1
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityCompleted",
+      "recorded_at": "2026-11-12T10:00:04.250000+00:00",
+      "payload": {
+        "activity_execution_id": "01JBENTRYACTIVITY000000000",
+        "activity_class": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "sequence": 1,
+        "result": "wwHioz3/VYAiNwocSGVsbG8sIFRheWxvciE=",
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "sequence": 4,
+      "event_type": "TimerScheduled",
+      "recorded_at": "2026-11-12T10:00:04.250000+00:00",
+      "payload": {
+        "timer_id": "01JBENTRYTIMER000000000000",
+        "sequence": 2,
+        "delay_seconds": 5,
+        "fire_at": "2026-11-12T10:00:09.250000Z"
+      }
+    },
+    {
+      "sequence": 5,
+      "event_type": "TimerFired",
+      "recorded_at": "2026-11-12T10:00:09.500000+00:00",
+      "payload": {
+        "timer_id": "01JBENTRYTIMER000000000000",
+        "sequence": 2,
+        "delay_seconds": 5,
+        "fire_at": "2026-11-12T10:00:09.250000Z",
+        "fired_at": "2026-11-12T10:00:09.500000Z"
+      }
+    }
+  ],
+  "workflow_tasks": [
+    {
+      "workflow_id": "regression-corpus-entry-instant",
+      "run_id": "regression-corpus-entry-run",
+      "replay_clock": {
+        "schema": "durable-workflow.worker-replay-clock/v1",
+        "workflow_run_id": "regression-corpus-entry-run",
+        "started_at": "2026-11-12T10:00:00.123456Z",
+        "source": "run_started_at"
+      }
+    },
+    {
+      "workflow_id": "regression-corpus-entry-instant",
+      "run_id": "regression-corpus-entry-run",
+      "replay_clock": {
+        "schema": "durable-workflow.worker-replay-clock/v1",
+        "workflow_run_id": "regression-corpus-entry-run",
+        "started_at": "2026-11-12T10:00:00.123456Z",
+        "source": "run_started_at"
+      }
+    },
+    {
+      "workflow_id": "regression-corpus-entry-instant",
+      "run_id": "regression-corpus-entry-run"
+    },
+    {
+      "workflow_id": "regression-corpus-entry-instant",
+      "run_id": "regression-corpus-entry-run",
+      "replay_clock": {
+        "schema": "durable-workflow.worker-replay-clock/v1",
+        "workflow_run_id": "regression-corpus-entry-run",
+        "started_at": "2026-11-12T10:00:00.123456Z",
+        "source": "redrive_replayed_started_at"
+      }
+    }
+  ],
+  "expected": {
+    "workflow_tasks": [
+      {
+        "command_sequence": [
+          {
+            "type": "complete_workflow",
+            "result": [
+              "2026-11-12T10:00:00.123456+00:00",
+              "2026-11-12T10:00:04.250000+00:00",
+              "2026-11-12T10:00:09.500000+00:00"
+            ]
+          }
+        ]
+      },
+      {
+        "command_sequence": [
+          {
+            "type": "complete_workflow",
+            "result": [
+              "2026-11-12T10:00:00.123456+00:00",
+              "2026-11-12T10:00:04.250000+00:00",
+              "2026-11-12T10:00:09.500000+00:00"
+            ]
+          }
+        ]
+      },
+      {
+        "command_sequence": [
+          {
+            "type": "complete_workflow",
+            "result": [
+              null,
+              "2026-11-12T10:00:04.250000+00:00",
+              "2026-11-12T10:00:09.500000+00:00"
+            ]
+          }
+        ]
+      },
+      {
+        "command_sequence": [
+          {
+            "type": "complete_workflow",
+            "result": [
+              null,
+              "2026-11-12T10:00:04.250000+00:00",
+              "2026-11-12T10:00:09.500000+00:00"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

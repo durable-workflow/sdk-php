@@ -1268,9 +1268,11 @@ def _replay_fixture(
             zip(task_definitions, task_expectations, strict=True)
         ):
             task = _object(raw_task, f"{path}.workflow_tasks[{index}]")
-            if set(task) != {"workflow_id", "run_id"}:
+            # replay_clock is the task's optional Server entry carrier (.github#215).
+            if not {"workflow_id", "run_id"} <= set(task) <= {"workflow_id", "run_id", "replay_clock"}:
                 raise CorpusError(
-                    f"{path}.workflow_tasks[{index}] must contain only workflow_id and run_id"
+                    f"{path}.workflow_tasks[{index}] must contain only workflow_id, run_id"
+                    " and an optional replay_clock"
                 )
             expected_task = _object(
                 raw_expected,
@@ -1280,22 +1282,27 @@ def _replay_fixture(
                 raise CorpusError(
                     f"{path}.expected.workflow_tasks[{index}] must not be empty"
                 )
-            executed_tasks.append(
-                {
-                    "workflow_id": _string(
-                        task.get("workflow_id"),
-                        f"{path}.workflow_tasks[{index}].workflow_id",
-                    ),
-                    "run_id": _string(
-                        task.get("run_id"),
-                        f"{path}.workflow_tasks[{index}].run_id",
-                    ),
-                    "executed_commands": _canonical_executed_commands(
-                        None,
-                        expected_task,
-                    ),
-                }
-            )
+            executed_task = {
+                "workflow_id": _string(
+                    task.get("workflow_id"),
+                    f"{path}.workflow_tasks[{index}].workflow_id",
+                ),
+                "run_id": _string(
+                    task.get("run_id"),
+                    f"{path}.workflow_tasks[{index}].run_id",
+                ),
+                "executed_commands": _canonical_executed_commands(
+                    None,
+                    expected_task,
+                ),
+            }
+            if "replay_clock" in task:
+                # Only present carriers enter the digest, so existing evidence is unchanged.
+                executed_task["replay_clock"] = _object(
+                    task["replay_clock"],
+                    f"{path}.workflow_tasks[{index}].replay_clock",
+                )
+            executed_tasks.append(executed_task)
         semantic = {
             "workflow": {"type": workflow["type"], "input": workflow_input},
             "history": _canonical_replay_history(

@@ -29,8 +29,12 @@ final class BusinessReplayClock
     private int $unavailableReads = 0;
 
     /** @param list<array<string, mixed>> $history */
-    public function __construct(private readonly array $history, private readonly string $workflowId, private readonly string $runId)
-    {
+    public function __construct(
+        private readonly array $history,
+        private readonly string $workflowId,
+        private readonly string $runId,
+        ?WorkerReplayClock $entry = null,
+    ) {
         $starts = [];
         foreach ($history as $index => $event) {
             if (ReplayClockHistory::kind($event) === 'WorkflowStarted') {
@@ -47,6 +51,21 @@ final class BusinessReplayClock
         }
         if (count($starts) === 1) {
             $this->initializeRedrive($starts[0], $workflowId, $runId);
+            $this->adoptEntry($entry);
+        }
+    }
+
+    /**
+     * The Server's entry instant supplies time before the first consumed
+     * boundary. Its source must match whether this history is a redrive. A
+     * redrive entry already proved from history stays authoritative, so a
+     * disagreeing carrier is ignored rather than trusted.
+     */
+    private function adoptEntry(?WorkerReplayClock $entry): void
+    {
+        $source = $this->redriveClaimed ? WorkerReplayClock::REDRIVE_ANCHOR : WorkerReplayClock::RUN_STARTED;
+        if ($entry !== null && $entry->source === $source && $this->time === null) {
+            $this->time = $entry->startedAt;
         }
     }
 
