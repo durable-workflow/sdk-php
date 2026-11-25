@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Worker\Interceptor;
 
 use DurableWorkflow\Exception\InvalidWorkerDefinition;
+use DurableWorkflow\Exception\UpdateValidationInterceptorViolation;
 use DurableWorkflow\Exception\WorkflowTaskInterceptorViolation;
 use DurableWorkflow\Worker\HandlerResolver;
 use Throwable;
@@ -133,6 +134,69 @@ final class WorkerInterceptorChain
 
         return $this->wrap($core, static fn (WorkerInterceptor $interceptor, QueryTaskInterceptorContext $ctx, callable $next): mixed
             => $interceptor->executeQueryTask($ctx, $next))($context);
+    }
+
+    /**
+     * Run the update validator inside the chain and return the validator's own decision.
+     *
+     * Hooks see a read-only outcome. The core always runs with the Worker's own
+     * context, so a hook cannot change the arguments or swap the task. A hook
+     * that throws, skips `$next` or repeats it fails the validation; none of
+     * them can change the decision.
+     *
+     * @param \Closure(): UpdateValidationInterceptorContext $context built only when interceptors are configured
+     * @param \Closure(): UpdateValidationOutcome $core never throws for a validator decision
+     */
+    public function updateValidation(\Closure $context, \Closure $core): UpdateValidationOutcome
+    {
+        if ($this->interceptors === []) {
+            return $core();
+        }
+        $context = $context();
+        $run = new class () {
+            public int $calls = 0;
+            public ?UpdateValidationOutcome $outcome = null;
+            public ?UpdateValidationInterceptorViolation $violation = null;
+        };
+        $terminal = static function () use ($core, $run): UpdateValidationOutcome {
+            if (++$run->calls > 1) {
+                throw $run->violation ??= new UpdateValidationInterceptorViolation('', 'An update validation interceptor called $next more than once.');
+            }
+
+            return $run->outcome = $core();
+        };
+        $handler = $this->wrap($terminal, static function (WorkerInterceptor $interceptor, UpdateValidationInterceptorContext $ctx, callable $next) use ($context, $run): UpdateValidationOutcome {
+            $called = false;
+            $outcome = $interceptor->executeUpdateValidation($ctx, static function () use ($interceptor, $context, $next, $run, &$called): UpdateValidationOutcome {
+                if ($called) {
+                    throw $run->violation ??= new UpdateValidationInterceptorViolation($interceptor::class,
+                        'Update validation interceptor '.$interceptor::class.' called $next more than once.');
+                }
+                $called = true;
+
+                return $next($context);
+            });
+            if (!$called) {
+                throw $run->violation ??= new UpdateValidationInterceptorViolation($interceptor::class,
+                    'Update validation interceptor '.$interceptor::class.' returned without calling $next.');
+            }
+
+            return $outcome;
+        });
+        try {
+            $handler($context);
+        } catch (Throwable $failure) {
+            throw $run->violation ?? $failure;
+        }
+        // A violation stays fatal even when an outer hook caught it and returned.
+        if ($run->violation !== null) {
+            throw $run->violation;
+        }
+        if ($run->outcome === null) {
+            throw new UpdateValidationInterceptorViolation('', 'An update validation interceptor returned without calling $next.');
+        }
+
+        return $run->outcome;
     }
 
     /**

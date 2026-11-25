@@ -819,9 +819,10 @@ Each validation sees only the history committed before its own task. Two
 validations running at the same time therefore can't see each other's
 updates, and both can pass a check that only one of them should. The
 validator runs in its own Fiber, so a library that suspends Fibers can't be
-used inside it. Update validation tasks don't pass through worker
-interceptors, and a validator worker doesn't use carried or prefetched
-workflow polls, so validation tasks keep their turn.
+used inside it. Worker interceptors wrap each validation task through
+`executeUpdateValidation()`, which observes but can't change the decision
+(see [Worker interceptors](#worker-interceptors)). A validator worker doesn't
+use carried or prefetched workflow polls, so validation tasks keep their turn.
 
 `updateWorkflow()` throws `UpdateFailed` for a rejected update.
 `rejectedByValidator()` is true for a validator rejection, and
@@ -1148,6 +1149,18 @@ Workflow-task interceptors cannot break determinism:
 - An exception thrown by an interceptor fails the workflow task. Nothing is
   recorded and the Server retries the task. Skipping `$next`, or calling it
   more than once, fails the task with `WorkflowTaskInterceptorViolation`.
+
+Update-validation interceptors (`executeUpdateValidation()`) wrap the run of
+an update's validator before the Server accepts the update. They see the
+task in `UpdateValidationInterceptorContext` and the decision as a read-only
+`UpdateValidationOutcome` (`approved`, `reason`, `message`, `failureType`,
+`validationErrors`). They cannot change the decision, the update's arguments
+or the history the validator reads: the validator always runs read-only in
+its own Fiber with the Worker's copy of the task, and the Worker answers with
+the validator's own decision. An exception from the interceptor, or skipping
+or repeating `$next` (`UpdateValidationInterceptorViolation`), answers the
+task with `update_validation_worker_failed`, so the update is not accepted and
+the caller can retry.
 
 Activity and query interceptors may change arguments with
 `$context->withArguments(...)` and may change the returned value, because
