@@ -143,7 +143,7 @@ final class WorkerUpdateValidatorTest extends TestCase
         [$worker, $completions] = $this->validatingWorker(
             [$this->validationTask('v-6', 'approve', [5])],
             static fn (QueryContext $context, int $amount): int => $amount,
-            static fn (QueryContext $context, int $amount): null => null,
+            static fn (QueryContext $context, int $amount): mixed => null,
             fence: new ServerException('stale', 409, 'stale_update_validation_completion'),
         );
 
@@ -157,7 +157,7 @@ final class WorkerUpdateValidatorTest extends TestCase
         [$worker] = $this->validatingWorker(
             [],
             static fn (QueryContext $context, int $amount): int => $amount,
-            static fn (QueryContext $context, int $amount): null => null,
+            static fn (QueryContext $context, int $amount): mixed => null,
         );
 
         $worker->run(0);
@@ -173,7 +173,7 @@ final class WorkerUpdateValidatorTest extends TestCase
         [$worker] = $this->validatingWorker(
             [],
             static fn (QueryContext $context, int $amount): int => $amount,
-            static fn (QueryContext $context, int $amount): null => null,
+            static fn (QueryContext $context, int $amount): mixed => null,
             capable: false,
         );
 
@@ -230,7 +230,7 @@ final class WorkerUpdateValidatorTest extends TestCase
 
         $this->expectException(\InvalidArgumentException::class);
         $worker->registerWorkflow('orders', static fn (WorkflowContext $context): string => 'done')
-            ->registerUpdateValidator('orders', 'approve', static fn (QueryContext $context): null => null);
+            ->registerUpdateValidator('orders', 'approve', static fn (QueryContext $context): mixed => null);
     }
 
     public function testValidatorWorkersNeverCarryWorkflowOnlyPolls(): void
@@ -272,7 +272,7 @@ final class WorkerUpdateValidatorTest extends TestCase
         $worker = new Worker(new Client('https://server.example', transport: $transport), 'queue', workerId: 'worker-1');
         $worker->registerWorkflow('orders', static fn (WorkflowContext $context): string => 'done')
             ->registerUpdate('orders', 'approve', static fn (QueryContext $context, int $amount): int => $amount)
-            ->registerUpdateValidator('orders', 'approve', static fn (QueryContext $context, int $amount): null => null);
+            ->registerUpdateValidator('orders', 'approve', static fn (QueryContext $context, int $amount): mixed => null);
 
         $worker->run(0);
 
