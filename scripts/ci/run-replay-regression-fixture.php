@@ -641,6 +641,21 @@ final class ReplayRegressionConsumer
             return;
         }
 
+        if ($workflowType === 'golden.update-validation') {
+            // durable-workflow/.github#234: only the declared validator answers the validation task.
+            require_once __DIR__.'/../../tests/Support/FakeTransport.php';
+            require_once __DIR__.'/../../tests/Support/UpdateValidationScenario.php';
+            $observed = \DurableWorkflow\Tests\Support\UpdateValidationScenario::run($input, $history);
+            if ($observed['handler_calls'] !== 0) {
+                throw new RuntimeException("{$identity} ran the update handler during validation.");
+            }
+            $commands = $observed['commands'];
+            self::assertMatches($fixture['expected'], ['command_sequence' => $commands] + ($commands[0] ?? []),
+                $identity.self::EXPECTED_CONTEXT);
+
+            return;
+        }
+
         if ($workflowType === 'golden.grouped-condition') {
             require_once __DIR__.'/../../tests/Support/FakeTransport.php';
             require_once __DIR__.'/../../tests/Support/GroupedConditionRefusalScenario.php';

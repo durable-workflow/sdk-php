@@ -760,6 +760,75 @@ invoked. The workflow reads their committed values with
 `$context->signals('set-language')` during replay. Query and update methods are
 executed with immutable `QueryContext` state.
 
+### Validate updates before they are accepted
+
+Declare an update validator to refuse a bad request before the update is
+accepted. Without one, an update that breaks a business rule is accepted first
+and then fails, and the caller can't tell the bad request from a failed
+operation.
+
+```php
+use DurableWorkflow\Attribute\Update;
+use DurableWorkflow\Attribute\UpdateValidator;
+use DurableWorkflow\Worker\QueryContext;
+
+final class OrderWorkflow
+{
+    #[Update('approve')]
+    public function approve(QueryContext $context, int $amount): int
+    {
+        return $amount;
+    }
+
+    #[UpdateValidator('approve')]
+    public function validateApprove(QueryContext $context, int $amount): void
+    {
+        if ($amount <= 0) {
+            throw new \DomainException('The amount must be positive.');
+        }
+    }
+}
+```
+
+`#[UpdateValidator]` names an `#[Update]` declared on the same class. The
+validator takes a `QueryContext` followed by the update's arguments. Use
+`registerUpdateValidator($workflowType, $updateName, $callable)` with the
+low-level API, after `registerUpdate()` for the same name.
+
+The worker registers the update in its `update_validators` contract and
+advertises `update_validation_tasks`. Registration is refused with
+`update_validation_tasks_unavailable` when the Server does not advertise
+synchronous update validation. The worker then polls workflow and update
+validation tasks together. For each validation task, it runs only the
+validator against the run's committed history:
+
+- Returning normally approves the update, and the Server accepts it.
+- Throwing, or returning `false`, rejects it with `update_validator_rejected`,
+  the exception message and class, and any field errors that an `errors()`
+  method on the exception returns. The update is never accepted, its handler
+  never runs and the workflow isn't woken. The Server records the rejection
+  only as an `UpdateRejected` audit event, as it does for other refusals.
+- A validator that tries to schedule durable work is refused with
+  `UpdateValidatorCommandRefused`, which rejects the update. Validators read
+  `QueryContext` state and never emit commands.
+
+Validators aren't recorded in history and never run during replay, so they
+don't affect determinism. The same committed history gives the same decision.
+
+Each validation sees only the history committed before its own task. Two
+validations running at the same time therefore can't see each other's
+updates, and both can pass a check that only one of them should. The
+validator runs in its own Fiber, so a library that suspends Fibers can't be
+used inside it. Update validation tasks don't pass through worker
+interceptors, and a validator worker doesn't use carried or prefetched
+workflow polls, so validation tasks keep their turn.
+
+`updateWorkflow()` throws `UpdateFailed` for a rejected update.
+`rejectedByValidator()` is true for a validator rejection, and
+`validationErrors()` returns its field errors. `validationFailed()` is true
+when the Server couldn't get a decision, for example because no capable worker
+answered in time; nothing was accepted, so retry with the same request ID.
+
 ### Locate a replay mismatch
 
 When replay finds a mismatch at a suspended workflow call,
