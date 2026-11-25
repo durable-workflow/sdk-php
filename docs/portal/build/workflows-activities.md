@@ -679,6 +679,14 @@ The context provides these replay-aware commands:
 
 Do not use PHP's process sleep, random-number functions, current wall-clock time, or mutable global state directly to make workflow decisions. `sideEffect()` is for small values whose result belongs in history, not for network or database work.
 
+### Read replay-safe workflow time
+
+`$context->replayNow()` returns a UTC `DateTimeImmutable` that replays identically. At workflow entry it is the run's start, from the workflow task's `replay_clock` (Server 3.6.0 and later). After an activity, timer, child workflow, condition wait or validated all-group of those, it is that step's recorded time. Repeated reads between durable steps return the same value, so a deadline loop around `sleep()` terminates and the difference between two reads after two durable steps is their recorded elapsed time.
+
+Where no recorded time is proved, it throws `ReplayClockUnavailable`, and an unhandled throw fails the workflow. That covers entry without a `replay_clock`, the steps after `sideEffect()`, version markers, local activities and memo upserts (unavailable until the platform defines a persisted time for them), other group modes, query, update and validator handlers, and cancellation. Order emitted events by stream offset, outbox sequence or a workflow-local counter, not by this timestamp.
+
+Earlier releases reported entry as unavailable. Version or drain running workflows whose code branches on that before upgrading workers.
+
 ### Read the schedule fire that started a run
 
 A run started by a schedule can read which fire started it. Use the occurrence
