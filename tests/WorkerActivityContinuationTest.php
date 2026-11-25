@@ -158,6 +158,18 @@ final class WorkerActivityContinuationTest extends TestCase
                 return 'branch-the-server-would-not-see';
             }
         }];
+        // Speculation has no replay_clock carrier, but the real workflow task
+        // does (.github#215), so an entry read must abandon it too.
+        yield 'caught entry read' => [static function (WorkflowContext $context): string {
+            try {
+                $entry = $context->replayNow()->format(DATE_ATOM);
+            } catch (\Throwable) {
+                $entry = 'branch-the-server-would-not-see';
+            }
+            $context->activity('test.activity');
+
+            return $entry;
+        }];
     }
 
     public function testDeclinedContinuationFinishesTheCarriedLeaseTheOrdinaryWay(): void

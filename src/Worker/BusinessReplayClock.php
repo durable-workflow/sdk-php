@@ -61,7 +61,7 @@ final class BusinessReplayClock
      * redrive entry already proved from history stays authoritative, so a
      * disagreeing carrier is ignored rather than trusted. An unproved redrive
      * whose start still records a readable replayed_started_at must agree
-     * with the carrier too.
+     * with the carrier too, and a start that names another run never adopts it.
      */
     private function adoptEntry(?WorkerReplayClock $entry, int $start): void
     {
@@ -69,8 +69,13 @@ final class BusinessReplayClock
         if ($entry === null || $entry->source !== $source || $this->time !== null) {
             return;
         }
+        $payload = $this->history[$start]['payload'] ?? null;
+        if (is_array($payload) && is_string($payload['workflow_run_id'] ?? null) && $payload['workflow_run_id'] !== $this->runId) {
+            // A start that names another run is not this run's entry. Server omits it too;
+            // like Server, a missing or non-string run is not a conflict.
+            return;
+        }
         if ($this->redriveClaimed) {
-            $payload = $this->history[$start]['payload'] ?? null;
             $recorded = is_array($payload) ? ReplayClockHistory::parseTime($payload['replayed_started_at'] ?? null) : null;
             if ($recorded !== null && $recorded->format('Y-m-d\TH:i:s.u') !== $entry->startedAt->format('Y-m-d\TH:i:s.u')) {
                 return;

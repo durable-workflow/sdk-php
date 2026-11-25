@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests;
 
 use DateTimeImmutable;
+use DurableWorkflow\Client;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\ReplayClockUnavailable;
+use DurableWorkflow\Tests\Support\FakeTransport;
+use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkerReplayClock;
@@ -217,13 +220,89 @@ final class EntryBusinessReplayClockTest extends TestCase
             $task + ['replay_clock' => $carrier + ['source' => 'redrive_replayed_started_at']]));
     }
 
-    public function testQueryAndUpdateHandlerReadsStayUnavailableWithACarrier(): void
+    public function testAnUpdateTaskWithACarrierRunsOnlyItsHandler(): void
     {
-        // Query and update handlers read a history snapshot, not a rebuilt workflow body.
-        $context = new QueryContext('workflow', 'run', self::ordinaryStart(), self::task());
+        // Update tasks run the handler against a history snapshot. They never
+        // re-run the workflow body, so its entry read cannot diverge there.
+        $completedCommand = null;
+        $codecClient = new Client('https://server.example', transport: new FakeTransport());
+        $arguments = $codecClient->payloadCodec()->envelope([41]);
+        $transport = new FakeTransport(handler: static function (
+            string $method,
+            string $uri,
+            array $headers,
+            ?array $body,
+        ) use (&$completedCommand, $arguments): ?array {
+            if (str_ends_with($uri, '/api/worker/register')) {
+                return ['registered' => true];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/poll')) {
+                return ['poll_status' => 'leased', 'task' => [
+                    'task_id' => 'update-task-1', 'workflow_task_attempt' => 1, 'lease_owner' => 'worker-1',
+                    'workflow_id' => 'workflow', 'run_id' => 'run', 'workflow_type' => 'clocked',
+                    'payload_codec' => 'avro', 'workflow_update_id' => 'update-1', 'replay_clock' => self::carrier(),
+                    'history_events' => [...self::ordinaryStart(), [
+                        'event_type' => 'UpdateAccepted',
+                        'payload' => ['update_id' => 'update-1', 'update_name' => 'increment', 'arguments' => $arguments],
+                    ]],
+                ]];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/update-task-1/heartbeat')) {
+                return ['task_id' => 'update-task-1', 'workflow_task_attempt' => 1, 'lease_owner' => 'worker-1',
+                    'renewed' => true, 'reason' => null];
+            }
+            if (str_ends_with($uri, '/api/worker/workflow-tasks/update-task-1/complete')) {
+                $completedCommand = $body['commands'][0] ?? null;
 
-        $this->expectException(ReplayClockUnavailable::class);
-        $context->replayNow();
+                return ['completed' => true];
+            }
+            if (str_ends_with($uri, '/api/worker/activity-tasks/poll')) {
+                return ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped'];
+            }
+            self::fail("Unexpected worker request: {$method} {$uri}");
+        });
+        $client = new Client('https://server.example', transport: $transport);
+        $bodyRuns = 0;
+        $handlerClock = null;
+        (new Worker($client, 'queue', workerId: 'worker-1'))
+            ->registerWorkflow('clocked', static function (WorkflowContext $context) use (&$bodyRuns): string {
+                $bodyRuns++;
+
+                return $context->replayNow()->format(self::FORMAT);
+            })
+            ->registerUpdate('clocked', 'increment', static function (QueryContext $context, int $value) use (&$handlerClock): int {
+                try {
+                    $handlerClock = $context->replayNow()->format(self::FORMAT);
+                } catch (ReplayClockUnavailable) {
+                    $handlerClock = 'unavailable';
+                }
+
+                return $value + 1;
+            })
+            ->run(0);
+
+        // The proof: the carrier-bearing update task never ran the workflow body.
+        self::assertSame(0, $bodyRuns);
+        // Documentation only: QueryContext::replayNow() always throws, so handler
+        // reads are unavailable with or without a carrier. Query tasks build the
+        // same QueryContext over history (Worker::executeQueryTask), never the body.
+        self::assertSame('unavailable', $handlerClock);
+        self::assertIsArray($completedCommand);
+        self::assertSame('complete_update', $completedCommand['type'] ?? null);
+        self::assertSame('update-1', $completedCommand['update_id'] ?? null);
+        self::assertSame(42, $client->payloadCodec()->decodeEnvelope($completedCommand['result'] ?? []));
+    }
+
+    public function testAnOrdinaryStartNamingAnotherRunIgnoresTheCarrier(): void
+    {
+        $history = self::ordinaryStart();
+        $history[0]['payload']['workflow_run_id'] = 'another-run';
+        $entryRead = static fn (WorkflowContext $context): ?string => self::read($context);
+        self::assertNull(self::replayResult($entryRead, $history, self::task()));
+        unset($history[0]['payload']['workflow_run_id']);
+        self::assertSame(self::ENTRY, self::replayResult($entryRead, $history, self::task()));
+        $history[0]['payload']['workflow_run_id'] = null;
+        self::assertSame(self::ENTRY, self::replayResult($entryRead, $history, self::task()));
     }
 
     public function testCancellationStillHidesTheEntryInstant(): void

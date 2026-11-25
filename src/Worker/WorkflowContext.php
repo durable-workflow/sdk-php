@@ -24,12 +24,16 @@ final class WorkflowContext
 {
     /**
      * The recorded time at this invocation's consumed replay boundary. Step
-     * times come from history. Before the first durable boundary the value is
-     * the run's entry instant from the workflow task's `replay_clock`, when the
-     * Server supplies one; otherwise it is unavailable. Repeated reads between
-     * durable steps return the same value. An unhandled ReplayClockUnavailable
-     * fails the workflow. Order emitted events by stream offset, outbox
-     * sequence or a workflow-local counter, not by this timestamp.
+     * times come from history. Before the first resume the value is the run's
+     * entry instant: a redrive start that history proves, otherwise the
+     * workflow task's `replay_clock` when the Server supplies a valid one. With
+     * neither, entry is unavailable. Any resume replaces the entry value,
+     * including sideEffect() and version markers, which leave the clock
+     * unavailable until the next supported boundary. While a value is
+     * available, repeated reads before the next resume return the same value.
+     * An unhandled ReplayClockUnavailable fails the workflow. Order emitted
+     * events by stream offset, outbox sequence or a workflow-local counter, not
+     * by this timestamp.
      */
     public function replayNow(): DateTimeImmutable
     {
