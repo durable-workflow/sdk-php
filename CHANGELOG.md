@@ -31,7 +31,9 @@ project follows [Semantic Versioning](https://semver.org/).
   replays a committed history prefix and cannot change the submitted commands,
   swap the task or hide a workflow-code failure. Class names resolve from the
   worker's PSR-11 container, and Laravel and Symfony service mode read them
-  from `worker.interceptors`.
+  from `worker.interceptors`. With interceptors configured,
+  `enableActivityContinuation` keeps the ordinary activity completion so every
+  workflow task is wrapped.
   ([Durable Workflow #226](https://github.com/durable-workflow/.github/issues/226))
 
 ## [3.31.0] - 2026-11-25

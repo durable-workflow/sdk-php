@@ -1024,6 +1024,9 @@ Workflow-task interceptors cannot break determinism:
   are never resubmitted. A retried attempt (`workflowTaskAttempt > 1`) can
   repeat an outcome whose task failed, so make external audit writes
   idempotent.
+- Update tasks (`updateId` set) run the update handler against committed
+  state without re-running the workflow body; for them `replaying` only
+  reports that earlier commands exist.
 - The worker submits exactly the commands the workflow code produced. The
   outcome is a copy; returning a different outcome, or passing a different
   context to `$next`, changes nothing.
@@ -1038,9 +1041,11 @@ Activity and query interceptors may change arguments with
 activity results are recorded once and queries record nothing. Activity
 exceptions pass through every interceptor unless one handles them. Activity
 interceptors wrap remote and local activities (`local` tells them apart). With
-cooperative cancellation, remote activity callbacks and their interceptors run
-in the activity's child process, so memory changes there do not reach the
-worker process. When tracing is configured, the built-in worker spans stay
+cooperative cancellation, remote, cooperative local and prepared local activity
+callbacks and their interceptors run in the activity's child process, so memory
+changes there do not reach the worker process. When interceptors are
+configured, `enableActivityContinuation` keeps the ordinary activity completion,
+so every workflow task still runs through `executeWorkflowTask`. When tracing is configured, the built-in worker spans stay
 outermost, so interceptors run inside the active task span.
 
 In Laravel and Symfony service mode, list interceptor classes under
