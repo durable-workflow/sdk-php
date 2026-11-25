@@ -1241,6 +1241,12 @@ jobs:
       - run: bash "$DOCS_TOOLING_DIRECTORY/scripts/build-docs.sh"
       - run: node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-portal.mjs" build/site
       - run: php "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-analytics.php" build/site
+      # Older published sources predate the vendored browser assets (#483).
+      - name: Require same-origin scripts and styles and the vendored asset manifest
+        if: matrix.source == 'current'
+        run: |
+          node --test "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-third-party.test.mjs"
+          node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-third-party.mjs" build/site
       - name: Check rendered portal links before merge
         uses: docker://lycheeverse/lychee@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d  # 0.24.2
         with:

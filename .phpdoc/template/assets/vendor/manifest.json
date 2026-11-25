@@ -1,0 +1,114 @@
+{
+  "schema": "durable-workflow.sdk-php.vendored-browser-assets/v1",
+  "description": "Third-party browser files served same-origin from /assets/vendor/ on php.durable-workflow.com (sdk-php #483). Each file is copied unchanged from the npm registry tarball named here, whose integrity matches the registry's dist.integrity.",
+  "packages": [
+    {
+      "name": "prismjs",
+      "version": "1.23.0",
+      "license": "MIT",
+      "tarball": "https://registry.npmjs.org/prismjs/-/prismjs-1.23.0.tgz",
+      "tarball_integrity": "sha512-c29LVsqOaLbBHuIbsTxaKENh1N2EQBOHaWv7gkHN4dgRbxSREqDnDbtFJYdpPauS4YCplMSNCABQ6Eeor69bAA==",
+      "files": [
+        {
+          "path": "prismjs-1.23.0/themes/prism-okaidia.css",
+          "package_path": "themes/prism-okaidia.css",
+          "sha256": "9f00e2a5d2e7f773b50991a8443a2bd22e022e60d06fe99d83fc9a60c502b8b3",
+          "bytes": 1812,
+          "replaces": "https://cdn.jsdelivr.net/npm/prismjs@1.23.0/themes/prism-okaidia.css"
+        },
+        {
+          "path": "prismjs-1.23.0/plugins/line-numbers/prism-line-numbers.css",
+          "package_path": "plugins/line-numbers/prism-line-numbers.css",
+          "sha256": "c9ef019077f69475d4b6a675f14d0a237c6327562fecff25bdd281b7dc665493",
+          "bytes": 782,
+          "replaces": "https://cdn.jsdelivr.net/npm/prismjs@1.23.0/plugins/line-numbers/prism-line-numbers.css"
+        },
+        {
+          "path": "prismjs-1.23.0/plugins/line-highlight/prism-line-highlight.css",
+          "package_path": "plugins/line-highlight/prism-line-highlight.css",
+          "sha256": "1fcd1b5501985343b5b336038e0639d3312cae8909a02c763a18847739542f21",
+          "bytes": 1551,
+          "replaces": "https://cdn.jsdelivr.net/npm/prismjs@1.23.0/plugins/line-highlight/prism-line-highlight.css"
+        },
+        {
+          "path": "prismjs-1.23.0/prism.js",
+          "package_path": "prism.js",
+          "sha256": "7d939decdfe8a1fa0a70ef76473c6f0b4c0c9be12fb0ac914f89e672641b8335",
+          "bytes": 50773,
+          "replaces": "https://cdn.jsdelivr.net/npm/prismjs@1.23.0/prism.min.js"
+        },
+        {
+          "path": "prismjs-1.23.0/plugins/autoloader/prism-autoloader.min.js",
+          "package_path": "plugins/autoloader/prism-autoloader.min.js",
+          "sha256": "df7430d25377aa8eed2d92f873bbc32c26a9454b3e80db5045a5483879383abb",
+          "bytes": 5064,
+          "replaces": "https://cdn.jsdelivr.net/npm/prismjs@1.23.0/plugins/autoloader/prism-autoloader.min.js"
+        },
+        {
+          "path": "prismjs-1.23.0/plugins/line-numbers/prism-line-numbers.min.js",
+          "package_path": "plugins/line-numbers/prism-line-numbers.min.js",
+          "sha256": "8d648907a22eb30d672c1f88ab0934769f53da34a7e5b4732d72421355663885",
+          "bytes": 2586,
+          "replaces": "https://cdn.jsdelivr.net/npm/prismjs@1.23.0/plugins/line-numbers/prism-line-numbers.min.js"
+        },
+        {
+          "path": "prismjs-1.23.0/plugins/line-highlight/prism-line-highlight.min.js",
+          "package_path": "plugins/line-highlight/prism-line-highlight.min.js",
+          "sha256": "eb1567db967443ff139307cb768604116baf2c89123cb8857c7966d71843fc8b",
+          "bytes": 3466,
+          "replaces": "https://cdn.jsdelivr.net/npm/prismjs@1.23.0/plugins/line-highlight/prism-line-highlight.min.js"
+        },
+        {
+          "path": "prismjs-1.23.0/LICENSE",
+          "package_path": "LICENSE",
+          "sha256": "2b947f0901a7ffcf08a89957da9783c0e9c6e72cb6ce8e959f501ab5409e4d2b",
+          "bytes": 1066
+        }
+      ]
+    },
+    {
+      "name": "fuse.js",
+      "version": "3.4.6",
+      "license": "Apache-2.0",
+      "tarball": "https://registry.npmjs.org/fuse.js/-/fuse.js-3.4.6.tgz",
+      "tarball_integrity": "sha512-H6aJY4UpLFwxj1+5nAvufom5b2BT2v45P1MkPvdGIK8fWjQx/7o6tTT1+ALV0yawQvbmvCF0ufl2et8eJ7v7Cg==",
+      "files": [
+        {
+          "path": "fuse.js-3.4.6/dist/fuse.js",
+          "package_path": "dist/fuse.js",
+          "sha256": "604214dd1d401d8b393e0ab85366efebd942698e49750b1a36990012820ee5ce",
+          "bytes": 11489,
+          "replaces": "https://cdn.jsdelivr.net/npm/fuse.js@3.4.6"
+        },
+        {
+          "path": "fuse.js-3.4.6/LICENSE",
+          "package_path": "LICENSE",
+          "sha256": "cc807e3caa26cdee316bab2ff6fdb508a2f619b74959fe59e513ef6e61635ebe",
+          "bytes": 11343
+        }
+      ]
+    },
+    {
+      "name": "css-vars-ponyfill",
+      "version": "2.4.9",
+      "license": "MIT",
+      "tarball": "https://registry.npmjs.org/css-vars-ponyfill/-/css-vars-ponyfill-2.4.9.tgz",
+      "tarball_integrity": "sha512-aZyLue5bdiGVNCiCclNjo123D8I7kyoYNUaAvz+H1JalX1ye4Ilz7jNRRH5YbM+dYD6ucejiydGwk7lol/GCXQ==",
+      "files": [
+        {
+          "path": "css-vars-ponyfill-2.4.9/dist/css-vars-ponyfill.min.js",
+          "package_path": "dist/css-vars-ponyfill.min.js",
+          "sha256": "3b0720cf5312d04a43124a81e657a9aaa77cd27688d0146daaedbe6d423107ce",
+          "bytes": 23387,
+          "replaces": "https://cdn.jsdelivr.net/npm/css-vars-ponyfill@2"
+        },
+        {
+          "path": "css-vars-ponyfill-2.4.9/LICENSE",
+          "package_path": "LICENSE",
+          "sha256": "dbf52617a6da37e56cd592924261137612b7ad5fa3f0e268e2392fc82e7f2ede",
+          "bytes": 1074
+        }
+      ]
+    }
+  ]
+}
