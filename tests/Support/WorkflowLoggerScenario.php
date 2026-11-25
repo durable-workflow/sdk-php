@@ -22,9 +22,10 @@ final class WorkflowLoggerScenario
      * @param list<array<string, mixed>> $history the completed run's history, in task order
      * @param list<int> $taskBoundaries history lengths at which each workflow task starts
      * @param list<mixed> $input
+     * @param 'activities'|'selection-cancel'|string $variant
      * @return array{logged: list<string>, cold_replay_logged: list<string>, commands: list<list<string>>}
      */
-    public static function run(array $history, array $taskBoundaries, array $input): array
+    public static function run(array $history, array $taskBoundaries, array $input, string $variant = 'activities'): array
     {
         $codec = new AvroPayloadCodec();
         $logger = new class() extends AbstractLogger {
@@ -36,7 +37,7 @@ final class WorkflowLoggerScenario
                 $this->messages[] = (string) $message;
             }
         };
-        $workflow = static function (WorkflowContext $context, string $name): string {
+        $workflow = $variant === 'selection-cancel' ? self::selectionCancelWorkflow() : static function (WorkflowContext $context, string $name): string {
             $context->logger()->info('logger scenario started');
             $reserved = $context->activity('golden.reserve', [$name]);
             $context->logger()->info('logger scenario reserved', ['result' => $reserved]);
@@ -71,5 +72,30 @@ final class WorkflowLoggerScenario
         foreach ($replayer->takeWorkflowLogs() as $record) {
             $logger->log($record['level'], $record['message'], $record['context']);
         }
+    }
+
+    /**
+     * durable-workflow/.github#227: a select cancels one loser, then parks
+     * awaiting the other. The cancellation is replayed from its marker without
+     * a step, so it is not durable progress for the parked lines.
+     */
+    private static function selectionCancelWorkflow(): \Closure
+    {
+        return static function (WorkflowContext $context): mixed {
+            $selected = $context->select([
+                'a' => static fn () => $context->activity('lookup-a'),
+                'b' => static fn () => $context->activity('lookup-b'),
+                'deadline' => static function () use ($context): void {
+                    $context->sleep(0);
+                },
+            ]);
+            $context->logger()->info('logger scenario selection resolved');
+            $selected->handles['a']->cancel();
+            $context->logger()->info('logger scenario loser cancelled');
+            $result = $selected->handles['b']->await();
+            $context->logger()->info('logger scenario other loser done', ['result' => $result]);
+
+            return $result;
+        };
     }
 }

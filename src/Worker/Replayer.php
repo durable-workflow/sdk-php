@@ -148,7 +148,12 @@ final class Replayer
         ));
     }
 
-    /** New commands a replay appended, leaving out applied-signal markers. */
+    /**
+     * New commands a replay appended that its next replay consumes as authored
+     * steps. Applied-signal markers are not authored steps, and a selection
+     * cancellation is replayed from its SelectionOperationCancelled marker
+     * without consuming a step, so neither counts as durable progress.
+     */
     private static function authoredCommandCount(mixed $commands): int
     {
         if (!is_array($commands)) {
@@ -158,7 +163,8 @@ final class Replayer
         return count(array_filter(
             $commands,
             static fn (mixed $command): bool => !is_array($command)
-                || ($command['change_id'] ?? null) !== AppliedSignals::CHANGE_ID,
+                || (($command['change_id'] ?? null) !== AppliedSignals::CHANGE_ID
+                    && ($command['type'] ?? null) !== 'cancel_selection_operation'),
         ));
     }
 
