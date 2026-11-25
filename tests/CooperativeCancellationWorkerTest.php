@@ -164,6 +164,120 @@ final class CooperativeCancellationWorkerTest extends TestCase
         }
     }
 
+    public function testCooperativeWorkerAdvertisesTimeoutCleanupVersionOne(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $worker = new Worker(new Client('https://server.example', transport: $transport), 'queue', workerId: 'worker-1',
+            enableCooperativeCancellation: true, clock: static fn (): float => 1790812800.0,
+            diagnosticListener: static function (string $event) use (&$worker): void {
+                if ($event === 'worker.registered') {
+                    $worker->requestShutdown();
+                }
+            });
+        $worker->registerWorkflow('cancel', static fn (WorkflowContext $context): string => 'done');
+        $worker->run(0);
+        $registration = array_values(array_filter($transport->requests,
+            static fn (array $request): bool => str_ends_with($request['uri'], '/worker/register')))[0]['body'];
+        self::assertContains('timeout_cleanup', $registration['capabilities']);
+        self::assertSame(['supported' => true, 'minimum_protocol_version' => '1.20', 'version' => 1],
+            $registration['capability_manifest']['timeout_cleanup']);
+    }
+
+    /** @return array<string, array{\Closure(WorkflowContext): mixed, ?string, string, ?array<string, string>}> */
+    public static function timeoutCleanupOutcomeProvider(): array
+    {
+        $marker = ['interruption' => 'timeout_cleanup'];
+        $timeout = \DurableWorkflow\Exception\WorkflowTimeoutCleanupRequested::class;
+
+        return [
+            'uncaught interruption' => [static fn (WorkflowContext $context): mixed => $context->sleep(10),
+                'timeout', $timeout, $marker],
+            'rethrown after compensation' => [static function (WorkflowContext $context): mixed {
+                try {
+                    return $context->sleep(10);
+                } catch (\DurableWorkflow\Exception\WorkflowCancelled $interrupted) {
+                    throw $interrupted;
+                }
+            }, 'timeout', $timeout, $marker],
+            'compensation failure' => [static function (WorkflowContext $context): mixed {
+                try {
+                    return $context->sleep(10);
+                } catch (\DurableWorkflow\Exception\WorkflowCancelled) {
+                    throw new CooperativeBusinessFailure('Compensation failed.');
+                }
+            }, 'timeout', CooperativeBusinessFailure::class, null],
+            'wrapped interruption' => [static function (WorkflowContext $context): mixed {
+                try {
+                    return $context->sleep(10);
+                } catch (\DurableWorkflow\Exception\WorkflowCancelled $interrupted) {
+                    throw new CooperativeBusinessFailure('Wrapped.', previous: $interrupted);
+                }
+            }, 'timeout', CooperativeBusinessFailure::class, null],
+            'ordinary cancellation' => [static fn (WorkflowContext $context): mixed => $context->sleep(10),
+                null, \DurableWorkflow\Exception\WorkflowCancelled::class, null],
+            'explicit cancellation cause' => [static fn (WorkflowContext $context): mixed => $context->sleep(10),
+                'cancellation', \DurableWorkflow\Exception\WorkflowCancelled::class, null],
+        ];
+    }
+
+    #[DataProvider('timeoutCleanupOutcomeProvider')]
+    public function testOnlyAnUncaughtTimeoutInterruptionCarriesThePortableMarker(
+        \Closure $workflow,
+        ?string $cause,
+        string $exceptionType,
+        ?array $failure,
+    ): void {
+        $transport = new CooperativeWorkerTransport();
+        $transport->useCancellationContext($cause);
+        $worker = $this->worker($transport);
+        $worker->registerWorkflow('cancel', $workflow);
+        self::assertTrue($worker->tick(0));
+        self::assertSame([], $transport->failures);
+        self::assertCount(1, $transport->deliveries);
+        $commands = $transport->completions[0]['commands'];
+        self::assertSame(['fail_workflow'], array_column($commands, 'type'));
+        self::assertSame($exceptionType, $commands[0]['exception_type']);
+        self::assertSame($failure, $commands[0]['failure'] ?? null);
+    }
+
+    public function testCleanupThatReturnsSendsAnOrdinaryCompletion(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->useCancellationContext('timeout');
+        $worker = $this->worker($transport);
+        $worker->registerWorkflow('cancel', static function (WorkflowContext $context): string {
+            try {
+                $context->sleep(10);
+            } catch (\DurableWorkflow\Exception\WorkflowTimeoutCleanupRequested) {
+                return 'compensated';
+            }
+
+            return 'finished';
+        });
+        self::assertTrue($worker->tick(0));
+        $commands = $transport->completions[0]['commands'];
+        self::assertSame(['complete_workflow'], array_column($commands, 'type'));
+        self::assertArrayNotHasKey('failure', $commands[0]);
+    }
+
+    public function testAWorkerWithoutCooperativeCancellationNeverSendsTheMarker(): void
+    {
+        $transport = new CooperativeWorkerTransport();
+        $transport->requestVisible = false;
+        $transport->history = [$transport->history[0]];
+        $worker = new Worker(new Client('https://server.example', transport: $transport), 'queue', workerId: 'worker-1',
+            clock: static fn (): float => 1790812800.0);
+        $snapshot = CooperativeWorkerTransport::cancellationContext('timeout');
+        $worker->registerWorkflow('cancel', static function (WorkflowContext $context) use ($snapshot): never {
+            throw new \DurableWorkflow\Exception\WorkflowTimeoutCleanupRequested(requestId: 'request-1',
+                context: \DurableWorkflow\Worker\CancellationContext::fromArray($snapshot));
+        });
+        self::assertTrue($worker->tick(0));
+        $commands = $transport->completions[0]['commands'];
+        self::assertSame(['fail_workflow'], array_column($commands, 'type'));
+        self::assertArrayNotHasKey('failure', $commands[0]);
+    }
+
     #[DataProvider('unsupportedChildPolicyProvider')]
     public function testCooperativeChildPoliciesRequireTheWorkerOptIn(string $protocol, array $options): void
     {
@@ -1007,6 +1121,24 @@ final class CooperativeWorkerTransport implements \DurableWorkflow\Transport\Bou
                 'payload' => ['workflow_run_id' => 'run-1', 'workflow_command_id' => 'request-1',
                     'cleanup_deadline_at' => $this->observation['cleanup_deadline_at']]],
         ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function cancellationContext(?string $cause): array
+    {
+        return ['schema' => 'durable-workflow.cancellation-context/v1', 'request_id' => 'request-1',
+            'root_request_id' => 'request-1', 'root_workflow_instance_id' => 'workflow-1', 'root_workflow_run_id' => 'run-1',
+            'parent_request_id' => null, 'reason' => 'Workflow work deadline passed; timeout cleanup requested.',
+            'requester' => ['type' => 'system', 'id' => 'timeout_cleanup'], 'source' => 'system',
+            'requested_at' => '2026-10-01T00:00:00.000000Z', 'cleanup_deadline_at' => '2026-10-01T00:01:00.000000Z',
+            'lineage' => [['request_id' => 'request-1', 'workflow_instance_id' => 'workflow-1', 'workflow_run_id' => 'run-1']],
+            ...($cause === null ? [] : ['cause' => $cause])];
+    }
+
+    /** Record the engine's cancellation context, with an optional cause, on the canonical request. */
+    public function useCancellationContext(?string $cause): void
+    {
+        $this->history[1]['payload']['cancellation'] = self::cancellationContext($cause);
     }
 
     public function makeRequestVisible(): void

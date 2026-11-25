@@ -174,10 +174,29 @@ read, and leaves an ordinary context unchanged.
 `WorkflowTimeoutCleanupRequested`, which extends `WorkflowCancelled`, so
 existing `catch (WorkflowCancelled)` compensation runs on timeout too. Test
 `$cancelled->context?->isTimeout()` (the cross-SDK discriminator is `cause`)
-when cleanup must differ. This is preparatory experimental support. Runtime
-admission and delivery remain pending in [server#1201](https://github.com/durable-workflow/server/issues/1201).
-The SDK does not advertise timeout cleanup support. The portable contract
-requires the run to end timed out after cleanup.
+when cleanup must differ.
+
+A worker started with `enableCooperativeCancellation: true` advertises the
+`timeout_cleanup` capability, version 1
+([server#1201](https://github.com/durable-workflow/server/issues/1201)). The
+Server admits a start with `timeout_cleanup_seconds` only on a task queue where
+such a worker is live, and refuses it otherwise with
+`timeout_cleanup_not_supported`. A worker without cooperative cancellation
+does not advertise it.
+
+The run always ends timed out. How workflow code finishes cleanup sets the
+recorded cleanup outcome:
+
+- Returning, or letting the delivered `WorkflowTimeoutCleanupRequested` escape
+  (uncaught or rethrown), records `completed`. For the escaped interruption the
+  worker adds `failure.interruption: "timeout_cleanup"` to its `fail_workflow`
+  command. The marker is sent only for the exception delivered with the
+  engine's root context, never for an exception the application constructs or
+  wraps.
+- Throwing any other exception records `failed`, with the failure linked.
+- Running past the cleanup deadline records `expired`.
+
+This support is experimental. It is opt-in for each start and for each worker.
 
 ## Child policies
 
