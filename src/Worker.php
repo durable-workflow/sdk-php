@@ -20,6 +20,7 @@ use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Exception\WorkflowTaskCompletionTooLarge;
 use DurableWorkflow\Exception\WorkflowTaskHistoryLimitExceeded;
 use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\ActivityHeartbeatResume;
 use DurableWorkflow\Worker\ActivityLeaseProcess;
 use DurableWorkflow\Worker\ActivityLeaseAuthority;
 use DurableWorkflow\Worker\ActivityLeaseMaintenanceException;
@@ -175,6 +176,8 @@ final class Worker
     private int $workflowTasksInFlight = 0;
     private ?CarriedPoll $carriedActivityPoll = null;
     private int $activityTasksInFlight = 0;
+    /** Heartbeat-resume state captured from the poll response of the activity task about to run. */
+    private ?ActivityHeartbeatResume $polledActivityHeartbeatResume = null;
     private bool $drainingCarriedLease = false;
     private ?CompletionPipeline $completionPipeline = null;
     private bool $pipelineManagedTick = false;
@@ -970,6 +973,7 @@ final class Worker
                         'sticky_execution',
                         'cross_kind_poll_wake',
                         'sticky_history_suffix',
+                        ActivityHeartbeatResume::CAPABILITY,
                         ...($this->client->workerProtocolVersion === '1.20' ? [\DurableWorkflow\Worker\TaskDelivery::CAPABILITY] : []),
                         ...($this->enableCooperativeCancellation ? ['cooperative_cancellation', 'nexus_cooperative_cancellation'] : []),
                         ...($this->enablePreparedLocalActivities ? ['prepared_local_activities'] : []),
@@ -1222,7 +1226,15 @@ final class Worker
             }
             $activityTask = $this->taskFromPoll($activityPoll);
             if ($activityTask !== null) {
-                $this->executePolledTask('activity', $activityTask);
+                // Only the poll response carries server_capabilities; the claim alone cannot
+                // distinguish an older Server from a supported claim without a checkpoint.
+                $this->polledActivityHeartbeatResume = ActivityHeartbeatResume::fromPoll(
+                    $activityPoll, $this->client->namespace, $this->workerId, $this->taskQueue);
+                try {
+                    $this->executePolledTask('activity', $activityTask);
+                } finally {
+                    $this->polledActivityHeartbeatResume = null;
+                }
                 $handled = true;
             }
         } finally {
@@ -3626,8 +3638,12 @@ final class Worker
         $callbackStopped = false;
         $callbackStarted = false;
         $resultComputed = false;
+        $heartbeatResume = $this->polledActivityHeartbeatResume ?? ActivityHeartbeatResume::unavailable();
+        $this->polledActivityHeartbeatResume = null;
         try {
             $this->trackWorkerSessionFromTask($task);
+            // A malformed negotiated checkpoint fails this attempt before its handler runs.
+            $heartbeatResume = $heartbeatResume->forClaim($task);
             $handler = $this->activities[$activityType] ?? null;
             if ($handler === null) {
                 throw new \RuntimeException("No activity handler is registered for {$activityType}.");
@@ -3644,6 +3660,7 @@ final class Worker
                     fn (): array => $this->client->heartbeatActivityTask($taskId, $attemptId, $leaseOwner, $details),
                 ),
                 taskMetadata: $task,
+                heartbeatResume: $heartbeatResume,
             );
             $arguments = $this->decodeArguments($task['arguments'] ?? null);
             $this->activityLeaseProcess?->check();
@@ -3660,10 +3677,10 @@ final class Worker
                     }
                 };
                 $result = (new CooperativeActivityExecutor($this->client->payloadCodec()))->execute(
-                    function (\Closure $heartbeat) use ($handler, $taskId, $attemptId, $leaseOwner, $activityType, $task, $arguments): mixed {
+                    function (\Closure $heartbeat) use ($handler, $taskId, $attemptId, $leaseOwner, $activityType, $task, $arguments, $heartbeatResume): mixed {
                         $callbackContext = new ActivityContext($this->client, $taskId, $attemptId, $leaseOwner,
                             $activityType, (int) ($task['attempt_number'] ?? 1), localHeartbeat: $heartbeat,
-                            taskMetadata: $task);
+                            taskMetadata: $task, heartbeatResume: $heartbeatResume);
 
                         return $this->invokeActivity($handler, $callbackContext, $arguments,
                             ExecutionTelemetry::taskFields($task, $this->client->namespace, $this->taskQueue), authorizedTask: $task);

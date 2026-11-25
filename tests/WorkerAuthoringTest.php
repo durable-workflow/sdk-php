@@ -185,6 +185,7 @@ final class WorkerAuthoringTest extends TestCase
                     'sticky_execution',
                     'cross_kind_poll_wake',
                     'sticky_history_suffix',
+                    'activity_heartbeat_resume',
                     'task_delivery_offers',
                 ],
                 'capability_manifest' => [
