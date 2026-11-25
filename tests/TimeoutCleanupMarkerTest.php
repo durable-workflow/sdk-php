@@ -7,6 +7,7 @@ namespace DurableWorkflow\Tests;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Exception\WorkflowTimeoutCleanupRequested;
 use DurableWorkflow\Worker\CancellationContext;
+use DurableWorkflow\Worker\ScopedCancellationContext;
 use DurableWorkflow\Worker\TimeoutCleanup;
 use PHPUnit\Framework\TestCase;
 
@@ -16,25 +17,41 @@ final class TimeoutCleanupMarkerTest extends TestCase
     public function testTheDeliveredTimeoutInterruptionIsMarked(): void
     {
         $context = CancellationContext::fromArray(self::snapshot('timeout'));
-        self::assertSame(['interruption' => 'timeout_cleanup'],
-            TimeoutCleanup::failureMarker(WorkflowCancelled::forContext('request-1', $context)));
+        $delivered = TimeoutCleanup::delivered(WorkflowCancelled::forContext('request-1', $context));
+        self::assertSame(['interruption' => 'timeout_cleanup'], TimeoutCleanup::failureMarker($delivered));
+        self::assertSame(['interruption' => 'timeout_cleanup'], TimeoutCleanup::failureMarker($delivered, 'run-1'));
     }
 
     public function testOtherFailuresAreNotMarked(): void
     {
         $timeout = CancellationContext::fromArray(self::snapshot('timeout'));
+        $delivered = static fn (array $overrides): WorkflowCancelled => TimeoutCleanup::delivered(
+            WorkflowCancelled::forContext($overrides['request_id'] ?? 'request-1',
+                CancellationContext::fromArray([...self::snapshot('timeout'), ...$overrides])));
         foreach ([
             'constructed without context' => new WorkflowTimeoutCleanupRequested(),
             'constructed with only a request' => new WorkflowTimeoutCleanupRequested(requestId: 'request-1'),
-            'another request' => new WorkflowTimeoutCleanupRequested(requestId: 'request-2', context: $timeout),
-            'ordinary cancellation' => WorkflowCancelled::forContext('request-1',
-                CancellationContext::fromArray(self::snapshot(null))),
-            'explicit cancellation' => WorkflowCancelled::forContext('request-1',
-                CancellationContext::fromArray(self::snapshot('cancellation'))),
-            'wrapped interruption' => new \RuntimeException('wrapped', previous: WorkflowCancelled::forContext('request-1', $timeout)),
+            'constructed with a copied context' => new WorkflowTimeoutCleanupRequested(requestId: 'request-1', context: $timeout),
+            'built by forContext, never delivered' => WorkflowCancelled::forContext('request-1', $timeout),
+            'another request' => TimeoutCleanup::delivered(new WorkflowTimeoutCleanupRequested(requestId: 'request-2', context: $timeout)),
+            'ordinary cancellation' => TimeoutCleanup::delivered(WorkflowCancelled::forContext('request-1',
+                CancellationContext::fromArray(self::snapshot(null)))),
+            'explicit cancellation' => TimeoutCleanup::delivered(WorkflowCancelled::forContext('request-1',
+                CancellationContext::fromArray(self::snapshot('cancellation')))),
+            'wrapped interruption' => new \RuntimeException('wrapped',
+                previous: TimeoutCleanup::delivered(WorkflowCancelled::forContext('request-1', $timeout))),
+            'descendant with a parent request' => $delivered(['request_id' => 'request-2', 'parent_request_id' => 'request-1',
+                'lineage' => [
+                    ['request_id' => 'request-1', 'workflow_instance_id' => 'workflow-1', 'workflow_run_id' => 'run-1'],
+                    ['request_id' => 'request-2', 'workflow_instance_id' => 'child-1', 'workflow_run_id' => 'child-run-1'],
+                ]]),
+            'scoped delivery of the timeout request' => TimeoutCleanup::delivered(WorkflowCancelled::forContext('request-1',
+                ScopedCancellationContext::fromRunContext($timeout))),
         ] as $case => $failure) {
             self::assertNull(TimeoutCleanup::failureMarker($failure), $case);
         }
+        $root = TimeoutCleanup::delivered(WorkflowCancelled::forContext('request-1', $timeout));
+        self::assertNull(TimeoutCleanup::failureMarker($root, 'another-run'), 'another run');
     }
 
     /** @return array<string, mixed> */

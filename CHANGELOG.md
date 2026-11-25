@@ -75,6 +75,17 @@ project follows [Semantic Versioning](https://semver.org/).
   the other branch. Drain such runs before upgrading, or put the new behaviour
   behind normal workflow versioning.
 
+### Changed
+
+- The timeout-cleanup marker `failure.interruption: "timeout_cleanup"` is sent
+  only for the delivered interruption for the run's root request: the exact
+  `WorkflowTimeoutCleanupRequested` the worker raised into workflow code, with
+  `cause: timeout`, no parent request, no scope, and this run's ID. An
+  exception built with `WorkflowCancelled::forContext()` or a copied context
+  is no longer marked and records failed cleanup. This matches the portable
+  contract and the Rust and Python workers.
+  ([Server #1201](https://github.com/durable-workflow/server/issues/1201))
+
 ## [3.31.0] - 2026-11-25
 
 ### Added

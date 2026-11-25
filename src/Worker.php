@@ -2316,6 +2316,7 @@ final class Worker
                                     $replay->terminalFailure,
                                     $replay->failedActivitySequence,
                                     $replay->failedActivityExecutionId,
+                                    is_string($task['run_id'] ?? null) ? $task['run_id'] : null,
                                 );
                             } else {
                                 $this->diagnoseWorkflowWait($task, $commands);
@@ -2327,7 +2328,8 @@ final class Worker
                                 throw $exception;
                             }
                             $this->handlerFailure('workflow', $workflowType, $exception);
-                            $commands = [$this->workflowFailureCommand($exception)];
+                            $commands = [$this->workflowFailureCommand($exception,
+                                runId: is_string($task['run_id'] ?? null) ? $task['run_id'] : null)];
                         }
                     }
 
@@ -5860,6 +5862,7 @@ final class Worker
         Throwable $exception,
         ?int $failedActivitySequence = null,
         ?string $failedActivityExecutionId = null,
+        ?string $runId = null,
     ): array
     {
         if ($exception instanceof FailureReportRefused) {
@@ -5876,7 +5879,7 @@ final class Worker
             $command['failed_activity_execution_id'] = $failedActivityExecutionId;
         }
         // Only a worker that advertised timeout_cleanup may send the marker.
-        $marker = $this->enableCooperativeCancellation ? TimeoutCleanup::failureMarker($exception) : null;
+        $marker = $this->enableCooperativeCancellation ? TimeoutCleanup::failureMarker($exception, $runId) : null;
         if ($marker !== null) {
             $command['failure'] = $marker;
         }
