@@ -31,6 +31,7 @@ use DurableWorkflow\Worker\CancellationHistory;
 use DurableWorkflow\Worker\CancellationDelivery;
 use DurableWorkflow\Worker\CancellationRequest;
 use DurableWorkflow\Worker\CancellationScopeDeliveryClaim;
+use DurableWorkflow\Worker\TimeoutCleanup;
 use DurableWorkflow\Worker\CarriedPoll;
 use DurableWorkflow\Worker\ContinueAsNewTargetBuild;
 use DurableWorkflow\Worker\CompletionPipeline;
@@ -975,7 +976,9 @@ final class Worker
                         'sticky_history_suffix',
                         ActivityHeartbeatResume::CAPABILITY,
                         ...($this->client->workerProtocolVersion === '1.20' ? [\DurableWorkflow\Worker\TaskDelivery::CAPABILITY] : []),
-                        ...($this->enableCooperativeCancellation ? ['cooperative_cancellation', 'nexus_cooperative_cancellation'] : []),
+                        // Timeout cleanup is delivered through cooperative cancellation (server#1201).
+                        ...($this->enableCooperativeCancellation
+                            ? ['cooperative_cancellation', 'nexus_cooperative_cancellation', TimeoutCleanup::CAPABILITY] : []),
                         ...($this->enablePreparedLocalActivities ? ['prepared_local_activities'] : []),
                         ...($this->preparedLocalActivityGroupsSupported ? ['prepared_local_activity_groups'] : []),
                         ...($this->preparedLocalActivityCancellationPolicies !== [] ? ['prepared_local_activity_cancellation_policies'] : []),
@@ -1023,6 +1026,7 @@ final class Worker
                                 'minimum_protocol_version' => Version::COOPERATIVE_CANCELLATION_MINIMUM_WORKER_PROTOCOL,
                                 'implementation' => 'authored_call_canonical_delivery',
                             ],
+                            TimeoutCleanup::CAPABILITY => TimeoutCleanup::manifestEntry(),
                         ] : []),
                     ],
                     workflowDefinitionFingerprints: $this->workflowDefinitionFingerprints(),
@@ -5457,6 +5461,11 @@ final class Worker
         if ($failedActivitySequence !== null && $failedActivityExecutionId !== null) {
             $command['failed_step_sequence'] = $failedActivitySequence;
             $command['failed_activity_execution_id'] = $failedActivityExecutionId;
+        }
+        // Only a worker that advertised timeout_cleanup may send the marker.
+        $marker = $this->enableCooperativeCancellation ? TimeoutCleanup::failureMarker($exception) : null;
+        if ($marker !== null) {
+            $command['failure'] = $marker;
         }
 
         return $command;

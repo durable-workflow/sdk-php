@@ -17,6 +17,14 @@ project follows [Semantic Versioning](https://semver.org/).
   `ActivityHeartbeatResumeUnavailable` instead of reporting an empty
   checkpoint. Heartbeats sent by the running attempt never change the received
   snapshot. ([.github #218](https://github.com/durable-workflow/.github/issues/218))
+- Workers with cooperative cancellation enabled advertise the `timeout_cleanup`
+  capability, version 1. A native Server can then admit starts that reserve
+  time for deadline-triggered timeout cleanup on their queue. When workflow
+  code lets the delivered `WorkflowTimeoutCleanupRequested` escape, the
+  `fail_workflow` command carries `failure.interruption: "timeout_cleanup"`,
+  and the Server records the cleanup as completed. Other failures still record
+  failed cleanup. Workers without cooperative cancellation are unchanged.
+  ([Server #1201](https://github.com/durable-workflow/server/issues/1201))
 
 ## [3.30.0] - 2026-11-24
 
