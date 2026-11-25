@@ -130,6 +130,8 @@ final class Worker
     private array $updateValidators = [];
     /** True once registration confirmed the Server routes update validation tasks to this worker. */
     private bool $updateValidationTasksEnabled = false;
+    /** @var list<array{level: mixed, message: string, context: array<array-key, mixed>}> */
+    private array $speculativeWorkflowLogs = [];
     private bool $shutdownRequested = false;
     /** Set only by requestShutdown() and process signals, so stale-registration recovery never overrides them. */
     private bool $shutdownByRequest = false;
@@ -291,6 +293,7 @@ final class Worker
         $this->handlerDiscovery = new HandlerDiscovery(new HandlerResolver($container));
         $this->interceptors = WorkerInterceptorChain::resolve($interceptors, new HandlerResolver($container));
         $this->logger = $logger ?? new NullLogger();
+        $this->replayer->useWorkflowLogger($this->logger, $client->namespace);
         $this->diagnosticListener = $diagnosticListener === null
             ? null
             : \Closure::fromCallable($diagnosticListener);
@@ -2250,6 +2253,8 @@ final class Worker
     /** @param array<string, mixed> $task */
     private function executeWorkflowTask(array $task): void
     {
+        // Lines a replay left behind (a failed task, a declined speculation) are never written by another task.
+        $this->replayer->takeWorkflowLogs();
         $traceScope = null;
         $previousLocalActivity = $this->workflowExecutedLocalActivity;
         $this->workflowExecutedLocalActivity = false;
@@ -2329,6 +2334,8 @@ final class Worker
                     return $commands;
                 },
             );
+            // The final replay's new-code log lines, written once this task is submitted (#227).
+            $workflowLogs = $this->replayer->takeWorkflowLogs();
             $this->completionPipeline?->join();
             $this->assertPipelineAuthority();
             if ($commands === [] && array_key_exists(ConditionInputOrder::PENDING_INPUT, $task)) {
@@ -2411,6 +2418,7 @@ final class Worker
                 $completion = $complete($commands, [], []);
             }
             $this->notifyDeliveredWorkflowHistory('accepted', $taskId, $attempt, $commands);
+            $this->writeWorkflowLogs($workflowLogs);
             if ($carried !== null) {
                 // Payload hydration belongs to the next task, never this completed parent's catch path.
                 $carried->completion = $completion;
@@ -2683,8 +2691,22 @@ final class Worker
             }
         }
 
+        $this->speculativeWorkflowLogs = $this->replayer->takeWorkflowLogs();
+
         return ['version' => 1, 'history_through_sequence' => $through, 'history_last_event_id' => $lastEventId,
             'commands' => $commands];
+    }
+
+    /** @param list<array{level: mixed, message: string, context: array<array-key, mixed>}> $records */
+    private function writeWorkflowLogs(array $records): void
+    {
+        foreach ($records as $record) {
+            try {
+                $this->logger->log($record['level'], $record['message'], $record['context']);
+            } catch (Throwable) {
+                // Workflow logging is an observation; it never fails the worker.
+            }
+        }
     }
 
     private function reserveWorkflowPoll(string $leaseOwner, bool $workflowCompletion = false): ?CarriedPoll
@@ -3851,7 +3873,10 @@ final class Worker
             }
             $resultComputed = true;
             $carried = $this->reserveWorkflowPoll($leaseOwner);
+            $this->speculativeWorkflowLogs = [];
             $continuation = $carried === null ? null : $this->speculateActivityContinuation($task, $result);
+            // Only an accepted speculation writes its lines; nothing stays behind for another task.
+            $this->replayer->takeWorkflowLogs();
             $completion = $this->retryStorageAdmission(
                 'activity_complete',
                 function () use ($taskId, $attemptId, $leaseOwner, $result, $carried, &$continuation): array {
@@ -3899,6 +3924,8 @@ final class Worker
             if ($continuation !== null) {
                 $outcome = is_array($completion['continuation'] ?? null) ? $completion['continuation'] : [];
                 if (($outcome['outcome'] ?? null) === 'accepted') {
+                    // The accepted speculation is this run's workflow task.
+                    $this->writeWorkflowLogs($this->speculativeWorkflowLogs);
                     // The accepted commands may already have scheduled this run's next
                     // activity. The server's cross-kind wake only reports work that
                     // becomes ready during a held poll, so sweep the next tick without

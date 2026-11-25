@@ -656,6 +656,19 @@ final class ReplayRegressionConsumer
             return;
         }
 
+        if ($workflowType === 'golden.workflow-logger') {
+            // durable-workflow/.github#227: one replay-aware log line per committed step.
+            require_once __DIR__.'/../../tests/Support/WorkflowLoggerScenario.php';
+            $boundaries = $fixture['workflow_task_history_lengths'] ?? null;
+            if (!is_array($boundaries) || !array_is_list($boundaries)) {
+                throw new RuntimeException("{$identity}.workflow_task_history_lengths must be a list.");
+            }
+            $observed = \DurableWorkflow\Tests\Support\WorkflowLoggerScenario::run($history, $boundaries, $input);
+            self::assertMatches($fixture['expected'], $observed, $identity.self::EXPECTED_CONTEXT);
+
+            return;
+        }
+
         if ($workflowType === 'golden.grouped-condition') {
             require_once __DIR__.'/../../tests/Support/FakeTransport.php';
             require_once __DIR__.'/../../tests/Support/GroupedConditionRefusalScenario.php';

@@ -136,6 +136,17 @@ final class ReplayRegressionFixture
             return self::executeUpdateValidation($identity, $input, $history, $fixture);
         }
 
+        if ($workflowType === 'golden.workflow-logger') {
+            $boundaries = $fixture['workflow_task_history_lengths'] ?? null;
+            if (!is_array($boundaries) || !array_is_list($boundaries)) {
+                throw new RuntimeException("{$identity}.workflow_task_history_lengths must be a list.");
+            }
+            $observed = WorkflowLoggerScenario::run($history, $boundaries, $input);
+            self::assertMatches($fixture['expected'], $observed, "{$identity}.expected");
+
+            return [];
+        }
+
         if ($workflowType === 'golden.completion-too-large' || $workflowType === 'golden.completion-history-limit') {
             return self::executeCompletionTooLarge($identity, $input, $fixture, $workflowType);
         }

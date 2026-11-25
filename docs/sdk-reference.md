@@ -829,6 +829,48 @@ workflow polls, so validation tasks keep their turn.
 when the Server couldn't get a decision, for example because no capable worker
 answered in time; nothing was accepted, so retry with the same request ID.
 
+### Log from workflow code
+
+The worker replays a workflow from its history on every workflow task, so an
+ordinary logger call in workflow code repeats once per completed step. A
+workflow with 50 steps logs its opening line 50 times. Use
+`$context->logger()` instead:
+
+```php
+use DurableWorkflow\Worker\WorkflowContext;
+
+function approve(WorkflowContext $context, string $orderId): string
+{
+    $context->logger()->info('Approval started', ['order_id' => $orderId]);
+    $decision = $context->activity('review', [$orderId]);
+    $context->logger()->info('Review finished', ['decision' => $decision]);
+
+    return $decision;
+}
+```
+
+`logger()` returns a PSR-3 `LoggerInterface`. It writes through the logger you
+pass to the `Worker` (the named `logger` argument) only when the code runs past
+the run's committed history, that is, for the first time. Each line gets
+`namespace`, `workflow_type`, `workflow_id` and `workflow_run_id` in its
+context. Without a Worker logger, and in offline `Replayer` runs, it writes
+nothing.
+
+`$context->replayState()` returns a `WorkflowReplayState`: `Replaying` while
+code re-runs over committed history, `Executing` past it, and `Unavailable`
+outside the workflow's own Fiber. `isReplaying()` is the boolean form. Use them
+for diagnostics only; never choose workflow commands from them.
+
+Lines are written after the worker submits the workflow task that ran the
+code. A replay that is superseded, speculative and declined, or refused
+writes nothing, and code that parks on a pending child or operation handle
+without recording a step logs once, in the task that moves past it. If the
+worker dies between the Server accepting a task and the write, those lines
+are lost; the logger is not an outbox for business effects. Keep log handlers
+fast and non-blocking, because a handler that waits on the network stalls
+the worker. Logger failures are caught and never change the workflow's
+commands.
+
 ### Locate a replay mismatch
 
 When replay finds a mismatch at a suspended workflow call,

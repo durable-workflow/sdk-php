@@ -44,6 +44,70 @@ final class WorkflowContext
     }
 
     /**
+     * Where this code runs relative to the run's committed history.
+     *
+     * Use it for logging and diagnostics only; never choose durable commands
+     * from it.
+     */
+    public function replayState(): WorkflowReplayState
+    {
+        if ($this->replaying === null || $this->execution === null || Fiber::getCurrent() !== $this->execution) {
+            return WorkflowReplayState::Unavailable;
+        }
+
+        return ($this->replaying)() ? WorkflowReplayState::Replaying : WorkflowReplayState::Executing;
+    }
+
+    /** True while this code is being replayed rather than run for the first time. */
+    public function isReplaying(): bool
+    {
+        return $this->replayState() === WorkflowReplayState::Replaying;
+    }
+
+    /**
+     * A PSR-3 logger that writes through the Worker's logger only when this code
+     * runs for the first time, adding the run's identity to every line.
+     *
+     * Ordinary logging from workflow code repeats on every workflow task,
+     * because the worker replays the workflow from its history each time.
+     */
+    public function logger(): WorkflowLogger
+    {
+        return new WorkflowLogger($this, [
+            ...$this->logIdentity,
+            'workflow_id' => $this->workflowId,
+            'workflow_run_id' => $this->runId,
+        ]);
+    }
+
+    /**
+     * @internal Bound by the Replayer before workflow code starts.
+     *
+     * @param Closure(): bool $replaying
+     * @param Closure(mixed, string, array<array-key, mixed>): void $logSink collects new-code lines
+     * @param array<string, string|null> $identity
+     */
+    public function bindReplayObservation(Closure $replaying, Closure $logSink, array $identity): void
+    {
+        $this->replaying = $replaying;
+        $this->logSink = $logSink;
+        $this->logIdentity = $identity;
+    }
+
+    /**
+     * @internal Hand a new-code line to the Replayer, which writes it once the
+     * workflow task that ran it is submitted.
+     *
+     * @param array<array-key, mixed> $context
+     */
+    public function collectWorkflowLog(mixed $level, string $message, array $context): void
+    {
+        if ($this->logSink !== null) {
+            ($this->logSink)($level, $message, $context);
+        }
+    }
+
+    /**
      * The schedule fire that started this run, or null for a run no schedule started.
      * It comes from recorded history, so it is identical on every replay.
      */
@@ -182,6 +246,15 @@ final class WorkflowContext
     private array $messageStreamWaits = [];
     /** @var array<string, int|string>|null */
     private ?array $selectionChildAwait = null;
+
+    /** @var (Closure(): bool)|null true while recorded steps remain to be replayed */
+    private ?Closure $replaying = null;
+
+    /** @var (Closure(mixed, string, array<array-key, mixed>): void)|null */
+    private ?Closure $logSink = null;
+
+    /** @var array<string, string|null> */
+    private array $logIdentity = [];
 
     /**
      * @param list<array<string, mixed>> $history
