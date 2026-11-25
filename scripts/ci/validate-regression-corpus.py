@@ -18,6 +18,7 @@ import tempfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -330,6 +331,34 @@ def _list(value: Any, context: str, *, nonempty: bool = False) -> Sequence[Any]:
     if nonempty and not value:
         raise CorpusError(f"{context} must not be empty")
     return value
+
+
+_WORKER_REPLAY_CLOCK_INSTANT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
+
+
+def _worker_replay_clock(value: Any, context: str) -> Mapping[str, Any]:
+    """Require the exact WorkerReplayClock v1 shape a workflow task can carry.
+
+    Matches .github's shared validator. The run is not compared with the
+    task's run_id: a fixture may pin the SDK refusing a carrier for another
+    run, as it may pin one whose source disagrees with its history.
+    """
+    clock = _object(value, context)
+    if set(clock) != {"schema", "workflow_run_id", "started_at", "source"}:
+        raise CorpusError(f"{context} must contain exactly schema, workflow_run_id, started_at and source")
+    if clock["schema"] != "durable-workflow.worker-replay-clock/v1":
+        raise CorpusError(f"{context}.schema must be durable-workflow.worker-replay-clock/v1")
+    _string(clock["workflow_run_id"], f"{context}.workflow_run_id")
+    started_at = clock["started_at"]
+    if not isinstance(started_at, str) or _WORKER_REPLAY_CLOCK_INSTANT.fullmatch(started_at) is None:
+        raise CorpusError(f"{context}.started_at must be UTC with six fractional digits and Z")
+    try:
+        datetime.strptime(started_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError as error:
+        raise CorpusError(f"{context}.started_at is not a real instant") from error
+    if clock["source"] not in ("run_started_at", "redrive_replayed_started_at"):
+        raise CorpusError(f"{context}.source is not a WorkerReplayClock v1 source")
+    return clock
 
 
 def _string(value: Any, context: str) -> str:
@@ -1298,7 +1327,7 @@ def _replay_fixture(
             }
             if "replay_clock" in task:
                 # Only present carriers enter the digest, so existing evidence is unchanged.
-                executed_task["replay_clock"] = _object(
+                executed_task["replay_clock"] = _worker_replay_clock(
                     task["replay_clock"],
                     f"{path}.workflow_tasks[{index}].replay_clock",
                 )

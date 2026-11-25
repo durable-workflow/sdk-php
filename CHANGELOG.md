@@ -25,6 +25,24 @@ project follows [Semantic Versioning](https://semver.org/).
   the carrier as `replay_clock` in its task argument
   (durable-workflow/.github#215).
 
+### Changed
+
+- `WorkerTestHarness::runWorkflow()` reads an entry `replay_clock` only when its
+  task also has the matching `run_id` and its history has exactly one
+  `WorkflowStarted`; with the default empty history the clock stays
+  unavailable at entry. The corpus validator and fixture runner require a
+  task's `replay_clock` to have the exact v1 shape. On an ordinary run whose
+  `WorkflowStarted` names another run, the carrier is ignored.
+
+### Upgrade notes
+
+- Don't branch on `ReplayClockUnavailable` at workflow entry across this
+  upgrade. A run whose code caught the exception at entry on an earlier SDK
+  gets a value after upgrading, and the same happens during a rolling deploy
+  that mixes SDK versions or a Server upgrade to 3.6.0. Its replay then takes
+  the other branch. Drain such runs before upgrading, or put the new behaviour
+  behind normal workflow versioning.
+
 ## [3.31.0] - 2026-11-25
 
 ### Added

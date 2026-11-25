@@ -2197,6 +2197,41 @@ print(json.dumps({
         report = json.loads(result.stdout)
         self.assertEqual(1, report["counts"]["replay"]["current"])
 
+    def test_validator_requires_the_exact_worker_replay_clock_shape(self) -> None:
+        (self.root / "tests/fixtures/replay-regressions").mkdir(parents=True)
+        path = "tests/fixtures/replay-regressions/attributed-entry-clock.json"
+        clock = {
+            "schema": "durable-workflow.worker-replay-clock/v1",
+            "workflow_run_id": "another-run",
+            "started_at": "2026-11-01T00:00:00.000000Z",
+            "source": "run_started_at",
+        }
+        fixture = self.official_attributed_lifetime_fixture("attributed-entry-clock")
+        fixture["workflow_tasks"][0]["replay_clock"] = clock
+        self.write_json(path, fixture)
+        # A carrier for another run stays valid so a fixture can pin its refusal.
+        result = self.validate_without_base()
+        self.assertEqual(0, result.returncode, result.stderr)
+
+        invalid_clocks = {
+            "empty": {},
+            "list": [clock],
+            "extra key": {**clock, "extra": True},
+            "missing source": {key: value for key, value in clock.items() if key != "source"},
+            "schema": {**clock, "schema": "durable-workflow.worker-replay-clock/v2"},
+            "precision": {**clock, "started_at": "2026-11-01T00:00:00Z"},
+            "calendar": {**clock, "started_at": "2026-13-45T25:61:61.000000Z"},
+            "source": {**clock, "source": "recorded_at"},
+            "run": {**clock, "workflow_run_id": ""},
+        }
+        for name, invalid_clock in invalid_clocks.items():
+            with self.subTest(clock=name):
+                fixture["workflow_tasks"][0]["replay_clock"] = invalid_clock
+                self.write_json(path, fixture)
+                result = self.validate_without_base()
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                self.assertIn("replay_clock", result.stderr)
+
     def test_official_php_runner_uses_attributed_worker_registration(self) -> None:
         fixture = self.official_attributed_lifetime_fixture(
             "official-attributed-lifetime"
