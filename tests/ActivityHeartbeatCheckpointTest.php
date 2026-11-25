@@ -190,7 +190,8 @@ final class ActivityHeartbeatCheckpointTest extends TestCase
             return 'ok';
         });
         self::assertTrue($worker->tick(0));
-        self::assertSame([['cursor' => 8], ['cursor' => 9], ['cursor' => 10]], array_slice($log['heartbeats'], 0, 3));
+        // A heartbeat whose response was lost is repeated with the same details (cloud#752).
+        self::assertSame([['cursor' => 8], ['cursor' => 9], ['cursor' => 9], ['cursor' => 10]], array_slice($log['heartbeats'], 0, 4));
         self::assertCount(4, $snapshots);
         foreach ($snapshots as $snapshot) {
             self::assertSame(['cursor' => 7], $snapshot['details']);
