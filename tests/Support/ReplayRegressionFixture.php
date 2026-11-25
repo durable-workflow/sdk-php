@@ -151,6 +151,29 @@ final class ReplayRegressionFixture
             return self::executeCompletionTooLarge($identity, $input, $fixture, $workflowType);
         }
 
+        if ($workflowType === 'golden.timeout-cleanup-marker') {
+            // Server #1201: the portable fail_workflow marker for the escaped exception.
+            $codec = new AvroPayloadCodec();
+            $commands = [];
+            try {
+                $replay = (new \DurableWorkflow\Worker\Replayer($codec))->replay(self::workflow($workflowType), $history, $input,
+                    'regression-corpus', ['workflow_type' => $workflowType, 'workflow_id' => 'regression-workflow', 'run_id' => 'regression-inline']);
+                $failure = $replay->terminalFailure;
+                $commands = $replay->commands;
+            } catch (\DurableWorkflow\Exception\WorkflowCancelled $escaped) {
+                // The Replayer lets an escaped interruption out instead of reporting it.
+                $failure = $escaped;
+            }
+            $marker = $failure === null ? null
+                : \DurableWorkflow\Worker\TimeoutCleanup::failureMarker($failure, 'regression-inline');
+            $commands = array_map(static fn (array $command): array => self::decodeEnvelopes($command, $codec), $commands);
+            self::assertMatches($fixture['expected'], ['command_sequence' => $commands,
+                'exception_type' => $failure === null ? null : $failure::class,
+                'failure_marker' => $marker['interruption'] ?? null], $identity.'.expected');
+
+            return $commands;
+        }
+
         if ($workflowType === 'golden.activity-continuation-untimed-result') {
             // Server #1078: replay directly so the fixture can assert that the replayer
             // reports a business-time read it could not answer at an untimed result.
@@ -743,6 +766,19 @@ final class ReplayRegressionFixture
                 'workflow_id' => $context->workflowId,
                 'run_id' => $context->runId,
             ],
+            'golden.timeout-cleanup-marker' => static function (WorkflowContext $context, string $mode): string {
+                try {
+                    $context->sleep(60);
+                } catch (\DurableWorkflow\Exception\WorkflowCancelled $interruption) {
+                    if ($mode === 'copied') {
+                        throw new \DurableWorkflow\Exception\WorkflowTimeoutCleanupRequested(
+                            requestId: $interruption->requestId, context: $interruption->context);
+                    }
+                    throw $interruption;
+                }
+
+                return 'not-interrupted';
+            },
             'golden.cancellation' => static function (WorkflowContext $context): string {
                 if ($context->isCancellationRequested()) {
                     $context->throwIfCancellationRequested();

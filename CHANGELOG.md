@@ -66,15 +66,6 @@ project follows [Semantic Versioning](https://semver.org/).
   `Client::registerWorker()` accepts non-empty `update_validators` with the
   `update_validation_tasks` capability.
 
-### Upgrade notes
-
-- Don't branch on `ReplayClockUnavailable` at workflow entry across this
-  upgrade. A run whose code caught the exception at entry on an earlier SDK
-  gets a value after upgrading, and the same happens during a rolling deploy
-  that mixes SDK versions or a Server upgrade to 3.6.0. Its replay then takes
-  the other branch. Drain such runs before upgrading, or put the new behaviour
-  behind normal workflow versioning.
-
 ### Changed
 
 - The timeout-cleanup marker `failure.interruption: "timeout_cleanup"` is sent
@@ -85,6 +76,15 @@ project follows [Semantic Versioning](https://semver.org/).
   is no longer marked and records failed cleanup. This matches the portable
   contract and the Rust and Python workers.
   ([Server #1201](https://github.com/durable-workflow/server/issues/1201))
+
+### Upgrade notes
+
+- Don't branch on `ReplayClockUnavailable` at workflow entry across this
+  upgrade. A run whose code caught the exception at entry on an earlier SDK
+  gets a value after upgrading, and the same happens during a rolling deploy
+  that mixes SDK versions or a Server upgrade to 3.6.0. Its replay then takes
+  the other branch. Drain such runs before upgrading, or put the new behaviour
+  behind normal workflow versioning.
 
 ## [3.31.0] - 2026-11-25
 

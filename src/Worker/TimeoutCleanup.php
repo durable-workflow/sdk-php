@@ -64,7 +64,8 @@ final class TimeoutCleanup
      * or null for any other failure. Only the delivered interruption for the
      * run's root request is marked: the exact object the runtime raised, whose
      * context has `cause: timeout`, no parent request and no scope, and names
-     * this run. An exception the application constructs (even with a copied
+     * this run (`$runId`, the claimed task's run; without it nothing is
+     * marked). An exception the application constructs (even with a copied
      * context), a wrapped interruption and a scoped child are not marked.
      *
      * @return array{interruption: string}|null
@@ -78,7 +79,7 @@ final class TimeoutCleanup
         if (!$context instanceof CancellationContext || !$context->isTimeout() || $context->scopeOrigin !== null
             || $context->parentRequestId !== null || $failure->requestId === null
             || $failure->requestId !== $context->requestId || $context->requestId !== $context->rootRequestId
-            || ($runId !== null && $context->rootWorkflowRunId !== $runId)) {
+            || $runId === null || $context->rootWorkflowRunId !== $runId) {
             return null;
         }
 

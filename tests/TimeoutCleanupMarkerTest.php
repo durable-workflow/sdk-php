@@ -18,8 +18,8 @@ final class TimeoutCleanupMarkerTest extends TestCase
     {
         $context = CancellationContext::fromArray(self::snapshot('timeout'));
         $delivered = TimeoutCleanup::delivered(WorkflowCancelled::forContext('request-1', $context));
-        self::assertSame(['interruption' => 'timeout_cleanup'], TimeoutCleanup::failureMarker($delivered));
         self::assertSame(['interruption' => 'timeout_cleanup'], TimeoutCleanup::failureMarker($delivered, 'run-1'));
+        self::assertNull(TimeoutCleanup::failureMarker($delivered), 'no claimed run, no marker');
     }
 
     public function testOtherFailuresAreNotMarked(): void
@@ -48,7 +48,7 @@ final class TimeoutCleanupMarkerTest extends TestCase
             'scoped delivery of the timeout request' => TimeoutCleanup::delivered(WorkflowCancelled::forContext('request-1',
                 ScopedCancellationContext::fromRunContext($timeout))),
         ] as $case => $failure) {
-            self::assertNull(TimeoutCleanup::failureMarker($failure), $case);
+            self::assertNull(TimeoutCleanup::failureMarker($failure, 'run-1'), $case);
         }
         $root = TimeoutCleanup::delivered(WorkflowCancelled::forContext('request-1', $timeout));
         self::assertNull(TimeoutCleanup::failureMarker($root, 'another-run'), 'another run');
