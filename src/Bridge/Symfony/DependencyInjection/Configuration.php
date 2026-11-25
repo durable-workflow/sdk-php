@@ -45,6 +45,11 @@ final class Configuration implements ConfigurationInterface
         $cacheChildren = $stickyCache->children();
         $cacheChildren->integerNode('capacity')->defaultValue(100)->min(1);
         $cacheChildren->integerNode('ttl_seconds')->defaultValue(300)->min(1)->max(3600);
+        $worker->children()->arrayNode('interceptors')
+            ->info('Ordered worker interceptor service IDs or classes; the first is outermost.')
+            ->defaultValue([])
+            ->scalarPrototype()
+            ->cannotBeEmpty();
 
         $credentials = $children->arrayNode('credentials');
         $credentials->addDefaultsIfNotSet();

@@ -52,6 +52,34 @@ final class WorkerActivityContinuationTest extends TestCase
         }
     }
 
+    public function testWorkerInterceptorsKeepTheOrdinaryCompletionSoEveryWorkflowTaskIsWrapped(): void
+    {
+        $calls = [];
+        $wrapped = [];
+        $transport = self::transport(static fn (): array => self::accepted());
+        $worker = self::worker($transport, $calls, static fn (WorkflowContext $context): int => $context->activity('test.activity') + 1,
+            interceptors: [new class ($wrapped) extends \DurableWorkflow\Worker\Interceptor\PassthroughWorkerInterceptor {
+                /** @param list<string> $wrapped */
+                public function __construct(private array &$wrapped)
+                {
+                }
+
+                public function executeWorkflowTask(\DurableWorkflow\Worker\Interceptor\WorkflowTaskInterceptorContext $context, callable $next): \DurableWorkflow\Worker\Interceptor\WorkflowTaskOutcome
+                {
+                    $this->wrapped[] = $context->taskId;
+
+                    return $next($context);
+                }
+            }]);
+        self::assertTrue($worker->tick(0));
+        self::assertSame([], self::requests($transport, '/continuation/history'));
+        self::assertSame([], self::requests($transport, '/continuation/complete'));
+        self::assertCount(1, self::requests($transport, '/activity-tasks/activity/complete'));
+        $worker->tick(0);
+        self::assertSame(['workflow'], $wrapped);
+        self::assertCount(1, self::requests($transport, '/workflow-tasks/workflow/complete'));
+    }
+
     public function testAcceptedContinuationSweepsTheNextTickWithoutWaiting(): void
     {
         // Server #1129: the accepted continuation already scheduled the next
@@ -158,10 +186,11 @@ final class WorkerActivityContinuationTest extends TestCase
         self::assertCount(1, self::requests($transport, '/workflow-tasks/workflow/complete'), 'The carried lease is finished ordinarily.');
     }
 
-    private static function worker(FakeTransport $transport, array &$calls, \Closure $workflow, bool $enabled = true): Worker
+    /** @param list<\DurableWorkflow\Worker\Interceptor\WorkerInterceptor> $interceptors */
+    private static function worker(FakeTransport $transport, array &$calls, \Closure $workflow, bool $enabled = true, array $interceptors = []): Worker
     {
         $worker = new Worker(new Client('https://continuation.invalid', transport: $transport), 'queue', workerId: 'worker',
-            enableActivityContinuation: $enabled);
+            enableActivityContinuation: $enabled, interceptors: $interceptors);
         $worker->registerWorkflow('test.workflow', static fn (WorkflowContext $context): mixed => $workflow($context));
         $worker->registerActivity('test.activity', static function (ActivityContext $context) use (&$calls): int {
             $calls[] = 'activity';

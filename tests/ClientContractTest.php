@@ -277,7 +277,7 @@ final class ClientContractTest extends TestCase
         self::assertSame('release-a', $transport->requests[0]['body']['build_id'] ?? null);
     }
 
-    public function testWorkerRegistrationRejectsUnsupportedUpdateValidatorsBeforeTransport(): void
+    public function testWorkerRegistrationRequiresTheValidationCapabilityForValidatorsBeforeTransport(): void
     {
         $transport = new FakeTransport([]);
         $client = new Client('https://server.example', transport: $transport);
@@ -295,7 +295,7 @@ final class ClientContractTest extends TestCase
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage(
-            'PHP workers do not support update-validator authoring; update_validators must be an empty list for workflow type orders.process.',
+            'Workflow type orders.process declares update validators; advertise the update_validation_tasks capability and poll update_validation tasks.',
         );
 
         try {
@@ -306,6 +306,54 @@ final class ClientContractTest extends TestCase
                 [],
                 workflowCommandContracts: $contracts,
             );
+        } finally {
+            self::assertSame([], $transport->requests);
+        }
+    }
+
+    public function testWorkerRegistrationSendsValidatorsWithTheValidationCapability(): void
+    {
+        $transport = new FakeTransport([['registered' => true]]);
+        $client = new Client('https://server.example', transport: $transport);
+        $contracts = [
+            'orders.process' => [
+                'queries' => [],
+                'query_contracts' => [],
+                'signals' => [],
+                'signal_contracts' => [],
+                'updates' => ['approve'],
+                'update_validators' => ['approve'],
+                'update_contracts' => [['name' => 'approve', 'parameters' => []]],
+            ],
+        ];
+
+        $client->registerWorker(
+            'worker-1',
+            'orders',
+            ['orders.process'],
+            [],
+            ['workflow_updates', 'update_validation_tasks'],
+            workflowCommandContracts: $contracts,
+        );
+
+        self::assertSame(['approve'], $transport->requests[0]['body']['workflow_command_contracts']['orders.process']['update_validators'] ?? null);
+        self::assertContains('update_validation_tasks', $transport->requests[0]['body']['capabilities'] ?? []);
+    }
+
+    public function testWorkerRegistrationRejectsValidatorsForUndeclaredUpdatesBeforeTransport(): void
+    {
+        $transport = new FakeTransport([]);
+        $client = new Client('https://server.example', transport: $transport);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Every update validator must name a declared update');
+
+        try {
+            $client->registerWorker('worker-1', 'orders', ['orders.process'], [], ['update_validation_tasks'],
+                workflowCommandContracts: ['orders.process' => [
+                    'queries' => [], 'query_contracts' => [], 'signals' => [], 'signal_contracts' => [],
+                    'updates' => [], 'update_validators' => ['approve'], 'update_contracts' => [],
+                ]]);
         } finally {
             self::assertSame([], $transport->requests);
         }
@@ -356,7 +404,7 @@ final class ClientContractTest extends TestCase
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage(
-            'PHP workers do not support update-validator authoring; update_validators must be an empty list for workflow type orders.process.',
+            'update_validators must be a list of update names for workflow type orders.process.',
         );
 
         try {

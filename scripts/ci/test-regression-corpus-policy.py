@@ -2561,17 +2561,17 @@ print(json.dumps({
         candidate_worker = worker_path.read_text()
         dispatch = "\n".join(
             (
-                "                        $handler,",
-                "                        $history,",
-                "                        $input,",
-                "                        $task,",
+                "                                $handler,",
+                "                                $history,",
+                "                                $input,",
+                "                                $task,",
             )
         )
         self.assertEqual(1, candidate_worker.count(dispatch))
         worker_path.write_text(
             candidate_worker.replace(
                 dispatch,
-                dispatch.replace("                        $history,", "                        [],"),
+                dispatch.replace("                                $history,", "                                [],"),
                 1,
             )
         )
@@ -2797,17 +2797,17 @@ print(json.dumps({
         worker = worker_path.read_text()
         dispatch = "\n".join(
             (
-                "                        $handler,",
-                "                        $history,",
-                "                        $input,",
-                "                        $task,",
+                "                                $handler,",
+                "                                $history,",
+                "                                $input,",
+                "                                $task,",
             )
         )
         self.assertEqual(1, worker.count(dispatch))
         worker_path.write_text(
             worker.replace(
                 dispatch,
-                dispatch.replace("                        $history,", "                        [],"),
+                dispatch.replace("                                $history,", "                                [],"),
                 1,
             )
         )

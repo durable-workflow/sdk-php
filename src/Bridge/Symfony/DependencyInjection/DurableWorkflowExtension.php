@@ -11,6 +11,7 @@ use DurableWorkflow\Bridge\Symfony\WorkerFactory;
 use DurableWorkflow\Client;
 use DurableWorkflow\WorkflowClientInterface;
 use Psr\Log\LoggerInterface;
+use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceLocatorArgument;
 use Symfony\Component\DependencyInjection\Argument\TaggedIteratorArgument;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -62,6 +63,19 @@ final class DurableWorkflowExtension extends Extension
             }
         }
 
+        $interceptors = [];
+        foreach ($values['worker']['interceptors'] ?? [] as $interceptor) {
+            if (!is_string($interceptor)) {
+                continue;
+            }
+            if (!$container->hasDefinition($interceptor) && !$container->hasAlias($interceptor)) {
+                $container->register($interceptor, $interceptor)
+                    ->setAutowired(true)
+                    ->setAutoconfigured(true);
+            }
+            $interceptors[] = new Reference($interceptor);
+        }
+
         $container->register(WorkerFactory::class, WorkerFactory::class)
             ->setArguments([
                 new Reference(ServiceConfiguration::class),
@@ -70,6 +84,7 @@ final class DurableWorkflowExtension extends Extension
                 new Reference(LoggerInterface::class, ContainerBuilder::NULL_ON_INVALID_REFERENCE),
                 new Reference(EventDispatcherInterface::class, ContainerBuilder::NULL_ON_INVALID_REFERENCE),
                 new Reference(\DurableWorkflow\Telemetry\ExecutionTelemetry::class, ContainerBuilder::NULL_ON_INVALID_REFERENCE),
+                new IteratorArgument($interceptors),
             ])
             ->setPublic(true);
         $container->register(WorkerCommand::class, WorkerCommand::class)

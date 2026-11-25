@@ -114,6 +114,13 @@ final class ReplayRegressionFixture
             return self::executeLocalBackoffRepeat($identity, $history, $fixture);
         }
 
+        if ($workflowType === 'golden.worker-interceptor') {
+            $observed = WorkerInterceptorScenario::run($history, $input);
+            self::assertMatches($fixture['expected'], $observed, $identity.'.expected');
+
+            return $observed['commands'];
+        }
+
         if ($workflowType === 'golden.grouped-condition') {
             $observed = GroupedConditionRefusalScenario::run();
             self::assertMatches($fixture['expected'], $observed, $identity.'.expected');
@@ -123,6 +130,10 @@ final class ReplayRegressionFixture
 
         if ($workflowType === 'golden.workflow-fresh-grant') {
             return self::executeFreshWorkflowPoll($identity, $input, $history, $fixture);
+        }
+
+        if ($workflowType === 'golden.update-validation') {
+            return self::executeUpdateValidation($identity, $input, $history, $fixture);
         }
 
         if ($workflowType === 'golden.completion-too-large' || $workflowType === 'golden.completion-history-limit') {
@@ -1220,6 +1231,26 @@ final class ReplayRegressionFixture
         }
         $commands = array_map(static fn (array $command): array => self::decodeEnvelopes($command, $codec), $completion['commands']);
         self::assertMatches($fixture['expected'], ['command_sequence' => $commands], $identity.'.expected');
+
+        return $commands;
+    }
+
+    /**
+     * durable-workflow/.github#234: answer one Server update validation task.
+     *
+     * @param list<mixed> $input the update arguments
+     * @param list<array<string, mixed>> $history
+     * @param array<string, mixed> $fixture
+     * @return list<array<string, mixed>>
+     */
+    private static function executeUpdateValidation(string $identity, array $input, array $history, array $fixture): array
+    {
+        $observed = UpdateValidationScenario::run($input, $history);
+        if ($observed['handler_calls'] !== 0) {
+            throw new RuntimeException("{$identity} ran the update handler during validation.");
+        }
+        $commands = $observed['commands'];
+        self::assertMatches($fixture['expected'], ['command_sequence' => $commands] + ($commands[0] ?? []), "{$identity}.expected");
 
         return $commands;
     }

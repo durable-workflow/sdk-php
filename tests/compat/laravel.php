@@ -5,6 +5,7 @@ declare(strict_types=1);
 require $argv[1];
 require __DIR__.'/history-cache.php';
 require __DIR__.'/execution-telemetry.php';
+require __DIR__.'/interceptors.php';
 
 use DurableWorkflow\Attribute\Activity;
 use DurableWorkflow\Attribute\Workflow;
@@ -225,11 +226,12 @@ $values = [
         LaravelTripActivities::class,
     ],
     'poll_timeout_seconds' => 5,
-    'worker' => ['sticky_cache' => ['capacity' => 1, 'ttl_seconds' => 37]],
+    'worker' => ['sticky_cache' => ['capacity' => 1, 'ttl_seconds' => 37], 'interceptors' => [CompatAuditInterceptor::class]],
 ];
 $app = new Application(sys_get_temp_dir().'/durable-workflow-laravel-compat');
 $app->instance('config', new Repository(['durable-workflow' => $values]));
 $app->instance(LaravelGreetingPrefix::class, new LaravelGreetingPrefix('hello from Laravel'));
+$app->instance(CompatAuditSink::class, new CompatAuditSink());
 LaravelGreetingWorkflow::$expectedDependency = $app->make(LaravelGreetingPrefix::class);
 $events = new Dispatcher($app);
 $diagnostics = [];
@@ -272,6 +274,7 @@ if (($clientAuthentication->headers(false)['Authorization'] ?? null) !== 'Bearer
     throw new RuntimeException('Laravel provider did not preserve role-specific client credentials.');
 }
 $worker = $factory->make();
+verifyConfiguredInterceptors($worker, $app->make(CompatAuditSink::class));
 verifyFrameworkExecutionTelemetry(static function (Client $client, ?\DurableWorkflow\Telemetry\ExecutionTelemetry $telemetry) use ($app): \DurableWorkflow\Worker {
     $configuration = new \DurableWorkflow\Bridge\ServiceConfiguration('https://framework.invalid', 'framework-namespace',
         'framework-queue', [FrameworkTelemetryHandler::class]);

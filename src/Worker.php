@@ -17,6 +17,7 @@ use DurableWorkflow\Exception\WorkflowEntryArgumentsMismatch;
 use DurableWorkflow\Exception\SagaCompensationFailed;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
+use DurableWorkflow\Exception\UpdateValidatorCommandRefused;
 use DurableWorkflow\Exception\WorkflowTaskCompletionTooLarge;
 use DurableWorkflow\Exception\WorkflowTaskHistoryLimitExceeded;
 use DurableWorkflow\Worker\ActivityContext;
@@ -38,6 +39,7 @@ use DurableWorkflow\Worker\CompletionPipeline;
 use DurableWorkflow\Worker\WorkflowPrefetch;
 use DurableWorkflow\Worker\WorkflowPollRetry;
 use DurableWorkflow\Worker\CooperativeCancellationObserved;
+use DurableWorkflow\Worker\DeferredWorkflowOperation;
 use DurableWorkflow\Worker\CooperativeActivityExecutor;
 use DurableWorkflow\Worker\DiscoveredHandlers;
 use DurableWorkflow\Worker\HandlerDiscovery;
@@ -45,6 +47,11 @@ use DurableWorkflow\Worker\HandlerDefinition;
 use DurableWorkflow\Worker\WorkflowDefinitionFingerprint;
 use DurableWorkflow\Worker\HandlerResolver;
 use DurableWorkflow\Worker\PollResponse;
+use DurableWorkflow\Worker\Interceptor\ActivityInterceptorContext;
+use DurableWorkflow\Worker\Interceptor\QueryTaskInterceptorContext;
+use DurableWorkflow\Worker\Interceptor\WorkerInterceptor;
+use DurableWorkflow\Worker\Interceptor\WorkerInterceptorChain;
+use DurableWorkflow\Worker\Interceptor\WorkflowTaskInterceptorContext;
 use DurableWorkflow\Worker\PreparedLocalActivityAttempt;
 use DurableWorkflow\Worker\PreparedLocalActivityCall;
 use DurableWorkflow\Worker\PreparedLocalActivityRunner;
@@ -88,6 +95,17 @@ final class Worker
     /** A release must land this long before the claim's grant ends. */
     private const RELEASE_MARGIN_SECONDS = 0.5;
     private const WORKFLOW_HISTORY_PAGE_SIZE = 500;
+    private const UPDATE_VALIDATION_TASKS_CAPABILITY = 'update_validation_tasks';
+    /** Typed Server fences: the validation already finished or the claim moved elsewhere. */
+    private const UPDATE_VALIDATION_FENCES = [
+        'update_validation_task_not_found',
+        'duplicate_update_validation_completion',
+        'update_validation_task_not_leased',
+        'update_validation_lease_owner_mismatch',
+        'stale_update_validation_completion',
+        'update_validation_lease_expired',
+        'update_validator_worker_lost',
+    ];
     private const INITIAL_TRANSIENT_RETRY_DELAY_SECONDS = 0.1;
     private const MAX_HEARTBEAT_INTERVAL_SECONDS = 3600;
     private const MAX_LOCAL_ACTIVITY_EXCEPTION_TYPE_BYTES = 255;
@@ -108,6 +126,10 @@ final class Worker
     private array $signals = [];
     /** @var array<array-key, array<array-key, HandlerDefinition>> */
     private array $updates = [];
+    /** @var array<array-key, array<array-key, HandlerDefinition>> */
+    private array $updateValidators = [];
+    /** True once registration confirmed the Server routes update validation tasks to this worker. */
+    private bool $updateValidationTasksEnabled = false;
     private bool $shutdownRequested = false;
     /** Set only by requestShutdown() and process signals, so stale-registration recovery never overrides them. */
     private bool $shutdownByRequest = false;
@@ -132,6 +154,7 @@ final class Worker
     private readonly LoggerInterface $logger;
     private readonly StickyWorkflowCache $stickyCache;
     private readonly MetricsObserver $metricsObserver;
+    private readonly WorkerInterceptorChain $interceptors;
     private ?WorkerTaskObservation $taskObservation = null;
     /** @var array<string, WorkerSessionOptions> */
     private array $activeWorkerSessions = [];
@@ -193,6 +216,7 @@ final class Worker
     /** @var (\Closure(string, array<string, mixed>): void)|null */
     private readonly ?\Closure $diagnosticListener;
 
+    /** @param iterable<WorkerInterceptor|class-string<WorkerInterceptor>> $interceptors */
     public function __construct(
         Client $client,
         public readonly string $taskQueue,
@@ -234,6 +258,11 @@ final class Worker
          * re-registers as a new incarnation. Set true to keep the pre-3.13 behavior and stop instead.
          */
         private readonly bool $stopOnStaleRegistration = false,
+        /**
+         * Ordered worker interceptors; the first is the outermost wrapper. Class names
+         * resolve through $container when one is given.
+         */
+        iterable $interceptors = [],
     ) {
         if ($enableCancellationScopes && !$enableCooperativeCancellation) {
             throw new \InvalidArgumentException('Cancellation scopes require the cooperative worker opt-in.');
@@ -260,6 +289,7 @@ final class Worker
         };
         $this->replayer = new Replayer($client->payloadCodec());
         $this->handlerDiscovery = new HandlerDiscovery(new HandlerResolver($container));
+        $this->interceptors = WorkerInterceptorChain::resolve($interceptors, new HandlerResolver($container));
         $this->logger = $logger ?? new NullLogger();
         $this->diagnosticListener = $diagnosticListener === null
             ? null
@@ -272,6 +302,7 @@ final class Worker
      * Construct the preferred class-oriented worker surface.
      *
      * @param (callable(string, array<string, mixed>): void)|null $diagnosticListener
+     * @param iterable<WorkerInterceptor|class-string<WorkerInterceptor>> $interceptors
      */
     public static function create(
         Client $client,
@@ -285,6 +316,7 @@ final class Worker
         ?ExecutionTelemetry $telemetry = null,
         ?MetricsRecorder $metrics = null,
         bool $enableCompletionPipelining = false,
+        iterable $interceptors = [],
     ): self {
         return new self(
             $client,
@@ -298,6 +330,7 @@ final class Worker
             telemetry: $telemetry,
             metrics: $metrics,
             enableCompletionPipelining: $enableCompletionPipelining,
+            interceptors: $interceptors,
         );
     }
 
@@ -331,6 +364,11 @@ final class Worker
             foreach ($handlers->updates as $workflowType => $updates) {
                 foreach ($updates as $name => $handler) {
                     $this->registerUpdateDefinition((string) $workflowType, (string) $name, $handler);
+                }
+            }
+            foreach ($handlers->updateValidators as $workflowType => $validators) {
+                foreach ($validators as $name => $handler) {
+                    $this->registerUpdateValidatorDefinition((string) $workflowType, (string) $name, $handler);
                 }
             }
         }
@@ -451,6 +489,44 @@ final class Worker
         $this->updates[$workflowType] ??= [];
         $this->assertUnique($this->updates[$workflowType], $updateName, 'update');
         $this->updates[$workflowType][$updateName] = $handler;
+
+        return $this;
+    }
+
+    /**
+     * Register the pre-acceptance validator for an update registered on this worker.
+     *
+     * The validator receives a QueryContext with the run's committed history,
+     * followed by the update's arguments. Throwing, or returning false, rejects
+     * the update with `update_validator_rejected` before it is accepted.
+     *
+     * @param callable(QueryContext, mixed ...$arguments): mixed $handler
+     */
+    public function registerUpdateValidator(string $workflowType, string $updateName, callable $handler): self
+    {
+        return $this->registerUpdateValidatorDefinition($workflowType, $updateName, HandlerDefinition::shared($handler));
+    }
+
+    private function registerUpdateValidatorDefinition(
+        string $workflowType,
+        string $updateName,
+        HandlerDefinition $handler,
+    ): self {
+        $this->assertValidDeclarationName($workflowType, 'workflow');
+        $this->assertValidDeclarationName($updateName, 'update');
+        $this->assertHandlerContext(
+            $handler->contract(),
+            QueryContext::class,
+            "update validator {$workflowType}.{$updateName}",
+        );
+        if (!isset($this->updates[$workflowType][$updateName])) {
+            throw new \InvalidArgumentException(
+                "Register update {$workflowType}.{$updateName} before its validator.",
+            );
+        }
+        $this->updateValidators[$workflowType] ??= [];
+        $this->assertUnique($this->updateValidators[$workflowType], $updateName, 'update validator');
+        $this->updateValidators[$workflowType][$updateName] = $handler;
 
         return $this;
     }
@@ -874,6 +950,20 @@ final class Worker
                 );
             }
         }
+        foreach ($this->updateValidators as $workflowType => $handlers) {
+            foreach ($handlers as $name => $handler) {
+                if (!isset($this->updates[$workflowType][$name])) {
+                    throw new \InvalidArgumentException(
+                        "Update validator {$workflowType}.{$name} has no registered update.",
+                    );
+                }
+                $this->assertHandlerContext(
+                    $handler->contract(),
+                    QueryContext::class,
+                    "update validator {$workflowType}.{$name}",
+                );
+            }
+        }
     }
 
     /**
@@ -907,6 +997,7 @@ final class Worker
             'query' => $workflowType === null ? null : ($this->queries[$workflowType][$name] ?? null),
             'signal' => $workflowType === null ? null : ($this->signals[$workflowType][$name] ?? null),
             'update' => $workflowType === null ? null : ($this->updates[$workflowType][$name] ?? null),
+            'update_validator' => $workflowType === null ? null : ($this->updateValidators[$workflowType][$name] ?? null),
             default => null,
         };
         if ($handler === null) {
@@ -949,6 +1040,18 @@ final class Worker
                 ? array_values(array_filter(['try_cancel', 'wait_cancellation_completed'], static fn (string $policy): bool => in_array($policy, $policies, true)))
                 : [];
         }
+        $this->updateValidationTasksEnabled = false;
+        if ($this->hasUpdateValidators()) {
+            $protocol = $this->retryUntypedOutage('cluster_info',
+                fn (): array => $this->client->workerClusterInfo()->raw)['worker_protocol'] ?? null;
+            if (!self::serverSupportsUpdateValidationTasks($protocol)) {
+                throw new WorkflowClaimAborted('update_validation_tasks_unavailable: this worker declares update '
+                    .'validators, but the Server does not advertise synchronous pre-accept update validation with '
+                    .'multiplexed workflow/update-validation polling. Registration is refused so validated updates '
+                    .'are never accepted without validator approval.');
+            }
+            $this->updateValidationTasksEnabled = true;
+        }
         $attempt = 0;
         while (!$this->shutdownRequested) {
             try {
@@ -982,6 +1085,7 @@ final class Worker
                         ...($this->enablePreparedLocalActivities ? ['prepared_local_activities'] : []),
                         ...($this->preparedLocalActivityGroupsSupported ? ['prepared_local_activity_groups'] : []),
                         ...($this->preparedLocalActivityCancellationPolicies !== [] ? ['prepared_local_activity_cancellation_policies'] : []),
+                        ...($this->updateValidationTasksEnabled ? [self::UPDATE_VALIDATION_TASKS_CAPABILITY] : []),
                     ],
                     buildId: $this->buildId,
                     workflowCommandContracts: $this->workflowCommandContracts(),
@@ -1185,7 +1289,7 @@ final class Worker
         }
         $workflowTask = $this->taskFromPoll($workflowPoll);
         if ($workflowTask !== null) {
-            $this->executePolledTask('workflow', $workflowTask);
+            $this->executePolledTask($this->polledWorkflowTaskKind($workflowTask), $workflowTask);
             $handled = true;
         }
         // Parse the sideband only after the parent task's completion/observation has finished.
@@ -1329,6 +1433,7 @@ final class Worker
                         $timeoutSeconds,
                         $requestId,
                         self::WORKFLOW_HISTORY_PAGE_SIZE,
+                        $this->workflowPollTaskKinds($carriedWorkflow),
                     ),
                     $pollTimeoutSeconds,
                     $carriedWorkflow,
@@ -2029,6 +2134,7 @@ final class Worker
                 'workflow' => $this->executeWorkflowTask($task),
                 'activity' => $this->executeActivityTask($task),
                 'query' => $this->executeQueryTask($task),
+                'update_validation' => $this->executeUpdateValidationTask($task),
                 default => throw new \LogicException("Unsupported polled task kind {$taskKind}."),
             };
         } catch (ServerException $exception) {
@@ -2126,6 +2232,16 @@ final class Worker
                         $failure->getMessage(),
                     );
                 },
+                'update_validation' => function (Throwable $failure) use ($leaseOwner, $task): void {
+                    $this->client->rejectUpdateValidationTask(
+                        (string) ($task['update_validation_task_id'] ?? ''),
+                        $leaseOwner,
+                        (int) ($task['update_validation_attempt'] ?? 1),
+                        $failure->getMessage(),
+                        'update_validation_worker_failed',
+                        $failure::class,
+                    );
+                },
                 default => throw new \LogicException("Unsupported polled task kind {$taskKind}."),
             },
         );
@@ -2158,52 +2274,61 @@ final class Worker
             }
             $workflowType = (string) ($task['workflow_type'] ?? '');
             $updateId = isset($task['workflow_update_id']) ? (string) $task['workflow_update_id'] : null;
-            if ($updateId !== null && $updateId !== '') {
-                $commands = [$this->executeUpdate($workflowType, $updateId, $history, $task)];
-            } else {
-                $handler = $this->workflows[$workflowType] ?? null;
-                if ($handler === null) {
-                    throw new \RuntimeException("No workflow handler is registered for {$workflowType}.");
-                }
-                $input = $this->decodeArguments($task['arguments'] ?? $task['input'] ?? null);
-                // Keep pre-entry refusal outside the application-error boundary.
-                // A valid-bound body throwing the same exception is still a body failure.
-                WorkflowEntryArguments::validate($handler, $input, $workflowType);
-                try {
-                    $replay = $this->replayWorkflowClaim(
-                        $handler,
-                        $history,
-                        $input,
-                        $task,
-                    );
-                    $commands = $replay->commands;
-                    $messageStreamCursors = $replay->messageStreamCursors;
-                    $messageStreamWaits = $replay->messageStreamWaits;
-                    $selectionChildAwait = $this->selectionChildAwaitAdvertised ? $replay->selectionChildAwait : null;
-                    if ($replay->terminalFailure instanceof ServerException
-                        && $replay->terminalFailure->isStorageAdmissionFailure()) {
-                        throw $replay->terminalFailure;
-                    }
-                    if ($replay->terminalFailure instanceof Throwable) {
-                        $this->handlerFailure('workflow', $workflowType, $replay->terminalFailure);
-                        $commands[] = $this->workflowFailureCommand(
-                            $replay->terminalFailure,
-                            $replay->failedActivitySequence,
-                            $replay->failedActivityExecutionId,
-                        );
+            $commands = $this->interceptors->workflowTask(
+                fn (): WorkflowTaskInterceptorContext => WorkflowTaskInterceptorContext::forTask(
+                    $this->workerId, $this->taskQueue, $this->client->namespace, $task, $history,
+                    $this->client->observabilityContextAvailable()),
+                function () use ($task, $history, $workflowType, $updateId, &$messageStreamCursors, &$messageStreamWaits, &$selectionChildAwait): array {
+                    if ($updateId !== null && $updateId !== '') {
+                        $commands = [$this->executeUpdate($workflowType, $updateId, $history, $task)];
                     } else {
-                        $this->diagnoseWorkflowWait($task, $commands);
+                        $handler = $this->workflows[$workflowType] ?? null;
+                        if ($handler === null) {
+                            throw new \RuntimeException("No workflow handler is registered for {$workflowType}.");
+                        }
+                        $input = $this->decodeArguments($task['arguments'] ?? $task['input'] ?? null);
+                        // Keep pre-entry refusal outside the application-error boundary.
+                        // A valid-bound body throwing the same exception is still a body failure.
+                        WorkflowEntryArguments::validate($handler, $input, $workflowType);
+                        try {
+                            $replay = $this->replayWorkflowClaim(
+                                $handler,
+                                $history,
+                                $input,
+                                $task,
+                            );
+                            $commands = $replay->commands;
+                            $messageStreamCursors = $replay->messageStreamCursors;
+                            $messageStreamWaits = $replay->messageStreamWaits;
+                            $selectionChildAwait = $this->selectionChildAwaitAdvertised ? $replay->selectionChildAwait : null;
+                            if ($replay->terminalFailure instanceof ServerException
+                                && $replay->terminalFailure->isStorageAdmissionFailure()) {
+                                throw $replay->terminalFailure;
+                            }
+                            if ($replay->terminalFailure instanceof Throwable) {
+                                $this->handlerFailure('workflow', $workflowType, $replay->terminalFailure);
+                                $commands[] = $this->workflowFailureCommand(
+                                    $replay->terminalFailure,
+                                    $replay->failedActivitySequence,
+                                    $replay->failedActivityExecutionId,
+                                );
+                            } else {
+                                $this->diagnoseWorkflowWait($task, $commands);
+                            }
+                        } catch (NonDeterministicWorkflow|WorkflowClaimAborted $exception) {
+                            throw $exception;
+                        } catch (Throwable $exception) {
+                            if ($exception instanceof ServerException && $exception->isStorageAdmissionFailure()) {
+                                throw $exception;
+                            }
+                            $this->handlerFailure('workflow', $workflowType, $exception);
+                            $commands = [$this->workflowFailureCommand($exception)];
+                        }
                     }
-                } catch (NonDeterministicWorkflow|WorkflowClaimAborted $exception) {
-                    throw $exception;
-                } catch (Throwable $exception) {
-                    if ($exception instanceof ServerException && $exception->isStorageAdmissionFailure()) {
-                        throw $exception;
-                    }
-                    $this->handlerFailure('workflow', $workflowType, $exception);
-                    $commands = [$this->workflowFailureCommand($exception)];
-                }
-            }
+
+                    return $commands;
+                },
+            );
             $this->completionPipeline?->join();
             $this->assertPipelineAuthority();
             if ($commands === [] && array_key_exists(ConditionInputOrder::PENDING_INPUT, $task)) {
@@ -2426,6 +2551,7 @@ final class Worker
     {
         $pipeline = $this->completionPipeline;
         if ($pipeline === null || !$pipeline->canPrefetch() || !$this->pipelineManagedTick
+            || $this->updateValidationTasksEnabled
             || !$this->workflowExecutedLocalActivity || $this->claimCancellation !== null
             || $this->shutdownRequested || $this->drainingCarriedLease || $this->carriedWorkflowPoll !== null
             || ($task['lease_owner'] ?? null) !== $this->workerId
@@ -2485,7 +2611,9 @@ final class Worker
     {
         $contract = $this->activityContinuation;
         $executionId = $task['activity_execution_id'] ?? null;
-        if (!$this->enableActivityContinuation || $contract === null || !is_string($executionId) || $executionId === '') {
+        // Interceptors wrap every workflow task, so keep the ordinary completion and workflow poll.
+        if (!$this->enableActivityContinuation || $contract === null || !is_string($executionId) || $executionId === ''
+            || !$this->interceptors->isEmpty()) {
             return null;
         }
         $taskId = (string) ($task['task_id'] ?? '');
@@ -2562,7 +2690,9 @@ final class Worker
     private function reserveWorkflowPoll(string $leaseOwner, bool $workflowCompletion = false): ?CarriedPoll
     {
         $supported = $workflowCompletion ? $this->workflowCompletionWorkflowPollSupported : $this->activityCompletionWorkflowPollSupported;
-        if (!$supported || $this->workflows === []
+        // The Server carries only workflow-only polls. A validator worker polls
+        // both kinds itself, so update validation tasks keep their turn (#234).
+        if (!$supported || $this->workflows === [] || $this->updateValidationTasksEnabled
             || $leaseOwner !== $this->workerId || $this->shutdownRequested || $this->drainingCarriedLease
             || $this->queryPollDeferredForCarriedWorkflow
             || $this->workflowTasksInFlight !== ($workflowCompletion ? 1 : 0) || $this->carriedWorkflowPoll !== null
@@ -4053,7 +4183,12 @@ final class Worker
                 throw new WorkflowClaimRevoked('worker_stopped', 'Worker stopped before query dispatch.');
             }
             $authority?->confirm();
-            $result = $handler($context, ...$arguments);
+            $result = $this->interceptors->queryTask(
+                new QueryTaskInterceptorContext($this->workerId, $this->taskQueue, $this->client->namespace, $task, $taskId,
+                    $workflowType, $queryName, $context->workflowId, $context->runId, $arguments, $context,
+                    $this->client->observabilityContextAvailable()),
+                static fn (QueryTaskInterceptorContext $ctx): mixed => $handler($ctx->queryContext, ...$ctx->arguments),
+            );
             $authority?->confirm();
             $this->retryStorageAdmission('query_complete', fn (): array =>
                 $this->client->completeQueryTask($taskId, $leaseOwner, $attempt, $result, $this->queryRequestBudget($authority)));
@@ -4080,6 +4215,202 @@ final class Worker
         } finally {
             $traceScope?->__invoke();
             $this->queryTaskAuthority = null;
+        }
+    }
+
+    /**
+     * A poll request id is bound to its task-kind set, so a carried or retried
+     * poll keeps the kinds it was created with. Only a fresh poll on a
+     * validator worker asks for update validation tasks too.
+     *
+     * @return list<string>|null
+     */
+    private function workflowPollTaskKinds(?CarriedPoll $carried): ?array
+    {
+        if ($carried !== null) {
+            $kinds = $carried->request['task_kinds'] ?? null;
+
+            // Workflow-only is the Server default; keep the original wire shape.
+            return isset($kinds[0]) && $kinds !== ['workflow'] ? $kinds : null;
+        }
+
+        return $this->updateValidationTasksEnabled ? ['workflow', 'update_validation'] : null;
+    }
+
+    /** @param array<string, mixed> $task */
+    private function polledWorkflowTaskKind(array $task): string
+    {
+        $kind = $task['task_kind'] ?? null;
+        if ($kind === null || $kind === 'workflow' || !$this->updateValidationTasksEnabled) {
+            return 'workflow';
+        }
+        if ($kind === 'update_validation') {
+            return 'update_validation';
+        }
+
+        throw new ServerException(
+            'The multiplexed workflow poll returned a task with an unsupported task_kind.',
+            200,
+            'invalid_task_kind',
+        );
+    }
+
+    /**
+     * Run only the declared validator against the run's committed history and
+     * approve or reject the update. Nothing here records workflow commands.
+     *
+     * @param array<string, mixed> $task
+     */
+    private function executeUpdateValidationTask(array $task): void
+    {
+        $taskId = (string) ($task['update_validation_task_id'] ?? '');
+        $attempt = $task['update_validation_attempt'] ?? 1;
+        $leaseOwner = (string) ($task['lease_owner'] ?? $this->workerId);
+        if ($taskId === '' || !is_int($attempt) || $attempt < 1) {
+            $this->diagnostic('worker.update_validation_malformed', ['task_id' => $taskId], 'warning');
+            $this->taskObservation?->outcome('failed');
+
+            return;
+        }
+        $workflowType = (string) ($task['workflow_type'] ?? '');
+        $updateName = (string) ($task['update_name'] ?? '');
+        $validator = $this->updateValidators[$workflowType][$updateName] ?? null;
+        if ($validator === null) {
+            $this->finishUpdateValidation($taskId, $leaseOwner, $attempt, false,
+                "No update validator is registered for {$workflowType}.{$updateName}.",
+                'update_validation_worker_failed', 'UnknownUpdateValidator');
+
+            return;
+        }
+
+        try {
+            $context = new QueryContext(
+                (string) ($task['workflow_id'] ?? ''),
+                (string) ($task['run_id'] ?? ''),
+                $this->historyFromTask($task),
+                $task,
+            );
+            $arguments = $this->decodeArguments($task['update_arguments'] ?? $task['arguments'] ?? null);
+        } catch (Throwable $exception) {
+            $this->finishUpdateValidation($taskId, $leaseOwner, $attempt, false,
+                'The update validation task could not be decoded: '.$exception->getMessage(),
+                'update_validation_worker_failed', $exception::class);
+
+            return;
+        }
+
+        try {
+            $result = $this->runUpdateValidator($validator, $workflowType, $updateName, $context, $arguments);
+        } catch (Throwable $exception) {
+            $this->finishUpdateValidation($taskId, $leaseOwner, $attempt, false,
+                $exception->getMessage() !== '' ? $exception->getMessage()
+                    : "Update validator for {$workflowType}.{$updateName} rejected the update.",
+                'update_validator_rejected', $exception::class, self::validatorErrors($exception));
+
+            return;
+        }
+        if ($result === false) {
+            $this->finishUpdateValidation($taskId, $leaseOwner, $attempt, false,
+                "Update validator for {$workflowType}.{$updateName} returned false.",
+                'update_validator_rejected', 'false');
+
+            return;
+        }
+
+        $this->finishUpdateValidation($taskId, $leaseOwner, $attempt, true);
+    }
+
+    /**
+     * Invoke a validator in its own Fiber. Workflow operations suspend the
+     * current Fiber to emit a command, so any suspension here is an attempt to
+     * schedule durable work, and is refused.
+     *
+     * @param list<mixed> $arguments
+     */
+    private function runUpdateValidator(
+        callable $validator,
+        string $workflowType,
+        string $updateName,
+        QueryContext $context,
+        array $arguments,
+    ): mixed {
+        $fiber = new \Fiber(static fn (): mixed => $validator($context, ...$arguments));
+        $suspended = $fiber->start();
+        if (!$fiber->isTerminated()) {
+            throw new UpdateValidatorCommandRefused($workflowType, $updateName, get_debug_type($suspended));
+        }
+        $result = $fiber->getReturn();
+        if ($result instanceof DeferredWorkflowOperation) {
+            throw new UpdateValidatorCommandRefused($workflowType, $updateName, DeferredWorkflowOperation::class);
+        }
+
+        return $result;
+    }
+
+    /** @return array<string, list<string>> */
+    private static function validatorErrors(Throwable $exception): array
+    {
+        if (!method_exists($exception, 'errors')) {
+            return [];
+        }
+        $errors = $exception->errors();
+        if (!is_array($errors)) {
+            return [];
+        }
+        $normalized = [];
+        foreach ($errors as $field => $messages) {
+            $kept = array_values(array_filter(
+                is_array($messages) ? $messages : [$messages],
+                static fn (mixed $message): bool => is_string($message) && $message !== '',
+            ));
+            if (is_string($field) && $kept !== []) {
+                $normalized[$field] = $kept;
+            }
+        }
+
+        return $normalized;
+    }
+
+    /** @param array<string, list<string>> $validationErrors */
+    private function finishUpdateValidation(
+        string $taskId,
+        string $leaseOwner,
+        int $attempt,
+        bool $approved,
+        string $message = '',
+        string $reason = 'update_validator_rejected',
+        ?string $type = null,
+        array $validationErrors = [],
+    ): void {
+        try {
+            if ($approved) {
+                $this->retryStorageAdmission('update_validation_approve', fn (): array =>
+                    $this->client->approveUpdateValidationTask($taskId, $leaseOwner, $attempt));
+            } else {
+                $this->retryStorageAdmission('update_validation_reject', fn (): array =>
+                    $this->client->rejectUpdateValidationTask($taskId, $leaseOwner, $attempt, $message, $reason,
+                        $type, $validationErrors));
+            }
+            $this->taskObservation?->outcome(match (true) {
+                $approved => 'approved',
+                $reason === 'update_validator_rejected' => 'rejected',
+                default => 'failed',
+            });
+        } catch (ServerException $exception) {
+            if (in_array($exception->reason, self::UPDATE_VALIDATION_FENCES, true)) {
+                // Another completion or a lease change already settled this validation.
+                $this->diagnostic('worker.update_validation_fenced', ['task_id' => $taskId,
+                    'reason' => $exception->reason], 'info');
+                $this->taskObservation?->outcome('expired');
+
+                return;
+            }
+            // As sdk-python does, a lost answer is logged, not fatal: the Server
+            // times the validation out and the caller can retry its request id.
+            $this->diagnostic('worker.update_validation_completion_failed', ['task_id' => $taskId,
+                'reason' => $exception->reason, 'status' => $exception->status,
+                'message' => $exception->getMessage()], 'warning');
+            $this->taskObservation?->outcome('failed');
         }
     }
 
@@ -5245,7 +5576,7 @@ final class Worker
                 'signal_contracts' => $this->commandHandlerContracts($signals),
                 'updates' => $this->declarationNames($updates),
                 'update_contracts' => $this->commandHandlerContracts($updates, QueryContext::class),
-                'update_validators' => [],
+                'update_validators' => $this->declarationNames($this->updateValidators[$workflowType] ?? []),
             ];
         }
 
@@ -5333,6 +5664,7 @@ final class Worker
         $queries = $this->queries;
         $signals = $this->signals;
         $updates = $this->updates;
+        $updateValidators = $this->updateValidators;
 
         foreach ($discoveries as $discovery) {
             try {
@@ -5366,6 +5698,13 @@ final class Worker
                         $updates[$workflowType][$name] = $handler;
                     }
                 }
+                foreach ($discovery->updateValidators as $workflowType => $handlers) {
+                    $updateValidators[$workflowType] ??= [];
+                    foreach ($handlers as $name => $handler) {
+                        $this->assertUnique($updateValidators[$workflowType], (string) $name, 'update validator');
+                        $updateValidators[$workflowType][$name] = $handler;
+                    }
+                }
             } catch (\InvalidArgumentException $exception) {
                 throw new InvalidWorkerDefinition(
                     $discovery->class,
@@ -5373,6 +5712,45 @@ final class Worker
                 );
             }
         }
+    }
+
+    private function hasUpdateValidators(): bool
+    {
+        foreach ($this->updateValidators as $validators) {
+            if ($validators !== []) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The Server's synchronous update validation contract, as sdk-python checks it.
+     */
+    private static function serverSupportsUpdateValidationTasks(mixed $protocol): bool
+    {
+        $capabilities = is_array($protocol) ? ($protocol['server_capabilities'] ?? null) : null;
+        if (!is_array($capabilities) || ($capabilities[self::UPDATE_VALIDATION_TASKS_CAPABILITY] ?? null) !== true) {
+            return false;
+        }
+        $semantics = $capabilities['synchronous_update_validation'] ?? null;
+        $poll = is_array($semantics) ? ($semantics['task_poll'] ?? null) : null;
+        $kinds = is_array($poll) ? ($poll['task_kinds'] ?? null) : null;
+
+        return is_array($semantics)
+            && ($semantics['supported'] ?? null) === true
+            && ($semantics['acceptance_boundary'] ?? null) === 'validator_approved'
+            && ($semantics['worker_capability'] ?? null) === self::UPDATE_VALIDATION_TASKS_CAPABILITY
+            && ($semantics['workflow_contract_field'] ?? null) === 'update_validators'
+            && is_array($poll)
+            && ($poll['strategy'] ?? null) === 'multiplexed'
+            && ($poll['endpoint'] ?? null) === '/worker/workflow-tasks/poll'
+            && ($poll['request_field'] ?? null) === 'task_kinds'
+            && ($poll['response_discriminator'] ?? null) === 'task.task_kind'
+            && is_array($kinds)
+            && in_array('workflow', $kinds, true)
+            && in_array('update_validation', $kinds, true);
     }
 
     private function assertSignalNameIsNotRuntimeReserved(string $signalName): void
@@ -5426,6 +5804,14 @@ final class Worker
      */
     private function invokeActivity(callable $handler, ActivityContext $context, array $arguments, array $fields, bool $local = false, ?array $authorizedTask = null): mixed
     {
+        if (!$this->interceptors->isEmpty()) {
+            $intercepted = new ActivityInterceptorContext($this->workerId, $this->taskQueue, $this->client->namespace,
+                $local ? [] : ($authorizedTask ?? []), $context->activityType, $arguments, $context->attemptNumber,
+                $context->taskId, $context->activityAttemptId, $context->workflowId, $context->runId, $local, $context,
+                $this->client->observabilityContextAvailable());
+            $handler = fn (ActivityContext $context, mixed ...$arguments): mixed => $this->interceptors->activity(
+                $intercepted, static fn (ActivityInterceptorContext $ctx): mixed => $handler($ctx->activityContext, ...$ctx->arguments));
+        }
         if ($this->telemetry === null) {
             return $handler($context, ...$arguments);
         }

@@ -66,6 +66,8 @@ final class WorkerFactory
             stickyCacheCapacity: $this->configuration->stickyCacheCapacity,
             stickyCacheTtlSeconds: $this->configuration->stickyCacheTtlSeconds,
             telemetry: $this->telemetry,
+            interceptors: array_map(fn (string $interceptor): object => $this->container->make($interceptor),
+                $this->configuration->interceptors),
         );
 
         $handlers = [];

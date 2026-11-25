@@ -462,7 +462,7 @@ jobs:
             bridge_path=src/Bridge/Symfony
             compatibility_scripts=("tests/compat/${COMPAT_SCRIPT}")
           fi
-          compatibility_scripts+=(tests/compat/history-cache.php tests/compat/execution-telemetry.php)
+          compatibility_scripts+=(tests/compat/history-cache.php tests/compat/execution-telemetry.php tests/compat/interceptors.php)
           php tests/compat/static-credentials.php "$consumer/vendor/autoload.php" "$COMPAT_SCRIPT"
           php "$consumer/vendor/bin/phpstan" analyse -c phpstan-framework.neon \
             --autoload-file="$consumer/vendor/autoload.php" \
@@ -620,7 +620,7 @@ jobs:
             bridge_path=src/Bridge/Symfony
             compatibility_scripts=("tests/compat/${COMPAT_SCRIPT}")
           fi
-          compatibility_scripts+=(tests/compat/history-cache.php tests/compat/execution-telemetry.php)
+          compatibility_scripts+=(tests/compat/history-cache.php tests/compat/execution-telemetry.php tests/compat/interceptors.php)
           php tests/compat/static-credentials.php "$consumer/vendor/autoload.php" "$COMPAT_SCRIPT"
           php "$consumer/vendor/bin/phpstan" analyse -c phpstan-framework.neon \
             --autoload-file="$consumer/vendor/autoload.php" \
@@ -792,7 +792,7 @@ jobs:
             bridge_path=src/Bridge/Symfony
             compatibility_scripts=("tests/compat/${COMPAT_SCRIPT}")
           fi
-          compatibility_scripts+=(tests/compat/history-cache.php tests/compat/execution-telemetry.php)
+          compatibility_scripts+=(tests/compat/history-cache.php tests/compat/execution-telemetry.php tests/compat/interceptors.php)
           php tests/compat/static-credentials.php "$consumer/vendor/autoload.php" "$COMPAT_SCRIPT"
           php "$consumer/vendor/bin/phpstan" analyse -c phpstan-framework.neon \
             --autoload-file="$consumer/vendor/autoload.php" \
@@ -971,7 +971,7 @@ jobs:
             bridge_path=src/Bridge/Symfony
             compatibility_scripts=("tests/compat/${COMPAT_SCRIPT}")
           fi
-          compatibility_scripts+=(tests/compat/history-cache.php tests/compat/execution-telemetry.php)
+          compatibility_scripts+=(tests/compat/history-cache.php tests/compat/execution-telemetry.php tests/compat/interceptors.php)
           php tests/compat/static-credentials.php "$consumer/vendor/autoload.php" "$COMPAT_SCRIPT"
           "$consumer/vendor/bin/phpstan" analyse -c phpstan-framework.neon \
             --autoload-file="$consumer/vendor/autoload.php" \

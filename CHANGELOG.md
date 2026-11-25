@@ -24,6 +24,30 @@ project follows [Semantic Versioning](https://semver.org/).
   `replayNow()` stays unavailable. `WorkerTestHarness::runWorkflow()` accepts
   the carrier as `replay_clock` in its task argument
   (durable-workflow/.github#215).
+- Workers accept ordered `interceptors` around workflow tasks, activities and
+  query tasks, with the task context the Python SDK exposes. The first
+  interceptor is the outermost wrapper; extend `PassthroughWorkerInterceptor`
+  to implement only some hooks. Workflow-task interceptors see whether the task
+  replays a committed history prefix and cannot change the submitted commands,
+  swap the task or hide a workflow-code failure. Class names resolve from the
+  worker's PSR-11 container, and Laravel and Symfony service mode read them
+  from `worker.interceptors`. With interceptors configured,
+  `enableActivityContinuation` keeps the ordinary activity completion so every
+  workflow task is wrapped.
+  ([Durable Workflow #226](https://github.com/durable-workflow/.github/issues/226))
+- Update validators. `#[UpdateValidator('update-name')]`, or
+  `Worker::registerUpdateValidator()`, declares a validator that the Server
+  runs through the worker before an update is accepted. The worker advertises
+  `update_validators` and `update_validation_tasks`, polls workflow and update
+  validation tasks together, runs only the validator against committed
+  history, and approves or rejects the update. Throwing or returning `false`
+  rejects it with `update_validator_rejected` before anything is accepted. A
+  validator that tries to schedule durable work is refused with
+  `UpdateValidatorCommandRefused`. Registration is refused when the Server
+  doesn't advertise synchronous update validation. `UpdateFailed` gains
+  `rejectedByValidator()`, `validationFailed()` and `validationErrors()`.
+  `Client::registerWorker()` accepts non-empty `update_validators` with the
+  `update_validation_tasks` capability.
 
 ### Changed
 

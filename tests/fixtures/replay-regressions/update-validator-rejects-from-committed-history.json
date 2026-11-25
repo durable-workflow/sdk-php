@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-update-validator-rejects-from-committed-history",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.update-validation", "input": [1]},
+  "history": [
+    {"event_type": "WorkflowStarted", "payload": {}},
+    {"event_type": "UpdateAccepted", "payload": {"update_id": "update-earlier", "update_name": "approve", "arguments": {"codec": "avro", "blob": "wwHioz3/VYAiNwwCBAAA"}}}
+  ],
+  "expected": {
+    "type": "reject_update_validation",
+    "update_validation_attempt": 1,
+    "reason": "update_validator_rejected",
+    "message": "The amount must exceed the 1 accepted updates.",
+    "command_sequence": [
+      {"type": "reject_update_validation", "reason": "update_validator_rejected"}
+    ]
+  }
+}

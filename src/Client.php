@@ -2179,10 +2179,12 @@ final class Client implements WorkflowClientInterface
     }
 
     /**
-     * Registers a low-level worker without advertising unsupported validator authoring.
+     * Registers a low-level worker.
      *
      * Workflow command contracts may omit `update_validators` for backward compatibility.
-     * When present, `update_validators` is a `list<string>` and must be empty.
+     * When present, `update_validators` is a `list<string>` of declared update names. A
+     * non-empty list requires the `update_validation_tasks` capability, and the worker
+     * must poll and answer update validation tasks.
      *
      * @param list<string> $workflowTypes
      * @param list<string> $activityTypes
@@ -2268,9 +2270,21 @@ final class Client implements WorkflowClientInterface
                 continue;
             }
 
-            if ($contract['update_validators'] !== []) {
+            /** @var mixed $validators Runtime callers may pass any shape. */
+            $validators = $contract['update_validators'];
+            if (!is_array($validators) || !array_is_list($validators)) {
+                throw new InvalidArgumentException("update_validators must be a list of update names for workflow type {$workflowType}.");
+            }
+            foreach ($validators as $validator) {
+                if (!is_string($validator) || !in_array($validator, $contract['updates'], true)) {
+                    throw new InvalidArgumentException(
+                        "Every update validator must name a declared update; workflow type {$workflowType} declares a validator for an unknown update.",
+                    );
+                }
+            }
+            if ($validators !== [] && !in_array('update_validation_tasks', $capabilities, true)) {
                 throw new InvalidArgumentException(
-                    "PHP workers do not support update-validator authoring; update_validators must be an empty list for workflow type {$workflowType}.",
+                    "Workflow type {$workflowType} declares update validators; advertise the update_validation_tasks capability and poll update_validation tasks.",
                 );
             }
         }
@@ -2415,6 +2429,11 @@ final class Client implements WorkflowClientInterface
     /**
      * Return the complete workflow-task poll response, including typed refusal and protocol metadata.
      *
+     * `$taskKinds` opts into the Server's multiplexed workflow-work poll. A worker
+     * with update validators passes `['workflow', 'update_validation']`, so one
+     * poll can lease either kind; the leased task names its kind in `task_kind`.
+     *
+     * @param list<string>|null $taskKinds
      * @return array<string, mixed>
      */
     public function pollWorkflowTaskResponse(
@@ -2423,10 +2442,17 @@ final class Client implements WorkflowClientInterface
         int $timeoutSeconds = 5,
         ?string $pollRequestId = null,
         ?int $historyPageSize = null,
+        ?array $taskKinds = null,
     ): array
     {
         if ($historyPageSize !== null && ($historyPageSize < 1 || $historyPageSize > 1000)) {
             throw new InvalidArgumentException('Workflow history page size must be between 1 and 1000.');
+        }
+        $kinds = self::untyped($taskKinds);
+        if ($kinds !== null && (!is_array($kinds) || $kinds === [] || !array_is_list($kinds)
+            || count(array_unique($kinds, SORT_REGULAR)) !== count($kinds)
+            || array_filter($kinds, static fn (mixed $kind): bool => !is_string($kind) || $kind === '') !== [])) {
+            throw new InvalidArgumentException('Workflow poll task kinds must be a non-empty list of unique task-kind names.');
         }
 
         $body = [
@@ -2437,6 +2463,9 @@ final class Client implements WorkflowClientInterface
         ];
         if ($historyPageSize !== null) {
             $body['history_page_size'] = $historyPageSize;
+        }
+        if ($taskKinds !== null) {
+            $body['task_kinds'] = $taskKinds;
         }
 
         return $this->pollTaskResponse('/worker/workflow-tasks/poll', $body);
@@ -3220,6 +3249,58 @@ final class Client implements WorkflowClientInterface
         }
 
         return $client->worker('POST', '/worker/query-tasks/'.$this->segment($taskId).self::TASK_COMPLETION_SUFFIX, $body, $budget);
+    }
+
+    /** Runtime callers may pass any shape, whatever the PHPDoc says. */
+    private static function untyped(mixed $value): mixed
+    {
+        return $value;
+    }
+
+    /**
+     * Approve one leased update validation task, letting the Server accept the update.
+     *
+     * @return array<string, mixed>
+     */
+    public function approveUpdateValidationTask(string $taskId, string $leaseOwner, int $attempt): array
+    {
+        return $this->worker('POST', '/worker/update-validation-tasks/'.$this->segment($taskId).'/approve', [
+            'lease_owner' => $leaseOwner,
+            'update_validation_attempt' => $attempt,
+        ]);
+    }
+
+    /**
+     * Reject one leased update validation task.
+     *
+     * `$reason` is `update_validator_rejected` when the validator refused the
+     * update, or `update_validation_worker_failed` when it could not run.
+     *
+     * @param array<string, list<string>> $validationErrors
+     * @return array<string, mixed>
+     */
+    public function rejectUpdateValidationTask(
+        string $taskId,
+        string $leaseOwner,
+        int $attempt,
+        string $message,
+        string $reason = 'update_validator_rejected',
+        ?string $type = null,
+        array $validationErrors = [],
+    ): array {
+        $failure = ['message' => $message, 'reason' => $reason];
+        if ($type !== null) {
+            $failure['type'] = $type;
+        }
+        if ($validationErrors !== []) {
+            $failure['validation_errors'] = $validationErrors;
+        }
+
+        return $this->worker('POST', '/worker/update-validation-tasks/'.$this->segment($taskId).'/reject', [
+            'lease_owner' => $leaseOwner,
+            'update_validation_attempt' => $attempt,
+            'failure' => $failure,
+        ]);
     }
 
     /** @return array<string, mixed> */
