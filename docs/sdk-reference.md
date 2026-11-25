@@ -348,6 +348,53 @@ Server execution ID; inline local/Server-free callbacks without one report
 null. Session callbacks use the actual claim field when present. The same
 accessor is used in ordinary and cooperative remote execution.
 
+## Resume an activity from its last acknowledged heartbeat
+
+A retried activity attempt can read the checkpoint that an earlier attempt of
+the same activity execution recorded with `heartbeat()`. The worker registers
+`activity_heartbeat_resume`, and a Server that supports version 1 of the
+contract adds the last acknowledged details to each retry claim.
+
+```php
+use DurableWorkflow\Exception\ActivityHeartbeatResumeUnavailable;
+use DurableWorkflow\Worker\ActivityContext;
+
+$worker->registerActivity('batch.import', function (ActivityContext $context, array $items): int {
+    try {
+        $next = $context->lastHeartbeatDetails()['next_item'] ?? 0;
+    } catch (ActivityHeartbeatResumeUnavailable) {
+        $next = 0; // Older Server: start over, relying on idempotent item writes.
+    }
+    for ($index = $next; $index < count($items); ++$index) {
+        importItem($items[$index], idempotencyKey: $context->activityExecutionId.':'.$index);
+        $context->heartbeat(['next_item' => $index + 1]);
+    }
+
+    return count($items);
+});
+```
+
+`lastHeartbeatCheckpoint()` returns an `ActivityHeartbeatCheckpoint`, or null
+when the supported claim has no checkpoint, such as a first attempt or a retry
+whose earlier attempts recorded none. It throws
+`ActivityHeartbeatResumeUnavailable` when the Server or claim does not carry
+the contract, and for local activities and Server-free tests. Unavailable is
+never reported as an empty checkpoint.
+
+The checkpoint's `details()` returns a fresh copy of the acknowledged
+details. `acknowledgedAt` is the original RFC 3339 acknowledgement time and
+`acknowledgedAtTime()` is the same instant in UTC with microsecond precision.
+`contractVersion` and `heartbeatResumeVersion()` name the negotiated protocol
+version. Version 1 has no per-checkpoint write sequence.
+
+The received checkpoint does not change while the attempt runs. A heartbeat
+from this attempt never updates it, whether the Server acknowledges or
+refuses the write, or its response is lost. A later attempt receives whatever
+the Server retained, so a write whose response was lost may still be resumed.
+An acknowledged heartbeat does not commit an external business effect. Keep
+using stable idempotency keys and provider reconciliation for effects that
+can repeat. Retry policy and timeouts are those of the original activity.
+
 ## Schedule origin
 
 A run started by a schedule can read the fire that started it with

@@ -321,6 +321,28 @@ final class CooperativeRemoteActivityTest extends TestCase
         }
     }
 
+    public function testTheReceivedHeartbeatCheckpointReachesTheSupervisedCallback(): void
+    {
+        $transport = new RemoteOwnerTransport();
+        $transport->pollEnvelope = ['server_capabilities' => ['activity_heartbeat_resume' => ['supported' => true, 'version' => 1]]];
+        $transport->taskMetadata = ['attempt_number' => 2, 'namespace' => 'default', 'workflow_id' => 'workflow',
+            'run_id' => 'run', 'activity_execution_id' => 'execution',
+            'last_heartbeat_details' => ['cursor' => 7], 'last_heartbeat_at' => '2026-11-14T09:00:00.123456789Z'];
+        $pids = [];
+        $worker = $this->worker($transport, $pids);
+        $worker->registerActivity('remote', static function (ActivityContext $context): array {
+            $context->heartbeat(['cursor' => 8]);
+
+            return ['version' => $context->heartbeatResumeVersion(), 'details' => $context->lastHeartbeatDetails(),
+                'at' => $context->lastHeartbeatAt()];
+        });
+        self::assertTrue($worker->tick(0));
+        self::assertSame([], $transport->failures);
+        self::assertSame([['cursor' => 8]], array_column($transport->userHeartbeats, 'details'));
+        $result = (new \DurableWorkflow\Codec\AvroPayloadCodec())->decode($transport->completions[0]['result']['blob']);
+        self::assertSame(['version' => 1, 'details' => ['cursor' => 7], 'at' => '2026-11-14T09:00:00.123456789Z'], $result);
+    }
+
     public function testOwnershipLossDiscardsAResultBeforeEncoding(): void
     {
         $transport = new RemoteOwnerTransport();
@@ -407,6 +429,7 @@ final class RemoteOwnerBusinessFailure extends RuntimeException {}
 final class RemoteOwnerTransport implements BoundedTransport
 {
     public array $taskMetadata = [];
+    public array $pollEnvelope = [];
     public array $status = ['task_id' => 'task', 'activity_attempt_id' => 'attempt', 'lease_owner' => 'owner',
         'can_continue' => true, 'cancel_requested' => false, 'heartbeat_recorded' => false,
         'reason' => null, 'lease_expires_at' => '2100-01-01T00:00:00Z'];
@@ -451,7 +474,7 @@ final class RemoteOwnerTransport implements BoundedTransport
         if (str_ends_with($uri, '/activity-tasks/poll')) {
             if ($this->polled) { return ['task' => null]; }
             $this->polled = true;
-            return ['task' => $this->taskMetadata + ['task_id' => 'task', 'activity_attempt_id' => 'attempt', 'lease_owner' => 'owner',
+            return $this->pollEnvelope + ['task' => $this->taskMetadata + ['task_id' => 'task', 'activity_attempt_id' => 'attempt', 'lease_owner' => 'owner',
                 'activity_type' => 'remote', 'attempt_number' => 1, 'arguments' => null, 'payload_codec' => 'avro']];
         }
         if (str_ends_with($uri, '/poll')) { return ['task' => null]; }

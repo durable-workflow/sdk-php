@@ -6,6 +6,18 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `ActivityContext::lastHeartbeatCheckpoint()` returns the last acknowledged
+  heartbeat checkpoint that a retry attempt receives from earlier attempts of
+  the same activity execution, with `lastHeartbeatDetails()`,
+  `lastHeartbeatAt()` and `heartbeatResumeVersion()`. Workers register the
+  `activity_heartbeat_resume` capability. A Server or claim without the
+  version 1 contract, local activities and Server-free tests throw
+  `ActivityHeartbeatResumeUnavailable` instead of reporting an empty
+  checkpoint. Heartbeats sent by the running attempt never change the received
+  snapshot. ([.github #218](https://github.com/durable-workflow/.github/issues/218))
+
 ## [3.30.0] - 2026-11-24
 
 ### Added
