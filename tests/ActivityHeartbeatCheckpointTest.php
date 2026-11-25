@@ -273,7 +273,9 @@ final class ActivityHeartbeatCheckpointTest extends TestCase
     public function testMalformedNegotiatedCheckpointsAreRefusedBeforeTheHandler(array $wire): void
     {
         [$worker, $log] = self::worker([$wire]);
-        $worker->registerActivity('inspect', static fn (ActivityContext $context): never => self::fail('A malformed checkpoint reached the handler.'));
+        $worker->registerActivity('inspect', static function (ActivityContext $context): never {
+            self::fail('A malformed checkpoint reached the handler.');
+        });
         self::assertTrue($worker->tick(0));
         self::assertSame([], $log['completions']);
         self::assertCount(1, $log['failures']);
