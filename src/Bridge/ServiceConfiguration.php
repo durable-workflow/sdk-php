@@ -15,6 +15,7 @@ final class ServiceConfiguration
 {
     /**
      * @param list<string> $handlers
+     * @param list<string> $interceptors ordered worker interceptor service names
      */
     public function __construct(
         public readonly string $endpoint,
@@ -29,6 +30,7 @@ final class ServiceConfiguration
         public readonly int $stickyCacheTtlSeconds = 300,
         public readonly ?float $requestTimeoutSeconds = null,
         public readonly ?float $workerRequestTimeoutSeconds = null,
+        public readonly array $interceptors = [],
     ) {
         foreach (['token' => $this->token, 'control_token' => $this->controlToken, 'worker_token' => $this->workerToken] as $setting => $value) {
             StaticCredential::assertValid($value, 'credentials.'.$setting);
@@ -56,6 +58,10 @@ final class ServiceConfiguration
             throw new InvalidArgumentException('Durable Workflow worker settings must be an array.');
         }
         $stickyCache = array_key_exists('sticky_cache', $worker) ? $worker['sticky_cache'] : [];
+        $interceptors = array_key_exists('interceptors', $worker) ? $worker['interceptors'] : [];
+        if (!is_array($interceptors) || !array_is_list($interceptors)) {
+            throw new InvalidArgumentException('Durable Workflow worker.interceptors must be a list of service class names.');
+        }
         if (!is_array($stickyCache)) {
             throw new InvalidArgumentException('Durable Workflow worker.sticky_cache settings must be an array.');
         }
@@ -73,6 +79,7 @@ final class ServiceConfiguration
             self::cacheInteger($stickyCache, 'ttl_seconds', 300),
             self::requestTimeout($values),
             self::requestTimeout($values, 'worker_request_timeout_seconds'),
+            self::interceptors($interceptors),
         );
     }
 
@@ -278,5 +285,27 @@ final class ServiceConfiguration
         }
 
         return $handlers;
+    }
+
+    /**
+     * @param list<mixed> $interceptors
+     * @return list<string>
+     */
+    private static function interceptors(array $interceptors): array
+    {
+        $seen = [];
+        foreach ($interceptors as $interceptor) {
+            if (!is_string($interceptor) || $interceptor === '' || trim($interceptor) !== $interceptor) {
+                throw new InvalidArgumentException(
+                    'Each Durable Workflow worker interceptor must be a non-empty service class name without surrounding whitespace.',
+                );
+            }
+            if (isset($seen[$interceptor])) {
+                throw new InvalidArgumentException("Durable Workflow worker interceptor {$interceptor} is configured more than once.");
+            }
+            $seen[$interceptor] = true;
+        }
+
+        return $interceptors;
     }
 }

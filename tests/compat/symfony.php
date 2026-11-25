@@ -5,6 +5,7 @@ declare(strict_types=1);
 require $argv[1];
 require __DIR__.'/history-cache.php';
 require __DIR__.'/execution-telemetry.php';
+require __DIR__.'/interceptors.php';
 
 use DurableWorkflow\Attribute\Activity;
 use DurableWorkflow\Attribute\Query;
@@ -149,6 +150,7 @@ $events->addListener('worker.shutdown_requested', static function (WorkerDiagnos
 });
 $container = new ContainerBuilder();
 $container->register(SymfonyGreetingDependency::class, SymfonyGreetingDependency::class)->setPublic(true);
+$container->register(CompatAuditSink::class, CompatAuditSink::class)->setPublic(true);
 $container->register(LoggerInterface::class)->setSynthetic(true)->setPublic(true);
 $container->register(EventDispatcherInterface::class)->setSynthetic(true)->setPublic(true);
 $bundle = new DurableWorkflowBundle();
@@ -158,7 +160,7 @@ $extension->load([[
     'endpoint' => 'http://localhost:8080',
     'namespace' => 'default',
     'task_queue' => 'symfony-workers',
-    'worker' => ['sticky_cache' => ['capacity' => 1, 'ttl_seconds' => 37]],
+    'worker' => ['sticky_cache' => ['capacity' => 1, 'ttl_seconds' => 37], 'interceptors' => [CompatAuditInterceptor::class]],
     'credentials' => [
         'control_token' => 'control-secret',
         'worker_token' => 'worker-secret',
@@ -206,6 +208,7 @@ if (($controlAuthentication->headers(false)['Authorization'] ?? null) !== 'Beare
     throw new RuntimeException('Symfony extension did not preserve role-specific client credentials.');
 }
 $worker = $factory->make();
+verifyConfiguredInterceptors($worker, $container->get(CompatAuditSink::class));
 verifyFrameworkExecutionTelemetry(static function (Client $client, ?\DurableWorkflow\Telemetry\ExecutionTelemetry $telemetry): \DurableWorkflow\Worker {
     $configuration = new \DurableWorkflow\Bridge\ServiceConfiguration('https://framework.invalid', 'framework-namespace',
         'framework-queue', [FrameworkTelemetryHandler::class]);

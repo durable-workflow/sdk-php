@@ -32,5 +32,9 @@ return [
             'capacity' => 100,
             'ttl_seconds' => 300, // Positive integer, at most 3600 seconds.
         ],
+        // Ordered worker interceptors, resolved from the container. The first is outermost.
+        'interceptors' => [
+            // App\Durable\AuditInterceptor::class,
+        ],
     ],
 ];
