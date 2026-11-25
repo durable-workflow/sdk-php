@@ -168,6 +168,104 @@ final class WorkflowLoggerTest extends TestCase
         );
     }
 
+    public function testTwoChildAwaitsLogEachLineOnce(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $logger = new WorkflowLogRecorder();
+        $workflow = static function (WorkflowContext $context): array {
+            $a = $context->startChildWorkflow('billing.a');
+            $b = $context->startChildWorkflow('billing.b');
+            $context->logger()->info('fan-out started both');
+            $first = (string) $a->await();
+            $context->logger()->info('fan-out first done');
+            $second = (string) $b->await();
+            $context->logger()->info('fan-out second done');
+
+            return [$first, $second];
+        };
+        $child = static fn (int $sequence, string $type): array => ['sequence' => $sequence, 'child_call_id' => "call-{$sequence}",
+            'workflow_link_id' => "call-{$sequence}", 'child_workflow_instance_id' => "child-{$sequence}",
+            'child_workflow_run_id' => "run-{$sequence}", 'child_workflow_type' => $type];
+        $startedA = [['event_type' => 'ChildWorkflowScheduled', 'payload' => $child(1, 'billing.a')],
+            ['event_type' => 'ChildRunStarted', 'payload' => $child(1, 'billing.a')]];
+        $startedB = [['event_type' => 'ChildWorkflowScheduled', 'payload' => $child(2, 'billing.b')],
+            ['event_type' => 'ChildRunStarted', 'payload' => $child(2, 'billing.b')]];
+        $doneA = ['event_type' => 'ChildRunCompleted', 'payload' => [...$child(1, 'billing.a'), 'result' => $codec->envelope('a')]];
+        $doneB = ['event_type' => 'ChildRunCompleted', 'payload' => [...$child(2, 'billing.b'), 'result' => $codec->envelope('b')]];
+
+        self::flushed($codec, $logger, $workflow, [], []);
+        self::flushed($codec, $logger, $workflow, $startedA, []);
+        // Both children run: the first await parks before any new step.
+        self::assertSame([], self::flushed($codec, $logger, $workflow, [...$startedA, ...$startedB], [])->commands);
+        self::assertSame([], array_column($logger->records, 'message'));
+        // The first child is done; the second await parks after an await that
+        // resumed without recording a step.
+        self::assertSame([], self::flushed($codec, $logger, $workflow, [...$startedA, ...$startedB, $doneA], [])->commands);
+        self::assertSame([], array_column($logger->records, 'message'));
+
+        $done = self::flushed($codec, $logger, $workflow, [...$startedA, ...$startedB, $doneA, $doneB], []);
+        self::assertSame(['complete_workflow'], array_column($done->commands, 'type'));
+        self::assertSame(
+            ['fan-out started both', 'fan-out first done', 'fan-out second done'],
+            array_column($logger->records, 'message'),
+        );
+    }
+
+    public function testLinesLeftByAFailedTaskAreNeverWrittenByTheNextTask(): void
+    {
+        $logger = new WorkflowLogRecorder();
+        $codec = new AvroPayloadCodec();
+        $tasks = [
+            self::workflowTask('task-broken', []) + ['workflow_type' => 'broken'],
+            ['task_id' => 'task-update', 'workflow_task_attempt' => 1, 'lease_owner' => 'worker-1',
+                'workflow_id' => 'counter-1', 'run_id' => 'run-c', 'workflow_type' => 'counter', 'payload_codec' => 'avro',
+                'workflow_update_id' => 'update-1', 'history_events' => [[
+                    'event_type' => 'UpdateAccepted',
+                    'payload' => ['update_id' => 'update-1', 'update_name' => 'increment', 'arguments' => $codec->envelope([1])],
+                ]]],
+        ];
+        $tasks[0]['workflow_type'] = 'broken';
+        $tasks[0]['arguments'] = $codec->envelope([]);
+        $transport = new FakeTransport(handler: static function (string $method, string $uri) use (&$tasks): array {
+            if (str_ends_with($uri, '/register')) {
+                return ['registered' => true];
+            }
+            if (str_ends_with($uri, '/workflow-tasks/poll')) {
+                $task = array_shift($tasks);
+
+                return $task === null ? ['task' => null, 'poll_status' => 'stopped', 'reason' => 'worker_stopped']
+                    : ['poll_status' => 'leased', 'task' => $task];
+            }
+            if (preg_match('#/workflow-tasks/([^/]+)/heartbeat$#', $uri, $match) === 1) {
+                return ['task_id' => $match[1], 'workflow_task_attempt' => 1, 'lease_owner' => 'worker-1',
+                    'renewed' => true, 'reason' => null];
+            }
+            if (str_contains($uri, '/workflow-tasks/') && !str_ends_with($uri, '/poll')) {
+                return ['completed' => true, 'failed' => true];
+            }
+
+            return ['task' => null, 'poll_status' => 'empty'];
+        });
+        $worker = new Worker(new Client('https://server.example', namespace: 'payments', transport: $transport),
+            'php-workers', workerId: 'worker-1', logger: $logger);
+        $worker->registerWorkflow('broken', static function (WorkflowContext $context): string {
+            $context->logger()->info('broken line');
+
+            throw new \DurableWorkflow\Exception\NonDeterministicWorkflow('History no longer matches.');
+        });
+        $worker->registerWorkflow('counter', static fn (WorkflowContext $context): string => 'waiting')
+            ->registerUpdate('counter', 'increment', static fn (\DurableWorkflow\Worker\QueryContext $context, int $value): int => $value + 1);
+
+        $worker->run(0);
+
+        self::assertNotContains('broken line', array_column($logger->records, 'message'));
+        $uris = array_column($transport->requests, 'uri');
+        self::assertNotEmpty(array_filter($uris, static fn (string $uri): bool => str_contains($uri, '/task-broken/fail')),
+            implode(', ', $uris));
+        self::assertNotEmpty(array_filter($uris, static fn (string $uri): bool => str_contains($uri, '/task-update/complete')),
+            implode(', ', $uris));
+    }
+
     public function testWorkerRoutesWorkflowLogsThroughItsLoggerOncePerStep(): void
     {
         $logger = new WorkflowLogRecorder();

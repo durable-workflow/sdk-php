@@ -17,9 +17,9 @@ project follows [Semantic Versioning](https://semver.org/).
   replays write nothing, and code parked on a pending child or operation handle
   logs once, in the task that moves past it. `WorkflowContext::replayState()`
   returns `WorkflowReplayState::Replaying`, `Executing` or `Unavailable`, and
-  `isReplaying()` is its boolean form. `Replayer::useWorkflowLogger()` and
-  `Replayer::takeWorkflowLogs()` serve direct Replayer use. Logger failures
-  never affect the workflow.
+  `isReplaying()` is its boolean form. `Replayer::useWorkflowLogger()` routes
+  the logger; the Worker writes the lines after a submitted task is accepted.
+  Logger failures never affect the workflow.
 
 - `WorkflowContext::replayNow()` is available at ordinary workflow entry,
   before any durable step. It returns the run's entry instant from the

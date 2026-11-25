@@ -2253,6 +2253,8 @@ final class Worker
     /** @param array<string, mixed> $task */
     private function executeWorkflowTask(array $task): void
     {
+        // Lines a replay left behind (a failed task, a declined speculation) are never written by another task.
+        $this->replayer->takeWorkflowLogs();
         $traceScope = null;
         $previousLocalActivity = $this->workflowExecutedLocalActivity;
         $this->workflowExecutedLocalActivity = false;
@@ -3873,6 +3875,8 @@ final class Worker
             $carried = $this->reserveWorkflowPoll($leaseOwner);
             $this->speculativeWorkflowLogs = [];
             $continuation = $carried === null ? null : $this->speculateActivityContinuation($task, $result);
+            // Only an accepted speculation writes its lines; nothing stays behind for another task.
+            $this->replayer->takeWorkflowLogs();
             $completion = $this->retryStorageAdmission(
                 'activity_complete',
                 function () use ($taskId, $attemptId, $leaseOwner, $result, $carried, &$continuation): array {
