@@ -338,6 +338,159 @@ final class WorkerInterceptorTest extends TestCase
         self::assertSame(42, $transport->requests[0]['body']['result']);
     }
 
+    public function testUpdateValidationInterceptorsRunInOrderAndObserveTheDecision(): void
+    {
+        $log = new InterceptorLog();
+        [$worker, $transport] = self::validationWorker([new RecordingInterceptor('outer', $log), new RecordingInterceptor('inner', $log)],
+            static function (QueryContext $context, int $amount) use ($log): void {
+                $log->events[] = 'validator:'.$context->workflowId;
+                if ($amount <= 0) {
+                    throw new RuntimeException('The amount must be positive.');
+                }
+            });
+
+        self::validate($worker, 'validation-1', [5]);
+        self::validate($worker, 'validation-2', [0]);
+
+        self::assertSame(['outer:before', 'inner:before', 'validator:orders-1', 'inner:after', 'outer:after',
+            'outer:before', 'inner:before', 'validator:orders-1', 'inner:after', 'outer:after'], $log->events);
+        $context = $log->validationContexts[0];
+        self::assertSame('validation-1', $context->taskId);
+        self::assertSame('orders', $context->workflowType);
+        self::assertSame('approve', $context->updateName);
+        self::assertSame('orders-1', $context->workflowId);
+        self::assertSame('run-1', $context->runId);
+        self::assertSame([5], $context->arguments);
+        self::assertSame('payments', $context->namespace);
+        self::assertTrue($log->validationOutcomes[0]->approved);
+        self::assertTrue($log->validationOutcomes[2]->rejected());
+        self::assertSame('update_validator_rejected', $log->validationOutcomes[2]->reason);
+        self::assertSame('The amount must be positive.', $log->validationOutcomes[2]->message);
+        self::assertStringEndsWith('/validation-1/approve', $transport->requests[0]['uri']);
+        self::assertStringEndsWith('/validation-2/reject', $transport->requests[1]['uri']);
+        self::assertSame('update_validator_rejected', $transport->requests[1]['body']['failure']['reason']);
+    }
+
+    public function testUpdateValidationInterceptorCannotChangeTheDecisionOrArguments(): void
+    {
+        $seen = [];
+        $forging = new class () extends PassthroughWorkerInterceptor {
+            public function executeUpdateValidation(
+                \DurableWorkflow\Worker\Interceptor\UpdateValidationInterceptorContext $context,
+                callable $next,
+            ): \DurableWorkflow\Worker\Interceptor\UpdateValidationOutcome {
+                $forged = new \DurableWorkflow\Worker\Interceptor\UpdateValidationInterceptorContext(
+                    $context->workerId, $context->taskQueue, $context->namespace, $context->task, $context->taskId,
+                    $context->workflowType, $context->updateName, $context->workflowId, $context->runId, [99],
+                    $context->queryContext);
+                $next($forged);
+
+                return new \DurableWorkflow\Worker\Interceptor\UpdateValidationOutcome(true);
+            }
+        };
+        [$worker, $transport] = self::validationWorker([$forging], static function (QueryContext $context, int $amount) use (&$seen): void {
+            $seen[] = $amount;
+            throw new RuntimeException('refused');
+        });
+
+        self::validate($worker, 'validation-1', [0]);
+
+        self::assertSame([0], $seen, 'The validator runs with the Worker\'s own arguments.');
+        self::assertStringEndsWith('/validation-1/reject', $transport->requests[0]['uri']);
+        self::assertSame('update_validator_rejected', $transport->requests[0]['body']['failure']['reason']);
+    }
+
+    public function testUpdateValidationInterceptorFailuresAndNextViolationsFailTheValidation(): void
+    {
+        $throwing = new class () extends PassthroughWorkerInterceptor {
+            public function executeUpdateValidation(
+                \DurableWorkflow\Worker\Interceptor\UpdateValidationInterceptorContext $context,
+                callable $next,
+            ): \DurableWorkflow\Worker\Interceptor\UpdateValidationOutcome {
+                $next($context);
+
+                throw new RuntimeException('audit sink down');
+            }
+        };
+        $skipping = new class () extends PassthroughWorkerInterceptor {
+            public function executeUpdateValidation(
+                \DurableWorkflow\Worker\Interceptor\UpdateValidationInterceptorContext $context,
+                callable $next,
+            ): \DurableWorkflow\Worker\Interceptor\UpdateValidationOutcome {
+                return new \DurableWorkflow\Worker\Interceptor\UpdateValidationOutcome(true);
+            }
+        };
+        $repeating = new class () extends PassthroughWorkerInterceptor {
+            public function executeUpdateValidation(
+                \DurableWorkflow\Worker\Interceptor\UpdateValidationInterceptorContext $context,
+                callable $next,
+            ): \DurableWorkflow\Worker\Interceptor\UpdateValidationOutcome {
+                $next($context);
+                try {
+                    return $next($context);
+                } catch (\Throwable) {
+                    return new \DurableWorkflow\Worker\Interceptor\UpdateValidationOutcome(true);
+                }
+            }
+        };
+        foreach ([[$throwing, RuntimeException::class], [$skipping, \DurableWorkflow\Exception\UpdateValidationInterceptorViolation::class],
+            [$repeating, \DurableWorkflow\Exception\UpdateValidationInterceptorViolation::class]] as [$interceptor, $type]) {
+            $calls = 0;
+            [$worker, $transport] = self::validationWorker([$interceptor], static function (QueryContext $context, int $amount) use (&$calls): void {
+                ++$calls;
+            });
+
+            self::validate($worker, 'validation-1', [5]);
+
+            self::assertLessThanOrEqual(1, $calls);
+            self::assertStringEndsWith('/validation-1/reject', $transport->requests[0]['uri']);
+            self::assertSame('update_validation_worker_failed', $transport->requests[0]['body']['failure']['reason']);
+            self::assertSame($type, $transport->requests[0]['body']['failure']['type']);
+        }
+    }
+
+    public function testUpdateValidatorStillRunsReadOnlyInsideInterceptors(): void
+    {
+        $log = new InterceptorLog();
+        [$worker, $transport] = self::validationWorker([new RecordingInterceptor('audit', $log)],
+            static function (QueryContext $context, int $amount): void {
+                \Fiber::suspend(['type' => 'schedule_activity']);
+            });
+
+        self::validate($worker, 'validation-1', [5]);
+
+        self::assertSame('update_validator_rejected', $transport->requests[0]['body']['failure']['reason']);
+        self::assertSame(\DurableWorkflow\Exception\UpdateValidatorCommandRefused::class, $transport->requests[0]['body']['failure']['type']);
+        self::assertSame(['audit:before', 'audit:after'], $log->events);
+    }
+
+    /**
+     * @param list<WorkerInterceptor> $interceptors
+     * @return array{Worker, FakeTransport}
+     */
+    private static function validationWorker(array $interceptors, callable $validator): array
+    {
+        $transport = new FakeTransport(handler: static fn (): array => ['outcome' => 'done']);
+        $worker = new Worker(new Client('http://runtime', namespace: 'payments', transport: $transport), 'workers',
+            workerId: 'worker-1', interceptors: $interceptors);
+        $worker->registerWorkflow('orders', static fn (WorkflowContext $context): string => 'waiting')
+            ->registerUpdate('orders', 'approve', static fn (QueryContext $context, int $amount): int => $amount)
+            ->registerUpdateValidator('orders', 'approve', $validator);
+
+        return [$worker, $transport];
+    }
+
+    /** @param list<mixed> $arguments */
+    private static function validate(Worker $worker, string $taskId, array $arguments): void
+    {
+        (new \ReflectionMethod($worker, 'executeUpdateValidationTask'))->invoke($worker, [
+            'task_kind' => 'update_validation', 'update_validation_task_id' => $taskId, 'update_validation_attempt' => 1,
+            'lease_owner' => 'worker-1', 'workflow_id' => 'orders-1', 'run_id' => 'run-1', 'workflow_type' => 'orders',
+            'update_name' => 'approve', 'payload_codec' => 'avro', 'history_events' => [],
+            'update_arguments' => (new AvroPayloadCodec())->envelope($arguments),
+        ]);
+    }
+
     public function testInterceptorClassNamesResolveFromTheContainer(): void
     {
         $log = new InterceptorLog();
@@ -505,6 +658,10 @@ final class InterceptorLog
     public array $activityContexts = [];
     /** @var list<QueryTaskInterceptorContext> */
     public array $queryContexts = [];
+    /** @var list<\DurableWorkflow\Worker\Interceptor\UpdateValidationInterceptorContext> */
+    public array $validationContexts = [];
+    /** @var list<\DurableWorkflow\Worker\Interceptor\UpdateValidationOutcome> */
+    public array $validationOutcomes = [];
 }
 
 final class RecordingInterceptor implements WorkerInterceptor
@@ -537,6 +694,20 @@ final class RecordingInterceptor implements WorkerInterceptor
         $this->log->queryContexts[] = $context;
 
         return $this->around(static fn (): mixed => $next($context));
+    }
+
+    public function executeUpdateValidation(
+        \DurableWorkflow\Worker\Interceptor\UpdateValidationInterceptorContext $context,
+        callable $next,
+    ): \DurableWorkflow\Worker\Interceptor\UpdateValidationOutcome {
+        $this->log->validationContexts[] = $context;
+
+        return $this->around(function () use ($context, $next): \DurableWorkflow\Worker\Interceptor\UpdateValidationOutcome {
+            $outcome = $next($context);
+            $this->log->validationOutcomes[] = $outcome;
+
+            return $outcome;
+        });
     }
 
     private function around(\Closure $next): mixed

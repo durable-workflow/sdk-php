@@ -51,6 +51,10 @@ project follows [Semantic Versioning](https://semver.org/).
   `enableActivityContinuation` keeps the ordinary activity completion so every
   workflow task is wrapped. `WorkflowTaskInterceptorContext::replayState()`
   reports the task's replay state as a `WorkflowReplayState`.
+  `executeUpdateValidation()` wraps update validation tasks; it observes the
+  validator's decision through a read-only `UpdateValidationOutcome` and
+  cannot change it, and an interceptor failure or `$next` violation answers
+  the task with `update_validation_worker_failed`.
   ([Durable Workflow #226](https://github.com/durable-workflow/.github/issues/226))
 - Update validators. `#[UpdateValidator('update-name')]`, or
   `Worker::registerUpdateValidator()`, declares a validator that the Server
