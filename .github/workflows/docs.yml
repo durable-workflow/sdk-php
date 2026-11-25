@@ -207,6 +207,8 @@ jobs:
           bash "$DOCS_TOOLING_DIRECTORY/scripts/build-docs.sh"
           node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-portal.mjs" build/site
           php "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-analytics.php" build/site
+          node --test "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-third-party.test.mjs"
+          node "$DOCS_TOOLING_DIRECTORY/scripts/check-docs-third-party.mjs" build/site
           test -s build/site/index.html
           test -s build/site/api/index.html
           test "$(cat build/site/CNAME)" = "php.durable-workflow.com"
