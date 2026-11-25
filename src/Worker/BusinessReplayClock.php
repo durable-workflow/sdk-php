@@ -70,8 +70,9 @@ final class BusinessReplayClock
             return;
         }
         $payload = $this->history[$start]['payload'] ?? null;
-        if (is_array($payload) && array_key_exists('workflow_run_id', $payload) && $payload['workflow_run_id'] !== $this->runId) {
-            // A start that names another run is not this run's entry (Server omits it too).
+        if (is_array($payload) && is_string($payload['workflow_run_id'] ?? null) && $payload['workflow_run_id'] !== $this->runId) {
+            // A start that names another run is not this run's entry. Server omits it too;
+            // like Server, a missing or non-string run is not a conflict.
             return;
         }
         if ($this->redriveClaimed) {

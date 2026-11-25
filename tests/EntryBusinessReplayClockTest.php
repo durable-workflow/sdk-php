@@ -281,7 +281,11 @@ final class EntryBusinessReplayClockTest extends TestCase
             })
             ->run(0);
 
+        // The proof: the carrier-bearing update task never ran the workflow body.
         self::assertSame(0, $bodyRuns);
+        // Documentation only: QueryContext::replayNow() always throws, so handler
+        // reads are unavailable with or without a carrier. Query tasks build the
+        // same QueryContext over history (Worker::executeQueryTask), never the body.
         self::assertSame('unavailable', $handlerClock);
         self::assertIsArray($completedCommand);
         self::assertSame('complete_update', $completedCommand['type'] ?? null);
@@ -296,6 +300,8 @@ final class EntryBusinessReplayClockTest extends TestCase
         $entryRead = static fn (WorkflowContext $context): ?string => self::read($context);
         self::assertNull(self::replayResult($entryRead, $history, self::task()));
         unset($history[0]['payload']['workflow_run_id']);
+        self::assertSame(self::ENTRY, self::replayResult($entryRead, $history, self::task()));
+        $history[0]['payload']['workflow_run_id'] = null;
         self::assertSame(self::ENTRY, self::replayResult($entryRead, $history, self::task()));
     }
 

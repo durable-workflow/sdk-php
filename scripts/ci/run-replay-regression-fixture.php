@@ -72,11 +72,6 @@ try {
     exit(1);
 }
 
-/** A fixture task's replay_clock is not the exact WorkerReplayClock v1 shape. */
-final class ReplayRegressionCarrierShapeInvalid extends RuntimeException
-{
-}
-
 final class ReplayRegressionTransport implements Transport
 {
     /** @var list<list<array<string, mixed>>> */
@@ -661,6 +656,19 @@ final class ReplayRegressionConsumer
             return;
         }
 
+        if ($workflowType === 'golden.workflow-logger') {
+            // durable-workflow/.github#227: one replay-aware log line per committed step.
+            require_once __DIR__.'/../../tests/Support/WorkflowLoggerScenario.php';
+            $boundaries = $fixture['workflow_task_history_lengths'] ?? null;
+            if (!is_array($boundaries) || !array_is_list($boundaries)) {
+                throw new RuntimeException("{$identity}.workflow_task_history_lengths must be a list.");
+            }
+            $observed = \DurableWorkflow\Tests\Support\WorkflowLoggerScenario::run($history, $boundaries, $input);
+            self::assertMatches($fixture['expected'], $observed, $identity.self::EXPECTED_CONTEXT);
+
+            return;
+        }
+
         if ($workflowType === 'golden.grouped-condition') {
             require_once __DIR__.'/../../tests/Support/FakeTransport.php';
             require_once __DIR__.'/../../tests/Support/GroupedConditionRefusalScenario.php';
@@ -714,11 +722,9 @@ final class ReplayRegressionConsumer
                         "{$identity}.workflow_tasks.{$index} must contain only workflow_id, run_id and an optional replay_clock.",
                     );
                 }
-                if (array_key_exists('replay_clock', $workflowTask)) {
-                    self::assertWorkerReplayClock(
-                        $workflowTask['replay_clock'],
-                        "{$identity}.workflow_tasks.{$index}.replay_clock",
-                    );
+                if (array_key_exists('replay_clock', $workflowTask)
+                    && (!is_array($workflowTask['replay_clock']) || array_is_list($workflowTask['replay_clock']))) {
+                    throw new RuntimeException("{$identity}.workflow_tasks.{$index}.replay_clock must be an object.");
                 }
                 foreach (['workflow_id', 'run_id'] as $field) {
                     if (!is_string($workflowTask[$field] ?? null) || $workflowTask[$field] === '') {
@@ -750,41 +756,6 @@ final class ReplayRegressionConsumer
      * @param array<string, mixed> $fixture
      * @param list<array<string, mixed>>|null $workflowTasks
      */
-    /**
-     * The exact WorkerReplayClock v1 shape, matching the corpus validator. The
-     * run is not compared with the task's run_id so a fixture can pin a refusal.
-     */
-    private static function assertWorkerReplayClock(mixed $clock, string $context): void
-    {
-        if (!is_array($clock) || array_is_list($clock)) {
-            throw new ReplayRegressionCarrierShapeInvalid("{$context} must be an object.");
-        }
-        $keys = array_keys($clock);
-        sort($keys);
-        if ($keys !== ['schema', 'source', 'started_at', 'workflow_run_id']) {
-            throw new ReplayRegressionCarrierShapeInvalid(
-                "{$context} must contain exactly schema, workflow_run_id, started_at and source.",
-            );
-        }
-        if ($clock['schema'] !== 'durable-workflow.worker-replay-clock/v1') {
-            throw new ReplayRegressionCarrierShapeInvalid("{$context}.schema must be durable-workflow.worker-replay-clock/v1.");
-        }
-        if (!is_string($clock['workflow_run_id']) || $clock['workflow_run_id'] === '') {
-            throw new ReplayRegressionCarrierShapeInvalid("{$context}.workflow_run_id must be a non-empty string.");
-        }
-        $startedAt = $clock['started_at'];
-        $parsed = is_string($startedAt)
-            && preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\z/', $startedAt) === 1
-            ? \DateTimeImmutable::createFromFormat('!Y-m-d\TH:i:s.u\Z', $startedAt, new \DateTimeZone('UTC'))
-            : false;
-        if ($parsed === false || $parsed->format('Y-m-d\TH:i:s.u\Z') !== $startedAt) {
-            throw new ReplayRegressionCarrierShapeInvalid("{$context}.started_at must be a real UTC instant with six fractional digits and Z.");
-        }
-        if (!in_array($clock['source'], ['run_started_at', 'redrive_replayed_started_at'], true)) {
-            throw new ReplayRegressionCarrierShapeInvalid("{$context}.source is not a WorkerReplayClock v1 source.");
-        }
-    }
-
     private static function executeLayout(
         string $identity,
         string $workflowType,

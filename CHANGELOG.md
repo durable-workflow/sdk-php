@@ -19,10 +19,13 @@ project follows [Semantic Versioning](https://semver.org/).
   a redrive entry already proved from history is unchanged. The carrier must
   have exactly the four v1 keys. Step times still come from history; only the
   entry value comes from the task. An unhandled `ReplayClockUnavailable` fails
-  the workflow, as before. Query and update handlers read a history snapshot
-  rather than re-running the workflow body, so they are unaffected and their
-  `replayNow()` stays unavailable. `WorkerTestHarness::runWorkflow()` accepts
-  the carrier as `replay_clock` in its task argument
+  the workflow, as before. Query handlers, update handlers and update
+  validators read a history snapshot rather than re-running the workflow body,
+  so they are unaffected and their `replayNow()` stays unavailable. An ordinary
+  run whose `WorkflowStarted` names another run ignores the carrier. `WorkerTestHarness::runWorkflow()` accepts the carrier
+  as `replay_clock` in its task argument; it applies only when the task has the
+  matching `run_id` and its history has exactly one `WorkflowStarted`, so with
+  the default empty history the clock stays unavailable at entry
   (durable-workflow/.github#215).
 - Workers accept ordered `interceptors` around workflow tasks, activities and
   query tasks, with the task context the Python SDK exposes. The first
@@ -48,15 +51,6 @@ project follows [Semantic Versioning](https://semver.org/).
   `rejectedByValidator()`, `validationFailed()` and `validationErrors()`.
   `Client::registerWorker()` accepts non-empty `update_validators` with the
   `update_validation_tasks` capability.
-
-### Changed
-
-- `WorkerTestHarness::runWorkflow()` reads an entry `replay_clock` only when its
-  task also has the matching `run_id` and its history has exactly one
-  `WorkflowStarted`; with the default empty history the clock stays
-  unavailable at entry. The corpus validator and fixture runner require a
-  task's `replay_clock` to have the exact v1 shape. On an ordinary run whose
-  `WorkflowStarted` names another run, the carrier is ignored.
 
 ### Upgrade notes
 
