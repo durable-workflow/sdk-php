@@ -35,6 +35,19 @@ project follows [Semantic Versioning](https://semver.org/).
   `enableActivityContinuation` keeps the ordinary activity completion so every
   workflow task is wrapped.
   ([Durable Workflow #226](https://github.com/durable-workflow/.github/issues/226))
+- Update validators. `#[UpdateValidator('update-name')]`, or
+  `Worker::registerUpdateValidator()`, declares a validator that the Server
+  runs through the worker before an update is accepted. The worker advertises
+  `update_validators` and `update_validation_tasks`, polls workflow and update
+  validation tasks together, runs only the validator against committed
+  history, and approves or rejects the update. Throwing or returning `false`
+  rejects it with `update_validator_rejected` before anything is accepted. A
+  validator that tries to schedule durable work is refused with
+  `UpdateValidatorCommandRefused`. Registration is refused when the Server
+  doesn't advertise synchronous update validation. `UpdateFailed` gains
+  `rejectedByValidator()`, `validationFailed()` and `validationErrors()`.
+  `Client::registerWorker()` accepts non-empty `update_validators` with the
+  `update_validation_tasks` capability.
 
 ## [3.31.0] - 2026-11-25
 

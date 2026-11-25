@@ -8,6 +8,7 @@ use DurableWorkflow\Attribute\Activity;
 use DurableWorkflow\Attribute\Query;
 use DurableWorkflow\Attribute\Signal;
 use DurableWorkflow\Attribute\Update;
+use DurableWorkflow\Attribute\UpdateValidator;
 use DurableWorkflow\Attribute\Workflow;
 use DurableWorkflow\Exception\InvalidWorkerDefinition;
 use ReflectionClass;
@@ -23,6 +24,7 @@ final class HandlerDiscovery
         Query::class,
         Signal::class,
         Update::class,
+        UpdateValidator::class,
     ];
 
     public function __construct(private readonly HandlerResolver $resolver)
@@ -75,7 +77,7 @@ final class HandlerDiscovery
         if ($annotated === []) {
             throw new InvalidWorkerDefinition(
                 $reflection->getName(),
-                'Add #[Workflow], #[Activity], #[Query], #[Signal], or #[Update] to a public handler method.',
+                'Add #[Workflow], #[Activity], #[Query], #[Signal], #[Update], or #[UpdateValidator] to a public handler method.',
             );
         }
         if (count($workflowMethods) > 1) {
@@ -102,6 +104,7 @@ final class HandlerDiscovery
         $queries = [];
         $signals = [];
         $updates = [];
+        $updateValidators = [];
 
         foreach ($annotated as [$method, $attribute]) {
             if ($attribute instanceof Workflow) {
@@ -155,6 +158,29 @@ final class HandlerDiscovery
             }
         }
 
+        foreach ($annotated as [$method, $attribute]) {
+            if (!$attribute instanceof UpdateValidator) {
+                continue;
+            }
+            if ($workflowType === null) {
+                throw $this->invalid(
+                    $method,
+                    'Put update validators on the same class as its #[Workflow] entry method.',
+                );
+            }
+            $name = $this->name($attribute->update, $method, 'update validator');
+            if (!isset($updates[$workflowType][$name])) {
+                throw $this->invalid($method, "Point the update validator at an #[Update] declared on this class; no update is named {$name}.");
+            }
+            $this->assertContext($method, QueryContext::class, 'update validator');
+            $this->assertLocalUnique($updateValidators[$workflowType] ?? [], $name, $method, 'update validator');
+            $updateValidators[$workflowType][$name] = HandlerDefinition::replaySafe(
+                $handler,
+                $method->getName(),
+                $factory,
+            );
+        }
+
         return new DiscoveredHandlers(
             $reflection->getName(),
             $workflows,
@@ -162,6 +188,7 @@ final class HandlerDiscovery
             $queries,
             $signals,
             $updates,
+            $updateValidators,
         );
     }
 
