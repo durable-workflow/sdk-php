@@ -2510,7 +2510,9 @@ final class Worker
     {
         $contract = $this->activityContinuation;
         $executionId = $task['activity_execution_id'] ?? null;
-        if (!$this->enableActivityContinuation || $contract === null || !is_string($executionId) || $executionId === '') {
+        // Interceptors wrap every workflow task, so keep the ordinary completion and workflow poll.
+        if (!$this->enableActivityContinuation || $contract === null || !is_string($executionId) || $executionId === ''
+            || !$this->interceptors->isEmpty()) {
             return null;
         }
         $taskId = (string) ($task['task_id'] ?? '');
