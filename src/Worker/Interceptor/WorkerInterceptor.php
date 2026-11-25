@@ -20,10 +20,11 @@ interface WorkerInterceptor
     /**
      * Wrap the run of workflow code that produces one workflow task's commands.
      *
-     * The hook runs for every workflow task, including tasks that replay
-     * committed history; use {@see WorkflowTaskInterceptorContext::$replaying}
-     * to avoid repeating side effects. Throwing fails the workflow task, which
-     * records nothing and is retried by the Server.
+     * The hook runs once per workflow task attempt. The commands it observes are
+     * new for that task, even when {@see WorkflowTaskInterceptorContext::$replaying}
+     * shows the workflow code first re-ran a committed prefix; a retried attempt
+     * can repeat them. Throwing fails the workflow task, which records nothing
+     * and is retried by the Server.
      *
      * @param callable(WorkflowTaskInterceptorContext): WorkflowTaskOutcome $next
      */

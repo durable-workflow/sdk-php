@@ -974,13 +974,13 @@ final class AuditInterceptor extends PassthroughWorkerInterceptor
     public function executeWorkflowTask(WorkflowTaskInterceptorContext $context, callable $next): WorkflowTaskOutcome
     {
         $outcome = $next($context);
-        if (!$context->replaying) {
-            $this->audit->info('workflow task', [
-                'workflow_id' => $context->workflowId,
-                'workflow_type' => $context->workflowType,
-                'commands' => $outcome->commandTypes(),
-            ]);
-        }
+        $this->audit->info('workflow task', [
+            'workflow_id' => $context->workflowId,
+            'workflow_type' => $context->workflowType,
+            'attempt' => $context->workflowTaskAttempt,
+            'replayed_history' => $context->replaying,
+            'commands' => $outcome->commandTypes(),
+        ]);
 
         return $outcome;
     }
@@ -1010,17 +1010,20 @@ container a class name must have no required constructor arguments.
 
 | Hook | Context | `$next` returns |
 | --- | --- | --- |
-| `executeWorkflowTask($context, $next)` | `workerId`, `taskQueue`, `namespace`, `task`, `taskId`, `workflowType`, `workflowId`, `runId`, `workflowTaskAttempt`, `historyLength`, `replaying`, `updateId` | `WorkflowTaskOutcome` with a copy of the commands |
-| `executeActivity($context, $next)` | `workerId`, `taskQueue`, `namespace`, `task`, `activityType`, `arguments`, `attemptNumber`, `taskId`, `activityAttemptId`, `workflowId`, `runId`, `local`, `activityContext` | the activity result |
-| `executeQueryTask($context, $next)` | `workerId`, `taskQueue`, `namespace`, `task`, `taskId`, `workflowType`, `queryName`, `workflowId`, `runId`, `arguments`, `queryContext` | the query result |
+| `executeWorkflowTask($context, $next)` | `workerId`, `taskQueue`, `namespace`, `task`, `taskId`, `workflowType`, `workflowId`, `runId`, `workflowTaskAttempt`, `historyLength`, `replaying`, `updateId`, `observabilitySupported` | `WorkflowTaskOutcome` with a copy of the commands |
+| `executeActivity($context, $next)` | `workerId`, `taskQueue`, `namespace`, `task`, `activityType`, `arguments`, `attemptNumber`, `taskId`, `activityAttemptId`, `workflowId`, `runId`, `local`, `activityContext`, `observabilitySupported` | the activity result |
+| `executeQueryTask($context, $next)` | `workerId`, `taskQueue`, `namespace`, `task`, `taskId`, `workflowType`, `queryName`, `workflowId`, `runId`, `arguments`, `queryContext`, `observabilitySupported` | the query result |
 
 Workflow-task interceptors cannot break determinism:
 
 - `executeWorkflowTask` wraps the run of workflow code that produces one
-  workflow task's commands. It runs for every workflow task, including tasks
-  that replay committed history. `replaying` is `true` when the delivered
-  history already holds commands recorded by earlier workflow tasks, so use it
-  to skip side effects you already performed.
+  workflow task's commands, once per task attempt. `replaying` is `true` when
+  the delivered history already holds commands recorded by earlier workflow
+  tasks, so the workflow code re-ran that committed prefix before reaching new
+  code. The outcome holds only the commands this task adds; replayed commands
+  are never resubmitted. A retried attempt (`workflowTaskAttempt > 1`) can
+  repeat an outcome whose task failed, so make external audit writes
+  idempotent.
 - The worker submits exactly the commands the workflow code produced. The
   outcome is a copy; returning a different outcome, or passing a different
   context to `$next`, changes nothing.

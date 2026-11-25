@@ -2176,7 +2176,8 @@ final class Worker
             $updateId = isset($task['workflow_update_id']) ? (string) $task['workflow_update_id'] : null;
             $commands = $this->interceptors->workflowTask(
                 fn (): WorkflowTaskInterceptorContext => WorkflowTaskInterceptorContext::forTask(
-                    $this->workerId, $this->taskQueue, $this->client->namespace, $task, $history),
+                    $this->workerId, $this->taskQueue, $this->client->namespace, $task, $history,
+                    $this->client->observabilityContextAvailable()),
                 function () use ($task, $history, $workflowType, $updateId, &$messageStreamCursors, &$messageStreamWaits, &$selectionChildAwait): array {
                     if ($updateId !== null && $updateId !== '') {
                         $commands = [$this->executeUpdate($workflowType, $updateId, $history, $task)];
@@ -4079,7 +4080,8 @@ final class Worker
             $authority?->confirm();
             $result = $this->interceptors->queryTask(
                 new QueryTaskInterceptorContext($this->workerId, $this->taskQueue, $this->client->namespace, $task, $taskId,
-                    $workflowType, $queryName, $context->workflowId, $context->runId, $arguments, $context),
+                    $workflowType, $queryName, $context->workflowId, $context->runId, $arguments, $context,
+                    $this->client->observabilityContextAvailable()),
                 static fn (QueryTaskInterceptorContext $ctx): mixed => $handler($ctx->queryContext, ...$ctx->arguments),
             );
             $authority?->confirm();
@@ -5457,7 +5459,8 @@ final class Worker
         if (!$this->interceptors->isEmpty()) {
             $intercepted = new ActivityInterceptorContext($this->workerId, $this->taskQueue, $this->client->namespace,
                 $local ? [] : ($authorizedTask ?? []), $context->activityType, $arguments, $context->attemptNumber,
-                $context->taskId, $context->activityAttemptId, $context->workflowId, $context->runId, $local, $context);
+                $context->taskId, $context->activityAttemptId, $context->workflowId, $context->runId, $local, $context,
+                $this->client->observabilityContextAvailable());
             $handler = fn (ActivityContext $context, mixed ...$arguments): mixed => $this->interceptors->activity(
                 $intercepted, static fn (ActivityInterceptorContext $ctx): mixed => $handler($ctx->activityContext, ...$ctx->arguments));
         }

@@ -25,6 +25,7 @@ final class QueryTaskInterceptorContext
         public readonly string $runId,
         public readonly array $arguments,
         public readonly QueryContext $queryContext,
+        public readonly bool $observabilitySupported = false,
     ) {
     }
 
@@ -33,6 +34,6 @@ final class QueryTaskInterceptorContext
     {
         return new self($this->workerId, $this->taskQueue, $this->namespace, $this->task, $this->taskId,
             $this->workflowType, $this->queryName, $this->workflowId, $this->runId, array_values($arguments),
-            $this->queryContext);
+            $this->queryContext, $this->observabilitySupported);
     }
 }

@@ -14,7 +14,7 @@ final class WorkflowTaskInterceptorContext
      */
     private const COMMAND_EVENT_PREFIXES = [
         'Activity', 'Timer', 'ChildWorkflow', 'ChildRun', 'ServiceCall', 'ServiceOperation',
-        'ExternalSignal', 'ConditionWait', 'SignalWait', 'CancellationScope',
+        'ExternalSignal', 'ConditionWait', 'SignalWait', 'CancellationScope', 'Selection',
     ];
     private const COMMAND_EVENTS = [
         'SideEffectRecorded', 'VersionMarkerRecorded', 'MemoUpserted', 'SearchAttributesUpserted',
@@ -25,7 +25,11 @@ final class WorkflowTaskInterceptorContext
      * @param array<string, mixed> $task the workflow task as delivered by the Server
      * @param bool $replaying true when the history already contains commands recorded
      *                        by earlier workflow tasks, so the workflow code re-runs that
-     *                        committed prefix before any new execution
+     *                        committed prefix before reaching new execution. The commands
+     *                        this task submits are still new; a retried task attempt
+     *                        (`workflowTaskAttempt > 1`) can repeat them.
+     * @param bool $observabilitySupported whether the connected Server accepts worker
+     *                                     observability context for this task
      */
     public function __construct(
         public readonly string $workerId,
@@ -40,6 +44,7 @@ final class WorkflowTaskInterceptorContext
         public readonly int $historyLength,
         public readonly bool $replaying,
         public readonly ?string $updateId = null,
+        public readonly bool $observabilitySupported = false,
     ) {
     }
 
@@ -49,7 +54,7 @@ final class WorkflowTaskInterceptorContext
      * @param array<string, mixed> $task
      * @param list<array<string, mixed>> $history
      */
-    public static function forTask(string $workerId, string $taskQueue, ?string $namespace, array $task, array $history): self
+    public static function forTask(string $workerId, string $taskQueue, ?string $namespace, array $task, array $history, bool $observabilitySupported = false): self
     {
         $updateId = isset($task['workflow_update_id']) ? (string) $task['workflow_update_id'] : null;
 
@@ -66,6 +71,7 @@ final class WorkflowTaskInterceptorContext
             count($history),
             self::replaysCommittedPrefix($history),
             $updateId === '' ? null : $updateId,
+            $observabilitySupported,
         );
     }
 

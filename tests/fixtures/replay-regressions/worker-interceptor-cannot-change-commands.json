@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-worker-interceptor-cannot-change-commands",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.worker-interceptor", "input": ["Ada"]},
+  "history": [
+    {"event_type": "WorkflowStarted", "payload": {"workflow_type": "golden.worker-interceptor"}},
+    {"event_type": "ActivityScheduled", "payload": {"sequence": 1, "activity_type": "greet"}},
+    {"event_type": "ActivityCompleted", "payload": {"sequence": 1, "activity_type": "greet", "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwoKaGVsbG8="}}}
+  ],
+  "expected": {
+    "commands": [{"type": "complete_workflow", "result": "hello again"}],
+    "observed_replaying": [true],
+    "interceptor_order": ["outer", "inner"]
+  }
+}

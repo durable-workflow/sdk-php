@@ -27,6 +27,7 @@ final class ActivityInterceptorContext
         public readonly ?string $runId,
         public readonly bool $local,
         public readonly ActivityContext $activityContext,
+        public readonly bool $observabilitySupported = false,
     ) {
     }
 
@@ -35,6 +36,6 @@ final class ActivityInterceptorContext
     {
         return new self($this->workerId, $this->taskQueue, $this->namespace, $this->task, $this->activityType,
             array_values($arguments), $this->attemptNumber, $this->taskId, $this->activityAttemptId,
-            $this->workflowId, $this->runId, $this->local, $this->activityContext);
+            $this->workflowId, $this->runId, $this->local, $this->activityContext, $this->observabilitySupported);
     }
 }

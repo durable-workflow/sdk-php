@@ -183,6 +183,29 @@ final class WorkerInterceptorTest extends TestCase
         }
     }
 
+    public function testSwallowedNextViolationStillFailsTheTask(): void
+    {
+        $swallow = new class () extends PassthroughWorkerInterceptor {
+            public function executeWorkflowTask(WorkflowTaskInterceptorContext $context, callable $next): WorkflowTaskOutcome
+            {
+                try {
+                    return $next($context);
+                } catch (\Throwable) {
+                    return new WorkflowTaskOutcome([['type' => 'complete_workflow']]);
+                }
+            }
+        };
+        foreach ([0, 2] as $calls) {
+            [$requests] = $this->runWorkflowTask(static fn (WorkflowContext $context): string => 'done',
+                [$swallow, new NextCallingInterceptor($calls)]);
+
+            self::assertSame([], self::requestsTo($requests, '/task-original/complete'), (string) $calls);
+            $failures = self::requestsTo($requests, '/task-original/fail');
+            self::assertCount(1, $failures, (string) $calls);
+            self::assertStringContainsString(NextCallingInterceptor::class, $failures[0]['body']['failure']['message']);
+        }
+    }
+
     public function testActivityInterceptorsRunInOrderAndMayTransformArgumentsAndResult(): void
     {
         $codec = new AvroPayloadCodec();
@@ -223,6 +246,47 @@ final class WorkerInterceptorTest extends TestCase
         $completions = self::requestsTo($requests, '/activity-task/complete');
         self::assertCount(1, $completions);
         self::assertSame('HELLO DEAR ADA', $codec->decodeEnvelope($completions[0]['body']['result']));
+    }
+
+    public function testActivityInterceptorsWrapInlineLocalActivities(): void
+    {
+        $codec = new AvroPayloadCodec();
+        $log = new InterceptorLog();
+        $completion = null;
+        $transport = new FakeTransport(handler: static function (string $method, string $uri, array $headers, ?array $body) use (&$completion): array {
+            if (str_ends_with($uri, '/workflow-tasks/poll')) {
+                return ['task' => ['task_id' => 'task', 'workflow_id' => 'local-workflow', 'run_id' => 'local-run',
+                    'workflow_type' => 'flow', 'lease_owner' => 'owner', 'payload_codec' => 'avro', 'history_events' => []]];
+            }
+            if (str_ends_with($uri, '/workflow-tasks/task/complete')) {
+                $completion = $body;
+
+                return ['completed' => true];
+            }
+            if (str_ends_with($uri, '/workflow-tasks/task/heartbeat')) {
+                return ['task_id' => 'task', 'workflow_task_attempt' => 1, 'lease_owner' => 'owner', 'renewed' => true];
+            }
+            if (str_ends_with($uri, '/poll')) {
+                return ['task' => null];
+            }
+            self::fail('Unexpected request: '.$method.' '.$uri);
+        });
+        $worker = new Worker(new Client('https://server.example', transport: $transport), 'queue', workerId: 'owner',
+            interceptors: [new RecordingInterceptor('audit', $log)]);
+        $worker->registerWorkflow('flow', static fn (WorkflowContext $context): mixed => $context->localActivity('greet', ['Ada']));
+        $worker->registerActivity('greet', static fn (ActivityContext $context, string $name): string => 'hello '.$name);
+
+        self::assertTrue($worker->tick(0));
+        self::assertNotNull($completion);
+        $local = array_values(array_filter($log->activityContexts, static fn (ActivityInterceptorContext $context): bool => $context->local));
+        self::assertCount(1, $local);
+        self::assertSame('greet', $local[0]->activityType);
+        self::assertSame(['Ada'], $local[0]->arguments);
+        self::assertSame('local-workflow', $local[0]->workflowId);
+        self::assertSame([], $local[0]->task);
+        $finished = array_values(array_filter($completion['commands'], static fn (array $command): bool => $command['type'] === 'complete_workflow'));
+        self::assertSame('hello Ada', $codec->decodeEnvelope($finished[0]['result']));
+        self::assertSame(['audit:before', 'audit:before', 'audit:after', 'audit:after'], $log->events);
     }
 
     public function testActivityFailurePassesThroughInterceptors(): void

@@ -72,10 +72,11 @@ final class WorkerInterceptorChain
             /** @var list<array<string, mixed>>|null */
             public ?array $commands = null;
             public ?Throwable $coreFailure = null;
+            public ?WorkflowTaskInterceptorViolation $violation = null;
         };
         $terminal = static function () use ($core, $run): WorkflowTaskOutcome {
             if (++$run->calls > 1) {
-                throw new WorkflowTaskInterceptorViolation('', 'A workflow task interceptor called $next more than once.');
+                throw $run->violation ??= new WorkflowTaskInterceptorViolation('', 'A workflow task interceptor called $next more than once.');
             }
             try {
                 $run->commands = $core();
@@ -88,14 +89,18 @@ final class WorkerInterceptorChain
             return new WorkflowTaskOutcome($run->commands);
         };
         $handler = $this->wrap($terminal, static fn (WorkerInterceptor $interceptor, WorkflowTaskInterceptorContext $ctx, callable $next): WorkflowTaskOutcome
-            => self::guardWorkflowHook($interceptor, $ctx, $next));
+            => self::guardWorkflowHook($interceptor, $ctx, $next, $run));
         try {
             $handler($context);
         } catch (Throwable $failure) {
-            throw $run->coreFailure ?? $failure;
+            throw $run->coreFailure ?? $run->violation ?? $failure;
         }
+        // A violation stays fatal even when an outer hook caught it and returned.
         if ($run->coreFailure !== null) {
             throw $run->coreFailure;
+        }
+        if ($run->violation !== null) {
+            throw $run->violation;
         }
         if ($run->commands === null) {
             throw new WorkflowTaskInterceptorViolation('', 'A workflow task interceptor returned without calling $next.');
@@ -134,12 +139,12 @@ final class WorkerInterceptorChain
      * The workflow core always runs with the Worker's own context, so a hook
      * cannot swap the task it executes. Each hook must call `$next` exactly once.
      */
-    private static function guardWorkflowHook(WorkerInterceptor $interceptor, WorkflowTaskInterceptorContext $context, callable $next): WorkflowTaskOutcome
+    private static function guardWorkflowHook(WorkerInterceptor $interceptor, WorkflowTaskInterceptorContext $context, callable $next, object $run): WorkflowTaskOutcome
     {
         $called = false;
-        $outcome = $interceptor->executeWorkflowTask($context, static function () use ($interceptor, $context, $next, &$called): WorkflowTaskOutcome {
+        $outcome = $interceptor->executeWorkflowTask($context, static function () use ($interceptor, $context, $next, $run, &$called): WorkflowTaskOutcome {
             if ($called) {
-                throw new WorkflowTaskInterceptorViolation($interceptor::class,
+                throw $run->violation ??= new WorkflowTaskInterceptorViolation($interceptor::class,
                     'Workflow task interceptor '.$interceptor::class.' called $next more than once.');
             }
             $called = true;
@@ -147,7 +152,7 @@ final class WorkerInterceptorChain
             return $next($context);
         });
         if (!$called) {
-            throw new WorkflowTaskInterceptorViolation($interceptor::class,
+            throw $run->violation ??= new WorkflowTaskInterceptorViolation($interceptor::class,
                 'Workflow task interceptor '.$interceptor::class.' returned without calling $next.');
         }
 
