@@ -1027,8 +1027,12 @@ clock is unavailable:
 - at entry when the task carries no valid `replay_clock` (Servers older than
   3.6.0, or a run whose start the Server cannot prove);
 - after inline and local operations: `sideEffect()`, version markers
-  (`getVersion()`), local activities and memo upserts. These stay unavailable
-  until the platform defines a persisted time for those steps;
+  (`getVersion()`), local activities, memo or search-attribute upserts and any
+  other command that is not a supported durable step (for example the
+  `startChildWorkflow()` handle). These stay unavailable until the platform
+  defines a persisted time for those steps;
+- inside `waitCondition()` predicates and `parallel()`/`all()` builder
+  closures;
 - after group modes other than the validated all-groups;
 - inside query, update and update-validator handlers;
 - once cancellation is requested, and inside a cancellation scope.
@@ -1043,8 +1047,9 @@ outbox sequence or a workflow-local counter.
 **Upgrading:** earlier releases reported `replayNow()` as unavailable at
 entry. A running workflow whose code branches on that, for example by
 catching `ReplayClockUnavailable` at entry and taking another path, takes the
-other branch when it replays on the new SDK. Version such code or drain those
-runs before you upgrade workers.
+other branch when it replays on the new SDK. The same happens during a rolling
+deploy that mixes SDK versions, or when the Server is upgraded to 3.6.0 or
+later. Version such code or drain those runs before you upgrade.
 
 ## Completion-carried polls
 
