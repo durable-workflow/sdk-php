@@ -291,6 +291,7 @@ final class Worker
         $this->handlerDiscovery = new HandlerDiscovery(new HandlerResolver($container));
         $this->interceptors = WorkerInterceptorChain::resolve($interceptors, new HandlerResolver($container));
         $this->logger = $logger ?? new NullLogger();
+        $this->replayer->useWorkflowLogger($this->logger, $client->namespace);
         $this->diagnosticListener = $diagnosticListener === null
             ? null
             : \Closure::fromCallable($diagnosticListener);

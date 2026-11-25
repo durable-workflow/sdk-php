@@ -17,6 +17,8 @@ use Closure;
 use DateTimeImmutable;
 use Fiber;
 use LogicException;
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 use WeakReference;
 
 /** Straight-line deterministic operations available while a workflow Fiber is replayed. */
@@ -41,6 +43,56 @@ final class WorkflowContext
         }
 
         return $this->businessReplayClock->time();
+    }
+
+    /**
+     * Where this code runs relative to the run's committed history.
+     *
+     * Use it for logging and diagnostics only; never choose durable commands
+     * from it.
+     */
+    public function replayState(): WorkflowReplayState
+    {
+        if ($this->replaying === null || $this->execution === null || Fiber::getCurrent() !== $this->execution) {
+            return WorkflowReplayState::Unavailable;
+        }
+
+        return ($this->replaying)() ? WorkflowReplayState::Replaying : WorkflowReplayState::Executing;
+    }
+
+    /** True while this code is being replayed rather than run for the first time. */
+    public function isReplaying(): bool
+    {
+        return $this->replayState() === WorkflowReplayState::Replaying;
+    }
+
+    /**
+     * A PSR-3 logger that writes through the Worker's logger only when this code
+     * runs for the first time, adding the run's identity to every line.
+     *
+     * Ordinary logging from workflow code repeats on every workflow task,
+     * because the worker replays the workflow from its history each time.
+     */
+    public function logger(): WorkflowLogger
+    {
+        return new WorkflowLogger($this, $this->hostLogger ?? new NullLogger(), [
+            ...$this->logIdentity,
+            'workflow_id' => $this->workflowId,
+            'workflow_run_id' => $this->runId,
+        ]);
+    }
+
+    /**
+     * @internal Bound by the Replayer before workflow code starts.
+     *
+     * @param Closure(): bool $replaying
+     * @param array<string, string|null> $identity
+     */
+    public function bindReplayObservation(Closure $replaying, ?LoggerInterface $logger, array $identity): void
+    {
+        $this->replaying = $replaying;
+        $this->hostLogger = $logger;
+        $this->logIdentity = $identity;
     }
 
     /**
@@ -182,6 +234,14 @@ final class WorkflowContext
     private array $messageStreamWaits = [];
     /** @var array<string, int|string>|null */
     private ?array $selectionChildAwait = null;
+
+    /** @var (Closure(): bool)|null true while recorded steps remain to be replayed */
+    private ?Closure $replaying = null;
+
+    private ?LoggerInterface $hostLogger = null;
+
+    /** @var array<string, string|null> */
+    private array $logIdentity = [];
 
     /**
      * @param list<array<string, mixed>> $history
