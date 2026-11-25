@@ -49,6 +49,8 @@ use DurableWorkflow\Worker\HandlerResolver;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\Interceptor\ActivityInterceptorContext;
 use DurableWorkflow\Worker\Interceptor\QueryTaskInterceptorContext;
+use DurableWorkflow\Worker\Interceptor\UpdateValidationInterceptorContext;
+use DurableWorkflow\Worker\Interceptor\UpdateValidationOutcome;
 use DurableWorkflow\Worker\Interceptor\WorkerInterceptor;
 use DurableWorkflow\Worker\Interceptor\WorkerInterceptorChain;
 use DurableWorkflow\Worker\Interceptor\WorkflowTaskInterceptorContext;
@@ -4326,25 +4328,43 @@ final class Worker
             return;
         }
 
+        $core = function () use ($validator, $workflowType, $updateName, $context, $arguments): UpdateValidationOutcome {
+            try {
+                $result = $this->runUpdateValidator($validator, $workflowType, $updateName, $context, $arguments);
+            } catch (Throwable $exception) {
+                return new UpdateValidationOutcome(false, 'update_validator_rejected',
+                    $exception->getMessage() !== '' ? $exception->getMessage()
+                        : "Update validator for {$workflowType}.{$updateName} rejected the update.",
+                    $exception::class, self::validatorErrors($exception));
+            }
+            if ($result === false) {
+                return new UpdateValidationOutcome(false, 'update_validator_rejected',
+                    "Update validator for {$workflowType}.{$updateName} returned false.", 'false');
+            }
+
+            return new UpdateValidationOutcome(true);
+        };
         try {
-            $result = $this->runUpdateValidator($validator, $workflowType, $updateName, $context, $arguments);
+            $outcome = $this->interceptors->updateValidation(
+                fn (): UpdateValidationInterceptorContext => new UpdateValidationInterceptorContext(
+                    $this->workerId, $this->taskQueue, $this->client->namespace, $task, $taskId, $workflowType,
+                    $updateName, $context->workflowId, $context->runId, $arguments, $context,
+                    $this->client->observabilityContextAvailable()),
+                $core,
+            );
         } catch (Throwable $exception) {
+            // An interceptor failure is not the validator's decision; nothing is accepted.
+            $this->handlerFailure('update_validation', "{$workflowType}.{$updateName}", $exception);
             $this->finishUpdateValidation($taskId, $leaseOwner, $attempt, false,
-                $exception->getMessage() !== '' ? $exception->getMessage()
-                    : "Update validator for {$workflowType}.{$updateName} rejected the update.",
-                'update_validator_rejected', $exception::class, self::validatorErrors($exception));
-
-            return;
-        }
-        if ($result === false) {
-            $this->finishUpdateValidation($taskId, $leaseOwner, $attempt, false,
-                "Update validator for {$workflowType}.{$updateName} returned false.",
-                'update_validator_rejected', 'false');
+                'An update validation interceptor failed: '.$exception->getMessage(),
+                'update_validation_worker_failed', $exception::class);
 
             return;
         }
 
-        $this->finishUpdateValidation($taskId, $leaseOwner, $attempt, true);
+        $this->finishUpdateValidation($taskId, $leaseOwner, $attempt, $outcome->approved,
+            (string) $outcome->message, $outcome->reason ?? 'update_validator_rejected', $outcome->failureType,
+            $outcome->validationErrors);
     }
 
     /**

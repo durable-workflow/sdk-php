@@ -47,4 +47,19 @@ interface WorkerInterceptor
      * @param callable(QueryTaskInterceptorContext): mixed $next
      */
     public function executeQueryTask(QueryTaskInterceptorContext $context, callable $next): mixed;
+
+    /**
+     * Wrap one update validation task: the run of an update's validator before
+     * the Server accepts the update.
+     *
+     * The hook observes the decision; it cannot change it. The Worker approves
+     * or rejects the update from the validator's own decision, and the
+     * validator always runs read-only in its own Fiber with the Worker's copy of
+     * the task. Throwing, skipping `$next` or calling it more than once answers
+     * the task with `update_validation_worker_failed`: the update is not
+     * accepted and the caller can retry.
+     *
+     * @param callable(UpdateValidationInterceptorContext): UpdateValidationOutcome $next
+     */
+    public function executeUpdateValidation(UpdateValidationInterceptorContext $context, callable $next): UpdateValidationOutcome;
 }
