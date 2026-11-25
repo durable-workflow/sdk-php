@@ -19,6 +19,7 @@ use Closure;
 use Fiber;
 use LogicException;
 use Throwable;
+use Psr\Log\LoggerInterface;
 
 /** Re-executes a straight-line workflow Fiber against committed, sequence-ordered history. */
 final class Replayer
@@ -89,8 +90,86 @@ final class Replayer
     /** Whether this task's Server advertises condition_wait_occurrence_deadline. */
     private bool $conditionOccurrenceDeadline = false;
 
+    private ?LoggerInterface $workflowLogger = null;
+
+    private ?string $workflowLogNamespace = null;
+
+    /** @var list<array{level: mixed, message: string, context: array<array-key, mixed>, progress: string}> */
+    private array $workflowLogRecords = [];
+
+    /** @var (Closure(): string)|null the current replay's durable progress */
+    private ?Closure $durableProgress = null;
+
+    private mixed $lastSuspended = null;
+
+    /** @var Fiber<mixed, mixed, mixed, mixed>|null */
+    private ?Fiber $lastExecution = null;
+
     public function __construct(private readonly PayloadCodec $codec)
     {
+    }
+
+    /**
+     * Route `WorkflowContext::logger()` through this PSR-3 logger. Replays
+     * without one, such as offline replays, write nothing.
+     *
+     * A replay only collects the lines its new code logs. The Worker writes
+     * them with takeWorkflowLogs() once the result of that replay has been
+     * submitted, so a superseded, speculative or refused pass logs nothing.
+     */
+    public function useWorkflowLogger(?LoggerInterface $logger, ?string $namespace = null): void
+    {
+        $this->workflowLogger = $logger;
+        $this->workflowLogNamespace = $namespace;
+    }
+
+    /**
+     * @internal The lines the last replay's new code logged, removed from the
+     * replayer. Code that parked on a durable-operation handle or a started
+     * child runs again later from its last durable progress, so the lines it
+     * logged since that progress are left out; the task that moves past the
+     * wait logs them.
+     *
+     * @return list<array{level: mixed, message: string, context: array<array-key, mixed>}>
+     */
+    public function takeWorkflowLogs(): array
+    {
+        $records = $this->workflowLogRecords;
+        $this->workflowLogRecords = [];
+        $parked = $this->lastExecution !== null && !$this->lastExecution->isTerminated()
+            && ($this->lastSuspended instanceof DurableOperationHandle
+                || ($this->lastSuspended instanceof WorkflowCommand && $this->lastSuspended->type === 'await_child_workflow'));
+        $progress = $this->durableProgress === null ? '' : ($this->durableProgress)();
+
+        return array_values(array_map(
+            static fn (array $record): array => ['level' => $record['level'], 'message' => $record['message'],
+                'context' => $record['context']],
+            array_filter($records, static fn (array $record): bool => !$parked || $record['progress'] !== $progress),
+        ));
+    }
+
+    /** New commands a replay appended, leaving out applied-signal markers. */
+    private static function authoredCommandCount(mixed $commands): int
+    {
+        if (!is_array($commands)) {
+            return 0;
+        }
+
+        return count(array_filter(
+            $commands,
+            static fn (mixed $command): bool => !is_array($command)
+                || ($command['change_id'] ?? null) !== AppliedSignals::CHANGE_ID,
+        ));
+    }
+
+    /** @param array<array-key, mixed> $context */
+    private function collectWorkflowLog(mixed $level, string $message, array $context): void
+    {
+        if ($this->workflowLogger === null) {
+            return;
+        }
+        $this->workflowLogRecords[] = ['level' => $level, 'message' => $message, 'context' => $context,
+            'progress' => $this->durableProgress === null ? '' : ($this->durableProgress)()];
     }
 
     /**
@@ -193,6 +272,10 @@ final class Replayer
         if ($allowScopedPreparedLocalActivities && (!$prepareLocalActivities || !$prepareCancellationScopeDelivery)) {
             throw new LogicException('Scoped local callbacks require prepared admission and canonical scope delivery.');
         }
+        $this->workflowLogRecords = [];
+        $this->durableProgress = null;
+        $this->lastSuspended = null;
+        $this->lastExecution = null;
         WorkflowEntryArguments::validate($handler, $input, (string) ($task['workflow_type'] ?? ''));
         $hasScopes = $this->assertCancellationScopeReplaySupported($history, $allowCancellationScopeAuthoring, $task, $replayCommittedCancellationScopes);
         $scopes = new CancellationScopeHistory($hasScopes ? $history : [], (string) ($task['run_id'] ?? ''));
@@ -272,7 +355,20 @@ final class Replayer
         $businessReplayClock = new BusinessReplayClock($history, (string) ($task['workflow_id'] ?? ''), (string) ($task['run_id'] ?? ''),
             WorkerReplayClock::fromTask($task['replay_clock'] ?? null, (string) ($task['run_id'] ?? '')));
         $this->lastBusinessReplayClock = $businessReplayClock;
-        $execution = new Fiber(ExecutionTelemetry::bind(function () use ($handler, $history, $input, $task, $businessReplayClock, $appliedSignals, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, $allowScopedPreparedLocalActivities, $allowContinueAsNewTargetBuild, &$context): mixed {
+        // Recorded steps remain while the code being run already ran before (#227).
+        $replaying = static function () use (&$stepCursor, &$steps, &$consumedConditionTail, $completedHistory): bool {
+            return $completedHistory || $stepCursor < count($steps)
+                // A legacy condition tail is held outside $steps while the code between its waits runs.
+                || $consumedConditionTail !== null; // @phpstan-ignore notIdentical.alwaysFalse (assigned by reference after this closure)
+        };
+        // Durable progress: recorded steps consumed and new commands appended,
+        // leaving out the applied-signal markers, which are not authored steps.
+        $this->durableProgress = static function () use (&$stepCursor, &$commands): string {
+            $authored = self::authoredCommandCount($commands);
+
+            return ((int) $stepCursor).':'.$authored;
+        };
+        $execution = new Fiber(ExecutionTelemetry::bind(function () use ($handler, $history, $input, $task, $businessReplayClock, $appliedSignals, $cancellation, $scopes, $localActivityExecutor, $prepareLocalActivities, $prepareLocalActivityGroups, $localActivityCancellationPolicies, $allowScopeAuthoring, $allowScopedPreparedLocalActivities, $allowContinueAsNewTargetBuild, $replaying, &$context): mixed {
             $current = Fiber::getCurrent();
             if ($current === null) {
                 throw new LogicException('Workflow execution did not start inside its Fiber.');
@@ -299,6 +395,11 @@ final class Replayer
                 $allowContinueAsNewTargetBuild,
             );
 
+            $context->bindReplayObservation($replaying, $this->collectWorkflowLog(...), [
+                'namespace' => $this->workflowLogNamespace,
+                'workflow_type' => isset($task['workflow_type']) ? (string) $task['workflow_type'] : null,
+            ]);
+
             try {
                 return $handler($context, ...$input);
             } catch (WorkflowFiberDiscarded) {
@@ -315,7 +416,8 @@ final class Replayer
         });
         /** @var array<string, array{version: int, sequence: ?int}> $versionDecisions */
         $versionDecisions = [];
-        $suspended = $businessReplayClock->invoke($execution->start(...));
+        $this->lastExecution = $execution;
+        $suspended = $this->lastSuspended = $businessReplayClock->invoke($execution->start(...));
         $cancellationConsumed = false;
         $consumedScopeDeliveries = [];
         $consumedConditionTail = null;
@@ -3034,7 +3136,7 @@ final class Replayer
     {
         $clock->consume($step);
 
-        return $clock->invoke(static fn (): mixed => $execution->resume($value));
+        return $this->lastSuspended = $clock->invoke(static fn (): mixed => $execution->resume($value));
     }
 
     /**
@@ -3045,7 +3147,7 @@ final class Replayer
     {
         $clock->consume($step);
 
-        return $clock->invoke(static fn (): mixed => $execution->throw($failure));
+        return $this->lastSuspended = $clock->invoke(static fn (): mixed => $execution->throw($failure));
     }
 
     /** @param Fiber<mixed, mixed, mixed, mixed> $execution
@@ -3055,7 +3157,7 @@ final class Replayer
     {
         $clock->consumeGroup($members, $size, $this->groupClockPathMatches(...));
 
-        return $clock->invoke(static fn (): mixed => $execution->resume($value));
+        return $this->lastSuspended = $clock->invoke(static fn (): mixed => $execution->resume($value));
     }
 
     /** @param Fiber<mixed, mixed, mixed, mixed> $execution
@@ -3065,7 +3167,7 @@ final class Replayer
     {
         $clock->consumeGroup($members, $size, $this->groupClockPathMatches(...), $order);
 
-        return $clock->invoke(static fn (): mixed => $execution->throw($failure));
+        return $this->lastSuspended = $clock->invoke(static fn (): mixed => $execution->throw($failure));
     }
 
     /** @param array<string, mixed> $body
