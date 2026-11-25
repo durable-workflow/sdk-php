@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-workflow-logger-one-line-per-committed-step",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {"type": "golden.workflow-logger", "input": ["Ada"]},
+  "history": [
+    {"event_type": "ActivityScheduled", "payload": {"sequence": 1, "activity_type": "golden.reserve"}},
+    {"event_type": "ActivityCompleted", "payload": {"sequence": 1, "activity_type": "golden.reserve", "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwoQcmVzZXJ2ZWQ="}}},
+    {"event_type": "ActivityScheduled", "payload": {"sequence": 2, "activity_type": "golden.charge"}},
+    {"event_type": "ActivityCompleted", "payload": {"sequence": 2, "activity_type": "golden.charge", "result": {"codec": "avro", "blob": "wwHioz3/VYAiNwoOY2hhcmdlZA=="}}},
+    {"event_type": "WorkflowCompleted", "payload": {"result": {"codec": "avro", "blob": "wwHioz3/VYAiNwoIZG9uZQ=="}}}
+  ],
+  "workflow_task_history_lengths": [0, 2, 4],
+  "expected": {
+    "logged": ["logger scenario started", "logger scenario reserved", "logger scenario charged"],
+    "cold_replay_logged": [],
+    "commands": [["schedule_activity"], ["schedule_activity"], ["complete_workflow"]]
+  }
+}
