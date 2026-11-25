@@ -1121,7 +1121,7 @@ container a class name must have no required constructor arguments.
 
 | Hook | Context | `$next` returns |
 | --- | --- | --- |
-| `executeWorkflowTask($context, $next)` | `workerId`, `taskQueue`, `namespace`, `task`, `taskId`, `workflowType`, `workflowId`, `runId`, `workflowTaskAttempt`, `historyLength`, `replaying`, `updateId`, `observabilitySupported` | `WorkflowTaskOutcome` with a copy of the commands |
+| `executeWorkflowTask($context, $next)` | `workerId`, `taskQueue`, `namespace`, `task`, `taskId`, `workflowType`, `workflowId`, `runId`, `workflowTaskAttempt`, `historyLength`, `replaying` (also `replayState()`), `updateId`, `observabilitySupported` | `WorkflowTaskOutcome` with a copy of the commands |
 | `executeActivity($context, $next)` | `workerId`, `taskQueue`, `namespace`, `task`, `activityType`, `arguments`, `attemptNumber`, `taskId`, `activityAttemptId`, `workflowId`, `runId`, `local`, `activityContext`, `observabilitySupported` | the activity result |
 | `executeQueryTask($context, $next)` | `workerId`, `taskQueue`, `namespace`, `task`, `taskId`, `workflowType`, `queryName`, `workflowId`, `runId`, `arguments`, `queryContext`, `observabilitySupported` | the query result |
 
@@ -1131,7 +1131,9 @@ Workflow-task interceptors cannot break determinism:
   workflow task's commands, once per task attempt. `replaying` is `true` when
   the delivered history already holds commands recorded by earlier workflow
   tasks, so the workflow code re-ran that committed prefix before reaching new
-  code. The outcome holds only the commands this task adds; replayed commands
+  code. `replayState()` reports the same thing as the `WorkflowReplayState`
+  that `WorkflowContext::replayState()` uses: `Replaying` or `Executing`.
+  The outcome holds only the commands this task adds; replayed commands
   are never resubmitted. A retried attempt (`workflowTaskAttempt > 1`) can
   repeat an outcome whose task failed, so make external audit writes
   idempotent.

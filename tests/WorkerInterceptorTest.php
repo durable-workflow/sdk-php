@@ -52,6 +52,7 @@ final class WorkerInterceptorTest extends TestCase
         self::assertSame(3, $context->workflowTaskAttempt);
         self::assertSame(0, $context->historyLength);
         self::assertFalse($context->replaying);
+        self::assertSame(\DurableWorkflow\Worker\WorkflowReplayState::Executing, $context->replayState());
         self::assertSame('task-original', $context->task['task_id']);
         self::assertSame([['complete_workflow'], ['complete_workflow']], $log->outcomeTypes);
         self::assertSame('complete_workflow', self::completed($requests)[0]['type']);
@@ -73,6 +74,7 @@ final class WorkerInterceptorTest extends TestCase
         );
 
         self::assertTrue($log->workflowContexts[0]->replaying);
+        self::assertSame(\DurableWorkflow\Worker\WorkflowReplayState::Replaying, $log->workflowContexts[0]->replayState());
         self::assertSame(3, $log->workflowContexts[0]->historyLength);
         $commands = self::completed($requests);
         self::assertSame('complete_workflow', $commands[0]['type']);
