@@ -932,7 +932,7 @@ final class WorkflowContext
     {
         if ($this->isCancellationRequested() && !$this->isCancellationShielded()) {
             $context = $this->cancellationContext();
-            throw WorkflowCancelled::forContext($context->requestId ?? $this->deliveredCancellationRequestId, $context);
+            throw TimeoutCleanup::delivered(WorkflowCancelled::forContext($context->requestId ?? $this->deliveredCancellationRequestId, $context));
         }
     }
 
@@ -1032,7 +1032,7 @@ final class WorkflowContext
             $this->deliveredCancellationContext = $context;
         }
 
-        return WorkflowCancelled::forContext($requestId, $context);
+        return TimeoutCleanup::delivered(WorkflowCancelled::forContext($requestId, $context));
     }
 
     /** @return Closure(): DateTimeImmutable */
