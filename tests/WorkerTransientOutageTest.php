@@ -516,8 +516,10 @@ final class WorkerTransientOutageTest extends TestCase
         self::assertTrue(TransientFailure::is(self::storageUnavailable()));
         self::assertTrue(TransientFailure::is(new ServerException('x', 503, 'backend_unavailable', ['reason' => 'backend_unavailable'])));
         self::assertTrue(TransientFailure::is(new ServerException('x', 502, null, ['retryable' => true])));
-        // An unclassified answer cannot authorize repeating an acknowledgement.
-        self::assertFalse(TransientFailure::is(new ServerException('x', 503, null, ['retryable' => true]), acknowledgement: true));
+        // An unclassified 429 cannot authorize repeating an acknowledgement.
+        self::assertFalse(TransientFailure::is(new ServerException('x', 429, null, ['retryable' => true]), acknowledgement: true));
+        // A generic 500/502/503/504 is an outage; the lease fence decides a repeated acknowledgement (cloud#752).
+        self::assertTrue(TransientFailure::is(new ServerException('x', 503, null, ['retryable' => true]), acknowledgement: true));
         self::assertTrue(TransientFailure::is(self::storageUnavailable(), acknowledgement: true));
         // A typed refusal keeps its own protocol classification.
         self::assertFalse(TransientFailure::is(new ServerException('x', 503, 'backend_lock_pressure',

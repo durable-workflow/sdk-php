@@ -284,7 +284,9 @@ final class WorkerStorageAdmissionTest extends TestCase
     public static function terminalAcknowledgements(): iterable
     {
         yield 'unclassified transport loss' => [new TransportException('Response lost.')];
-        yield 'generic unavailable' => [self::refused(['retryable' => true])];
+        // A generic 500/502/503/504 is an outage repeated under the lease fence (cloud#752,
+        // WorkerServerErrorRetryTest); an unclassified 429 still authorizes nothing.
+        yield 'generic throttle' => [self::refused(['retryable' => true], 429)];
         yield 'authentication' => [self::refused(self::pressure(), 401)];
         yield 'lease mismatch' => [self::refused(['reason' => 'lease_owner_mismatch'], 409)];
         yield 'outcome unspecified' => [self::refused(array_diff_key(self::pressure(), ['request_admitted' => true]))];

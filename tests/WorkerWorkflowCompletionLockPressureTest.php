@@ -66,6 +66,11 @@ final class WorkerWorkflowCompletionLockPressureTest extends TestCase
             'recorded' => 'false', 'backend' => ['driver' => 'sqlite', 'lock_pressure' => false],
         ] as $field => $value) {
             yield "wrong {$field}" => [array_replace(self::lockPressure(false), [$field => $value])];
+            if ($field === 'reason') {
+                // A 503 that names no reason is a generic outage, repeated under the
+                // same fence on the shared schedule (cloud#752, WorkerServerErrorRetryTest).
+                continue;
+            }
             $response = self::lockPressure(false);
             unset($response[$field]);
             yield "missing {$field}" => [$response];

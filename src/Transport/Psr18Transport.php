@@ -365,7 +365,11 @@ final class Psr18Transport implements BoundedPayloadTransport, BoundedPayloadUpl
             if (is_array($decoded)) {
                 $this->restoreReportedCapabilities($decoded, $captured, $status);
             }
-            throw $this->responseFailure($status, is_array($decoded) ? $decoded : null, $rawBody, [], $acceptance, $proof);
+            // Keep only the Server's suggested wait; a managed Worker honours it for an outage.
+            $retryAfter = trim($response->getHeaderLine('Retry-After'));
+            $headers = $retryAfter !== '' && strlen($retryAfter) <= 64 && preg_match('/[\r\n]/', $retryAfter) !== 1
+                ? ['retry-after' => $retryAfter] : [];
+            throw $this->responseFailure($status, is_array($decoded) ? $decoded : null, $rawBody, $headers, $acceptance, $proof);
         }
 
         $decoded = $rawBody === '' ? null : json_decode($rawBody, true, 512, JSON_THROW_ON_ERROR);

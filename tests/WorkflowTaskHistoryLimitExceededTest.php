@@ -153,7 +153,9 @@ final class WorkflowTaskHistoryLimitExceededTest extends TestCase
     {
         $events = [];
         $secondary = match ($kind) {
-            'server_error' => TransportException::fromResponse(500, ['message' => 'Server Error'], '{"message":"Server Error"}'),
+            // A generic 500 is an outage and is repeated (cloud#752); a definitive one falls through.
+            'server_error' => TransportException::fromResponse(500, ['message' => 'Server Error', 'retryable' => false],
+                '{"message":"Server Error","retryable":false}'),
             'second_typed_409' => self::typedRefusal(),
         };
         $transport = self::workflowTransport([self::typedRefusal(), $secondary]);
