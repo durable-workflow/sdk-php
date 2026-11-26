@@ -475,6 +475,14 @@ final class ReplayRegressionAttributedNestedWorkflow
     }
 }
 
+/**
+ * A fixture's replay_clock does not have the exact WorkerReplayClock v1 shape.
+ * The ASCII-only `\d` (no /u flag) matches the same digits as the Server's `[0-9]`.
+ */
+final class ReplayRegressionReplayClockShape extends RuntimeException
+{
+}
+
 final class ReplayRegressionConsumer
 {
     private const COMMAND_SEQUENCE_CONTEXT = '.command_sequence';
@@ -763,34 +771,34 @@ final class ReplayRegressionConsumer
     {
         $keys = ['schema', 'workflow_run_id', 'started_at', 'source'];
         if (!is_array($clock) || array_is_list($clock)) {
-            throw new RuntimeException("{$context} must be an object.");
+            throw new ReplayRegressionReplayClockShape("{$context} must be an object.");
         }
         $actual = array_keys($clock);
         sort($actual);
         $expected = $keys;
         sort($expected);
         if ($actual !== $expected) {
-            throw new RuntimeException("{$context} must contain exactly schema, workflow_run_id, started_at and source.");
+            throw new ReplayRegressionReplayClockShape("{$context} must contain exactly schema, workflow_run_id, started_at and source.");
         }
         if ($clock['schema'] !== 'durable-workflow.worker-replay-clock/v1') {
-            throw new RuntimeException("{$context}.schema must be durable-workflow.worker-replay-clock/v1.");
+            throw new ReplayRegressionReplayClockShape("{$context}.schema must be durable-workflow.worker-replay-clock/v1.");
         }
         if (!is_string($clock['workflow_run_id']) || $clock['workflow_run_id'] === '') {
-            throw new RuntimeException("{$context}.workflow_run_id must be a non-empty string.");
+            throw new ReplayRegressionReplayClockShape("{$context}.workflow_run_id must be a non-empty string.");
         }
         $startedAt = $clock['started_at'];
         if (!is_string($startedAt)
-            || preg_match('/\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z\z/', $startedAt) !== 1) {
-            throw new RuntimeException("{$context}.started_at must be UTC with six fractional digits and Z.");
+            || preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\z/', $startedAt) !== 1) {
+            throw new ReplayRegressionReplayClockShape("{$context}.started_at must be UTC with six fractional digits and Z.");
         }
         // A real instant: no rollover, and year 0000 is refused as Python's strptime refuses it.
         $instant = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i:s.u\Z', $startedAt, new DateTimeZone('UTC'));
         if ($instant === false || str_starts_with($startedAt, '0000-')
             || $instant->format('Y-m-d\TH:i:s.u\Z') !== $startedAt) {
-            throw new RuntimeException("{$context}.started_at is not a real instant.");
+            throw new ReplayRegressionReplayClockShape("{$context}.started_at is not a real instant.");
         }
         if (!in_array($clock['source'], ['run_started_at', 'redrive_replayed_started_at'], true)) {
-            throw new RuntimeException("{$context}.source is not a WorkerReplayClock v1 source.");
+            throw new ReplayRegressionReplayClockShape("{$context}.source is not a WorkerReplayClock v1 source.");
         }
     }
 
