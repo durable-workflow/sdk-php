@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Worker;
 
+use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Exception\WorkflowTimeoutCleanupRequested;
 use DurableWorkflow\Version;
 use Throwable;
@@ -27,6 +28,9 @@ final class TimeoutCleanup
     public const CAPABILITY = 'timeout_cleanup';
     public const INTERRUPTION = 'timeout_cleanup';
 
+    /** @var \WeakMap<WorkflowTimeoutCleanupRequested, true>|null Interruptions the runtime raised into workflow code. */
+    private static ?\WeakMap $delivered = null;
+
     /** @return array{supported: true, minimum_protocol_version: string, version: 1} */
     public static function manifestEntry(): array
     {
@@ -38,21 +42,44 @@ final class TimeoutCleanup
     }
 
     /**
+     * @internal Records an interruption the runtime raises into workflow code,
+     * so only that exact object can carry the marker.
+     *
+     * @template T of WorkflowCancelled
+     * @param T $interruption
+     * @return T
+     */
+    public static function delivered(WorkflowCancelled $interruption): WorkflowCancelled
+    {
+        if ($interruption instanceof WorkflowTimeoutCleanupRequested) {
+            self::$delivered ??= new \WeakMap();
+            self::$delivered[$interruption] = true;
+        }
+
+        return $interruption;
+    }
+
+    /**
      * The portable failure marker for an uncaught timeout-cleanup interruption,
-     * or null for any other failure. The delivered exception carries the
-     * engine's root cancellation context with `cause: timeout`; an
-     * application-constructed exception without that context is not marked.
+     * or null for any other failure. Only the delivered interruption for the
+     * run's root request is marked: the exact object the runtime raised, whose
+     * context has `cause: timeout`, no parent request and no scope, and names
+     * this run (`$runId`, the claimed task's run; without it nothing is
+     * marked). An exception the application constructs (even with a copied
+     * context), a wrapped interruption and a scoped child are not marked.
      *
      * @return array{interruption: string}|null
      */
-    public static function failureMarker(Throwable $failure): ?array
+    public static function failureMarker(Throwable $failure, ?string $runId = null): ?array
     {
-        if (!$failure instanceof WorkflowTimeoutCleanupRequested) {
+        if (!$failure instanceof WorkflowTimeoutCleanupRequested || self::$delivered === null || !isset(self::$delivered[$failure])) {
             return null;
         }
         $context = $failure->context;
-        if (!$context instanceof CancellationContext || !$context->isTimeout()
-            || $failure->requestId === null || $failure->requestId !== $context->requestId) {
+        if (!$context instanceof CancellationContext || !$context->isTimeout() || $context->scopeOrigin !== null
+            || $context->parentRequestId !== null || $failure->requestId === null
+            || $failure->requestId !== $context->requestId || $context->requestId !== $context->rootRequestId
+            || $runId === null || $context->rootWorkflowRunId !== $runId) {
             return null;
         }
 

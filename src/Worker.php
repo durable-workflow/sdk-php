@@ -604,10 +604,12 @@ final class Worker
                         $this->staleRegistrationObserved = true;
                     } elseif (TransientFailure::is($exception)) {
                         // The Server or network was briefly unavailable (for
-                        // example a database warming up). Keep the Worker
-                        // running; any claimed task is re-delivered by the
-                        // Server when its lease ends.
-                        $delay = TransientFailure::delay(++$transientAttempt);
+                        // example a database warming up or failing over, or a
+                        // generic HTTP 5xx). Keep the Worker running; any
+                        // claimed task is re-delivered by the Server when its
+                        // lease ends.
+                        $delay = TransientFailure::delay(++$transientAttempt,
+                            TransientFailure::retryAfterSeconds($exception, $this->now()));
                         $this->diagnostic('worker.transient_failure', ['worker_id' => $this->workerId,
                             'task_queue' => $this->taskQueue, 'attempt' => $transientAttempt,
                             'delay_seconds' => $delay, 'exception' => $exception], 'warning');
@@ -1156,7 +1158,7 @@ final class Worker
 
                 ++$attempt;
                 $delaySeconds = $untypedOutage
-                    ? TransientFailure::delay($attempt, $exception->details['retry_after_seconds'] ?? null)
+                    ? TransientFailure::delay($attempt, TransientFailure::retryAfterSeconds($exception, $this->now()))
                     : $this->transientRetryDelay($attempt, $exception->details['retry_after_seconds'] ?? null);
                 if ($this->transientPollRetryObserver !== null) {
                     ($this->transientPollRetryObserver)('registration', $attempt, $delaySeconds, $exception);
@@ -1645,12 +1647,12 @@ final class Worker
 
     private function waitForPollRetry(string $kind, int $attempt, ServerException $error): void
     {
-        $retryAfter = $error->details['retry_after_seconds'] ?? null;
         // Typed refusals keep their protocol backoff; an untyped outage uses
-        // the shared jittered schedule so Workers do not retry in step.
+        // the shared jittered schedule so Workers do not retry in step, and
+        // waits at least the Server's bounded Retry-After.
         $delay = !PollResponse::isTransientFailure($error) && TransientFailure::is($error)
-            ? TransientFailure::delay($attempt, $retryAfter)
-            : $this->transientRetryDelay($attempt, $retryAfter);
+            ? TransientFailure::delay($attempt, TransientFailure::retryAfterSeconds($error, $this->now()))
+            : $this->transientRetryDelay($attempt, $error->details['retry_after_seconds'] ?? null);
         ($this->transientPollRetryObserver)?->__invoke($kind, $attempt, $delay, $error);
         $this->diagnostic('worker.retrying', ['worker_id' => $this->workerId, 'operation' => "{$kind}_poll",
             'attempt' => $attempt, 'delay_seconds' => $delay, 'exception' => $error], 'warning');
@@ -1691,6 +1693,8 @@ final class Worker
      * @param \Closure(): T $request
      * @param array{task_id: string, lease_owner: string, attempt: int}|null $workflowTaskLease
      * @param array{task_id: string, activity_attempt_id: string, lease_owner: string}|null $activityTaskLease
+     * @param string|null $fencedTaskId A failure report or query answer repeated under its original task,
+     *     attempt and lease through an outage (see settledByServer()).
      * @return T
      */
     private function retryStorageAdmission(
@@ -1698,10 +1702,12 @@ final class Worker
         \Closure $request,
         ?array $workflowTaskLease = null,
         ?array $activityTaskLease = null,
+        ?string $fencedTaskId = null,
     ): mixed
     {
         $attempt = 0;
         $uncertainActivityCompletion = false;
+        $resentUncertain = false;
         while (true) {
             if (str_starts_with($operation, 'query_')) {
                 $this->queryTaskAuthority?->confirm();
@@ -1759,6 +1765,16 @@ final class Worker
 
                     return null;
                 }
+                if ($fencedTaskId !== null && $resentUncertain && $this->settledByServer($exception, $fencedTaskId)) {
+                    // An earlier copy met an outage and may have been
+                    // recorded. The Server now fences this task: our report
+                    // landed or the lease moved on. Either way it owns the
+                    // outcome, and nothing is reported twice.
+                    $this->diagnostic('worker.outcome_already_settled', ['worker_id' => $this->workerId,
+                        'operation' => $operation, 'task_id' => $fencedTaskId, 'reason' => $exception->reason], 'info');
+
+                    return null;
+                }
                 $backendUnavailable = $workflowBackendUnavailable || $activityBackendUnavailable;
                 // These requests retain their original lease fence and computed
                 // outcome. An uncertain reply retries the request, never the handler.
@@ -1771,8 +1787,15 @@ final class Worker
                 // Cluster info failed before this request was sent (see
                 // RuntimePayloadUploads); repeating it is safe.
                 $discoveryOutage = $untypedOutage && $exception->isPayloadDiscoveryUnavailable();
+                // Each of these is repeated with its original task, attempt
+                // and lease, so the Server's fence decides a copy it may have
+                // committed: a heartbeat is idempotent, an activity completion
+                // is answered by its committed receipt, and a workflow
+                // completion, failure report or query answer is refused as no
+                // longer leased.
                 $claimedTaskTransportFailure = ($workflowTaskLease !== null
-                        || ($operation === 'activity_complete' && $activityTaskLease !== null))
+                        || ($operation === 'activity_complete' && $activityTaskLease !== null)
+                        || $operation === 'activity_heartbeat' || $fencedTaskId !== null)
                     && ($exception->isTransientConnectionFailure() || $exception->isTransientUpstreamFailure()
                         || $untypedOutage);
                 if ((!$exception->isStorageAdmissionFailure() && !$backendUnavailable && !$activityDiscoveryUnavailable
@@ -1785,6 +1808,7 @@ final class Worker
                 }
                 $uncertainActivityCompletion = $uncertainActivityCompletion || $activityBackendUnavailable
                     || ($operation === 'activity_complete' && $claimedTaskTransportFailure);
+                $resentUncertain = $resentUncertain || $claimedTaskTransportFailure;
                 if ($untypedOutage && $attempt >= $this->untypedOutageAttemptLimit($operation)) {
                     // Retries stay inside the claim: with lease maintenance the
                     // publication fence ends them when the grant ends; without
@@ -1796,14 +1820,13 @@ final class Worker
                 }
 
                 ++$attempt;
-                $retryAfter = $exception->details['retry_after_seconds'] ?? null;
                 // An untyped outage uses the shared jittered schedule; typed
                 // refusals keep their protocol backoff. The lease fence still
                 // bounds every retry: once the claim's grant ends, publication
                 // is refused and the Server settles the attempt.
                 $delaySeconds = $untypedOutage
-                    ? TransientFailure::delay($attempt, $retryAfter)
-                    : $this->transientRetryDelay($attempt, $retryAfter);
+                    ? TransientFailure::delay($attempt, TransientFailure::retryAfterSeconds($exception, $this->now()))
+                    : $this->transientRetryDelay($attempt, $exception->details['retry_after_seconds'] ?? null);
                 if ($this->transientPollRetryObserver !== null) {
                     ($this->transientPollRetryObserver)($operation, $attempt, $delaySeconds, $exception);
                 }
@@ -1851,8 +1874,7 @@ final class Worker
                 if (!TransientFailure::isReadOutage($exception) || $this->shutdownRequested) {
                     throw $exception;
                 }
-                $details = $exception instanceof ServerException ? $exception->details : $exception->response;
-                $delay = TransientFailure::delay(++$attempt, $details['retry_after_seconds'] ?? null);
+                $delay = TransientFailure::delay(++$attempt, TransientFailure::retryAfterSeconds($exception, $this->now()));
                 $this->diagnostic('worker.retrying', ['worker_id' => $this->workerId, 'operation' => $operation,
                     'attempt' => $attempt, 'delay_seconds' => $delay, 'exception' => $exception], 'warning');
                 $this->observeOutage($operation, $exception, 'cluster_info');
@@ -1870,6 +1892,26 @@ final class Worker
         // A maintained activity lease fences publication at the grant's end.
         return str_starts_with($operation, 'activity_') && $this->activityLeaseProcess !== null
             ? PHP_INT_MAX : self::UNTYPED_OUTAGE_MAX_ATTEMPTS;
+    }
+
+    /**
+     * A 409 that fences this very task, answered to a repeated report. It
+     * never matches a stale registration, which run() recovers from itself.
+     */
+    private function settledByServer(ServerException $exception, string $taskId): bool
+    {
+        $details = $exception->details;
+        if ($exception->status !== 409 || $taskId === '' || $details === null || array_is_list($details)
+            || in_array($exception->reason, PollResponse::TERMINAL_REASONS, true)) {
+            return false;
+        }
+        foreach (['task_id', 'query_task_id', 'update_validation_task_id'] as $field) {
+            if (($details[$field] ?? null) === $taskId) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** @param array{task_id: string, activity_attempt_id: string, lease_owner: string} $lease */
@@ -2318,6 +2360,7 @@ final class Worker
                                     $replay->terminalFailure,
                                     $replay->failedActivitySequence,
                                     $replay->failedActivityExecutionId,
+                                    is_string($task['run_id'] ?? null) ? $task['run_id'] : null,
                                 );
                             } else {
                                 $this->diagnoseWorkflowWait($task, $commands);
@@ -2329,7 +2372,8 @@ final class Worker
                                 throw $exception;
                             }
                             $this->handlerFailure('workflow', $workflowType, $exception);
-                            $commands = [$this->workflowFailureCommand($exception)];
+                            $commands = [$this->workflowFailureCommand($exception,
+                                runId: is_string($task['run_id'] ?? null) ? $task['run_id'] : null)];
                         }
                     }
 
@@ -3845,7 +3889,14 @@ final class Worker
                     },
                     function (array $details) use ($taskId, $attemptId, $leaseOwner): array {
                         try {
-                            $reply = $this->client->heartbeatActivityTask($taskId, $attemptId, $leaseOwner, $details);
+                            // Repeated through a transient Server outage like the
+                            // inline heartbeat (cloud#752). Each copy carries the
+                            // original attempt and lease: the bound activity lease
+                            // checks it before sending, and the retry stops on
+                            // shutdown, the cancellation deadline, a definitive
+                            // refusal or its bounded attempts.
+                            $reply = $this->retryStorageAdmission('activity_heartbeat', fn (): array =>
+                                $this->client->heartbeatActivityTask($taskId, $attemptId, $leaseOwner, $details));
                             if (($reply['task_id'] ?? null) !== $taskId
                                 || ($reply['activity_attempt_id'] ?? null) !== $attemptId
                                 || ($reply['lease_owner'] ?? null) !== $leaseOwner
@@ -4220,7 +4271,8 @@ final class Worker
             );
             $authority?->confirm();
             $this->retryStorageAdmission('query_complete', fn (): array =>
-                $this->client->completeQueryTask($taskId, $leaseOwner, $attempt, $result, $this->queryRequestBudget($authority)));
+                $this->client->completeQueryTask($taskId, $leaseOwner, $attempt, $result, $this->queryRequestBudget($authority)),
+                fencedTaskId: $taskId);
         } catch (WorkflowClaimRevoked $exception) {
             $this->diagnostic('worker.claim_aborted', ['task_kind' => 'query', 'task_id' => $taskId,
                 'reason' => $exception->reason, 'message' => $exception->getMessage()], 'warning');
@@ -4521,7 +4573,7 @@ final class Worker
         try {
             $this->retryStorageAdmission("{$taskKind}_fail", static function () use ($failureAcknowledgement, $taskFailure): void {
                 $failureAcknowledgement($taskFailure);
-            });
+            }, fencedTaskId: $taskId);
         } catch (Throwable $acknowledgementFailure) {
             if (!$this->isTaskAuthorityLost($taskKind, $taskId, $acknowledgementFailure, $workflowTaskAttempt)) {
                 throw $acknowledgementFailure;
@@ -5490,7 +5542,7 @@ final class Worker
             // An outage during a retry wait therefore never ends run() (#448).
             $attempt = ++$this->heartbeatRetryAttempt;
             $delaySeconds = $untypedOutage
-                ? TransientFailure::delay($attempt, $exception->details['retry_after_seconds'] ?? null)
+                ? TransientFailure::delay($attempt, TransientFailure::retryAfterSeconds($exception, $this->now()))
                 : $this->transientRetryDelay($attempt, $exception->details['retry_after_seconds'] ?? null);
             $this->heartbeatRetryAt = $this->now() + $delaySeconds;
             if ($this->transientPollRetryObserver !== null) {
@@ -5880,6 +5932,7 @@ final class Worker
         Throwable $exception,
         ?int $failedActivitySequence = null,
         ?string $failedActivityExecutionId = null,
+        ?string $runId = null,
     ): array
     {
         if ($exception instanceof FailureReportRefused) {
@@ -5896,7 +5949,7 @@ final class Worker
             $command['failed_activity_execution_id'] = $failedActivityExecutionId;
         }
         // Only a worker that advertised timeout_cleanup may send the marker.
-        $marker = $this->enableCooperativeCancellation ? TimeoutCleanup::failureMarker($exception) : null;
+        $marker = $this->enableCooperativeCancellation ? TimeoutCleanup::failureMarker($exception, $runId) : null;
         if ($marker !== null) {
             $command['failure'] = $marker;
         }

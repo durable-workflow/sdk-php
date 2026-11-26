@@ -6,6 +6,37 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A managed Worker no longer exits when the Server answers a generic HTTP 500,
+  502, 503 or 504 (cloud#752). During a database failover native Server
+  answered an activity poll with 500 `server_error`, which the Worker treated as
+  fatal, so `run()` threw and the process exited. Such an answer, with no
+  reason or only `server_error`, is now an outage, like a reset connection.
+  Polls keep their poll request ID. Worker, workflow-task and activity
+  heartbeats, completions, failure reports and query answers are repeated with
+  the same task, attempt and lease, so the Server's lease fence decides any copy
+  it already recorded. A repeated failure report or query answer refused with a
+  409 for the same task is settled (`worker.outcome_already_settled`). Retries
+  use the bounded, jittered schedule (0.25 s doubling to 4 s) and honour
+  `Retry-After` as delta-seconds or an HTTP-date, capped at 60 s.
+  `Psr18Transport` now keeps an error response's `Retry-After` header.
+  `TransientFailure::retryAfterSeconds()` reads it. An explicit
+  `retryable: false`, 4xx refusals, typed refusals, task-offer 409 refusals,
+  storage admission and the completion size limits are unchanged. See
+  "Worker resilience" in the SDK reference.
+- With `enableCooperativeCancellation`, a supervised remote activity's
+  `heartbeat()` now rides out the same transient Server errors (cloud#752,
+  following sdk-php#492). A 500 `server_error`, a 503 or a reset connection
+  previously abandoned the activity's claim. The heartbeat is now repeated with
+  the same task, attempt, lease and details on the shared schedule, honouring
+  `Retry-After`. Its reply must still match the original task, attempt and
+  lease and allow the activity to continue. A definitive refusal, a fence
+  mismatch, shutdown, a lost activity lease or the cooperative cleanup deadline
+  still stops the activity.
+- Cluster info retries during Worker startup now honour a `Retry-After` header,
+  not only a `retry_after_seconds` body field.
+
 ### Added
 
 - `WorkflowContext::logger()` returns a replay-aware PSR-3 logger. It writes
@@ -69,6 +100,17 @@ project follows [Semantic Versioning](https://semver.org/).
   `rejectedByValidator()`, `validationFailed()` and `validationErrors()`.
   `Client::registerWorker()` accepts non-empty `update_validators` with the
   `update_validation_tasks` capability.
+
+### Changed
+
+- The timeout-cleanup marker `failure.interruption: "timeout_cleanup"` is sent
+  only for the delivered interruption for the run's root request: the exact
+  `WorkflowTimeoutCleanupRequested` the worker raised into workflow code, with
+  `cause: timeout`, no parent request, no scope, and this run's ID. An
+  exception built with `WorkflowCancelled::forContext()` or a copied context
+  is no longer marked and records failed cleanup. This matches the portable
+  contract and the Rust and Python workers.
+  ([Server #1201](https://github.com/durable-workflow/server/issues/1201))
 
 ### Upgrade notes
 

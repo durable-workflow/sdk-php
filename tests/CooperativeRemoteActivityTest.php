@@ -292,6 +292,71 @@ final class CooperativeRemoteActivityTest extends TestCase
         self::assertSame([], $transport->failures);
     }
 
+    /**
+     * cloud#752: a cooperative remote activity's user heartbeat rides out a
+     * transient Server error like the inline heartbeat, instead of abandoning
+     * its claim. Each copy carries the original attempt and lease.
+     */
+    public function testUserHeartbeatRidesOutA500ThenA503WithRetryAfter(): void
+    {
+        $transport = new RemoteOwnerTransport();
+        $serverError = ['reason' => 'server_error', 'message' => 'Database runtime credential authentication is enabled but unavailable.'];
+        $unavailable = ['message' => 'Service Unavailable'];
+        $transport->heartbeatFaults = [
+            TransportException::fromResponse(500, $serverError, json_encode($serverError, JSON_THROW_ON_ERROR)),
+            TransportException::fromResponse(503, $unavailable, json_encode($unavailable, JSON_THROW_ON_ERROR), ['retry-after' => '4']),
+        ];
+        $pids = [];
+        $now = (float) time();
+        $slept = 0.0;
+        $retries = [];
+        $worker = new Worker(new Client('https://server.example', transport: $transport, workerProtocolVersion: '1.20'),
+            'queue', workerId: 'owner', enableCooperativeCancellation: true,
+            clock: static function () use (&$now): float { return $now; },
+            sleeper: static function (int $microseconds) use (&$now, &$slept): void {
+                // Injected: simulated time only, the test never really sleeps.
+                $now += $microseconds / 1_000_000;
+                $slept += $microseconds / 1_000_000;
+            },
+            transientPollRetryObserver: static function (string $operation, int $attempt, float $delay) use (&$retries): void {
+                $retries[] = [$operation, $attempt, $delay];
+            },
+            diagnosticListener: static function (string $event, array $context) use (&$pids, $transport): void {
+                $transport->events[] = $event;
+                if ($event === 'worker.activity_process_started') { $pids = [$context['relay_pid'], $context['callback_pid']]; }
+                if ($event === 'worker.claim_aborted') { $transport->aborts[] = $context['message']; }
+            });
+        $worker->registerActivity('remote', static function (ActivityContext $context): string {
+            $context->heartbeat(['progress' => 1]);
+
+            return 'done after heartbeat';
+        });
+        $started = microtime(true);
+        self::assertTrue($worker->tick(0));
+        self::assertLessThan(3, microtime(true) - $started, 'Retry waits use the injected sleeper.');
+
+        self::assertSame([], $transport->aborts, 'The claim was not abandoned.');
+        self::assertNotContains('worker.claim_aborted', $transport->events);
+        self::assertSame([], $transport->failures);
+        self::assertCount(3, $transport->userHeartbeats, 'A 500, a 503, then the heartbeat that is recorded.');
+        self::assertCount(1, array_unique(array_map('serialize', $transport->userHeartbeats)),
+            'Repeated with its original attempt, lease and details.');
+        self::assertSame('attempt', $transport->userHeartbeats[0]['activity_attempt_id']);
+        self::assertSame('owner', $transport->userHeartbeats[0]['lease_owner']);
+        self::assertSame(['progress' => 1], $transport->userHeartbeats[0]['details']);
+        self::assertSame([['activity_heartbeat', 1], ['activity_heartbeat', 2]],
+            array_map(static fn (array $retry): array => [$retry[0], $retry[1]], $retries));
+        self::assertGreaterThanOrEqual(0.0, $retries[0][2]);
+        self::assertLessThanOrEqual(0.25, $retries[0][2], 'The first retry waits within the jitter ceiling.');
+        self::assertSame(4.0, $retries[1][2], 'The 503 waits its Retry-After.');
+        self::assertEqualsWithDelta($retries[0][2] + $retries[1][2], $slept, 0.001);
+        self::assertCount(1, $transport->completions);
+        self::assertSame('done after heartbeat',
+            (new \DurableWorkflow\Codec\AvroPayloadCodec())->decode($transport->completions[0]['result']['blob']));
+        self::assertCount(2, $pids);
+        foreach ($pids as $pid) { self::assertFalse(posix_kill($pid, 0)); }
+    }
+
     public function testReceivedRetryAndWorkflowIdentityReachTheSupervisedCallback(): void
     {
         foreach ([[], ['attempt_number' => 3, 'retry_policy' => ['max_attempts' => 3, 'future' => [true]],
@@ -447,6 +512,8 @@ final class RemoteOwnerTransport implements BoundedTransport
     public int $retainedStopReceipts = 0;
     public ?\Closure $onAcknowledgment = null;
     public ?\Closure $observe = null;
+    /** @var list<\Throwable> Thrown, in order, by the next user heartbeats. */
+    public array $heartbeatFaults = [];
     private bool $polled = false;
 
     public function supportsBoundedRequests(): bool { return true; }
@@ -484,6 +551,7 @@ final class RemoteOwnerTransport implements BoundedTransport
         }
         if (str_ends_with($uri, '/activity-tasks/task/heartbeat')) {
             $this->userHeartbeats[] = $body;
+            if ($this->heartbeatFaults !== []) { throw array_shift($this->heartbeatFaults); }
             return array_replace($this->status, ['heartbeat_recorded' => true]);
         }
         if (str_ends_with($uri, '/worker/heartbeat')) { return ['heartbeat_recorded' => true]; }

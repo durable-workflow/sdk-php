@@ -120,7 +120,9 @@ final class WorkflowTaskCompletionTooLargeTest extends TestCase
     {
         $events = [];
         $secondary = match ($kind) {
-            'server_error' => TransportException::fromResponse(500, ['message' => 'Server Error'], '{"message":"Server Error"}'),
+            // A generic 500 is an outage and is repeated (cloud#752); a definitive one falls through.
+            'server_error' => TransportException::fromResponse(500, ['message' => 'Server Error', 'retryable' => false],
+                '{"message":"Server Error","retryable":false}'),
             'invalid_commands' => TransportException::fromResponse(409, ['reason' => 'invalid_commands'], '{"reason":"invalid_commands"}'),
             'validation_failed' => TransportException::fromResponse(422, ['reason' => 'validation_failed'], '{"reason":"validation_failed"}'),
             'second_typed_413' => self::typedRefusal(),
@@ -190,7 +192,7 @@ final class WorkflowTaskCompletionTooLargeTest extends TestCase
     {
         yield 'untyped 413' => [413, ['message' => 'Request payload exceeds the maximum allowed size of 2097152 bytes.',
             'reason' => 'payload_too_large', 'limit' => 2097152]];
-        yield '500' => [500, ['message' => 'Server Error']];
+        yield '500' => [500, ['message' => 'Server Error', 'retryable' => false]];
     }
 
     public function testAnOversizedActivityContinuationCompletesTheActivityAlone(): void

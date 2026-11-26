@@ -219,7 +219,8 @@ final class WorkerUpstreamRecoveryTest extends TestCase
         yield 'scalar success' => [200, 'true'];
         yield 'auth' => [401, '<html>Unauthorized</html>'];
         yield 'explicit refusal' => [503, '{"reason":"service_unavailable","poll_status":"service_unavailable","task":null,"retryable":false}'];
-        yield 'unknown structured error' => [503, '{"error":"refused"}'];
+        // A 503 that names no reason is an outage (cloud#752); one with an unknown reason is a refusal.
+        yield 'unknown typed error' => [503, '{"reason":"refused","error":"refused"}'];
     }
 
     /**

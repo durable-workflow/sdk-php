@@ -213,6 +213,23 @@ final class CooperativeCancellationWorkerTest extends TestCase
                     throw new CooperativeBusinessFailure('Wrapped.', previous: $interrupted);
                 }
             }, 'timeout', CooperativeBusinessFailure::class, null],
+            'raised again by throwIfCancellationRequested' => [static function (WorkflowContext $context): mixed {
+                try {
+                    return $context->sleep(10);
+                } catch (\DurableWorkflow\Exception\WorkflowCancelled) {
+                    $context->throwIfCancellationRequested();
+
+                    return 'unreachable';
+                }
+            }, 'timeout', $timeout, $marker],
+            'constructed with the delivered context' => [static function (WorkflowContext $context): mixed {
+                try {
+                    return $context->sleep(10);
+                } catch (\DurableWorkflow\Exception\WorkflowCancelled $interrupted) {
+                    throw new \DurableWorkflow\Exception\WorkflowTimeoutCleanupRequested(
+                        requestId: $interrupted->requestId, context: $interrupted->context);
+                }
+            }, 'timeout', $timeout, null],
             'ordinary cancellation' => [static fn (WorkflowContext $context): mixed => $context->sleep(10),
                 null, \DurableWorkflow\Exception\WorkflowCancelled::class, null],
             'explicit cancellation cause' => [static fn (WorkflowContext $context): mixed => $context->sleep(10),
