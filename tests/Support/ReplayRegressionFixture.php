@@ -110,6 +110,16 @@ final class ReplayRegressionFixture
             return $observed['commands'];
         }
 
+        if ($workflowType === 'golden.activity-continuation-v2') {
+            $observed = ActivityContinuationV2Scenario::run();
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
+            $commands = $observed['commands'];
+            unset($observed['commands']);
+            self::assertMatches($fixture['expected'], ($commands[0] ?? []) + $observed, $identity.'.expected');
+
+            return $commands;
+        }
+
         if ($workflowType === 'golden.local-activity-backoff-repeat') {
             return self::executeLocalBackoffRepeat($identity, $history, $fixture);
         }

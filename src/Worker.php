@@ -117,6 +117,17 @@ final class Worker
     private const TRANSIENT_RETRY_SLEEP_SLICE_SECONDS = 0.1;
     private const MAX_STALE_REGISTRATION_BACKOFF_SECONDS = 60.0;
     private const REREGISTRATION_METRIC = 'durable_workflow_worker_reregistrations';
+    /** Server #1181: the registration capabilities a v2 continuation may require; this Worker always registers both. */
+    private const CONTINUATION_V2_WORKER_CAPABILITIES = ['sticky_execution', 'sticky_history_suffix'];
+    /** The v2 refusals that report corrupt stored state: complete the activity the ordinary way and report it. */
+    private const CONTINUATION_V2_CORRUPT_STATE = ['invalid_continuation_receipt', 'history_invariant_violated'];
+    /** v2 declines after which the cache no longer names this run's history (contract "Declines and fallback"). */
+    private const CONTINUATION_V2_EVICTING_DECLINES = ['cache_identity_mismatch', 'run_not_open'];
+    /**
+     * Activities an accepted v2 answer may hand straight to the next one within a tick. Past it the
+     * request carries no activity poll, so the tick ends and query and workflow polls get a turn.
+     */
+    private const CONTINUATION_V2_MAX_CHAINED_ACTIVITIES = 16;
 
     /** @var array<array-key, HandlerDefinition> */
     private array $workflows = [];
@@ -201,6 +212,16 @@ final class Worker
     private bool $queryPollDeferredForCarriedWorkflow = false;
     /** @var array<string, mixed>|null The server's advertised activity_workflow_continuation v1 contract. */
     private ?array $activityContinuation = null;
+    /** @var array{supported_commands: list<string>, max_commands: int}|null The advertised v2 member (Server #1181). */
+    private ?array $activityContinuationV2 = null;
+    /** A Server answered 422 unsupported_continuation_version; v2 stays off until the Worker registers again. */
+    private bool $activityContinuationV2Refused = false;
+    /** The activity poll an accepted v2 continuation carried, observed after its activity task ends. */
+    private ?CarriedPoll $continuationActivityPoll = null;
+    /** The current activity's v2 continuation met an unknown outcome: it is resent, never replaced. */
+    private bool $continuationV2OutcomeUnknown = false;
+    /** Activities this tick ran from leases accepted v2 continuations carried. */
+    private int $continuationChainLength = 0;
     private int $workflowTasksInFlight = 0;
     private ?CarriedPoll $carriedActivityPoll = null;
     private int $activityTasksInFlight = 0;
@@ -252,9 +273,10 @@ final class Worker
         /** Opt-in. Changes when completion failures become visible; never applies to public tick(). */
         private readonly bool $enableCompletionPipelining = false,
         /**
-         * Opt-in (Server #1078). After an activity succeeds, replay its run with the result and send the
-         * next workflow commands with the completion. Used only when the server advertises
-         * activity_workflow_continuation; anything unsupported falls back to the ordinary path.
+         * Opt-in (Server #1078, #1181). After an activity succeeds, replay its run with the result and send
+         * the next workflow commands with the completion. Used only when the server advertises
+         * activity_workflow_continuation; v2 is preferred when advertised and v1 is the fallback.
+         * Anything unsupported falls back to the ordinary path. Unqualified: it may cost throughput.
          */
         private readonly bool $enableActivityContinuation = false,
         /**
@@ -672,6 +694,7 @@ final class Worker
     {
         $this->applyHeartbeatInterval($registration);
         $this->captureRegistrationFence($registration);
+        $this->activityContinuationV2Refused = false;
         $this->discoverGroupedConditionWaitSupport($registration);
         $this->queryTaskAuthoritySupported = $this->client->workerProtocolVersion === '1.20'
             && ($registration['server_capabilities']['query_task_authority'] ?? null) === true
@@ -779,6 +802,7 @@ final class Worker
         $this->carriedWorkflowPoll = null;
         $this->queryPollDeferredForCarriedWorkflow = false;
         $this->carriedActivityPoll = null;
+        $this->continuationActivityPoll = null;
         $this->workflowPollGrant = null;
         $this->claimCancellation = null;
         $this->claimDeliveredCancellationId = null;
@@ -1316,44 +1340,59 @@ final class Worker
             // Finish only a lease already delivered by the completion; create no new carrier.
             $this->shutdownRequested = false;
         }
+        $this->continuationChainLength = 0;
         try {
-            $activityPoll = $this->pollWithRetry(
-                'activity',
-                fn (string $requestId, int $timeoutSeconds): array => $this->client->pollActivityTaskResponse(
-                    $this->workerId,
-                    $this->taskQueue,
-                    $timeoutSeconds,
-                    $requestId,
-                ),
-                $handled ? 0 : $pollTimeoutSeconds,
-                $this->carriedActivityPoll,
-            );
-            if ($activityPoll === null) {
-                return $handled;
-            }
-            if ($this->stopForTerminalPoll($activityPoll)) {
-                return $handled;
-            }
-            $this->rememberCarriedPollCapabilities($activityPoll);
-            $this->heartbeatIfDue();
-            if ($this->crossKindPollWakeReceived($activityPoll)) {
-                $pollTimeoutSeconds = 0;
-            }
-            $activityTask = $this->taskFromPoll($activityPoll);
-            if ($activityTask !== null) {
-                // Only the poll response carries server_capabilities; the claim alone cannot
-                // distinguish an older Server from a supported claim without a checkpoint.
-                $this->polledActivityHeartbeatResume = ActivityHeartbeatResume::fromPoll(
-                    $activityPoll, $this->client->namespace, $this->workerId, $this->taskQueue);
-                try {
-                    $this->executePolledTask('activity', $activityTask);
-                } finally {
-                    $this->polledActivityHeartbeatResume = null;
+            do {
+                $activityPoll = $this->pollWithRetry(
+                    'activity',
+                    fn (string $requestId, int $timeoutSeconds): array => $this->client->pollActivityTaskResponse(
+                        $this->workerId,
+                        $this->taskQueue,
+                        $timeoutSeconds,
+                        $requestId,
+                    ),
+                    $handled ? 0 : $pollTimeoutSeconds,
+                    $this->carriedActivityPoll,
+                );
+                if ($activityPoll === null) {
+                    return $handled;
                 }
-                $handled = true;
-            }
+                if ($this->stopForTerminalPoll($activityPoll)) {
+                    return $handled;
+                }
+                $this->rememberCarriedPollCapabilities($activityPoll);
+                $this->heartbeatIfDue();
+                if ($this->crossKindPollWakeReceived($activityPoll)) {
+                    $pollTimeoutSeconds = 0;
+                }
+                $activityTask = $this->taskFromPoll($activityPoll);
+                if ($activityTask !== null) {
+                    // Only the poll response carries server_capabilities; the claim alone cannot
+                    // distinguish an older Server from a supported claim without a checkpoint.
+                    $this->polledActivityHeartbeatResume = ActivityHeartbeatResume::fromPoll(
+                        $activityPoll, $this->client->namespace, $this->workerId, $this->taskQueue);
+                    try {
+                        $this->executePolledTask('activity', $activityTask);
+                    } finally {
+                        $this->polledActivityHeartbeatResume = null;
+                    }
+                    $handled = true;
+                }
+                // Server #1181: an accepted v2 continuation leased the run's next activity.
+                $this->carriedActivityPoll = $this->takeContinuationActivityLease();
+                if ($this->carriedActivityPoll !== null) {
+                    ++$this->continuationChainLength;
+                }
+                if ($this->carriedActivityPoll !== null && $this->shutdownRequested) {
+                    // Finish only the lease the completion already delivered; create no new carrier.
+                    $stopAfterCarriedLease = true;
+                    $this->drainingCarriedLease = true;
+                    $this->shutdownRequested = false;
+                }
+            } while ($this->carriedActivityPoll !== null);
         } finally {
             $this->carriedActivityPoll = null;
+            $this->continuationActivityPoll = null;
             $this->shutdownRequested = $stopAfterCarriedLease || $this->shutdownRequested;
             $this->drainingCarriedLease = false;
         }
@@ -1510,6 +1549,54 @@ final class Worker
             && is_array($continuation['supported_commands'] ?? null) && is_int($continuation['max_commands'] ?? null)
             && ($continuation['complete_endpoint'] ?? null) === '/worker/activity-tasks/{taskId}/continuation/complete'
             ? $continuation : null;
+        $this->activityContinuationV2 = self::activityContinuationV2Contract($continuation);
+    }
+
+    /**
+     * Server #1181: the v2 member of activity_workflow_continuation, or null. It is read on its
+     * own, so a malformed member disables v2 and never v1.
+     *
+     * @return array{supported_commands: list<string>, max_commands: int}|null
+     */
+    private static function activityContinuationV2Contract(mixed $continuation): ?array
+    {
+        if (!is_array($continuation)) {
+            return null;
+        }
+        $versions = $continuation['supported_versions'] ?? null;
+        $v2 = $continuation['v2'] ?? null;
+        if (!is_array($versions) || !in_array(2, $versions, true) || !is_array($v2) || array_is_list($v2)
+            || ($v2['version'] ?? null) !== 2
+            || ($v2['complete_endpoint'] ?? null) !== '/worker/activity-tasks/{taskId}/continuation/complete') {
+            return null;
+        }
+        $commands = $v2['supported_commands'] ?? null;
+        $maxCommands = $v2['max_commands'] ?? null;
+        $required = $v2['requires_worker_capabilities'] ?? null;
+        if (!is_array($commands) || !array_is_list($commands) || $commands === []
+            || array_filter($commands, static fn (mixed $command): bool => !is_string($command)) !== []
+            || !is_int($maxCommands) || $maxCommands < 1
+            || !is_array($required) || !array_is_list($required)
+            // Every Worker registers both; a requirement it does not know is never met.
+            || array_diff($required, self::CONTINUATION_V2_WORKER_CAPABILITIES) !== []
+            || !is_int($v2['tail_max_events'] ?? null) || $v2['tail_max_events'] < 1
+            || !is_int($v2['tail_max_bytes'] ?? null) || $v2['tail_max_bytes'] < 1) {
+            return null;
+        }
+
+        return ['supported_commands' => $commands, 'max_commands' => $maxCommands];
+    }
+
+    /**
+     * Server #1181: v2 is used only when the option is on, the Server advertises a well-formed v2
+     * member and has not refused its version, and this registration takes sticky history suffixes.
+     * Worker interceptors wrap every workflow task, so they keep the ordinary path, as in v1.
+     */
+    private function activityContinuationV2Selected(): bool
+    {
+        return $this->enableActivityContinuation && $this->activityContinuationV2 !== null
+            && !$this->activityContinuationV2Refused && $this->stickyHistorySuffixSupported
+            && $this->interceptors->isEmpty();
     }
 
     private function observeCarriedWorkflowCompletion(): void
@@ -1695,6 +1782,8 @@ final class Worker
      * @param array{task_id: string, activity_attempt_id: string, lease_owner: string}|null $activityTaskLease
      * @param string|null $fencedTaskId A failure report or query answer repeated under its original task,
      *     attempt and lease through an outage (see settledByServer()).
+     * @param (\Closure(): bool)|null $uncertainOutcome True when the failed request's outcome is unknown
+     *     and the identical request must be resent (an activity workflow continuation v2, Server #1181).
      * @return T
      */
     private function retryStorageAdmission(
@@ -1703,6 +1792,7 @@ final class Worker
         ?array $workflowTaskLease = null,
         ?array $activityTaskLease = null,
         ?string $fencedTaskId = null,
+        ?\Closure $uncertainOutcome = null,
     ): mixed
     {
         $attempt = 0;
@@ -1783,7 +1873,8 @@ final class Worker
                 $untypedOutage = !$exception->isStorageAdmissionFailure() && !$backendUnavailable
                     && !$activityDiscoveryUnavailable
                     && !$exception->isTransientConnectionFailure() && !$exception->isTransientUpstreamFailure()
-                    && TransientFailure::is($exception, acknowledgement: true);
+                    && (TransientFailure::is($exception, acknowledgement: true)
+                        || ($uncertainOutcome !== null && $uncertainOutcome() === true));
                 // Cluster info failed before this request was sent (see
                 // RuntimePayloadUploads); repeating it is safe.
                 $discoveryOutage = $untypedOutage && $exception->isPayloadDiscoveryUnavailable();
@@ -2053,6 +2144,7 @@ final class Worker
             $this->staleRegistrationObserved = true;
             $this->carriedWorkflowPoll = null;
             $this->carriedActivityPoll = null;
+            $this->continuationActivityPoll = null;
             $this->completionPipeline?->requestStop();
             $this->shutdownRequested = true;
 
@@ -2397,6 +2489,13 @@ final class Worker
             $this->assertSignalExternalWorkflowAvailable($commands);
             $this->assertCancellationPoliciesAvailable($commands);
             $stickyClaim = $this->stickyCacheClaim($task);
+            // Server #1181: seed the cache for a v2 continuation of the activity this completion schedules.
+            $continuationTail = $this->activityContinuationV2Selected() && isset($stickyClaim['history_last_sequence']);
+            if ($continuationTail && ($updateId === null || $updateId === '')) {
+                $this->stickyCache->rememberContext((string) $task['workflow_id'], (string) $task['run_id'],
+                    $this->effectiveBuildId(), ['workflow_type' => $workflowType,
+                        'arguments' => $task['arguments'] ?? $task['input'] ?? null]);
+            }
             $this->prepareCompletionPipeline($task, $commands);
             $this->assertPipelineAuthority();
             $promotedContinuation = false;
@@ -2413,11 +2512,28 @@ final class Worker
             $this->notifyDeliveredWorkflowHistory('completion', $taskId, $attempt, $commands);
             $complete = fn (array $commands, array $messageStreamCursors, array $messageStreamWaits, ?array $selectionChildAwait = null): array
                 => $this->retryStorageAdmission('workflow_complete', function () use (
-                    $taskId, $leaseOwner, $attempt, $commands, $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried, $workflowCarried, $promotedContinuation, $selectionChildAwait,
+                    $task, $taskId, $leaseOwner, $attempt, $commands, $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried, $workflowCarried, $promotedContinuation, $selectionChildAwait, &$continuationTail,
                 ): array {
                     try {
-                        return $this->client->completeWorkflowTask($taskId, $leaseOwner, $attempt, $commands,
-                            $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried?->request, $workflowCarried?->request, $selectionChildAwait);
+                        try {
+                            return $this->client->completeWorkflowTask($taskId, $leaseOwner, $attempt, $commands,
+                                $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried?->request, $workflowCarried?->request, $selectionChildAwait,
+                                $continuationTail ? ['version' => 2] : null);
+                        } catch (ServerException $error) {
+                            if (!$continuationTail || $error->status !== 422 || $error->reason !== 'invalid_continuation_tail') {
+                                throw $error;
+                            }
+                            // Refused before any write: the Server holds no history after the cached
+                            // boundary. The cache cannot be trusted, so complete without a tail.
+                            $continuationTail = false;
+                            $this->forgetCachedRun($task);
+                            $this->diagnostic('worker.activity_continuation_tail_refused', [
+                                'task_id' => $taskId, 'workflow_task_attempt' => $attempt, 'reason' => $error->reason,
+                            ], 'warning');
+
+                            return $this->client->completeWorkflowTask($taskId, $leaseOwner, $attempt, $commands,
+                                $messageStreamCursors, $messageStreamWaits, $stickyClaim, $carried?->request, $workflowCarried?->request, $selectionChildAwait);
+                        }
                     } catch (ServerException $error) {
                         $carried?->uncertainCompletion();
                         $workflowCarried?->uncertainCompletion();
@@ -2464,6 +2580,9 @@ final class Worker
                 $completion = $complete($commands, [], []);
             }
             $this->notifyDeliveredWorkflowHistory('accepted', $taskId, $attempt, $commands);
+            if ($continuationTail) {
+                $this->applyWorkflowCompletionTail($task, $stickyClaim['history_last_sequence'], $completion);
+            }
             $this->writeWorkflowLogs($workflowLogs);
             if ($carried !== null) {
                 // Payload hydration belongs to the next task, never this completed parent's catch path.
@@ -2741,6 +2860,307 @@ final class Worker
 
         return ['version' => 1, 'history_through_sequence' => $through, 'history_last_event_id' => $lastEventId,
             'commands' => $commands];
+    }
+
+    /**
+     * Server #1181: speculate the run's next workflow task from the sticky cache plus this
+     * activity's own result, with no history request. Returns the v2 continuation member, or
+     * null for the ordinary completion. The worker preconditions of the v2 contract:
+     * - the cache entry exists, starts with WorkflowStarted and is contiguous;
+     * - its tail ends in this attempt's ActivityStarted, so a lease this Worker did not seed
+     *   (for example one a replayed carried poll handed back) is completed the ordinary way;
+     * - the replay of the cache plus one synthetic ActivityCompleted at through + 1 produced
+     *   1 to max_commands supported commands and passes the v1 speculation checks.
+     * The caller has reserved the workflow poll slot.
+     *
+     * @param array<string, mixed> $task
+     * @return array{version: int, history_through_sequence: int, history_last_event_id: string, sticky_cache: array<string, mixed>, commands: list<array<string, mixed>>}|null
+     */
+    private function speculateActivityContinuationV2(array $task, mixed $result): ?array
+    {
+        $contract = $this->activityContinuationV2;
+        $taskId = (string) ($task['task_id'] ?? '');
+        $attemptId = (string) ($task['activity_attempt_id'] ?? $task['attempt_id'] ?? '');
+        $executionId = $task['activity_execution_id'] ?? null;
+        $workflowId = $task['workflow_id'] ?? null;
+        $runId = $task['run_id'] ?? null;
+        $skip = function (string $reason) use ($taskId, $attemptId): ?array {
+            $this->diagnostic('worker.activity_continuation_skipped', [
+                'task_id' => $taskId, 'activity_attempt_id' => $attemptId, 'version' => 2, 'reason' => $reason,
+            ]);
+
+            return null;
+        };
+        if ($contract === null || $attemptId === '' || !is_string($executionId) || $executionId === ''
+            || !is_string($workflowId) || $workflowId === '' || !is_string($runId) || $runId === ''
+            || ($task['lease_owner'] ?? $this->workerId) !== $this->workerId) {
+            return $skip('task_identity');
+        }
+        $buildId = $this->effectiveBuildId();
+        $history = $this->stickyCache->cachedHistory($workflowId, $runId, $buildId);
+        if ($history === null) {
+            return $skip('cache_miss');
+        }
+        if (!StickyWorkflowCache::startsWithWorkflowStart($history)) {
+            return $skip('cache_incomplete');
+        }
+        $expected = 1;
+        foreach ($history as $event) {
+            if (($event['sequence'] ?? null) !== $expected) {
+                return $skip('cache_not_contiguous');
+            }
+            ++$expected;
+        }
+        $last = $history[array_key_last($history)];
+        $through = $last['sequence'];
+        $lastEventId = $last['id'] ?? null;
+        if (($last['event_type'] ?? $last['type'] ?? null) !== 'ActivityStarted'
+            || !is_array($last['payload'] ?? null) || ($last['payload']['activity_attempt_id'] ?? null) !== $attemptId) {
+            return $skip('cache_tail_not_this_activity');
+        }
+        if (!is_string($lastEventId) || $lastEventId === '' || strlen($lastEventId) > 64) {
+            return $skip('cache_event_id');
+        }
+        $claim = $this->stickyCacheClaim($task);
+        $context = $this->stickyCache->context($workflowId, $runId, $buildId);
+        $workflowType = $context['workflow_type'] ?? null;
+        $handler = is_string($workflowType) ? ($this->workflows[$workflowType] ?? null) : null;
+        if ($claim === null || ($claim['history_last_sequence'] ?? null) !== $through || $handler === null) {
+            return $skip('cache_context');
+        }
+        // The worker's own result, in the shape the server records: this activity's last
+        // scheduling event with its result. The event has no ID or time: the Server assigns them.
+        $scheduled = null;
+        foreach ($history as $event) {
+            if (in_array($event['event_type'] ?? null, ['ActivityScheduled', 'ActivityStarted'], true)
+                && ($event['payload']['activity_execution_id'] ?? null) === $executionId) {
+                $scheduled = $event;
+            }
+        }
+        if (!is_array($scheduled) || !is_array($scheduled['payload'] ?? null)) {
+            return $skip('activity_not_scheduled');
+        }
+        try {
+            $payload = $scheduled['payload'];
+            $payload['result'] = $this->client->payloadCodec()->envelope($result);
+            $payload['payload_codec'] = 'avro';
+            $payload['activity_attempt_id'] = $attemptId;
+            $payload['attempt_number'] = (int) ($task['attempt_number'] ?? 1);
+            $history[] = ['id' => null, 'sequence' => $through + 1, 'event_type' => 'ActivityCompleted', 'payload' => $payload,
+                'recorded_at' => null, 'workflow_task_id' => $taskId, 'workflow_command_id' => null];
+            $input = $this->decodeArguments($context['arguments'] ?? null);
+            WorkflowEntryArguments::validate($handler, $input, $workflowType);
+            $replay = $this->replayer->replay($handler, $history, $input, $this->taskQueue, [
+                'workflow_type' => $workflowType, 'workflow_id' => $workflowId, 'run_id' => $runId, 'cancel_requested' => false,
+            ]);
+        } catch (Throwable $error) {
+            $this->diagnostic('worker.activity_continuation_skipped', [
+                'task_id' => $taskId, 'activity_attempt_id' => $attemptId, 'version' => 2, 'error' => $error::class,
+            ]);
+
+            return null;
+        }
+        $commands = $replay->commands;
+        if ($this->replayer->lastReplayReadUnavailableTime() || $replay->terminalFailure !== null
+            || $replay->messageStreamCursors !== [] || $replay->messageStreamWaits !== []
+            || $replay->cancellationDelivery !== null || $replay->preparedLocalActivity !== null
+            || $replay->preparedLocalActivityGroup !== null || $replay->cancellationScopeOpening !== null
+            || $replay->cancellationScopeDelivery !== null
+            || $commands === [] || count($commands) > $contract['max_commands']) {
+            return null;
+        }
+        foreach ($commands as $command) {
+            if (!in_array($command['type'] ?? null, $contract['supported_commands'], true)
+                || array_key_exists('cancellation_scope_id', $command) || array_key_exists('parallel_group_path', $command)) {
+                return null;
+            }
+        }
+
+        $this->speculativeWorkflowLogs = $this->replayer->takeWorkflowLogs();
+
+        return ['version' => 2, 'history_through_sequence' => $through, 'history_last_event_id' => $lastEventId,
+            'sticky_cache' => $claim, 'commands' => $commands];
+    }
+
+    /** Server #1181: an activity poll for the activity an accepted v2 continuation's commands schedule. */
+    private function reserveContinuationActivityPoll(string $leaseOwner): ?CarriedPoll
+    {
+        if (!$this->workflowCompletionActivityPollSupported || $this->activities === []
+            || $leaseOwner !== $this->workerId || $this->shutdownRequested || $this->drainingCarriedLease
+            || $this->continuationActivityPoll !== null
+            || $this->continuationChainLength >= self::CONTINUATION_V2_MAX_CHAINED_ACTIVITIES) {
+            return null;
+        }
+
+        return new CarriedPoll([
+            'worker_id' => $this->workerId, 'task_queue' => $this->taskQueue,
+            'poll_request_id' => 'php-activity-poll-'.bin2hex(random_bytes(16)), 'timeout_seconds' => 0,
+        ], hrtime(true) / 1e9);
+    }
+
+    /** The activity lease an accepted v2 continuation carried, observed after its own activity task ended. */
+    private function takeContinuationActivityLease(): ?CarriedPoll
+    {
+        $poll = $this->continuationActivityPoll;
+        $this->continuationActivityPoll = null;
+        if ($poll === null || !$poll->observeCompletion('activity_poll') || !$poll->hasLease()) {
+            return null;
+        }
+
+        return $poll;
+    }
+
+    /**
+     * The contract's "Refusals" table: a 5xx other than the corrupt-state refusals, or a
+     * transport failure, leaves the outcome unknown.
+     */
+    private static function continuationV2OutcomeUnknown(ServerException $error): bool
+    {
+        return $error->status === 0 || $error->isTransientUpstreamFailure()
+            || ($error->status >= 500 && $error->status <= 599
+                && !in_array($error->reason, self::CONTINUATION_V2_CORRUPT_STATE, true));
+    }
+
+    /**
+     * A refused v2 continuation wrote nothing; the caller sends the ordinary completion.
+     *
+     * @param array<string, mixed> $task
+     */
+    private function refuseActivityContinuationV2(array $task, ServerException $error): void
+    {
+        $corrupt = $error->status >= 500 && in_array($error->reason, self::CONTINUATION_V2_CORRUPT_STATE, true);
+        if ($error->status === 422 && $error->reason === 'unsupported_continuation_version') {
+            // A Server without v2: use v1 or the ordinary path until the Worker registers again.
+            $this->activityContinuationV2Refused = true;
+        }
+        if ($corrupt) {
+            $this->forgetCachedRun($task);
+        }
+        $this->diagnostic('worker.activity_continuation_refused', [
+            'task_id' => $task['task_id'] ?? null,
+            'activity_attempt_id' => $task['activity_attempt_id'] ?? $task['attempt_id'] ?? null,
+            'version' => 2, 'status' => $error->status, 'reason' => $error->reason,
+        ], $corrupt ? 'error' : 'warning');
+    }
+
+    /**
+     * Server #1181: apply a v2 answer (contract "Answer", "Declines and fallback"). The carried
+     * workflow poll answer is processed by its own carrier; this handles the cache, the carried
+     * activity lease and the speculative workflow logs.
+     *
+     * @param array<string, mixed> $task
+     * @param array{history_through_sequence: int} $continuation
+     * @param array<string, mixed> $completion
+     */
+    private function observeActivityContinuationV2(array $task, array $continuation, array $completion,
+        ?CarriedPoll $workflowCarrier, ?CarriedPoll $activityCarrier): void
+    {
+        $decision = $completion['continuation'] ?? null;
+        $outcome = is_array($decision) && ($decision['version'] ?? null) === 2 ? ($decision['outcome'] ?? null) : null;
+        $reason = is_array($decision) ? ($decision['reason'] ?? null) : null;
+        $tail = null;
+        if ($outcome === 'accepted') {
+            // The accepted speculation is this run's workflow task.
+            $this->writeWorkflowLogs($this->speculativeWorkflowLogs);
+            $tail = $this->applyContinuationTail($task, $continuation['history_through_sequence'],
+                $completion['continuation_tail'] ?? null, missingIsOmitted: false);
+            $runStatus = is_array($decision['completion'] ?? null) ? ($decision['completion']['run_status'] ?? null) : null;
+            if (!in_array($runStatus, ['running', 'waiting'], true)) {
+                $this->forgetCachedRun($task);
+            }
+            // The resumed workflow task was completed by this request, so its carried poll
+            // leased nothing to drain, even after an uncertain first attempt.
+            if ($workflowCarrier !== null && $this->carriedWorkflowPoll === $workflowCarrier) {
+                $this->carriedWorkflowPoll = null;
+            }
+            if ($activityCarrier !== null) {
+                $activityCarrier->completion = $completion;
+                $this->continuationActivityPoll = $activityCarrier;
+            }
+            $this->pollSweepRequested = true;
+        } elseif ($outcome === 'declined') {
+            if (in_array($reason, self::CONTINUATION_V2_EVICTING_DECLINES, true)) {
+                $this->forgetCachedRun($task);
+            }
+        } else {
+            // The result is recorded, but the decision is unreadable: trust nothing speculative.
+            $this->forgetCachedRun($task);
+        }
+        $this->diagnostic('worker.activity_continuation', [
+            'task_id' => $task['task_id'] ?? null,
+            'activity_attempt_id' => $task['activity_attempt_id'] ?? $task['attempt_id'] ?? null,
+            'version' => 2, 'outcome' => $outcome, 'reason' => $reason, 'tail' => $tail,
+            'workflow_task_id' => is_array($decision) ? ($decision['workflow_task_id'] ?? null) : null,
+        ], $outcome === null ? 'warning' : 'info');
+    }
+
+    /**
+     * Server #1181: the tail a workflow task completion returned for its continuation_tail request.
+     *
+     * @param array<string, mixed> $task
+     */
+    private function applyWorkflowCompletionTail(array $task, int $afterSequence, mixed $completion): void
+    {
+        if (!is_array($completion)) {
+            return;
+        }
+        // An older Server ignores the request and records the old boundary, as for an omitted tail.
+        $this->applyContinuationTail($task, $afterSequence, $completion['continuation_tail'] ?? null, missingIsOmitted: true);
+        if (array_key_exists('run_status', $completion) && !in_array($completion['run_status'], ['running', 'waiting'], true)) {
+            $this->forgetCachedRun($task);
+        }
+    }
+
+    /**
+     * The contract's "Tail rules": append a tail only when it continues the cache exactly, keep
+     * the old boundary for an omitted tail, and evict otherwise. Returns what happened.
+     *
+     * @param array<string, mixed> $task
+     */
+    private function applyContinuationTail(array $task, int $afterSequence, mixed $tail, bool $missingIsOmitted): string
+    {
+        $workflowId = (string) ($task['workflow_id'] ?? '');
+        $runId = (string) ($task['run_id'] ?? '');
+        if ($workflowId === '' || $runId === '') {
+            return 'evicted';
+        }
+        if ($tail === null && $missingIsOmitted) {
+            return 'omitted';
+        }
+        if (is_array($tail) && ($tail['version'] ?? null) === 2 && ($tail['after_sequence'] ?? null) === $afterSequence) {
+            if (array_key_exists('omitted', $tail)) {
+                if (is_string($tail['omitted']) && $tail['omitted'] !== '' && !array_key_exists('history_events', $tail)) {
+                    // The next sticky poll delivers the suffix after the old boundary. The leased
+                    // activity is not speculated on: the cache does not end in its ActivityStarted.
+                    return 'omitted';
+                }
+            } else {
+                $events = $tail['history_events'] ?? null;
+                $last = $tail['last_sequence'] ?? null;
+                if (is_int($last) && is_array($events) && array_is_list($events)
+                    && array_filter($events, static fn (mixed $event): bool => !is_array($event) || ($event !== [] && array_is_list($event))) === []
+                    && $this->stickyCache->appendTail($workflowId, $runId, $this->effectiveBuildId(), $afterSequence, $last, $events)) {
+                    return 'appended';
+                }
+            }
+        }
+        $this->forgetCachedRun($task);
+        $this->diagnostic('worker.activity_continuation_tail_rejected', [
+            'task_id' => $task['task_id'] ?? null, 'workflow_id' => $workflowId, 'run_id' => $runId,
+            'after_sequence' => $afterSequence,
+        ], 'warning');
+
+        return 'evicted';
+    }
+
+    /** @param array<string, mixed> $task */
+    private function forgetCachedRun(array $task): void
+    {
+        $workflowId = (string) ($task['workflow_id'] ?? '');
+        $runId = (string) ($task['run_id'] ?? '');
+        if ($workflowId !== '' && $runId !== '') {
+            $this->stickyCache->forget($workflowId, $runId, $this->effectiveBuildId());
+        }
     }
 
     /** @param list<array{level: mixed, message: string, context: array<array-key, mixed>}> $records */
@@ -3840,6 +4260,7 @@ final class Worker
         $callbackStopped = false;
         $callbackStarted = false;
         $resultComputed = false;
+        $this->continuationV2OutcomeUnknown = false;
         $heartbeatResume = $this->polledActivityHeartbeatResume ?? ActivityHeartbeatResume::unavailable();
         $this->polledActivityHeartbeatResume = null;
         try {
@@ -3927,13 +4348,48 @@ final class Worker
             $resultComputed = true;
             $carried = $this->reserveWorkflowPoll($leaseOwner);
             $this->speculativeWorkflowLogs = [];
-            $continuation = $carried === null ? null : $this->speculateActivityContinuation($task, $result);
+            $continuation = null;
+            $continuationV2 = null;
+            if ($carried !== null) {
+                // Server #1181: v2 is preferred when negotiated. Its preconditions failing means the
+                // ordinary completion, which costs nothing extra; v1 is the fallback only without v2.
+                if ($this->activityContinuationV2Selected()) {
+                    $continuationV2 = $this->speculateActivityContinuationV2($task, $result);
+                } else {
+                    $continuation = $this->speculateActivityContinuation($task, $result);
+                }
+            }
             // Only an accepted speculation writes its lines; nothing stays behind for another task.
             $this->replayer->takeWorkflowLogs();
+            $activityCarrier = $continuationV2 === null ? null : $this->reserveContinuationActivityPoll($leaseOwner);
+            /** @var array<string, mixed>|null $completion A committed completion found by a retry answers null. */
             $completion = $this->retryStorageAdmission(
                 'activity_complete',
-                function () use ($taskId, $attemptId, $leaseOwner, $result, $carried, &$continuation): array {
+                function () use ($task, $taskId, $attemptId, $leaseOwner, $result, $carried, $activityCarrier, &$continuation, &$continuationV2): array {
                     try {
+                        if ($carried !== null && $continuationV2 !== null) {
+                            try {
+                                $answer = $this->client->completeActivityTaskWithContinuation(
+                                    $taskId, $attemptId, $leaseOwner, $result, $carried->request, $continuationV2, $activityCarrier?->request);
+                                $this->continuationV2OutcomeUnknown = false;
+
+                                return $answer;
+                            } catch (ServerException $error) {
+                                $this->continuationV2OutcomeUnknown = self::continuationV2OutcomeUnknown($error);
+                                if ($this->continuationV2OutcomeUnknown) {
+                                    // The Server may have committed it: resend the identical request.
+                                    $activityCarrier?->uncertainCompletion();
+                                    throw $error;
+                                }
+                                if ($error->status === 409 && in_array($error->reason, ['stale_attempt', 'conflicting_completion'], true)) {
+                                    // Ordinary stale-attempt or duplicate handling; never retried.
+                                    throw $error;
+                                }
+                                // A refusal wrote nothing, so the same carried workflow poll is safe.
+                                $this->refuseActivityContinuationV2($task, $error);
+                                $continuationV2 = null;
+                            }
+                        }
                         if ($carried !== null && $continuation !== null) {
                             try {
                                 return $this->client->completeActivityTaskWithContinuation(
@@ -3970,9 +4426,13 @@ final class Worker
                     'activity_attempt_id' => $attemptId,
                     'lease_owner' => $leaseOwner,
                 ],
+                uncertainOutcome: fn (): bool => $this->continuationV2OutcomeUnknown,
             );
             if ($carried !== null) {
                 $carried->completion = $completion;
+            }
+            if ($continuationV2 !== null && $completion !== null) {
+                $this->observeActivityContinuationV2($task, $continuationV2, $completion, $carried, $activityCarrier);
             }
             if ($continuation !== null) {
                 $outcome = is_array($completion['continuation'] ?? null) ? $completion['continuation'] : [];
@@ -3995,7 +4455,7 @@ final class Worker
             if ($exception instanceof ServerException && $this->discardClosedActivityAttempt($task, $exception)) {
                 return;
             }
-            if ($resultComputed && TransientFailure::is($exception, acknowledgement: true)) {
+            if ($resultComputed && ($this->continuationV2OutcomeUnknown || TransientFailure::is($exception, acknowledgement: true))) {
                 // An outage outlasted publishing a computed result. It is not
                 // an activity failure: leave the attempt to the Server, which
                 // re-delivers it when the lease ends (a committed completion
@@ -5226,7 +5686,8 @@ final class Worker
      *     run_id: string,
      *     build_id: string,
      *     ttl_seconds: int,
-     *     metrics: array{hit: int, miss: int, eviction: int, forced_cold_replay: int}
+     *     metrics: array{hit: int, miss: int, eviction: int, forced_cold_replay: int},
+     *     history_last_sequence?: int
      * }|null
      */
     private function stickyCacheClaim(array $task): ?array

@@ -2841,11 +2841,14 @@ final class Client implements WorkflowClientInterface
      *     run_id: string,
      *     build_id: string,
      *     ttl_seconds: int,
-     *     metrics: array{hit: int, miss: int, eviction: int, forced_cold_replay: int}
+     *     metrics: array{hit: int, miss: int, eviction: int, forced_cold_replay: int},
+     *     history_last_sequence?: int
      * }|null $stickyCache
      * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int}|null $activityPoll
      * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int, history_page_size: int, task_kinds: list<string>}|null $workflowPoll
      * @param array<string, int|string>|null $selectionChildAwait
+     * @param array{version: int}|null $continuationTail Server #1181: ask for the history after the
+     *     sticky_cache boundary, read after this completion's writes. Requires history_last_sequence.
      * @return array<string, mixed>
      */
     public function completeWorkflowTask(
@@ -2859,6 +2862,7 @@ final class Client implements WorkflowClientInterface
         ?array $activityPoll = null,
         ?array $workflowPoll = null,
         ?array $selectionChildAwait = null,
+        ?array $continuationTail = null,
     ): array {
         if (($messageStreamCursors !== [] || $messageStreamWaits !== []) && !Version::supportsMessageStreams()) {
             throw new InvalidArgumentException('Message stream completion metadata requires worker protocol 1.15 or newer.');
@@ -2916,6 +2920,7 @@ final class Client implements WorkflowClientInterface
             'activity_poll' => $activityPoll,
             'workflow_poll' => $workflowPoll,
             'selection_handle' => $selectionChildAwait,
+            'continuation_tail' => $continuationTail,
         ], static fn (mixed $value): bool => $value !== [] && $value !== null));
     }
 
@@ -3029,9 +3034,12 @@ final class Client implements WorkflowClientInterface
 
     /**
      * Server #1078: complete an activity and propose the run's next workflow task commands.
+     * A version 2 continuation (Server #1181) also names the sticky cache it was speculated
+     * from and may carry an activity poll for the activity its commands schedule.
      *
      * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int, history_page_size: int, task_kinds: list<string>} $workflowPoll
-     * @param array{version: int, history_through_sequence: int, history_last_event_id: string, commands: list<array<string, mixed>>} $continuation
+     * @param array{version: int, history_through_sequence: int, history_last_event_id: string, commands: list<array<string, mixed>>, sticky_cache?: array<string, mixed>} $continuation
+     * @param array{worker_id: string, task_queue: string, poll_request_id: string, timeout_seconds: int}|null $activityPoll
      * @return array<string, mixed>
      */
     public function completeActivityTaskWithContinuation(
@@ -3041,6 +3049,7 @@ final class Client implements WorkflowClientInterface
         mixed $result,
         array $workflowPoll,
         array $continuation,
+        ?array $activityPoll = null,
     ): array {
         foreach ($continuation['commands'] as $command) {
             if (array_key_exists('target_build', $command)) {
@@ -3049,14 +3058,20 @@ final class Client implements WorkflowClientInterface
         }
 
         $this->taskDelivery->carried('/worker/workflow-tasks/poll', $workflowPoll);
+        $this->taskDelivery->carried('/worker/activity-tasks/poll', $activityPoll);
 
-        return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/continuation/complete', [
+        $body = [
             'activity_attempt_id' => $activityAttemptId,
             'lease_owner' => $leaseOwner,
             'result' => $this->codec->envelope($result),
             'workflow_poll' => $workflowPoll,
-            'continuation' => $continuation,
-        ]);
+        ];
+        if ($activityPoll !== null) {
+            $body['activity_poll'] = $activityPoll;
+        }
+        $body['continuation'] = $continuation;
+
+        return $this->worker('POST', self::ACTIVITY_TASK_PATH.$this->segment($taskId).'/continuation/complete', $body);
     }
 
     /**

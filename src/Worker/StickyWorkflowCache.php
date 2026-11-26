@@ -15,7 +15,7 @@ final class StickyWorkflowCache
 {
     public const MAX_TTL_SECONDS = 3600;
 
-    /** @var array<string, array{history: list<array<string, mixed>>, expires_at: float, touched_at: float}> */
+    /** @var array<string, array{history: list<array<string, mixed>>, expires_at: float, touched_at: float, context?: array<string, mixed>}> */
     private array $entries = [];
 
     /** @var array{hit: int, miss: int, eviction: int, forced_cold_replay: int} */
@@ -44,11 +44,15 @@ final class StickyWorkflowCache
     {
         $now = ($this->clock)();
         $key = self::key($workflowId, $runId, $buildId);
+        $context = $this->entries[$key]['context'] ?? null;
         $this->entries[$key] = [
             'history' => $durableHistory,
             'expires_at' => $now + $this->ttlSeconds,
             'touched_at' => $now,
         ];
+        if ($context !== null) {
+            $this->entries[$key]['context'] = $context;
+        }
         $this->evictExpired($now);
         while (count($this->entries) > $this->capacity) {
             uasort($this->entries, static fn (array $left, array $right): int => $left['touched_at'] <=> $right['touched_at']);
@@ -118,6 +122,83 @@ final class StickyWorkflowCache
         $this->entries[$key]['touched_at'] = $now;
 
         return array_merge($entry['history'], $runtimeHistory);
+    }
+
+    /**
+     * @internal Activity workflow continuation v2 (Server #1181): append a history tail the
+     * Server returned after exactly $afterSequence. The tail must continue the cached history
+     * with the rule a sticky_history_suffix v1 suffix follows. Anything else evicts the entry,
+     * because the Server has already moved its sticky boundary past the cached one.
+     *
+     * @param list<array<string, mixed>> $events
+     */
+    public function appendTail(string $workflowId, string $runId, string $buildId, int $afterSequence, int $lastSequence, array $events): bool
+    {
+        $now = ($this->clock)();
+        $this->evictExpired($now);
+        $key = self::key($workflowId, $runId, $buildId);
+        $entry = $this->entries[$key] ?? null;
+        if ($entry === null) {
+            return false;
+        }
+        $history = $entry['history'];
+        $cachedLast = $history === [] ? null : self::sequenceOf($history[array_key_last($history)]);
+        if ($cachedLast !== $afterSequence || !self::startsWithWorkflowStart($history)
+            || !self::continues($events, $afterSequence, $lastSequence)) {
+            unset($this->entries[$key]);
+            ++$this->metrics['eviction'];
+
+            return false;
+        }
+        $this->entries[$key]['history'] = array_merge($history, $events);
+        $this->entries[$key]['touched_at'] = $now;
+
+        return true;
+    }
+
+    /**
+     * @internal The cached history for this run, without counting a hit or a miss.
+     *
+     * @return list<array<string, mixed>>|null
+     */
+    public function cachedHistory(string $workflowId, string $runId, string $buildId): ?array
+    {
+        $this->evictExpired(($this->clock)());
+
+        return $this->entries[self::key($workflowId, $runId, $buildId)]['history'] ?? null;
+    }
+
+    /**
+     * @internal What a replay of this run needs besides its history (its workflow type and
+     * input), kept with the entry and evicted with it.
+     *
+     * @param array<string, mixed> $context
+     */
+    public function rememberContext(string $workflowId, string $runId, string $buildId, array $context): void
+    {
+        $key = self::key($workflowId, $runId, $buildId);
+        if (isset($this->entries[$key])) {
+            $this->entries[$key]['context'] = $context;
+        }
+    }
+
+    /**
+     * @internal
+     * @return array<string, mixed>|null
+     */
+    public function context(string $workflowId, string $runId, string $buildId): ?array
+    {
+        return $this->entries[self::key($workflowId, $runId, $buildId)]['context'] ?? null;
+    }
+
+    /** @internal Drop this run's entry, for example when the Server says the cache no longer matches. */
+    public function forget(string $workflowId, string $runId, string $buildId): void
+    {
+        $key = self::key($workflowId, $runId, $buildId);
+        if (isset($this->entries[$key])) {
+            unset($this->entries[$key]);
+            ++$this->metrics['eviction'];
+        }
     }
 
     /** @param list<array<string, mixed>> $suffix */

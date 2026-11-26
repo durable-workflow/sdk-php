@@ -144,6 +144,75 @@ completion outcomes follow completion error/recovery rules. They do not become
 eligibility declines. Drain or disable opted-in workers before downgrading a
 producer or introducing older serving nodes. No speedup is promised.
 
+**Continuations are unqualified.** Enabling them may cost throughput. The
+[server#1078](https://github.com/durable-workflow/server/issues/1078) A/B
+measured version 1 as slower than the ordinary path under load. Version 2 must
+pass the [server#1181](https://github.com/durable-workflow/server/issues/1181)
+benchmark before the option can become a default. Until then it stays off.
+
+### Activity continuation version 2
+
+A native Server that implements version 2 advertises it inside the same
+capability, as `supported_versions` containing `2` and a `v2` member. The
+worker uses version 2 when all of these hold:
+
+- `enableActivityContinuation` is on;
+- the `v2` member is well formed, with `version` exactly `2` and the expected
+  `complete_endpoint`;
+- the registration negotiated sticky history suffixes;
+- no worker interceptors are configured.
+
+A malformed `v2` member turns off version 2 only. Version 1 stays the fallback
+when version 2 is not advertised, or after a Server refuses it with
+`unsupported_continuation_version`. That refusal holds until the worker
+registers again.
+
+Version 2 speculates from the worker's sticky cache and never asks the Server
+for history:
+
+1. A workflow task completion with a cached boundary asks for
+   `continuation_tail`. The Server answers with the events it wrote after that
+   boundary. With a tail requested, the carried activity poll leases only an
+   activity this completion created.
+2. The worker appends the tail only when it continues the cache exactly. A tail
+   that does not continue the cache evicts the run's entry. An omitted tail
+   (over a Server budget, or `tail_unavailable` on a retry) keeps the old
+   boundary.
+3. After an activity succeeds, the worker sends version 2 only when the cache
+   starts with `WorkflowStarted`, is contiguous, and ends in this attempt's
+   `ActivityStarted`. It also needs a reserved workflow poll slot, and the
+   replay with the result must pass the version 1 checks. Otherwise it sends
+   the ordinary completion, which costs nothing extra.
+4. An accepted answer returns the next tail and may carry the next activity,
+   which the worker runs in the same tick. After 16 such activities in one
+   tick, the request carries no activity poll, so the tick ends and query and
+   workflow polls get a turn.
+
+Answers follow the
+[contract](https://github.com/durable-workflow/server/blob/main/docs/contracts/activity-workflow-continuation-v2.md):
+
+- **Decline.** The result is recorded. The worker processes the carried
+  workflow poll answer. It evicts the cache entry for
+  `cache_identity_mismatch` and `run_not_open`, and keeps it for every other
+  reason.
+- **Refusal** (a 4xx, or 500 `invalid_continuation_receipt` or
+  `history_invariant_violated`). Nothing was written, so the worker sends the
+  ordinary activity completion with the same carried workflow poll. The two
+  500 reasons also evict the cache entry and log an error. 409 `stale_attempt`
+  and `conflicting_completion` keep the ordinary stale-attempt and duplicate
+  handling and are not retried.
+- **Unknown outcome** (another 5xx, or a transport failure). The worker resends
+  the identical request on the completion retry schedule, never an ordinary
+  completion. A retry that outlasts its attempts is logged as
+  `worker.outcome_unpublished`, and the Server re-delivers the attempt when
+  its lease ends.
+
+Diagnostics: `worker.activity_continuation` (with `version`, `outcome`,
+`reason` and `tail`), `worker.activity_continuation_skipped`,
+`worker.activity_continuation_refused`,
+`worker.activity_continuation_tail_rejected` and
+`worker.activity_continuation_tail_refused`.
+
 ### Poll timeouts and early disconnects
 
 When the Server advertises `task_delivery`, the managed worker negotiates
