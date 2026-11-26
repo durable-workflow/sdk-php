@@ -1,0 +1,27 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "php-activity-continuation-v2-tail-chain",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "golden.activity-continuation-v2",
+    "input": []
+  },
+  "command_sequence": [
+    {
+      "type": "complete_workflow",
+      "result": 14
+    }
+  ],
+  "expected": {
+    "type": "complete_workflow",
+    "result": 14,
+    "continuation_versions": [2, 2],
+    "history_reads": 0,
+    "ordinary_completions": 0,
+    "activity_callback_count": 2
+  }
+}
