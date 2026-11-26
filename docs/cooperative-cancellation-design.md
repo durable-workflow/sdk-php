@@ -190,13 +190,20 @@ recorded cleanup outcome:
 - Returning, or letting the delivered `WorkflowTimeoutCleanupRequested` escape
   (uncaught or rethrown), records `completed`. For the escaped interruption the
   worker adds `failure.interruption: "timeout_cleanup"` to its `fail_workflow`
-  command. The marker is sent only for the exception delivered with the
-  engine's root context, never for an exception the application constructs or
-  wraps.
+  command. The marker is sent only for the delivered interruption for the
+  run's root request: the exact exception object the worker raised, whose
+  context has `cause: timeout`, no parent request and no scope, and names this
+  run. An exception the application constructs (even with a copied context),
+  a wrapped interruption and an escaped scoped child are not marked.
 - Throwing any other exception records `failed`, with the failure linked.
 - Running past the cleanup deadline records `expired`.
+- Terminating or hard-cancelling the run records `preempted`.
 
-This support is experimental. It is opt-in for each start and for each worker.
+This support is experimental. It is opt-in for each start, and any worker with
+cooperative cancellation advertises it. Every worker on a queue that runs
+opted-in workflows should use a supporting SDK: admission needs only one
+advertising worker, and a worker that does not deliver the typed interruption
+can still claim the cleanup turn, ending `failed` or `expired`.
 
 ## Child policies
 
