@@ -661,6 +661,17 @@ final class ReplayRegressionConsumer
             return;
         }
 
+        if ($workflowType === 'golden.continuation-empty-tail') {
+            require_once __DIR__.'/../../tests/Support/FakeTransport.php';
+            require_once __DIR__.'/../../tests/Support/ContinuationEmptyTailScenario.php';
+            $observed = \DurableWorkflow\Tests\Support\ContinuationEmptyTailScenario::run();
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.self::COMMAND_SEQUENCE_CONTEXT);
+            self::assertMatches($fixture['expected'], $observed['commands'][0] + ['authoritative_fetches' => $observed['authoritative_fetches'],
+                'tail_requests' => $observed['tail_requests']], $identity.self::EXPECTED_CONTEXT);
+
+            return;
+        }
+
         if ($workflowType === 'golden.activity-continuation-v2') {
             require_once __DIR__.'/../../tests/Support/FakeTransport.php';
             require_once __DIR__.'/../../tests/Support/ActivityContinuationV2Scenario.php';

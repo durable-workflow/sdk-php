@@ -143,14 +143,18 @@ final class StickyWorkflowCache
         }
         $history = $entry['history'];
         $cachedLast = $history === [] ? null : self::sequenceOf($history[array_key_last($history)]);
+        // An empty tail at the cached boundary (a completion that recorded no events) continues it.
+        $empty = $events === [] && $lastSequence === $afterSequence;
         if ($cachedLast !== $afterSequence || !self::startsWithWorkflowStart($history)
-            || !self::continues($events, $afterSequence, $lastSequence)) {
+            || (!$empty && !self::continues($events, $afterSequence, $lastSequence))) {
             unset($this->entries[$key]);
             ++$this->metrics['eviction'];
 
             return false;
         }
         $this->entries[$key]['history'] = array_merge($history, $events);
+        // The tail is the run's latest workflow task, so the entry lives as long as remember() keeps it.
+        $this->entries[$key]['expires_at'] = $now + $this->ttlSeconds;
         $this->entries[$key]['touched_at'] = $now;
 
         return true;

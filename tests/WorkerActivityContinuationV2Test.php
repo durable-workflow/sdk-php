@@ -197,6 +197,11 @@ final class WorkerActivityContinuationV2Test extends TestCase
         yield 'event budget' => [$omit('tail_event_budget_exceeded'), true];
         yield 'byte budget' => [$omit('tail_byte_budget_exceeded'), true];
         yield 'retried completion' => [$omit('tail_unavailable'), true];
+        yield 'empty tail at the boundary' => [static function (array $answer): array {
+            $answer['continuation_tail'] = ['version' => 2, 'after_sequence' => 1, 'last_sequence' => 1, 'history_events' => []];
+
+            return $answer;
+        }, true];
         yield 'older Server (no tail)' => [static function (array $answer): array {
             unset($answer['continuation_tail']);
 
@@ -510,6 +515,39 @@ final class WorkerActivityContinuationV2Test extends TestCase
         self::assertNull($cache->cachedHistory('w', 'r', 'b'));
         self::assertNull($cache->context('w', 'r', 'b'));
         self::assertSame(1, $cache->metrics()['eviction']);
+    }
+
+    public function testAnEmptyTailAtTheCachedBoundaryKeepsTheEntry(): void
+    {
+        // A completion that recorded no events answers last_sequence == after_sequence with no events.
+        $cache = new StickyWorkflowCache(10, 60, static fn (): float => 0.0);
+        $cache->remember('w', 'r', 'b', [self::event(1, 'WorkflowStarted', [])]);
+        self::assertTrue($cache->appendTail('w', 'r', 'b', 1, 1, []));
+        self::assertSame([1], array_column($cache->cachedHistory('w', 'r', 'b') ?? [], 'sequence'));
+        self::assertSame(0, $cache->metrics()['eviction']);
+        self::assertFalse($cache->appendTail('w', 'r', 'b', 1, 2, []), 'An empty tail that claims events evicts.');
+        self::assertNull($cache->cachedHistory('w', 'r', 'b'));
+        $cache->remember('w', 'r', 'b', [self::event(1, 'WorkflowStarted', [])]);
+        self::assertFalse($cache->appendTail('w', 'r', 'b', 2, 2, []), 'An empty tail at another boundary evicts.');
+        self::assertNull($cache->cachedHistory('w', 'r', 'b'));
+    }
+
+    public function testAnAppendedTailRenewsTheEntrysTtl(): void
+    {
+        $now = 0.0;
+        $cache = new StickyWorkflowCache(10, 60, static function () use (&$now): float {
+            return $now;
+        });
+        $cache->remember('w', 'r', 'b', [self::event(1, 'WorkflowStarted', [])]);
+        $now = 50.0;
+        self::assertTrue($cache->appendTail('w', 'r', 'b', 1, 2, [self::event(2, 'TimerScheduled', [])]));
+        $now = 100.0;
+        self::assertSame([1, 2], array_column($cache->cachedHistory('w', 'r', 'b') ?? [], 'sequence'),
+            'A chain of accepted steps keeps the entry past the TTL of its last remember().');
+        $now = 50.0;
+        self::assertTrue($cache->appendTail('w', 'r', 'b', 2, 2, []), 'An empty tail renews it too.');
+        $now = 111.0;
+        self::assertNull($cache->cachedHistory('w', 'r', 'b'), 'The entry still expires a TTL after its last append.');
     }
 
     /** @param list<string> $calls */

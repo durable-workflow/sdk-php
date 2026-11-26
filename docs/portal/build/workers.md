@@ -177,7 +177,8 @@ for history:
 2. The worker appends the tail only when it continues the cache exactly. A tail
    that does not continue the cache evicts the run's entry. An omitted tail
    (over a Server budget, or `tail_unavailable` on a retry) keeps the old
-   boundary.
+   boundary, and so does an empty tail at that boundary. Each appended tail
+   renews the entry's TTL, so a long chain of accepted steps keeps its cache.
 3. After an activity succeeds, the worker sends version 2 only when the cache
    starts with `WorkflowStarted`, is contiguous, and ends in this attempt's
    `ActivityStarted`. It also needs a reserved workflow poll slot, and the
