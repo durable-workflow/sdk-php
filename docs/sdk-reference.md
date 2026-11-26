@@ -1009,7 +1009,10 @@ already have recorded. A repeated activity completion is answered by its
 committed receipt. A repeated failure report or query answer that the Server
 refuses with a 409 for the same task is settled: the Server already owns the
 outcome, and the worker logs `worker.outcome_already_settled`. Handlers never
-run again because of an outage.
+run again because of an outage. With `enableCooperativeCancellation`, a
+supervised activity's `heartbeat()` is repeated the same way, and its reply
+must still match the original task, attempt and lease and allow the activity to
+continue.
 
 Retries wait on a jittered exponential schedule: up to 0.25 s, doubling to a
 4 s ceiling. A wait is never shorter than the Server's `Retry-After` (header in

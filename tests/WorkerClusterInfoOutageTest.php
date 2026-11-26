@@ -68,8 +68,12 @@ final class WorkerClusterInfoOutageTest extends TestCase
                         throw new ConnectException('Connection refused', $request);
                     }
 
-                    return $this->outage === '502' ? new Response(502, ['Content-Type' => 'text/html'], '<html>Bad gateway</html>')
-                        : new Response(500, ['Content-Type' => 'application/json'], '{"message":"Server Error"}');
+                    return match ($this->outage) {
+                        '502' => new Response(502, ['Content-Type' => 'text/html'], '<html>Bad gateway</html>'),
+                        '503' => new Response(503, ['Content-Type' => 'application/json', 'Retry-After' => '9'],
+                            '{"message":"Service Unavailable"}'),
+                        default => new Response(500, ['Content-Type' => 'application/json'], '{"message":"Server Error"}'),
+                    };
                 }
                 $body = match (true) {
                     $path === '/api/cluster/info' => ['version' => '3.17.0', 'limits' => ['max_payload_bytes' => 2097152],
@@ -112,7 +116,8 @@ final class WorkerClusterInfoOutageTest extends TestCase
     }
 
     /** @param \ArrayObject<int, mixed> $events */
-    private static function worker(object $server, \ArrayObject $events, bool $cooperativeCancellation = false): Worker
+    private static function worker(object $server, \ArrayObject $events, bool $cooperativeCancellation = false,
+        ?\ArrayObject $retryDelays = null): Worker
     {
         $transport = new Psr18Transport(client: $server->client());
         $worker = new Worker(
@@ -124,8 +129,11 @@ final class WorkerClusterInfoOutageTest extends TestCase
             sleeper: static function (int $microseconds) use ($server): void {
                 $server->now += $microseconds / 1_000_000;
             },
-            diagnosticListener: static function (string $event, array $context, string $level = 'info') use ($events): void {
+            diagnosticListener: static function (string $event, array $context, string $level = 'info') use ($events, $retryDelays): void {
                 $events[] = [$event, $context['operation'] ?? ''];
+                if ($event === 'worker.retrying' && $retryDelays !== null) {
+                    $retryDelays[] = [$context['operation'] ?? '', $context['delay_seconds'] ?? null];
+                }
             },
         );
         $worker->registerWorkflow('orders.flow', static fn (WorkflowContext $context): string => 'done');
@@ -162,6 +170,20 @@ final class WorkerClusterInfoOutageTest extends TestCase
         self::assertSame(21, count(array_keys(array_slice($server->paths, 0, $register), '/api/cluster/info')));
         self::assertContains(['worker.outage_persisting', 'cluster_info'], $events);
         self::assertNotContains('worker.fatal_failure', array_column($events, 0));
+    }
+
+    public function testAClusterInfoOutageWaitsTheRetryAfterHeader(): void
+    {
+        $server = self::server('503', 2, ['cooperative_cancellation' => true]);
+        $server->completed = true;
+        self::worker($server, $log = new \ArrayObject(), cooperativeCancellation: true, retryDelays: $delays = new \ArrayObject())->run(0);
+
+        $register = array_search('/api/worker/register', $server->paths, true);
+        self::assertIsInt($register, 'The Worker registered once discovery recovered.');
+        $discovery = array_values(array_filter($delays->getArrayCopy(), static fn (array $retry): bool => $retry[0] === 'cluster_info'));
+        self::assertSame([['cluster_info', 9.0], ['cluster_info', 9.0]], $discovery,
+            'Each 503 waits its Retry-After header, above the jittered schedule.');
+        self::assertNotContains('worker.fatal_failure', array_column($log->getArrayCopy(), 0));
     }
 
     public function testAReadOnlyDiscoveryOutageIsTransientButARefusalIsNot(): void
