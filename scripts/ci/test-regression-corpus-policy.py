@@ -2221,6 +2221,8 @@ print(json.dumps({
             "schema": {**clock, "schema": "durable-workflow.worker-replay-clock/v2"},
             "precision": {**clock, "started_at": "2026-11-01T00:00:00Z"},
             "calendar": {**clock, "started_at": "2026-13-45T25:61:61.000000Z"},
+            "year zero": {**clock, "started_at": "0000-01-01T00:00:00.000000Z"},
+            "leap second": {**clock, "started_at": "2026-12-31T23:59:60.000000Z"},
             "source": {**clock, "source": "recorded_at"},
             "run": {**clock, "workflow_run_id": ""},
         }
@@ -2231,6 +2233,42 @@ print(json.dumps({
                 result = self.validate_without_base()
                 self.assertNotEqual(0, result.returncode, result.stdout)
                 self.assertIn("replay_clock", result.stderr)
+
+    def test_php_runner_requires_the_same_worker_replay_clock_shape(self) -> None:
+        # The trusted runner refuses every carrier the validator refuses, by
+        # itself, so the two cannot drift apart unnoticed.
+        clock = {
+            "schema": "durable-workflow.worker-replay-clock/v1",
+            "workflow_run_id": "another-run",
+            "started_at": "2026-11-01T00:00:00.000000Z",
+            "source": "run_started_at",
+        }
+        fixture = self.official_attributed_lifetime_fixture("runner-entry-clock")
+        fixture["workflow_tasks"][0]["replay_clock"] = clock
+        result = self.run_official_php_runner(REPOSITORY_ROOT, fixture)
+        self.assertEqual(0, result.returncode, result.stderr)
+
+        invalid_clocks = {
+            "empty": {},
+            "list": [clock],
+            "extra key": {**clock, "extra": True},
+            "missing source": {key: value for key, value in clock.items() if key != "source"},
+            "schema": {**clock, "schema": "durable-workflow.worker-replay-clock/v2"},
+            "precision": {**clock, "started_at": "2026-11-01T00:00:00Z"},
+            "calendar": {**clock, "started_at": "2026-13-45T25:61:61.000000Z"},
+            "rollover": {**clock, "started_at": "2026-02-30T00:00:00.000000Z"},
+            "year zero": {**clock, "started_at": "0000-01-01T00:00:00.000000Z"},
+            "leap second": {**clock, "started_at": "2026-12-31T23:59:60.000000Z"},
+            "source": {**clock, "source": "recorded_at"},
+            "run": {**clock, "workflow_run_id": ""},
+            "numeric run": {**clock, "workflow_run_id": 7},
+        }
+        for name, invalid_clock in invalid_clocks.items():
+            with self.subTest(clock=name):
+                fixture["workflow_tasks"][0]["replay_clock"] = invalid_clock
+                result = self.run_official_php_runner(REPOSITORY_ROOT, fixture)
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                self.assertIn("replay_clock", result.stderr + result.stdout)
 
     def test_official_php_runner_uses_attributed_worker_registration(self) -> None:
         fixture = self.official_attributed_lifetime_fixture(
