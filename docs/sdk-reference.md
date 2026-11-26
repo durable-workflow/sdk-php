@@ -989,6 +989,68 @@ task kind, consecutive attempt, selected delay, and typed server exception.
 Authentication failures, malformed responses, and generic server errors remain
 fatal.
 
+## Workflow time and the replay clock
+
+`WorkflowContext::replayNow()` returns a replay-safe UTC `DateTimeImmutable`
+that advances with consumed history. Every replay of the same history returns
+the same values, so workflow code can use it for deadlines and elapsed time.
+
+- **At workflow entry**, before any durable step, it returns the run's start
+  from the workflow task's `replay_clock` carrier (`WorkerReplayClock` v1, sent
+  by Server 3.6.0 and later). A redrive successor whose history proves the
+  original start uses that start.
+- **After a supported durable step** (an activity, a plain timer, a child
+  workflow, a condition wait, including one satisfied by signals, or a
+  validated all-group of those) it returns that step's recorded time.
+- **Repeated reads** between two durable steps return the same value.
+
+A deadline loop around a durable timer therefore terminates, and the difference
+between two reads taken after two durable steps is their recorded elapsed time:
+
+```php
+$deadline = $context->replayNow()->modify('+1 hour');
+while ($context->replayNow() < $deadline) {
+    if ($context->activity('orders.poll', [$orderId])) {
+        return 'ready';
+    }
+    $context->sleep(60);
+}
+
+return 'timed out';
+```
+
+Where the SDK cannot prove a time, `replayNow()` throws
+`DurableWorkflow\Exception\ReplayClockUnavailable` instead of using wall time or
+any other value. An unhandled `ReplayClockUnavailable` fails the workflow. The
+clock is unavailable:
+
+- at entry when the task carries no valid `replay_clock` (Servers older than
+  3.6.0, or a run whose start the Server cannot prove);
+- after inline and local operations: `sideEffect()`, version markers
+  (`getVersion()`), local activities, memo or search-attribute upserts and any
+  other command that is not a supported durable step (for example the
+  `startChildWorkflow()` handle). These stay unavailable until the platform
+  defines a persisted time for those steps;
+- inside `waitCondition()` predicates and `parallel()`/`all()` builder
+  closures;
+- after group modes other than the validated all-groups;
+- inside query, update and update-validator handlers;
+- once cancellation is requested, and inside a cancellation scope.
+
+Queries, updates and update validators read history snapshots and never re-run
+the workflow body, so a body that reads the clock at entry cannot diverge from
+what its workflow task computed.
+
+Do not use timestamps to order emitted events. Order them by stream offset,
+outbox sequence or a workflow-local counter.
+
+**Upgrading:** earlier releases reported `replayNow()` as unavailable at
+entry. A running workflow whose code branches on that, for example by
+catching `ReplayClockUnavailable` at entry and taking another path, takes the
+other branch when it replays on the new SDK. The same happens during a rolling
+deploy that mixes SDK versions, or when the Server is upgraded to 3.6.0 or
+later. Version such code or drain those runs before you upgrade.
+
 ## Completion-carried polls
 
 SDK 3.10.0 can request the next task on a task completion when the runtime
