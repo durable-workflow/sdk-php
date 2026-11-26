@@ -17,7 +17,8 @@ project follows [Semantic Versioning](https://semver.org/).
   keeps the cache exact. The answer can carry the next activity, which runs in
   the same tick. A tail that does not continue the cache evicts the entry. An
   omitted tail keeps the old boundary, and the leased activity completes the
-  ordinary way. Declines process the carried workflow poll, and refusals send
+  ordinary way. An empty tail at the boundary keeps the entry, and each
+  appended tail renews the entry's TTL. Declines process the carried workflow poll, and refusals send
   the ordinary completion with the same poll. An unknown outcome resends the
   identical v2 request. A malformed `v2` member disables version 2 only. The
   option stays off by default. Continuations are unqualified and may cost

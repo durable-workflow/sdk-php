@@ -110,6 +110,15 @@ final class ReplayRegressionFixture
             return $observed['commands'];
         }
 
+        if ($workflowType === 'golden.continuation-empty-tail') {
+            $observed = ContinuationEmptyTailScenario::run();
+            self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
+            self::assertMatches($fixture['expected'], $observed['commands'][0] + ['authoritative_fetches' => $observed['authoritative_fetches'],
+                'tail_requests' => $observed['tail_requests']], $identity.'.expected');
+
+            return $observed['commands'];
+        }
+
         if ($workflowType === 'golden.activity-continuation-v2') {
             $observed = ActivityContinuationV2Scenario::run();
             self::assertMatches($fixture['command_sequence'], $observed['commands'], $identity.'.command_sequence');
