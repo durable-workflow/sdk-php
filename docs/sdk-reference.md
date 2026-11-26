@@ -986,8 +986,47 @@ transient, the managed worker retries that same poll with capped backoff while
 keeping heartbeats and graceful shutdown responsive. Pass a
 `transientPollRetryObserver` callback to the `Worker` constructor to record the
 task kind, consecutive attempt, selected delay, and typed server exception.
-Authentication failures, malformed responses, and generic server errors remain
-fatal.
+Authentication failures, malformed responses, and other definitive refusals
+remain fatal.
+
+### Worker resilience
+
+`run()` keeps running through a Server restart or a database failover. The
+managed worker treats these answers as an outage, not a refusal:
+
+- a connection that can't be made, is reset or times out;
+- HTTP 500, 502, 503 or 504 whose body names no reason or only the generic
+  `server_error` reason, whatever else the body holds (an HTML or JSON error
+  page from a load balancer, or native Server's `server_error` while it can't
+  read its database during a failover);
+- 503 `storage_unavailable` or `backend_unavailable`.
+
+Workflow, activity and query polls, worker, workflow-task and activity
+heartbeats, completions, failure reports and query answers are repeated through
+an outage with the same identity: the same poll request ID, or the same task,
+attempt and lease. The Server's lease fence then decides a request it may
+already have recorded. A repeated activity completion is answered by its
+committed receipt. A repeated failure report or query answer that the Server
+refuses with a 409 for the same task is settled: the Server already owns the
+outcome, and the worker logs `worker.outcome_already_settled`. Handlers never
+run again because of an outage.
+
+Retries wait on a jittered exponential schedule: up to 0.25 s, doubling to a
+4 s ceiling. A wait is never shorter than the Server's `Retry-After` (header in
+delta-seconds or HTTP-date form, or a `retry_after_seconds` body field), capped
+at 60 s. A completion, failure report or heartbeat inside a claim stops
+retrying when its lease grant ends, or after eight retries without lease
+maintenance. The task is then left to the Server, which delivers it again when
+the lease expires, and the worker keeps polling. `worker.retrying` is logged at
+warning level for each retry, and `worker.outage_persisting` at error level
+once an outage lasts 60 s, then every 5 minutes.
+
+These still stop the worker: an explicit `retryable: false`, authentication and
+authorization failures, other 4xx refusals, 501 and other 5xx statuses, and
+typed refusals that fail their own protocol checks (such as `backend_lock_pressure`
+without a valid `retry_after_seconds`). Task-offer 409 refusals, storage
+admission refusals and the completion size and history limits keep their
+documented handling.
 
 ## Workflow time and the replay clock
 

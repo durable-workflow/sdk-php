@@ -17,10 +17,15 @@ use Throwable;
  * - an upstream 502/503/504 with no protocol body;
  * - a 503 whose reason is `storage_unavailable` or `backend_unavailable`
  *   (for example native Server while its database warms up);
- * - any 5xx or 429 whose body says `retryable: true` and names no other
- *   reason. This one does not apply to acknowledgements (completions),
- *   because an unclassified answer cannot authorize repeating a request the
- *   Server may have committed.
+ * - a generic Server error: HTTP 500, 502, 503 or 504 with any body that
+ *   names no reason, or only the generic `server_error` reason (for example
+ *   native Server while a database failover makes runtime credentials
+ *   briefly unreadable, cloud#752). This applies to acknowledgements too: the
+ *   Worker repeats them with the same task, attempt and lease, so the Server's
+ *   lease fence decides a request it may already have committed, exactly as
+ *   for a reset connection;
+ * - any other 5xx or 429 whose body says `retryable: true` and names no other
+ *   reason. This one does not apply to acknowledgements (completions).
  *
  * An explicit `retryable: false`, authentication and authorization failures,
  * and other protocol refusals are never transient. A typed refusal (one that
@@ -33,6 +38,9 @@ final class TransientFailure
     private const FIRST_SECONDS = 0.25;
     private const MAX_SECONDS = 4.0;
     private const REASONS = ['storage_unavailable', 'backend_unavailable'];
+    /** Generic Server errors: an outage, not a refusal of this request. */
+    private const SERVER_ERROR_STATUSES = [500, 502, 503, 504];
+    private const SERVER_ERROR_REASONS = [null, '', 'server_error'];
     /** The longest Server-suggested delay honoured for an untyped outage. */
     private const MAX_RETRY_AFTER_SECONDS = 60;
 
@@ -89,6 +97,57 @@ final class TransientFailure
             && (!is_array($details) || ($details['retryable'] ?? null) !== false);
     }
 
+    /**
+     * The Server's suggested wait for an untyped outage, in whole seconds,
+     * capped at 60: the body's `retry_after_seconds`, else a `Retry-After`
+     * header as delta-seconds or an HTTP-date (read against $now, Unix
+     * seconds). Null when neither gives a positive wait.
+     */
+    public static function retryAfterSeconds(Throwable $error, float $now): ?int
+    {
+        $details = $error instanceof ServerException ? $error->details
+            : ($error instanceof TransportException ? $error->response : null);
+        $seconds = is_array($details) ? ($details['retry_after_seconds'] ?? null) : null;
+        if (!is_int($seconds) || $seconds <= 0) {
+            $seconds = null;
+            for ($cause = $error; $cause !== null && $seconds === null; $cause = $cause->getPrevious()) {
+                if ($cause instanceof TransportException) {
+                    $seconds = self::retryAfterHeader($cause->headers, $now);
+                }
+            }
+        }
+
+        return $seconds === null ? null : min($seconds, self::MAX_RETRY_AFTER_SECONDS);
+    }
+
+    /** @param array<string, string> $headers */
+    private static function retryAfterHeader(array $headers, float $now): ?int
+    {
+        $value = null;
+        foreach ($headers as $name => $header) {
+            if (strtolower((string) $name) === 'retry-after') {
+                $value = trim($header);
+            }
+        }
+        if ($value === null || $value === '') {
+            return null;
+        }
+        if (preg_match('/\A\d{1,10}\z/', $value) === 1) {
+            $seconds = (int) $value;
+
+            return $seconds > 0 ? $seconds : null;
+        }
+        // RFC 9110 HTTP-date in its preferred IMF-fixdate form, always GMT.
+        $at = \DateTimeImmutable::createFromFormat('!D, d M Y H:i:s \\G\\M\\T', $value, new \DateTimeZone('UTC'));
+        $errors = \DateTimeImmutable::getLastErrors();
+        if ($at === false || ($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0))) {
+            return null;
+        }
+        $seconds = (int) ceil($at->getTimestamp() - $now);
+
+        return $seconds > 0 ? $seconds : null;
+    }
+
     /** Full-jitter delay for the given 1-based attempt, never shorter than a bounded retry_after. */
     public static function delay(int $attempt, mixed $retryAfterSeconds = null): float
     {
@@ -108,6 +167,9 @@ final class TransientFailure
         }
 
         if ($status === 503 && in_array($reason, self::REASONS, true)) {
+            return true;
+        }
+        if (in_array($status, self::SERVER_ERROR_STATUSES, true) && in_array($reason, self::SERVER_ERROR_REASONS, true)) {
             return true;
         }
 

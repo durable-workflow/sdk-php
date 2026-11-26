@@ -6,6 +6,26 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A managed Worker no longer exits when the Server answers a generic HTTP 500,
+  502, 503 or 504 (cloud#752). During a database failover native Server
+  answered an activity poll with 500 `server_error`, which the Worker treated as
+  fatal, so `run()` threw and the process exited. Such an answer, with no
+  reason or only `server_error`, is now an outage, like a reset connection.
+  Polls keep their poll request ID. Worker, workflow-task and activity
+  heartbeats, completions, failure reports and query answers are repeated with
+  the same task, attempt and lease, so the Server's lease fence decides any copy
+  it already recorded. A repeated failure report or query answer refused with a
+  409 for the same task is settled (`worker.outcome_already_settled`). Retries
+  use the bounded, jittered schedule (0.25 s doubling to 4 s) and honour
+  `Retry-After` as delta-seconds or an HTTP-date, capped at 60 s.
+  `Psr18Transport` now keeps an error response's `Retry-After` header.
+  `TransientFailure::retryAfterSeconds()` reads it. An explicit
+  `retryable: false`, 4xx refusals, typed refusals, task-offer 409 refusals,
+  storage admission and the completion size limits are unchanged. See
+  "Worker resilience" in the SDK reference.
+
 ### Added
 
 - `WorkflowContext::logger()` returns a replay-aware PSR-3 logger. It writes
