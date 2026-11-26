@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.32.0] - 2026-11-26
+
 ### Fixed
 
 - A managed Worker no longer exits when the Server answers a generic HTTP 500,
@@ -114,12 +116,38 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ### Upgrade notes
 
-- Don't branch on `ReplayClockUnavailable` at workflow entry across this
-  upgrade. A run whose code caught the exception at entry on an earlier SDK
-  gets a value after upgrading, and the same happens during a rolling deploy
-  that mixes SDK versions or a Server upgrade to 3.6.0. Its replay then takes
-  the other branch. Drain such runs before upgrading, or put the new behaviour
-  behind normal workflow versioning.
+- `replayNow()` now returns the run's start time when it is read at workflow
+  entry, before any durable step, whenever the Server sends the task's
+  `replay_clock` entry instant (Server 3.6.0 and later). Earlier SDK releases
+  reported the clock as unavailable there. A running workflow whose code
+  catches that unavailable error at entry and branches on it will take the
+  other branch when it replays on the new SDK, which can change its next
+  commands. The same happens during a rolling deploy that mixes SDK versions,
+  or when the Server is upgraded to 3.6.0 under 3.32.0 workers. Before
+  upgrading workers, put such code behind workflow versioning (a version
+  marker or a new workflow type) or let those runs finish. Code that reads the
+  clock only after a durable step, or never catches the error, is unaffected.
+  PHP query handlers, update handlers and update validators don't re-run the
+  workflow body, so their `replayNow()` stays unavailable on every Server and
+  they don't need the clock that newer Servers also send on query and
+  validation tasks ([Server #1338](https://github.com/durable-workflow/server/pull/1338)).
+- Server admits a start with `timeout_cleanup_seconds` when at least one live
+  worker on its task queue advertises `timeout_cleanup`. It doesn't check the
+  other workers, and any of them can claim the cleanup turn. Server refuses the
+  cleanup marker from a worker that didn't advertise the capability, so an
+  escaped interruption there is recorded as `failed` or `expired`. But a worker
+  without timeout-cleanup support may never see the interruption: if its
+  workflow code returns, the run is recorded as cleanup `completed` although no
+  cleanup ran. Before starting opted-in runs on a queue, upgrade every worker
+  on it to a supporting SDK with cooperative cancellation enabled: PHP SDK
+  3.31.0 or later (3.32.0 or later for the stricter marker rule under
+  "Changed"), Rust SDK 4.25.0, Python SDK 2.24.0.
+- A managed Worker no longer stops when the Server answers a plain HTTP 500, or
+  a 500, 502, 503 or 504 that names only `server_error`: it retries the request
+  as a transient outage (see "Fixed"). A supervisor that relied on the process
+  exiting on such an answer should watch the `worker.retrying` warnings and the
+  `worker.outage_persisting` error, logged once an outage has lasted 60 s and
+  then every 5 minutes.
 
 ## [3.31.0] - 2026-11-25
 
