@@ -1874,8 +1874,7 @@ final class Worker
                 if (!TransientFailure::isReadOutage($exception) || $this->shutdownRequested) {
                     throw $exception;
                 }
-                $details = $exception instanceof ServerException ? $exception->details : $exception->response;
-                $delay = TransientFailure::delay(++$attempt, $details['retry_after_seconds'] ?? null);
+                $delay = TransientFailure::delay(++$attempt, TransientFailure::retryAfterSeconds($exception, $this->now()));
                 $this->diagnostic('worker.retrying', ['worker_id' => $this->workerId, 'operation' => $operation,
                     'attempt' => $attempt, 'delay_seconds' => $delay, 'exception' => $exception], 'warning');
                 $this->observeOutage($operation, $exception, 'cluster_info');
@@ -3890,7 +3889,14 @@ final class Worker
                     },
                     function (array $details) use ($taskId, $attemptId, $leaseOwner): array {
                         try {
-                            $reply = $this->client->heartbeatActivityTask($taskId, $attemptId, $leaseOwner, $details);
+                            // Repeated through a transient Server outage like the
+                            // inline heartbeat (cloud#752). Each copy carries the
+                            // original attempt and lease: the bound activity lease
+                            // checks it before sending, and the retry stops on
+                            // shutdown, the cancellation deadline, a definitive
+                            // refusal or its bounded attempts.
+                            $reply = $this->retryStorageAdmission('activity_heartbeat', fn (): array =>
+                                $this->client->heartbeatActivityTask($taskId, $attemptId, $leaseOwner, $details));
                             if (($reply['task_id'] ?? null) !== $taskId
                                 || ($reply['activity_attempt_id'] ?? null) !== $attemptId
                                 || ($reply['lease_owner'] ?? null) !== $leaseOwner

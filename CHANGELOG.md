@@ -25,6 +25,17 @@ project follows [Semantic Versioning](https://semver.org/).
   `retryable: false`, 4xx refusals, typed refusals, task-offer 409 refusals,
   storage admission and the completion size limits are unchanged. See
   "Worker resilience" in the SDK reference.
+- With `enableCooperativeCancellation`, a supervised remote activity's
+  `heartbeat()` now rides out the same transient Server errors (cloud#752,
+  following sdk-php#492). A 500 `server_error`, a 503 or a reset connection
+  previously abandoned the activity's claim. The heartbeat is now repeated with
+  the same task, attempt, lease and details on the shared schedule, honouring
+  `Retry-After`. Its reply must still match the original task, attempt and
+  lease and allow the activity to continue. A definitive refusal, a fence
+  mismatch, shutdown, a lost activity lease or the cooperative cleanup deadline
+  still stops the activity.
+- Cluster info retries during Worker startup now honour a `Retry-After` header,
+  not only a `retry_after_seconds` body field.
 
 ### Added
 
