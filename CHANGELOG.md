@@ -6,6 +6,24 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `enableActivityContinuation` consumes activity workflow continuation v2
+  (#500, server#1181) when a native Server advertises it. Version 2 is
+  preferred over version 1, and version 1 stays the fallback. The worker seeds
+  its sticky cache from the `continuation_tail` a workflow task completion
+  returns. It then speculates the next workflow task from the cache plus its
+  own activity result, with no history request. Each accepted answer's tail
+  keeps the cache exact. The answer can carry the next activity, which runs in
+  the same tick. A tail that does not continue the cache evicts the entry. An
+  omitted tail keeps the old boundary, and the leased activity completes the
+  ordinary way. Declines process the carried workflow poll, and refusals send
+  the ordinary completion with the same poll. An unknown outcome resends the
+  identical v2 request. A malformed `v2` member disables version 2 only. The
+  option stays off by default. Continuations are unqualified and may cost
+  throughput until the server#1181 benchmark passes. See the
+  [worker guide](docs/portal/build/workers.md#activity-continuation-version-2).
+
 ## [3.32.0] - 2026-11-26
 
 ### Fixed

@@ -257,3 +257,31 @@ fixture requirement does not add an SDK runtime platform requirement. Also resol
 the consumer with Composer platform PHP8.1, ext-curl=false and ext-openssl=false to
 verify installation compatibility. Keep source component evidence separate from
 normally installed published-package acceptance.
+
+# Activity workflow continuation v2
+
+`ActivityContinuationV2Test.php` drives a managed Worker with
+`enableActivityContinuation` against a real native Server
+(server#1181, sdk-php#500). It covers an accepted chain of continuations with
+no history reads, an unknown outcome resent identically and answered from the
+receipt, a refusal that falls back to the ordinary completion, a decline caused
+by a signal, and an over-budget tail that is omitted.
+
+The cases are opt-in, and they skip unless the Server's cluster info advertises
+the `v2` member of `activity_workflow_continuation`. A Server release without
+v2 therefore never fails them. Use a disposable Server and its token. Do not
+point the test at a shared runtime.
+
+```sh
+export DURABLE_WORKFLOW_CONTINUATION_V2_QUALIFICATION=1
+export DURABLE_WORKFLOW_RUNTIME_URL=http://localhost:8080
+export DURABLE_WORKFLOW_AUTH_TOKEN=test-token
+vendor/bin/phpunit tests/Integration/ActivityContinuationV2Test.php
+```
+
+Before a Server release includes v2, build the native image from an exact
+Server commit with `Dockerfile.native`. Start it with `DW_RUST_EXPERIMENTAL=1`,
+because a development build without a release version refuses to start
+otherwise. These cases check correctness only. They are not the server#1181
+throughput benchmark.
+
