@@ -6,6 +6,8 @@ project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.33.0] - 2026-11-28
+
 ### Added
 
 - `enableActivityContinuation` consumes activity workflow continuation v2
@@ -24,6 +26,11 @@ project follows [Semantic Versioning](https://semver.org/).
   option stays off by default. Continuations are unqualified and may cost
   throughput until the server#1181 benchmark passes. See the
   [worker guide](docs/portal/build/workers.md#activity-continuation-version-2).
+
+### Security
+
+- Updated the Laravel example's locked Symfony packages for upstream advisories
+  (#502).
 
 ## [3.32.0] - 2026-11-26
 
