@@ -838,32 +838,25 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           persist-credentials: false
+      - name: Check out the fixed APT prerequisite
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          repository: durable-workflow/.github
+          ref: 18783be6bef737cc778e4c7282a8797e39daa61a
+          path: .central-apt-source
+          persist-credentials: false
       - name: Select stock-profile system Python
         run: |
           /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
           echo /usr/bin >> "$GITHUB_PATH"
-      - name: Create isolated framework Composer state
-        run: |
-          state="$(mktemp -d "$RUNNER_TEMP/framework-composer.XXXXXX")"
-          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp"
-          {
-            echo "COMPOSER_HOME=$state/home"
-            echo "COMPOSER_CACHE_DIR=$state/cache"
-            echo "TMPDIR=$state/tmp"
-          } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - name: Set up the qualified stock PHP 8.3 framework profile
-        uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
-        with:
-          php-version: '8.3'
-          ini-file: production
-          tools: composer:2.10.3,phpunit:11.5.57
-          coverage: none
+      - name: Prepare the reviewed PHP container runtime
+        run: bash "$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh" "8.3"
       - name: Require the actual stock framework modules
         run: |
           php -r 'if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 3) { throw new RuntimeException("Expected PHP 8.3"); }
@@ -922,7 +915,7 @@ jobs:
         env:
           FRAMEWORK_EXERCISED_PACKAGE: ${{ matrix.exercised_package }}
         run: |
-          application="$RUNNER_TEMP/laravel-fresh-config-cache"
+          application="$SDK_PHP_CI_STATE/data/laravel-fresh-config-cache"
           exercised_version="${FRAMEWORK_EXERCISED_PACKAGE#laravel/framework:}"
           composer create-project laravel/laravel:^13.0 "$application" \
             --no-interaction --prefer-dist --no-progress
@@ -936,7 +929,7 @@ jobs:
       - name: Exercise fresh Laravel cached role isolation
         if: matrix.framework == 'Laravel' && matrix.version == '13' && matrix.php == '8.4'
         run: |
-          bash tests/compat/laravel-fresh-config-cache.sh "$RUNNER_TEMP/laravel-fresh-config-cache"
+          bash tests/compat/laravel-fresh-config-cache.sh "$SDK_PHP_CI_STATE/data/laravel-fresh-config-cache"
       - name: Exercise native container, diagnostics, and testing integration
         env:
           COMPAT_SCRIPT: ${{ matrix.script }}
@@ -1054,32 +1047,25 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           persist-credentials: false
+      - name: Check out the fixed APT prerequisite
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          repository: durable-workflow/.github
+          ref: 18783be6bef737cc778e4c7282a8797e39daa61a
+          path: .central-apt-source
+          persist-credentials: false
       - name: Select stock-profile system Python
         run: |
           /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
           echo /usr/bin >> "$GITHUB_PATH"
-      - name: Create isolated transition Composer state
-        run: |
-          state="$(mktemp -d "$RUNNER_TEMP/transition-composer.XXXXXX")"
-          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp"
-          {
-            echo "COMPOSER_HOME=$state/home"
-            echo "COMPOSER_CACHE_DIR=$state/cache"
-            echo "TMPDIR=$state/tmp"
-          } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - name: Set up the qualified stock PHP 8.3 transition profile
-        uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
-        with:
-          php-version: '8.3'
-          ini-file: production
-          tools: composer:2.10.3,phpunit:11.5.57
-          coverage: none
+      - name: Prepare the reviewed PHP container runtime
+        run: bash "$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh" "8.3"
       - name: Require the actual stock transition modules
         run: |
           php -r 'if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 3) { throw new RuntimeException("Expected PHP 8.3"); }
@@ -1119,31 +1105,25 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           persist-credentials: false
+      - name: Check out the fixed APT prerequisite
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          repository: durable-workflow/.github
+          ref: 18783be6bef737cc778e4c7282a8797e39daa61a
+          path: .central-apt-source
+          persist-credentials: false
       - name: Select Ubuntu's Python 3.12
         run: |
           /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
           echo /usr/bin >> "$GITHUB_PATH"
-      - name: Create isolated Composer state
-        run: |
-          state="$(mktemp -d "$RUNNER_TEMP/php-check.XXXXXX")"
-          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp"
-          {
-            echo "COMPOSER_HOME=$state/home"
-            echo "COMPOSER_CACHE_DIR=$state/cache"
-            echo "TMPDIR=$state/tmp"
-          } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
-        with:
-          php-version: '8.3'
-          ini-file: production
-          tools: composer:2.10.3,phpunit:11.5.57
-          coverage: none
+      - name: Prepare the reviewed PHP container runtime
+        run: bash "$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh" "8.3"
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - run: composer install --no-interaction --prefer-dist
@@ -1168,6 +1148,13 @@ jobs:
           persist-credentials: false
           ref: ${{ matrix.source == 'current' && github.sha || matrix.source }}
           fetch-depth: 0
+      - name: Check out the fixed APT prerequisite
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          repository: durable-workflow/.github
+          ref: 18783be6bef737cc778e4c7282a8797e39daa61a
+          path: .central-apt-source
+          persist-credentials: false
       - name: Select Ubuntu's Python 3.12
         run: |
           /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
@@ -1186,27 +1173,16 @@ jobs:
         run: python "$DOCS_TOOLING_DIRECTORY/scripts/test-docs-release-channel.py"
       - name: Test presentation and published SDK source isolation
         run: python "$DOCS_TOOLING_DIRECTORY/scripts/prepare-docs-presentation.test.py"
-      - name: Create isolated Composer state
-        run: |
-          state="$(mktemp -d "$RUNNER_TEMP/php-check.XXXXXX")"
-          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp"
-          {
-            echo "COMPOSER_HOME=$state/home"
-            echo "COMPOSER_CACHE_DIR=$state/cache"
-            echo "TMPDIR=$state/tmp"
-          } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           clients: pip,python,composer,curl,git,npm
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
-        with:
-          php-version: '8.3'
-          ini-file: production
-          tools: composer:2.10.3,phpunit:11.5.57
-          coverage: none
+      - name: Prepare the reviewed PHP container runtime
+        run: |
+          mv "$GITHUB_WORKSPACE/.central-apt-source" "$DOCS_TOOLING_DIRECTORY/.central-apt-source"
+          bash "$DOCS_TOOLING_DIRECTORY/scripts/ci/setup-php-container.sh" "8.3" docs
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
         with:
           node-version: '24'
@@ -1270,7 +1246,7 @@ jobs:
         if: matrix.source == '6a821568db5c72983bd3990fe27c7990f092db12'
         env:
           PRESENTATION_SOURCE: ${{ github.event.pull_request.base.sha || github.sha }}
-        run: python "$DOCS_TOOLING_DIRECTORY/scripts/prepare-docs-presentation.py" "$PRESENTATION_SOURCE" "$RUNNER_TEMP/stable-presentation"
+        run: python "$DOCS_TOOLING_DIRECTORY/scripts/prepare-docs-presentation.py" "$PRESENTATION_SOURCE" "$SDK_PHP_CI_STATE/data/stable-presentation"
       - name: Qualify the published SDK with its accepted presentation
         if: matrix.source == '6a821568db5c72983bd3990fe27c7990f092db12'
         env:
@@ -1299,31 +1275,25 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           persist-credentials: false
+      - name: Check out the fixed APT prerequisite
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          repository: durable-workflow/.github
+          ref: 18783be6bef737cc778e4c7282a8797e39daa61a
+          path: .central-apt-source
+          persist-credentials: false
       - name: Select Ubuntu's Python 3.12
         run: |
           /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
           echo /usr/bin >> "$GITHUB_PATH"
-      - name: Create isolated Composer state
-        run: |
-          state="$(mktemp -d "$RUNNER_TEMP/php-check.XXXXXX")"
-          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp"
-          {
-            echo "COMPOSER_HOME=$state/home"
-            echo "COMPOSER_CACHE_DIR=$state/cache"
-            echo "TMPDIR=$state/tmp"
-          } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
-        with:
-          php-version: '8.3'
-          ini-file: production
-          tools: composer:2.10.3,phpunit:11.5.57
-          coverage: none
+      - name: Prepare the reviewed PHP container runtime
+        run: bash "$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh" "8.3"
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - name: Install into a clean consumer project
@@ -1360,31 +1330,25 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           persist-credentials: false
+      - name: Check out the fixed APT prerequisite
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          repository: durable-workflow/.github
+          ref: 18783be6bef737cc778e4c7282a8797e39daa61a
+          path: .central-apt-source
+          persist-credentials: false
       - name: Select Ubuntu's Python 3.12
         run: |
           /usr/bin/python3 -I -S -c 'import sys; assert sys.version_info[:2] == (3, 12)'
           echo /usr/bin >> "$GITHUB_PATH"
-      - name: Create isolated Composer state
-        run: |
-          state="$(mktemp -d "$RUNNER_TEMP/php-check.XXXXXX")"
-          mkdir -m 700 "$state/home" "$state/cache" "$state/tmp"
-          {
-            echo "COMPOSER_HOME=$state/home"
-            echo "COMPOSER_CACHE_DIR=$state/cache"
-            echo "TMPDIR=$state/tmp"
-          } >> "$GITHUB_ENV"
       - name: Select authenticated dependency trust
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
-        with:
-          php-version: '8.3'
-          ini-file: production
-          tools: composer:2.10.3,phpunit:11.5.57
-          coverage: none
+      - name: Prepare the reviewed PHP container runtime
+        run: bash "$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh" "8.3"
       - name: Verify Composer trust before requests
         uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:

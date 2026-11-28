@@ -90,6 +90,24 @@ class PhpContainerLauncherTests(unittest.TestCase):
             self.assertEqual(arguments.count(mount), 1)
         self.assertEqual(arguments[-3:], ["php", "/reviewed/verify.php", "/usr/local/bin/composer"])
 
+    def test_docs_mounts_only_the_source_and_its_build_output(self):
+        source = self.state / "selected-source"
+        (source / "src").mkdir(parents=True)
+        (source / "build").mkdir()
+        (self.state / "docs-source").write_text(f"{source}\n")
+        self.environment["DOCS_SOURCE_DIRECTORY"] = str(source)
+        result = self.invoke("php", "--version")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"type=bind,source={source},target={source},readonly", self.arguments())
+        self.assertIn(f"type=bind,source={source}/build,target={source}/build", self.arguments())
+        self.assertIn("DOCS_SOURCE_DIRECTORY", self.arguments())
+
+        (source / "build").rmdir()
+        (source / "build").symlink_to(self.state, target_is_directory=True)
+        self.log.unlink()
+        self.assertNotEqual(self.invoke("php", "--version").returncode, 0)
+        self.assertFalse(self.log.exists())
+
     def test_host_selector_ignores_workspace_and_pythonpath_modules_before_apt(self):
         for location in ("workspace", "pythonpath"):
             with self.subTest(location=location):
