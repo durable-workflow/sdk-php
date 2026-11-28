@@ -299,6 +299,13 @@ Set `DW_V2_LIMIT_PAYLOAD_SIZE_BYTES=524288` on the disposable Server and
 the structural result-budget refusal. The oversized request uses a valid Avro
 envelope and the retried ordinary completion uses the original result.
 
+Set `DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE=12` on the disposable Server and
+`DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_NESTED_BUDGET=1` for PHPUnit to cover
+the nested completion event limit. The fixture submits thirteen supported
+timer commands on the first continuation, compares the history across the
+refusal, and checks the ordinary fallback uses the original activity result
+and poll.
+
 For the external result decline, enable local external payload storage in the
 disposable Server's test namespace and set
 `DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_EXTERNAL_PAYLOAD=1` for PHPUnit.
