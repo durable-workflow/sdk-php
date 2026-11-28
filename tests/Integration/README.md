@@ -263,10 +263,11 @@ normally installed published-package acceptance.
 `ActivityContinuationV2Test.php` drives a managed Worker with
 `enableActivityContinuation` against a real native Server
 (server#1181, sdk-php#500). It covers an accepted chain of continuations with
-no history reads, exact retries after lost responses and gateway errors, four
-wire refusals, and declines caused by a signal, an accepted update, a cache
-mismatch, or an unadmitted carried poll. It also checks the fallback after a
-refused, over-budget, or unavailable tail.
+no continuation history reads, exact retries after lost responses and gateway
+errors, wire refusals, and declines caused by a signal, an accepted update, a
+cache mismatch, or an unadmitted carried poll. It verifies that a stale attempt
+and a conflicting completion do not cause an ordinary replacement. It also
+checks the fallback after a refused, over-budget, or unavailable tail.
 
 The response-loss cases introduce the fault after the live Server has committed
 the completion. The refusal and decline cases check the Server's actual reply
@@ -287,6 +288,20 @@ vendor/bin/phpunit tests/Integration/ActivityContinuationV2Test.php
 For installed-package qualification, install the published SDK with Composer
 and run this test file with that installation's autoloader. Select a published
 native Server image that advertises v2 and record its digest. The same command
-can exercise a disposable Server backed by SQLite, MySQL, or PostgreSQL. See
-server#1181 for the throughput benchmark.
+can exercise a disposable Server backed by SQLite, MySQL, or PostgreSQL.
+
+Set `DW_V2_LIMIT_PAYLOAD_SIZE_BYTES=524288` on the disposable Server and
+`DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_RESULT_BUDGET=1` for PHPUnit to cover
+the structural result-budget refusal. The oversized request uses a valid Avro
+envelope and the retried ordinary completion uses the original result.
+
+To exercise an unavailable v2 receipt tail on SQLite, share the disposable
+database directory with PHPUnit and set
+`DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_SQLITE` to the absolute writable path
+of its database file. That case temporarily removes one event from its own run
+after the Server commits, forces the Worker to retry the identical request, and
+restores the event before the Worker receives the real retry response. The
+original carried lease is replayed without renewal and completes normally.
+
+See server#1181 for the throughput benchmark.
 
