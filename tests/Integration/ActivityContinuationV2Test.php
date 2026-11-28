@@ -234,6 +234,125 @@ final class ActivityContinuationV2Test extends TestCase
         self::assertSame([], $run['requests']['failure']);
     }
 
+    #[Group('continuation-v2-sql-faults')]
+    #[DataProvider('nestedTransactionFaults')]
+    public function testANestedTransactionFaultRollsBackBeforeOrdinaryFallback(int $status, string $reason): void
+    {
+        $database = $this->disposableNativeFaultDatabase();
+        $client = new Client($this->url, token: $this->token);
+        $trigger = 'continuation_fixture_'.bin2hex(random_bytes(8));
+        $armed = false;
+        $rolledBack = false;
+        $driver = $database->getAttribute(\PDO::ATTR_DRIVER_NAME);
+        $table = $reason === 'history_invariant_violated' ? 'activity_attempts' : 'workflow_tasks';
+        $remove = static function () use ($database, $driver, $table, $trigger, &$armed): void {
+            if ($armed) {
+                $database->exec('DROP TRIGGER IF EXISTS '.$trigger.($driver === 'pgsql' ? ' ON '.$table : ''));
+                if ($driver === 'pgsql') {
+                    $database->exec('DROP FUNCTION IF EXISTS '.$trigger.'()');
+                }
+                $armed = false;
+            }
+        };
+
+        try {
+            $run = $this->driveRun('transaction-fault', function (array $request) use (
+                $database, $client, $driver, $trigger, $table, $remove, $status, $reason, &$armed, &$rolledBack,
+            ): ?array {
+                if ($armed || $rolledBack || !str_ends_with($request['uri'], '/continuation/complete')) {
+                    return null;
+                }
+
+                $cache = $request['body']['continuation']['sticky_cache'];
+                $through = $request['body']['continuation']['history_through_sequence'];
+                $select = $database->prepare('SELECT workflow_instance_id, last_history_sequence FROM workflow_runs WHERE id = :run');
+                $select->execute(['run' => $cache['run_id']]);
+                $row = $select->fetch(\PDO::FETCH_ASSOC);
+                $select->closeCursor();
+                self::assertIsArray($row, 'The disposable database contains the exact HTTP fixture run.');
+                self::assertSame($cache['workflow_id'], $row['workflow_instance_id']);
+                self::assertSame($through, (int) $row['last_history_sequence']);
+                $history = static fn (): array => iterator_to_array($client->iterateWorkflowHistory($cache['workflow_id'], $cache['run_id']), false);
+                $before = $history();
+                $armed = true;
+                $this->installNativeFaultTrigger($database, $driver, $table, $trigger, $cache['run_id'], $through, $reason);
+
+                return ['after_error' => static function (TransportException $error) use ($remove, $status, $reason, $history, $before, &$rolledBack): void {
+                    $remove();
+                    self::assertSame($status, $error->status);
+                    self::assertSame($reason, $error->response['reason']);
+                    self::assertSame($before, $history(), 'The refused continuation preserved the complete history.');
+                    $rolledBack = true;
+                }];
+            });
+        } finally {
+            $remove();
+        }
+
+        self::assertTrue($rolledBack);
+        self::assertSame(21, $run['result']);
+        self::assertSame(3, $run['activity_completed']);
+        $refused = $run['requests']['continuation'][0];
+        $ordinary = $run['requests']['ordinary'][0];
+        self::assertSame(str_replace('/continuation/complete', '/complete', $refused['uri']), $ordinary['uri']);
+        self::assertSame($refused['body']['workflow_poll'], $ordinary['body']['workflow_poll']);
+        self::assertSame($refused['body']['result'], $ordinary['body']['result']);
+        self::assertTrue($ordinary['answer']['recorded']);
+        self::assertSame([], $run['requests']['failure']);
+    }
+
+    public static function nestedTransactionFaults(): iterable
+    {
+        yield 'gap in the written tail' => [500, 'history_invariant_violated'];
+        yield 'run expires after the carried claim' => [409, 'continuation_run_deadline_expired'];
+    }
+
+    private function disposableNativeFaultDatabase(): \PDO
+    {
+        if (getenv('DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_SQL_FAULTS') !== '1') {
+            self::markTestSkipped('These fault cases need the explicitly configured disposable native Server database.');
+        }
+        $dsn = getenv('DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_DSN');
+        if ($dsn === false || $dsn === '') {
+            return $this->disposableSqliteDatabase();
+        }
+        self::assertTrue(str_starts_with($dsn, 'mysql:') || str_starts_with($dsn, 'pgsql:'), 'Use a disposable MySQL or PostgreSQL database.');
+
+        return new \PDO($dsn, getenv('DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_DB_USER') ?: null,
+            getenv('DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_DB_PASSWORD') ?: null,
+            [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
+    }
+
+    private function installNativeFaultTrigger(\PDO $database, string $driver, string $table, string $trigger,
+        string $runId, int $through, string $reason): void
+    {
+        $run = $database->quote($runId);
+        $when = 'NEW.workflow_run_id = '.$run;
+        if ($reason === 'history_invariant_violated') {
+            // The result is appended before the attempt closes. The nested tail must detect this exact gap.
+            $when .= " AND OLD.status = 'running' AND NEW.status = 'completed'";
+            $effect = "DELETE FROM workflow_history_events WHERE workflow_run_id = $run AND sequence = ".($through + 1)
+                ." AND event_type = 'ActivityCompleted'";
+        } else {
+            // Expire the fixture run once the carrier has leased its workflow task inside the transaction.
+            $when .= " AND NEW.task_type = 'workflow' AND OLD.status = 'ready' AND NEW.status = 'leased'";
+            $effect = "UPDATE workflow_runs SET run_deadline_at = '2000-01-01 00:00:00.000000' WHERE id = $run";
+        }
+
+        if ($driver === 'pgsql') {
+            $database->exec('CREATE FUNCTION '.$trigger.'() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF '.$when
+                .' THEN '.$effect.'; END IF; RETURN NEW; END; $$');
+            $database->exec('CREATE TRIGGER '.$trigger.' AFTER UPDATE OF status ON '.$table
+                .' FOR EACH ROW EXECUTE FUNCTION '.$trigger.'()');
+        } elseif ($driver === 'mysql') {
+            $database->exec('CREATE TRIGGER '.$trigger.' AFTER UPDATE ON '.$table.' FOR EACH ROW BEGIN IF '.$when
+                .' THEN '.$effect.'; END IF; END');
+        } else {
+            $database->exec('CREATE TRIGGER '.$trigger.' AFTER UPDATE OF status ON '.$table
+                .' WHEN '.$when.' BEGIN '.$effect.'; END');
+        }
+    }
+
     public function testAClosedActivityAttemptIsAnsweredWithoutAnOrdinaryResend(): void
     {
         $client = new Client($this->url, token: $this->token);

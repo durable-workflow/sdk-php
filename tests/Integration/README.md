@@ -316,6 +316,18 @@ case leases the activity before the run deadline and sends the continuation
 after the deadline. Disabling the repair loop isolates the completion from
 automatic timeout settlement.
 
+For the native history-gap and nested deadline refusals, point PHPUnit at a
+disposable Server and set `DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_SQL_FAULTS=1`.
+Use the SQLite fixture file described below, or supply
+`DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_DSN`,
+`DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_DB_USER`, and
+`DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_DB_PASSWORD` to PHPUnit with the
+matching MySQL or PostgreSQL PDO driver. The fixture user needs permission
+to create and drop triggers on its disposable database and trigger functions
+on PostgreSQL. Each trigger is bound to the exact test run, fires inside the
+proposed transaction, and is dropped before Worker fallback. The tests check
+the Server's typed response and the complete history before and after refusal.
+
 For the external result decline, enable local external payload storage in the
 disposable Server's test namespace and set
 `DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_EXTERNAL_PAYLOAD=1` for PHPUnit.
