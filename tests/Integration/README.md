@@ -268,6 +268,8 @@ errors, wire refusals, and declines caused by a signal, update admission, cache
 mismatch, or carried poll state. The carried poll cases use real empty and
 leased replies from the Server. The validation case needs PHP's cURL extension
 to keep the control request open while the fixture holds a validation lease.
+A cooperative cancellation request declines the continuation for the leased
+activity and closes the workflow as cancelled after recording the activity once.
 A stale attempt and a conflicting completion cause no ordinary replacement.
 The suite also checks fallback after a refused, over-budget, or unavailable tail.
 
@@ -296,6 +298,13 @@ Set `DW_V2_LIMIT_PAYLOAD_SIZE_BYTES=524288` on the disposable Server and
 `DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_RESULT_BUDGET=1` for PHPUnit to cover
 the structural result-budget refusal. The oversized request uses a valid Avro
 envelope and the retried ordinary completion uses the original result.
+
+For the external result decline, enable local external payload storage in the
+disposable Server's test namespace and set
+`DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_EXTERNAL_PAYLOAD=1` for PHPUnit.
+The fixture uploads the original encoded activity result and substitutes the
+returned reference on the first continuation. The Worker resumes the run from
+the Server's carried poll and reads the same result through the payload endpoint.
 
 To exercise an unavailable v2 receipt tail on SQLite, share the disposable
 database directory with PHPUnit and set
