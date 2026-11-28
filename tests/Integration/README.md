@@ -263,9 +263,14 @@ normally installed published-package acceptance.
 `ActivityContinuationV2Test.php` drives a managed Worker with
 `enableActivityContinuation` against a real native Server
 (server#1181, sdk-php#500). It covers an accepted chain of continuations with
-no history reads, an unknown outcome resent identically and answered from the
-receipt, a refusal that falls back to the ordinary completion, a decline caused
-by a signal, and an over-budget tail that is omitted.
+no history reads, exact retries after lost responses and gateway errors, four
+wire refusals, and declines caused by a signal, an accepted update, a cache
+mismatch, or an unadmitted carried poll. It also checks the fallback after a
+refused, over-budget, or unavailable tail.
+
+The response-loss cases introduce the fault after the live Server has committed
+the completion. The refusal and decline cases check the Server's actual reply
+and the Worker requests that follow it.
 
 The cases are opt-in, and they skip unless the Server's cluster info advertises
 the `v2` member of `activity_workflow_continuation`. A Server release without
@@ -279,9 +284,9 @@ export DURABLE_WORKFLOW_AUTH_TOKEN=test-token
 vendor/bin/phpunit tests/Integration/ActivityContinuationV2Test.php
 ```
 
-Before a Server release includes v2, build the native image from an exact
-Server commit with `Dockerfile.native`. Start it with `DW_RUST_EXPERIMENTAL=1`,
-because a development build without a release version refuses to start
-otherwise. These cases check correctness only. They are not the server#1181
-throughput benchmark.
+For installed-package qualification, install the published SDK with Composer
+and run this test file with that installation's autoloader. Select a published
+native Server image that advertises v2 and record its digest. The same command
+can exercise a disposable Server backed by SQLite, MySQL, or PostgreSQL. See
+server#1181 for the throughput benchmark.
 
