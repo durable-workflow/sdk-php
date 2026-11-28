@@ -142,13 +142,18 @@ Missing or older capability, unsupported replay state and a documented Server
 decline preserve ordinary completion and polling. Backend faults and unknown
 completion outcomes follow completion error/recovery rules. They do not become
 eligibility declines. Drain or disable opted-in workers before downgrading a
-producer or introducing older serving nodes. No speedup is promised.
+producer or introducing older serving nodes.
 
-**Continuations are unqualified.** Enabling them may cost throughput. The
-[server#1078](https://github.com/durable-workflow/server/issues/1078) A/B
-measured version 1 as slower than the ordinary path under load. Version 2 must
-pass the [server#1181](https://github.com/durable-workflow/server/issues/1181)
-benchmark before the option can become a default. Until then it stays off.
+Version 1 raised batch wall time by 24–49% under load.
+[Version 1 benchmark](https://github.com/durable-workflow/server/issues/1078#issuecomment-6827690149)
+
+Version 2 reduced median wall time by 26–28% and cut database commits per
+workflow roughly in half in the measured 200-workflow batches. Sequential
+workflow latency also fell in that experiment.
+[Version 2 benchmark](https://github.com/durable-workflow/server/issues/1181#issuecomment-7234206731)
+
+The option remains off by default. Verify that every serving node advertises
+v2 before enabling it on a queue.
 
 ### Activity continuation version 2
 
