@@ -408,6 +408,176 @@ final class ActivityContinuationV2Test extends TestCase
         self::assertSame([], $run['requests']['ordinary']);
     }
 
+    public function testAStandaloneActivityDeclinesAndReplaysItsCompletion(): void
+    {
+        $client = new Client($this->url, token: $this->token);
+        $identity = $this->registerLeaseFixture($client, 'standalone');
+        // The SDK's control client has no standalone activity submission method.
+        $started = (new Psr18Transport())->send('POST', rtrim($this->url, '/').'/api/activities', [
+            'Authorization' => 'Bearer '.$this->token,
+            'Content-Type' => 'application/json',
+            'X-Durable-Workflow-Control-Plane-Version' => '2',
+        ], [
+            'activity_id' => $identity,
+            'activity_type' => 'tests.php-continuation-v2.lease',
+            'task_queue' => $identity,
+            'input' => $client->payloadCodec()->envelope([]),
+        ]);
+        self::assertSame($identity, $started['workflow_id']);
+        $activity = $client->pollActivityTask($identity, $identity, timeoutSeconds: 2);
+        self::assertSame($identity, $activity['workflow_id']);
+        self::assertSame($started['workflow_run_id'], $activity['run_id']);
+        $history = iterator_to_array($client->iterateWorkflowHistory($identity, $activity['run_id']), false);
+        $last = $history[array_key_last($history)];
+        self::assertSame('ActivityStarted', $last['event_type']);
+
+        // This host has no sticky tail. The Server checks the activity kind before the event ID.
+        $last['id'] = 'standalone-host-boundary';
+        $answer = $this->assertLeasedActivityDecline($client, $activity, $last, 'standalone_activity');
+        self::assertNull($answer['next_task_id']);
+        self::assertFalse($answer['workflow_poll']['leased']);
+        self::assertSame(7, $client->workflowResult($identity, timeoutSeconds: 5));
+    }
+
+    public function testAParallelMemberDeclinesAndItsSiblingCanFinishTheRun(): void
+    {
+        $client = new Client($this->url, token: $this->token);
+        $identity = $this->registerLeaseFixture($client, 'parallel');
+        $client->startWorkflow('tests.php-continuation-v2.lease', $identity, $identity);
+        $commands = [];
+        for ($index = 0; $index < 2; $index++) {
+            $group = [
+                'parallel_group_id' => 'parallel-activities:1:2', 'parallel_group_kind' => 'activity',
+                'parallel_group_base_sequence' => 1, 'parallel_group_size' => 2, 'parallel_group_index' => $index,
+            ];
+            $commands[] = ['type' => 'schedule_activity', 'activity_type' => 'tests.php-continuation-v2.lease',
+                'arguments' => $client->payloadCodec()->envelope([]), 'parallel_group_path' => [$group], ...$group];
+        }
+        [$activity, $last] = $this->seedActivityLease($client, $identity, $commands);
+        $answer = $this->assertLeasedActivityDecline($client, $activity, $last, 'parallel_group');
+        self::assertNull($answer['next_task_id']);
+        self::assertFalse($answer['workflow_poll']['leased']);
+
+        $sibling = $client->pollActivityTask($identity, $identity, timeoutSeconds: 2);
+        self::assertSame($activity['run_id'], $sibling['run_id']);
+        self::assertNotSame($activity['task_id'], $sibling['task_id']);
+        $done = $client->completeActivityTask($sibling['task_id'], $sibling['activity_attempt_id'], $identity, 13);
+        self::assertTrue($done['recorded']);
+        $resumed = $client->pollWorkflowTask($identity, $identity, timeoutSeconds: 2);
+        self::assertSame($done['next_task_id'], $resumed['task_id']);
+        self::assertSame($activity['run_id'], $resumed['run_id']);
+        $history = iterator_to_array($client->iterateWorkflowHistory($identity, $activity['run_id']), false);
+        $results = [];
+        foreach ($history as $event) {
+            if ($event['event_type'] === 'ActivityCompleted') {
+                $results[] = $client->payloadCodec()->decodeEnvelope($event['payload']['result']);
+            }
+        }
+        self::assertSame([7, 13], $results);
+        $closed = $client->completeWorkflowTask($resumed['task_id'], $identity, $resumed['workflow_task_attempt'], [
+            ['type' => 'complete_workflow', 'result' => $client->payloadCodec()->envelope(array_sum($results))],
+        ]);
+        self::assertTrue($closed['recorded']);
+        self::assertSame(20, $client->workflowResult($identity, timeoutSeconds: 5));
+    }
+
+    #[Group('continuation-v2-run-deadline')]
+    public function testAnExpiredRunDeclinesAndRecordsItsAlreadyLeasedActivity(): void
+    {
+        if (getenv('DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_RUN_DEADLINE') !== '1') {
+            self::markTestSkipped('This case needs the disposable native Server maintenance repair loop disabled.');
+        }
+
+        $client = new Client($this->url, token: $this->token);
+        $identity = $this->registerLeaseFixture($client, 'deadline');
+        $runTimeoutSeconds = 3;
+        $client->startWorkflow('tests.php-continuation-v2.lease', $identity, $identity, runTimeoutSeconds: $runTimeoutSeconds);
+        // Start has completed, so its Server-side deadline will pass by this monotonic instant.
+        $waitUntil = hrtime(true) + $runTimeoutSeconds * 1_000_000_000;
+        [$activity, $last] = $this->seedActivityLease($client, $identity, [
+            ['type' => 'schedule_activity', 'activity_type' => 'tests.php-continuation-v2.lease',
+                'arguments' => $client->payloadCodec()->envelope([])],
+        ]);
+        usleep((int) max(0, ceil(($waitUntil - hrtime(true)) / 1000)));
+
+        // Leave the independent expired-run poll policy out of the fenced activity completion.
+        $answer = $this->assertLeasedActivityDecline($client, $activity, $last, 'run_not_open', $identity.'-unregistered');
+        self::assertArrayNotHasKey('workflow_poll', $answer);
+    }
+
+    private function seedActivityLease(Client $client, string $identity, array $commands): array
+    {
+        $workflow = $client->pollWorkflowTask($identity, $identity, timeoutSeconds: 2);
+        self::assertSame($identity, $workflow['workflow_id']);
+        $seed = $client->completeWorkflowTask($workflow['task_id'], $identity, $workflow['workflow_task_attempt'], $commands,
+            stickyCache: $this->leaseFixtureCache($workflow, $workflow['history_last_sequence']),
+            activityPoll: ['worker_id' => $identity, 'task_queue' => $identity, 'poll_request_id' => $identity.'-seed', 'timeout_seconds' => 0],
+            continuationTail: ['version' => 2]);
+        self::assertTrue($seed['activity_poll']['leased']);
+        $activity = $seed['activity_poll']['answer']['task'];
+        self::assertSame($workflow['run_id'], $activity['run_id']);
+        $tail = $seed['continuation_tail'];
+        $last = $tail['history_events'][array_key_last($tail['history_events'])];
+        self::assertSame('ActivityStarted', $last['event_type']);
+
+        return [$activity, $last];
+    }
+
+    private function registerLeaseFixture(Client $client, string $case): string
+    {
+        $identity = 'php-continuation-v2-'.$case.'-'.bin2hex(random_bytes(4));
+        $type = 'tests.php-continuation-v2.lease';
+        $client->registerWorker($identity, $identity, [$type], [$type], ['sticky_execution', 'sticky_history_suffix'],
+            buildId: 'php-v2-build');
+        $client->heartbeatWorker($identity);
+
+        return $identity;
+    }
+
+    /** @return array{worker_id: string, workflow_id: string, run_id: string, build_id: string, ttl_seconds: int, history_last_sequence: int} */
+    private function leaseFixtureCache(array $task, int $through): array
+    {
+        return ['worker_id' => $task['lease_owner'], 'workflow_id' => $task['workflow_id'], 'run_id' => $task['run_id'],
+            'build_id' => 'php-v2-build', 'ttl_seconds' => 300, 'history_last_sequence' => $through];
+    }
+
+    private function assertLeasedActivityDecline(Client $client, array $activity, array $last, string $reason, ?string $pollWorkerId = null): array
+    {
+        $history = static fn (): array => iterator_to_array($client->iterateWorkflowHistory($activity['workflow_id'], $activity['run_id']), false);
+        $before = $history();
+        $identity = $activity['lease_owner'];
+        $poll = ['worker_id' => $pollWorkerId ?? $identity, 'task_queue' => $identity, 'poll_request_id' => $identity.'-workflow',
+            'timeout_seconds' => 0, 'history_page_size' => 100, 'task_kinds' => ['workflow']];
+        $through = $last['sequence'];
+        $continuation = ['version' => 2, 'history_through_sequence' => $through, 'history_last_event_id' => $last['id'],
+            'sticky_cache' => $this->leaseFixtureCache($activity, $through),
+            'commands' => [['type' => 'start_timer', 'delay_seconds' => 60]]];
+        $complete = static fn (): array => $client->completeActivityTaskWithContinuation(
+            $activity['task_id'], $activity['activity_attempt_id'], $identity, 7, $poll, $continuation);
+        $answer = $complete();
+        self::assertTrue($answer['recorded']);
+        self::assertSame(['version' => 2, 'outcome' => 'declined', 'reason' => $reason], $answer['continuation']);
+        self::assertArrayNotHasKey('continuation_tail', $answer);
+        self::assertArrayNotHasKey('activity_poll', $answer);
+        $after = $history();
+        self::assertSame($before, array_slice($after, 0, count($before)));
+        $added = array_column(array_slice($after, count($before)), 'event_type');
+        self::assertCount(1, array_keys($added, 'ActivityCompleted', true));
+        self::assertNotContains('TimerScheduled', $added);
+        $retry = $complete();
+        self::assertFalse($retry['recorded']);
+        self::assertSame('already_completed', $retry['reason']);
+        // JSON object field ordering can change when a backend persists the receipt.
+        $decision = $answer['continuation'];
+        $replayedDecision = $retry['continuation'];
+        ksort($decision);
+        ksort($replayedDecision);
+        self::assertSame($decision, $replayedDecision);
+        self::assertSame($after, $history());
+
+        return $answer;
+    }
+
     #[DataProvider('carriedPollDecisions')]
     public function testAReplayedCarriedPollDeclinesWhilePreservingItsOriginalAnswer(bool $leaseOtherWorkflow, string $reason): void
     {
