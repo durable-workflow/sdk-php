@@ -8,6 +8,8 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Codec\AvroPayloadCodec;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
+use DurableWorkflow\Exception\WorkflowCancelled;
+use DurableWorkflow\Transport\BoundedPayloadTransport;
 use DurableWorkflow\Transport\BoundedTransport;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Worker;
@@ -295,6 +297,66 @@ final class ActivityContinuationV2Test extends TestCase
 
             return $body;
         }];
+    }
+
+    #[Group('continuation-v2-external-payload')]
+    public function testAnExternalActivityResultDeclinesAndResumesThroughTheCarriedPoll(): void
+    {
+        if (getenv('DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_EXTERNAL_PAYLOAD') !== '1') {
+            self::markTestSkipped('This case needs local external payload storage on the disposable native Server.');
+        }
+
+        $reference = null;
+        $run = $this->driveRun('external-result', function (array $request) use (&$reference): ?array {
+            if ($reference !== null || !str_ends_with($request['uri'], '/continuation/complete')) {
+                return null;
+            }
+
+            $body = $request['body'];
+            $blob = $body['result']['blob'];
+            $upload = (new Psr18Transport())->uploadPayload(rtrim($this->url, '/').'/api/external-payloads/v1', [
+                'Authorization' => 'Bearer '.$this->token,
+                'Content-Type' => 'application/octet-stream',
+                'X-Durable-Workflow-Payload-Codec' => 'avro',
+                'X-Durable-Workflow-Payload-Size' => (string) strlen($blob),
+                'X-Durable-Workflow-Payload-SHA256' => hash('sha256', $blob),
+            ], $blob, 5);
+            $reference = $upload['reference'];
+            self::assertSame(hash('sha256', $blob), $reference['sha256']);
+            $body['result'] = ['codec' => 'avro', 'external_payload' => $reference];
+
+            return ['body' => $body];
+        });
+
+        $answer = $this->assertDeclineRecordedOnce($run, 'external_payload');
+        self::assertNotNull($reference);
+        self::assertTrue($answer['workflow_poll']['leased']);
+        self::assertSame($answer['next_task_id'], $answer['workflow_poll']['answer']['task']['task_id']);
+        self::assertContains('accepted', array_column($this->decisions(), 'outcome'));
+    }
+
+    public function testARequestedCancellationDeclinesAndTheWorkflowClosesAsCancelled(): void
+    {
+        $client = new Client($this->url, token: $this->token);
+        $receipt = null;
+        $run = $this->driveRun('cancellation', static function (array $request) use ($client, &$receipt): ?array {
+            if ($receipt === null && str_ends_with($request['uri'], '/continuation/complete')) {
+                $cache = $request['body']['continuation']['sticky_cache'];
+                $receipt = $client->requestWorkflowCancellation($cache['workflow_id'], 'Continuation fixture', 10, $cache['run_id']);
+            }
+
+            return null;
+        }, expectCancelled: true);
+
+        self::assertTrue($receipt['accepted'] ?? false);
+        self::assertFalse($receipt['duplicate']);
+        self::assertSame(1, $run['activity_completed']);
+        self::assertCount(1, $run['requests']['continuation']);
+        $answer = $run['requests']['continuation'][0]['answer'];
+        self::assertTrue($answer['recorded']);
+        self::assertSame(['version' => 2, 'outcome' => 'declined', 'reason' => 'cancellation_requested'], $answer['continuation']);
+        self::assertSame('cancellation_requested', $this->decisions()[0]['reason']);
+        self::assertSame([], $run['requests']['ordinary']);
     }
 
     #[DataProvider('carriedPollDecisions')]
@@ -694,7 +756,8 @@ final class ActivityContinuationV2Test extends TestCase
      * @return array{result: mixed, activity_completed: int, requests: array<string, list<array<string, mixed>>>}
      */
     private function driveRun(string $case, \Closure $intercept, bool $signalFirstActivity = false, bool $bigFirstResult = false,
-        bool $withUpdate = false, ?string $expectedTerminalReason = null, ?\Closure $configureWorker = null): array
+        bool $withUpdate = false, ?string $expectedTerminalReason = null, ?\Closure $configureWorker = null,
+        bool $expectCancelled = false): array
     {
         $suffix = $case.'-'.bin2hex(random_bytes(4));
         $queue = 'php-continuation-v2-'.$suffix;
@@ -705,7 +768,7 @@ final class ActivityContinuationV2Test extends TestCase
         $deadline = microtime(true) + 60;
         $transport = new class($intercept, $client, $workflowId, $deadline, static function () use (&$worker): void {
             $worker?->requestShutdown();
-        }) implements BoundedTransport {
+        }) implements BoundedTransport, BoundedPayloadTransport {
             /** @var array<string, list<array<string, mixed>>> */
             public array $requests = ['continuation' => [], 'ordinary' => [], 'history' => [], 'workflow' => [], 'failure' => []];
             private readonly Psr18Transport $inner;
@@ -720,6 +783,16 @@ final class ActivityContinuationV2Test extends TestCase
             public function supportsBoundedRequests(): bool
             {
                 return $this->inner->supportsBoundedRequests();
+            }
+
+            public function fetchPayload(string $uri, array $headers, int $maxBytes): string
+            {
+                return $this->inner->fetchPayload($uri, $headers, $maxBytes);
+            }
+
+            public function fetchPayloadBounded(string $uri, array $headers, int $maxBytes, int $timeoutSeconds): string
+            {
+                return $this->inner->fetchPayloadBounded($uri, $headers, $maxBytes, $timeoutSeconds);
             }
 
             public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
@@ -847,7 +920,17 @@ final class ActivityContinuationV2Test extends TestCase
         }
         self::assertSame($expectedTerminalReason, $terminal);
         self::assertLessThan($deadline, microtime(true), 'The run closed before the deadline.');
-        $result = $client->workflowResult($workflowId, timeoutSeconds: 5);
+        try {
+            $result = $client->workflowResult($workflowId, timeoutSeconds: 5);
+            if ($expectCancelled) {
+                self::fail('The workflow must close as cancelled.');
+            }
+        } catch (WorkflowCancelled $error) {
+            if (!$expectCancelled) {
+                throw $error;
+            }
+            $result = null;
+        }
         $runId = $client->describeWorkflow($workflowId)->runId;
         $completed = 0;
         foreach ($client->iterateWorkflowHistory($workflowId, (string) $runId) as $event) {
