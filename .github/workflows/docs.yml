@@ -304,16 +304,29 @@ jobs:
                       print(text)
                       with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as output:
                           output.write('PHP docs post-product terminal qualification\n\n'+text+'\n')
-                  owned_pip=qualification.pip_ownership(pip_state,runner_temp)
+                  evidence={'outcome':'refused'}
+                  owned_pip=None
                   try:
+                      owned_pip=qualification.pip_ownership(pip_state,runner_temp)
                       with qualification.capture_private_pip(owned_pip,runner_temp) as pip_report:
                           command=[sys.executable,'-I','-S','-B',
                               str(control_directory/'scripts/hosted_php_identity.py'),'--expect',expected_php]
-                          php_report=json.loads(subprocess.check_output(command,env=closed,text=True,timeout=20))
+                          evidence['php']=json.loads(subprocess.check_output(command,env=closed,text=True,timeout=20))
+                      evidence.update(outcome='pass',private_pip=pip_report)
+                  except Exception as error:
+                      evidence['failure_type']=type(error).__name__
+                      raise
                   finally:
-                      owned=owned_pip['state']
-                      qualification.private_pip.cleanup_runtime(owned.root,owned.root.parent,owned.identity)
-                  publish({'outcome':'pass','php':php_report,'private_pip':pip_report,'private_pip_cleanup':'pass'})
+                      try:
+                          if owned_pip is not None:
+                              owned=owned_pip['state']
+                              qualification.private_pip.cleanup_runtime(owned.root,owned.root.parent,owned.identity)
+                              evidence['private_pip_cleanup']='pass'
+                      except Exception as error:
+                          evidence.update(outcome='refused',private_pip_cleanup='refused',failure_type=type(error).__name__)
+                          raise
+                      finally:
+                          publish(evidence)
           finally:
               if composer_root is not None:
                   metadata=composer_root.lstat()
