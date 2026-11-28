@@ -42,15 +42,6 @@ if [[ "$git_directory" != "$root/"* ]]; then
     options+=(--mount "type=bind,source=$git_directory,target=$git_directory,readonly")
 fi
 
-if [[ -e "$state/docs-source" || -L "$state/docs-source" ]]; then
-    [[ -f "$state/docs-source" && ! -L "$state/docs-source" ]]
-    IFS= read -r docs_source < "$state/docs-source"
-    [[ "$docs_source" = "$(realpath -e "$docs_source")" && "$docs_source" != "$root" ]]
-    [[ -d "$docs_source/src" && -d "$docs_source/build" && ! -L "$docs_source/build" ]]
-    options+=(--mount "type=bind,source=$docs_source,target=$docs_source,readonly"
-        --mount "type=bind,source=$docs_source/build,target=$docs_source/build")
-fi
-
 declare -A mounted=()
 for variable in SSL_CERT_FILE CURL_CA_BUNDLE GIT_SSL_CAINFO COMPOSER_CAFILE \
     REQUESTS_CA_BUNDLE PIP_CERT NPM_CONFIG_CAFILE CARGO_HTTP_CAINFO CARGO_HTTP_PROXY_CAINFO \
@@ -70,7 +61,6 @@ while IFS= read -r variable; do
     case "$variable" in
         APP_*|DB_*|SHARED_DB_*|REDIS_*|CACHE_*|QUEUE_*|SESSION_*|MAIL_*|BCRYPT_ROUNDS|\
         COMPOSER_HOME|COMPOSER_CACHE_DIR|COMPOSER_MAX_PARALLEL_*|COMPOSER_IPRESOLVE|\
-        DOCS_SOURCE_DIRECTORY|DOCS_PORTAL_DIRECTORY|DOCS_TEMPLATE_DIRECTORY|DOCS_PRESENTATION_DIRECTORY|\
         SDK_PATH|SOURCE_MODE|WORKFLOW_REQUIREMENT|LARAVEL_REQUIREMENT|\
         FRAMEWORK_BOOTSTRAP|FRAMEWORK_PACKAGE|FRAMEWORK_EXERCISED_PACKAGE|FRAMEWORK_CONSOLE_PACKAGE|COMPAT_SCRIPT|\
         DURABLE_WORKFLOW_RUNTIME_URL|DURABLE_WORKFLOW_SERVER_URL|DURABLE_WORKFLOW_NAMESPACE|\

@@ -3,14 +3,14 @@ set -euo pipefail
 umask 077
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-minor="${1:?Usage: setup-php-container.sh 8.1|8.2|8.3|8.4 [carbon2|docs]}"
+minor="${1:?Usage: setup-php-container.sh 8.1|8.2|8.4 [carbon2]}"
 mode="${2:-unit}"
-case "$mode:$minor" in unit:8.1|unit:8.2|unit:8.3|unit:8.4|carbon2:8.1|docs:8.3) ;; *) echo 'Unsupported PHP CI caller mode.' >&2; exit 2 ;; esac
+case "$mode:$minor" in unit:8.1|unit:8.2|unit:8.4|carbon2:8.1) ;; *) echo 'Unsupported PHP CI caller mode.' >&2; exit 2 ;; esac
 image="$(python3 -I -S - "$root/scripts/ci/php-container-images.json" "$minor" <<'PY'
 import json,re,sys
 images=json.load(open(sys.argv[1]))
 image=images[sys.argv[2]]
-assert re.fullmatch(r'php:8\.[1234]\.\d+-cli-bookworm@sha256:[0-9a-f]{64}', image)
+assert re.fullmatch(r'php:8\.[124]\.\d+-cli-bookworm@sha256:[0-9a-f]{64}', image)
 print(image)
 PY
 )"
@@ -59,12 +59,6 @@ fi
 [[ -d "$root/vendor" && -d "$root/build" && -d "$root/.phpunit.cache" && -f "$root/composer.lock" && -f "$root/composer.json" ]]
 if [[ "$mode" = carbon2 ]]; then
     printf 'carbon2\n' > "$state/writable-manifest"
-fi
-if [[ "$mode" = docs ]]; then
-    source="$(realpath -e "${GITHUB_WORKSPACE:?Documentation source checkout is required}")"
-    [[ "$source" != "$root" && -d "$source/src" && ! -L "$source/build" ]]
-    mkdir -p "$source/build"
-    printf '%s\n' "$source" > "$state/docs-source"
 fi
 ln -sf "$root/scripts/ci/run-php-container.sh" "$state/bin/php"
 ln -sf "$root/scripts/ci/run-php-container.sh" "$state/bin/composer"
