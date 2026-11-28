@@ -185,6 +185,55 @@ final class ActivityContinuationV2Test extends TestCase
         }];
     }
 
+    #[Group('continuation-v2-nested-budget')]
+    public function testAnOverBudgetNestedCompletionRollsBackBeforeOrdinaryFallback(): void
+    {
+        if (getenv('DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_NESTED_BUDGET') !== '1') {
+            self::markTestSkipped('This case needs the disposable Server history transaction event limit set to 12.');
+        }
+
+        $client = new Client($this->url, token: $this->token);
+        $changed = false;
+        $rolledBack = false;
+        $run = $this->driveRun('nested-budget', static function (array $request) use ($client, &$changed, &$rolledBack): ?array {
+            if ($changed || !str_ends_with($request['uri'], '/continuation/complete')) {
+                return null;
+            }
+
+            $changed = true;
+            $body = $request['body'];
+            $cache = $body['continuation']['sticky_cache'];
+            $history = static fn (): array => iterator_to_array($client->iterateWorkflowHistory($cache['workflow_id'], $cache['run_id']), false);
+            $before = $history();
+            $body['continuation']['commands'] = array_fill(0, 13, ['type' => 'start_timer', 'delay_seconds' => 60]);
+
+            return [
+                'body' => $body,
+                'after_error' => static function (TransportException $error) use ($history, $before, &$rolledBack): void {
+                    self::assertSame(409, $error->status);
+                    self::assertSame('completion_budget_exceeded', $error->response['reason']);
+                    self::assertSame('history_transaction_size', $error->response['limit_kind']);
+                    self::assertSame(12, $error->response['configured_limit']);
+                    self::assertSame(13, $error->response['current_value']);
+                    self::assertFalse($error->response['recorded']);
+                    self::assertSame($before, $history(), 'The refused transaction left the complete run history intact.');
+                    $rolledBack = true;
+                },
+            ];
+        });
+
+        self::assertTrue($rolledBack);
+        self::assertSame(21, $run['result']);
+        self::assertSame(3, $run['activity_completed']);
+        $refused = $run['requests']['continuation'][0];
+        $ordinary = $run['requests']['ordinary'][0];
+        self::assertSame(str_replace('/continuation/complete', '/complete', $refused['uri']), $ordinary['uri']);
+        self::assertSame($refused['original_body']['workflow_poll'], $ordinary['body']['workflow_poll']);
+        self::assertSame($refused['original_body']['result'], $ordinary['body']['result']);
+        self::assertTrue($ordinary['answer']['recorded']);
+        self::assertSame([], $run['requests']['failure']);
+    }
+
     public function testAClosedActivityAttemptIsAnsweredWithoutAnOrdinaryResend(): void
     {
         $client = new Client($this->url, token: $this->token);
