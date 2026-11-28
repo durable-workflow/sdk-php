@@ -264,10 +264,12 @@ normally installed published-package acceptance.
 `enableActivityContinuation` against a real native Server
 (server#1181, sdk-php#500). It covers an accepted chain of continuations with
 no continuation history reads, exact retries after lost responses and gateway
-errors, wire refusals, and declines caused by a signal, an accepted update, a
-cache mismatch, or an unadmitted carried poll. It verifies that a stale attempt
-and a conflicting completion do not cause an ordinary replacement. It also
-checks the fallback after a refused, over-budget, or unavailable tail.
+errors, wire refusals, and declines caused by a signal, update admission, cache
+mismatch, or carried poll state. The carried poll cases use real empty and
+leased replies from the Server. The validation case needs PHP's cURL extension
+to keep the control request open while the fixture holds a validation lease.
+A stale attempt and a conflicting completion cause no ordinary replacement.
+The suite also checks fallback after a refused, over-budget, or unavailable tail.
 
 The response-loss cases introduce the fault after the live Server has committed
 the completion. The refusal and decline cases check the Server's actual reply
@@ -302,6 +304,10 @@ of its database file. That case temporarily removes one event from its own run
 after the Server commits, forces the Worker to retry the identical request, and
 restores the event before the Worker receives the real retry response. The
 original carried lease is replayed without renewal and completes normally.
+The invalid-receipt case uses the same fixture to change the committed receipt
+version briefly. It restores the original receipt before the Worker handles the
+Server's typed error and verifies that the ordinary fallback uses the original
+result and carried workflow poll.
 
 See server#1181 for the throughput benchmark.
 
