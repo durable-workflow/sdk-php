@@ -12,7 +12,7 @@ import tempfile
 import textwrap
 import types
 import unittest
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -314,7 +314,7 @@ class DocumentationTerminalCollectorTest(unittest.TestCase):
             identity = [info.st_dev, info.st_ino, info.st_uid, info.st_mode & 0o7777]
             environment = {"RUNNER_TEMP": str(scratch), "COMPOSER_DIRECTORY": str(composer),
                 "COMPOSER_DIRECTORY_IDENTITY": json.dumps(identity), "PRODUCT_STATUS": product_status,
-                "GITHUB_STEP_SUMMARY": str(root / "summary"), "SETUP_RECEIPT": str(root / "setup"),
+                "GITHUB_STEP_SUMMARY": str(root / "summary"), "PHP_IDENTITY": "a" * 64,
                 "PIP_RECEIPT": str(root / "pip"), "PIP_CREATED": "true",
                 "PIP_ROOT_IDENTITY": "fixture-root", "PIP_RECEIPT_IDENTITY": "fixture-receipt"}
             environment.update({key: "fixture" for key in ("GITHUB_REPOSITORY", "GITHUB_WORKFLOW_SHA", "GITHUB_SHA",
@@ -326,16 +326,25 @@ class DocumentationTerminalCollectorTest(unittest.TestCase):
             package.php_linux_bootstrap.clean_environment = lambda env, home: {
                 key: value for key, value in env.items() if key != "PRODUCT_STATUS"}
             calls = []
-            def qualify(receipt, runner_temp, closed, publish, *, pip_state):
-                calls.append((receipt, runner_temp, pip_state))
-                self.assertNotIn("PRODUCT_STATUS", os.environ)
-                publish({"outcome": "refused" if refusal else "pass", "cleanup": "pass",
-                         "private_pip_cleanup": "pass", "detail": "x" * (65537 if oversized else 0)})
-                if refusal:
-                    raise ValueError("canonical fixture refusal")
-            package.php_linux_qualification.qualify = qualify
-            source = "636d0cda4ce1e9c94ac6bf649154ff57957558be"
+            cleanup = []
+            qualification = package.php_linux_qualification
+            def pip_ownership(pip_state, runner_temp):
+                calls.append((pip_state, runner_temp))
+                return {"state": types.SimpleNamespace(root=scratch / "pip", identity="fixture-root")}
+            @contextmanager
+            def capture_private_pip(_owned, _runner_temp):
+                yield {"detail": "x" * (65537 if oversized else 0)}
+            qualification.pip_ownership = pip_ownership
+            qualification.capture_private_pip = capture_private_pip
+            qualification.private_pip = types.SimpleNamespace(cleanup_runtime=lambda *args: cleanup.append(args))
+            source = self.script.split("control_source='", 1)[1].split("'", 1)[0]
             def git_output(arguments, **options):
+                if arguments[-2] == "--expect":
+                    self.assertEqual("a" * 64, arguments[-1])
+                    self.assertNotIn("PRODUCT_STATUS", options["env"])
+                    if refusal:
+                        raise ValueError("canonical fixture refusal")
+                    return json.dumps({"revalidated": True})
                 return source if arguments[-2:] == ["rev-parse", "HEAD"] else ""
             output = io.StringIO()
             error = None
@@ -349,7 +358,8 @@ class DocumentationTerminalCollectorTest(unittest.TestCase):
             records = [json.loads(line) for line in output.getvalue().splitlines()]
             self.assertFalse(composer.exists(), "Caller Composer cleanup must survive qualification/publication refusal.")
             self.assertEqual(1, len(calls))
-            self.assertEqual("fixture-root", calls[0][2]["root_identity"])
+            self.assertEqual("fixture-root", calls[0][0]["root_identity"])
+            self.assertEqual([(scratch / "pip", scratch, "fixture-root")], cleanup)
             return records, error
 
     def test_product_status_is_retained_before_environment_clear(self):

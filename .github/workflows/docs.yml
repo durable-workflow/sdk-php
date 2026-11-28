@@ -90,7 +90,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           repository: durable-workflow/.github
-          ref: 636d0cda4ce1e9c94ac6bf649154ff57957558be
+          ref: d22415dd8ae679bd584fc85f32d35abe9a736d6d
           path: .php-setup-control
           persist-credentials: false
       - name: Select the trusted system Python
@@ -135,14 +135,20 @@ jobs:
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
         with:
           clients: pip,python,composer,curl,git,npm
-      - name: Set up the exact accepted initial PHP profile
-        id: php_setup
-        uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
+      - name: Disable APT download retries (CVE-2026-109518)
+        run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
+      - name: Require fixed APT before setting up PHP
+        uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a  # fixed-apt
+      - name: Install the approved hosted PHP profile
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # v2.40.0
         with:
           php-version: '8.3'
           ini-file: production
           tools: composer:2.10.3,phpunit:11.5.57
           coverage: none
+      - name: Record PHP and package tool identity before product commands
+        id: php_identity
+        run: /usr/bin/python3 -I -S -B .php-setup-control/scripts/hosted_php_identity.py
       - name: Select the temporary tooling directory
         run: echo "DOCS_TOOLING_DIRECTORY=$RUNNER_TEMP/docs-tooling" >> "$GITHUB_ENV"
       - name: Prepare the exact workflow tooling separately
@@ -243,7 +249,7 @@ jobs:
       - name: Revalidate PHP after product commands and clean owned state
         if: ${{ always() && steps.composer_state.outcome != 'skipped' }}
         env:
-          SETUP_RECEIPT: ${{ steps.php_setup.outputs.bootstrap-receipt }}
+          PHP_IDENTITY: ${{ steps.php_identity.outputs.sha256 }}
           PIP_RECEIPT: ${{ steps.pip_trust.outputs.pip-state }}
           PIP_CREATED: ${{ steps.pip_trust.outputs.pip-created }}
           PIP_ROOT_IDENTITY: ${{ steps.pip_trust.outputs.pip-root-identity }}
@@ -262,7 +268,7 @@ jobs:
           composer_root=pathlib.Path(composer_text) if composer_text else None
           composer_identity=os.environ.get('COMPOSER_DIRECTORY_IDENTITY','')
           try:
-              control_source='636d0cda4ce1e9c94ac6bf649154ff57957558be'
+              control_source='d22415dd8ae679bd584fc85f32d35abe9a736d6d'
               control_directory=pathlib.Path.cwd()/'.php-setup-control'
               def control_git(*arguments):
                   return subprocess.check_output(['/usr/bin/git','-C',str(control_directory),*arguments],text=True).strip()
@@ -277,8 +283,7 @@ jobs:
               pip_state={key:os.environ.get(name,'') for key,name in (
                   ('receipt','PIP_RECEIPT'),('created','PIP_CREATED'),
                   ('root_identity','PIP_ROOT_IDENTITY'),('receipt_identity','PIP_RECEIPT_IDENTITY'))}
-              receipt_text=os.environ.get('SETUP_RECEIPT','')
-              receipt=pathlib.Path(receipt_text) if receipt_text else None
+              expected_php=os.environ.get('PHP_IDENTITY','')
               product_status=os.environ['PRODUCT_STATUS']
               context={key:os.environ[key] for key in ('GITHUB_REPOSITORY','GITHUB_WORKFLOW_SHA',
                   'GITHUB_SHA','GITHUB_REF','GITHUB_EVENT_NAME','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT')}
@@ -299,7 +304,29 @@ jobs:
                       print(text)
                       with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as output:
                           output.write('PHP docs post-product terminal qualification\n\n'+text+'\n')
-                  qualification.qualify(receipt,runner_temp,closed,publish,pip_state=pip_state)
+                  evidence={'outcome':'refused'}
+                  owned_pip=None
+                  try:
+                      owned_pip=qualification.pip_ownership(pip_state,runner_temp)
+                      with qualification.capture_private_pip(owned_pip,runner_temp) as pip_report:
+                          command=[sys.executable,'-I','-S','-B',
+                              str(control_directory/'scripts/hosted_php_identity.py'),'--expect',expected_php]
+                          evidence['php']=json.loads(subprocess.check_output(command,env=closed,text=True,timeout=20))
+                      evidence.update(outcome='pass',private_pip=pip_report)
+                  except Exception as error:
+                      evidence['failure_type']=type(error).__name__
+                      raise
+                  finally:
+                      try:
+                          if owned_pip is not None:
+                              owned=owned_pip['state']
+                              qualification.private_pip.cleanup_runtime(owned.root,owned.root.parent,owned.identity)
+                              evidence['private_pip_cleanup']='pass'
+                      except Exception as error:
+                          evidence.update(outcome='refused',private_pip_cleanup='refused',failure_type=type(error).__name__)
+                          raise
+                      finally:
+                          publish(evidence)
           finally:
               if composer_root is not None:
                   metadata=composer_root.lstat()

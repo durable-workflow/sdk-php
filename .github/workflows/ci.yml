@@ -99,7 +99,9 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
+      - name: Require fixed APT before setting up PHP
+        uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a  # fixed-apt
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # v2.40.0
         with:
           php-version: '8.3'
           ini-file: production
@@ -222,7 +224,9 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
+      - name: Require fixed APT before setting up PHP
+        uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a  # fixed-apt
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # v2.40.0
         with:
           php-version: '8.3'
           ini-file: production
@@ -869,8 +873,10 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
+      - name: Require fixed APT before setting up PHP
+        uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a  # fixed-apt
       - name: Set up the qualified stock PHP 8.3 framework profile
-        uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # v2.40.0
         with:
           php-version: '8.3'
           ini-file: production
@@ -1085,8 +1091,10 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
+      - name: Require fixed APT before setting up PHP
+        uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a  # fixed-apt
       - name: Set up the qualified stock PHP 8.3 transition profile
-        uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # v2.40.0
         with:
           php-version: '8.3'
           ini-file: production
@@ -1150,7 +1158,9 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
+      - name: Require fixed APT before setting up PHP
+        uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a  # fixed-apt
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # v2.40.0
         with:
           php-version: '8.3'
           ini-file: production
@@ -1213,7 +1223,9 @@ jobs:
           clients: pip,python,composer,curl,git,npm
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
+      - name: Require fixed APT before setting up PHP
+        uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a  # fixed-apt
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # v2.40.0
         with:
           php-version: '8.3'
           ini-file: production
@@ -1330,7 +1342,9 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
+      - name: Require fixed APT before setting up PHP
+        uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a  # fixed-apt
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # v2.40.0
         with:
           php-version: '8.3'
           ini-file: production
@@ -1391,7 +1405,9 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
+      - name: Require fixed APT before setting up PHP
+        uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a  # fixed-apt
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # v2.40.0
         with:
           php-version: '8.3'
           ini-file: production
@@ -1442,7 +1458,9 @@ jobs:
           clients: pip,python,composer,curl,git,cargo
       - name: Disable APT download retries (CVE-2026-109518)
         run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
-      - uses: durable-workflow/.github/.github/actions/setup-php-linux@636d0cda4ce1e9c94ac6bf649154ff57957558be  # bound-linux-php
+      - name: Require fixed APT before setting up PHP
+        uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a  # fixed-apt
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # v2.40.0
         with:
           php-version: '8.3'
           ini-file: production
