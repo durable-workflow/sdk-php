@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace DurableWorkflow\Tests\Integration;
 
 use DurableWorkflow\Client;
+use DurableWorkflow\Codec\AvroPayloadCodec;
+use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\TransportException;
 use DurableWorkflow\Transport\BoundedTransport;
 use DurableWorkflow\Transport\Psr18Transport;
@@ -13,6 +15,7 @@ use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\WorkflowContext;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -111,8 +114,11 @@ final class ActivityContinuationV2Test extends TestCase
     }
 
     #[DataProvider('wireRefusals')]
-    public function testAServerRefusalFallsBackToTheOrdinaryCompletion(string $reason, \Closure $changeBody): void
+    public function testAServerRefusalFallsBackToTheOrdinaryCompletion(int $status, string $reason, \Closure $changeBody): void
     {
+        if ($status === 413 && getenv('DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_RESULT_BUDGET') !== '1') {
+            self::markTestSkipped('The result-budget case needs the fixture structural payload limit set to 524288 bytes.');
+        }
         $refused = false;
         $run = $this->driveRun('refusal', static function (array $request) use (&$refused, $changeBody): ?array {
             if (!$refused && str_ends_with($request['uri'], '/continuation/complete')) {
@@ -124,19 +130,20 @@ final class ActivityContinuationV2Test extends TestCase
             return null;
         });
         self::assertTrue($refused);
-        self::assertSame(21, $run['result']);
-        self::assertSame(3, $run['activity_completed']);
         // The refused activity completed the ordinary way with the same carried workflow poll.
         $refusedRequest = $run['requests']['continuation'][0];
         $ordinary = $run['requests']['ordinary'][0] ?? null;
-        self::assertSame(422, $refusedRequest['status'] ?? null);
+        self::assertSame($status, $refusedRequest['status'] ?? null, (string) ($refusedRequest['answer']['reason'] ?? ''));
+        self::assertSame($reason, $refusedRequest['answer']['reason'] ?? null);
+        self::assertSame(21, $run['result']);
+        self::assertSame(3, $run['activity_completed']);
         self::assertIsArray($ordinary);
         self::assertSame(str_replace('/continuation/complete', '/complete', $refusedRequest['uri']), $ordinary['uri']);
         self::assertSame($refusedRequest['original_body']['workflow_poll'], $ordinary['body']['workflow_poll']);
         self::assertSame($refusedRequest['original_body']['result'], $ordinary['body']['result']);
         self::assertTrue($ordinary['answer']['recorded'] ?? false);
         $refusals = array_values(array_filter($this->diagnostics, static fn (array $row): bool => $row[0] === 'worker.activity_continuation_refused'));
-        self::assertSame([[422, $reason]], array_map(static fn (array $row): array => [$row[1]['status'], $row[1]['reason']], $refusals));
+        self::assertSame([[$status, $reason]], array_map(static fn (array $row): array => [$row[1]['status'], $row[1]['reason']], $refusals));
         if ($reason === 'unsupported_continuation_version') {
             self::assertCount(1, array_filter($run['requests']['continuation'],
                 static fn (array $request): bool => ($request['original_body']['continuation']['version'] ?? null) === 2));
@@ -145,27 +152,91 @@ final class ActivityContinuationV2Test extends TestCase
 
     public static function wireRefusals(): iterable
     {
-        yield 'unknown field' => ['invalid_continuation', static function (array $body): array {
+        yield 'unknown field' => [422, 'invalid_continuation', static function (array $body): array {
             $body['continuation']['unknown_member'] = true;
 
             return $body;
         }];
-        yield 'unsupported version' => ['unsupported_continuation_version', static function (array $body): array {
+        yield 'unsupported version' => [422, 'unsupported_continuation_version', static function (array $body): array {
             $body['continuation']['version'] = 99;
             unset($body['continuation']['sticky_cache']);
 
             return $body;
         }];
-        yield 'unsupported command' => ['unsupported_continuation_command', static function (array $body): array {
+        yield 'unsupported command' => [422, 'unsupported_continuation_command', static function (array $body): array {
             $body['continuation']['commands'] = [['type' => 'open_signal_wait', 'signal_name' => 'note']];
 
             return $body;
         }];
-        yield 'missing carried poll' => ['continuation_requires_workflow_poll', static function (array $body): array {
+        yield 'missing carried poll' => [422, 'continuation_requires_workflow_poll', static function (array $body): array {
             unset($body['workflow_poll']);
 
             return $body;
         }];
+        yield 'result exceeds the native fixture budget' => [413, 'continuation_result_exceeds_budget', static function (array $body): array {
+            // This encodes above the fixture's 512 KiB structural limit and below the wire envelope limit.
+            $body['result'] = (new AvroPayloadCodec())->envelope(str_repeat('x', 450_000));
+
+            return $body;
+        }];
+    }
+
+    public function testAClosedActivityAttemptIsAnsweredWithoutAnOrdinaryResend(): void
+    {
+        $client = new Client($this->url, token: $this->token);
+        $committed = null;
+        $run = $this->driveRun('stale', static function (array $request) use ($client, &$committed): ?array {
+            if ($committed === null && preg_match('~/activity-tasks/([^/]+)/continuation/complete$~', $request['uri'], $match) === 1) {
+                $body = $request['body'];
+                $committed = $client->completeActivityTask($match[1], $body['activity_attempt_id'], $body['lease_owner'], 7);
+            }
+
+            return null;
+        });
+        self::assertTrue($committed['recorded'] ?? false);
+        self::assertSame(21, $run['result']);
+        self::assertSame(3, $run['activity_completed']);
+        $first = $run['requests']['continuation'][0];
+        self::assertSame(409, $first['status']);
+        self::assertSame('stale_attempt', $first['answer']['reason']);
+        self::assertFalse($first['answer']['recorded']);
+        self::assertSame($committed['task_id'], $first['answer']['task_id']);
+        self::assertSame($committed['activity_attempt_id'], $first['answer']['activity_attempt_id']);
+        self::assertSame('completed', $first['answer']['attempt_status']);
+        self::assertCount(1, array_filter($run['requests']['continuation'], static fn (array $row): bool => $row['uri'] === $first['uri']));
+        $ordinaryUri = str_replace('/continuation/complete', '/complete', $first['uri']);
+        self::assertNotContains($ordinaryUri, array_column($run['requests']['ordinary'], 'uri'));
+        self::assertSame([], $run['requests']['failure']);
+    }
+
+    public function testAChangedContinuationConflictsWithTheCommittedReceipt(): void
+    {
+        $conflicted = false;
+        $run = $this->driveRun('conflict', static function (array $request) use (&$conflicted): ?array {
+            if ($conflicted || !str_ends_with($request['uri'], '/continuation/complete')
+                || ($request['body']['continuation']['commands'][0]['type'] ?? null) !== 'complete_workflow') {
+                return null;
+            }
+            $conflicted = true;
+            $first = $request['body'];
+            $first['workflow_poll']['poll_request_id'] .= '-original';
+
+            return ['send_first' => $first];
+        }, expectedTerminalReason: 'conflicting_completion');
+        self::assertTrue($conflicted);
+        self::assertSame(21, $run['result']);
+        self::assertSame(3, $run['activity_completed']);
+        $requests = $run['requests']['continuation'];
+        [$first, $conflict] = array_slice($requests, -2);
+        self::assertSame($first['uri'], $conflict['uri']);
+        self::assertNotSame($first['body']['workflow_poll']['poll_request_id'], $conflict['body']['workflow_poll']['poll_request_id']);
+        self::assertTrue($first['answer']['recorded']);
+        self::assertSame('accepted', $first['answer']['continuation']['outcome']);
+        self::assertSame(409, $conflict['status']);
+        self::assertSame('conflicting_completion', $conflict['answer']['reason']);
+        self::assertCount(2, array_filter($requests, static fn (array $row): bool => $row['uri'] === $conflict['uri']));
+        self::assertSame([], $run['requests']['ordinary']);
+        self::assertSame([], $run['requests']['failure']);
     }
 
     #[DataProvider('wireDeclines')]
@@ -314,16 +385,100 @@ final class ActivityContinuationV2Test extends TestCase
             $run['requests']['ordinary'][0]['uri']);
     }
 
+    #[Group('continuation-v2-disposable-sqlite')]
+    public function testAnExactActivityContinuationRetryReceivesAnUnavailableTail(): void
+    {
+        $path = getenv('DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_SQLITE');
+        if ($path === false || $path === '') {
+            self::markTestSkipped('The pruned-tail case needs the disposable native Server SQLite fixture file.');
+        }
+        self::assertSame($path, realpath($path), 'Use the absolute path of the disposable fixture file.');
+        self::assertFileIsWritable($path);
+        $database = new \PDO('sqlite:'.$path, options: [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
+        $database->exec('PRAGMA busy_timeout = 5000');
+        $pruned = null;
+        $restore = static function () use ($database, &$pruned): void {
+            if ($pruned === null) {
+                return;
+            }
+            $insert = $database->prepare('INSERT INTO workflow_history_events
+                (id, workflow_run_id, sequence, event_type, payload, workflow_task_id, workflow_command_id,
+                 recorded_at, created_at, updated_at, recorded_at_utc)
+                VALUES (:id, :workflow_run_id, :sequence, :event_type, :payload, :workflow_task_id, :workflow_command_id,
+                        :recorded_at, :created_at, :updated_at, :recorded_at_utc)');
+            $insert->execute($pruned);
+            $pruned = null;
+        };
+        $firstUri = null;
+        try {
+            $run = $this->driveRun('pruned-tail', static function (array $request) use ($database, &$firstUri, &$pruned, $restore): ?array {
+                if (!str_ends_with($request['uri'], '/continuation/complete')) {
+                    return null;
+                }
+                if ($firstUri !== null) {
+                    return $request['uri'] === $firstUri ? ['after_response' => $restore] : null;
+                }
+
+                $firstUri = $request['uri'];
+                $runId = $request['body']['continuation']['sticky_cache']['run_id'];
+                return [
+                    'after_response' => static function (array $answer) use ($database, $runId, &$pruned): void {
+                        self::assertTrue($answer['recorded']);
+                        self::assertSame('accepted', $answer['continuation']['outcome']);
+                        $tail = $answer['continuation_tail'];
+                        $event = $tail['history_events'][0];
+                        self::assertSame($tail['after_sequence'] + 1, $event['sequence']);
+                        $select = $database->prepare('SELECT id, workflow_run_id, sequence, event_type, payload, workflow_task_id,
+                            workflow_command_id, recorded_at, created_at, updated_at, recorded_at_utc
+                            FROM workflow_history_events WHERE id = :id AND workflow_run_id = :run AND sequence = :sequence');
+                        $identity = ['id' => $event['id'], 'run' => $runId, 'sequence' => $event['sequence']];
+                        $select->execute($identity);
+                        $record = $select->fetch(\PDO::FETCH_ASSOC);
+                        self::assertIsArray($record, 'The fixture database contains this test run and its exact committed event.');
+                        $select->closeCursor();
+                        $delete = $database->prepare('DELETE FROM workflow_history_events
+                            WHERE id = :id AND workflow_run_id = :run AND sequence = :sequence');
+                        $delete->execute($identity);
+                        self::assertSame(1, $delete->rowCount());
+                        $pruned = $record;
+                    },
+                    'response_failure' => new TransportException('Response connection lost.', transientConnectionFailure: true),
+                ];
+            });
+        } finally {
+            $restore();
+        }
+        self::assertSame(21, $run['result']);
+        self::assertSame(3, $run['activity_completed']);
+        [$first, $retry] = $run['requests']['continuation'];
+        self::assertSame($firstUri, $retry['uri']);
+        self::assertCount(2, array_filter($run['requests']['continuation'], static fn (array $row): bool => $row['uri'] === $firstUri));
+        self::assertSame($first['body'], $retry['body']);
+        self::assertFalse($retry['answer']['recorded']);
+        self::assertSame('already_completed', $retry['answer']['reason']);
+        self::assertSame($first['answer']['continuation'], $retry['answer']['continuation']);
+        self::assertSame(['version' => 2, 'after_sequence' => $first['answer']['continuation_tail']['after_sequence'],
+            'omitted' => 'tail_unavailable'], $retry['answer']['continuation_tail']);
+        $carried = $first['answer']['activity_poll']['answer']['task'];
+        $replayed = $retry['answer']['activity_poll']['answer']['task'];
+        self::assertSame($carried['task_id'], $replayed['task_id']);
+        self::assertSame($carried['lease_expires_at'], $replayed['lease_expires_at']);
+        self::assertCount(1, array_filter($run['requests']['ordinary'], static fn (array $row): bool
+            => str_ends_with($row['uri'], '/'.$carried['task_id'].'/complete')));
+        self::assertSame('omitted', $this->decisions()[0]['tail']);
+    }
+
     /**
      * Start one run of three sequential activities and drive a managed Worker until it is closed.
      *
      * @param \Closure(array{uri: string, body: array<string, mixed>|null}): (array{
-     *     body?: array<string, mixed>, response_failure?: TransportException, replay?: bool
+     *     body?: array<string, mixed>, send_first?: array<string, mixed>, after_response?: \Closure,
+     *     response_failure?: TransportException, replay?: bool
      * }|null) $intercept
      * @return array{result: mixed, activity_completed: int, requests: array<string, list<array<string, mixed>>>}
      */
     private function driveRun(string $case, \Closure $intercept, bool $signalFirstActivity = false, bool $bigFirstResult = false,
-        bool $withUpdate = false): array
+        bool $withUpdate = false, ?string $expectedTerminalReason = null): array
     {
         $suffix = $case.'-'.bin2hex(random_bytes(4));
         $queue = 'php-continuation-v2-'.$suffix;
@@ -336,7 +491,7 @@ final class ActivityContinuationV2Test extends TestCase
             $worker?->requestShutdown();
         }) implements BoundedTransport {
             /** @var array<string, list<array<string, mixed>>> */
-            public array $requests = ['continuation' => [], 'ordinary' => [], 'history' => [], 'workflow' => []];
+            public array $requests = ['continuation' => [], 'ordinary' => [], 'history' => [], 'workflow' => [], 'failure' => []];
             private readonly Psr18Transport $inner;
             private float $checkedAt = 0.0;
 
@@ -372,6 +527,10 @@ final class ActivityContinuationV2Test extends TestCase
                 $originalBody = $body;
                 $body = $change['body'] ?? $body;
                 $row = ['uri' => $uri, 'body' => $body, 'original_body' => $originalBody];
+                if (isset($change['send_first'])) {
+                    $first = $change['send_first'];
+                    $this->record($uri, ['uri' => $uri, 'body' => $first, 'original_body' => $originalBody, 'answer' => $send($first)]);
+                }
                 try {
                     $answer = $send($body);
                 } catch (TransportException $error) {
@@ -379,6 +538,9 @@ final class ActivityContinuationV2Test extends TestCase
                     throw $error;
                 }
                 $this->record($uri, $row + ['answer' => $answer]);
+                if (isset($change['after_response'])) {
+                    $change['after_response']($answer);
+                }
                 if (isset($change['response_failure'])) {
                     throw $change['response_failure'];
                 }
@@ -399,6 +561,8 @@ final class ActivityContinuationV2Test extends TestCase
                     $this->requests['history'][] = $row;
                 } elseif (preg_match('~/activity-tasks/[^/]+/complete$~', $uri) === 1) {
                     $this->requests['ordinary'][] = $row;
+                } elseif (preg_match('~/activity-tasks/[^/]+/fail$~', $uri) === 1) {
+                    $this->requests['failure'][] = $row;
                 } elseif (preg_match('~/workflow-tasks/[^/]+/complete$~', $uri) === 1) {
                     $this->requests['workflow'][] = $row;
                 }
@@ -452,7 +616,16 @@ final class ActivityContinuationV2Test extends TestCase
         $worker->registerActivity('tests.php-continuation-v2.step', static fn (ActivityContext $context, int $value): int => $value);
 
         $client->startWorkflow($type, $workflowId, $queue);
-        $worker->run(0);
+        $terminal = null;
+        try {
+            $worker->run(0);
+        } catch (ServerException $error) {
+            if ($expectedTerminalReason === null || $error->status !== 409 || $error->reason !== $expectedTerminalReason) {
+                throw $error;
+            }
+            $terminal = $error->reason;
+        }
+        self::assertSame($expectedTerminalReason, $terminal);
         self::assertLessThan($deadline, microtime(true), 'The run closed before the deadline.');
         $result = $client->workflowResult($workflowId, timeoutSeconds: 5);
         $runId = $client->describeWorkflow($workflowId)->runId;
