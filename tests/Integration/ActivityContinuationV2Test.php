@@ -467,6 +467,41 @@ final class ActivityContinuationV2Test extends TestCase
         }];
     }
 
+    public function testAValidButOlderHistoryBoundaryDeclinesWithoutReplayingTheActivity(): void
+    {
+        $previousEvent = null;
+        $changed = false;
+        $run = $this->driveRun('stale-history', static function (array $request) use (&$previousEvent, &$changed): ?array {
+            if ($changed) {
+                return null;
+            }
+            if (($request['body']['continuation_tail']['version'] ?? null) === 2) {
+                return ['after_response' => static function (array $answer) use (&$previousEvent): void {
+                    $events = $answer['continuation_tail']['history_events'] ?? [];
+                    $previousEvent = $events[count($events) - 2] ?? null;
+                }];
+            }
+            if (!str_ends_with($request['uri'], '/continuation/complete')) {
+                return null;
+            }
+
+            self::assertIsArray($previousEvent);
+            self::assertIsString($previousEvent['id']);
+            $body = $request['body'];
+            $staleSequence = $body['continuation']['history_through_sequence'] - 1;
+            self::assertSame($staleSequence, $previousEvent['sequence']);
+            $body['continuation']['history_through_sequence'] = $staleSequence;
+            $body['continuation']['history_last_event_id'] = $previousEvent['id'];
+            $body['continuation']['sticky_cache']['history_last_sequence'] = $staleSequence;
+            $changed = true;
+
+            return ['body' => $body];
+        });
+
+        self::assertTrue($changed);
+        $this->assertDeclineRecordedOnce($run, 'history_changed');
+    }
+
     #[Group('continuation-v2-external-payload')]
     public function testAnExternalActivityResultDeclinesAndResumesThroughTheCarriedPoll(): void
     {
