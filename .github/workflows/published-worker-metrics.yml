@@ -128,6 +128,8 @@ jobs:
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
         with:
           clients: python,composer,curl,git
+      - name: Disable APT download retries (CVE-2026-109518)
+        run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
       - name: Require fixed APT before setting up PHP
         uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a  # fixed-apt
       - name: Set up the qualified PHP profile
@@ -340,6 +342,8 @@ jobs:
         uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
         with:
           clients: python,composer,curl,git
+      - name: Disable APT download retries (CVE-2026-109518)
+        run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
       - name: Require fixed APT before setting up PHP
         uses: durable-workflow/.github/.github/actions/require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a  # fixed-apt
       - name: Set up the qualified PHP profile
