@@ -270,6 +270,9 @@ leased replies from the Server. The validation case needs PHP's cURL extension
 to keep the control request open while the fixture holds a validation lease.
 A cooperative cancellation request declines the continuation for the leased
 activity and closes the workflow as cancelled after recording the activity once.
+The standalone and parallel-member cases submit v2 from an actual lease.
+They verify that the Server records the activity once, replays the decline,
+and starts no proposed timer. The parallel sibling then finishes the run.
 A stale attempt and a conflicting completion cause no ordinary replacement.
 The suite also checks fallback after a refused, over-budget, or unavailable tail.
 
@@ -305,6 +308,13 @@ the nested completion event limit. The fixture submits thirteen supported
 timer commands on the first continuation, compares the history across the
 refusal, and checks the ordinary fallback uses the original activity result
 and poll.
+
+For the expired-run decline, start the disposable Server with
+`DW_RUST_MAINTENANCE_LOOP=0` and set
+`DURABLE_WORKFLOW_CONTINUATION_V2_FIXTURE_RUN_DEADLINE=1` for PHPUnit. The
+case leases the activity before the run deadline and sends the continuation
+after the deadline. Disabling the repair loop isolates the completion from
+automatic timeout settlement.
 
 For the external result decline, enable local external payload storage in the
 disposable Server's test namespace and set
